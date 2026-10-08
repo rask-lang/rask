@@ -83,7 +83,7 @@ fn stub_file_id(index: usize) -> u16 {
 
 /// Every stdlib file, parsed once. Each accessor below is a view of this, so a
 /// declaration has one `NodeId` whichever list it reached a pass through — the
-/// resolver's symbol for `spawn` and the checker's declaration of it agree on
+/// resolver's symbol for `cancelled` and the checker's declaration of it agree on
 /// which node they mean. They used to be six separate parses, each numbering
 /// from its own base.
 fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {

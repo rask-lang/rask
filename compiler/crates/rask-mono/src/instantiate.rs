@@ -509,6 +509,12 @@ impl TypeSubstitutor {
                     body: Box::new(self.clone_expr(body)),
                 },
 
+                ExprKind::Spawn { target, receiver, body } => ExprKind::Spawn {
+                    target: *target,
+                    receiver: receiver.as_ref().map(|r| Box::new(self.clone_expr(r))),
+                    body: Box::new(self.clone_expr(body)),
+                },
+
                 // Type cast
                 ExprKind::Cast { expr, ty } => ExprKind::Cast {
                     expr: Box::new(self.clone_expr(expr)),

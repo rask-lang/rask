@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // The corners of the loopback network that used to hang or answer wrongly.
 import net
-import async.spawn
 
 // A connection still waiting in a listener's backlog when the listener
 // closes is refused. It used to stay queued, and its client waited forever.
@@ -11,7 +10,7 @@ test "closing a listener resets the connections it never accepted" {
         let addr = listener.local_addr()
         let (tx, rx) = Channel<bool>.buffered(1)
         let (done_tx, done_rx) = Channel<bool>.buffered(1)
-        let client = spawn(|| {
+        let client = spawn {
             let conn = net.tcp_connect(addr) catch e => {
                 let _ = done_tx.send(true)
                 return
@@ -20,7 +19,7 @@ test "closing a listener resets the connections it never accepted" {
             let failed = conn.read_text() is IoError
             let _ = conn.close()
             let _ = done_tx.send(failed)
-        })
+        }
         ensure client.detach()
         let _ = rx.receive()
         let _ = listener.close()

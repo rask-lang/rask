@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -4021,6 +4021,11 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
 
+                // `spawn { … }` — a task block (conc.async/S1).
+                if name == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                    return self.parse_spawn_block(SpawnTarget::Green, None, start);
+                }
+
                 // Labeled loop/for/while expression: `label: loop { ... }`
                 if self.check(&TokenKind::Colon)
                     && matches!(self.peek(1), TokenKind::Loop | TokenKind::For | TokenKind::While)
@@ -4652,6 +4657,39 @@ impl Parser {
         })
     }
 
+    /// The block of `spawn { … }` and its `Thread`/`ThreadPool` forms, the
+    /// current token being its `{`. The block is wrapped in a parameterless
+    /// closure node that only the compiler sees (`ExprKind::Spawn`).
+    fn parse_spawn_block(
+        &mut self,
+        target: SpawnTarget,
+        receiver: Option<Box<Expr>>,
+        start: usize,
+    ) -> Result<Expr, ParseError> {
+        let block_start = self.current().span.start;
+        // The task is its own frame: `break` can't reach a loop outside it.
+        let outer_labels = std::mem::take(&mut self.loop_labels);
+        let stmts = self.parse_block_body();
+        self.loop_labels = outer_labels;
+        let stmts = stmts?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let block = Expr {
+            id: self.next_id(),
+            kind: ExprKind::Block(stmts),
+            span: self.span(block_start, end),
+        };
+        let body = Expr {
+            id: self.next_id(),
+            kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(block) },
+            span: self.span(block_start, end),
+        };
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Spawn { target, receiver, body: Box::new(body) },
+            span: self.span(start, end),
+        })
+    }
+
     /// Parse a closure body, handling assignment in braceless bodies.
     /// Supports `|c| c = 42` and `|c| c += 1` without requiring braces.
     fn parse_closure_body(&mut self) -> Result<Expr, ParseError> {
@@ -4754,6 +4792,18 @@ impl Parser {
                 }
 
                 let field = self.expect_ident_or_keyword()?;
+
+                // `Thread.spawn { … }` / `ThreadPool.spawn { … }` (conc.async/S2–S3).
+                if field == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                    let target = match Self::name_path(&lhs).as_deref() {
+                        Some([.., last]) if last == "Thread" => Some(SpawnTarget::Thread),
+                        Some([.., last]) if last == "ThreadPool" => Some(SpawnTarget::Pool),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        return self.parse_spawn_block(target, Some(Box::new(lhs)), start);
+                    }
+                }
 
                 let type_args = if self.check(&TokenKind::Lt) && self.looks_like_generic_method_call() {
                     self.advance();

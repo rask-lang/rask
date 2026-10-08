@@ -1349,8 +1349,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
-        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
-        StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        // `ThreadPool.spawn { … }` and `Thread.spawn { … }`: see the green
+        // task's entry below for the arguments.
+        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("rask_thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry {
             mir_name: "time_sleep", c_name: "rask_sleep_ns",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -1363,12 +1365,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
         // Two args: the closure, then whether its result is a heap box the task
         // owns and must free if no join ever comes for it (#963).
-        // Panics when the closure is bound to its task (#1356), so the call
+        // Panics when the task block is bound to its task (#1356), so the call
         // records where it is; without that the report named the last line
-        // that happened to record one.
-        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), true),
-        // `spawn_with` wraps its body in the task's closure, so it asks of the
-        // body itself what adopting the task's closure asks of that.
+        // that happened to record one. `lower_spawn` calls the three task
+        // entries by their C names: they're the runtime's, not stdlib methods.
+        StdlibEntry::simple("rask_green_closure_spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        // A closure value a task block captured: refused if it captured a link
+        // or a `Local` box itself.
         StdlibEntry::simple("rask_closure_refuse_crossing", "rask_closure_refuse_crossing", &[types::I64], None, true),
         // One handle for every spawn form (conc.async/H5); the runtime reads
         // which kind it is.

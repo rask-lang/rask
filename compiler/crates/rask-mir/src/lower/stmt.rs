@@ -575,10 +575,7 @@ impl<'a> MirLowerer<'a> {
                 // was dropped on the floor — native printed the old value back
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
-                let (val_op, val_ty) = match &target.kind {
-                    ExprKind::Ident(name) => self.lower_value_for_name(&name.clone(), value)?,
-                    _ => self.lower_expr(value)?,
-                };
+                let (val_op, val_ty) = self.lower_expr(value)?;
                 self.check_resource_moved(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
@@ -1559,33 +1556,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Lower `value` to be stored in `name` — by a binding or a reassignment.
-    ///
-    /// A closure this function later hands to `spawn(name)` is lowered as a
-    /// spawn closure here: the wrapper that boxes a result too wide for the
-    /// task's one word is built while the closure is lowered, and the `spawn`
-    /// comes later (#1094). The body is scanned for spawned names up front, so
-    /// the name is what's known. Every store to the name has to agree with it,
-    /// not only the first: a reassignment lowered as an ordinary stack closure
-    /// handed `spawn` something other than the box it expected, and the task
-    /// hung (#1335).
-    fn lower_value_for_name(&mut self, name: &str, value: &Expr) -> Result<super::TypedOperand, LoweringError> {
-        let spawned = matches!(&value.kind, ExprKind::Closure { .. })
-            && self.spawned_closure_names.contains(name);
-        if !spawned {
-            return self.lower_expr(value);
-        }
-        let ExprKind::Closure { params, ret_ty, body, .. } = &value.kind else {
-            unreachable!("checked by `spawned` above")
-        };
-        let lowered = self.lower_closure_expecting(
-            params, ret_ty.as_ref(), body, true, &[],
-            Some(value.id), true,
-        )?;
-        self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);
-        Ok(lowered)
-    }
-
     /// Give a copy of a Copy aggregate references of its own.
     ///
     /// `let p = items[0]` copies the bytes, and the bytes include the source's
@@ -1711,7 +1681,7 @@ impl<'a> MirLowerer<'a> {
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&TypeExpr>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
-        let (init_op, inferred_ty) = self.lower_value_for_name(name, init)?;
+        let (init_op, inferred_ty) = self.lower_expr(init)?;
 
         // `let b = Heap(Big { … })` takes over the block rather than copying out
         // of it. A struct-typed destination copies its bytes on assignment,
@@ -1933,6 +1903,17 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { method, .. } = &init.kind {
             if method == "to_vec" {
                 self.meta_mut(name).type_prefix = Some("Vec".to_string());
+            }
+        }
+        // A task block's value is its `Handle`, which `join`/`detach` dispatch
+        // through and an `ensure` on it is cancelled by.
+        if let ExprKind::Spawn { .. } = &init.kind {
+            if let Some(prefix) = self
+                .ctx
+                .lookup_raw_type(init.id)
+                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            {
+                self.meta_mut(name).type_prefix = Some(prefix.as_str().to_string());
             }
         }
         // Also track for simple function calls (e.g. cli.args())

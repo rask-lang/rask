@@ -22,7 +22,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 
 | Rule | Description |
 |------|-------------|
-| **A1: Thread per spawn** | `spawn(|| {})` creates an OS thread via `pthread_create` (`thread.c`) |
+| **A1: Thread per spawn** | `spawn {}` creates an OS thread via `pthread_create` (`thread.c`) |
 | **A2: Blocking I/O** | All I/O blocks the calling thread. No reactor, no parking |
 | **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/receive |
 | **A4: Linear handles** | `Handle` wraps a refcounted `TaskState*`. An unconsumed handle is a compile error |
@@ -33,7 +33,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 
 ```rask
 using Multitasking {
-    let h = spawn(|| { work() })
+    let h = spawn { work() }
     try h.join()
 }
 ```
@@ -117,7 +117,7 @@ No state-machine codegen pass, no pause-point enumeration, no wide ABIs for indi
 
 | Aspect | Stays the same |
 |--------|---------------|
-| Programmer syntax | `spawn(|| {})`, `.join()`, `.detach()`, channels, `select` |
+| Programmer syntax | `spawn {}`, `.join()`, `.detach()`, channels, `select` |
 | Error types | `JoinError`, `SendError`, `ReceiveError`, `TimedOut` |
 | Affine handle rules | Must consume via join/detach/cancel |
 | `using` block scoping | Block exit waits for non-detached tasks |
@@ -131,7 +131,7 @@ ERROR [conc.strategy/RS3]: too many concurrent tasks
    |
    | 10,247 OS threads active (Phase A limit: ~10,000)
    |
-WHY: Phase A uses OS threads. Each spawn() creates a real thread.
+WHY: Phase A uses OS threads. Each spawn creates a real thread.
 
 FIX: Reduce concurrent tasks, or wait for Phase B (green tasks).
 ```
@@ -167,7 +167,7 @@ FIX: Reduce concurrent tasks, or wait for Phase B (green tasks).
 5. `rask_sleep` + `rask_timeout` (timers)
 6. `rask_mutex` + `rask_shared` (shared state)
 
-Each step is independently testable. Step 1 alone enables `spawn(|| {}).detach()` and `try h.join()`.
+Each step is independently testable. Step 1 alone enables `spawn {}.detach()` and `try h.join()`.
 
 ### Risk: Phase A "good enough" trap
 

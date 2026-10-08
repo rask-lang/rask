@@ -37,9 +37,9 @@ func main() {
     using Multitasking {
         // Render thread gets its own graph. No link crosses the boundary.
         let frame = world.snapshot()
-        let h: Handle<i32> = spawn(|| {
+        let h: Handle<i32> = spawn {
             return walk(frame)
-        })
+        }
 
         // Simulation keeps mutating the live world at the same time.
         mut i = 0

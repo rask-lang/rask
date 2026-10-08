@@ -220,6 +220,14 @@ pub enum ResolveErrorKind {
     #[error("return outside of function")]
     InvalidReturn,
 
+    /// `spawn(|| …)`, `spawn_with(v, |take x| …)` or their `Thread` /
+    /// `ThreadPool` forms: a task starts with a block now (conc.async/S1–S3).
+    /// `form` is how the start of the call was written — `spawn`,
+    /// `Thread.spawn_with` — `receiver` the `Thread`/`ThreadPool` prefix, and
+    /// `handed` the name a `spawn_with` passed in, when it was a name.
+    #[error("`{form}` takes a block, not a closure")]
+    SpawnTakesABlock { form: String, receiver: Option<String>, handed: Option<String> },
+
     #[error("unknown package: `{}`", if path.is_empty() { "<empty>".to_string() } else { path.join(".") })]
     UnknownPackage { path: Vec<String> },
 

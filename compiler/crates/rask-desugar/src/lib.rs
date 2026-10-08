@@ -733,6 +733,9 @@ impl Desugarer {
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
+            ExprKind::Spawn { body, .. } => {
+                self.desugar_expr(body);
+            }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }

@@ -3,7 +3,6 @@
 // completion, so a plain `rask test` never sees the lost update; sim does.
 import sync.Atomic
 import sync.SeqCst
-import async.spawn
 
 const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
 
@@ -16,9 +15,9 @@ func racy_bump(times: i64) {
 
 test "lost update" {
     using Multitasking {
-        let a = spawn(|| { racy_bump(10) })
+        let a = spawn { racy_bump(10) }
         ensure a.detach()
-        let b = spawn(|| { racy_bump(10) })
+        let b = spawn { racy_bump(10) }
         ensure b.detach()
         a.join()!
         b.join()!

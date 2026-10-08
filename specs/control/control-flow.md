@@ -206,7 +206,7 @@ search: loop {
 
 | Rule | Description |
 |------|-------------|
-| **CF26: Exits function** | `return` immediately exits current function or closure (not just block) |
+| **CF26: Exits function** | `return` immediately exits current function, closure or task block (not just block) |
 | **CF27: Ensure trigger** | `return` triggers `ensure` cleanup before exiting |
 | **CF28: Never type** | Type of `return` expression is `Never` |
 
@@ -440,7 +440,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 **CF1/CF2 (context-dependent):** Most control flow is for side effects (logging, validation, mutation). Assignment context (`let x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity.
 
-**CF26 (explicit return):** `return` exits the innermost function or closure scope. Inside a match arm or if block within a function, `return` exits the **function**. Inside a closure body, `return` exits the **closure**. Closures are anonymous functions — same return semantics. Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression.
+**CF26 (explicit return):** `return` exits the innermost function or closure scope. Inside a match arm or if block within a function, `return` exits the **function**. Inside a closure body, `return` exits the **closure**. Closures are anonymous functions — same return semantics. A task block (`spawn { … }`) is a frame of its own too: `return v` ends the task with `v`, since the function that started it may already have returned (`conc.async/S7`). Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression.
 
 **CF15 (break value):** `loop` with `break value` provides clear syntax for value-returning loops. The alternative (while with mutation, implicit last expression) is ambiguous and error-prone.
 

@@ -483,7 +483,7 @@ with db.write() as d {
 
 // Message passing — channels between tasks
 let ch = Channel.buffered(16)
-spawn(|| { ch.sender.send(compute_result()) }
+spawn { ch.sender.send(compute_result()) }
 let result = try ch.receiver.receive()
 ```
 
@@ -502,13 +502,13 @@ See [concurrency/sync.md](concurrency/sync.md).
 ```rask
 // Spawn and join
 using Multitasking {
-    let handle = spawn(|| { fetch(url) }
+    let handle = spawn { fetch(url) }
     let result = try handle.join()
 }
 
 // Fire-and-forget
 using Multitasking {
-    spawn(|| { log_event(event) }).detach()
+    spawn { log_event(event) }.detach()
 }
 
 // Parallel work with channels
@@ -516,7 +516,7 @@ using Multitasking {
     let ch = Channel.buffered(10)
 
     for url in urls {
-        spawn(|| {
+        spawn {
             let data = try fetch(url)
             try ch.sender.send(data)
         }

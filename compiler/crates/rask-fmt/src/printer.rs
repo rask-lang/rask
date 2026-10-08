@@ -2424,6 +2424,30 @@ impl<'a> Printer<'a> {
                     _ => self.format_expr(body),
                 }
             }
+            ExprKind::Spawn { receiver, body, .. } => {
+                match receiver {
+                    Some(r) => {
+                        self.format_expr(r);
+                        self.emit(".spawn");
+                    }
+                    None => self.emit("spawn"),
+                }
+                // The parser wraps the block in a closure node; only the
+                // block is source. Laid out the way a closure's block body is.
+                let block = match &body.kind {
+                    ExprKind::Closure { body: block, .. } => block,
+                    _ => body,
+                };
+                self.emit(" ");
+                match &block.kind {
+                    ExprKind::Block(stmts) if self.fits_one_line(block.span, stmts) => {
+                        self.emit("{ ");
+                        self.format_stmt_inline(&stmts[0]);
+                        self.emit(" }");
+                    }
+                    _ => self.format_expr(block),
+                }
+            }
             ExprKind::Cast { expr: inner, ty } => {
                 self.format_cast_operand(inner);
                 self.emit(" as ");
@@ -2759,6 +2783,7 @@ impl<'a> Printer<'a> {
                 | ExprKind::ArrayRepeat { .. }
                 | ExprKind::Tuple(_)
                 | ExprKind::Unwrap { .. }
+                | ExprKind::Spawn { .. }
         )
     }
 

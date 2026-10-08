@@ -328,7 +328,7 @@ impl InferenceContext {
     /// Give a variable an answer of last resort.
     ///
     /// A closure whose body diverges is the case this exists for.
-    /// `spawn(|| { panic("boom") })` never returns, so no constraint ever
+    /// `spawn { panic("boom") }` never returns, so no constraint ever
     /// reaches the closure's return variable and inference finishes with it
     /// open — which used to leave every consumer inventing a width for a value
     /// that doesn't exist. `Never` is the honest answer and it already lowers

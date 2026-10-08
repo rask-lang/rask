@@ -14,15 +14,15 @@
 
 func main() {
     using Multitasking(workers: 1) {
-        let outer = spawn(|| {
-            let inner = spawn(|| {
+        let outer = spawn {
+            let inner = spawn {
                 return 7
-            })
+            }
             let v = inner.join() catch e => {
                 return 0
             }
             return v
-        })
+        }
         let r = outer.join() catch e => {
             println("outer failed")
             return

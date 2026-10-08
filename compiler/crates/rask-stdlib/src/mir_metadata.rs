@@ -883,6 +883,14 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     ("RawPtr_add", &[]),
     ("RawPtr_offset", &[]),
     ("RawPtr_read", &[]),
+    // A task block's entry points keep the block's closure: the task runs it
+    // later and frees it when it ends. The second argument is a flag.
+    ("rask_green_closure_spawn", &[0]),
+    ("rask_thread_spawn", &[0]),
+    ("rask_threadpool_spawn", &[0]),
+    // Reads a closure's header before a task block captures it, and keeps
+    // nothing.
+    ("rask_closure_refuse_crossing", &[]),
 ];
 
 /// What a call does with the argument at `arg_index`, by its declaration.
@@ -950,8 +958,8 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
 ///
-/// `rask_closure_refuse_crossing` is the check `spawn_with` makes of its body
-/// before wrapping it: it reads the closure's header and hands it back.
+/// `rask_closure_refuse_crossing` is the check a task block makes of each
+/// closure value it captures: it reads the closure's header and hands it back.
 const BORROWS_ITS_CALLBACK: &[&str] = &[
     "Vec_sort_by",
     "Vec_sort_by_keys",

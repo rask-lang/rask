@@ -4,7 +4,8 @@
 //
 // Carrying moves the capture into the closure's environment (CM2), and the
 // body can never give it away (CM4), so nothing would ever consume it. The
-// value goes in as a `take` parameter, or `spawn_with` for a task.
+// value goes in as a `take` parameter. A task block isn't a closure: it may
+// capture a resource and consume it (task_leaves_capture_unconsumed.rk).
 
 import memory.Heap
 
@@ -36,23 +37,6 @@ func make_sizer() -> func() -> i64 {
 }
 
 func main() {
-    using Multitasking {
-        let c = Conn { id: 2 }
-        // ERROR: the task only reads `c`, and nothing ever closes it [E0913]
-        let t = spawn(|| {
-            return peek(c)
-        })
-        println("{t.join()!}")
-
-        // Fine: the task is handed `d` and closes it.
-        let d = Conn { id: 3 }
-        let u = spawn_with(d, |take d: Conn| {
-            ensure d.close()
-            return peek(d)
-        })
-        println("{u.join()!}")
-    }
-
     // Fine: a closure that stays in its frame only borrows.
     let e = Conn { id: 4 }
     ensure e.close()

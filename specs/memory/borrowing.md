@@ -329,15 +329,15 @@ func update(mutate state: GameState, dt: f32) {
 func parallel_update(mutate state: GameState, dt: f32) {
     scoped {
         // Compiler sees: captures state.entities mutably
-        spawn(|| {
+        spawn {
             for e in state.entities.nodes() {
                 e.position.x += e.velocity.dx * dt
             }
-        })
+        }
         // Compiler sees: captures state.score mutably — disjoint, no conflict
-        spawn(|| {
+        spawn {
             state.score += 10
-        })
+        }
     }
 }
 ```

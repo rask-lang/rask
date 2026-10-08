@@ -19,11 +19,11 @@ func worker(id: i32, iterations: i32) {
 func main() -> void {
     print("=== Basic Threading ===\n\n")
 
-    // Spawn a thread with Thread.spawn(|| {})
+    // Spawn a thread with Thread.spawn {}
     // Returns a Handle
-    let handle = Thread.spawn(|| {
+    let handle = Thread.spawn {
         print("Hello from thread!\n")
-    })
+    }
     ensure handle.detach()
 
     print("Main thread continues...\n")
@@ -37,17 +37,17 @@ func main() -> void {
 
     // A handle has to be joined or detached. The ensure detaches it if
     // anything fails before the join; the join cancels it.
-    let h1 = Thread.spawn(|| {
+    let h1 = Thread.spawn {
         worker(1, 10)
-    })
+    }
     ensure h1.detach()
-    let h2 = Thread.spawn(|| {
+    let h2 = Thread.spawn {
         worker(2, 20)
-    })
+    }
     ensure h2.detach()
-    let h3 = Thread.spawn(|| {
+    let h3 = Thread.spawn {
         worker(3, 15)
-    })
+    }
     ensure h3.detach()
 
     // Wait for all threads
@@ -60,9 +60,9 @@ func main() -> void {
     // Detaching threads - fire and forget
     print("=== Detached Threads ===\n\n")
 
-    let detached = Thread.spawn(|| {
+    let detached = Thread.spawn {
         print("I'm a detached thread!\n")
-    })
+    }
 
     detached.detach()  // Don't wait for it
     print("Detached thread running in background\n\n")
@@ -74,22 +74,22 @@ func main() -> void {
     let (tx, rx) = Channel<string>.buffered(5)
 
     // Spawn producer thread - `own` moves the Sender into the closure
-    let producer = Thread.spawn(|| {
+    let producer = Thread.spawn {
         let _ = tx.send("Message 1")
         let _ = tx.send("Message 2")
         let _ = tx.send("Message 3")
         print("Producer sent 3 messages\n")
-    })
+    }
     ensure producer.detach()
 
     // Spawn consumer thread - `own` moves the Receiver into the closure
-    let consumer = Thread.spawn(|| {
+    let consumer = Thread.spawn {
         for _ in 0..3 {
             if rx.receive() is string as msg {
                 println("Received: {msg}")
             }
         }
-    })
+    }
     ensure consumer.detach()
 
     let _ = producer.join()
@@ -101,19 +101,20 @@ func main() -> void {
 
     let (sync_tx, sync_rx) = Channel<i32>.unbuffered()
 
-    let sender_thread = Thread.spawn(|| {
+    let sender_thread = Thread.spawn {
         print("Sending 100...\n")
         let _ = sync_tx.send(100)  // Blocks until received
         print("Send complete\n")
-    })
+    }
     ensure sender_thread.detach()
 
-    let receiver_thread = Thread.spawn(|| {
+    let receiver_thread = Thread.spawn {
         print("Waiting to receive...\n")
-        if sync_rx.receive() is i32 as value {  // Blocks until sent
+        if sync_rx.receive() is i32 as value {
+            // Blocks until sent
             println("Received: {value}")
         }
-    })
+    }
     ensure receiver_thread.detach()
 
     let _ = sender_thread.join()
@@ -152,9 +153,9 @@ func main() -> void {
         ensure tasks.detach()
 
         for i in 0..8 {
-            tasks.add(ThreadPool.spawn(|| {
+            tasks.add(ThreadPool.spawn {
                 println("Pool task {i} running")
-            }))
+            })
         }
 
         print("\nWaiting for all pool tasks...\n")
@@ -162,8 +163,8 @@ func main() -> void {
     }
 
     print("\n=== Key Points ===\n")
-    print("- Thread.spawn(|| {}) creates raw OS threads\n")
-    print("- ThreadPool.spawn(|| {}) uses thread pool (needs using ThreadPool)\n")
+    print("- Thread.spawn {{ }} creates raw OS threads\n")
+    print("- ThreadPool.spawn {{ }} uses thread pool (needs using ThreadPool)\n")
     print("- handle.join() waits for completion\n")
     print("- handle.detach() runs in background\n")
     print("- Channels enable message passing\n")

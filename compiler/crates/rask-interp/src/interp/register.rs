@@ -12,12 +12,9 @@ use crate::value::{BuiltinKind, ModuleKind, Value};
 use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkResult};
 
 /// Free functions from `stdlib/async.rk` that are callable unqualified.
-/// `spawn { … }` is its own expression form; `spawn(closure)` arrives here as an
-/// ordinary call, so the name has to resolve to something callable.
+/// (`spawn { … }` is an expression form of its own, not a function.)
 pub(super) fn prelude_builtin(name: &str) -> Option<BuiltinKind> {
     match name {
-        "spawn" => Some(BuiltinKind::AsyncSpawn),
-        "spawn_with" => Some(BuiltinKind::AsyncSpawnWith),
         "cancelled" => Some(BuiltinKind::Cancelled),
         _ => None,
     }
@@ -35,12 +32,6 @@ impl Interpreter {
                 self.env.define(alias.to_string(), Value::Type("ThreadPool".to_string()));
             }
             // Async module members
-            (ModuleKind::Async, "spawn") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
-            }
-            (ModuleKind::Async, "spawn_with") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawnWith));
-            }
             (ModuleKind::Async, "cancelled") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));
             }

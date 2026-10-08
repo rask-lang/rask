@@ -42,7 +42,7 @@ func spawn_carries_its_capture() {
     using Multitasking {
         mut data = Vec.new<i32>()
         data.push(1)
-        let h = spawn(|| { return data.len() })
+        let h = spawn { return data.len() }
         h.detach()
     }
 }

@@ -8,7 +8,6 @@ import time
 import time.Duration
 import time.Instant
 import time.SystemTime
-import async.spawn_with
 import io.IoError
 import sim
 import sim.Fault
@@ -56,10 +55,10 @@ test "a cut connection is an error, never a short message" {
         for i in 0..10 {
             let listener = try net.tcp_listen("127.0.0.1:0")
             let addr = listener.local_addr()
-            let server = spawn_with(listener, |take listener: TcpListener| {
+            let server = spawn {
                 let _ = greet_once(listener)
                 let _ = listener.close()
-            })
+            }
             ensure server.detach()
             let conn = net.tcp_connect(addr) catch e => {
                 server.join()!

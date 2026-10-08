@@ -2,7 +2,7 @@
 // Spawning a closure that something else still holds (#1386).
 //
 // `let f = fs[0]` reads the vector's closure without taking it: the vector
-// still frees it when it dies. `spawn(f)` handed the task that same block, the
+// still frees it when it dies. `spawn { f() }` handed the task that same block, the
 // task freed it at `join`, and the vector freed it again. A closure read out
 // of a struct field, or found by a sequence, went the same way. The keeper now
 // gets a reference of its own, and each side frees its own.
@@ -39,25 +39,26 @@ test "a closure read out of a vector, spawned" {
         fs.push(keep_i(5))
         let f = fs[0]
         assert f() == 7
-        assert spawn(f).join()! == 7
+        assert spawn { f() }.join()! == 7
         assert fs[0]() == 7
     }
 }
 
-test "spawned straight from the index" {
+test "read from the index, spawned twice" {
     using Multitasking {
         mut fs = Vec<func() -> i64>.new()
         fs.push(keep_i(1))
         fs.push(keep_i(2))
-        assert spawn(fs[1]).join()! == 4
-        assert spawn(fs[1]).join()! == 4
+        let g = fs[1]
+        assert spawn { g() }.join()! == 4
+        assert spawn { g() }.join()! == 4
     }
 }
 
 test "a closure read out of a struct field, spawned" {
     using Multitasking {
         let h = Holder { f: keep_i(3) }
-        assert spawn(h.f).join()! == 5
+        assert spawn { (h.f)() }.join()! == 5
         assert (h.f)() == 5
     }
 }
@@ -92,7 +93,8 @@ test "closures collected by to_vec, spawned" {
         let plain: Vec<i64> = [1, 2, 3]
         let fs = plain.as_sequence().map(keep_i).to_vec()
         assert fs[0]() == 3
-        assert spawn(fs[2]).join()! == 5
+        let g = fs[2]
+        assert spawn { g() }.join()! == 5
     }
 }
 
@@ -100,7 +102,7 @@ test "a closure found in a sequence, spawned" {
     using Multitasking {
         let plain: Vec<i64> = [1, 2, 3]
         let f = plain.as_sequence().map(keep_i).find(|f| f() > 3)!
-        assert spawn(f).join()! == 4
+        assert spawn { f() }.join()! == 4
     }
 }
 
@@ -131,7 +133,7 @@ test "yielded literals through an adapter, collected and spawned" {
         let fs = pair().take(5).to_vec()
         assert fs.len() == 2
         let g = fs[1]
-        assert spawn(|| g(2)).join()! == 42
+        assert spawn { g(2) }.join()! == 42
     }
 }
 

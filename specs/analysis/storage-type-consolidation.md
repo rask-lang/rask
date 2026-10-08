@@ -432,7 +432,7 @@ fix:
 ```
 ERROR [conc.sync/SH7]: this `Shared` is task-local and cannot be sent
    |
- 8 |  spawn(own || { counter.write() … })
+ 8 |  spawn { counter.write() … }
    |                 ^^^^^^^ `Shared<i64>` uses the `Local` strategy
 
 WHY: `Local` takes no lock, so two tasks touching it would race.

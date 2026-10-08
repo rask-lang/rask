@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A spawned closure is checked for what it *captures*: a `Local` box or a link
+// A task block is checked for what it *captures*: a `Local` box or a link
 // it reaches from outside can't go to another task (E0346, E0901). What the
 // task makes for itself is its own.
 //
-//     spawn(|| {
+//     spawn {
 //         mut r: Rack<Node> = Rack.new()
 //         let a = r.insert(Node { id: 1 })
 //         let c = Shared.local(0)
 //         ...
-//     })
+//     }
 //
 // used to be rejected twice: the check asked whether a name was *used* inside
-// the closure, not whether it came from outside, so the task's own link and
+// the block, not whether it came from outside, so the task's own link and
 // its own `Local` box both counted as sent (#830).
 
-import async.spawn
 import memory.{Rack, Link}
 import sync.Shared
 
@@ -25,7 +24,7 @@ struct Node {
 }
 
 func count_in_a_task() -> i64 {
-    let h = spawn(|| {
+    let h = spawn {
         mut r: Rack<Node> = Rack.new()
         let a = r.insert(Node { id: 1, peer: none })
         let b = r.insert(Node { id: 2, peer: a })
@@ -40,7 +39,7 @@ func count_in_a_task() -> i64 {
             }
         }
         return c.get()
-    })
+    }
     return h.join() catch e => -1
 }
 
@@ -49,13 +48,13 @@ func a_graph_crosses_whole() -> i64 {
     let a = world.insert(Node { id: 5, peer: none })
     let bonus = a.id
     let frame = world.snapshot()
-    let h = spawn(|| {
+    let h = spawn {
         mut t = bonus
         for n in frame.nodes() {
             t += n.id
         }
         return t
-    })
+    }
     return h.join() catch e => -1
 }
 

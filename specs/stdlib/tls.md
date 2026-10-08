@@ -53,10 +53,10 @@ ensure listener.close()
 
 loop {
     let conn = try listener.accept()
-    spawn_with(conn, |take conn: TlsConnection| {
+    spawn {
         ensure conn.close()
         try handle(conn)
-    }).detach()
+    }.detach()
 }
 ```
 

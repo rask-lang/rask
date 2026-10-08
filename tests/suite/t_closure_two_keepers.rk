@@ -3,7 +3,7 @@
 // A closure value is Copy, so one closure the frame owns can be handed to two
 // keepers, or to a keeper and then called. Natively the first keeper took the
 // frame's only reference to the block, and whoever freed it second freed a
-// dead block: `spawn(c)` twice read garbage, `fs.push(c)` twice crashed at
+// dead block: `spawn { c() }` twice read garbage, `fs.push(c)` twice crashed at
 // exit (#1411).
 
 func keep_i(x: i64) -> func() -> i64 {
@@ -13,7 +13,7 @@ func keep_i(x: i64) -> func() -> i64 {
 
 func run_on_a_task(f: func() -> i64) -> i64 {
     using Multitasking {
-        return spawn(f).join()!
+        return spawn { f() }.join()!
     }
 }
 
@@ -35,8 +35,8 @@ func alone(x: i64) -> i64 {
 test "spawned twice" {
     using Multitasking {
         let c = keep_i(1)
-        let a = spawn(c).join()!
-        let b = spawn(c).join()!
+        let a = spawn { c() }.join()!
+        let b = spawn { c() }.join()!
         assert a == 3
         assert b == 3
     }

@@ -815,15 +815,21 @@ impl Interpreter {
         ));
     }
 
-    /// Build the interpreter a task will run on: the program's tables and the
-    /// closure's captures. Every spawn form goes through `task_from_args`, which
-    /// calls this and hands over the task's argument. One path, because
-    /// patching one copy and not the others is how #882's first fix changed
-    /// nothing: two copies looked identical and only one was reached.
+    /// Build the interpreter a task will run on: the program's tables, the
+    /// block's captures, and the resources among them, which the task owes
+    /// from here on (conc.async/S6). Every spawn form goes through
+    /// `task_from_closure`, which calls this. One path, because patching one
+    /// copy and not the others is how #882's first fix changed nothing: two
+    /// copies looked identical and only one was reached.
+    ///
+    /// `named` is every name the block mentions. The snapshot holds the whole
+    /// visible environment, and handing a resource the block never names to
+    /// the task would leave the parent closing something it no longer tracks.
     pub(crate) fn spawn_child(
         &mut self,
         captured_vars: HashMap<String, crate::env::Slot>,
         generics: &GenericFrame,
+        named: &std::collections::HashSet<String>,
     ) -> Self {
         let mut child = Interpreter::new();
         // The body is the closure's, so it runs under the frame it was built in.
@@ -856,11 +862,20 @@ impl Interpreter {
         // reason, which is the failure std.testing/T19 exists to surface
         // (#1093). Shared rather than copied, because there is one report.
         child.output_buffer = self.output_buffer.clone();
-        // Captures hold nothing the task owes: a closure that outlives its
-        // frame can't capture a linear value (mem.closures/CM4). What the task
-        // consumes arrives as its argument, handed over in `task_from_args`.
+        // The task owns what it captured. It runs on its own interpreter with
+        // its own resource tracker, so without this the parent went on owing
+        // a resource the task had already closed, and died at the scope's exit
+        // claiming a leak native never had (#882).
+        let handed: Vec<Value> = captured_vars
+            .iter()
+            .filter(|(name, _)| named.contains(*name))
+            .filter_map(|(_, slot)| slot.get())
+            .collect();
         for (name, cell) in captured_vars {
             child.env.define_slot(name, cell);
+        }
+        for value in &handed {
+            self.hand_resources_to_task(value, &mut child);
         }
         child
     }
@@ -878,73 +893,46 @@ impl Interpreter {
         Value::Handle(inner)
     }
 
-    /// What every spawn form needs from its arguments: the task's
-    /// interpreter, holding what the task was handed, and the body it runs.
-    ///
-    /// `with_arg` is the `spawn_with` form. The first argument is the body's
-    /// one `take` parameter, and it crosses the way a capture does: into the
-    /// task's own environment, its resources owed by the task from here on.
-    ///
-    /// A named function is a body too: `spawn_with(conn, serve_one)`.
-    fn task_from_args(
+    /// What every spawn form needs: the task's interpreter, holding what the
+    /// block captured, and the body it runs. `block` is the task block's
+    /// closure node, read for the names it mentions.
+    fn task_from_closure(
         &mut self,
         form: &str,
-        args: Vec<Value>,
-        with_arg: bool,
-    ) -> Result<(Interpreter, TaskBody), RuntimeError> {
-        let mut args = args.into_iter();
-        let handed = if with_arg { args.next() } else { None };
-        let Some(closure) = args.next() else {
-            return Err(RuntimeError::TypeError(format!("{form} requires a closure argument")));
-        };
-        let wanted = usize::from(with_arg);
-        if let Value::Function { name, generics } = &closure {
-            let Some(decl) = self.functions.get(name).cloned() else {
-                return Err(RuntimeError::UndefinedFunction(name.clone()));
-            };
-            if decl.params.len() != wanted {
-                return Err(RuntimeError::TypeError(format!(
-                    "{form}: `{name}` must take {wanted} parameter{}",
-                    if wanted == 1 { "" } else { "s" }
-                )));
-            }
-            let mut child = self.spawn_child(HashMap::new(), &None);
-            let args: Vec<Value> = handed.into_iter().collect();
-            for value in &args {
-                self.hand_resources_to_task(value, &mut child);
-            }
-            return Ok((child, TaskBody::Function(decl, generics.clone(), args)));
-        }
-        let Value::Closure { params, body, captured_env, task_bound, generics, .. } = closure else {
+        closure: Value,
+        block: &rask_ast::expr::Expr,
+    ) -> Result<(Interpreter, rask_ast::expr::Expr), RuntimeError> {
+        let Value::Closure { body, captured_env, task_bound, generics, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
-                "{form} expects a closure, got {}",
+                "{form}: a task block evaluated to {}",
                 closure.type_name()
             )));
         };
-        if params.len() != wanted {
-            return Err(RuntimeError::TypeError(format!(
-                "{form} closure must take {wanted} parameter{}",
-                if wanted == 1 { "" } else { "s" }
-            )));
-        }
         if task_bound {
             return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
-        let mut child = self.spawn_child(captured_env, &generics);
-        // The task owns what it was handed. It runs on its own interpreter
-        // with its own resource tracker, so without this the parent went on
-        // owing a resource the task had already closed, and died at the
-        // scope's exit claiming a leak native never had (#882).
-        if let (Some(value), Some(name)) = (handed, params.first()) {
-            self.hand_resources_to_task(&value, &mut child);
-            child.env.define_slot(name.clone(), crate::env::slot(value));
+        let mut named = std::collections::HashSet::new();
+        rask_ast::visit::walk_expr(block, &mut |e| {
+            if let rask_ast::expr::ExprKind::Ident(n) = &e.kind {
+                named.insert(n.clone());
+            }
+        });
+        // A closure value the block captures carries what it captured out of
+        // sight of the checker (#1356).
+        let crossing_bound_closure = captured_env.iter().any(|(name, slot)| {
+            named.contains(name)
+                && matches!(slot.get(), Some(Value::Closure { task_bound: true, .. }))
+        });
+        if crossing_bound_closure {
+            return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
-        Ok((child, TaskBody::Closure(body)))
+        let child = self.spawn_child(captured_env, &generics, &named);
+        Ok((child, body))
     }
 
-    /// Spawn an OS thread from a closure (`Thread.spawn`, `Thread.spawn_with`).
-    pub(crate) fn spawn_os_thread(&mut self, args: Vec<Value>, with_arg: bool) -> Result<Value, RuntimeError> {
-        let (child, body) = self.task_from_args("Thread.spawn", args, with_arg)?;
+    /// Start an OS thread (`Thread.spawn { … }`).
+    pub(crate) fn spawn_os_thread(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
+        let (child, body) = self.task_from_closure("Thread.spawn", closure, block)?;
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
@@ -953,17 +941,23 @@ impl Interpreter {
         Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    /// Spawn an async task from a closure (`spawn`, `spawn_with` in
-    /// `using Multitasking`). In the interpreter it's an OS thread.
-    pub(crate) fn spawn_async_task(&mut self, args: Vec<Value>, with_arg: bool) -> Result<Value, RuntimeError> {
+    /// Start a green task (`spawn { … }` in `using Multitasking`). In the
+    /// interpreter it's an OS thread.
+    pub(crate) fn spawn_async_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         // Check for active runtime slot (CC3 fallback)
         if crate::value::ACTIVE_RUNTIME.read().unwrap().is_none() {
             return Err(RuntimeError::Panic(
-                "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
+                "RUNTIME PANIC: spawn with no active `using Multitasking` scope\n\
+                 \n\
+                 This can happen when:\n\
+                 - A closure containing a spawn is stored and called outside a block\n\
+                 - An interface object dispatches to an impl that spawns\n\
+                 - FFI calls back into Rask outside any scope\n\
+                 \n\
                  Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
-        let (child, body) = self.task_from_args("spawn()", args, with_arg)?;
+        let (child, body) = self.task_from_closure("spawn", closure, block)?;
 
         // The thread starts now; the body waits for one of the scope's
         // task slots before running, so `workers: n` bounds how many
@@ -978,9 +972,8 @@ impl Interpreter {
         Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    /// Spawn a thread pool task from a closure (`ThreadPool.spawn`,
-    /// `ThreadPool.spawn_with`).
-    pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>, with_arg: bool) -> Result<Value, RuntimeError> {
+    /// Start a job on the thread pool (`ThreadPool.spawn { … }`).
+    pub(crate) fn spawn_pool_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         use crate::value::PoolTask;
 
         // Check for thread pool context
@@ -992,7 +985,7 @@ impl Interpreter {
                 ))
             }
         };
-        let (child, body) = self.task_from_args("ThreadPool.spawn", args, with_arg)?;
+        let (child, body) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
         let cancel = Arc::new(crate::value::CancelToken::default());
@@ -1167,7 +1160,7 @@ impl Interpreter {
 
     /// Hand what a call stored into a `mutate` argument to the caller.
     ///
-    /// `self.tasks = Tasks.More(spawn(f), …)` puts a handle made in this call
+    /// `self.tasks = Tasks.More(spawn { f() }, …)` puts a handle made in this call
     /// into the caller's value, and the return value is not the only way out
     /// of a call. Outward only: an entry already owned further out stays
     /// where it is.
@@ -1635,19 +1628,10 @@ impl std::fmt::Display for RuntimeDiagnostic {
 
 impl std::error::Error for RuntimeDiagnostic {}
 
-/// Run a spawned closure's body to its result, or the message it failed with.
-/// What a task runs: a closure's body, or a named function and its argument.
-enum TaskBody {
-    Closure(rask_ast::expr::Expr),
-    Function(rask_ast::decl::FnDecl, crate::value::GenericFrame, Vec<Value>),
-}
-
-fn run_task_body(mut interp: Interpreter, body: TaskBody) -> Result<Value, String> {
-    let ran = match body {
-        TaskBody::Closure(body) => interp.eval_expr(&body),
-        TaskBody::Function(decl, generics, args) => interp.call_function(&decl, args, generics),
-    };
-    match ran {
+/// Run a task block to its result, or the message it failed with. A `return`
+/// in the block ends the task with that value.
+fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr) -> Result<Value, String> {
+    match interp.eval_expr(&body) {
         Ok(val) => Ok(val),
         Err(diag) => match diag.error {
             RuntimeError::Return(val) => Ok(val),

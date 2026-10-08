@@ -246,10 +246,15 @@ pub struct OwnershipChecker<'a> {
     /// a Vec was enough to reject the whole thing (#869). Keyed by node, a
     /// binding asks about its own initializer and the body can't answer for it.
     closure_scope_limits: HashMap<rask_ast::NodeId, u32>,
-    /// Closure literals bound to a name, so `spawn(f)` can be checked the same
-    /// way `spawn(|| …)` is. Only the literal case is in here — a closure that
-    /// arrives through a parameter or a call has no body to read.
+    /// Closure literals bound to a name, so a task block that calls one —
+    /// `let f = || { … }` then `spawn { f() }` — is checked for the writes the
+    /// closure makes as well as its own. Only the literal case is in here — a
+    /// closure that arrives through a parameter or a call has no body to read.
     closure_literals: HashMap<String, Expr>,
+    /// The closure nodes the parser wraps around task blocks (`spawn { … }`).
+    /// A task block runs once, so unlike a closure it may consume what it
+    /// captures (conc.async/S6).
+    task_bodies: HashSet<rask_ast::NodeId>,
     /// CM1: closure literals that outlive the frame that built them, so they
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
@@ -402,6 +407,7 @@ impl<'a> OwnershipChecker<'a> {
             scope_limited_closures: HashMap::new(),
             module_consts: std::collections::HashSet::new(),
             closure_scope_limits: HashMap::new(),
+            task_bodies: HashSet::new(),
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
             closure_writes_a_capture: HashSet::new(),
@@ -549,7 +555,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Run ownership analysis, reading parameter modes from `extra` as well.
     ///
     /// `extra` is the stdlib. Its bodies are not walked — only its signatures
-    /// are read, so a call to `spawn` can see that it takes its closure. The
+    /// are read, so a call to a stdlib function can see what it takes. The
     /// ownership checker had never been handed them: `stdlib_decls` was built
     /// for the type checker and stopped there, so PM3 had never fired for a
     /// stdlib function called by name, and `mem.closures/SL4` had to guess a
@@ -1047,9 +1053,7 @@ impl<'a> OwnershipChecker<'a> {
         self.scope_limited_closures.clear();
         self.closure_scope_limits.clear();
         // Keyed by name too, so an `f` in one body would otherwise answer for
-        // the next body's `f`: a `spawn(f)` in a function that borrowed its
-        // closure got checked against a body from somewhere else, and reported
-        // that body's write at that body's line.
+        // the next body's `f`.
         self.closure_literals.clear();
         self.mutable_captures.clear();
         self.param_types.clear();
@@ -1798,8 +1802,8 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Expr(expr) => {
                 self.check_expr(expr);
                 // H1/L1: a resource-typed value with nothing to bind it to is
-                // dropped the instant it's produced — e.g. `spawn(f)` used as
-                // a bare statement, with the Handle never joined/detached.
+                // dropped the instant it's produced — e.g. `spawn { … }` used
+                // as a bare statement, with the Handle never joined/detached.
                 // A bare `Ident` is never a *fresh* value — it names an
                 // existing binding, which the end-of-scope check (E0805)
                 // already tracks; flagging it here too would double-report
@@ -1908,8 +1912,7 @@ impl<'a> OwnershipChecker<'a> {
                 // field/index (can't be tracked), treat it as an escape.
                 // A name rebound stands for what it holds now. Without this a
                 // `mut f` reassigned to a second closure still answered with
-                // the first one's body, so `spawn(f)` was checked against a
-                // closure the program had thrown away.
+                // the first one's body.
                 if let ExprKind::Ident(target_name) = &target.kind {
                     if matches!(value.kind, ExprKind::Closure { .. }) {
                         self.closure_literals.insert(target_name.clone(), value.clone());
@@ -2258,9 +2261,6 @@ impl<'a> OwnershipChecker<'a> {
                     // does. A `take` parameter is the real escape: the callee
                     // keeps it and the caller can't see where it goes (SL2).
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
-                    if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn" || n == "spawn_with") {
-                        self.check_spawn_lost_writes(&arg.expr);
-                    }
                     // Passing a rack to a `deleting` parameter revokes every link
                     // local into it — but not until the rest of the arguments have
                     // been checked, or a link passed alongside it reads as already
@@ -2362,9 +2362,6 @@ impl<'a> OwnershipChecker<'a> {
                         .and_then(|t| t.get(i))
                         .map(|m| matches!(m, ParamMode::Take) || (channel_send && i == 0));
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
-                    if self.is_task_spawn(object, method) {
-                        self.check_spawn_lost_writes(&arg.expr);
-                    }
                     if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -2585,6 +2582,29 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(end);
                 }
             }
+            // A task block: its body is a closure node the task keeps, so it
+            // goes through the closure rules as a closure handed to a `take`
+            // would — carrying its captures (CM1) — except that it runs once
+            // and so may consume them (`task_bodies`).
+            ExprKind::Spawn { body, .. } => {
+                self.check_expr(body);
+                self.check_spawn_lost_writes(body);
+                // A closure the block calls by name runs in the task too, on
+                // its own copy of what it captured.
+                let mut named = Vec::new();
+                rask_ast::visit::walk_expr(body, &mut |e| {
+                    if let ExprKind::Ident(n) = &e.kind {
+                        if let Some(c) = self.closure_literals.get(n) {
+                            if !named.iter().any(|(m, _): &(String, Expr)| m == n) {
+                                named.push((n.clone(), c.clone()));
+                            }
+                        }
+                    }
+                });
+                for (_, closure) in named {
+                    self.check_spawn_lost_writes(&closure);
+                }
+            }
             ExprKind::Closure { params, body, .. } => {
                 // CM1: a closure that outlives its frame carries its captures;
                 // one that doesn't points at them. Worked out in
@@ -2592,6 +2612,7 @@ impl<'a> OwnershipChecker<'a> {
                 // there was never a second legal answer for the compiler to be
                 // told.
                 let carries = self.closure_carries_captures(expr.id);
+                let is_task = self.task_bodies.contains(&expr.id);
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
@@ -2617,11 +2638,17 @@ impl<'a> OwnershipChecker<'a> {
                 // capture gets E0891 there, which says the same thing closer
                 // to the mistake. The outer name is moved all the same, so one
                 // mistake is one error and not a cascade of "never consumed".
+                //
+                // A task block is the exception: it runs once, so a resource it
+                // captures is its to consume, and it has to (`L1`), the same
+                // as a resource a function body acquires.
                 let mut stranded: Vec<(String, Option<String>)> = Vec::new();
                 if carries {
                     for name in &resource_captures {
-                        let ty = self.binding_types.get(name).map(|t| self.program.types.resolve_type_names(t).to_string());
-                        stranded.push((name.clone(), ty));
+                        if !is_task {
+                            let ty = self.binding_types.get(name).map(|t| self.program.types.resolve_type_names(t).to_string());
+                            stranded.push((name.clone(), ty));
+                        }
                         self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                     }
                 }
@@ -2786,14 +2813,23 @@ impl<'a> OwnershipChecker<'a> {
                 // them — `twice(|| { c.close() })` closed one handle twice on
                 // native (#882, #1318), and `|| b` handed every caller the same
                 // `Bag` (#1449).
+                //
+                // A task block owns what it carried in: it runs once, so giving
+                // a capture away there is giving it away once.
                 let saved_borrowed_captures = std::mem::take(&mut self.borrowed_captures);
                 for name in &resource_captures {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    self.borrowed_captures.insert(name.clone(), expr.span);
+                    if is_task {
+                        let ty = self.binding_types.get(name).cloned();
+                        self.register_resource_binding(name, ty.as_ref());
+                        self.resource_acquired_at.insert(name.clone(), expr.span);
+                    } else {
+                        self.borrowed_captures.insert(name.clone(), expr.span);
+                    }
                 }
                 for name in &captures {
                     if !resource_captures.contains(name) {
-                        if self.bindings.contains_key(name) && !self.capture_is_copy(name) {
+                        if !is_task && self.bindings.contains_key(name) && !self.capture_is_copy(name) {
                             self.borrowed_captures.insert(name.clone(), expr.span);
                         }
                         self.bindings.insert(name.clone(), BindingState::Owned);
@@ -2835,7 +2871,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
 
                 // Check resource consumption at closure exit
-                self.check_resource_consumption_in_closure(expr.span);
+                self.check_resource_consumption_in_closure(expr.span, is_task);
 
                 // Restore outer scope
                 self.bindings = saved_bindings;
@@ -5042,13 +5078,13 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// Collected up front, before any body is walked, because the literal is
     /// where the captures are taken and the escape is usually a line or two
-    /// further down: `let f = || { … }` says nothing, `spawn(f)` says it all.
+    /// further down: `let f = || { … }` says nothing, `store(f)` says it all.
     /// Still function-local — nothing here reads past the body it is walking.
     ///
     /// Where a closure ends up outliving the frame:
     ///
-    /// - handed to a `take` parameter, which is where `spawn` lives (its
-    ///   signature is `spawn(take f: func() -> T)`)
+    /// - handed to a `take` parameter
+    /// - the body of a task block (`spawn { … }`), which the task keeps
     /// - returned
     /// - stored into a struct field, or assigned through a field or an index
     ///
@@ -5068,7 +5104,7 @@ impl<'a> OwnershipChecker<'a> {
                     for m in &i.methods { self.escapes_in_body(&m.body); }
                 }
                 // `test` and `benchmark` bodies are function bodies, and the
-                // spawn tests live in them.
+                // task tests live in them.
                 DeclKind::Test(t) => self.escapes_in_body(&t.body),
                 DeclKind::Benchmark(b) => self.escapes_in_body(&b.body),
                 _ => {}
@@ -5164,11 +5200,7 @@ impl<'a> OwnershipChecker<'a> {
                             modes.as_ref().and_then(|m| m.get(i)),
                             Some(ParamMode::Take)
                         );
-                        // A method the signature table can't place is the
-                        // common case for `spawn` on a handle or a group.
-                        // Reading an unplaceable `spawn` as a borrow would hand
-                        // the task a pointer into the frame that spawned it.
-                        if takes || (modes.is_none() && (method == "spawn" || method == "spawn_with")) {
+                        if takes {
                             self.mark_escaping(&arg.expr, named);
                         }
                     }
@@ -5185,7 +5217,7 @@ impl<'a> OwnershipChecker<'a> {
                 // Every shape that holds statements has to be here: `using
                 // Multitasking { … }` is where the spawns live, and routing it
                 // through the plain walk instead lost the `let f = || …` that
-                // `spawn(f)` two lines down needs.
+                // `store(f)` two lines down needs.
                 ExprKind::Block(body)
                 | ExprKind::Unsafe { body } | ExprKind::Comptime { body }
                 | ExprKind::Loop { body, .. } => {
@@ -5201,6 +5233,26 @@ impl<'a> OwnershipChecker<'a> {
                     for b in bindings { self.escapes_in_expr(&b.source, named); }
                     self.escapes_in_stmts(body, named);
                     false
+                }
+                // A task block's body is kept by the task, so it outlives this
+                // frame and carries what it captures.
+                ExprKind::Spawn { body, .. } => {
+                    self.escaping_closures.insert(body.id);
+                    self.task_bodies.insert(body.id);
+                    // A closure value the block names goes into the task with
+                    // it, so it outlives this frame as well and has to carry
+                    // what it captured. Pointing, it would write into this
+                    // frame from another task.
+                    let mut held = Vec::new();
+                    rask_ast::visit::walk_expr(body, &mut |x| {
+                        if let ExprKind::Ident(n) = &x.kind {
+                            if let Some(ids) = named.get(n) {
+                                held.extend(ids.iter().copied());
+                            }
+                        }
+                    });
+                    self.escaping_closures.extend(held);
+                    true
                 }
                 // A closure body is its own frame's business. What it stores or
                 // returns escapes *its* frame, and the names out here mean
@@ -5282,30 +5334,6 @@ impl<'a> OwnershipChecker<'a> {
         found
     }
 
-    /// Whether this method call starts a task: `Thread.spawn`,
-    /// `ThreadPool.spawn`, or `spawn` on a `Handles`.
-    ///
-    /// The receiver decides, not the name. A program may have a `Runner` with a
-    /// synchronous `spawn(cb)` that just calls what it was handed, and matching
-    /// the bare name reported a lost write in a closure nothing ran on a task.
-    ///
-    /// Reading this the other way — escape — stays conservative on purpose. A
-    /// capture carried into something that turns out not to be a task costs a
-    /// copy; a capture pointed at from something that *is* one reads a dead
-    /// frame, so `collect_escaping_closures` treats an unplaceable `spawn` as
-    /// escaping and this one says nothing.
-    fn is_task_spawn(&self, object: &Expr, method: &str) -> bool {
-        if method != "spawn" && method != "spawn_with" {
-            return false;
-        }
-        match &object.kind {
-            ExprKind::Ident(name) if name == "Thread" || name == "ThreadPool" => true,
-            _ => self
-                .receiver_type_name(object)
-                .is_some_and(|t| t == "Thread" || t == "ThreadPool"),
-        }
-    }
-
     /// A closure literal the ownership pass decided points at its captures
     /// rather than carrying them (CM1).
     ///
@@ -5327,7 +5355,7 @@ impl<'a> OwnershipChecker<'a> {
 
     // ---- A task's write to a capture nothing reads back ----
 
-    /// A closure handed to `spawn` gets a **copy** of every capture, and the
+    /// A task block gets a **copy** of every capture, and the
     /// task's environment dies when the task does. So a write to a capture the
     /// task never puts to use goes nowhere: the counter in the task is not the
     /// counter the parent prints, and `join()` is not a write-back.
@@ -5341,15 +5369,7 @@ impl<'a> OwnershipChecker<'a> {
     /// task: `Shared` reached through a clone, a channel, or the closure's
     /// return value.
     fn check_spawn_lost_writes(&mut self, arg: &Expr) {
-        let closure = match &arg.kind {
-            ExprKind::Closure { .. } => arg.clone(),
-            ExprKind::Ident(name) => match self.closure_literals.get(name) {
-                Some(c) => c.clone(),
-                None => return,
-            },
-            _ => return,
-        };
-        let ExprKind::Closure { params, body, .. } = &closure.kind else { return };
+        let ExprKind::Closure { params, body, .. } = &arg.kind else { return };
         let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
         // Nothing in the environment survives the task, so every capture starts
@@ -5539,8 +5559,8 @@ impl<'a> OwnershipChecker<'a> {
             | StmtKind::ComptimeFor { binding, iter, body, .. } => {
                 // The loop's own binding shadows a capture of the same name
                 // inside the body, so the body's reads of it are not reads of
-                // the capture. Without this `spawn(|| { i = 5  for i in 0..3 {
-                // println("{i}") } })` looked like the write was put to use, by
+                // the capture. Without this `spawn { i = 5  for i in 0..3 {
+                // println("{i}") } }` looked like the write was put to use, by
                 // the loop variable that replaced it.
                 let mut inner = locals.clone();
                 for name in binding.names() {
@@ -6428,12 +6448,8 @@ impl<'a> OwnershipChecker<'a> {
         // The signature decides, and only the signature. This used to read
         // "trust the mode, unless no mode is in reach, in which case assume the
         // worst", which made a language rule mean different things depending on
-        // what the compiler managed to look up — and the case it was protecting
-        // was `spawn`, whose declaration said it borrowed the closure while the
-        // task it starts keeps it. That declaration says `take` now, so the
-        // guess has nothing left to protect and SL4 can be read off the
-        // signature at every call site (conc.tasks/T3 holds because `spawn`
-        // says what it does, not because this line distrusts it).
+        // what the compiler managed to look up. SL4 is read off the signature
+        // at every call site.
         //
         // A callee with no mode in reach — a call through a closure variable —
         // is a call whose argument the callee cannot store either: it is a
@@ -6678,8 +6694,8 @@ impl<'a> OwnershipChecker<'a> {
         let id = match ty {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
-            // A stdlib type named as the receiver of a static method —
-            // `Thread.spawn_with(conn, …)` — arrives as its name.
+            // A stdlib type named as the receiver of a static method arrives
+            // as its name.
             Type::UnresolvedNamed(name) => self.program.types.get_type_id(name)?,
             _ => return None,
         };
@@ -7029,7 +7045,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// At closure exit, report what the body owns and didn't consume.
-    fn check_resource_consumption_in_closure(&mut self, span: Span) {
+    fn check_resource_consumption_in_closure(&mut self, span: Span, in_task: bool) {
         let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
         names.sort();
         for name in names {
@@ -7051,8 +7067,12 @@ impl<'a> OwnershipChecker<'a> {
                 continue;
             }
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
+                // A `return` in a task block already said it, at the return.
+                if in_task && self.exit_reported.contains(&name) {
+                    continue;
+                }
                 self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ResourceNotConsumedInClosure { name },
+                    kind: OwnershipErrorKind::ResourceNotConsumedInClosure { name, in_task },
                     span,
                 });
             }

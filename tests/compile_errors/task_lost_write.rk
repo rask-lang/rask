@@ -13,49 +13,49 @@ func main() {
     using Multitasking {
         mut count = 0
         // ERROR: E0896 — the write lands on the task's copy of `count`
-        let h = spawn(|| {
+        let h = spawn {
             count += 1
-        })
+        }
         h.join()
         println("{count}")
 
         mut hits = 0
         let flag = true
-        let g = spawn(|| {
+        let g = spawn {
             if flag {
                 // ERROR: E0896 — the same loss under a branch
                 hits = hits + 1
             }
-        })
+        }
         g.join()
         println("{hits}")
 
         mut named = 0
         // ERROR: E0896 — named first, spawned after, same copy
         let f = || { named += 1 }
-        let k = spawn(f)
+        let k = spawn { f() }
         k.join()
         println("{named}")
 
         // A read before the write is not a use of what the write produced.
         mut seen = 0
-        let r = spawn(|| {
+        let r = spawn {
             println("starting at {seen}")
             // ERROR: E0896 — nothing after this wants the new value
             seen += 1
-        })
+        }
         r.join()
         println("{seen}")
 
         // Every write here is read — by the next iteration, which writes again.
         // The accumulation still goes nowhere, so the whole chain is lost.
         mut total = 0
-        let a = spawn(|| {
+        let a = spawn {
             for i in 0..10 {
                 // ERROR: E0896 — the only reader is another write that's lost
                 total += i
             }
-        })
+        }
         a.join()
         println("{total}")
 
@@ -63,13 +63,13 @@ func main() {
         // the moment the loop shadows the name, and reading the loop variable
         // is not reading what the write produced.
         mut i = 0
-        let s = spawn(|| {
+        let s = spawn {
             // ERROR: E0896 — shadowed by the loop binding on the next line
             i = 5
             for i in 0..3 {
                 println("{i}")
             }
-        })
+        }
         s.join()
         println("{i}")
     }
@@ -79,12 +79,12 @@ func main() {
 func computes_its_own() {
     using Multitasking {
         mut sum = 0
-        let h = spawn(|| {
+        let h = spawn {
             for i in 0..5 {
                 sum += i
             }
             return sum
-        })
+        }
         let total = h.join() catch e => { return }
         println("{total}")
     }
@@ -94,10 +94,10 @@ func computes_its_own() {
 func reports_its_own() {
     using Multitasking {
         mut seen = 0
-        let h = spawn(|| {
+        let h = spawn {
             seen += 1
             println("task saw {seen}")
-        })
+        }
         h.join()
     }
 }

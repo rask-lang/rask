@@ -126,7 +126,7 @@ fn has_unsafe_in_expr(expr: &Expr) -> bool {
         ExprKind::Index { object, index } => {
             has_unsafe_in_expr(object) || has_unsafe_in_expr(index)
         }
-        ExprKind::Closure { body, .. } => has_unsafe_in_expr(body),
+        ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => has_unsafe_in_expr(body),
         ExprKind::Tuple(exprs) | ExprKind::Array(exprs) => {
             exprs.iter().any(|e| has_unsafe_in_expr(e))
         }

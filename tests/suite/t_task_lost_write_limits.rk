@@ -27,7 +27,7 @@ func run_through_a_parameter(f: func()) {
         mut leak = 0
         leak = 1
         println("second leak={leak}")
-        let h = spawn(f)
+        let h = spawn { f() }
         h.join() catch _ => { return }
     }
 }
@@ -52,7 +52,7 @@ test "a closure rebound before it is spawned" {
             seen += 1
             println("task seen={seen}")
         }
-        let h = spawn(f)
+        let h = spawn { f() }
         h.join() catch _ => { return }
     }
 }

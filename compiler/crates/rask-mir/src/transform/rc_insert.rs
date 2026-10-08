@@ -169,7 +169,7 @@ fn heap_create_sites(func: &MirFunction) -> Vec<((usize, usize), CarriedSite)> {
 /// The type of a heap closure's capture when it copies a Copy aggregate in.
 ///
 /// The value stays the frame's (`mem.closures/CM2`): `let held = Line { … }`
-/// captured by `spawn(|| println(held.text))` and printed again afterwards, or
+/// captured by `spawn { println(held.text) }` and printed again afterwards, or
 /// carried once per loop turn. So the environment's copy is a second holder of
 /// the strings in it. A Copy aggregate holds no container (the checker's rule),
 /// so a reference per string is all it needs, the same as a captured string.
@@ -969,7 +969,15 @@ fn insert_aggregate_release(
                             .filter(|c| !c.by_ref && c.copy)
                             .map(|c| c.local_id)
                             .collect();
-                        for c in caps.into_iter().filter(|c| !copied.contains(c)) {
+                        // A closure the frame took a reference of its own to
+                        // for this environment (a task block's capture,
+                        // `closures::retain_borrowed_closures_handed_on`): the
+                        // environment gets that one, and the aggregate it was
+                        // read out of keeps its own.
+                        for c in caps
+                            .into_iter()
+                            .filter(|c| !copied.contains(c) && !retained.contains(c))
+                        {
                             if aggregates.contains(&c) {
                                 ev.push(ownership::Event::Carry(c));
                             } else {

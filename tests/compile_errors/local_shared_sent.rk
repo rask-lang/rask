@@ -6,15 +6,14 @@
 // task with one doesn't compile. The default (`Shared.new`, a read-write lock)
 // needs no such rule, which is why it's the default.
 
-import async.spawn
 import sync.Shared
 
 func races() {
     using Multitasking {
         let counter = Shared.local(0)       // Local — no lock
-        let h = spawn(|| {
+        let h = spawn {
             with counter.write() as c { c += 1 }   // ERROR: E0346
-        })
+        }
         let _ = h.join()
     }
 }
@@ -25,9 +24,9 @@ func races() {
 func serialised() {
     using Multitasking {
         let counter = Shared.mutex(0)
-        let h = spawn(|| {
+        let h = spawn {
             with counter.write() as c { c += 1 }
-        })
+        }
         let _ = h.join()
     }
 }
@@ -35,9 +34,9 @@ func serialised() {
 func read_heavy() {
     using Multitasking {
         let config = Shared.new(30)
-        let h = spawn(|| {
+        let h = spawn {
             with config.read() as c { let _ = c }
-        })
+        }
         let _ = h.join()
     }
 }

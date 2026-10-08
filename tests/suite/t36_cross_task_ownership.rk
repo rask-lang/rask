@@ -44,14 +44,14 @@ test "own closure moves its captures into the task" {
         mut data = Vec.new<i64>()
         data.push(7)
         data.push(8)
-        spawn(|| {
+        spawn {
             mut acc = 0
             for v in data {
                 acc += v
             }
             tx.send(acc)
             return 0
-        }).detach()
+        }.detach()
         mut result = 0
         if rx.receive() is i64 as v {
             result = v

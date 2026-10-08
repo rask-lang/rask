@@ -43,7 +43,7 @@ The test is whether a *value* is needed to decide. If the answer is fixed the mo
 <!-- test: parse -->
 ```rask
 func observe() {
-    let h = spawn(|| { risky_work() })
+    let h = spawn { risky_work() }
     match h.join() {
         T as val                => process(val),
         JoinError.Panicked(msg) => log("worker died: {msg}"),  // P3: only observation point

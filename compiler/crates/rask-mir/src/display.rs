@@ -239,6 +239,7 @@ impl fmt::Display for MirStmt {
             MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let how = match access {
                     crate::CaptureAccess::Value => "",
+                    crate::CaptureAccess::Taken => "taken ",
                     crate::CaptureAccess::Borrowed => "_ref",
                     crate::CaptureAccess::Owned => "_own",
                 };

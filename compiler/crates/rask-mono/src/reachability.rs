@@ -667,8 +667,8 @@ impl<'a> Monomorphizer<'a> {
             // A closure that captured a link or a `Local` box of a concrete
             // type is task-bound in every copy. One whose capture has a type
             // parameter's type is decided here, where that type is known:
-            // `keep<T>`'s closure over `x: T` is task-bound in `keep<Link<Node>>`
-            // and not in `keep<i64>`.
+            // `keep<T>`'s `spawn { … x … }` over `x: T` is task-bound in
+            // `keep<Link<Node>>` and not in `keep<i64>`.
             let task_bound = typed.task_bound_closures.contains(&old_id)
                 || typed.generic_closure_captures.get(&old_id).is_some_and(|captures| {
                     typed.types.generic_closure_task_bound(captures, |ty| {
@@ -1695,9 +1695,9 @@ impl<'a> Monomorphizer<'a> {
                     let type_args = self.type_args_at(expr.id);
                     // Record call rewrite so MIR lowering uses the mangled name.
                     // Only for functions with a body to instantiate — a stdlib
-                    // stub like `spawn(f: func() -> T)` is generic in its
-                    // signature but resolves to one C entry point, so mangling
-                    // it produced a call to `spawn$i64` that nothing emits.
+                    // stub generic in its signature but backed by one C entry
+                    // point would otherwise get a call to `name$i64` that
+                    // nothing emits.
                     if !type_args.is_empty() && self.has_instantiable_body(name) {
                         let mangled = mangle_name(name, &type_args, self.typed.map(|t| &t.types));
                         self.call_rewrites.insert(expr.id, mangled);
@@ -2156,7 +2156,7 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_expr(e);
                 }
             }
-            ExprKind::Closure { body, .. } => {
+            ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => {
                 self.visit_expr(body);
             }
             ExprKind::Cast { expr: inner, ty } => {

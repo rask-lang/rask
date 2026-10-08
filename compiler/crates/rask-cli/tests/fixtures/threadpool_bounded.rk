@@ -10,9 +10,9 @@ func main() {
         mut jobs = Handles<i64>.new()
         ensure jobs.detach()
         for i in 0..800 {
-            jobs.add(ThreadPool.spawn(|| {
+            jobs.add(ThreadPool.spawn {
                 return i
-            }))
+            })
         }
         mut total = 0
         mut count = 0

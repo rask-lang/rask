@@ -53,8 +53,8 @@ Pool task 7 running
 Waiting for all pool tasks...
 
 === Key Points ===
-- Thread.spawn(|| {}) creates raw OS threads
-- ThreadPool.spawn(|| {}) uses thread pool (needs using ThreadPool)
+- Thread.spawn { } creates raw OS threads
+- ThreadPool.spawn { } uses thread pool (needs using ThreadPool)
 - handle.join() waits for completion
 - handle.detach() runs in background
 - Channels enable message passing

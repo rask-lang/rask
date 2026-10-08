@@ -240,7 +240,7 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
                 check_expr_for_large_unsafe(&arm.body, source, max, diags);
             }
         }
-        ExprKind::Closure { body, .. } => {
+        ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => {
             check_expr_for_large_unsafe(body, source, max, diags);
         }
         _ => {}

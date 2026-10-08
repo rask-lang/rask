@@ -263,7 +263,7 @@ impl MirPass for StringRcInsertionPass {
         for func in fns.iter_mut() {
             carried.extend(crate::transform::rc_insert::insert_rc_ops(func, &kept, &ctx.own_functions));
         }
-        crate::container_drop::add_carried_releases(fns, carried);
+        crate::container_drop::add_carried_releases(fns, carried, &kept, &targets, &reach);
     }
 }
 

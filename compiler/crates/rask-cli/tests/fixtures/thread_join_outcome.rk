@@ -3,27 +3,27 @@
 import thread.Thread
 
 func main() {
-    let ok = Thread.spawn(|| {
+    let ok = Thread.spawn {
         return 42
-    })
+    }
     match ok.join() {
         i64 as v => println("value {v}"),
         JoinError.Panicked(m) => println("panicked {m}"),
     }
 
     // A value that used to be indistinguishable from the panic sentinel.
-    let neg = Thread.spawn(|| {
+    let neg = Thread.spawn {
         return -1
-    })
+    }
     match neg.join() {
         i64 as v => println("value {v}"),
         JoinError.Panicked(m) => println("panicked {m}"),
     }
 
-    let boom = Thread.spawn(|| {
+    let boom = Thread.spawn {
         panic("boom")
         return 0
-    })
+    }
     match boom.join() {
         i64 as v => println("value {v}"),
         JoinError.Panicked(m) => println("panicked {m}"),

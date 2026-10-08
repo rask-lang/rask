@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1349: a free function `async` exports, reached through the module, failed
+// natively with "unresolved variable `async`". It's the bare call reached
+// through the module, and now it is one. (`spawn` used to be the other such
+// function; a task is a block now.)
+
+import async
+
+test "async.cancelled is the bare cancelled" {
+    using Multitasking {
+        let h = spawn { return async.cancelled() }
+        let was = try h.join()
+        assert !was
+    }
+}

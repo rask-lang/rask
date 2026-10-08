@@ -13,9 +13,9 @@ func spam(id: i64) {
 func main() {
     mut threads = Handles<void>.new()
     ensure threads.detach()
-    threads.add(Thread.spawn(|| { spam(1) }))
-    threads.add(Thread.spawn(|| { spam(2) }))
-    threads.add(Thread.spawn(|| { spam(3) }))
-    threads.add(Thread.spawn(|| { spam(4) }))
+    threads.add(Thread.spawn { spam(1) })
+    threads.add(Thread.spawn { spam(2) })
+    threads.add(Thread.spawn { spam(3) })
+    threads.add(Thread.spawn { spam(4) })
     let _ = threads.join_all()
 }

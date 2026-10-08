@@ -24,9 +24,11 @@ func apply<A, R>(f: func(A) -> R, a: A) -> R {
 func main() {
     using Multitasking {
         let plain = apply(hold, 7)
-        println("{spawn(plain).join()!}")
+        let t1 = spawn { plain() }
+        println("{t1.join()!}")
         let f = apply(hold, Vec<Link<Node>>.new())
         println("before")
-        println("{spawn(f).join()!}")
+        let t2 = spawn { f() }
+        println("{t2.join()!}")
     }
 }

@@ -32,7 +32,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 11. **Interfaces.** `Type implements Interface` declares conformance. `any Interface` holds mixed types — the cast allocates, and writing it is the marker.
 
-12. **Concurrency.** `using Multitasking { }` once, near the top of `main`. `spawn(|| { ... })` returns a handle you must `.join()` or `.detach()`. Channels move values between tasks. No `async`/`await` — calls look like calls.
+12. **Concurrency.** `using Multitasking { }` once, near the top of `main`. `spawn { ... }` returns a handle you must `.join()` or `.detach()`. Channels move values between tasks. No `async`/`await` — calls look like calls.
 
 13. **A value can live in a container you reach through.** The type says which: `Shared<T, S>` when several names touch one value — reach it scoped, `with s.write() as v { ... }`. `Rack<T>` + `Link<T>` when many things point at each other — a link is storable in a field, and deleting a node sets every `Link<T>?` aimed at it to `none`, so there is no stale link to check for. `Heap<T>` for one owner behind an indirection. A function that deletes nodes you didn't hand it says `deleting`, and that call revokes your links.
 

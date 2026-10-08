@@ -670,16 +670,16 @@ pub struct TypedProgram {
     /// by the ownership pass and written back here, like `escaping_closures`.
     pub field_reuses: std::collections::HashSet<NodeId>,
     /// Closure literals that capture a link or a `Local` box, so they may not
-    /// reach another task (mem.ownership/T2, conc.sync/SH7). A `spawn` written
-    /// around the closure is rejected at compile time; one that reaches the
-    /// spawn through a return, a field or a container is caught when the task
-    /// starts, from a flag the closure carries (#1356).
+    /// reach another task (mem.ownership/T2, conc.sync/SH7). A task block that
+    /// names one of these by itself is rejected at compile time; one that
+    /// captures such a closure value is refused when the task starts, from a
+    /// flag the closure carries (#1356).
     pub task_bound_closures: std::collections::HashSet<NodeId>,
-    /// Closure literals in a generic body that capture a name whose type
-    /// mentions a type parameter, with each such capture's name and type.
-    /// Whether one is task-bound depends on the instantiation, and both
-    /// backends decide it from the substituted types through
-    /// `TypeTable::generic_closure_task_bound`.
+    /// Closure literals in a generic body — task blocks' own included — that
+    /// capture a name whose type mentions a type parameter, with each such
+    /// capture's name and type. Whether one is task-bound depends on the
+    /// instantiation, and both backends decide it from the substituted types
+    /// through `TypeTable::generic_closure_task_bound`.
     pub generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `spawn(|| { … })` carries the closure's return type, and `join()` gives it
+// `spawn { … }` carries the closure's return type, and `join()` gives it
 // back (conc.async/H2).
 //
 // The stub said `spawn(f: func()) -> Handle<void>`, so every task was
@@ -14,14 +14,14 @@ func double(n: i64) -> i64 {
 
 func joined_value() -> i64 or JoinError {
     using Multitasking {
-        let h = spawn(|| { return 42 })
+        let h = spawn { return 42 }
         return try h.join()
     }
 }
 
 func joined_annotated() -> i64 or JoinError {
     using Multitasking {
-        let h = spawn(|| { return double(21) })
+        let h = spawn { return double(21) }
         let v: i64 = try h.join()
         return v
     }
@@ -29,9 +29,9 @@ func joined_annotated() -> i64 or JoinError {
 
 func joined_pair() -> i64 or JoinError {
     using Multitasking {
-        let a = spawn(|| { return 10 })
+        let a = spawn { return 10 }
         ensure a.detach()
-        let b = spawn(|| { return 32 })
+        let b = spawn { return 32 }
         ensure b.detach()
         // A handle has to be consumed on every way out, including the ones
         // nobody writes down — a failing `try`, a panic. mem.linear/L7 puts
@@ -45,14 +45,14 @@ func joined_pair() -> i64 or JoinError {
 
 func joined_own() -> i64 or JoinError {
     using Multitasking {
-        let h = spawn(|| { return 7 })
+        let h = spawn { return 7 }
         return try h.join()
     }
 }
 
 func detached() -> bool {
     using Multitasking {
-        let h = spawn(|| { return })
+        let h = spawn { return }
         h.detach()
     }
     return true
@@ -63,7 +63,7 @@ func survives_panicked_join() -> bool {
     // panicked, re-panicking in the joiner and aborting the whole process
     // instead of handing the error back (#288). This just has to come back.
     using Multitasking {
-        let h = spawn(|| { panic("boom") })
+        let h = spawn { panic("boom") }
         let _ = h.join()
     }
     return true

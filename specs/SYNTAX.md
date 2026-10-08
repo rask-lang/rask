@@ -590,7 +590,7 @@ func sort(items: Vec<T>) {
 // `using` installs a process-global slot for a block's lexical extent.
 // It never appears on a signature.
 using Multitasking {
-    let t = spawn(|| { return work() })
+    let t = spawn { return work() }
     t.join()
 }
 ```
@@ -863,7 +863,7 @@ let input = loop {
 ```rask
 loop {
     let conn = server.accept()
-    spawn(|| { handle(conn) }).detach()
+    spawn { handle(conn) }.detach()
 }
 ```
 
@@ -1005,12 +1005,15 @@ Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinish
 ## Concurrency Syntax
 
 ```rask
-// Spawn and join
-let handle = spawn(|| { return compute() })
+// A task's body is a block; its value is the task's result
+let handle = spawn { compute() }
 let result = try handle.join()
-spawn(|| { background_work() }).detach()
-// Hand the task what it consumes
-spawn_with(conn, |take c: Conn| { serve(c) }).detach()
+spawn { background_work() }.detach()
+// The block runs once, so it may consume what it captures
+spawn { conn.close() }.detach()
+// An OS thread, a pool job
+let t = Thread.spawn { work() }
+let j = ThreadPool.spawn { crunch(x) }
 
 // Channels
 let (tx, rx) = Channel<Message>.buffered(100)

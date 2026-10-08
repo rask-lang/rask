@@ -2982,7 +2982,7 @@ fn error_linear_consumed_if_without_else() {
 #[test]
 fn error_task_handle_bound_but_never_consumed() {
     let output = check_output(
-        "import async.Handle\n\nfunc leaky() -> i64 {\n    let h: Handle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+        "import async.Handle\n\nfunc leaky() -> i64 {\n    let h: Handle<i64> = spawn { return 1 }\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "a Handle bound but never joined/detached should be E0805 (H1): {}", output);
@@ -2993,17 +2993,17 @@ fn error_task_handle_dropped_as_bare_statement() {
     // The exact form specs/concurrency/async.md's H1 example rejects: nothing
     // even binds the handle, so it's dropped the instant it's produced.
     let output = check_output(
-        "func main() {\n    using Multitasking {\n        spawn(|| { return 1 })\n    }\n}"
+        "func main() {\n    using Multitasking {\n        spawn { return 1 }\n    }\n}"
     );
     assert!(output.contains("E0840"),
-        "an unbound spawn() used as a statement should be E0840 (H1): {}", output);
+        "an unbound spawn used as a statement should be E0840 (H1): {}", output);
 }
 
 #[test]
 fn ok_task_handle_joined_or_detached_or_cancelled() {
     for method in ["let _ = h.join()", "h.detach()", "let _ = h.cancel()"] {
         let output = check_output(&format!(
-            "func main() {{\n    using Multitasking {{\n        let h = spawn(|| {{ return 1 }})\n        {}\n    }}\n}}",
+            "func main() {{\n    using Multitasking {{\n        let h = spawn {{ return 1 }}\n        {}\n    }}\n}}",
             method
         ));
         assert!(output.contains("Typecheck OK"),
@@ -3071,7 +3071,7 @@ fn spawn_in_a_loop_is_not_blocking_io() {
          \x20   mut i = 0\n\
          \x20   while i < 4 {\n\
          \x20       let k = i\n\
-         \x20       hs.add(Thread.spawn(|| { return k }))\n\
+         \x20       hs.add(Thread.spawn { return k })\n\
          \x20       i += 1\n\
          \x20   }\n\
          \x20   for j in 0..2 {\n\
@@ -3095,7 +3095,7 @@ fn join_through_a_variable_is_io() {
          func main() {\n\
          \x20   mut j = 0\n\
          \x20   while j < 3 {\n\
-         \x20       let t = Thread.spawn(|| { return 1 })\n\
+         \x20       let t = Thread.spawn { return 1 }\n\
          \x20       let _ = t.join()\n\
          \x20       let parts: Vec<string> = [\"a\", \"b\"]\n\
          \x20       let _ = parts.join(\",\")\n\
@@ -4394,11 +4394,11 @@ fn panic_in_a_lock_closure_releases_the_lock() {
     }
 }
 
-// A closure that captured a link or a `Local` box can't reach another task,
-// however it gets to the spawn (#1356). Written at the spawn, the checker
-// rejects it; returned from a function or read out of a field, the spawn site
-// shows nothing, so the closure carries a flag and every spawn form refuses a
-// flagged one when it starts the task.
+// A link or a `Local` box can't reach another task, however the task block
+// gets hold of it (#1356). Named in the block, the checker rejects it. Inside
+// a closure value the block captures — one returned from a function, or read
+// out of a field — the block shows nothing, so the closure carries a flag and
+// the spawn refuses a flagged capture when it starts the task.
 #[test]
 fn a_task_bound_closure_is_refused_at_spawn() {
     // The report names the spawn's own line. Natively `spawn` didn't record a
@@ -4406,7 +4406,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // an earlier spawn that succeeded.
     for (fixture, line) in [
         ("spawn_returned_closure_with_link.rk", 21),
-        ("spawn_field_closure_with_local_box.rk", 19),
+        ("spawn_field_closure_with_local_box.rk", 20),
     ] {
         for mode in ["--interp", "--native"] {
             let (stdout, stderr, code) = run_capture(mode, fixture);
@@ -4426,16 +4426,24 @@ fn a_task_bound_closure_is_refused_at_spawn() {
         assert_eq!(stdout, "15\n", "{mode}");
     }
     // A closure in a generic body captures a `T`, so it's decided per
-    // instantiation: `keep<i64>`'s crosses, `keep<Link<Node>>`'s doesn't.
+    // instantiation: `keep<i64>`'s crosses, `keep<Link<Node>>`'s doesn't. The
+    // same goes for a task block written in the generic body itself.
+    for (fixture, line) in [
+        ("spawn_generic_closure_with_link.rk", 27),
+        ("spawn_generic_block_with_link.rk", 13),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_ne!(code, 0, "{mode} {fixture}: the link spawn has to fail; stdout: {stdout}");
+            assert_eq!(stdout, "1\nbefore\n", "{mode} {fixture}");
+            assert!(
+                stderr.contains("this task would hold a link or a `Local` box"),
+                "{mode} {fixture}: {stderr}",
+            );
+            assert!(stderr.contains(&format!("{fixture}:{line}:")), "{mode} {fixture}: {stderr}");
+        }
+    }
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_with_link.rk");
-        assert_ne!(code, 0, "{mode}: the link spawn has to fail; stdout: {stdout}");
-        assert_eq!(stdout, "1\nbefore\n", "{mode}");
-        assert!(
-            stderr.contains("this task would hold a link or a `Local` box"),
-            "{mode}: {stderr}",
-        );
-        assert!(stderr.contains("spawn_generic_closure_with_link.rk:26:"), "{mode}: {stderr}");
         let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_that_may_cross.rk");
         assert_eq!(code, 0, "{mode}: {stderr}");
         assert_eq!(stdout, "1\n", "{mode}");
@@ -4449,12 +4457,12 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // `fn_value` ones pass a generic function as a value, so its type arguments
     // come from where it was named, not from the call that runs it.
     for (file, line) in [
-        ("spawn_generic_closure_empty_vec.rk", 24),
-        ("spawn_generic_closure_none_link.rk", 30),
-        ("spawn_generic_method_closure.rk", 32),
-        ("spawn_generic_tuple_header_closure.rk", 33),
-        ("spawn_generic_nested_header_closure.rk", 32),
-        ("spawn_generic_fn_value_apply.rk", 30),
+        ("spawn_generic_closure_empty_vec.rk", 25),
+        ("spawn_generic_closure_none_link.rk", 31),
+        ("spawn_generic_method_closure.rk", 34),
+        ("spawn_generic_tuple_header_closure.rk", 35),
+        ("spawn_generic_nested_header_closure.rk", 34),
+        ("spawn_generic_fn_value_apply.rk", 31),
         ("spawn_generic_fn_value_map.rk", 16),
     ] {
         for mode in ["--interp", "--native"] {
@@ -6967,8 +6975,9 @@ fn error_mutate_param_left_empty() {
 }
 
 // A closure can't give away what it captured (mem.closures/CM4, #1318). The
-// fix names both ways out, as code: a `take` parameter, and `spawn_with` for a
-// task. E0891's fix line once said `own ||`, which no longer parses (#1361).
+// fix names both ways out, as code: a `take` parameter, and a task block for
+// work that runs once. E0891's fix line once said `own ||`, which no longer
+// parses (#1361).
 // The fixture's legal case takes its `Conn` as a parameter and must stay clean.
 #[test]
 fn error_closure_consumes_borrowed_capture() {
@@ -6977,13 +6986,14 @@ fn error_closure_consumes_borrowed_capture() {
     assert_eq!(out.matches("error[E0891]").count(), 1, "the `take` parameter must compile: {}", out);
     assert!(!out.contains("own ||") && !out.contains("`own`"), "still suggests `own`: {}", out);
     assert!(out.contains("|take c: Conn| { … }"), "the fix should show a `take` parameter: {}", out);
-    assert!(out.contains("spawn_with(c, |take c: Conn| { … })"), "the fix should show `spawn_with`: {}", out);
+    assert!(out.contains("spawn { … }"), "the fix should show a task block: {}", out);
+    assert!(!out.contains("spawn_with"), "`spawn_with` is gone: {}", out);
     assert!(!out.contains("c.clone()"), "a resource has no copy to offer: {}", out);
 }
 
-// The carrying side of the same rule: a returned closure, one a `take` keeps,
-// and a task's closure (#1318). Each consumption is one E0891 or E0907, and the
-// legal shapes beside them stay clean.
+// The carrying side of the same rule: a returned closure and one a `take`
+// keeps (#1318). Each consumption is one E0891 or E0907, and the legal shapes
+// beside them stay clean.
 #[test]
 fn error_carrying_closure_consumes_capture() {
     let (failed, out) = compile_error_output("closure_consumes_capture.rk");
@@ -6991,23 +7001,47 @@ fn error_carrying_closure_consumes_capture() {
     assert_eq!(out.matches("error[E0891]").count(), 2, "{}", out);
     assert_eq!(out.matches("error[E0907]").count(), 1, "{}", out);
     assert!(out.contains("`b.clone()`"), "a non-linear capture can offer a copy: {}", out);
+}
 
-    let (failed, out) = compile_error_output("spawn_consumes_capture.rk");
+// A task block isn't a closure: it runs once, so it may consume what it
+// captures, and a resource it captures is its to consume on every path
+// (conc.async/S6, #1318). One that only reads it is one error, not a leak at
+// the `return` and another at the block's end; the task that closes its
+// resource and the one that gives a `Vec` away compile.
+#[test]
+fn error_task_leaves_capture_unconsumed() {
+    let (failed, out) = compile_error_output("task_leaves_capture_unconsumed.rk");
     assert!(failed, "{}", out);
-    assert_eq!(out.matches("error[E0891]").count(), 2, "{}", out);
-    assert!(out.contains("spawn_with(v, |take v: Vec<i64>| { … })"), "{}", out);
+    let errors = out.matches("error[").count();
+    assert_eq!(errors, 1, "one mistake, one error: {}", out);
+    assert!(out.contains("`c`"), "{}", out);
+    assert!(!out.contains("E0891"), "a task block may consume its captures: {}", out);
+}
+
+// The closure spellings of a task are gone (E0915). Each one names the block
+// form as its fix, with the value `spawn_with` was handed named in it.
+#[test]
+fn error_spawn_closure_form() {
+    let (failed, out) = compile_error_output("spawn_closure_form.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0915]").count(), 4, "{}", out);
+    assert!(out.contains("spawn { … }"), "{}", out);
+    assert!(out.contains("Thread.spawn { … }"), "{}", out);
+    assert!(out.contains("ThreadPool.spawn { … }"), "{}", out);
+    assert!(out.contains("spawn { … n … }"), "the handed value is named: {}", out);
 }
 
 // A linear value can't be carried at all: nothing in the closure could ever
-// consume it (E0913). The message points at `spawn_with` and a `take`
-// parameter, with the value's type filled in.
+// consume it (E0913). The message points at a `take` parameter, with the
+// value's type filled in, and at a task block for work that runs once.
 #[test]
 fn error_closure_carries_linear_capture() {
     let (failed, out) = compile_error_output("closure_carries_linear_capture.rk");
     assert!(failed, "{}", out);
-    assert_eq!(out.matches("error[E0913]").count(), 3, "{}", out);
-    assert!(out.contains("spawn_with(c, |take c: Conn| { … })"), "{}", out);
+    assert_eq!(out.matches("error[E0913]").count(), 2, "{}", out);
+    assert!(out.contains("|take c: Conn| { … }"), "{}", out);
     assert!(out.contains("|take h: Heap<i64>| { … }"), "{}", out);
+    assert!(out.contains("spawn {"), "{}", out);
     assert!(!out.contains("error[E0805]"), "a refused capture is one error, not a leak too: {}", out);
 }
 

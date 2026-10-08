@@ -3,7 +3,6 @@
 import time
 import time.Instant
 import time.Duration
-import async.spawn
 
 test "a month passes instantly" {
     let start = Instant.now()
@@ -15,15 +14,15 @@ test "the shorter sleeper wakes first" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(2)
         let tx2 = tx.clone()
-        let slow = spawn(|| {
+        let slow = spawn {
             let _ = time.sleep(Duration.seconds(20))
             let _ = tx.send(2)
-        })
+        }
         ensure slow.detach()
-        let fast = spawn(|| {
+        let fast = spawn {
             let _ = time.sleep(Duration.seconds(10))
             let _ = tx2.send(1)
-        })
+        }
         ensure fast.detach()
         mut first = 0
         if rx.receive() is i64 as v {

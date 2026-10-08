@@ -22,24 +22,24 @@ const NONBLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })
 
 func main() {
     using Multitasking {
-        let a = Thread.spawn(|| {
+        let a = Thread.spawn {
             with BLOCKING.write() as w {
                 panic("died in a write block")
             }
             return 0
-        })
+        }
         match a.join() {
             i64 as v => println("joined"),
             JoinError.Panicked(msg) => println("write panicked"),
         }
 
-        let b = Thread.spawn(|| {
+        let b = Thread.spawn {
             NONBLOCKING.try_write(|w| {
                 panic("died in a try_write closure")
                 return 0
             })
             return 0
-        })
+        }
         match b.join() {
             i64 as v => println("joined"),
             JoinError.Panicked(msg) => println("try_write panicked"),

@@ -87,7 +87,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 - **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
 - **Errors without wrappers** — `T or E` is a builtin sum type. You return bare values, the compiler picks the branch by type. No `Ok(x)` / `Err(e)`. Every `E` must implement `Error`. `@message` generates the method from variant templates. `catch e => return wrap(e)` chains transformation with leaving; every exit is written where it happens. See below
 - **Option isn't an enum** — `T?` is a builtin status type with operator-only grammar (`?`, `?.`, `??`, `!`, `is none`). Match on `T?` is a style lint. Payload access is the `x? as v` bind — no flow narrowing to remember. Kotlin/TypeScript nullable ergonomics, not Rust Option
-- **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
+- **Must-use task handles** — `spawn { work() }` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No call-site coloring** — I/O pauses green tasks transparently. No `async`/`await` at call sites. But `using Multitasking` propagates through signatures (scope-level coloring) — you don't write `.await`, but you do declare the capability. This is a deliberate tradeoff: uncolored calls, colored signatures
 
 ### Rask vs. Rust

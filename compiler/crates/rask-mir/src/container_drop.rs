@@ -213,7 +213,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
             &closure_bodies,
         );
     }
-    let glue = env_drop_glue(fns, &handing_over, &targets);
+    let glue = env_drop_glue(fns, &handing_over, &targets, &kept, &reach);
     fns.extend(glue);
 }
 
@@ -259,6 +259,8 @@ fn env_drop_glue(
     fns: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
     targets: &crate::closure_targets::ClosureTargets,
+    kept: &HashMap<String, Vec<bool>>,
+    closure_reach: &ClosureReach,
 ) -> Vec<MirFunction> {
     // How many escaping closures capture each container by value, per frame.
     // Two means the container has two candidate owners and the answer is to
@@ -281,18 +283,23 @@ fn env_drop_glue(
     }
 
     // What each closure body gives up by itself, by capture offset. A capture
-    // the body consumes is not the glue's to free. Only a Copy one can be —
-    // `mem.closures/CM4` refuses the rest — and a channel end is one:
+    // the body consumes is not the glue's to free. A closure's can only be a
+    // Copy one — `mem.closures/CM4` refuses the rest — and a channel end is
+    // one:
     //
-    //     spawn(|| { for i in 1..n { tx.send(i) }  tx.close() })
+    //     let f = || { for i in 1..n { tx.send(i) }  tx.close() }
     //
     // `close` takes the sender away — closing an end *is* dropping it — so the
     // glue freeing it again on the way out aborted the process on a double
-    // free. Nothing had noticed because until channels were released at all,
-    // no capture was both owned and consumable.
+    // free. A task block may give away anything it captured, since it runs
+    // once (conc.async/S6).
     let consumed: HashMap<&str, HashSet<u32>> = fns
         .iter()
-        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
+        .map(|f| {
+            let mut gone = captures_the_body_consumes(f);
+            gone.extend(task_captures_given_away(f, kept, targets, closure_reach));
+            (f.name.as_str(), gone)
+        })
         .collect();
 
     // One glue per closure *function*, because the block header holds a
@@ -547,9 +554,45 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
+/// The capture offsets a task block's body gives away: returns, stores, hands
+/// to something that keeps it, or carries into a task of its own. A closure
+/// value it captured counts whatever it does with it: the body frees that one
+/// itself, like any closure it holds.
+///
+/// A task block runs once, so it owns what it captured (conc.async/S6), and
+/// what it gives away is not the environment's to free when the task ends.
+/// The question is the one a parameter is asked (`param_is_kept_by`), asked
+/// of each capture the block loads. Conservative the same way: a capture given
+/// away on one path counts, which leaks on the other path rather than freeing
+/// twice.
+pub(crate) fn task_captures_given_away(
+    func: &MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
+) -> HashSet<u32> {
+    let none = HashMap::new();
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            // A closure value the block frees itself (`closures::insert_drops`).
+            MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. }
+                if matches!(func.local_ty(*dst), Some(MirType::FuncPtr(_))) =>
+            {
+                Some(*offset)
+            }
+            MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. } => {
+                param_is_kept_by(func, *dst, kept, &none, targets, reach).then_some(*offset)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Release the aggregates a closure's environment owns.
 ///
-/// A struct carried into a closure that leaves its frame — `spawn(|| …)`,
+/// A struct carried into a closure that leaves its frame — a task block,
 /// returned, stored — is the environment's from then on (`mem.closures/CM2`),
 /// and the frame stops owning it at the create. `env_drop_glue` only knew
 /// handles and strings, so nothing released the struct, and `http.serve`
@@ -575,6 +618,9 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
 pub(crate) fn add_carried_releases(
     fns: &mut Vec<MirFunction>,
     sites: Vec<crate::transform::rc_insert::CarriedSite>,
+    kept: &HashMap<String, Vec<bool>>,
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
 ) {
     let mut answers: HashMap<String, Vec<crate::transform::rc_insert::CarriedSite>> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -594,13 +640,17 @@ pub(crate) fn add_carried_releases(
         if all.iter().all(|s| s.copies == first.copies) {
             slots.extend(first.copies.iter().cloned());
         }
+        // What a task block gave away is the receiver's now. A closure gives
+        // nothing here away: CM4 refuses consuming a non-Copy capture or a
+        // non-Copy field of one, and the Copy things a body can consume — a
+        // channel end's `close` — are not what the walk releases.
+        if let Some(body) = fns.iter().find(|f| f.name == name) {
+            let gone = task_captures_given_away(body, kept, targets, reach);
+            slots.retain(|(offset, _)| !gone.contains(offset));
+        }
         if slots.is_empty() {
             continue;
         }
-        // Nothing here is the body's to give away first. CM4 refuses consuming
-        // a non-Copy capture or a non-Copy field of one, and the Copy things a
-        // body can consume — a channel end's `close` — are not what the walk
-        // releases.
         let releases = slots.into_iter().map(|(offset, ty)| {
             MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: LocalId(0), offset, ty })
         });

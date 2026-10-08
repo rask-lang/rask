@@ -409,8 +409,6 @@ pub struct TypeChecker {
     pub(super) mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
     /// D1: Bindings invalidated by `discard`. Maps name → discard span.
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
-    /// CC1: nesting depth of `using Multitasking { }` blocks in current function.
-    pub(super) multitasking_depth: u32,
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
@@ -463,26 +461,24 @@ pub struct TypeChecker {
     /// `staged()` calls already reported. A body can be inferred more than once
     /// and the error is about where the call sits, not about a type.
     pub(super) staged_reported: std::collections::HashSet<rask_ast::NodeId>,
-    /// The argument spans of every `spawn` call seen, each with the local scope
-    /// depth at the call. A use inside one of these of a name from a scope no
-    /// deeper than that is a capture: the name is reached from another task.
-    pub(super) spawn_arg_spans: Vec<(rask_ast::Span, usize)>,
+    /// Every task block's body: its closure node, its span and the local scope
+    /// depth it was written at. A use inside one of these of a name from a
+    /// scope no deeper than that is a capture: the name is reached from
+    /// another task.
+    pub(super) spawn_spans: Vec<(NodeId, rask_ast::Span, usize)>,
+    /// Closures bound to a name, keyed by the name and the depth of the scope
+    /// holding it, each with its span and the scope depth where it was
+    /// written. A task block that calls one by name runs its body on the task
+    /// as surely as its own, so the closure's captures are checked the same way.
+    pub(super) closure_bindings:
+        HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
+    /// Every closure expression — task blocks' included — with its span and
+    /// the scope depth it was written at, for `mark_task_bound_closures`.
+    pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
     /// Calls that wrote a named argument, checked once callees are settled.
     pub(super) labeled_calls: Vec<arg_labels::LabeledCall>,
     /// Every method call with where it was written, for the visibility check.
     pub(super) method_calls: Vec<method_visibility::PlacedCall>,
-    /// Closures bound to a name, keyed by the name and the depth of the scope
-    /// holding it, each with its span and the scope depth where it was
-    /// written. `spawn(f)` runs these as surely as `spawn(|| …)` runs its
-    /// argument, so they are checked for captures the same way.
-    pub(super) closure_bindings:
-        HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
-    /// Every closure expression, with its span and the scope depth it was
-    /// written at. A closure that captures a link or a `Local` box can't cross
-    /// a task however it gets to a `spawn`, and one that gets there by a
-    /// return or a field is invisible at the spawn site, so each closure is
-    /// judged on its own (#1356).
-    pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
     /// Parameter types a closure literal's slot gives it, keyed by the
     /// closure's node. Set by `infer_expr_expecting` just before the closure
     /// is checked, so an unannotated parameter has its type while the body is
@@ -672,7 +668,6 @@ impl TypeChecker {
             mutate_self_fns: std::collections::HashSet::new(),
             accumulate_errors: false,
             discarded_bindings: HashMap::new(),
-            multitasking_depth: 0,
             pending_casts: Vec::new(),
             pending_for_mutate: Vec::new(),
             pending_int_literals: Vec::new(),
@@ -685,17 +680,17 @@ impl TypeChecker {
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
             task_bound_uses: Vec::new(),
-            task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: HashMap::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
-            spawn_arg_spans: Vec::new(),
+            spawn_spans: Vec::new(),
+            closure_spans: Vec::new(),
+            closure_bindings: HashMap::new(),
+            task_bound_closures: std::collections::HashSet::new(),
             labeled_calls: Vec::new(),
             method_calls: Vec::new(),
-            closure_bindings: HashMap::new(),
-            closure_spans: Vec::new(),
             closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
@@ -1282,14 +1277,14 @@ fn drop_module_qualifiers(resolved: ResolvedProgram, decls: &mut [Decl]) -> Reso
     resolved
 }
 
-/// `async.spawn(f)` becomes `spawn(f)`: a free function a module exports,
-/// reached through the module, is the bare call (structure.modules/IM1).
+/// `async.cancelled()` becomes `cancelled()`: a free function a module
+/// exports, reached through the module, is the bare call
+/// (structure.modules/IM1).
 ///
 /// The resolver points such a call node at the function's symbol. Rewriting
 /// the call rather than teaching each pass the qualified spelling is what lets
-/// every rule written against the bare call apply to it: `spawn` alone has
-/// its own handling in the checker, ownership, effects and MIR. Lowered as a
-/// method on a namespace, `async.spawn` failed natively with "unresolved
+/// every rule written against the bare call apply to it. Lowered as a method
+/// on a namespace, the qualified call failed natively with "unresolved
 /// variable `async`" (#1349).
 ///
 /// The call keeps its node id; the callee takes the module name's, resolved

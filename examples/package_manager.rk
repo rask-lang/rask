@@ -778,7 +778,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
         for item in items {
             let item_tx = tx.clone()
             let item_counter = counter.clone()
-            spawn(|| {
+            spawn {
                 if fetch_one(item, registry) is string as path {
                     with item_counter.write() as c {
                         c += 1
@@ -787,7 +787,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
                 } else as e {
                     let _ = item_tx.send(FetchResult.Failed(e))
                 }
-            }).detach()
+            }.detach()
         }
 
         // Collect results — first error is fatal

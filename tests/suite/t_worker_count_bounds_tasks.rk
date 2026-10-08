@@ -3,7 +3,7 @@
 // `using Multitasking(workers: n)` bounds how many tasks run at once (#1111).
 //
 // It bounded nothing on the interpreter. The block built a pool of n worker
-// threads reading a channel, and `spawn(|| …)` — the only form there is —
+// threads reading a channel, and `spawn { … }` — the only form there is —
 // started a thread of its own and never used it. So the workers sat idle for
 // the lifetime of every block, six tasks under `workers: 2` all ran at once
 // here, and two ran at once natively.
@@ -20,7 +20,6 @@
 
 import sync.Atomic
 import sync.SeqCst
-import async.spawn
 
 const RUNNING: Atomic<i64> = Atomic<i64>.new(0)
 const PEAK: Atomic<i64> = Atomic<i64>.new(0)
@@ -52,17 +51,17 @@ test "workers: 2 runs at most two tasks at once" {
     PEAK.store(0, SeqCst)
     RUNNING.store(0, SeqCst)
     using Multitasking(workers: 2) {
-        let a = spawn(|| { return busy() })
+        let a = spawn { return busy() }
         ensure a.detach()
-        let b = spawn(|| { return busy() })
+        let b = spawn { return busy() }
         ensure b.detach()
-        let c = spawn(|| { return busy() })
+        let c = spawn { return busy() }
         ensure c.detach()
-        let d = spawn(|| { return busy() })
+        let d = spawn { return busy() }
         ensure d.detach()
-        let e = spawn(|| { return busy() })
+        let e = spawn { return busy() }
         ensure e.detach()
-        let f = spawn(|| { return busy() })
+        let f = spawn { return busy() }
         ensure f.detach()
         let av = a.join() catch x => { return }
         let bv = b.join() catch x => { return }

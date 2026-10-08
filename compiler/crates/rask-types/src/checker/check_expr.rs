@@ -765,11 +765,6 @@ impl TypeChecker {
                 type_args,
             } => {
                 self.in_stmt_expr = false;
-                if (method == "spawn" || method == "spawn_with")
-                    && matches!(&object.kind, ExprKind::Ident(n) if n == "Thread" || n == "ThreadPool")
-                {
-                    self.note_spawn_args(expr.id, method == "spawn_with", args);
-                }
                 let ty = self
                     .check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span);
                 if method == "eq" && args.len() == 1 && self.operator_calls.contains(&expr.id) {
@@ -1959,7 +1954,7 @@ impl TypeChecker {
                     expected_ret
                 } else {
                     // A body that diverges returns nothing, so no constraint
-                    // reaches the return variable: `spawn(|| { panic("boom") })`
+                    // reaches the return variable: `spawn { panic("boom") }`
                     // finished inference with it open, and every consumer
                     // downstream then invented a width for a value that never
                     // exists. Register `Never` as the answer of last resort — a
@@ -1979,6 +1974,39 @@ impl TypeChecker {
                         .map(|(p, ty)| FnParam { mode: ParamMode::from_flags(p.is_take, p.is_mutate), ty })
                         .collect(),
                     ret: Box::new(ret_ty),
+                }
+            }
+
+            // A task block. Its value is the task's result, so the expression
+            // is a `Handle` of whatever the block produces (conc.async/H5).
+            ExprKind::Spawn { body, .. } => {
+                // What the block names from outside crosses to the task: a
+                // link or a `Local` box there is refused once types are solved
+                // (`validate_spawn_captures`), and in a generic body, per
+                // instantiation.
+                let depth = self.local_types.len();
+                self.spawn_spans.push((body.id, body.span, depth));
+                // A closure the block calls by name crosses with it.
+                let mut named: Vec<(rask_ast::Span, usize)> = Vec::new();
+                rask_ast::visit::walk_expr(body, &mut |e| {
+                    if let ExprKind::Ident(n) = &e.kind {
+                        if let Some(d) = self.local_depth(n) {
+                            if let Some(bound) = self.closure_bindings.get(&(n.clone(), d)) {
+                                named.extend(bound.iter().copied());
+                            }
+                        }
+                    }
+                });
+                self.spawn_spans.extend(named.into_iter().map(|(span, d)| (body.id, span, d)));
+                let body_ty = self.infer_expr(body);
+                let result = match self.ctx.apply(&body_ty) {
+                    Type::Fn { ret, .. } => *ret,
+                    _ => self.ctx.fresh_var(),
+                };
+                let args = vec![GenericArg::Type(Box::new(result))];
+                match self.types.get_type_id("Handle") {
+                    Some(base) => Type::Generic { base, args },
+                    None => Type::UnresolvedGeneric { name: "Handle".to_string(), args },
                 }
             }
 
@@ -2114,19 +2142,8 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
-                // CC1: track nesting depth so spawn() inside this block is allowed
-                let is_multitasking = matches!(
-                    name.as_str(),
-                    "Multitasking" | "MultiTasking" | "multitasking"
-                );
-                if is_multitasking {
-                    self.multitasking_depth += 1;
-                }
                 for stmt in body {
                     self.check_stmt(stmt);
-                }
-                if is_multitasking {
-                    self.multitasking_depth -= 1;
                 }
                 // Check if the block ends with a diverging statement (return/break/continue)
                 if let Some(last) = body.last() {
@@ -2802,31 +2819,9 @@ impl TypeChecker {
         }
 
         // Extern and unsafe function calls require unsafe context
-        // Also: CC1 — spawn() must be inside a `using Multitasking { }` block
-        // conc.sync/SH7 applies to any call named `spawn`, however it reached
-        // scope — a builtin, or the `async.spawn` import. Judged after solving.
-        if let ExprKind::Ident(n) = &func.kind {
-            let bare = n.rsplit('.').next().unwrap_or(n);
-            if bare == "spawn" || bare == "spawn_with" {
-                self.note_spawn_args(call_id, bare == "spawn_with", args);
-            }
-        }
         if let Some(_) = func.name() {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
-                    // CC1: spawn() outside any using Multitasking block
-                    if matches!(&sym.kind, SymbolKind::BuiltinFunction { builtin }
-                        if *builtin == rask_resolve::BuiltinFunctionKind::Spawn)
-                    {
-                        if self.multitasking_depth == 0 {
-                            self.errors.push(TypeError::SpawnOutsideBlock { span });
-                        }
-                        // conc.sync/SH7: `Local` takes no lock, so a box using it
-                        // must not reach a second task. This is the whole reason
-                        // the default can be the cheap one — the unsafe direction
-                        // doesn't compile.
-                    }
-
                     let unsafe_category = match &sym.kind {
                         SymbolKind::ExternFunction { .. } => Some(super::UnsafeCategory::ExternCall),
                         SymbolKind::Function { is_unsafe: true, .. } => Some(super::UnsafeCategory::UnsafeFuncCall),
@@ -5972,10 +5967,10 @@ impl TypeChecker {
     /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
     /// for a place that already has the type in hand.
     /// Report every task-local `Shared` (SH7) and every value carrying a link
-    /// (`mem.ownership/T2`) a spawned closure reaches.
+    /// (`mem.ownership/T2`) a task block reaches.
     ///
-    /// A value is captured by naming it, so the names checked inside a `spawn`
-    /// argument's span are exactly the values that task can touch. Matching on
+    /// A value is captured by naming it, so the names checked inside a task
+    /// block's span are exactly the values that task can touch. Matching on
     /// span containment beats re-walking the body, which would have to know
     /// every expression and statement shape to be right.
     ///
@@ -5985,22 +5980,22 @@ impl TypeChecker {
     pub(super) fn validate_spawn_captures(&mut self) {
         let uses = std::mem::take(&mut self.task_bound_uses);
         self.mark_task_bound_closures(&uses);
-        if self.spawn_arg_spans.is_empty() {
+        let spawns = std::mem::take(&mut self.spawn_spans);
+        if spawns.is_empty() {
             return;
         }
-        let spans = std::mem::take(&mut self.spawn_arg_spans);
         let mut reported: std::collections::HashSet<(String, usize)> =
             std::collections::HashSet::new();
         let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
             inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
         };
         for super::TaskBoundUse { name, ty, span, depth, .. } in uses {
-            // Made inside the task — a `let` in the closure, a parameter, a
-            // pattern binding — sits deeper than the call. Only what the closure
-            // reaches from outside crosses.
-            let Some(i) = spans
+            // Made inside the task — a `let` in the block, a pattern binding —
+            // sits deeper than the block. Only what it reaches from outside
+            // crosses. The outermost task that captures it is the one to fix.
+            let Some(i) = spawns
                 .iter()
-                .position(|(s, call_depth)| within(span, s) && depth <= *call_depth)
+                .position(|(_, block, block_depth)| within(span, block) && depth <= *block_depth)
             else {
                 continue;
             };
@@ -6023,8 +6018,15 @@ impl TypeChecker {
     }
 
     /// Every closure that captures a task-bound value, by the same rule the
-    /// spawn check uses: a use inside the closure of a name from a scope no
-    /// deeper than the closure's own.
+    /// task block check uses: a use inside the closure of a name from a scope
+    /// no deeper than the closure's own.
+    ///
+    /// A task block that names such a closure value — `let f = reader(link)`,
+    /// then `spawn { f() }` — would hand the link to another task without the
+    /// block mentioning it, so the closure carries a flag and the spawn
+    /// refuses a flagged capture when the task starts (#1356). A task block's
+    /// own closure node is one of these too: in a generic body that is how a
+    /// `T` that turns out to be a link is caught.
     ///
     /// A capture whose type names a type parameter can't be judged here: `x: T`
     /// is a link in one instantiation and an `i64` in the next. Those go into
@@ -6081,35 +6083,10 @@ impl TypeChecker {
         }
     }
 
-    /// Everything a spawn call hands its task, for `validate_spawn_captures`:
-    /// each argument's span, and a closure bound to a name by the closure's.
-    ///
-    /// `spawn_with`'s first argument crosses as a value rather than as a
-    /// capture, and the call itself is marked the way a closure literal is, so
-    /// a task-bound value refuses the spawn natively too — per instantiation,
-    /// when its type is a type parameter's (#1356).
-    fn note_spawn_args(&mut self, call: NodeId, with_arg: bool, args: &[CallArg]) {
-        let depth = self.local_types.len();
-        for a in args {
-            self.spawn_arg_spans.push((a.expr.span, depth));
-            if let ExprKind::Ident(n) = &a.expr.kind {
-                if let Some(d) = self.local_depth(n) {
-                    if let Some(bound) = self.closure_bindings.get(&(n.clone(), d)) {
-                        self.spawn_arg_spans.extend(bound.iter().copied());
-                    }
-                }
-            }
-        }
-        if with_arg {
-            if let Some(a) = args.first() {
-                self.closure_spans.push((call, a.expr.span, depth));
-            }
-        }
-    }
-
-    /// Remember a closure bound to `name` by `let`, `mut` or `=`, for a later
-    /// `spawn(name)`. A name rebound several times keeps every closure it was
-    /// given: whichever one is live at the spawn, the check covers it.
+    /// Remember a closure bound to `name` by `let`, `mut` or `=`, for a task
+    /// block that calls it by name. A name rebound several times keeps every
+    /// closure it was given: whichever one is live at the spawn, the check
+    /// covers it.
     pub(super) fn note_closure_binding(&mut self, name: &str, value: &Expr) {
         if !matches!(value.kind, ExprKind::Closure { .. }) {
             return;
@@ -7123,7 +7100,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
     fn in_expr(expr: &Expr) -> bool {
         match &expr.kind {
             // A nested closure's `return` is its own.
-            ExprKind::Closure { .. } => false,
+            ExprKind::Closure { .. } | ExprKind::Spawn { .. } => false,
             ExprKind::Block(body) | ExprKind::Loop { body, .. } => {
                 in_stmts(body)
             }

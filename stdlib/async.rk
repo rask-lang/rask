@@ -2,35 +2,14 @@
 
 import memory.Heap
 
-// --- Task spawning ---
-
-/// Spawn a green task on the current scheduler.
-/// Requires an active `using Multitasking { ... }` scope in the process.
-/// Compile error if called outside any scope (directly or transitively);
-/// runtime panic for higher-order/interface-object cases the compiler can't prove.
-///
-/// `take f`: the task keeps the closure and runs it after this call returns, so
-/// the closure is given away here (PM3). It read as a borrow for a long time,
-/// which is a signature saying the caller keeps something they don't — and
-/// `mem.closures/SL4` reads parameter modes to decide what a returned closure
-/// still borrows, so the lie had to be worked around rather than trusted.
-@native("rask_green_closure_spawn")
-public func spawn(take f: func() -> T) -> Handle<T> {}
-
-/// Spawn a green task and hand it `arg`. The task body takes it as a `take`
-/// parameter, so the bars show what crosses:
-///
-///     spawn_with(responder, |take r: Responder| { r.respond(handler(req)) })
-///
-/// A closure can't consume what it captured (`mem.closures/CM4`), so a linear
-/// value reaches a task this way and no other. Several go in a tuple.
-///
-/// `@builtin`: the compiler lowers the call itself. Written in Rask it would be
-/// `spawn(|| f(arg))`, a closure consuming its capture, which is the thing the
-/// rule exists to refuse; the call runs exactly once only because the runtime
-/// says so.
-@builtin
-public func spawn_with(take arg: A, take f: func(take A) -> T) -> Handle<T> {}
+// --- Tasks ---
+//
+// A task starts with a task block, which is language syntax rather than a
+// function here (conc.async/S1–S3):
+//
+//     spawn { responder.respond(handler(req)) }.detach()
+//     let h = Thread.spawn { work() }
+//     let j = ThreadPool.spawn { compute(x) }
 
 /// Whether the task, pooled job or thread running this has been asked to stop.
 /// Use in long-running loops.
@@ -39,9 +18,9 @@ public func cancelled() -> bool {}
 
 // --- Handles ---
 
-/// What every spawn form hands back: `spawn`, `Thread.spawn` and
-/// `ThreadPool.spawn`, and their `spawn_with` twins. Must be joined or detached; dropping one is a compile
-/// error.
+/// What every task block hands back: `spawn { … }`, `Thread.spawn { … }` and
+/// `ThreadPool.spawn { … }`. Must be joined or detached; dropping one is a
+/// compile error.
 @resource
 public struct Handle<T> {
 }
@@ -83,7 +62,7 @@ extend JoinError {
 ///     mut pages = Handles<Page>.new()
 ///     ensure pages.detach()
 ///     for url in urls {
-///         pages.add(spawn(|| { return fetch(url) }))
+///         pages.add(spawn { fetch(url) })
 ///     }
 ///     let results = pages.join_all()
 ///

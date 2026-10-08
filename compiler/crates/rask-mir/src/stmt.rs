@@ -249,9 +249,13 @@ pub struct ClosureCapture {
 /// in where a write inside the body lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureAccess {
-    /// The slot holds the value and the body only reads it. Spawn bodies run
-    /// once from a state machine that rebuilds the environment itself.
+    /// The slot holds the value and the body only reads it.
     Value,
+    /// A task block's capture (`spawn { … }`). The slot holds the value, as
+    /// for `Value`, and the block owns it: it runs once, so it may give the
+    /// value away, and the environment's drop glue frees only what it didn't
+    /// (`container_drop::task_captures_given_away`).
+    Taken,
     /// The slot holds a pointer into the frame that built the closure, so a
     /// write through it is a write to that frame's variable (mem.closures/MC1).
     Borrowed,

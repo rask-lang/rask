@@ -15,7 +15,7 @@ struct Tagged { key: i64, tag: string }
 
 func joins_a_panicking_task() -> bool {
     using Multitasking {
-        let h = spawn(|| { panic("boom") })
+        let h = spawn { panic("boom") }
         let _ = h.join()
     }
     return true
@@ -23,7 +23,7 @@ func joins_a_panicking_task() -> bool {
 
 func joins_a_returning_task() -> i64 or JoinError {
     using Multitasking {
-        let h = spawn(|| { return 42 })
+        let h = spawn { return 42 }
         return try h.join()
     }
 }

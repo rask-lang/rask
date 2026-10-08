@@ -215,7 +215,7 @@ WHY: Linear values can be consumed exactly once. A second consumption
 | `take` parameter | L7 | Arrives owed; the body's first statement commits it |
 | `take self` method of the linear type | — | The method is the consumption, so L7 doesn't apply to `self` |
 | Closure captures a linear value | L2 | A closure may run any number of times, so its body can't consume a capture (`mem.closures/CM4`, E0891), and one that outlives its frame can't carry a linear value at all (E0913). The value comes in as a `take` parameter instead |
-| Handing a linear value to a task | L5 | `spawn_with(file, \|take f: File\| { … })` — the task's body is the `take` parameter it fills (`conc.async/S6`) |
+| Handing a linear value to a task | L5 | `spawn { … file.close() … }` — the task block captures it and, running once, consumes it on every path (`conc.async/S6`) |
 
 ## See Also
 

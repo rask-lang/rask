@@ -197,12 +197,11 @@ impl Resolver {
         // in the global scope — they require explicit `import` statements.
         // See resolve_import() for how they enter scope.
 
-        // Top-level stdlib stub functions (e.g. async.rk's `spawn`,
-        // `cancelled`) are auto-registered.
+        // Top-level stdlib stub functions (e.g. async.rk's `cancelled`) are
+        // auto-registered.
         // The pipeline sometimes runs the resolver without stdlib_decls
         // (single-file `rask check`), and these names are spec-required to
-        // be in scope under their context (`spawn` under `using Multitasking`,
-        // for instance — checked separately via context-clause analysis).
+        // be in scope.
         // Skip names already claimed by hardcoded builtins above so println,
         // print, format, etc. keep their BuiltinFunction symbol kind.
         let stub_reg = rask_stdlib::StubRegistry::load();
@@ -266,10 +265,10 @@ impl Resolver {
             self.stub_functions.insert(f.name.clone(), sym_id);
             self.decl_symbols.insert(f.decl_id, sym_id);
             // These come from the stubs, so a stdlib file importing one of them
-            // (`import async.spawn` in http.rk) is replacing its own symbol, not
+            // (`import async.cancelled`) is replacing its own symbol, not
             // shadowing a user import. Without this, `rask test` — the one entry
-            // point that resolves stdlib bodies — reported `spawn` shadowing an
-            // import that doesn't exist (#507).
+            // point that resolves stdlib bodies — reported such a name shadowing
+            // an import that doesn't exist (#507).
             self.stdlib_symbols.insert(sym_id);
         }
 
@@ -282,6 +281,14 @@ impl Resolver {
             true,
         );
         let _ = self.scopes.define("null".to_string(), null_sym, Span::new(0, 0));
+    }
+
+    /// The name `spawn_with(name, …)` handed its task, for E0915's fix.
+    fn handed_to_spawn_with(form: &str, args: &[rask_ast::expr::CallArg]) -> Option<String> {
+        if form != "spawn_with" {
+            return None;
+        }
+        args.first().and_then(|a| a.expr.name()).map(str::to_string)
     }
 
     fn register_builtin_enum(&mut self, name: &str, variants: &[&str]) {
@@ -328,11 +335,10 @@ impl Resolver {
     fn register_module_functions(&mut self, module: BuiltinModuleKind, span: Span) {
         use crate::symbol::BuiltinFunctionKind;
 
-        // `spawn` and `transmute` are always-available built-ins
-        // (struct.modules/BF1), so this only settles which symbol kind the name
-        // carries — it is not what makes them resolve.
+        // `transmute` is an always-available built-in (struct.modules/BF1), so
+        // this only settles which symbol kind the name carries — it is not what
+        // makes it resolve.
         let functions: &[(&str, BuiltinFunctionKind)] = match module {
-            BuiltinModuleKind::ASYNC => &[("spawn", BuiltinFunctionKind::Spawn)],
             BuiltinModuleKind::CORE => &[("transmute", BuiltinFunctionKind::Transmute)],
             _ => &[],
         };
@@ -353,10 +359,11 @@ impl Resolver {
     }
 
     /// The function `module.name` means when the module exports `name` as a
-    /// free function rather than as a member of its namespace — `async.spawn`.
+    /// free function rather than as a member of its namespace —
+    /// `async.cancelled`.
     ///
-    /// Looked up in the global scope, not the current one: a local `spawn`
-    /// in the caller is not what `async.spawn` names.
+    /// Looked up in the global scope, not the current one: a local
+    /// `cancelled` in the caller is not what `async.cancelled` names.
     fn module_free_function(&self, module: &str, name: &str) -> Option<SymbolId> {
         if !rask_stdlib::modules::exports(module).functions.iter().any(|f| f == name) {
             return None;
@@ -428,7 +435,6 @@ impl Resolver {
 
         // Builtin functions
         match (module, symbol) {
-            ("async", "spawn") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Spawn },
             ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute },
             _ => {}
         }
@@ -2542,7 +2548,41 @@ impl Resolver {
                 self.resolve_expr(operand);
             }
             ExprKind::Call { func, args } => {
-                self.resolve_expr(func);
+                // `spawn(|| …)` and `spawn_with(…)` were functions once. A task
+                // is a block now, and "undefined symbol" would send the reader
+                // looking for an import.
+                let old_spawn = matches!(&func.kind, ExprKind::Ident(n)
+                    if (n == "spawn" || n == "spawn_with") && self.scopes.lookup(n).is_none());
+                if let (true, ExprKind::Ident(n)) = (old_spawn, &func.kind) {
+                    self.errors.push(ResolveError {
+                        kind: crate::error::ResolveErrorKind::SpawnTakesABlock {
+                            form: n.clone(),
+                            receiver: None,
+                            handed: Self::handed_to_spawn_with(n, args),
+                        },
+                        span: expr.span,
+                    });
+                } else {
+                    self.resolve_expr(func);
+                }
+                for arg in args {
+                    self.resolve_expr(&arg.expr);
+                }
+            }
+            ExprKind::MethodCall { object, method, args, .. }
+                if (method == "spawn" || method == "spawn_with")
+                    && matches!(&object.kind, ExprKind::Ident(n) if n == "Thread" || n == "ThreadPool") =>
+            {
+                let receiver = object.name().map(str::to_string);
+                self.errors.push(ResolveError {
+                    kind: crate::error::ResolveErrorKind::SpawnTakesABlock {
+                        form: format!("{}.{}", receiver.as_deref().unwrap_or(""), method),
+                        receiver,
+                        handed: Self::handed_to_spawn_with(method, args),
+                    },
+                    span: expr.span,
+                });
+                self.resolve_expr(object);
                 for arg in args {
                     self.resolve_expr(&arg.expr);
                 }
@@ -2576,9 +2616,9 @@ impl Resolver {
                                 }
                                 return;
                             }
-                            // `async.spawn(f)` — a free function the module
+                            // `async.cancelled()` — a free function the module
                             // exports, reached through it (IM1). It's the same
-                            // function bare `spawn(f)` names, so the call node
+                            // function bare `cancelled()` names, so the call node
                             // points at that symbol and the checker turns the
                             // call into the bare one (#1349).
                             if let SymbolKind::BuiltinModule { module } = &sym.kind {
@@ -2904,6 +2944,12 @@ impl Resolver {
                 }
                 self.resolve_expr(body);
                 self.scopes.pop();
+            }
+            ExprKind::Spawn { receiver, body, .. } => {
+                if let Some(r) = receiver {
+                    self.resolve_expr(r);
+                }
+                self.resolve_expr(body);
             }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.resolve_expr(inner);

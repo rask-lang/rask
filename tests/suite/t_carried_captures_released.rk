@@ -8,7 +8,7 @@
 // so a struct went with the block and stayed behind:
 //
 //     let held = Line { text: heap("captured") }
-//     spawn(|| println(held.text)).join()!
+//     spawn { println(held.text) }.join()!
 //
 //     rask: 1 allocation never released (338 bytes, undercounted)
 //
@@ -21,7 +21,7 @@
 // its copy and the glue gives those back, however the frame goes on to use its
 // value — read it after the capture, or carry it again every turn.
 
-import async.{spawn, spawn_with, Channel, Sender}
+import async.{Channel, Sender}
 import http
 import http.{Response, Responder}
 
@@ -141,9 +141,9 @@ func pass_through(take f: func() -> i64) -> i64 {
 test "a struct carried into a spawned closure" {
     using Multitasking {
         let held = Line { text: heap("captured") }
-        let h = spawn(|| {
+        let h = spawn {
             return held.text.len().wrap<i64>()
-        })
+        }
         assert (h.join() catch e => -1) == 41
     }
 }
@@ -151,9 +151,9 @@ test "a struct carried into a spawned closure" {
 test "a struct holding a Vec and a Map, carried into a task" {
     using Multitasking {
         let bag = make_bag("task")
-        let h = spawn(|| {
+        let h = spawn {
             return bag_size(bag)
-        })
+        }
         assert (h.join() catch e => -1) == 40
     }
 }
@@ -165,10 +165,10 @@ test "a nested struct, a Vec, a Map and a string, carried into a task" {
         mut m: Map<string, i64> = Map.new()
         m.insert(heap("m"), 9)
         let s = heap("s")
-        let h = spawn(|| {
+        let h = spawn {
             let nested = o.inner.words.len().wrap<i64>() + o.label.len().wrap<i64>()
             return nested + words.len().wrap<i64>() + m.len().wrap<i64>() + s.len().wrap<i64>()
-        })
+        }
         assert (h.join() catch e => -1) == 2 + 34 + 1 + 1 + 34
     }
 }
@@ -178,9 +178,9 @@ test "one struct per turn, each carried into its own task" {
         mut total = 0
         for i in 0..4 {
             let line = Line { text: heap("turn {i}") }
-            let h = spawn(|| {
+            let h = spawn {
                 return line.text.len().wrap<i64>()
-            })
+            }
             total += h.join() catch e => -1
         }
         assert total == 156
@@ -190,10 +190,10 @@ test "one struct per turn, each carried into its own task" {
 test "a detached task's struct goes when the task does" {
     using Multitasking {
         let bag = make_bag("gone")
-        spawn(|| {
+        spawn {
             let n = bag_size(bag)
             assert n > 0
-        }).detach()
+        }.detach()
     }
 }
 
@@ -229,10 +229,10 @@ test "a carried struct whose body closes its channel field" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(4)
         let w = Wire { label: heap("wire"), tx }
-        let h = spawn(|| {
+        let h = spawn {
             w.tx.send(7)
             let _ = w.tx.close()
-        })
+        }
         h.join()!
         assert rx.try_receive() is i64
     }
@@ -244,14 +244,14 @@ test "a request carried into the task that answers it" {
         let server = http.listen("127.0.0.1:0")!
         ensure server.close()
         let addr = server.local_addr()
-        let client = spawn(|| {
+        let client = spawn {
             return http.get("http://{addr}/items/7")
-        })
+        }
         ensure client.detach()
         let (req, responder) = server.accept()!
-        spawn_with(responder, |take r: Responder| {
-            let _ = r.respond(Response.ok("you asked for {req.path()}"))
-        }).join()!
+        spawn {
+            let _ = responder.respond(Response.ok("you asked for {req.path()}"))
+        }.join()!
         let resp = client.join()!!
         assert resp.body == "you asked for /items/7"
     }
@@ -262,9 +262,9 @@ test "a request carried into the task that answers it" {
 test "a Copy struct the frame reads after a detached task captured it" {
     using Multitasking {
         let held = Line { text: heap("kept") }
-        spawn(|| {
+        spawn {
             assert held.text.len() == 37
-        }).detach()
+        }.detach()
         assert held.text.len() == 37
     }
 }
@@ -274,9 +274,9 @@ test "a Copy struct made once and carried into a task every turn" {
         let once = Line { text: heap("once") }
         mut total = 0
         for i in 0..4 {
-            let h = spawn(|| {
+            let h = spawn {
                 return once.text.len().wrap<i64>() + i
-            })
+            }
             total += h.join() catch e => -1
         }
         assert total == 4 * 37 + 6
@@ -287,9 +287,9 @@ test "a Copy struct carried into a detached task every turn" {
     using Multitasking {
         let once = Line { text: heap("detached") }
         for i in 0..3 {
-            spawn(|| {
+            spawn {
                 assert once.text.len() == 41
-            }).detach()
+            }.detach()
         }
     }
 }
@@ -305,9 +305,9 @@ test "a Copy half of a struct carried while the frame keeps the rest" {
     using Multitasking {
         let p = Pair { left: Line { text: heap("left") }, right: Line { text: heap("right") } }
         let half = p.left
-        let h = spawn(|| {
+        let h = spawn {
             return half.text.len().wrap<i64>()
-        })
+        }
         assert (h.join() catch e => -1) == 37
         assert p.right.text.len() == 38
         assert p.left.text.len() == 37

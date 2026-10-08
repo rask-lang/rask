@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task block carries away what it captures, so a resource it names is the
+// task's to consume, on every path (conc.async/S6, mem.linear/L1, E0810). The
+// parent can't close it any more: the outer name is gone at the spawn.
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) {
+        println("closed {self.id}")
+    }
+}
+
+func peek(c: Conn) -> i32 {
+    return c.id
+}
+
+func eat(take v: Vec<i64>) -> u64 {
+    return v.len()
+}
+
+func main() {
+    using Multitasking {
+        let c = Conn { id: 1 }
+        // ERROR: the task only reads `c`, and nothing ever closes it [E0810]
+        let t = spawn {
+            return peek(c)
+        }
+        println("{t.join()!}")
+
+        // Fine: the task closes what it captured.
+        let d = Conn { id: 2 }
+        let u = spawn {
+            ensure d.close()
+            return peek(d)
+        }
+        println("{u.join()!}")
+
+        // Fine: a task may give a capture away, since it runs once.
+        let w: Vec<i64> = [3]
+        let k = spawn { return eat(w) }
+        println("{k.join()!}")
+    }
+}

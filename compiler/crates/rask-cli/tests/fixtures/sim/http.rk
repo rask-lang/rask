@@ -6,7 +6,6 @@
 import http
 import http.HttpError
 import http.Response
-import async.spawn
 import sim
 import sim.Fault
 
@@ -14,9 +13,9 @@ test "a request round trip" {
     using Multitasking {
         let server = try http.listen("127.0.0.1:8080")
         ensure server.close()
-        let client = spawn(|| {
+        let client = spawn {
             return http.get("http://127.0.0.1:8080/items/7")
-        })
+        }
         ensure client.detach()
         let (req, responder) = try server.accept()
         try responder.respond(Response.ok("you asked for {req.path()}"))
@@ -30,9 +29,9 @@ test "a POST body arrives whole" {
     using Multitasking {
         let server = try http.listen("127.0.0.1:8081")
         ensure server.close()
-        let client = spawn(|| {
+        let client = spawn {
             return http.post("http://127.0.0.1:8081/echo", body)
-        })
+        }
         ensure client.detach()
         let (req, responder) = try server.accept()
         try responder.respond(Response.ok("got {req.body}"))
@@ -52,9 +51,9 @@ test "a cut connection is an error, never a short body" {
             let server = try http.listen("127.0.0.1:0")
             ensure server.close()
             let addr = server.local_addr()
-            let client = spawn(|| {
+            let client = spawn {
                 return http.get("http://{addr}/")
-            })
+            }
             ensure client.detach()
             let (req, responder) = server.accept() catch e => {
                 continue

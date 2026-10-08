@@ -22,42 +22,42 @@ import thread.ThreadPool
 
 func a_string_task() -> string or JoinError {
     using Multitasking {
-        let h = spawn(|| { return "from the task" })
+        let h = spawn { return "from the task" }
         return try h.join()
     }
 }
 
 func a_float_task() -> f64 or JoinError {
     using Multitasking {
-        let h = spawn(|| { return 2.5f64 })
+        let h = spawn { return 2.5f64 }
         return try h.join()
     }
 }
 
 func a_struct_task() -> Reading or JoinError {
     using Multitasking {
-        let h = spawn(|| { return Reading { id: 3i64, label: "sensor", scale: 0.5f64 } })
+        let h = spawn { return Reading { id: 3i64, label: "sensor", scale: 0.5f64 } }
         return try h.join()
     }
 }
 
 func a_counted_task() -> i64 or JoinError {
     using Multitasking {
-        let h = spawn(|| { return 1i64 })
+        let h = spawn { return 1i64 }
         return try h.join()
     }
 }
 
 func a_pooled_string() -> string or JoinError {
     using ThreadPool(workers: 2) {
-        let h = ThreadPool.spawn(|| { return "from the pool" })
+        let h = ThreadPool.spawn { return "from the pool" }
         return try h.join()
     }
 }
 
 func a_pooled_float() -> f64 or JoinError {
     using ThreadPool(workers: 2) {
-        let h = ThreadPool.spawn(|| { return 0.25f64 })
+        let h = ThreadPool.spawn { return 0.25f64 }
         return try h.join()
     }
 }

@@ -205,9 +205,6 @@ impl TypeChecker {
             }
         }
 
-        // Reset multitasking depth for each function body
-        self.multitasking_depth = 0;
-
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
@@ -603,7 +600,7 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind as EK;
         match &expr.kind {
             // Its own frame, its own return.
-            EK::Closure { .. } => false,
+            EK::Closure { .. } | EK::Spawn { .. } => false,
             EK::Block(body)
             | EK::Unsafe { body }
             | EK::Comptime { body }

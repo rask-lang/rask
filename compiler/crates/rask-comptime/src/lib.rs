@@ -1641,7 +1641,10 @@ impl ComptimeInterpreter {
                 }
             }
 
-            // Spawn - not allowed
+            // A task needs a runtime, which compile time doesn't have (CT7).
+            ExprKind::Spawn { .. } => {
+                return Err(ComptimeError::ConcurrencyNotAllowed);
+            }
 
             // Unsafe - not allowed
             ExprKind::Unsafe { .. } => {

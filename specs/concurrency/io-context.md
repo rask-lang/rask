@@ -171,7 +171,7 @@ enum IoError {
 ```
 ERROR [conc.async/CC1]: spawn requires a Multitasking scope
    |
-5  |  spawn(|| { File.open("x.txt") })
+5  |  spawn { File.open("x.txt") }
    |  ^^^^^ no `using Multitasking { ... }` block encloses this call
    |
 FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main.
@@ -203,27 +203,27 @@ FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main.
 
 ### I/O in ThreadPool context
 
-`ThreadPool.spawn` closures don't get async I/O even in Phase B. Thread pool workers are OS threads that run jobs to completion — no parking, no reactor. I/O in a thread pool closure blocks the pool thread.
+`ThreadPool.spawn` blocks don't get async I/O even in Phase B. Thread pool workers are OS threads that run jobs to completion — no parking, no reactor. I/O in a thread pool job blocks the pool thread.
 
-This is by design: `ThreadPool` is for CPU-bound work. If you need I/O, use `spawn()` (green tasks) instead.
+This is by design: `ThreadPool` is for CPU-bound work. If you need I/O, use `spawn { }` (green tasks) instead.
 
 <!-- test: skip -->
 ```rask
 using Multitasking, ThreadPool {
     // Good: I/O in green task
-    spawn(|| {
+    spawn {
         let data = try File.read("big.csv")  // Parks task
-        let result = try ThreadPool.spawn(|| {
+        let result = try ThreadPool.spawn {
             parse_csv(data)  // CPU-bound, no I/O
-        }).join()
+        }.join()
         try File.write("output.json", result)   // Parks task
-    }).detach()
+    }.detach()
 
     // Bad: I/O in thread pool (blocks pool thread)
-    ThreadPool.spawn(|| {
+    ThreadPool.spawn {
         let data = try File.read("big.csv")  // Blocks pool thread!
         parse_csv(data)
-    }).detach()
+    }.detach()
 }
 ```
 

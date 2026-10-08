@@ -52,11 +52,11 @@ test "a spinning task doesn't starve another on the same worker" {
     using Multitasking(workers: 1) {
         mut group = Handles<i64>.new()
         ensure group.detach()
-        group.add(spawn(|| { return spin_until_set() }))
-        group.add(spawn(|| {
+        group.add(spawn { return spin_until_set() })
+        group.add(spawn {
             SPIN_DONE.store(true, SeqCst)
             return 0
-        }))
+        })
         assert all_ok(group.join_all())
     }
 }
@@ -65,11 +65,11 @@ test "a loop between checks of the flag is caught at its back edge" {
     using Multitasking(workers: 1) {
         mut group = Handles<i64>.new()
         ensure group.detach()
-        group.add(spawn(|| { return count_until_set() }))
-        group.add(spawn(|| {
+        group.add(spawn { return count_until_set() })
+        group.add(spawn {
             COUNT_DONE.store(true, SeqCst)
             return 0
-        }))
+        })
         assert all_ok(group.join_all())
     }
 }

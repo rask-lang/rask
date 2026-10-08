@@ -1321,44 +1321,6 @@ impl TypeChecker {
                 let payload = self.atomic_payload(&ty).expect("just checked");
                 self.resolve_atomic_method(payload, &method, &args, &ret, span)
             }
-            // Thread.spawn(closure) → Handle<T>
-            Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
-                if method == "spawn" && args.len() == 1 {
-                    // Extract closure return type for Handle<T>
-                    let inner = if let Type::Fn { ret: fn_ret, .. } = &args[0] {
-                        *fn_ret.clone()
-                    } else {
-                        self.ctx.fresh_var()
-                    };
-                    let handle_ty = Type::UnresolvedGeneric {
-                        name: "Handle".to_string(),
-                        args: vec![GenericArg::Type(Box::new(inner))],
-                    };
-                    self.unify(&ret, &handle_ty, span)
-                } else if method == "spawn_with" && args.len() == 2 {
-                    // `spawn_with(arg, f)`: `f` takes `arg` (`func(take A) -> T`).
-                    let inner = self.ctx.fresh_var();
-                    let body_ty = Type::Fn {
-                        params: vec![crate::types::FnParam {
-                            mode: rask_ast::ty::ParamMode::Take,
-                            ty: args[0].clone(),
-                        }],
-                        ret: Box::new(inner.clone()),
-                    };
-                    self.unify(&args[1], &body_ty, span)?;
-                    let handle_ty = Type::UnresolvedGeneric {
-                        name: "Handle".to_string(),
-                        args: vec![GenericArg::Type(Box::new(inner))],
-                    };
-                    self.unify(&ret, &handle_ty, span)
-                } else {
-                    Err(TypeError::NoSuchMethod {
-                        ty,
-                        method,
-                        span,
-                    })
-                }
-            }
             // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
             Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
                 self.resolve_simd_method(name, &method, &args, &ret, span)

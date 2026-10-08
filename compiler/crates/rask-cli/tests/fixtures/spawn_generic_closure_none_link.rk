@@ -23,10 +23,12 @@ func wrap<U>(u: U) -> func() -> i64 {
 func main() {
     using Multitasking {
         let plain = wrap(7)
-        println("{spawn(plain).join()!}")
+        let t1 = spawn { plain() }
+        println("{t1.join()!}")
         let missing: Link<Node>? = none
         let f = wrap(missing)
         println("before")
-        println("{spawn(f).join()!}")
+        let t2 = spawn { f() }
+        println("{t2.join()!}")
     }
 }

@@ -9,34 +9,49 @@ Green tasks with must-use handles. No async/await split — the same function wo
 
 ## Spawn Constructs
 
+A task's body is a block, written after the word that says what runs it:
+
+```rask
+func serve_one(server: HttpServer, handler: func(Request) -> Response) -> void or HttpError {
+    let (req, responder) = try server.accept()
+    spawn { responder.respond(handler(req)) }.detach()
+}
+```
+
 | Rule | Description |
 |------|-------------|
-| **S1: Green task** | `spawn(|| {})` creates a green task; must run with an active `using Multitasking` block in the process |
-| **S2: Pooled thread** | `ThreadPool.spawn(|| {})` runs on thread pool; must run with an active `using ThreadPool` block |
-| **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no runtime required |
+| **S1: Green task** | `spawn { … }` runs the block as a green task; must run with an active `using Multitasking` block in the process |
+| **S2: Pooled thread** | `ThreadPool.spawn { … }` runs the block on the thread pool; must run with an active `using ThreadPool` block |
+| **S3: Raw thread** | `Thread.spawn { … }` runs the block on a new OS thread; no runtime required |
 | **S4: Must-use handle** | All spawn forms return handles that must be joined or detached — dropping one is a compile error |
-| **S5: The task works on copies** | Every spawn form gives the task a copy of what its closure captured. A borrow can't cross (E0862) and a write the task never reads back is an error (E0896) — see [mem.closures](../memory/closures.md#spawn) for both. The value both sides need is a `Shared` reached through a clone, or the closure's return value |
-| **S6: What the task consumes is its argument** | `spawn_with(value, \|take v: T\| { … })` hands `value` to the task as the body's `take` parameter; `Thread.spawn_with` and `ThreadPool.spawn_with` do the same. A closure can't consume what it captured (`mem.closures/CM4`), so a resource reaches a task this way and no other. Several go in a tuple, destructured in the body. The plain form is for a task that hands over nothing linear |
+| **S5: The task works on copies** | Every spawn form carries what its block names into the task: a Copy value is copied, anything else is moved and the outer name is gone. A borrow can't cross (E0862), and neither can a link or a `Local` box (`mem.ownership/T2`, `conc.sync/SH7`). A write the task never reads back is an error (E0896) — see [mem.closures](../memory/closures.md#spawn). The value both sides need is a `Shared` reached through a clone, or the block's result |
+| **S6: The block runs once** | A task block isn't a closure value: nothing can name it or run it a second time. So it may use up what it captures — answer a responder, close a file, hand a value on, return it — the way any block may. A resource it captures is the task's to consume on every path (`mem.linear/L1`). A closure never may (`mem.closures/CM4`) |
+| **S7: The block's value is the result** | What the block evaluates to is what `join()` hands back. `return v` ends the task with `v`, and `try` ends it with the error, so the task's result is a `T or E`. The block is the task's whole frame, the same as a closure body is (`ctrl.flow/CF26`): the function that spawned it may have returned long before, so there is nothing further out for `return` to leave. `break` and `continue` can't reach a loop outside the block |
 
 <!-- test: skip -->
 ```rask
-let (req, responder) = try server.accept()
-spawn_with(responder, |take r: Responder| { r.respond(handle(req)) }).detach()
-
-spawn_with((src, dst), |take ends: (File, File)| {
-    let (src, dst) = ends
+let (src, dst) = try open_pair()
+spawn {
     ensure src.close()
     ensure dst.close()
     try copy(src, dst)
-}).detach()
+}.detach()
+
+let h = spawn {
+    if cancelled() {
+        return 0
+    }
+    expensive()
+}
 ```
 
-It's a second name and not a second shape of `spawn`, because Rask has neither
-overloading nor a default that could stand in for "no argument". I'd rather the
-two read differently anyway: `spawn_with` at the call site says something
-crosses before you look inside the bars.
+I had `spawn(|| { … })` for a long time. A closure was the wrong shape: it may
+run any number of times, so it can't consume what it captures, and a task that
+answers a request has to. That took a second spawn (`spawn_with`, the value
+passed in as a `take` parameter) to put back what the block form says for
+free. The task runs once, so the body is a block.
 
-Spawn functions do not appear in signatures. No function declares `using Multitasking` — the compiler infers which functions (transitively) need a runtime and checks callers against the current lexical scope. See [Runtime Scope](#runtime-scope) below.
+Spawning doesn't appear in signatures. No function declares `using Multitasking` — the compiler infers which functions (transitively) need a runtime and checks callers against the current lexical scope. See [Runtime Scope](#runtime-scope) below.
 
 ```rask
 func main() -> void or Error {
@@ -45,7 +60,7 @@ func main() -> void or Error {
 
         loop {
             let conn = try listener.accept()
-            spawn(|| { handle_connection(conn) }).detach()
+            spawn { handle_connection(conn) }.detach()
         }
     }
 }
@@ -70,23 +85,23 @@ func handle_connection(conn: TcpConnection) -> void or Error {
 <!-- test: skip -->
 ```rask
 // Propagate errors
-let h = spawn(|| { compute() })
+let h = spawn { compute() }
 let result = try h.join()
 
 // Panic on task failure
-let h = spawn(|| { work() })
+let h = spawn { work() }
 h.join()!
 
 // Handle explicitly
-let h = spawn(|| { fallible_work() })
+let h = spawn { fallible_work() }
 match h.join() {
     T as val                   => process(val),
     JoinError.Panicked(msg)    => println("task panicked: {msg}"),
 }
 
-spawn(|| { background_work() }).detach()
+spawn { background_work() }.detach()
 
-spawn(|| { work() })  // ERROR [conc.async/H1]: unused Handle
+spawn { work() }  // ERROR [conc.async/H1]: unused Handle
 ```
 
 ### Handle API
@@ -121,15 +136,15 @@ one or be written twice. So there is one.
 
 <!-- test: skip -->
 ```rask
-let h1 = spawn(|| { work1() })
-let h2 = spawn(|| { work2() })
+let h1 = spawn { work1() }
+let h2 = spawn { work2() }
 let a = try h1.join()
 let b = try h2.join()
 
 mut pages = Handles<Page>.new()
 ensure pages.detach()
 for url in urls {
-    pages.add(spawn(|| { return fetch(url) }))
+    pages.add(spawn { return fetch(url) })
 }
 let results = pages.join_all()
 ```
@@ -152,11 +167,11 @@ channel both send to covers it today.
 | Rule | Description |
 |------|-------------|
 | **C1: Single active runtime** | At most one `using Multitasking` block is active in the process at any time. Entering a second while one is active is an error |
-| **C2: Process-global visibility** | While the block is active, every thread in the process can `spawn()` — the runtime lives in a process-global slot |
+| **C2: Process-global visibility** | While the block is active, every thread in the process can `spawn` — the runtime lives in a process-global slot |
 | **C3: Block-scoped lifetime** | The runtime starts on block entry and shuts down on block exit. No refcounting, no persistence across blocks |
 | **C4: Drain on exit** | Normal block exit waits for all tasks (including detached ones) to finish before returning. Panic-unwinding the block signals cancellation to remaining tasks without draining them (see edge cases) |
 | **C5: Sequential blocks OK** | After one block exits cleanly, another may be opened (new runtime, possibly different config). Non-overlapping only |
-| **C6: Libraries don't install runtimes** | Only application code opens `using Multitasking`. Libraries call `spawn()` assuming the caller already did. Violation triggers C1's nesting error |
+| **C6: Libraries don't install runtimes** | Only application code opens `using Multitasking`. Libraries `spawn` assuming the caller already did. Violation triggers C1's nesting error |
 
 `workers: n` is how many tasks may be *running*, not a cap on threads. A task
 blocked in `join` isn't running anything, so it doesn't hold a slot — without
@@ -176,7 +191,7 @@ deadlock rather than growing past 32 of them.
 ```rask
 func main() {
     using Multitasking(workers: 4) {
-        // all spawn() calls below, on any thread, use this runtime
+        // every spawn below, on any thread, uses this runtime
         // body
     }
     // block exit: all spawned tasks drained, runtime shut down
@@ -191,7 +206,7 @@ The static path works from inference: the compiler figures out which functions t
 
 | Rule | Description |
 |------|-------------|
-| **CC1: Direct spawn check** | A lexical `spawn()` call outside any `using Multitasking` block, in a function nothing calls — the entry point, a `test` block, a `@test` function → compile error at the `spawn` |
+| **CC1: Direct spawn check** | A lexical `spawn { }` outside any `using Multitasking` block, in a function nothing calls — the entry point, a `test` block, a `@test` function → compile error at the `spawn` |
 | **CC2: Inferred-requirement check** | A call to any function inferred as requiring the runtime, lexically outside any block → compile error at the call |
 | **CC3: Runtime check** | The check the other two are an optimization of. Where the call target isn't statically known — a closure stored and called across block boundaries, interface-object dispatch, FFI calling in — `spawn` finds the slot empty and panics with a clear message |
 
@@ -250,7 +265,7 @@ CN4 is what keeps invisible suspension safe around locks: a lock held across a p
 
 <!-- test: skip -->
 ```rask
-let h = spawn(|| {
+let h = spawn {
     let file = try File.open("data.txt")
     ensure file.close()
 
@@ -260,7 +275,7 @@ let h = spawn(|| {
         done += 1
     }
     return done
-})
+}
 
 sleep(5.seconds)
 let finished = try h.cancel()   // how far it got
@@ -289,18 +304,18 @@ that sees `cancelled()` returns like any other; if the caller needs to tell
 ```rask
 mut (tx, rx) = Channel<Message>.buffered(100)
 
-let producer = spawn(|| {
+let producer = spawn {
     for msg in generate_messages() {
         try tx.send(msg)
-    })
+    }
 }
 
-let consumer = spawn(|| {
+let consumer = spawn {
     loop {
         let r = rx.receive()
         if r? as msg { process(msg) } else { break }
     }
-})
+}
 
 try producer.join()
 try consumer.join()
@@ -331,21 +346,21 @@ try consumer.join()
 ```
 ERROR [conc.async/H1]: unused Handle
    |
-12 |  spawn(|| { work() })
+12 |  spawn { work() }
    |  ^^^^^^^^^^^^^^^^ Handle must be joined or detached
 ```
 
 ```
 ERROR [conc.async/CC1]: `spawn` needs a `using Multitasking { }` scope
    |
-5  |  spawn(|| { fetch(url) })
+5  |  spawn { fetch(url) }
    |  ^^^^^^^^^^^^^^^^^^^^^^^^ no block installs a runtime for this task
 
 FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main:
 
     func main() {
         using Multitasking {
-            spawn(|| { fetch(url) }).detach()
+            spawn { fetch(url) }.detach()
         }
     }
 ```
@@ -362,10 +377,10 @@ FIX: wrap the caller chain in `using Multitasking { ... }`.
 ```
 
 ```
-RUNTIME PANIC: spawn() called with no active `using Multitasking` scope
+RUNTIME PANIC: spawn with no active `using Multitasking` scope
 
 This can happen when:
-  - A closure containing spawn is stored and called outside a block
+  - A closure containing a spawn is stored and called outside a block
   - An interface object dispatches to an impl that spawns
   - FFI calls back into Rask outside any scope
 
@@ -408,7 +423,7 @@ Install a `using Multitasking { ... }` block that encloses the call.
 
 | Aspect | Go | Rask |
 |--------|-----|------|
-| Spawn syntax | `go func()` | `spawn(|| { }).detach()` |
+| Spawn syntax | `go func()` | `spawn { }.detach()` |
 | Track tasks | Manual (WaitGroup) | Compile-time (must-use handles) |
 | Forgotten tasks | Silent | Compile error |
 | Async/sync split | No | No |

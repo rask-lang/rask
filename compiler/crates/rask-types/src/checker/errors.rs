@@ -895,12 +895,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// CC1: `spawn` used outside any `using Multitasking` block
-    #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
-    SpawnOutsideBlock {
-        span: Span,
-    },
-
     /// T6: cyclic type alias
     #[error("cyclic type alias: {cycle}")]
     CyclicTypeAlias {
@@ -1710,7 +1704,6 @@ impl TypeError {
             | NonExhaustiveMatch { .. }
             | UndefinedName { .. }
             | UnknownContext { .. }
-            | SpawnOutsideBlock { .. }
             | CyclicTypeAlias { .. }
             | CallableFieldNotAMethod { .. }
             | TakeOnCopyType { .. }

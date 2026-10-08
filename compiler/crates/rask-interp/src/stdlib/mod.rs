@@ -182,24 +182,6 @@ impl Interpreter {
             "f32x8" => self.call_simd_type_method(method, args),
             "Random" => self.call_rng_type_method(method, args),
             "StringBuilder" => self.call_string_builder_type_method(method, args),
-            "Thread" => {
-                if method == "spawn" || method == "spawn_with" {
-                    self.spawn_os_thread(args, method == "spawn_with")
-                } else {
-                    Err(RuntimeError::TypeError(format!(
-                        "Thread has no method '{}'", method
-                    )))
-                }
-            }
-            "ThreadPool" => {
-                if method == "spawn" || method == "spawn_with" {
-                    self.spawn_pool_task(args, method == "spawn_with")
-                } else {
-                    Err(RuntimeError::TypeError(format!(
-                        "ThreadPool has no method '{}'", method
-                    )))
-                }
-            }
             // CE1: Cell.new(value) — heap-allocate a single value
             "Cell" => {
                 if method == "new" && args.len() == 1 {

@@ -369,7 +369,7 @@ pub enum OwnershipErrorKind {
 
     /// H1: a resource-typed value produced by an expression statement is
     /// never bound to anything, so it's dropped unconsumed the instant it's
-    /// produced (e.g. `spawn(|| { ... })` with no `let`).
+    /// produced (e.g. `spawn { ... }` with no `let`).
     #[error("value of resource type `{type_name}` is dropped without being consumed")]
     ResourceDiscardedAsStatement {
         type_name: String,
@@ -414,10 +414,13 @@ pub enum OwnershipErrorKind {
     },
 
     /// A resource the closure body owns — a `take` parameter or a local it
-    /// acquired — not consumed on every path through the body.
+    /// acquired, or for a task block a capture — not consumed on every path
+    /// through the body.
     #[error("resource `{name}` is not consumed on every path through the closure")]
     ResourceNotConsumedInClosure {
         name: String,
+        /// The body is a task block's (`spawn { … }`).
+        in_task: bool,
     },
 
     /// A closure that outlives its frame would carry a linear value into an
@@ -559,7 +562,7 @@ pub enum OwnershipErrorKind {
     #[error("`{name}` is written in a task and nothing reads it back")]
     TaskWriteLost {
         name: String,
-        /// Where the closure was handed to `spawn`.
+        /// The task block.
         spawn_span: Span,
     },
 

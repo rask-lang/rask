@@ -18,9 +18,11 @@ func keep<T>(x: T) -> func() -> i64 {
 func main() {
     using Multitasking {
         let plain = keep(7)
-        println("{spawn(plain).join()!}")
+        let t1 = spawn { plain() }
+        println("{t1.join()!}")
         let f = keep(Vec<Link<Node>>.new())
         println("before")
-        println("{spawn(f).join()!}")
+        let t2 = spawn { f() }
+        println("{t2.join()!}")
     }
 }

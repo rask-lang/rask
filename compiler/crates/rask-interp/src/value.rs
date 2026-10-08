@@ -505,8 +505,6 @@ pub enum BuiltinKind {
     EPrintln, // eprintln(...) — same as println, to stderr
     Panic,
     Format,
-    AsyncSpawn,     // spawn(|| {}) from async module
-    AsyncSpawnWith, // spawn_with(arg, |take a| {}) from async module
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
@@ -818,8 +816,7 @@ impl fmt::Debug for ThreadPoolInner {
 /// end, and `join` gives its slot up while it waits.
 ///
 /// This used to start n worker threads reading a channel. Nothing ever sent to
-/// that channel — `spawn(|| …)` as a call, which is the only form, starts its
-/// own thread — so the workers sat idle for the lifetime of every block and
+/// that channel — every spawn starts its own thread — so the workers sat idle for the lifetime of every block and
 /// `workers: n` bounded nothing at all: `using Multitasking(2)` with two
 /// hundred spawns ran two hundred tasks at once here and two natively (#1111).
 pub struct MultitaskingRuntime {

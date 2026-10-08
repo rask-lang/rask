@@ -21,7 +21,7 @@ needing one of those is refused with a message rather than half-working:
 |---|---|
 | `fs`, `io`, `net`, `http` | no filesystem or sockets |
 | `time` | no clock — which is also why `benchmark` blocks don't run here |
-| `spawn`, `spawn_with`, `Thread.spawn`, `using Multitasking`, `using ThreadPool` | no threads |
+| `spawn { }`, `Thread.spawn { }`, `ThreadPool.spawn { }`, `using Multitasking`, `using ThreadPool` | no threads |
 | `extern "C"`, `import c` | no libc to call |
 
 Everything else runs: collections, structs, enums, generics, interfaces, pattern

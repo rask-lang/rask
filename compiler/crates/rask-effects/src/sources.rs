@@ -22,13 +22,6 @@ pub fn classify_call(callee: &str) -> Effects {
         return Effects { io: true, async_: is_async_source(callee), grow: false, shrink: false, needs_runtime: false };
     }
 
-    // `spawn` hands the task to the scheduler and returns. It's concurrency,
-    // not a wait, so it carries no IO: a loop of spawns doesn't block, and
-    // calling it blocking I/O sent CW1/CW2 after the wrong call (#1362).
-    if is_async_source(callee) {
-        return Effects { io: false, async_: true, grow: false, shrink: false, needs_runtime: false };
-    }
-
     // Container structural mutation sources (EF1: split into Grow/Shrink)
     if is_grow_source(callee) {
         return Effects { io: false, async_: false, grow: true, shrink: false, needs_runtime: false };
@@ -86,9 +79,7 @@ fn is_io_source(callee: &str) -> bool {
 
 fn is_async_source(callee: &str) -> bool {
     matches!(callee,
-        "spawn" | "Thread.spawn" | "ThreadPool.spawn"
-        | "spawn_with" | "Thread.spawn_with" | "ThreadPool.spawn_with"
-        | "sleep" | "time.sleep"
+        "sleep" | "time.sleep"
         | "Sender.send" | "Receiver.receive"
         | "Handle.join" | "Handles.join_all"
     )
@@ -130,15 +121,6 @@ mod tests {
         let e = classify_call("Sender.send");
         assert!(e.io);
         assert!(e.async_);
-    }
-
-    /// Starting a task returns at once. Classing it as I/O told every spawn
-    /// loop it blocked on each iteration (#1362).
-    #[test]
-    fn spawn_is_async_without_io() {
-        let e = classify_call("spawn");
-        assert!(e.async_);
-        assert!(!e.io);
     }
 
     /// A container's structural effects come from the method's name, whatever

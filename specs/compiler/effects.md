@@ -63,9 +63,9 @@ A source is matched on the callee the type checker resolved, not on how the call
 
 | Rule | Description |
 |------|-------------|
-| **AS1: Source functions** | `spawn()`, `Thread.spawn()`, `time.sleep()`, `Sender.send()`, `Receiver.receive()`, `Handle.join()` |
+| **AS1: Sources** | A task block (`spawn { }`, `Thread.spawn { }`, `ThreadPool.spawn { }`), `time.sleep()`, `Sender.send()`, `Receiver.receive()`, `Handle.join()` |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
-| **AS3: Waiting is IO** | An Async source that waits — `time.sleep()`, the channel ops, `Handle.join()` — is also an IO source. `spawn()` hands a task to the scheduler and returns, so it is Async without IO. A loop of spawns blocks nothing; the `join` is where the wait is |
+| **AS3: Waiting is IO** | An Async source that waits — `time.sleep()`, the channel ops, `Handle.join()` — is also an IO source. `spawn { }` hands a task to the scheduler and returns, so it is Async without IO. A loop of spawns blocks nothing; the `join` is where the wait is |
 
 ## Mutation Effect
 
@@ -163,7 +163,7 @@ func run_server() -> void or Error {                      // ghost: [io, async]
         let listener = try TcpListener.bind("0.0.0.0:8080")
         loop {
             let conn = try listener.accept()          // ← IO + Async
-            spawn(|| { handle(conn) }).detach()         // ← Async
+            spawn { handle(conn) }.detach()         // ← Async
         }
     }
 }
@@ -194,19 +194,19 @@ These use the existing `tool.warnings` infrastructure (`@allow` to suppress).
 ```
 WARNING [comp.effects/CW1]: I/O function called in thread pool context
    |
-5  |  ThreadPool.spawn(|| {
+5  |  ThreadPool.spawn {
 6  |      let data = try File.read("big.csv")
    |                       ^^^^^^^^^ File.read has IO effect — blocks pool thread
    |
 WHY: ThreadPool is for CPU-bound work. I/O blocks the pool thread instead of
      parking a green task.
 
-FIX: Use spawn() for I/O-heavy work:
+FIX: Use `spawn` for I/O-heavy work:
 
-  spawn(|| {
+  spawn {
       let data = try File.read("big.csv")
-      let result = try ThreadPool.spawn(|| { parse(data) }).join()
-  }).detach()
+      let result = try ThreadPool.spawn { parse(data) }.join()
+  }.detach()
 ```
 
 ```

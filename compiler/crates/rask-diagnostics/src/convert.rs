@@ -269,6 +269,32 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("`continue` can only skip to the next loop iteration")
             }
 
+            SpawnTakesABlock { form, receiver, handed } => {
+                let start = match receiver {
+                    Some(r) => format!("{r}.spawn"),
+                    None => "spawn".to_string(),
+                };
+                let fix = if form.ends_with("spawn_with") {
+                    let v = handed.as_deref().unwrap_or("value");
+                    format!(
+                        "name `{v}` in the block instead of passing it in — the block runs \
+                         once, so it may consume what it captures:\n\n  \
+                         {start} {{ … {v} … }}"
+                    )
+                } else {
+                    format!("drop the parentheses and the bars:\n\n  {start} {{ … }}")
+                };
+                Diagnostic::error(format!("`{}` takes a block, not a closure", form))
+                    .with_code("E0915")
+                    .with_primary(self.span, format!("write the task as `{start} {{ … }}`"))
+                    .with_fix(fix)
+                    .with_why(
+                        "a task's body is a block that runs once, not a closure value: it may \
+                         use up what it captures, and nothing can call it a second time \
+                         [conc.async/S1, S6]",
+                    )
+            }
+
             InvalidReturn => Diagnostic::error("return outside of function")
                 .with_code("E0206")
                 .with_primary(self.span, "cannot return here")
@@ -2648,14 +2674,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`using` blocks require a known runtime context to initialize")
             }
 
-            SpawnOutsideBlock { span } => {
-                Diagnostic::error("`spawn` must be inside a `using Multitasking { ... }` block")
-                    .with_code("E0352")
-                    .with_primary(*span, "`spawn` used here without a runtime")
-                    .with_help("wrap this code in `using Multitasking { ... }`")
-                    .with_why("spawn() requires an active runtime slot installed by `using Multitasking { }` [conc.async/CC1]")
-            }
-
             CyclicTypeAlias { cycle, span } => {
                 Diagnostic::error(format!("cyclic type alias: {}", cycle))
                     .with_code("E0395")
@@ -4356,7 +4374,18 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            ResourceNotConsumedInClosure { name } => {
+            ResourceNotConsumedInClosure { name, in_task: true } => {
+                Diagnostic::error(format!(
+                    "resource `{}` is not consumed on every path through the task",
+                    name
+                ))
+                .with_code("E0810")
+                .with_primary(self.span, format!("this task captures `{}` and can end without consuming it", name))
+                .with_fix(format!("consume it in the task — `ensure {}.close()` at the top of the block", name))
+                .with_why("a task carries away what it captures, so the parent can't close it any more: the task owns it, and a resource is consumed exactly once [conc.async/S6, mem.linear/L1]")
+            }
+
+            ResourceNotConsumedInClosure { name, in_task: false } => {
                 Diagnostic::error(format!(
                     "resource `{}` is not consumed on every path through the closure",
                     name
@@ -4376,10 +4405,12 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0913")
                 .with_primary(self.span, format!("this closure outlives its frame, so it would carry `{}` away and never let go of it", name))
                 .with_fix(format!(
-                    "pass it in as an argument the closure takes — for a task:\n\n  \
-                     spawn_with({n}, |take {n}: {t}| {{ … }})\n\n\
-                     for any other callback, a `take` parameter its caller fills:\n\n  \
-                     |take {n}: {t}| {{ … }}",
+                    "pass it in as an argument the closure takes — a `take` parameter its \
+                     caller fills:\n\n  \
+                     |take {n}: {t}| {{ … }}\n\n\
+                     or, if this runs once as a task, a task block, which may consume what \
+                     it captures:\n\n  \
+                     spawn {{ … }}",
                     n = name, t = ty
                 ))
                 .with_why(
@@ -4445,8 +4476,9 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_fix(format!(
                     "pass `{n}` in instead of capturing it — a `take` parameter:\n\n  \
                      |take {n}: {t}| {{ … }}\n\n\
-                     or, for a task, the spawn argument form:\n\n  \
-                     spawn_with({n}, |take {n}: {t}| {{ … }}){copy}",
+                     or, if this runs once as a task, a task block, which may consume what \
+                     it captures:\n\n  \
+                     spawn {{ … }}{copy}",
                     n = name
                 ))
                 .with_why(

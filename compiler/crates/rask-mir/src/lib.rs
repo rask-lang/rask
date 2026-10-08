@@ -47,3 +47,9 @@ pub use stmt::{CaptureAccess, ClosureCapture, MirStmt, MirStmtKind, MirTerminato
 pub use lower::ComptimeGlobalMeta;
 pub use program::MirProgram;
 pub use types::{spawn_payload_is_boxed, ContainerKind, MirType, StructLayoutId, EnumLayoutId};
+
+/// The runtime entries a task block's closure is handed to (`lower_spawn`):
+/// a green task, an OS thread, a pool job. Each keeps the closure and frees it
+/// when the task ends.
+pub const TASK_ENTRIES: &[&str] =
+    &["rask_green_closure_spawn", "rask_thread_spawn", "rask_threadpool_spawn"];

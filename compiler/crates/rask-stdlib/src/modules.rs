@@ -43,8 +43,8 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
 /// different things with them: these are valid in `import m.name` but must not
 /// be registered as a struct.
 const EXTRA_NAMES: &[(&str, &[&str])] = &[
-    // `spawn(…)` reads as a language feature, not as `async.spawn(…)`.
-    ("async", &["spawn", "spawn_with", "cancelled"]),
+    // `cancelled()` reads as a language feature, not as `async.cancelled()`.
+    ("async", &["cancelled"]),
     ("core", &["transmute"]),
     // `std` re-exports the reflection module.
     ("std", &["reflect", "exit"]),
@@ -426,9 +426,9 @@ mod tests {
     #[test]
     fn module_functions_are_separate_from_types() {
         let a = exports("async");
-        assert!(a.functions.iter().any(|f| f == "spawn"));
-        assert!(!a.exports_type("spawn"), "spawn is a function, not a type");
-        assert!(a.exports("spawn"));
+        assert!(a.functions.iter().any(|f| f == "cancelled"));
+        assert!(!a.exports_type("cancelled"), "cancelled is a function, not a type");
+        assert!(a.exports("cancelled"));
     }
 
     /// Every extra has to be pulling its weight. Once a module's own `.rk` file

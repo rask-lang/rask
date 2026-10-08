@@ -10,6 +10,7 @@ func adder(base: i64, step: i64) -> func() -> i64 {
 func main() {
     using Multitasking {
         let f = adder(5, 10)
-        println("{spawn(f).join()!}")
+        let t1 = spawn { f() }
+        println("{t1.join()!}")
     }
 }

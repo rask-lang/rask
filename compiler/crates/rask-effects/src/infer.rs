@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::{Effects, EffectMap, MethodTargets};
@@ -540,6 +540,11 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             classify_body(body, effects, callees, t);
         }
         ExprKind::Closure { body, .. } => classify_expr(body, effects, callees, t),
+        // Starting a task returns at once: concurrency, not a wait (AS1, #1362).
+        ExprKind::Spawn { body, .. } => {
+            effects.async_ = true;
+            classify_expr(body, effects, callees, t);
+        }
         ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => {
             classify_body(body, effects, callees, t);
@@ -597,7 +602,7 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
 // ── CC2: runtime-needs scanning ────────────────────────────────────────
 //
 // These functions walk the AST tracking `using Multitasking {}` nesting depth.
-// At depth 0, a direct `spawn()` call sets `needs_runtime = true`.
+// At depth 0, a direct `spawn { }` sets `needs_runtime = true`.
 // Function calls at depth 0 are collected into `unguarded` for transitive propagation.
 
 fn is_multitasking_block(name: &str) -> bool {
@@ -696,28 +701,28 @@ fn rt_scan_stmt(stmt: &Stmt, depth: u32, rs: &mut ReachScan<'_>) -> bool {
 fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
     match &expr.kind {
         ExprKind::Call { func, args } => {
-            let mut direct = false;
-            let callee = extract_callee_name(func);
-            let spawning = matches!(callee.as_deref(), Some("spawn" | "spawn_with"));
-            if let Some(name) = callee {
-                if spawning {
-                    direct = depth == 0;
-                } else {
-                    rs.record(depth, name);
-                }
+            if let Some(name) = extract_callee_name(func) {
+                rs.record(depth, name);
             }
-            direct |= rt_scan_expr(func, depth, rs);
-            // The closure handed to `spawn` runs on a task, so a runtime is
-            // installed for everything it reaches — the same thing `using
-            // Multitasking` means, arriving by a different route.
-            let was = rs.in_spawn;
-            rs.in_spawn |= spawning;
+            let mut r = rt_scan_expr(func, depth, rs);
             for arg in args {
-                direct |= rt_scan_expr(&arg.expr, depth, rs);
+                r |= rt_scan_expr(&arg.expr, depth, rs);
             }
-            rs.in_spawn = was;
-            direct
+            r
         }
+
+        // A green task runs on the scheduler, so a runtime is installed for
+        // everything its block reaches — the same thing `using Multitasking`
+        // means, arriving by a different route. An OS thread or a pool job
+        // needs no green runtime to start.
+        ExprKind::Spawn { target: SpawnTarget::Green, body, .. } => {
+            let was = rs.in_spawn;
+            rs.in_spawn = true;
+            rt_scan_expr(body, depth, rs);
+            rs.in_spawn = was;
+            depth == 0
+        }
+        ExprKind::Spawn { body, .. } => rt_scan_expr(body, depth, rs),
 
         // `using Multitasking { }` guards the body — increase depth
         ExprKind::UsingBlock { name, args, body } if is_multitasking_block(name) => {
@@ -908,6 +913,21 @@ mod tests {
         Stmt { id: NodeId(0), kind: StmtKind::Return(val), span: sp() }
     }
 
+    /// `spawn { }` — the parser's shape: an empty block in a closure node.
+    fn spawn_block() -> Expr {
+        let block = Expr { id: NodeId(0), kind: ExprKind::Block(vec![]), span: sp() };
+        let body = Expr {
+            id: NodeId(0),
+            kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(block) },
+            span: sp(),
+        };
+        Expr {
+            id: NodeId(0),
+            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, body: Box::new(body) },
+            span: sp(),
+        }
+    }
+
     fn expr_stmt(e: Expr) -> Stmt {
         Stmt { id: NodeId(0), kind: StmtKind::Expr(e), span: sp() }
     }
@@ -993,7 +1013,7 @@ mod tests {
     #[test]
     fn direct_async_call() {
         let decls = vec![make_fn("run", vec![
-            expr_stmt(call("spawn", vec![])),
+            expr_stmt(spawn_block()),
         ])];
         let effects = infer(&decls, &Default::default());
         assert!(!effects["run"].io, "spawning waits on nothing, so it isn't IO (#1362)");
@@ -1134,16 +1154,6 @@ mod tests {
         assert!(effects["c_function"].io, "INF5: extern is conservative IO");
     }
 
-    /// `spawn(|| …)` is a call, which is the only form there is — the block
-    /// form was a variant nothing produced (#1115). This used to build that
-    /// variant, so it proved a path no program could reach.
-    #[test]
-    fn spawn_is_async() {
-        let decls = vec![make_fn("run", vec![expr_stmt(call("spawn", vec![]))])];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["run"].async_);
-    }
-
     #[test]
     fn mutation_effect() {
         let decls = vec![make_fn("grow", vec![
@@ -1158,7 +1168,7 @@ mod tests {
     fn mixed_effects() {
         let decls = vec![make_fn("complex", vec![
             expr_stmt(call("println", vec![])),
-            expr_stmt(call("spawn", vec![])),
+            expr_stmt(spawn_block()),
             expr_stmt(method_call("pool", "insert")),
         ])];
         let effects = infer(&decls, &Default::default());

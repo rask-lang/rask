@@ -13,6 +13,7 @@ func keep<T>(x: T) -> func() -> i64 {
 func main() {
     using Multitasking {
         let f = keep(7)
-        println("{spawn(f).join()!}")
+        let t1 = spawn { f() }
+        println("{t1.join()!}")
     }
 }

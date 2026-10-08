@@ -125,11 +125,11 @@ RaskTask *rask_task_new(void) {
     return t;
 }
 
-// A closure bound to its task may not reach another one. Every spawn form
-// hands its closure over through `rask_task_adopt_closure`, so that is the one
-// place a closure that got to `spawn` by a return, a field or a container is
-// seen at all; `spawn_with` also asks here of the body it wraps. The checker
-// catches the ones written at the spawn.
+// A closure bound to its task may not reach another one. The checker refuses
+// a link or a `Local` box a task block names; this catches the two it can't
+// see: a block in a generic body whose `T` turned out to be one (checked as
+// the task adopts the block), and a closure value the block captured, which
+// carries what it captured out of sight (checked by lowering for each one).
 void rask_closure_refuse_crossing(void *closure_base) {
     if (rask_closure_task_bound(closure_base)) {
         rask_panic("spawn: this task would hold a link or a `Local` box, and "

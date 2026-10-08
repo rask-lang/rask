@@ -34,7 +34,7 @@ src/round.rk
    7 |     apply_damage(mutate player, 10)
    8 |     let report = try http.post(STATS_URL, player.encode())
      |                                              « ⟨pauses⟩
-   9 |     spawn(|| { archive(report) }).detach()
+   9 |     spawn { archive(report) }.detach()
      |                                              « [moves: report (Response)]
   10 | }
 ```

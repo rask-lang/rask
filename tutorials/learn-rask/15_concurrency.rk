@@ -7,9 +7,9 @@
 //
 // Three ways to run code in parallel:
 //
-//   spawn(|| { ... })              — lightweight task (like asyncio, but parallel)
-//   ThreadPool.spawn(|| { ... })   — worker thread from a pool (for CPU work)
-//   Thread.spawn(|| { ... })       — dedicated OS thread
+//   spawn { ... }              — lightweight task (like asyncio, but parallel)
+//   ThreadPool.spawn { ... }   — worker thread from a pool (for CPU work)
+//   Thread.spawn { ... }       — dedicated OS thread
 //
 // The || { } is a closure (lesson 10). The || means "takes no arguments."
 //
@@ -22,7 +22,7 @@
 //
 // Every spawn returns a handle. You MUST either:
 //   - join it:   let result = try h.join()    // wait for the result
-//   - detach it: spawn(|| { fire_and_forget() }).detach()
+//   - detach it: spawn { fire_and_forget() }.detach()
 //
 // The compiler enforces this — you can't accidentally forget about a task.
 // (This is the resource type pattern from lesson 17, applied to tasks.)
@@ -37,7 +37,6 @@
 //   loop { let r = rx.receive(); if r? as v { use(v) } else { break } }
 //
 
-import async.spawn
 
 // --- Example ---
 
@@ -48,13 +47,13 @@ func example_concurrency() -> void or Error {
         // nobody writes down, like a `try` that fails or a panic. So the
         // cleanup is committed where the handle is acquired (L7), and the
         // `join` below cancels it (L6).
-        let h1 = spawn(|| {
+        let h1 = spawn {
             21
-        })
+        }
         ensure h1.detach()
-        let h2 = spawn(|| {
+        let h2 = spawn {
             21
-        })
+        }
         ensure h2.detach()
         let a = try h1.join()
         let b = try h2.join()

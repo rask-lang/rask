@@ -205,11 +205,11 @@ func main() -> void or Error {
 
         loop {
             let (req, responder) = try server.accept()
-            spawn_with(responder, |take responder: Responder| {
+            spawn {
                 ensure responder.respond(Response.internal_error("unhandled"))
                 let response = handle(req)
                 responder.respond(response)
-            }).detach()
+            }.detach()
         }
     }
 }

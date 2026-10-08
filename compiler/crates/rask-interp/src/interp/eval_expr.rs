@@ -27,16 +27,6 @@ impl Located {
     }
 }
 
-/// CC3 runtime panic message for spawn() without an active `using Multitasking` block.
-const SPAWN_NO_RUNTIME_MSG: &str =
-    "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
-     \n\
-     This can happen when:\n\
-     - A closure containing spawn is stored and called outside a block\n\
-     - An interface object dispatches to an impl that spawns\n\
-     - FFI calls back into Rask outside any scope\n\
-     \n\
-     Install a `using Multitasking { ... }` block that encloses the call.";
 
 /// type.primitives/NT1 — associated constants on the numeric types.
 /// `MIN`/`MAX` carry the receiver's own width so overflow checks see the right
@@ -1190,16 +1180,6 @@ impl Interpreter {
                     }
                 })?;
                 let (arg_vals, places) = self.eval_call_args(args)?;
-                // `spawn_with`'s argument crosses to the task as a value, so the
-                // call is judged the way a spawned closure's captures are.
-                if matches!(func_val, Value::Builtin(crate::value::BuiltinKind::AsyncSpawnWith))
-                    && self.closure_is_task_bound(expr.id)
-                {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic(super::TASK_BOUND_SPAWN.to_string()),
-                        expr.span,
-                    ));
-                }
                 // What the callee's type parameters stand for here, written
                 // (`count<Plain>()`, #968) or inferred: the checker recorded
                 // both under this call.
@@ -1536,12 +1516,6 @@ impl Interpreter {
                 }
 
                 if let Value::Type(type_name) = &receiver {
-                    if method == "spawn_with" && self.closure_is_task_bound(expr.id) {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::Panic(super::TASK_BOUND_SPAWN.to_string()),
-                            expr.span,
-                        ));
-                    }
                     return self.call_type_method(type_name, method, arg_vals)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
@@ -2547,6 +2521,18 @@ impl Interpreter {
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
                 })
+            }
+
+            // A task block: build its body as the carrying closure it is
+            // underneath, and hand that to the task.
+            ExprKind::Spawn { target, body, .. } => {
+                let closure = self.eval_expr(body)?;
+                let started = match target {
+                    rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
+                    rask_ast::expr::SpawnTarget::Thread => self.spawn_os_thread(closure, body),
+                    rask_ast::expr::SpawnTarget::Pool => self.spawn_pool_task(closure, body),
+                };
+                started.map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
             ExprKind::Cast { expr, ty } => {

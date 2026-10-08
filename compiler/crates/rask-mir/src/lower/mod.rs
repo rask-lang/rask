@@ -1622,30 +1622,16 @@ pub struct MirLowerer<'a> {
     synthesized_functions: Vec<MirFunction>,
     /// Counter for generating unique closure function names
     closure_counter: u32,
-    /// Whether the closure just lowered for a `spawn` boxes its result.
+    /// Whether the task block just lowered boxes its result.
     ///
-    /// Written by `lower_closure_expecting` and read by the spawn call it was
-    /// lowered for, which is the very next thing lowered. A one-shot handoff
-    /// rather than a return value because the decision is made three call
-    /// frames below the argument list it has to reach.
+    /// Written by `lower_closure_expecting` and read by `lower_spawn`, right
+    /// after. A one-shot handoff rather than a return value because the
+    /// decision is made where the closure's entry point is built.
     spawn_result_boxed: bool,
-    /// Names bound to a closure that some `spawn(name)` in this function hands
-    /// to a task.
-    ///
-    /// A task hands back one word, so a closure whose result is wider than that
-    /// needs a wrapper that boxes it — and the wrapper is built while the
-    /// closure is lowered, which for `let g = own || { … }` happens at the
-    /// binding, several statements before the `spawn` that reveals why it
-    /// matters. Scanned up front for the same reason `ensure_read_names` is
-    /// (#1094).
-    spawned_closure_names: std::collections::HashSet<String>,
     /// Inside a closure body: the locals that hold a capture's address
     /// rather than a copy of it. A whole-value write to one replaces what
     /// the creating frame (or the environment) holds.
     pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
-    /// Which of those closures actually box, once lowered — `spawn` takes a
-    /// flag saying whether the word it gets back is a box the runtime owns.
-    spawn_boxed_bindings: HashMap<String, bool>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
@@ -3161,7 +3147,7 @@ impl<'a> MirLowerer<'a> {
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
     /// stale), as are fat pointers (an interface object — 16 bytes, doesn't fit an
     /// 8-byte env slot).
-    /// Collect every name this body reassigns. Walks closure and spawn bodies
+    /// Collect every name this body reassigns. Walks closure and task bodies
     /// too: a closure writing an outer name reassigns it just the same.
     pub(crate) fn collect_reassigned(body: &[rask_ast::stmt::Stmt]) -> std::collections::HashSet<String> {
         let mut out = std::collections::HashSet::new();
@@ -3260,60 +3246,6 @@ impl<'a> MirLowerer<'a> {
     /// mentions, bound or not, because the cost of a false positive is one
     /// scalar getting a stack cell it didn't need, and the cost of a miss is an
     /// ensure that silently doesn't run on a panic.
-    /// Every name handed to a `spawn` in this body — `spawn(g)`, or
-    /// `Thread.spawn(g)`.
-    ///
-    /// Only the bare-identifier form matters: an inline closure argument
-    /// already learns it is being spawned from the call that lowers it. This is
-    /// for the case where the closure was lowered at its binding, before
-    /// anything knew (#1094).
-    pub(crate) fn collect_spawned_names(
-        body: &[rask_ast::stmt::Stmt],
-    ) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
-        Self::find_spawned_body(body, &mut out);
-        out
-    }
-
-    fn find_spawned_body(
-        body: &[rask_ast::stmt::Stmt],
-        out: &mut std::collections::HashSet<String>,
-    ) {
-        for stmt in body {
-            let (kids, bodies) = Self::stmt_children(stmt);
-            for k in kids {
-                Self::find_spawned_expr(k, out);
-            }
-            for b in bodies {
-                Self::find_spawned_body(b, out);
-            }
-        }
-    }
-
-    fn find_spawned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
-        let spawned_arg = match &expr.kind {
-            ExprKind::Call { func, args } => {
-                matches!(&func.kind, ExprKind::Ident(n) if n == "spawn")
-                    .then(|| args.first())
-                    .flatten()
-            }
-            ExprKind::MethodCall { method, args, .. } if method == "spawn" => args.first(),
-            _ => None,
-        };
-        if let Some(arg) = spawned_arg {
-            if let ExprKind::Ident(name) = &arg.expr.kind {
-                out.insert(name.clone());
-            }
-        }
-        let (kids, bodies) = Self::expr_children(expr);
-        for k in kids {
-            Self::find_spawned_expr(k, out);
-        }
-        for b in bodies {
-            Self::find_spawned_body(b, out);
-        }
-    }
-
     pub(crate) fn collect_ensure_reads(
         body: &[rask_ast::stmt::Stmt],
     ) -> std::collections::HashSet<String> {
@@ -3474,7 +3406,7 @@ impl<'a> MirLowerer<'a> {
             | ExprKind::UsingBlock { body, .. }
             | ExprKind::Unsafe { body }
             | ExprKind::Comptime { body } => bodies.push(body),
-            ExprKind::Closure { body, .. } => kids.push(body),
+            ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => kids.push(body),
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 kids.push(condition);
                 kids.extend(message.iter().map(|m| m.as_ref()));
@@ -4157,9 +4089,7 @@ impl<'a> MirLowerer<'a> {
             synthesized_functions: Vec::new(),
             closure_counter: 0,
             spawn_result_boxed: false,
-            spawned_closure_names: std::collections::HashSet::new(),
             addressed_captures: std::collections::HashSet::new(),
-            spawn_boxed_bindings: HashMap::new(),
             parent_name: func_name,
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
@@ -4191,7 +4121,6 @@ impl<'a> MirLowerer<'a> {
         // about statements the ensure hasn't reached yet.
         lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
         lowerer.ensure_read_names = Self::collect_ensure_reads(&fn_decl.body);
-        lowerer.spawned_closure_names = Self::collect_spawned_names(&fn_decl.body);
 
         // Resolve Self from the function name, for the methods that still
         // arrive with it: a generic owner's template keeps `Self` because the
@@ -5583,6 +5512,7 @@ impl<'a> MirLowerer<'a> {
                 for p in inner_params { inner_bound.insert(p.name.clone()); }
                 self.walk_free_vars(body, &inner_bound, seen, free);
             }
+            ExprKind::Spawn { body, .. } => self.walk_free_vars(body, bound, seen, free),
             ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }

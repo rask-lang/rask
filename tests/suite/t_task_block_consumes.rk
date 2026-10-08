@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task block uses up what it captures (conc.async/S6, #1318).
+//
+// A closure can't consume what it captured (mem.closures/CM4): nothing says
+// how many times it runs. A task block runs once, so it may: a resource it
+// names is carried into the task and owed there. One value, several, a
+// container the task hands back, a function called from the block, every
+// spawn form, and the HTTP responder `http.serve` gives each request.
+
+import async.Handles
+import thread.Thread
+import thread.ThreadPool
+import net
+import http
+import http.{Request, Response, Responder}
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 {
+        println("closed {self.id}")
+        return self.id
+    }
+}
+
+struct Bag {
+    public items: Vec<i64>
+    public name: string
+}
+
+func total(take b: Bag) -> i64 {
+    mut t = 0
+    for x in b.items {
+        t += x
+    }
+    return t
+}
+
+test "a task closes the connection it captures" {
+    using Multitasking {
+        let c = Conn { id: 1 }
+        let h = spawn {
+            return c.close()
+        }
+        assert h.join()! == 1
+    }
+}
+
+test "several resources at once" {
+    using Multitasking {
+        let pair = (Conn { id: 2 }, Conn { id: 3 })
+        let h = spawn {
+            let (a, b) = pair
+            ensure b.close()
+            a.close()
+        }
+        assert h.join()! == 2
+    }
+}
+
+test "a container goes in and comes back" {
+    using Multitasking {
+        let v: Vec<i64> = [1, 2, 3]
+        let h = spawn {
+            mut w = v
+            w.push(4)
+            return w
+        }
+        let back = h.join()!
+        assert back.len() == 4
+    }
+}
+
+test "a struct is given away inside the task" {
+    using Multitasking {
+        let label = "sum"
+        let b = Bag { items: [5, 6], name: "bag" }
+        let h = spawn {
+            let name = b.name
+            "{label} {name} {total(b)}"
+        }
+        assert h.join()! == "sum bag 11"
+    }
+}
+
+test "the block's value is the result" {
+    using Multitasking {
+        let b = Bag { items: [1, 2], name: "two" }
+        let h = spawn { total(b) }
+        assert h.join()! == 3
+    }
+}
+
+test "return ends the task with its value" {
+    using Multitasking {
+        let n = 5
+        let h = spawn {
+            if n > 3 {
+                return "big"
+            }
+            "small"
+        }
+        assert h.join()! == "big"
+    }
+}
+
+test "wide results come back whole" {
+    using Multitasking {
+        let greeting = "hello"
+        let s = spawn { "{greeting} world" }
+        assert s.join()! == "hello world"
+        let x = 2.5
+        let f = spawn { x * 2.0 }
+        assert f.join()! == 5.0
+    }
+}
+
+test "one per turn of a loop" {
+    using Multitasking {
+        mut hs = Handles<u64>.new()
+        ensure hs.detach()
+        for i in 0..3 {
+            let items: Vec<i64> = [i, i]
+            hs.add(spawn { return items.len() })
+        }
+        mut sum: u64 = 0
+        for r in hs.join_all() {
+            sum += r!
+        }
+        assert sum == 6
+    }
+}
+
+test "an OS thread" {
+    let c = Conn { id: 4 }
+    let t = Thread.spawn { c.close() }
+    assert t.join()! == 4
+}
+
+test "a pool job" {
+    using ThreadPool {
+        let b = Bag { items: [2, 3], name: "pool" }
+        let p = ThreadPool.spawn { total(b) }
+        assert p.join()! == 5
+    }
+}
+
+test "a detached task still consumes what it captured" {
+    using Multitasking {
+        let c = Conn { id: 6 }
+        spawn {
+            let _ = c.close()
+        }.detach()
+    }
+}
+
+test "the responder an HTTP server hands out" {
+    using Multitasking {
+        let server = http.listen("127.0.0.1:0")!
+        ensure server.close()
+        let addr = server.local_addr()
+        let client = spawn {
+            return http.get("http://{addr}/items/7")
+        }
+        ensure client.detach()
+        let (req, responder) = server.accept()!
+        spawn {
+            let _ = responder.respond(Response.ok("you asked for {req.path()}"))
+        }.join()!
+        let resp = client.join()!!
+        assert resp.body == "you asked for /items/7"
+    }
+}
+
+// A closure the caller lent is the caller's: each task that calls it takes a
+// reference of its own, so the caller's closure outlives both (http.serve's
+// handler, one task per request).
+func run_twice(f: func() -> i64) -> i64 {
+    let a = spawn { f() }
+    ensure a.detach()
+    let b = spawn { f() }
+    ensure b.detach()
+    return a.join()! + b.join()!
+}
+
+test "a lent closure called in two tasks" {
+    using Multitasking {
+        let base = 4
+        let f = || { return base }
+        assert run_twice(f) == 8
+        assert run_twice(f) == 8
+        assert f() == 4
+    }
+}
+
+// A closure value the block calls is carried in like any capture.
+test "a named closure called in a task" {
+    using Multitasking {
+        let label = "named"
+        let g = || { return "{label} closure" }
+        let h = spawn { g() }
+        assert h.join()! == "named closure"
+        assert g() == "named closure"
+    }
+}

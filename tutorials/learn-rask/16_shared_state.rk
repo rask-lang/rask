@@ -30,7 +30,6 @@
 //   lock.release()  # forget?     }   # released here, or on any early exit
 //
 
-import async.spawn
 import sync.Atomic
 import sync.Relaxed
 import sync.SeqCst
@@ -49,21 +48,21 @@ func example_shared() -> void or Error {
         let c1 = counter.clone()
         let c2 = counter.clone()
 
-        let h1 = spawn(|| {
+        let h1 = spawn {
             for i in 0..1000 {
                 with c1.write() as c {
                     c = c + 1
                 }
             }
-        })
+        }
         ensure h1.detach()
-        let h2 = spawn(|| {
+        let h2 = spawn {
             for i in 0..1000 {
                 with c2.write() as c {
                     c = c + 1
                 }
             }
-        })
+        }
         ensure h2.detach()
 
         try h1.join()
