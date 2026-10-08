@@ -3023,9 +3023,23 @@ impl Resolver {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Ident(name) => {
+                // A bare name that already means a variant or a type isn't a
+                // new binding. `r is Fault` tests the branch (type.errors/ER27)
+                // and binds nothing, which is how the checker reads it, but
+                // the name was declared as a variable here anyway. It then
+                // shadowed the type for the rest of the scope, so a later
+                // `Fault.Mine` resolved to a variable nobody had typed and
+                // failed with "couldn't work out the type" (#1026).
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     if let Some(sym) = self.symbols.get(sym_id) {
-                        if matches!(sym.kind, SymbolKind::EnumVariant { .. }) {
+                        if matches!(
+                            sym.kind,
+                            SymbolKind::EnumVariant { .. }
+                                | SymbolKind::Struct { .. }
+                                | SymbolKind::Enum { .. }
+                                | SymbolKind::Interface { .. }
+                                | SymbolKind::BuiltinType { .. }
+                        ) {
                             return;
                         }
                     }

@@ -199,3 +199,76 @@ func allocated() -> bool {
         return true
     }
 }
+
+// #1026, the four shapes left after the sweeps above.
+
+// A loop over a range that isn't a literal: what `step` and `rev` return is the
+// declared `Range<T>`, and only the written spelling was recognised.
+func stepped(n: i64) -> i64 {
+    mut evens = Vec.new()
+    for i in (0..n).step(2) {
+        evens.push(i)
+    }
+    let r = 0..n
+    for j in r.rev() {
+        evens.push(j)
+    }
+    return evens[0]
+}
+
+// The `as q` of a guard: only the `let`'s own name was ever given a type.
+enum Fault {
+    Mine
+}
+
+extend Fault {
+    func message(self) -> string {
+        return "fault"
+    }
+}
+
+struct Spot {
+    x: i64
+}
+
+func spot_or(n: i64) -> Spot or Fault {
+    if n < 0 {
+        return Fault.Mine
+    }
+    return Spot { x: n }
+}
+
+func guarded(n: i64) -> i64 {
+    let r = spot_or(n)
+    let p = r is Spot as q else { return -1 }
+    return q.x + p.x
+}
+
+// A match on a boxed enum: the box has to come off before the variant is
+// looked up.
+enum Chain {
+    Link(i64, Heap<Chain>)
+    End
+}
+
+func second(c: Chain) -> i64 {
+    match c {
+        Chain.Link(_, rest) => {
+            match rest {
+                Chain.Link(v, _) => return v
+                Chain.End => return -1
+            }
+        }
+        Chain.End => return -1
+    }
+}
+
+// A bare type test binds nothing, so the type's name still means the type
+// afterwards.
+func tested(n: i64) -> bool {
+    let r = spot_or(n)
+    let failed = r is Fault
+    let f = Fault.Mine
+    return failed && f == Fault.Mine
+}
+
