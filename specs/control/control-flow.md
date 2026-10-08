@@ -83,7 +83,7 @@ if error {
 | **CF9: Not exhaustive** | Unmatched patterns skip the block (not an error) |
 | **CF10: Combined conditions** | Bindings from `is` available after `&&` in same condition |
 | **CF11: Linear resources** | Non-Copy values moved into pattern; must handle both match/no-match paths |
-| **CF12: Implicit unwrap** | `if expr is Variant` (no binding) unwraps single-payload variant, reusing outer name |
+| **CF12: A bare variant tests** | `x is Variant` or `x is Enum.Variant` with no payload pattern tests the tag and binds nothing, whatever the variant carries. A payload is named by writing it: `x is Variant(v)` |
 
 ```rask
 // Pattern match with explicit binding
@@ -91,9 +91,9 @@ if state is Connected(sock) {
     sock.send(data)
 }
 
-// Implicit unwrap for single-payload variants
+// A bare variant only tests
 if event is Tick {
-    process(event)  // event unwrapped, same name
+    count += 1
 }
 
 // Optionals use the `?` predicate + `as` binding
@@ -206,7 +206,7 @@ search: loop {
 
 | Rule | Description |
 |------|-------------|
-| **CF26: Exits function** | `return` immediately exits current function or closure (not just block) |
+| **CF26: Exits function** | `return` immediately exits current function, closure or task block (not just block) |
 | **CF27: Ensure trigger** | `return` triggers `ensure` cleanup before exiting |
 | **CF28: Never type** | Type of `return` expression is `Never` |
 
@@ -440,7 +440,7 @@ FIX: Match the number of bindings, use _ to discard:
 
 **CF1/CF2 (context-dependent):** Most control flow is for side effects (logging, validation, mutation). Assignment context (`let x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity.
 
-**CF26 (explicit return):** `return` exits the innermost function or closure scope. Inside a match arm or if block within a function, `return` exits the **function**. Inside a closure body, `return` exits the **closure**. Closures are anonymous functions — same return semantics. Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression.
+**CF26 (explicit return):** `return` exits the innermost function or closure scope. Inside a match arm or if block within a function, `return` exits the **function**. Inside a closure body, `return` exits the **closure**. Closures are anonymous functions — same return semantics. A task block (`spawn { … }`) is a frame of its own too: `return v` ends the task with `v`, since the function that started it may already have returned (`conc.async/S7`). Block-bodied closures require explicit `return`, same as functions. Expression-bodied closures (`|x| x * 2`) implicitly return their expression.
 
 **CF15 (break value):** `loop` with `break value` provides clear syntax for value-returning loops. The alternative (while with mutation, implicit last expression) is ambiguous and error-prone.
 
@@ -452,7 +452,7 @@ The diverging `else` requirement (CF13) ensures the binding is always valid afte
 
 **Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `??` and `catch` already handle the miss inline with the exit written out and the payload bound.
 
-**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
+**CF12 (no implicit unwrap):** An earlier draft had `if x is Variant` rebind `x` to a single payload inside the branch. I dropped it for the same reason the error-model redesign dropped `if x is Some { use(x) }` (its P3): the name's type changes with nothing written to say so, and `while s is Next { s = step(s) }` can't be written at all. Naming the payload costs one word, `x is Variant(v)`. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 

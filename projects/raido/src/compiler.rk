@@ -300,7 +300,7 @@ extend Compiler {
         // Emit implicit return None at end
         self.emit_abx(Opcode.RETURN, 255, 0)
 
-        return Chunk.new(self.proto)
+        return Chunk.new(self.proto.clone())
     }
 
     func compile_statement(self) -> void or CompileError {

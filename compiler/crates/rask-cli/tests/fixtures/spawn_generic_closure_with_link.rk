@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A closure written in a generic function, returned and then spawned. The
-// capture has type `T`, so whether the closure may cross to another task
-// depends on what `T` is. The `i64` copy crosses; the link copy is refused.
+// A closure written in a generic function, returned, then called in a task
+// block. The capture has type `T`, so whether the closure may cross to
+// another task depends on what `T` is. The `i64` copy crosses; the link copy is refused.
 import memory.{Rack, Link}
 
 struct Node {
@@ -20,9 +20,11 @@ func main() {
         mut rack: Rack<Node> = Rack.new()
         let a = rack.insert(Node { id: 1 })
         let plain = keep(7)
-        println("{spawn(plain).join()!}")
+        let t1 = spawn { plain() }
+        println("{t1.join()!}")
         let f = keep(a)
         println("before")
-        println("{spawn(f).join()!}")
+        let t2 = spawn { f() }
+        println("{t2.join()!}")
     }
 }

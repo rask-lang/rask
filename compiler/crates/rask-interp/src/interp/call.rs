@@ -13,6 +13,37 @@ use crate::value::{GenericFrame, Value};
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
+    /// End a scope's resource tracking. Under `RASK_RUNTIME_CHECKS`, a linear
+    /// value still live here panics, naming where it was made and where the
+    /// scope (spanning `scope`) ended. The static linearity check is what the
+    /// language promises; this only catches a hole in it (rask-lang/rask#1296).
+    pub(crate) fn end_resource_scope(
+        &mut self,
+        scope_depth: usize,
+        scope: Span,
+    ) -> Result<(), RuntimeDiagnostic> {
+        let leaked = self.resource_tracker.end_scope(scope_depth);
+        if leaked.is_empty() || !self.runtime_checks {
+            return Ok(());
+        }
+        let end = Span { start: scope.end.saturating_sub(1), end: scope.end, file_id: scope.file_id };
+        let what: Vec<String> = leaked.iter().map(|l| {
+            let name = l.var_name.as_deref().map(|n| format!(" '{}'", n)).unwrap_or_default();
+            let born = l.born.map(|b| format!(" (made at {})", self.origin_string(b))).unwrap_or_default();
+            format!("{}{}{}", l.type_name, name, born)
+        }).collect();
+        Err(RuntimeDiagnostic::new(
+            RuntimeError::Panic(format!(
+                "resource leak: {} never consumed before its scope ended at {} \
+                 (RASK_RUNTIME_CHECKS; the static linearity check should have caught this, \
+                 so please report it)",
+                what.join(", "),
+                self.origin_string(end),
+            )),
+            end,
+        ))
+    }
+
     /// Keep recursing past the end of the host stack by moving onto a new one.
     ///
     /// The interpreter spends one host stack frame per Rask call, and those
@@ -102,6 +133,14 @@ impl Interpreter {
         mut args: Vec<Value>,
         generics: GenericFrame,
     ) -> Result<Value, RuntimeDiagnostic> {
+        // Taken before anything else runs, so a default argument's own calls
+        // can't see it. Only the call it was made for may use it.
+        let lent: Vec<Option<crate::env::Slot>> = self
+            .lent_args
+            .take()
+            .filter(|l| l.depth + 1 == self.call_depth && l.callee == func.name)
+            .map(|l| l.slots)
+            .unwrap_or_default();
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
@@ -133,7 +172,7 @@ impl Interpreter {
 
         self.generic_frames.push(generics);
 
-        for (param, arg) in func.params.iter().zip(args.into_iter()) {
+        for (i, (param, arg)) in func.params.iter().zip(args.into_iter()).enumerate() {
             // A by-value parameter receives an independent copy (VS1): mutating
             // it inside the callee can't alias the caller's value. `mutate`/`self`
             // borrows share the caller's storage by design; `take` moves it, so
@@ -150,6 +189,15 @@ impl Interpreter {
                 Some(ty) => wrap_optional_layers(arg, ty),
                 None => arg,
             };
+            // PM2: a `mutate` parameter is the caller's place, bound as such.
+            // An argument that isn't one (a temporary) gets storage of its
+            // own, since nobody can see what is written there. Either way the
+            // binding is borrowed, which a closure built here has to know (CM3).
+            if param.is_mutate {
+                let cell = lent.get(i).cloned().flatten().unwrap_or_else(|| crate::env::slot(arg));
+                self.env.define_lent(param.name.clone(), cell);
+                continue;
+            }
             self.env.define(param.name.clone(), arg);
         }
 
@@ -179,46 +227,25 @@ impl Interpreter {
             }
         }
 
-        if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
-            let guard_diag = RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0));
-            // E3: a guard (R5/H1) firing while the body is already failing is a
-            // secondary panic — contained and reported, not a replacement for
-            // the original.
-            //
-            // Any failure, not just a panic. A body that dies on `no method
-            // seek on type File` leaves its resource unconsumed *because* it
-            // died, so replacing the error with "resource leak: File 'f' not
-            // consumed" hides the only line that says what went wrong — and
-            // points at the import instead of the call. Return, break,
-            // continue and `try` are control flow rather than failure, and a
-            // resource leaked on the way out through one of those is the real
-            // problem, so those still lose to the guard.
-            let body_failed = matches!(
-                &result,
-                Err(diag) if !matches!(
-                    diag.error,
-                    RuntimeError::Return(_)
-                        | RuntimeError::TryError(_)
-                        | RuntimeError::Break(_, _)
-                        | RuntimeError::Continue(_)
-                )
-            );
-            if body_failed {
-                self.report_secondary_panic(&guard_diag);
-            } else {
-                self.generic_frames.pop();
-                self.env.pop_scope();
-                return Err(guard_diag);
-            }
+        // A body that panicked leaves its linear values unconsumed because it
+        // panicked; that's unwind, not a leak, so only a normal exit is checked.
+        let body_failed = matches!(
+            &result,
+            Err(diag) if !matches!(
+                diag.error,
+                RuntimeError::Return(_)
+                    | RuntimeError::TryError(_)
+                    | RuntimeError::Break(_, _)
+                    | RuntimeError::Continue(_)
+            )
+        );
+        if body_failed {
+            self.resource_tracker.end_scope(scope_depth);
+        } else if let Err(leak) = self.end_resource_scope(scope_depth, func.span) {
+            self.generic_frames.pop();
+            self.env.pop_scope();
+            return Err(leak);
         }
-
-        // mem.parameters/PM2: snapshot the final values of `mutate` params before
-        // the scope is dropped, so the call site can write each back to its
-        // argument place. Keyed by parameter index (self is param 0 for methods).
-        self.mutate_writebacks = func.params.iter().enumerate()
-            .filter(|(_, p)| p.is_mutate)
-            .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
-            .collect();
 
         self.generic_frames.pop();
         self.env.pop_scope();

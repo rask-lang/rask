@@ -400,7 +400,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::ClosureDrop { closure, .. } => {
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
             *closure = current_version(*closure, version_stack, num_orig_locals);
         }
         MirStmtKind::ResourceRegister { dst, .. } => {
@@ -459,15 +459,16 @@ fn rename_stmt(
                 }
             }
         }
-        MirStmtKind::InterfaceDrop { interface_object } => {
+        MirStmtKind::InterfaceDrop { interface_object, .. } => {
             *interface_object = current_version(*interface_object, version_stack, num_orig_locals);
         }
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
-        | MirStmtKind::RcDecContents { local } => {
+        | MirStmtKind::RcDecContents { local }
+        | MirStmtKind::RcIncContents { local } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
-        MirStmtKind::ReleaseSlot { addr, .. } => {
+        MirStmtKind::ZeroAggregate { local: addr } | MirStmtKind::ReleaseSlot { addr, .. } => {
             *addr = current_version(*addr, version_stack, num_orig_locals);
         }
         MirStmtKind::EnsureHookRegister { captures, .. } => {
@@ -475,7 +476,10 @@ fn rename_stmt(
                 cap.local_id = current_version(cap.local_id, version_stack, num_orig_locals);
             }
         }
-        MirStmtKind::EnsureHookPop => {}
+        MirStmtKind::UnwindArm { value, .. } => {
+            *value = current_version(*value, version_stack, num_orig_locals);
+        }
+        MirStmtKind::EnsureHookPop | MirStmtKind::UnwindDisarm { .. } => {}
     }
     None
 }

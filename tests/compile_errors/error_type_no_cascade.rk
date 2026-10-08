@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: one mistake, one diagnostic.
+//
+// A call or field read on a value whose type was already rejected left its
+// result open, and the binding holding it was reported again as "couldn't
+// work out the type" (#1485). So did a call to a method that doesn't exist.
+// The result of either is an error now, which nothing reports twice. Each
+// marker below has exactly one diagnostic under it.
+
+struct Box2<T> {
+    v: T,
+}
+
+// ERROR: unknown type `Nonexistent` — and nothing for `z`
+func f(x: Nonexistent) -> i64 {
+    let z = x.size()
+    let y = x.count
+    return 1
+}
+
+func main() {
+    // ERROR: `Box2` takes 1 type argument, found 2 — and nothing for `c`
+    let c = |q: Box2<i64, i64>| q.v
+    let b = Box2 { v: 1 }
+    // ERROR: no method `size` — and nothing for `s`
+    let s = b.size()
+    println("ok")
+}

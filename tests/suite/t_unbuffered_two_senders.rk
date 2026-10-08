@@ -3,23 +3,22 @@
 // and marked it taken, then B installed its own value in the slot and reset
 // the mark before A woke to see it, so A waited forever for a handoff that
 // had already happened. Sim found it; it hung natively on both runtimes.
-import async.spawn
 
 test "two senders on an unbuffered channel both get through" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.unbuffered()
         let tx2 = tx.clone()
-        let a = spawn(|| {
+        let a = spawn {
             for i in 0..200 {
                 let _ = tx.send(1)
             }
-        })
+        }
         ensure a.detach()
-        let b = spawn(|| {
+        let b = spawn {
             for i in 0..200 {
                 let _ = tx2.send(2)
             }
-        })
+        }
         ensure b.detach()
         mut total = 0
         for i in 0..400 {

@@ -353,13 +353,13 @@ func main() -> void or Error {
         let listener = try net.tcp_listen("0.0.0.0:8080")
         loop {
             let conn = try listener.accept()
-            spawn(|| { handle(conn) }).detach()  // handles MUST be joined or detached
+            spawn { handle(conn) }.detach()  // handles MUST be joined or detached
         }
     }
 }
 ```
 
-- `spawn(|| {})` → green task (needs `using Multitasking`); `ThreadPool.spawn` → CPU work (needs `using ThreadPool`; combine: `using Multitasking, ThreadPool`); `Thread.spawn` → raw OS thread.
+- `spawn {}` → green task (needs `using Multitasking`); `ThreadPool.spawn` → CPU work (needs `using ThreadPool`; combine: `using Multitasking, ThreadPool`); `Thread.spawn` → raw OS thread.
 - A spawned closure carries what it captured: the task outlives the block that made it, so captures move in rather than borrow, and the outer name is gone. Nothing to write — the compiler works it out. Two tasks that both need the same `Shared` each get a `.clone()` of it.
 - Every spawn form returns `Handle<T>`. `h.join()` → `T or JoinError` (`JoinError.Panicked(msg)` is the only failure); `h.cancel()` raises the flag the body polls with `cancelled()` and returns what the body returned; `Handles<T>` holds a run-time count (`add`, `join_all`, `detach`); dropping a handle unconsumed is a compile error.
 - Channels transfer ownership: `mut (tx, rx) = Channel<Msg>.buffered(100)`; `try tx.send(m)`, `rx.receive()` (not `recv`), non-blocking `try_send`/`try_receive`.
@@ -377,7 +377,7 @@ Two stages, syntactically marked (`ctrl.comptime`). Comptime code computes const
 const PRIMES = comptime {
     mut v = Vec.new()
     for n in 2..100 { if is_prime(n) { v.push(n) } }
-    v.freeze()                                    // collections must freeze to cross into runtime
+    v                                             // the table is built into the program
 }
 
 func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {

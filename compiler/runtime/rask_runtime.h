@@ -41,6 +41,7 @@ void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t f
 #define RASK_CLOSURE_TASK_BOUND 1
 // Whether a heap closure captured a link or a `Local` box.
 int   rask_closure_task_bound(const void *ptr);
+void  rask_closure_refuse_crossing(void *closure_base);
 void  rask_closure_free(void *ptr);
 void  rask_closure_retain(void *ptr);
 
@@ -254,6 +255,11 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
                                 const int32_t *str_offs, int64_t n_str_offs);
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
                               const int32_t *str_offs, int64_t n_str_offs);
+// A fixed array seen as a Vec: a copy of its elements that doesn't own them.
+RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
+                       const int32_t *str_offs, int64_t n_str_offs);
+void     rask_vec_free_view(RaskVec *v);
+void     rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride);
 // A `Vec<u8>` of raw bytes, one 8-byte slot per byte like compiled code's.
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n);
 // Releases every string the elements hold, then the vector itself.
@@ -280,6 +286,7 @@ void     rask_vec_release_elem(RaskVec *v);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
 void     rask_vec_set(RaskVec *v, int64_t index, const void *elem);
+void     rask_vec_write_back(RaskVec *v, int64_t index, const void *elem);
 void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
@@ -293,17 +300,24 @@ RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_iter_take(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
+int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
+int64_t  rask_field_take(const void *field, int64_t size, void *out);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
-void     rask_vec_sort_f64(RaskVec *v);
-// Sort a Vec of (key, value) pairs by the key at offset 0. `key_kind` is one of
-// the RASK_DEBUG_ELEM_* codes below.
-void     rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size);
+// Sort by the scalar at offset 0 of each element — the element itself, or the
+// key of a (key, value) pair. `key_kind` is one of the RASK_DEBUG_ELEM_* codes
+// below.
+void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
-void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
+// `pass`: how the comparator takes the two elements. Lowering knows which;
+// the width doesn't say. Lowering picks one in `sort_pass` (rask-mir lower/expr.rs).
+#define RASK_SORT_PASS_WORD    0  /* the slot's word */
+#define RASK_SORT_PASS_ADDRESS 1  /* a pointer to the slot: aggregates, strings */
+#define RASK_SORT_PASS_WIDE    2  /* the slot's two words as one i128 */
+void     rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass);
 // Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
 // over two keys — same shape sort_by takes. `keys` is read, not reordered.
-void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator);
+void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t pass);
 void     rask_vec_reverse(RaskVec *v);
 void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);
 int64_t  rask_vec_contains(const RaskVec *v, const void *elem);
@@ -354,6 +368,7 @@ void        rask_leak_check(void);
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
+const char *rask_string_message(const RaskStr *s);
 int64_t     rask_string_is_empty(const RaskStr *s);
 int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_hash(const RaskStr *s);
@@ -653,6 +668,7 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // `Map.insert` answers `V?`: a pointer to the value this call displaced, or
 // NULL if the key was fresh. Good until the next insert on this map.
 void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
+void     rask_map_write_back(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
@@ -824,7 +840,6 @@ void rask_io_error_message(RaskStr *out, int32_t err);
 #define RASK_STROUT_ERROR 1   // *err_out holds the message → IoError.Other(msg)
 #define RASK_STROUT_EOF   2   // input ran out → IoError.UnexpectedEof
 
-int64_t     rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out);
 int64_t     rask_file_read_bytes(int64_t file);
 int64_t     rask_file_write(int64_t file, const RaskStr *content);
 int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);
@@ -920,16 +935,6 @@ void         rask_json_buf_array_add_i64(RaskJsonBuf *buf, int64_t val);
 void         rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val);
 void         rask_json_buf_array_add_bool(RaskJsonBuf *buf, int64_t val);
 void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
-
-// Decode helpers — minimal JSON object parser.
-typedef struct RaskJsonObj RaskJsonObj;
-
-RaskJsonObj *rask_json_parse(const RaskStr *s);
-void         rask_json_get_string(RaskStr *out, RaskJsonObj *obj, const char *key);
-int64_t      rask_json_get_i64(RaskJsonObj *obj, const char *key);
-double       rask_json_get_f64(RaskJsonObj *obj, const char *key);
-int8_t       rask_json_get_bool(RaskJsonObj *obj, const char *key);
-int64_t      rask_json_decode(const RaskStr *s);
 
 // ─── JSON value tree + typed decode (json.c) ────────────────
 //
@@ -1137,9 +1142,9 @@ void    rask_panic_set_task_id(int64_t id);
 // two are epoll and io_uring — so off Linux there is no green scheduler and
 // nothing below this line is defined. `LINUX_SOURCES` in
 // rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
-// same thing for the build; this is how a portable source asks. Sim mode
-// (sim.c) builds on the one-thread-per-task path, so it leaves green.c out too.
-#if defined(__linux__) && !defined(RASK_NO_GREEN) && !defined(RASK_SIM)
+// same thing for the build; this is how a portable source asks. Sim keeps it:
+// green.c's workers are then threads sim.c schedules from the seed.
+#if defined(__linux__) && !defined(RASK_NO_GREEN)
 #define RASK_HAS_GREEN 1
 #else
 #define RASK_HAS_GREEN 0
@@ -1397,15 +1402,27 @@ void   rask_thread_tls_swap(void *blob);
 size_t rask_random_tls_size(void);
 void   rask_random_tls_swap(void *blob);
 
-// ─── Ensure hooks (LIFO cleanup) ───────────────────────────
-// Per-task cleanup stack. Hooks run LIFO on cancel or panic.
+// ─── Unwind stack (ctrl.panic/U1, U6) ──────────────────────
+// Per-task LIFO list of what a panic runs on the way out: `ensure` hooks, and
+// the unwind records of frames that own something. A record lives in its
+// frame: this header, then one word per value the frame owns at the moment
+// (zero for none), which `run` releases.
+
+typedef struct RaskUnwindRec {
+    struct RaskUnwindRec *next;
+    void (*run)(struct RaskUnwindRec *self);
+} RaskUnwindRec;
 
 typedef void (*RaskEnsureFn)(void *ctx);
 
 void rask_ensure_push(RaskEnsureFn fn, void *ctx);
 void rask_ensure_pop(void);
 
-// Drain the stack LIFO during panic unwind (ctrl.panic/U1, E2, E3).
+// A frame's record, on entry and on every return.
+void rask_unwind_push(RaskUnwindRec *rec);
+void rask_unwind_pop(RaskUnwindRec *rec);
+
+// Drain the whole stack LIFO (ctrl.panic/U1, U6, E2, E3).
 void rask_ensure_run_all(void);
 
 // Park/resume the current thread's stack head (opaque; for fiber workers).
@@ -1437,21 +1454,11 @@ void  rask_access_stack_set(void *head);
 
 typedef struct RaskMutex RaskMutex;
 
-// Callback for lock/read/write: receives pointer to the protected data.
-typedef void (*RaskAccessFn)(void *data, void *ctx);
-
 RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size);
 void       rask_mutex_free(RaskMutex *m);
 
-// Acquire lock, call f(data, ctx), release lock.
-void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
-
-// Non-blocking. Returns 1 if lock acquired (and f was called), 0 otherwise.
-int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
-
 // Pointer-based codegen wrappers for Mutex.
 int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
-int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
 int64_t rask_mutex_data(int64_t mutex);
@@ -1474,7 +1481,6 @@ int64_t rask_shared_staged_acquire(int64_t shared);
 int64_t rask_shared_staged_data(int64_t shared);
 void    rask_shared_staged_commit(int64_t shared);
 void    rask_shared_staged_discard(int64_t shared);
-int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);
 
@@ -1487,25 +1493,12 @@ typedef struct RaskShared RaskShared;
 RaskShared *rask_shared_new(const void *initial_data, int64_t data_size);
 void        rask_shared_free(RaskShared *s);
 
-// Shared read access — multiple concurrent readers allowed.
-void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx);
-
-// Exclusive write access — blocks until all readers finish.
-void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx);
-
-// Non-blocking variants. Return 1 if access granted, 0 otherwise.
-int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx);
-int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx);
-
 // Rask closure layout (see closures.rs): [func_ptr(8) | env...].
 // The call takes the env pointer as its first argument.
 #define CLOSURE_FUNC(cl)  (*(int64_t *)(intptr_t)(cl))
 #define CLOSURE_ENV(cl)   ((cl) + 8)
 
 // i64-based Shared wrappers for codegen dispatch table.
-int64_t rask_shared_new_i64(int64_t value);
-int64_t rask_shared_read_i64(int64_t shared, int64_t closure);
-int64_t rask_shared_write_i64(int64_t shared, int64_t closure);
 int64_t rask_shared_clone_i64(int64_t shared);
 void    rask_shared_drop_i64(int64_t shared);
 
@@ -1528,8 +1521,6 @@ void    rask_cell_set(int64_t cell, int64_t data_ptr);
 void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);
 void    rask_cell_into_inner(int64_t cell, int64_t out);
 void    rask_cell_free(int64_t cell);
-int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
-int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
 
 // `get`/`set`/`replace` under each lock — the single-expression shorthand
 // (CE6) that `Local` gets for free. See sync.c for why they exist per strategy.

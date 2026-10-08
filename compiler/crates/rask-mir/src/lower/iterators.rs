@@ -15,6 +15,8 @@ use rask_types::Type;
 
 /// Internal state for iterator chain loop setup.
 pub(super) struct IterLoopSetup {
+    /// The vector the loop indexes — the source, or what it materialized into.
+    pub(super) collection: LocalId,
     pub(super) idx: LocalId,
     pub(super) elem_local: LocalId,
     pub(super) elem_ty: MirType,
@@ -240,7 +242,8 @@ impl<'a> MirLowerer<'a> {
         match method {
             "to_vec" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_collect(&chain)?;
+                    let elem = self.container_elem_type(_full_expr.id, 0);
+                    let result = self.lower_iter_collect(&chain, elem)?;
                     return Ok(Some(result));
                 }
             }
@@ -248,7 +251,9 @@ impl<'a> MirLowerer<'a> {
             // The checker has already rejected a non-pair element type.
             "to_map" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_to_map(&chain)?;
+                    let key = self.container_elem_type(_full_expr.id, 0);
+                    let value = self.container_elem_type(_full_expr.id, 1);
+                    let result = self.lower_iter_to_map(&chain, key, value)?;
                     return Ok(Some(result));
                 }
             }
@@ -263,7 +268,9 @@ impl<'a> MirLowerer<'a> {
                 if let Some(chain) = self.try_parse_iter_chain(object)
                     .filter(|c| !c.adapters.is_empty() || self.source_is_a_sequence(c.source))
                 {
-                    let (vec_op, _) = self.lower_iter_collect(&chain)?;
+                    // `join` is over strings, and the collected ones are the
+                    // temporary vector's to release.
+                    let (vec_op, _) = self.lower_iter_collect(&chain, Some(MirType::String))?;
                     let (sep_op, _) = self.lower_expr(&args[0].expr)?;
                     let dst = self.builder.alloc_temp(MirType::String);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -278,7 +285,13 @@ impl<'a> MirLowerer<'a> {
             // They were the only iterator terminals without a lowering, so
             // `v.iter().min()` reached codegen as a call to `Vec_iter`, which
             // doesn't exist: "Function not found: Vec_iter".
-            "min" | "max" if args.is_empty() => {
+            //
+            // Only for an element a one-word `<` orders the way its `compare`
+            // does. Anything else goes to the Rask body (`Vec.min`,
+            // `Sequence.min`), which asks the element: the loop here compared
+            // a struct's address and stored it as the payload, and segfaulted
+            // (#1406).
+            "min" | "max" if args.is_empty() && self.extreme_fuses(_full_expr) => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_extreme(&chain, method == "max")?;
                     return Ok(Some(result));
@@ -411,7 +424,8 @@ impl<'a> MirLowerer<'a> {
             // as a call to `Vec_zip`, which nothing emits (#887).
             "zip" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_zip(&chain, &args[0].expr)?;
+                    let pair = self.container_elem_type(_full_expr.id, 0);
+                    let result = self.lower_iter_zip(&chain, &args[0].expr, pair)?;
                     return Ok(Some(result));
                 }
             }
@@ -523,11 +537,13 @@ impl<'a> MirLowerer<'a> {
             target: have_block,
         }));
 
+        // The value is taken out for the closure and put back after it, like
+        // a `with m[k]` binding.
         self.builder.switch_to_block(have_block);
         let value = self.builder.alloc_temp(value_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(value),
-            func: FunctionRef::internal("Map_get_unwrap".to_string()),
+            func: FunctionRef::internal("Map_lend".to_string()),
             args: vec![MirOperand::Local(map), MirOperand::Local(key)],
         }));
         let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
@@ -535,17 +551,15 @@ impl<'a> MirLowerer<'a> {
             MirOperand::Local(value),
             value_ty,
         )?;
-        if let Some(param) = param_local {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Map_insert".to_string()),
-                args: vec![
-                    MirOperand::Local(map),
-                    MirOperand::Local(key),
-                    MirOperand::Local(param),
-                ],
-            }));
-        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Map_write_back".to_string()),
+            args: vec![
+                MirOperand::Local(map),
+                MirOperand::Local(key),
+                MirOperand::Local(param_local.unwrap_or(value)),
+            ],
+        }));
         Ok(Some((body_op, body_ty)))
     }
 
@@ -562,7 +576,7 @@ impl<'a> MirLowerer<'a> {
         let cont_block = self.builder.create_block();
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((result_local, cont_block));
+        self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len(), None));
 
         let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -633,9 +647,11 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(present_block);
         let value = self.builder.alloc_temp(value_ty.clone());
+        // `modify` takes the value out and writes it back; `read` only looks.
+        let read = if method == "modify" { "Map_lend" } else { "Map_get_unwrap" };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(value),
-            func: FunctionRef::internal("Map_get_unwrap".to_string()),
+            func: FunctionRef::internal(read.to_string()),
             args: vec![MirOperand::Local(map), MirOperand::Local(key)],
         }));
         let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
@@ -644,17 +660,15 @@ impl<'a> MirLowerer<'a> {
             value_ty,
         )?;
         if method == "modify" {
-            if let Some(param) = param_local {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Map_insert".to_string()),
-                    args: vec![
-                        MirOperand::Local(map),
-                        MirOperand::Local(key),
-                        MirOperand::Local(param),
-                    ],
-                }));
-            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Map_write_back".to_string()),
+                args: vec![
+                    MirOperand::Local(map),
+                    MirOperand::Local(key),
+                    MirOperand::Local(param_local.unwrap_or(value)),
+                ],
+            }));
         }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
@@ -776,9 +790,11 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(present_block);
         let elem = self.builder.alloc_temp(elem_ty.clone());
+        // `modify` takes the element out and writes it back; `read` only looks.
+        let read = if method == "modify" { "Vec_lend" } else { "Vec_get" };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal(read.to_string()),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
         let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
@@ -787,17 +803,18 @@ impl<'a> MirLowerer<'a> {
             elem_ty,
         )?;
         if method == "modify" {
-            if let Some(param) = param_local {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Vec_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(idx),
-                        MirOperand::Local(param),
-                    ],
-                }));
-            }
+            // Always put the element back, even through a closure that takes
+            // no parameter: the frame owns the lent copy until it does.
+            let value = param_local.unwrap_or(elem);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_write_back".to_string()),
+                args: vec![
+                    MirOperand::Local(collection),
+                    MirOperand::Local(idx),
+                    MirOperand::Local(value),
+                ],
+            }));
         }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
@@ -888,7 +905,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((result_local, cont_block));
+                self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len(), None));
 
                 let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -1103,6 +1120,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok(IterLoopSetup {
+            collection,
             idx,
             elem_local,
             elem_ty,
@@ -1127,17 +1145,6 @@ impl<'a> MirLowerer<'a> {
         let idx = setup.idx;
         let mut current_op = elem_op;
         let mut current_ty = elem_ty;
-
-        // When the source holds functions, an adapter's closure parameter holds
-        // one too, and calling it needs the same registration a `for` binding
-        // gets (#869). Without it `fs.map(|f| { return f(3) })` lowered `f(3)` as
-        // a call to a function named `f`, found no signature for it, and gave up
-        // on the return type (#870).
-        //
-        // Registered across the whole chain rather than per adapter: a closure
-        // parameter's name is scoped to its own closure anyway, and the names
-        // come back out at the end.
-        let callable_params = self.register_callable_adapter_params(chain);
 
         for (adapter_idx, adapter) in chain.adapters.iter().enumerate() {
             match adapter {
@@ -1228,10 +1235,6 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        for name in &callable_params {
-            self.closure_locals.remove(name);
-            self.func_sigs.remove(name);
-        }
         Ok((current_op, current_ty))
     }
 
@@ -1245,64 +1248,6 @@ impl<'a> MirLowerer<'a> {
                 right: MirOperand::Constant(MirConst::Int(1)),
             },
         }));
-    }
-
-    /// Register every adapter closure's parameters as callable, when the source
-    /// holds functions. Returns the names so they can be taken back out.
-    ///
-    /// Only up to the first `map`: after one, the element is whatever that
-    /// closure returned, so a later adapter's parameter isn't a function any
-    /// more.
-    fn register_callable_adapter_params(&mut self, chain: &super::IterChain<'_>) -> Vec<String> {
-        let Some(ret) = self.source_elem_fn_ret(chain.source) else {
-            return Vec::new();
-        };
-        let mut names = Vec::new();
-        for adapter in &chain.adapters {
-            let closure = match adapter {
-                super::IterAdapter::Map { closure } | super::IterAdapter::Filter { closure } => {
-                    closure
-                }
-                _ => continue,
-            };
-            if let ExprKind::Closure { params, .. } = &closure.kind {
-                for p in params {
-                    if self.closure_locals.insert(p.name.clone()) {
-                        names.push(p.name.clone());
-                    }
-                    self.func_sigs.insert(
-                        p.name.clone(),
-                        super::FuncSig {
-                            ret_ty: ret.clone(),
-                            scalar_mutate_params: Vec::new(),
-                            aggregate_mutate_params: Vec::new(),
-                            ret_vec_elem: None,
-                            param_tys: Vec::new(),
-                        },
-                    );
-                }
-            }
-            if matches!(adapter, super::IterAdapter::Map { .. }) {
-                break;
-            }
-        }
-        names
-    }
-
-    /// The MIR return type of the functions a source holds, when it holds
-    /// functions. `Vec<func(i64) -> i64>` answers `i64`; anything else answers
-    /// nothing.
-    fn source_elem_fn_ret(&self, source: &Expr) -> Option<MirType> {
-        let ty = self.ctx.lookup_raw_type(source.id)?;
-        let (name, args) = self.generic_head(ty)?;
-        if !matches!(name.as_str(), "Vec" | "Iterator") {
-            return None;
-        }
-        let rask_types::GenericArg::Type(elem) = args.first()? else { return None };
-        match &**elem {
-            rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
-            _ => None,
-        }
     }
 
     /// Emit the increment block: idx += 1, goto check
@@ -1330,9 +1275,23 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// .collect() — fused loop that pushes each result into a new Vec.
+    ///
+    /// `elem` is the checker's element type, with its containers named, for
+    /// the vector to describe its elements by when they're its own. Without it
+    /// `Vec_free` thought they owned nothing: `v.map(|x| mk(x)).to_vec()` over
+    /// a `mk` returning a `Vec` leaked every inner vector (#1412).
+    ///
+    /// They're always its own. A `map` makes values the chain owns, and the
+    /// push moves them in (SEQ47). A chain of only `filter`/`take`/`skip`
+    /// pushes items it was lent — Copy ones, the checker sees to that — and
+    /// the push is a hand-over of a view, which takes a reference of its own
+    /// the way any view given to a keeper does (`rc_insert`). Before that, a
+    /// lent chain built a vector that owned nothing, so describing its
+    /// elements released what the source still held (#1419).
     pub(super) fn lower_iter_collect(
         &mut self,
         chain: &super::IterChain<'_>,
+        elem: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let result_vec = self.builder.alloc_temp(MirType::I64);
         // The element size isn't known until the adapters have been lowered —
@@ -1353,12 +1312,11 @@ impl<'a> MirLowerer<'a> {
         )?;
         let elem_size = Self::mir_slot_size(&final_ty);
         if elem_size > 0 {
-            self.builder.set_call_args(
-                vec_new_pos.0,
-                vec_new_pos.1,
-                "Vec_new",
-                vec![MirOperand::Constant(MirConst::Int(elem_size))],
-            );
+            let args = vec![
+                MirOperand::Constant(MirConst::Int(elem_size)),
+                crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
+            ];
+            self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
             self.collected_elem_types.insert(result_vec, final_ty);
         }
 
@@ -1379,9 +1337,16 @@ impl<'a> MirLowerer<'a> {
     /// Later keys overwrite earlier ones, which is what repeated `insert` does
     /// anyway (SEQ29). The element is a 2-tuple, so the key and value come out
     /// of its two slots.
+    ///
+    /// `key` and `value` are the checker's types, with their containers named,
+    /// for the map to describe what it holds by. Built the way `Map.new()` is:
+    /// a bare `Map_new` freed none of its strings or vectors and hashed a
+    /// string key by its header word, so `m.get(k)` found nothing (#1416).
     pub(super) fn lower_iter_to_map(
         &mut self,
         chain: &super::IterChain<'_>,
+        key: Option<MirType>,
+        value: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let result_map = self.builder.alloc_temp(MirType::I64);
         let map_new_pos = self.builder.next_stmt_pos();
@@ -1408,14 +1373,18 @@ impl<'a> MirLowerer<'a> {
         };
         // `Map_new` sizes its key and value slots the way `Vec_new` sizes its
         // element — from the type the loop actually produces, filled in here
-        // because the adapters decide it.
-        self.builder.set_call_args(
+        // because the adapters decide it. So does the constructor: a string
+        // key hashes by its contents.
+        self.builder.set_call(
             map_new_pos.0,
             map_new_pos.1,
             "Map_new",
+            crate::elem_strs::map_ctor_for(&key_ty),
             vec![
                 MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty))),
                 MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&val_ty))),
+                crate::elem_strs::elem(key.unwrap_or_else(|| key_ty.clone())),
+                crate::elem_strs::elem(value.unwrap_or_else(|| val_ty.clone())),
             ],
         );
 
@@ -1439,9 +1408,11 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::Word,
             },
         }));
+        // SEQ29: a later key overwrites an earlier one. `Map_set`, because
+        // nothing takes the value it displaces, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Map_insert".to_string()),
+            func: FunctionRef::internal("Map_set".to_string()),
             args: vec![
                 MirOperand::Local(result_map),
                 MirOperand::Local(key),
@@ -1502,7 +1473,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((acc, setup.inc_block));
+                self.inline_return_target = Some((acc, setup.inc_block, self.pending_write_backs.len(), None));
 
                 let (result_op, _) = self.lower_expr(body)?;
 
@@ -1693,6 +1664,24 @@ impl<'a> MirLowerer<'a> {
     /// The comparison is on the element as the loop produces it, so an adapter
     /// ahead of the terminal is already applied — `.map(f).max()` is the max of
     /// the mapped values, not of the sources.
+    /// Can `lower_iter_extreme` answer this `min()`/`max()` call? Its loop
+    /// keeps one signed word and compares with `<`, which is the element's own
+    /// order only for an integer that fits a signed word, a char or a bool. A
+    /// u64 above i64::MAX would come out smallest; a float's `compare` is the
+    /// total order, not IEEE `<`; a string, a 128-bit integer or an aggregate
+    /// isn't one comparable word at all.
+    fn extreme_fuses(&self, call: &Expr) -> bool {
+        let Some(elem) = self.ctx.lookup_raw_type(call.id).and_then(|t| t.as_option()) else {
+            return false;
+        };
+        matches!(
+            self.ctx.type_to_mir(elem),
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32
+                | MirType::Char | MirType::Bool
+        )
+    }
+
     pub(super) fn lower_iter_extreme(
         &mut self,
         chain: &super::IterChain<'_>,
@@ -1938,7 +1927,7 @@ impl<'a> MirLowerer<'a> {
 
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((acc, after_block));
+        self.inline_return_target = Some((acc, after_block, self.pending_write_backs.len(), None));
         let (result_op, _) = self.lower_expr(body)?;
         let returned = self.inline_return_taken.take().is_some();
         self.inline_return_target = saved_return_target;
@@ -2051,10 +2040,16 @@ impl<'a> MirLowerer<'a> {
     /// `other` argument. Before this, nothing tied the checker's
     /// own `U` to anything either, so the mangled name carried an unresolved
     /// type parameter and the pair's second slot got the wrong width (#887).
+    ///
+    /// `pair` is the checker's element type, for the result to describe its
+    /// pairs by. Each side is read out of its vector and stored into the
+    /// pair, which takes a reference of its own, so the pairs are the
+    /// result's to release.
     pub(super) fn lower_iter_zip(
         &mut self,
         chain: &super::IterChain<'_>,
         other: &Expr,
+        pair: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let other_elem_ty = self.collection_elem_of_expr(other)
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:zip_elem"));
@@ -2137,7 +2132,10 @@ impl<'a> MirLowerer<'a> {
             vec_new_pos.0,
             vec_new_pos.1,
             "Vec_new",
-            vec![MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&pair_ty)))],
+            vec![
+                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&pair_ty))),
+                crate::elem_strs::elem(pair.unwrap_or_else(|| pair_ty.clone())),
+            ],
         );
         self.collected_elem_types.insert(result_vec, pair_ty);
 
@@ -2423,7 +2421,12 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_sort_by_keys".to_string()),
-            args: vec![MirOperand::Local(vec_local), MirOperand::Local(keys), cmp],
+            args: vec![
+                MirOperand::Local(vec_local),
+                MirOperand::Local(keys),
+                cmp,
+                Self::sort_pass(&key_ty),
+            ],
         }));
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

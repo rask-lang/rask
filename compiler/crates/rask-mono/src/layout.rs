@@ -18,16 +18,6 @@ pub struct StructLayout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<FieldLayout>,
-    /// Declared in the stdlib rather than in the program.
-    ///
-    /// Layouts live in one flat `Vec` looked up by bare name, so a program's
-    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer` and the
-    /// first one wins. The stdlib's is `public struct Timer { }` — no fields —
-    /// so every field of the user's landed at offset 0 and the literal
-    /// segfaulted (#975). `find_struct` prefers the program's when both exist,
-    /// which is the same rule the checker's `type_names` /
-    /// `stdlib_type_names` split already applies to types (#515).
-    pub is_stdlib: bool,
     /// Declared `@resource`, so its values must be consumed exactly once
     /// (mem.linear/L1).
     ///
@@ -221,22 +211,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             // Assume pointer-sized; struct/enum layouts are computed separately.
             (8, 8)
         }
-        // Generic builtins with known sizes
-        // A link is the node's address; a rack is a pointer to its slab.
-        Type::UnresolvedGeneric { name, .. } if name == "Link" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Rack" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
-        Type::UnresolvedGeneric { name, .. } if name == "Wide" => (8, 8), // Opaque pointer (runtime uses RaskVec* — conc.data-parallel)
-        Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
-        Type::UnresolvedGeneric { name, .. } if name == "Random" => (8, 8),  // Pointer to rng state
-        Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
-        // Box family — all opaque runtime pointers, same as the collections
-        // above. Without these a `Mutex<T>` field warned about an unresolved
-        // generic on every build even though (8, 8) is the right answer.
-        Type::UnresolvedGeneric { name, .. }
-            if matches!(name.as_str(),
-                "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
-                | "Sender" | "Receiver" | "Handle") => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if generic_is_one_word(name) => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             if let Some(found) = cached_generic_layout(name, args, cache) {
                 return found;
@@ -255,15 +230,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             );
             (8, 8)
         }
-        // A field written `any Interface` reaches here as a name, not a parsed
-        // InterfaceObject. It's still a fat pointer, and sizing it at 8 gave a
-        // struct field half the room for one — the vtable half landed in
-        // whatever followed (#474).
         // AT6: projections resolve during type checking. One that got here
         // named a conformance that doesn't exist, and the error for that is
         // already reported — lay it out as a word rather than panicking on top.
         Type::Assoc { .. } => (8, 8),
-        Type::UnresolvedNamed(name) if name.starts_with("any ") => (16, 8),
         // A raw pointer field written `*u8` arrives as a name too. It's a
         // pointer, so the fallback size was right — but it went through the
         // unknown-type branch and warned about a program with nothing wrong
@@ -426,10 +396,19 @@ pub fn field_type(ty: &TypeExpr) -> Type {
         },
         TypeExpr::Tuple(elems) => Type::Tuple(elems.iter().map(field_type).collect()),
         TypeExpr::Func { params, ret } => Type::Fn {
-            params: params.iter().map(field_type).collect(),
+            params: params
+                .iter()
+                .map(|p| rask_types::FnParam { mode: p.mode, ty: field_type(&p.ty) })
+                .collect(),
             ret: Box::new(field_type(ret)),
         },
         TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(field_type(inner))),
+        // A fat pointer. Left as the name "any Shape" it sized right only by a
+        // spelling check, and `any Shape?` became an option of a one-word
+        // name: eight bytes short of the fat pointer stored in it (#1308).
+        // The written name is the interface's symbol by now (#1426), and a
+        // size is all this needs.
+        TypeExpr::Any(interface) => Type::InterfaceObject { interface_name: interface.to_string(), decl: None },
         // Whatever a field's type is reached *through* says nothing about its
         // size, so the last segment is the whole question: `time.Duration` and
         // an aliased import's `h.Response` both size as the type they name.
@@ -526,7 +505,7 @@ fn resolve_field_type(
 /// the shared one. The recorded type keeps its `T` — reflection substitutes
 /// the real argument itself, and the shared layout's stand-in `i64` would
 /// read as the answer.
-fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Type>) -> Type {
+pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Type>) -> Type {
     use rask_types::GenericArg;
     let go = |t: &Type| substitute_inside(t, subst);
     match ty {
@@ -550,6 +529,21 @@ fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Type>) 
         Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)), len: *len },
         _ => ty.clone(),
     }
+}
+
+/// A builtin generic that is one pointer whatever its arguments are: a
+/// collection or box is a handle to runtime storage, a link is the node's
+/// address, a rack a pointer to its slab.
+///
+/// Laying out a type that holds one never needs its arguments' layouts, so
+/// `Vec<Expr>` inside `Wrapped` doesn't make `Wrapped` wait for `Expr`.
+pub(crate) fn generic_is_one_word(name: &str) -> bool {
+    matches!(
+        name,
+        "Link" | "Rack" | "Vec" | "Wide" | "Map" | "Random" | "Channel"
+            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
+            | "Sender" | "Receiver" | "Handle"
+    )
 }
 
 /// A builtin container or box, written without its type arguments.
@@ -742,7 +736,6 @@ fn struct_layout(
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_stdlib: is_stdlib_span(struct_def.span),
         is_resource: struct_decl.attrs.iter().any(|a| a == "resource"),
     }
 }
@@ -790,7 +783,6 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_stdlib: is_stdlib_span(union_def.span),
         is_resource: false,
     }
 }
@@ -1220,7 +1212,7 @@ mod tests {
     #[test]
     fn fn_pointer_size() {
         let (size, align) = tsa(&Type::Fn {
-            params: vec![Type::I32],
+            params: vec![rask_types::FnParam::borrowed(Type::I32)],
             ret: Box::new(Type::I32),
         });
         assert_eq!(size, 8);

@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// mem.racks/RK2: a link reads like its node, methods included (#1285).
+//
+// `a.tags` through a `Link<Task>` always worked; `a.has_tag("x")` was "no
+// method `has_tag` found for type `Link`", because the checker only forwarded
+// the unresolved spelling of `Link<T>` and a link from `Rack.insert` is the
+// resolved one. Forwarding it alone miscompiled two ways natively: the call
+// passed the address of the slot holding the link instead of the link, so
+// `has_tag` answered false for a tag just pushed; and once inlined, `self`
+// bound to the node was counted as the frame's own and released the node's
+// fields while the rack still held them.
+
+import memory.Rack
+import memory.Link
+
+func main() {}
+
+struct Task {
+    id: i64
+    name: string
+    tags: Vec<string> = Vec.new()
+}
+
+extend Task {
+    func has_tag(self, t: string) -> bool {
+        for x in self.tags {
+            if x == t {
+                return true
+            }
+        }
+        return false
+    }
+
+    func tag(mutate self, t: string) {
+        if !self.has_tag(t) {
+            self.tags.push(t)
+        }
+    }
+
+    func label(self) -> string {
+        return "{self.name}#{self.id}"
+    }
+
+    // Small enough to inline: `self` is bound straight to the node.
+    func weight(self) -> i64 {
+        return self.id + self.tags.len().to<i64>()!
+    }
+}
+
+test "a method on the node, called through its link" {
+    mut r: Rack<Task> = Rack.new()
+    let a = r.insert(Task { id: 1, name: "a" })
+    a.tags.push("x")
+    assert a.has_tag("x")
+    assert !a.has_tag("y")
+    assert a.weight() == 2
+    assert a.tags.len() == 1
+}
+
+test "a mutate self method writes the node in place" {
+    mut r: Rack<Task> = Rack.new()
+    let a = r.insert(Task { id: 1, name: "a" })
+    a.tag("x")
+    a.tag("x")
+    a.tag("y")
+    assert a.tags.len() == 2
+    assert a.weight() == 3
+}
+
+test "links held in a collection" {
+    mut r: Rack<Task> = Rack.new()
+    let a = r.insert(Task { id: 1, name: "a" })
+    let b = r.insert(Task { id: 2, name: "b" })
+    b.tag("z")
+    mut links: Vec<Link<Task>> = Vec.new()
+    links.push(a)
+    links.push(b)
+    mut labels = ""
+    mut total = 0
+    for l in links {
+        labels = "{labels}{l.label()} "
+        total += l.weight()
+    }
+    assert labels == "a#1 b#2 "
+    assert total == 4
+}
+
+test "identity stays the link's" {
+    mut r: Rack<Task> = Rack.new()
+    let a = r.insert(Task { id: 1, name: "same" })
+    let b = r.insert(Task { id: 1, name: "same" })
+    assert a != b
+    assert a == a
+}

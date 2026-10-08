@@ -35,7 +35,7 @@ Package-visible default for items and fields, `private` keyword for extend-only 
 
 | Rule | Description |
 |------|-------------|
-| **BF1: Always available** | `println`, `print`, `format`, `panic`, `todo`, `unreachable`, `spawn`, `transmute` |
+| **BF1: Always available** | `println`, `print`, `format`, `panic`, `todo`, `unreachable`, `transmute`. `spawn` isn't a function but starts a task block (`spawn { … }`, `conc.async/S1`); the name is reserved the same way |
 | **BF2: Compiler-known** | Not regular functions. The compiler knows their signatures, validates arguments, and generates specialized code per call site |
 | **BF3: No shadowing** | Defining a function with a built-in name is a compile error |
 | **BF4: No variadics** | `format`, `println`, `print` accept variable arguments through compiler support, not through a general variadic mechanism. The compiler parses template strings at compile time and type-checks each argument against its placeholder |

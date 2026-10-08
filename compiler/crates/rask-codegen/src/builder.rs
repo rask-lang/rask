@@ -221,6 +221,10 @@ struct CodegenCtx<'a> {
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
     c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
+    /// The frame's unwind record (ctrl.panic/U6), when it owns anything a
+    /// panic would have to release: `[next | run | slot…]`, pushed on entry
+    /// and popped before every return.
+    unwind_rec: Option<StackSlot>,
 }
 
 /// How to compare one slot of an aggregate. Struct and enum-payload fields
@@ -702,7 +706,11 @@ impl<'a> FunctionBuilder<'a> {
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
+            unwind_rec: None,
         };
+        // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
+        // later, run ahead of it on a panic and still see what it owns.
+        ctx.unwind_rec = Self::push_unwind_record(&mut builder, self.mir_fn, &ctx);
 
         // ctrl.panic/A1: an exported symbol is entered from C, so the frames
         // between here and any panic handler belong to the C caller. Mark the
@@ -846,6 +854,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().jump(first_block, &[]);
             } else {
                 // Empty chain — just return
+                Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                 if let Some(val) = ret_param {
                     builder.ins().return_(&[val]);
                 } else {
@@ -918,9 +927,11 @@ impl<'a> FunctionBuilder<'a> {
                             }
                             None => match ret_param {
                                 Some(val) => {
+                                    Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                                     builder.ins().return_(&[val]);
                                 }
                                 None => {
+                                    Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                                     builder.ins().return_(&[]);
                                 }
                             },
@@ -929,6 +940,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Leaving from inside a cleanup returns what the function
                     // was already returning.
                     MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
+                        Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                         match ret_param {
                             Some(val) => {
                                 builder.ins().return_(&[val]);
@@ -1100,6 +1112,62 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().call(*push_ref, &[thunk_ptr, env_addr]);
             }
 
+            // ctrl.panic/U6: one store each into the frame's record.
+            MirStmtKind::UnwindArm { slot, value, .. } => {
+                if let Some(rec) = ctx.unwind_rec {
+                    let var = ctx.var_map.get(value).ok_or_else(|| {
+                        CodegenError::UnsupportedFeature("UnwindArm value not found".to_string())
+                    })?;
+                    let val = builder.use_var(*var);
+                    let vty = builder.func.dfg.value_type(val);
+                    let val64 = if vty == types::I64 {
+                        val
+                    } else if vty.is_int() && vty.bytes() < 8 {
+                        builder.ins().uextend(types::I64, val)
+                    } else {
+                        return Err(CodegenError::UnsupportedFeature(format!(
+                            "UnwindArm of a {} value: a record slot holds one word", vty
+                        )));
+                    };
+                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    builder.ins().stack_store(val64, rec, off as i32);
+                }
+            }
+            MirStmtKind::UnwindDisarm { slot } => {
+                if let Some(rec) = ctx.unwind_rec {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    builder.ins().stack_store(zero, rec, off as i32);
+                }
+            }
+            // Only the unwind glue reads these zeroes: none without a record,
+            // and nothing to read in an aggregate that holds nothing.
+            MirStmtKind::ZeroAggregate { local } => {
+                if ctx.unwind_rec.is_none() {
+                    return Ok(());
+                }
+                let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
+                    return Ok(());
+                };
+                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                if !Self::holds_string_mir(&ty, ctx, 0) {
+                    return Ok(());
+                }
+                let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
+                let size = entry.ty.size() as i32;
+                let zero = builder.ins().iconst(types::I64, 0);
+                let mut off = 0;
+                while off + 8 <= size {
+                    builder.ins().store(MemFlags::new(), zero, base, off);
+                    off += 8;
+                }
+                let byte = builder.ins().iconst(types::I8, 0);
+                while off < size {
+                    builder.ins().store(MemFlags::new(), byte, base, off);
+                    off += 1;
+                }
+            }
+
             // Deregister the most recent hook (normal exit runs the inline path).
             MirStmtKind::EnsureHookPop => {
                 let pop_ref = ctx.func_refs.get("rask_ensure_pop")
@@ -1170,6 +1238,16 @@ impl<'a> FunctionBuilder<'a> {
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
+            MirStmtKind::ClosureRetain { closure, .. } => {
+                let closure_val = builder.use_var(*ctx.var_map.get(closure)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "ClosureRetain closure variable not found".to_string()
+                    ))?);
+                let retain_ref = ctx.func_refs.get("rask_closure_retain")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_retain".to_string()))?;
+                builder.ins().call(*retain_ref, &[closure_val]);
+            }
+
             MirStmtKind::GlobalRef { dst, name } => {
                 let gv = ctx.comptime_globals.get(name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -1189,26 +1267,32 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
 
-            // This is only ever the *borrowed* box — the one built for a
-            // call, which `interface_drop` emits a drop for because the frame
-            // outlives it. So the block goes and nothing inside it does: the
-            // value's strings and containers are the frame's, and the box holds
-            // the same buffer and the same handle (mem.shared-rack-heap, #1144).
+            // A *borrowed* box — one built for a call while the frame keeps
+            // the value — frees the block and nothing inside it: the value's
+            // strings and containers are the frame's, and the box holds the
+            // same buffer and the same handle (mem.shared-rack-heap, #1144).
             // `rc_insert` puts the frame's own release after this statement.
+            // Hence the null hook.
             //
-            // Hence the null hook. A box the value was *moved* into owns its
-            // contents and passes the vtable's `owned_release` here instead,
-            // which is what a container element's release does.
-            MirStmtKind::InterfaceDrop { interface_object } => {
+            // A box the value was *moved* into owns its contents (`owns`), and
+            // its release goes through the vtable's `owned_release`, which is
+            // what a container element's release does.
+            MirStmtKind::InterfaceDrop { interface_object, owns } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(interface_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "InterfaceDrop: interface object variable not found".to_string()
                     ))?);
-                let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                let none = builder.ins().iconst(types::I64, 0);
-                let release_ref = ctx.func_refs.get("rask_box_release")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
-                builder.ins().call(*release_ref, &[data_ptr, none]);
+                if *owns {
+                    // The variable holds the fat pointer's address, which is
+                    // the slot shape a boxed field's release takes.
+                    Self::emit_boxed_field_release(builder, obj_val, 0, ctx)?;
+                } else {
+                    let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
+                    let none = builder.ins().iconst(types::I64, 0);
+                    let release_ref = ctx.func_refs.get("rask_box_release")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
+                    builder.ins().call(*release_ref, &[data_ptr, none]);
+                }
             }
 
             MirStmtKind::Phi { .. } => {
@@ -1251,6 +1335,26 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
                 Self::release_strings_mir(builder, base, 0, &ty, ctx, 0)?;
+            }
+
+            // A copy of an aggregate handed to a keeper takes a reference to
+            // what it holds. The element map is the one a container of this
+            // type would carry, so this retains exactly what a cloned vector
+            // would retain per element; `collect_element_offsets` registered it.
+            MirStmtKind::RcIncContents { local } => {
+                let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
+                    return Ok(());
+                };
+                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let Some(offs) = Self::element_owned_offsets(Some(&ty), ctx).filter(|o| !o.is_empty()) else {
+                    return Ok(());
+                };
+                let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
+                let entries = Self::element_offsets_global(builder, &offs, ctx);
+                let count = builder.ins().iconst(types::I64, offs.len() as i64);
+                let retain_ref = ctx.func_refs.get("rask_owned_retain_all")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_retain_all".to_string()))?;
+                builder.ins().call(*retain_ref, &[base, entries, count]);
             }
 
             // One slot of an aggregate, about to be written over. The same walk
@@ -2708,6 +2812,11 @@ impl<'a> FunctionBuilder<'a> {
                         // `sum(rest)` on a `Cons(i64, Heap<List>)` trapped on
                         // the second node.
                         | MirType::Heap(_)
+                        // A link is the node's address (mem.racks/RK2), so it
+                        // already is the pointer a `self: Task` takes. Spilled,
+                        // `a.has_tag(t)` on a `Link<Task>` handed the method the
+                        // address of the slot holding the link (#1285).
+                        | MirType::Link(_)
                 )
             });
             if arg_is_aggregate {
@@ -4888,10 +4997,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
         } else if func.name == "assert_fail_cmp_str" || func.name == "check_fail_cmp_str" {
-            // Comparison assert/check failure with string values: args = [left, right, op_str]
+            // Comparison assert/check failure with string values: args = [left, right, op_str].
+            // The two sides go over as Rask strings; only the operator is a C one.
             if args.len() >= 3 {
-                let left_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
-                let right_val = Self::lower_operand_as_cstr(builder, &args[1], ctx)?;
+                let left_val = Self::lower_operand(builder, &args[0], ctx)?;
+                let right_val = Self::lower_operand(builder, &args[1], ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                 if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
@@ -4981,42 +5091,6 @@ impl<'a> FunctionBuilder<'a> {
                 if let Some(var) = ctx.var_map.get(dst_id) {
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder.def_var(*var, zero);
-                }
-            }
-        } else if func.name.starts_with("assert_eq_fail") {
-            // assert_eq failure: args = [got, expected] (empty for aggregates).
-            // MIR already emitted the comparison and branched here.
-            let value_args: Vec<Value> = match func.name.as_str() {
-                "assert_eq_fail_str" => vec![
-                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?,
-                    Self::lower_operand_as_cstr(builder, &args[1], ctx)?,
-                ],
-                "assert_eq_fail_f64" => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?,
-                ],
-                // f32 stays f32: see assert_fail_cmp_f32.
-                "assert_eq_fail_f32" => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::F32), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::F32), ctx)?,
-                ],
-                "assert_eq_fail" => Vec::new(),
-                _ => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?,
-                ],
-            };
-            if let Some(file_str) = ctx.source_file {
-                if let (Some(func_ref), Some(gv)) = (
-                    ctx.func_refs.get(func.name.as_str()),
-                    ctx.string_globals.get(file_str),
-                ) {
-                    let file_ptr = builder.ins().global_value(types::I64, *gv);
-                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                    let mut call_args = value_args;
-                    call_args.extend_from_slice(&[file_ptr, line_val, col_val]);
-                    builder.ins().call(*func_ref, &call_args);
                 }
             }
         } else if func.name == "panic_str" {
@@ -5945,10 +6019,13 @@ impl<'a> FunctionBuilder<'a> {
                 // though: exit 1, not the silent 0 it used to give (#345).
                 if ctx.is_main {
                     Self::emit_main_error_check(builder, value.as_ref(), ctx)?;
+                    Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[]);
                 } else if let Some(val) = Self::exit_value(builder, value.as_ref(), ctx)? {
+                    Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[val]);
                 } else {
+                    Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[]);
                 }
             }
@@ -6759,14 +6836,88 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         if ctx.is_main {
+            Self::emit_unwind_pop(builder, ctx);
             builder.ins().return_(&[]);
             return Ok(());
         }
-        match Self::exit_value(builder, value, ctx)? {
+        let val = Self::exit_value(builder, value, ctx)?;
+        Self::emit_unwind_pop(builder, ctx);
+        match val {
             Some(val) => builder.ins().return_(&[val]),
             None => builder.ins().return_(&[]),
         };
         Ok(())
+    }
+
+    /// Take the frame's unwind record off the thread's stack: the frame is
+    /// leaving normally, and released what it owned on the way.
+    fn emit_unwind_pop(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx) {
+        let (Some(rec), Some(pop)) = (ctx.unwind_rec, ctx.func_refs.get("rask_unwind_pop")) else {
+            return;
+        };
+        let addr = builder.ins().stack_addr(types::I64, rec, 0);
+        builder.ins().call(*pop, &[addr]);
+    }
+
+    /// The frame's unwind record, pushed: zeroed slots, the glue as its
+    /// `run`, linked onto the thread's unwind stack. `None` for a frame that
+    /// arms nothing (most of them), which pays nothing.
+    ///
+    /// A frame whose every arm releases an aggregate holding nothing (a
+    /// `Point`, an `i64?`) arms nothing either: MIR has no layouts and arms
+    /// every aggregate, and only here is it known that the release is empty.
+    fn push_unwind_record(
+        builder: &mut ClifFunctionBuilder,
+        mir_fn: &MirFunction,
+        ctx: &CodegenCtx,
+    ) -> Option<StackSlot> {
+        let arms = || {
+            mir_fn.blocks.iter().flat_map(|b| b.statements.iter()).filter_map(|s| match &s.kind {
+                MirStmtKind::UnwindArm { release, .. } => Some(release),
+                _ => None,
+            })
+        };
+        let empty = |release: &rask_mir::UnwindRelease| {
+            release.stmts.iter().all(|s| match &s.kind {
+                MirStmtKind::RcDecContents { local } => ctx
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *local)
+                    .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
+                    .is_none_or(|ty| !Self::holds_string_mir(&ty, ctx, 0)),
+                _ => false,
+            })
+        };
+        if arms().all(empty) {
+            return None;
+        }
+        let func_refs = ctx.func_refs;
+        let slots = mir_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|s| match &s.kind {
+                MirStmtKind::UnwindArm { slot, .. } | MirStmtKind::UnwindDisarm { slot } => Some(*slot + 1),
+                _ => None,
+            })
+            .max()?;
+        let glue = format!("{}{}", mir_fn.name, rask_mir::transform::unwind::UNWIND_SUFFIX);
+        let run = func_refs.get(&glue)?;
+        let push = func_refs.get("rask_unwind_push")?;
+        let header = rask_mir::transform::unwind::RECORD_HEADER;
+        let size = header + 8 * slots;
+        let rec = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3));
+        // Zeroed, not assumed zero: a slot nothing armed yet reads as empty
+        // only if something wrote it (RASK_POISON_STACK).
+        let zero = builder.ins().iconst(types::I64, 0);
+        for off in (header..size).step_by(8) {
+            builder.ins().stack_store(zero, rec, off as i32);
+        }
+        let run_ptr = builder.ins().func_addr(types::I64, *run);
+        builder.ins().stack_store(run_ptr, rec, 8);
+        let addr = builder.ins().stack_addr(types::I64, rec, 0);
+        builder.ins().call(*push, &[addr]);
+        Some(rec)
     }
 
     /// The address and size of a returned aggregate whose storage this frame
@@ -7220,9 +7371,7 @@ impl<'a> FunctionBuilder<'a> {
             return true;
         }
         // A box a field holds is the aggregate's: it was moved in, so the block
-        // and the value's own contents go when the aggregate does. Asked before
-        // the name lookup below, which would read `any Handler` as a struct
-        // nobody declared and answer no.
+        // and the value's own contents go when the aggregate does.
         if crate::drop_fields::is_interface_object(ty) {
             return true;
         }
@@ -7280,6 +7429,8 @@ impl<'a> FunctionBuilder<'a> {
             // The slot holds the block's address. What the block holds goes
             // first — after `rask_free` there is nothing left to walk — and
             // then the block. Same two steps `drop(b)` emits for a named one.
+            // A null block is a slot nothing was stored in yet: an aggregate
+            // a panic caught half built (`ZeroAggregate`).
             MirType::Heap(payload) => {
                 let block = builder.ins().load(
                     cranelift_codegen::ir::types::I64,
@@ -7287,12 +7438,20 @@ impl<'a> FunctionBuilder<'a> {
                     base,
                     offset,
                 );
+                let present = builder.create_block();
+                let done = builder.create_block();
+                builder.ins().brif(block, present, &[], done, &[]);
+                builder.switch_to_block(present);
+                builder.seal_block(present);
                 Self::release_strings_mir(builder, block, 0, payload, ctx, depth + 1)?;
                 let free_ref = ctx
                     .func_refs
                     .get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 builder.ins().call(*free_ref, &[block]);
+                builder.ins().jump(done, &[]);
+                builder.switch_to_block(done);
+                builder.seal_block(done);
                 Ok(())
             }
             // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
@@ -7403,8 +7562,7 @@ impl<'a> FunctionBuilder<'a> {
         }
         // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
         // the runtime's own entry walker reads both words and the vtable's
-        // release hook. Before the match for the reason `holds_string_ty` asks
-        // it early — a field's `any Interface` is a name, not a parsed form.
+        // release hook.
         if crate::drop_fields::is_interface_object(ty) {
             return Self::emit_boxed_field_release(builder, base, offset, ctx);
         }
@@ -7834,8 +7992,11 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Payload types that live in their own storage, so extracting one yields
-    /// an address rather than a loaded scalar. Nested `Option`/`Result` belong
-    /// here: a `T??` payload is a whole 16-byte `T?` slot (#493).
+    /// an address rather than a loaded scalar: everything `passed_by_address`
+    /// except the niche. Spelled out as its own list, this one had no `Array`,
+    /// so `v.pop()` on a `Vec<[i32; 2]>` loaded the array's bytes and used
+    /// them as its address (#1450). Nested `Option`/`Result` (#493), interface
+    /// objects (#552) and error unions (#776) were each found the same way.
     fn is_boxed_payload(ty: &MirType) -> bool {
         // A niche option is one word — the value itself, with one reserved word
         // meaning `none` — so it loads like a scalar even though it is spelled
@@ -7845,24 +8006,7 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return false;
         }
-        matches!(
-            ty,
-            MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::String
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                // An interface object is two words, so the payload read has to hand
-                // back its address like any other aggregate. Loading the first
-                // 8 bytes as a scalar kept the data pointer and dropped the
-                // vtable (#552).
-                | MirType::InterfaceObject { .. }
-                // An error union is `[member:8][member bytes]` in the payload
-                // area. Loaded as a word, the member index came back as if it
-                // were the union's address (#776).
-                | MirType::Union(_)
-        )
+        ty.passed_by_address()
     }
 
     /// The Cranelift type a bare scalar takes on once it becomes an Option's
@@ -7971,15 +8115,21 @@ impl<'a> FunctionBuilder<'a> {
     /// `v.push(a)` on an `f32` local wrote 4, and the 4-byte read back got the
     /// double's zero low half — printing 0 for the literal and the right value
     /// for the local (#629).
+    ///
+    /// The slot is as wide as the value, and an i128 is sixteen bytes. An
+    /// eight-byte slot took the store's high half into whatever Cranelift put
+    /// next to it: in a test body that was the spill slot holding a `u128::MAX`
+    /// literal, so `assert u[1] == <max>` compared against `0` (#1407).
     fn value_to_ptr(builder: &mut ClifFunctionBuilder, val: Value) -> Value {
-        let ss = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot, 8, 0,
-        ));
         let stored = if builder.func.dfg.value_type(val) == types::F32 {
             builder.ins().fpromote(types::F64, val)
         } else {
             val
         };
+        let size = builder.func.dfg.value_type(stored).bytes().max(8);
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot, size, 0,
+        ));
         builder.ins().stack_store(stored, ss, 0);
         builder.ins().stack_addr(types::I64, ss, 0)
     }
@@ -8009,23 +8159,17 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// MIR arg already lives behind a pointer — its i64 value is a pointer to
-    /// the data, not the data itself. Strings, structs, enums, tuples, options,
-    /// results, slices, and interface objects all qualify.
+    /// the data, not the data itself (`MirType::passed_by_address`). This and
+    /// the two destination checks below spelled out their own lists, which
+    /// left fixed arrays out: `v.push([3, 4])` handed the runtime the array's
+    /// bytes as an address and `v[0]` loaded a word where the array belonged
+    /// (#1450).
     fn is_by_ptr_arg(mir_args: &[MirOperand], index: usize, locals: &[rask_mir::MirLocal]) -> bool {
         match mir_args.get(index) {
             Some(MirOperand::Local(id)) => locals
                 .iter()
                 .find(|l| l.id == *id)
-                .map(|l| matches!(l.ty,
-                    MirType::String
-                    | MirType::Struct(_)
-                    | MirType::Enum(_)
-                    | MirType::Tuple(_)
-                    | MirType::Option(_)
-                    | MirType::Result { .. }
-                    | MirType::Union(_)
-                    | MirType::InterfaceObject { .. }
-                ))
+                .map(|l| l.ty.passed_by_address())
                 .unwrap_or(false),
             Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
             _ => false,
@@ -8043,15 +8187,7 @@ impl<'a> FunctionBuilder<'a> {
     /// anything wider than a word, or with its own layout.
     fn is_aggregate_dst(dst: Option<&LocalId>, ctx: &CodegenCtx) -> bool {
         dst.and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-            .map(|l| matches!(l.ty,
-                MirType::String
-                | MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Union(_)
-                | MirType::InterfaceObject { .. }))
+            .map(|l| l.ty.passed_by_address())
             .unwrap_or(false)
     }
 
@@ -8114,16 +8250,7 @@ impl<'a> FunctionBuilder<'a> {
     fn deref_or_string(dst: Option<&LocalId>, ctx: &CodegenCtx) -> CallAdapt {
         let is_aggregate = dst
             .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-            .map(|l| matches!(l.ty,
-                MirType::String
-                | MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Union(_)
-                | MirType::InterfaceObject { .. }
-            ))
+            .map(|l| l.ty.passed_by_address())
             .unwrap_or(false);
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
@@ -8434,11 +8561,6 @@ impl<'a> FunctionBuilder<'a> {
 
             ArgAdapt::AppendZero => {
                 args.push(builder.ins().iconst(types::I64, 0));
-                CallAdapt::None
-            }
-
-            ArgAdapt::AppendElemSize => {
-                args.push(builder.ins().iconst(types::I64, 8));
                 CallAdapt::None
             }
 
@@ -8825,7 +8947,15 @@ impl<'a> FunctionBuilder<'a> {
                 return Ok(builder.ins().global_value(types::I64, *gv));
             }
         }
-        // Fallback: treat as i64 (pointer)
+        // A string built at run time is a Rask string, not a C one. Passed as
+        // is, the runtime printed its header's bytes (#1517).
+        if Self::operand_mir_type(op, ctx.locals) == Some(MirType::String) {
+            let s = Self::lower_operand(builder, op, ctx)?;
+            let f = ctx.func_refs.get("string_message")
+                .ok_or_else(|| CodegenError::FunctionNotFound("string_message".into()))?;
+            let call = builder.ins().call(*f, &[s]);
+            return Ok(builder.inst_results(call)[0]);
+        }
         Self::lower_operand_typed(builder, op, Some(types::I64), ctx)
     }
 

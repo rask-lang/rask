@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container passed to a call through a closure is still the caller's.
+//
+// The call only lends it: a closure body can't keep a parameter, and a named
+// function behind the value answers from its own body. Natively the caller
+// used to stop owing the vector at the call while the body never freed it,
+// so it leaked (#1468). The leak gate runs this file under leak checking.
+
+import sequence.Sequence
+
+func count(p: Vec<i64>) -> u64 {
+    return p.len()
+}
+
+func pass_on(p: Vec<i64>, f: func(Vec<i64>) -> u64) -> u64 {
+    return f(p)
+}
+
+test "a closure literal borrows its argument" {
+    let v: Vec<i64> = [1, 2]
+    let f = |p: Vec<i64>| p.len()
+    assert f(v) == 2
+    assert v.len() == 2
+}
+
+test "a named function as a value borrows its argument" {
+    let v: Vec<i64> = [1, 2, 3]
+    let f: func(Vec<i64>) -> u64 = count
+    assert f(v) == 3
+    assert v.len() == 3
+}
+
+test "a parameter passed on through a closure stays the caller's" {
+    let v: Vec<i64> = [4]
+    let g = |p: Vec<i64>| p.len()
+    assert pass_on(v, g) == 1
+    assert pass_on(v, count) == 1
+    assert v.len() == 1
+}
+
+test "a vector of strings lent to a closure" {
+    let names: Vec<string> = ["a", "b"]
+    let f = |p: Vec<string>| p.len()
+    assert f(names) == 2
+    assert names[1] == "b"
+}
+
+// A closure pulled out of a Vec has no known body, so the call asks every
+// closure body that takes one argument. None of these keeps it (#1469).
+test "a closure taken out of a vector borrows its argument" {
+    let g = |p: Vec<i64>| p.len()
+    mut fs: Vec<func(Vec<i64>) -> u64> = Vec.new()
+    fs.push(count)
+    fs.push(g)
+    mut total: u64 = 0
+    for h in fs {
+        let v: Vec<i64> = [1, 2]
+        total += h(v)
+        assert v.len() == 2
+    }
+    assert total == 4
+}
+
+test "a closure indexed out of a vector borrows its argument" {
+    mut fs: Vec<func(Vec<string>) -> u64> = Vec.new()
+    fs.push(|p: Vec<string>| p.len())
+    let names: Vec<string> = ["a", "b", "c"]
+    assert fs[0](names) == 3
+    assert names[2] == "c"
+}
+
+// `to_vec`'s loop body moves each item into the Vec, so it does keep its
+// argument. In the same program as the calls above it must not change their
+// answer, and its own items must not be freed twice.
+func pairs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        let a: Vec<i64> = [1, 1]
+        if !yield(a.clone()) { return }
+        let b: Vec<i64> = [2, 2]
+        if !yield(b.clone()) { return }
+    }
+}
+
+test "a terminal that moves its items still owns them" {
+    let fused = [1, 2, 3].map(|n| [n, n]).to_vec()
+    assert fused[2][1] == 3
+    let rows = pairs().map(|p| p.clone()).to_vec()
+    assert rows.len() == 2
+    assert rows[1][0] == 2
+}

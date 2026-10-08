@@ -39,8 +39,8 @@ test "a task holding a lock keeps its worker until it lets go" {
     using Multitasking(workers: 1) {
         mut group = Handles<i64>.new()
         ensure group.detach()
-        group.add(spawn(|| { return add_slowly() }))
-        group.add(spawn(|| { return add_one() }))
+        group.add(spawn { return add_slowly() })
+        group.add(spawn { return add_one() })
         for r in group.join_all() {
             match r {
                 i64 as v => assert v == 0

@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The spellings E0906 points at, when a lookup's value is wanted by a `take`.
+//
+// `obj.get(k)!.as_array()` used to be accepted: `as_array` takes its receiver,
+// and the map still held it, so two owners freed one vector (#1429). It's
+// rejected now; these are the ways that give the `take` a value of its own.
+
+import json
+import json.JsonValue
+
+func sample() -> Map<string, JsonValue> {
+    let v = json.decode<JsonValue>("{{\"k\":[1,2]}}") catch e => { return Map.new() }
+    return v.as_object() ?? Map.new()
+}
+
+func eat(take v: JsonValue) -> u64 {
+    return (v.as_array() ?? Vec.new()).len()
+}
+
+test "get_clone hands back a copy" {
+    let obj = sample()
+    let a = obj.get_clone("k")!.as_array() ?? Vec.new()
+    assert a.len() == 2
+    assert obj.len() == 1
+}
+
+test "a clone of the lookup is a copy too" {
+    let obj = sample()
+    let a = obj.get("k")!.clone().as_array() ?? Vec.new()
+    assert a.len() == 2
+}
+
+test "remove takes it out" {
+    mut obj = sample()
+    let a = obj.remove("k")!.as_array() ?? Vec.new()
+    assert a.len() == 2
+    assert obj.len() == 0
+}
+
+// The stdlib's own instance: `try_push_all` borrows its source and pushed the
+// source's elements as they were.
+test "try_push_all copies what it pushes" {
+    let src: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut dst: Vec<Vec<i64>> = Vec.new()
+    if dst.try_push_all(src) is GrowError<Vec<i64>> as e {
+        assert false
+    }
+    assert dst.len() == 2
+    assert src.len() == 2
+    assert dst[0].len() == 2
+}
+
+test "an argument for a take parameter" {
+    let obj = sample()
+    assert eat(obj.get_clone("k")!) == 2
+}

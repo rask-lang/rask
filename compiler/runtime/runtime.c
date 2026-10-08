@@ -248,6 +248,15 @@ static void panic_str_text(char *buf, size_t cap, const RaskStr *msg) {
     snprintf(buf, cap, "%.*s", (int)(len > 0 ? len : 0), text ? text : "");
 }
 
+// A Rask string as a C string, for the failure paths whose C side takes one:
+// assert and check messages, skip reasons, panics. Per thread, and good until
+// the next call — each caller prints or copies it straight away.
+const char *rask_string_message(const RaskStr *s) {
+    static __thread char buf[RASK_PANIC_MSG_MAX];
+    panic_str_text(buf, sizeof(buf), s);
+    return buf;
+}
+
 void rask_panic_str(const RaskStr *msg) {
     char buf[512];
     panic_str_text(buf, sizeof(buf), msg);
@@ -888,62 +897,39 @@ int64_t rask_stat_atime(const char *path) {
 // ─── File instance methods ────────────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open / rask_fs_create.
 
-// Read from the current position to EOF. Returns 0 on success, 1 on failure —
-// `File.read_text` is `string or IoError`, and the caller needs the tag.
+// Read from the current position to EOF. Returns a RaskVec<u8>* (cast to
+// int64_t), or -1 with errno set — `File.read_bytes` in stdlib/io.rk turns
+// that into the IoError, which the runtime can't build, and `read_text` is
+// that plus UTF-8 validation. A null handle is EBADF.
 //
 // Chunked rather than sized by ftell/fseek: a pipe or a terminal has no size to
-// seek to, and a stream opened write-only reports one anyway (0), so the old
-// version answered Ok("") for a file it could not read at all.
-int64_t rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out) {
+// seek to, and a stream opened write-only reports one anyway (0). `ferror`
+// says whether the read failed; the old sized read answered an empty Vec for a
+// file it could not read at all.
+int64_t rask_file_read_bytes(int64_t file) {
     FILE *f = (FILE *)(uintptr_t)file;
-    rask_string_new(err_out);
     if (!f) {
-        rask_string_new(out);
-        rask_string_from(err_out, "file handle is closed");
-        return RASK_STROUT_ERROR;
+        errno = EBADF;
+        return -1;
     }
-
     size_t cap = 4096, len = 0;
     char *buf = (char *)rask_alloc((int64_t)cap);
     for (;;) {
         if (len == cap) {
-            size_t new_cap = cap * 2;
-            char *grown = (char *)rask_alloc((int64_t)new_cap);
-            memcpy(grown, buf, len);
-            rask_free(buf);
-            buf = grown;
-            cap = new_cap;
+            buf = (char *)rask_realloc(buf, (int64_t)cap, (int64_t)(cap * 2));
+            cap *= 2;
         }
         size_t n = fread(buf + len, 1, cap - len, f);
         len += n;
         if (n == 0) break;
     }
     if (ferror(f)) {
-        // The reason, not just the fact. Reading a write-only descriptor is
-        // EBADF, and "unexpected end of file" said nothing about that (#682).
-        rask_string_from(err_out, rask_io_error_text(errno));
+        int err = errno ? errno : EIO;
         rask_free(buf);
-        rask_string_new(out);
-        return RASK_STROUT_ERROR;
+        errno = err;
+        return -1;
     }
-    rask_string_from_bytes(out, buf, (int64_t)len);
-    rask_free(buf);
-    return RASK_STROUT_OK;
-}
-
-// Returns a RaskVec<u8>* (cast to int64_t), or -1 if the handle is null.
-int64_t rask_file_read_bytes(int64_t file) {
-    FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) return -1;
-    long start = ftell(f);
-    fseek(f, 0, SEEK_END);
-    long end = ftell(f);
-    fseek(f, start, SEEK_SET);
-    long size = end - start;
-    if (size < 0) size = 0;
-    char *buf = (char *)rask_alloc((int64_t)size + 1);
-    size_t n = fread(buf, 1, (size_t)size, f);
-    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)n);
+    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)len);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
@@ -1739,163 +1725,6 @@ void rask_json_encode_i64(RaskStr *out, int64_t val) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", (long long)val);
     rask_string_from_bytes(out, buf, (int64_t)len);
-}
-
-// ─── JSON decode ──────────────────────────────────────────────────
-
-#define JSON_MAX_FIELDS 64
-
-struct RaskJsonField {
-    char key[128];
-    enum { JSON_STRING, JSON_NUMBER, JSON_BOOL } type;
-    union {
-        RaskStr str_val;
-        double num_val;
-        int8_t bool_val;
-    };
-};
-
-struct RaskJsonObj {
-    struct RaskJsonField fields[JSON_MAX_FIELDS];
-    int count;
-};
-
-static void json_skip_ws(const char **p) {
-    while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
-}
-
-static void json_parse_string(RaskStr *out, const char **p) {
-    if (**p != '"') { rask_string_new(out); return; }
-    (*p)++;
-    // Scan for closing quote to know total length
-    const char *start = *p;
-    int has_escapes = 0;
-    while (**p && **p != '"') {
-        if (**p == '\\') { has_escapes = 1; (*p)++; if (**p) (*p)++; }
-        else (*p)++;
-    }
-    if (!has_escapes) {
-        // Fast path: no escapes, just copy the raw bytes
-        rask_string_from_bytes(out, start, (int64_t)(*p - start));
-        if (**p == '"') (*p)++;
-        return;
-    }
-    // Slow path: unescape. Reset and rebuild.
-    *p = start;
-    RaskStr s;
-    rask_string_new(&s);
-    while (**p && **p != '"') {
-        if (**p == '\\' && *(*p + 1)) {
-            char c = *(*p + 1);
-            uint8_t byte;
-            switch (c) {
-                case '"': case '\\': case '/': byte = (uint8_t)c; break;
-                case 'n': byte = '\n'; break;
-                case 't': byte = '\t'; break;
-                case 'r': byte = '\r'; break;
-                default: byte = (uint8_t)c; break;
-            }
-            RaskStr tmp;
-            rask_string_push_byte(&tmp, &s, byte);
-            rask_string_free(&s);
-            s = tmp;
-            *p += 2;
-        } else {
-            RaskStr tmp;
-            rask_string_push_byte(&tmp, &s, (uint8_t)**p);
-            rask_string_free(&s);
-            s = tmp;
-            (*p)++;
-        }
-    }
-    if (**p == '"') (*p)++;
-    *out = s;
-}
-
-RaskJsonObj *rask_json_parse(const RaskStr *s) {
-    RaskJsonObj *obj = (RaskJsonObj *)rask_alloc(sizeof(RaskJsonObj));
-    memset(obj, 0, sizeof(RaskJsonObj));
-
-    const char *p = rask_string_ptr(s);
-    json_skip_ws(&p);
-    if (*p != '{') return obj;
-    p++;
-
-    while (*p && *p != '}' && obj->count < JSON_MAX_FIELDS) {
-        json_skip_ws(&p);
-        if (*p == '}') break;
-        if (*p == ',') { p++; json_skip_ws(&p); }
-
-        if (*p != '"') break;
-        RaskStr key;
-        json_parse_string(&key, &p);
-        struct RaskJsonField *f = &obj->fields[obj->count];
-        snprintf(f->key, sizeof(f->key), "%s", rask_string_ptr(&key));
-        rask_string_free(&key);
-
-        json_skip_ws(&p);
-        if (*p != ':') break;
-        p++;
-        json_skip_ws(&p);
-
-        if (*p == '"') {
-            f->type = JSON_STRING;
-            json_parse_string(&f->str_val, &p);
-        } else if (*p == 't' || *p == 'f') {
-            f->type = JSON_BOOL;
-            if (strncmp(p, "true", 4) == 0) { f->bool_val = 1; p += 4; }
-            else if (strncmp(p, "false", 5) == 0) { f->bool_val = 0; p += 5; }
-        } else if (*p == 'n' && strncmp(p, "null", 4) == 0) {
-            f->type = JSON_STRING;
-            rask_string_new(&f->str_val);
-            p += 4;
-        } else {
-            f->type = JSON_NUMBER;
-            char *end;
-            f->num_val = strtod(p, &end);
-            p = end;
-        }
-        obj->count++;
-    }
-    return obj;
-}
-
-static struct RaskJsonField *json_find_field(RaskJsonObj *obj, const char *key) {
-    if (!obj) return NULL;
-    for (int i = 0; i < obj->count; i++) {
-        if (strcmp(obj->fields[i].key, key) == 0) return &obj->fields[i];
-    }
-    return NULL;
-}
-
-void rask_json_get_string(RaskStr *out, RaskJsonObj *obj, const char *key) {
-    struct RaskJsonField *f = json_find_field(obj, key);
-    if (!f || f->type != JSON_STRING) { rask_string_new(out); return; }
-    // Copy the field's string value
-    *out = f->str_val;
-    rask_string_clone(out); // RC inc if heap
-}
-
-int64_t rask_json_get_i64(RaskJsonObj *obj, const char *key) {
-    struct RaskJsonField *f = json_find_field(obj, key);
-    if (!f || f->type != JSON_NUMBER) return 0;
-    return (int64_t)f->num_val;
-}
-
-double rask_json_get_f64(RaskJsonObj *obj, const char *key) {
-    struct RaskJsonField *f = json_find_field(obj, key);
-    if (!f || f->type != JSON_NUMBER) return 0.0;
-    return f->num_val;
-}
-
-int8_t rask_json_get_bool(RaskJsonObj *obj, const char *key) {
-    struct RaskJsonField *f = json_find_field(obj, key);
-    if (!f || f->type != JSON_BOOL) return 0;
-    return f->bool_val;
-}
-
-int64_t rask_json_decode(const RaskStr *s) {
-    return (int64_t)(uintptr_t)rask_json_parse(s);
 }
 
 // ─── Error origin (ER15/ER16) ────────────────────────────────────

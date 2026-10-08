@@ -21,9 +21,11 @@ use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{GenericFrame, Value};
 
 /// Methods the interpreter derives for every struct and enum. An `extend`
-/// block that defines one of these replaces the derived version.
+/// block that defines one of these replaces the derived version, and so does
+/// the body the checker writes for a derived one. `clone` was missing, so a
+/// hand-written `clone` never ran here (#1428).
 const DERIVABLE_METHODS: &[&str] = &[
-    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug",
+    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug", "clone",
 ];
 
 /// Values whose `.clone()` is just the value again.
@@ -470,7 +472,7 @@ impl Interpreter {
             }
             let mut all_args = vec![receiver];
             all_args.extend(args);
-            let answer = self.call_function(&method_fn, all_args, generics).map_err(|diag| diag.error);
+            let answer = self.call_method_body(&method_fn, all_args, generics);
             if let Some(id) = taken {
                 // Whatever the body did with it, the caller gave it up.
                 let _ = self.resource_tracker.mark_consumed(id);

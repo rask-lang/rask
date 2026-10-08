@@ -21,6 +21,18 @@ pub enum TypeConstraint {
         /// V5: Self type at constraint creation site (for private field checks)
         self_type: Option<Type>,
     },
+    /// AT6/AT8: `result` is `base.assoc` read through the applied interface
+    /// `bound` — the bound a generic callee put on the parameter `base` stands
+    /// for. Deferred until `base` is concrete. `args` fills the callee's other
+    /// parameters if the bound names them (`T: Mul<U>`).
+    Projection {
+        base: Type,
+        bound: rask_ast::ty::TypeExpr,
+        args: Vec<(String, Type)>,
+        assoc: String,
+        result: Type,
+        span: Span,
+    },
     /// Type must have a method with given signature.
     HasMethod {
         ty: Type,
@@ -158,8 +170,33 @@ pub enum TypeConstraint {
     ElementOf {
         container: Type,
         elem: Type,
+        /// The loop's source expression.
+        node: rask_ast::NodeId,
         span: Span,
     },
+    /// A `[...]` literal whose slot wasn't known when it was walked.
+    ///
+    /// The slot picks the literal's shape (std.collections/C9), and a method
+    /// argument's slot is the parameter, which isn't known until the receiver
+    /// is: `Bytes.new().add([7, 8])`. `literal` is the literal's type, a
+    /// variable until the call resolves; then the elements are put into
+    /// whatever collection it turned out to be. A literal nothing ever pins
+    /// becomes a fixed array of its elements, as it would have on its own.
+    CollectionLiteral {
+        literal: Type,
+        elems: Vec<LiteralElem>,
+        span: Span,
+    },
+}
+
+/// One member of a deferred collection literal.
+#[derive(Debug, Clone)]
+pub struct LiteralElem {
+    pub ty: Type,
+    pub span: Span,
+    /// The member is a `[...]` literal deferred the same way, so it takes the
+    /// element slot's shape rather than coercing into it.
+    pub nested: bool,
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).
@@ -291,7 +328,7 @@ impl InferenceContext {
     /// Give a variable an answer of last resort.
     ///
     /// A closure whose body diverges is the case this exists for.
-    /// `spawn(|| { panic("boom") })` never returns, so no constraint ever
+    /// `spawn { panic("boom") }` never returns, so no constraint ever
     /// reaches the closure's return variable and inference finishes with it
     /// open — which used to leave every consumer inventing a width for a value
     /// that doesn't exist. `Never` is the honest answer and it already lowers
@@ -345,7 +382,7 @@ impl InferenceContext {
                 args: args.iter().map(|a| self.apply_generic_arg(a)).collect(),
             },
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|t| self.apply(t)).collect(),
+                params: params.iter().map(|t| t.map(|t| self.apply(t))).collect(),
                 ret: Box::new(self.apply(ret)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
@@ -403,7 +440,7 @@ impl InferenceContext {
                 args.iter().any(|a| self.occurs_in_generic_arg(var, a))
             }
             Type::Fn { params, ret } => {
-                params.iter().any(|p| self.occurs_in(var, p)) || self.occurs_in(var, ret)
+                params.iter().any(|p| self.occurs_in(var, &p.ty)) || self.occurs_in(var, ret)
             }
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Type::Array { elem, .. } => self.occurs_in(var, elem),

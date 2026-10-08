@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use rask_ast::ty::TypeExpr;
+use rask_ast::ty::{ParamMode, TypeExpr};
 use std::hash::Hash;
 
 /// Unique identifier for user-defined types (structs, enums, interfaces).
@@ -21,6 +21,33 @@ pub enum GenericArg {
     Type(Box<Type>),
     /// A const usize argument (const generic)
     ConstUsize(usize),
+}
+
+/// One parameter of a function type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FnParam {
+    pub mode: ParamMode,
+    pub ty: Type,
+}
+
+impl FnParam {
+    pub fn borrowed(ty: Type) -> FnParam {
+        FnParam { mode: ParamMode::Borrow, ty }
+    }
+
+    /// The same mode around a different type.
+    pub fn map(&self, f: impl FnOnce(&Type) -> Type) -> FnParam {
+        FnParam { mode: self.mode, ty: f(&self.ty) }
+    }
+}
+
+impl fmt::Display for FnParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(kw) = self.mode.keyword() {
+            write!(f, "{} ", kw)?;
+        }
+        write!(f, "{}", self.ty)
+    }
 }
 
 /// A type in Rask.
@@ -63,9 +90,10 @@ pub enum Type {
         name: std::string::String,
         args: Vec<GenericArg>,
     },
-    /// Function type
+    /// Function type. Each parameter's mode is part of it (type.functions/FT1):
+    /// `func(take Vec<i64>)` and `func(Vec<i64>)` are different types.
     Fn {
-        params: Vec<Type>,
+        params: Vec<FnParam>,
         ret: Box<Type>,
     },
     /// Tuple type
@@ -100,7 +128,12 @@ pub enum Type {
     },
     /// Interface object: `any InterfaceName` — heap-boxed, vtable-dispatched.
     InterfaceObject {
+        /// As written, for messages.
         interface_name: std::string::String,
+        /// Which interface: its declaration. A program's `interface Writer`
+        /// and the stdlib's are two interfaces with one name (#1426). `None`
+        /// for one the compiler provides without a declaration.
+        decl: Option<TypeId>,
     },
     /// Never type (for return, panic, etc.)
     Never,
@@ -120,6 +153,15 @@ impl Type {
             Type::Named(id) | Type::Generic { base: id, .. } => names.get(id).map(String::as_str),
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => Some(name),
             _ => None,
+        }
+    }
+
+    /// A function type whose parameters are all borrowed: a constructor,
+    /// a compiler-made callback, a stub with no modes.
+    pub fn fn_borrowing(params: Vec<Type>, ret: Type) -> Type {
+        Type::Fn {
+            params: params.into_iter().map(FnParam::borrowed).collect(),
+            ret: Box::new(ret),
         }
     }
 }
@@ -161,21 +203,24 @@ impl Type {
     /// layout — and they each had their own copy of the match. They agreed, but
     /// only until someone added a `Type` variant and updated one of them.
     pub fn has_unsolved_var(&self) -> bool {
+        self.contains(&|t| matches!(t, Type::Var(_)))
+    }
+
+    /// Whether this type, or any type inside it, satisfies `pred`.
+    pub fn contains(&self, pred: &impl Fn(&Type) -> bool) -> bool {
+        if pred(self) {
+            return true;
+        }
         match self {
-            Type::Var(_) => true,
-            Type::Result { ok, err } => ok.has_unsolved_var() || err.has_unsolved_var(),
-            Type::RawPtr(inner) => inner.has_unsolved_var(),
-            Type::Array { elem, .. } => elem.has_unsolved_var(),
-            Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(Type::has_unsolved_var)
-            }
-            Type::Fn { params, ret } => {
-                params.iter().any(Type::has_unsolved_var) || ret.has_unsolved_var()
-            }
-            Type::SimdVector { elem, .. } => elem.has_unsolved_var(),
+            Type::Result { ok, err } => ok.contains(pred) || err.contains(pred),
+            Type::RawPtr(inner) => inner.contains(pred),
+            Type::Array { elem, .. } => elem.contains(pred),
+            Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(|t| t.contains(pred)),
+            Type::Fn { params, ret } => params.iter().any(|p| p.ty.contains(pred)) || ret.contains(pred),
+            Type::SimdVector { elem, .. } => elem.contains(pred),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
                 .iter()
-                .any(|a| matches!(a, GenericArg::Type(t) if t.has_unsolved_var())),
+                .any(|a| matches!(a, GenericArg::Type(t) if t.contains(pred))),
             _ => false,
         }
     }
@@ -328,7 +373,10 @@ impl Type {
                 TypeExpr::generic(name.clone(), args.iter().map(arg).collect())
             }
             Type::Fn { params, ret } => TypeExpr::Func {
-                params: params.iter().map(Type::to_type_expr).collect(),
+                params: params
+                    .iter()
+                    .map(|p| rask_ast::ty::FuncParam { mode: p.mode, ty: p.ty.to_type_expr() })
+                    .collect(),
                 ret: Box::new(ret.to_type_expr()),
             },
             Type::Tuple(elems) => TypeExpr::Tuple(elems.iter().map(Type::to_type_expr).collect()),
@@ -345,7 +393,7 @@ impl Type {
             },
             Type::Union(members) => TypeExpr::Union(members.iter().map(Type::to_type_expr).collect()),
             Type::RawPtr(inner) => TypeExpr::RawPtr(Box::new(inner.to_type_expr())),
-            Type::InterfaceObject { interface_name } => {
+            Type::InterfaceObject { interface_name, .. } => {
                 TypeExpr::Any(Box::new(TypeExpr::named(interface_name.clone())))
             }
             other => TypeExpr::named(other.to_string()),
@@ -419,7 +467,7 @@ impl fmt::Display for Type {
             }
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
-            Type::InterfaceObject { interface_name } => write!(f, "any {}", interface_name),
+            Type::InterfaceObject { interface_name, .. } => write!(f, "any {}", interface_name),
             Type::Assoc { base, name } => write!(f, "{}.{}", base, name),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),

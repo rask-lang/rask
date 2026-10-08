@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Reading a JSON tree without handing out what it owns (#1425).
+//
+// `JsonValue.as_array(self)` returned the vector inside a *borrowed* value, so
+// the caller got a second owner for it. `examples/package_manager.rk` called it
+// on a map lookup, freed the array, and then freed it again with the map:
+// `free(): invalid pointer` on any manifest with a dependency. `as_array` and
+// `as_object` take the value now, and a borrowed one is read in place.
+
+import json
+import json.JsonValue
+
+struct Dep {
+    name: string
+    constraint: string
+}
+
+func str_field(m: Map<string, JsonValue>, key: string) -> string? {
+    if m.get(key)? as v {
+        return v.as_string()
+    }
+    return none
+}
+
+func parse_dep(entry: JsonValue) -> Dep? {
+    if entry is Object(d) {
+        let name = str_field(d, "name") ?? ""
+        let constraint = str_field(d, "constraint") ?? ""
+        if name.is_empty() || constraint.is_empty() { return none }
+        return Dep { name, constraint }
+    }
+    return none
+}
+
+func parse_deps(deps_val: JsonValue) -> Vec<Dep> {
+    mut deps = Vec.new()
+    if deps_val is Array(entries) {
+        for entry in entries {
+            if parse_dep(entry)? as dep {
+                deps.push(dep)
+            }
+        }
+    }
+    return deps
+}
+
+// The package manager's shape: the array is read where it lives, under a
+// lookup into the object's map.
+func deps_of(obj: JsonValue) -> Vec<Dep> {
+    if obj is Object(m) {
+        if m.get("deps")? as deps_val {
+            return parse_deps(deps_val)
+        }
+    }
+    return Vec.new()
+}
+
+const META: string = "{{\"name\":\"alpha\",\"deps\":[{{\"name\":\"beta\",\"constraint\":\"^1.0.0\"}},{{\"name\":\"gamma\",\"constraint\":\"~2.1\"}},{{\"name\":\"\"}}]}}"
+
+test "a dependency array read in place under a map lookup" {
+    let v = json.decode<JsonValue>(META) catch e => {
+        assert false
+        return
+    }
+    let deps = deps_of(v)
+    assert deps.len() == 2
+    assert deps[0].name == "beta"
+    assert deps[1].constraint == "~2.1"
+    // Still the caller's, whole.
+    assert json.encode(v).contains("gamma")
+}
+
+test "read twice from the same tree" {
+    let v = json.decode<JsonValue>(META) catch e => {
+        assert false
+        return
+    }
+    assert deps_of(v).len() + deps_of(v).len() == 4
+}
+
+test "as_object and as_array take the value apart" {
+    let v = json.decode<JsonValue>(META) catch e => {
+        assert false
+        return
+    }
+    mut obj = v.as_object() ?? Map.new()
+    let arr = (obj.remove("deps") ?? JsonValue.Null).as_array() ?? Vec.new()
+    assert arr.len() == 3
+    assert obj.len() == 1
+}
+
+func main() {
+    let v = json.decode<JsonValue>(META) catch e => {
+        return
+    }
+    println("{deps_of(v).len()}")
+}

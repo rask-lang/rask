@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A fixed array is its bytes wherever it's stored: in a Vec, a Map, an outer
+// array or an option.
+//
+// Natively, `Vec<[i32; 2]>` read back zeros (#1450). Codegen kept its own
+// lists of "types handed around by address", and none had `Array`, so the
+// literal stored the inner array's address as the element, push handed the
+// runtime the array's bytes as a pointer, and `v[0]` loaded a word where the
+// array belonged.
+
+test "a Vec of i32 pairs reads back what went in" {
+    let a: Vec<[i32; 2]> = [[1, 2]]
+    let b = a[0]
+    assert b[0] == 1
+    assert b[1] == 2
+    assert a[0][1] == 2
+}
+
+test "a Vec of i64 pairs reads back what went in" {
+    let c: Vec<[i64; 2]> = [[1, 2], [3, 4]]
+    let d = c[1]
+    assert d[0] == 3
+    assert d[1] == 4
+}
+
+test "push, assign, iterate and pop" {
+    mut v: Vec<[i32; 2]> = Vec.new()
+    v.push([1, 2])
+    v.push([3, 4])
+    v[0] = [5, 6]
+    mut sum = 0
+    for p in v {
+        sum += p[0] + p[1]
+    }
+    assert sum == 18
+    let popped = v.pop()
+    if popped? as p {
+        assert p[1] == 4
+    } else {
+        assert false
+    }
+    let got = v.get(0)
+    if got? as g {
+        assert g[0] == 5
+    } else {
+        assert false
+    }
+}
+
+test "an array of arrays" {
+    mut grid: [[i64; 2]; 2] = [[1, 2], [3, 4]]
+    assert grid[1][0] == 3
+    grid[1] = [7, 8]
+    grid[0][1] = 9
+    assert grid[0][1] == 9
+    assert grid[1][1] == 8
+    let nested: Vec<[[i64; 2]; 2]> = [[[1, 2], [3, 4]]]
+    assert nested[0][1][0] == 3
+}
+
+test "narrow and float elements" {
+    let bs: Vec<[u8; 3]> = [[1, 2, 3], [4, 5, 6]]
+    assert bs[1][2] == 6
+    let fs: Vec<[f32; 2]> = [[1.5, 2.5]]
+    assert fs[0][1] == 2.5
+}
+
+test "a Map of arrays" {
+    mut m: Map<i64, [i32; 2]> = Map.new()
+    m.insert(1, [11, 12])
+    if m.get(1)? as q {
+        assert q[1] == 12
+    } else {
+        assert false
+    }
+}
+
+test "a Vec of string arrays" {
+    let names: Vec<[string; 2]> = [["a", "b"]]
+    assert names[0][1] == "b"
+}

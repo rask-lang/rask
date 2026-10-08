@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `x is Variant`, written bare or qualified, tests the tag whatever the
+// variant carries, and binds nothing. A payload is named by writing it:
+// `x is Variant(n)`.
+//
+// Before #1401 the qualified form of a payload variant was checked as a
+// constructor call with no arguments and refused ("expected 1 argument,
+// found 0"), and the bare form bound a variable named after the variant.
+// Natively a test on a struct-shaped variant read the wrong tag, and a
+// pattern that reused an outer name kept it rebound after the branch.
+
+enum Cmd {
+    Ins(i32)
+    Del { at: i32 }
+    Move(i32, i32)
+    Quit
+}
+
+enum Chain {
+    Next(i64)
+    Stop
+}
+
+func step(c: Chain) -> Chain {
+    if c is Next(n) {
+        if n > 3 {
+            return Chain.Stop
+        }
+        return Chain.Next(n + 1)
+    }
+    return Chain.Stop
+}
+
+test "the qualified form tests a payload variant" {
+    let c = Cmd.Ins(5)
+    mut hit = false
+    if c is Cmd.Ins {
+        hit = true
+    }
+    assert hit
+    mut wrong = false
+    if c is Cmd.Del {
+        wrong = true
+    }
+    assert !wrong
+}
+
+test "a bare test on a named payload reads the right tag" {
+    let d = Cmd.Del(at: 7)
+    mut hit = false
+    if d is Del {
+        hit = true
+    }
+    assert hit
+}
+
+test "the payload is named by writing it" {
+    let c = Cmd.Ins(5)
+    mut seen = 0
+    if c is Cmd.Ins(n) {
+        seen = n + 1
+    }
+    assert seen == 6
+}
+
+test "a pattern reusing an outer name rebinds it only in the branch" {
+    let d = Cmd.Del(at: 7)
+    if d is Del(d) {
+        assert d == 7
+    }
+    mut other = false
+    if d is Cmd.Ins {
+        other = true
+    }
+    assert !other
+}
+
+test "multi-field and empty variants test too" {
+    let m = Cmd.Move(1, 2)
+    mut moved = false
+    if m is Cmd.Move {
+        moved = true
+    }
+    assert moved
+    let q = Cmd.Quit
+    mut quit = false
+    if q is Cmd.Quit {
+        quit = true
+    }
+    assert quit
+}
+
+test "while tests the tag and the body moves it along" {
+    mut s = Chain.Next(0)
+    mut steps = 0
+    while s is Chain.Next {
+        steps += 1
+        s = step(s)
+    }
+    assert steps == 5
+}

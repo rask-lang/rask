@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `mutate self` on a type that is one word at runtime.
+//
+// A nominal over `i64`, or a `File` (whose value is the `FILE *` itself), is
+// a scalar `mutate` parameter: the method body reads and writes `self`
+// through a pointer. The caller passed the value instead, so natively the body
+// dereferenced the number or the handle and crashed (#1350).
+
+import fs
+import fs.File
+import io.IoError
+
+type Meters = i64
+
+extend Meters {
+    func grow(mutate self) {
+        self = Meters(self.value + 1)
+    }
+
+    func grow_twice(mutate self) {
+        self.grow()
+        self.grow()
+    }
+}
+
+struct Track {
+    length: Meters
+}
+
+extend File {
+    func write_twice(mutate self, s: string) -> void or IoError {
+        try self.write_text(s)
+        try self.write_text(s)
+    }
+}
+
+test "mutate self on a nominal writes back to a variable" {
+    mut m = Meters(5)
+    m.grow()
+    assert m.value == 6
+}
+
+test "mutate self on a nominal writes back to a field" {
+    mut t = Track { length: Meters(1) }
+    t.length.grow()
+    assert t.length.value == 2
+}
+
+test "mutate self passes itself on to another mutate self" {
+    mut m = Meters(0)
+    m.grow_twice()
+    assert m.value == 2
+}
+
+test "a Rask-bodied mutate self method on File runs" {
+    let p = "/tmp/rask_t_mutate_self_one_word.txt"
+    mut f = try fs.create_file(p)
+    try f.write_twice("ab")
+    try f.close()
+    assert (try fs.read_text(p)) == "abab"
+    try fs.remove_file(p)
+}
+
+test "mutate self on a nominal writes back to a Vec element" {
+    mut v: Vec<Meters> = [Meters(1), Meters(10)]
+    v[1].grow()
+    assert v[0].value == 1
+    assert v[1].value == 11
+}

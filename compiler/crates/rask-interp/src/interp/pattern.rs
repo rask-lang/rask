@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rask_ast::ty::TypeExpr;
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 
-use crate::value::Value;
+use crate::value::{IntKind, Value};
 
 use super::Interpreter;
 
@@ -25,6 +25,74 @@ impl Interpreter {
             || self.enums.contains_key(base)
             || self.struct_decls.contains_key(base)
             || matches!(base, "Vec" | "Map")
+    }
+
+    /// ER22: what `else as e` holds after `if x is P` missed: `x` without
+    /// the leaf `P` named, shaped as the checker typed it (`rest_ty`).
+    ///
+    /// On a two-branch value that's the payload of the other side. A flat
+    /// `T? or E` keeps a layer: testing `T` or `E` leaves an optional (`E?`,
+    /// `T?`), testing `none` leaves `T or E`. A union error less one member
+    /// stays a result too (#1454).
+    pub(super) fn else_binding_value(
+        scrutinee_ty: Option<&rask_types::Type>,
+        value: Value,
+        rest_ty: Option<&rask_types::Type>,
+    ) -> Value {
+        use rask_types::Type;
+        let Value::Enum { name, variant, fields, .. } = &value else { return value };
+        if name != "Result" && name != "Option" {
+            return value;
+        }
+        let payload = fields.first().cloned().unwrap_or(Value::Unit);
+        let wrap = |name: &str, variant: &str, field: Value| Value::Enum {
+            name: name.to_string(),
+            variant: variant.to_string(),
+            fields: vec![field],
+            variant_index: 0,
+            origin: None,
+        };
+        match rest_ty {
+            // `E?` or `T?` out of a flat value: the error moves into an
+            // option; the success side already is one.
+            Some(rest) if rest.is_option() => {
+                if variant == "Err" { wrap("Option", "Some", payload) } else { payload }
+            }
+            Some(Type::Result { ok: rest_ok, .. }) => {
+                let had_option = matches!(scrutinee_ty, Some(Type::Result { ok, .. }) if ok.is_option());
+                if variant == "Ok" && had_option && !rest_ok.is_option() {
+                    // `none` was tested, so the option holds a value.
+                    let inner = match &payload {
+                        Value::Enum { fields, .. } => fields.first().cloned().unwrap_or(Value::Unit),
+                        other => other.clone(),
+                    };
+                    wrap("Result", "Ok", inner)
+                } else {
+                    value
+                }
+            }
+            _ => payload,
+        }
+    }
+
+    /// The value a bare type test in a guard narrows to — `let p = x is
+    /// Point else …` — read off its `as` form. `None` when the pattern isn't
+    /// a type test against a two-branch value, or already binds.
+    pub(super) fn guard_type_test_value(&self, pattern: &Pattern, value: &Value) -> Option<Value> {
+        const GUARD: &str = "<guard>";
+        if !matches!(value, Value::Enum { name, .. } if name == "Result") {
+            return None;
+        }
+        let ty = match pattern {
+            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            Pattern::TypePat { ty, binding: None } => ty.clone(),
+            Pattern::Ident(name) if !name.contains('.') && self.is_known_type_name(name) => {
+                TypeExpr::named(name.as_str())
+            }
+            _ => return None,
+        };
+        let as_form = Pattern::TypePat { ty, binding: Some(GUARD.to_string()) };
+        self.match_pattern(&as_form, value)?.remove(GUARD)
     }
 
     pub(super) fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
@@ -100,14 +168,15 @@ impl Interpreter {
                 // treatment as Result (#579) — without it, `x is i32` on a
                 // `T?` fell through to the variable-binding case and matched
                 // unconditionally, `none` included.
-                if let Value::Enum { name: sc_name, fields, .. } = value {
+                //
+                // It's the type pattern with nothing bound, so it goes through
+                // the same walk: a flat `string? or E` wears two wrappers, and
+                // checking only the outer one answered `r is string` false
+                // while `r is string as s` matched.
+                if let Value::Enum { name: sc_name, .. } = value {
                     if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
-                        return match fields.first() {
-                            Some(inner) if runtime_type_matches(inner, &TypeExpr::named(name.as_str())) => {
-                                Some(HashMap::new())
-                            }
-                            _ => None,
-                        };
+                        let as_type = Pattern::TypePat { ty: TypeExpr::named(name.as_str()), binding: None };
+                        return self.match_pattern(&as_type, value);
                     }
                 }
                 // Not a known variant — treat as variable binding
@@ -258,6 +327,10 @@ impl Interpreter {
             // `none`. A flat `T? or E` wears two wrappers, so the walk goes
             // down layer by layer — the pattern names one leaf (OPT30).
             Pattern::TypePat { ty, binding } => {
+                // In a generic body `T as x` names whatever this call bound
+                // `T` to; the value only knows its concrete type (#1439).
+                let resolved = self.resolve_type_param(ty);
+                let ty = &resolved;
                 let mut current = value;
                 loop {
                     let Value::Enum { name: sc_name, variant, fields, .. } = current else {
@@ -496,6 +569,11 @@ impl Interpreter {
     /// Returns None if the values are not comparable.
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         match (a, b) {
+            // A `u64` travels as its bit pattern in an i64, so one above
+            // `i64::MAX` reads as negative. Compared signed, `sort()` put
+            // 18000000000000000000 ahead of 3.
+            (Value::Int(a, IntKind::U64), Value::Int(b, _))
+            | (Value::Int(a, _), Value::Int(b, IntKind::U64)) => Some((*a as u64).cmp(&(*b as u64))),
             (Value::Int(a, _), Value::Int(b, _)) => Some(a.cmp(b)),
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),

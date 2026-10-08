@@ -59,3 +59,21 @@ func main() {
 
     println("{ok_coalesce} {ok_force} {ok_get} {a} {b} {c} {d} {e} {f}")
 }
+
+func id<R>(x: R) -> R {
+    return x
+}
+
+// An operand whose type settles only at the end of checking. The checker
+// committed it to `i32 or _` early, and when it came out `i64` the mismatch
+// was reported on `m.insert`, a line with nothing wrong on it (#1290).
+func late_operands() {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    // ERROR: the closure's `v + 1` settles last; the call returns a plain `i64`
+    let g = m.modify_with_default("b", || { return 7 }, |mutate v: i64| { return v + 1 }) ?? -1
+
+    // ERROR: a generic handing back an unsuffixed number
+    let h = id(5) ?? -1
+    println("{g} {h}")
+}

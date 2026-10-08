@@ -723,6 +723,7 @@ fn remap_stmt(
                     offset: c.offset,
                     size: c.size,
                     by_ref: c.by_ref,
+                    copy: c.copy,
                 })
                 .collect(),
             heap: *heap,
@@ -744,6 +745,10 @@ fn remap_stmt(
             access: *access,
         },
         MirStmtKind::ClosureDrop { closure, made } => MirStmtKind::ClosureDrop {
+            closure: local_map.get(closure).copied().unwrap_or(*closure),
+            made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
+        },
+        MirStmtKind::ClosureRetain { closure, made } => MirStmtKind::ClosureRetain {
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
@@ -790,8 +795,9 @@ fn remap_stmt(
             vtable_offset: *vtable_offset,
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
         },
-        MirStmtKind::InterfaceDrop { interface_object } => MirStmtKind::InterfaceDrop {
+        MirStmtKind::InterfaceDrop { interface_object, owns } => MirStmtKind::InterfaceDrop {
             interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
+            owns: *owns,
         },
         MirStmtKind::Phi { dst, args } => MirStmtKind::Phi {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
@@ -814,6 +820,12 @@ fn remap_stmt(
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::RcIncContents { local } => MirStmtKind::RcIncContents {
+            local: local_map.get(local).copied().unwrap_or(*local),
+        },
+        MirStmtKind::ZeroAggregate { local } => MirStmtKind::ZeroAggregate {
+            local: local_map.get(local).copied().unwrap_or(*local),
+        },
         MirStmtKind::ReleaseSlot { addr, offset, ty } => MirStmtKind::ReleaseSlot {
             addr: local_map.get(addr).copied().unwrap_or(*addr),
             offset: *offset,
@@ -828,10 +840,19 @@ fn remap_stmt(
                     offset: c.offset,
                     size: c.size,
                     by_ref: c.by_ref,
+                    copy: c.copy,
                 })
                 .collect(),
         },
         MirStmtKind::EnsureHookPop => MirStmtKind::EnsureHookPop,
+        // Inlining runs before any release pass arms a slot, so these never
+        // reach here; copied, they'd keep the callee's slot numbers.
+        MirStmtKind::UnwindArm { slot, value, release } => MirStmtKind::UnwindArm {
+            slot: *slot,
+            value: local_map.get(value).copied().unwrap_or(*value),
+            release: release.clone(),
+        },
+        MirStmtKind::UnwindDisarm { slot } => MirStmtKind::UnwindDisarm { slot: *slot },
     };
 
     // IN4: preserve original spans from callee

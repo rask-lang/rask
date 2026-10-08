@@ -1,29 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import async.Handle
-
 // --- OS threads ---
 
 /// Raw OS thread. Works anywhere — no context required.
+///
+///     let h = Thread.spawn { work() }
+///
+/// `Thread.spawn { … }` is a task block (conc.async/S3): language syntax, so
+/// the type has no methods of its own.
 public struct Thread { }
-
-extend Thread {
-    /// Spawn an OS thread. Returns a handle that must be joined or detached.
-    ///
-    /// `take f`: the thread keeps the closure past this call (PM3).
-    @native("rask_closure_spawn")
-    public func spawn(take f: func() -> T) -> Handle<T> {}
-}
 
 // --- Thread pool ---
 
 /// Thread pool for CPU-bound work. Requires `using ThreadPool`.
+///
+///     let j = ThreadPool.spawn { compute(x) }
+///
+/// `ThreadPool.spawn { … }` is a task block (conc.async/S2).
 public struct ThreadPool { }
-
-extend ThreadPool {
-    /// Spawn work on the thread pool. Returns a handle.
-    ///
-    /// `take f`: the pool keeps the closure past this call (PM3).
-    @native("rask_threadpool_spawn")
-    public func spawn(take f: func() -> T) -> Handle<T> {}
-}

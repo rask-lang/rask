@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `return` inside an inlined closure answers the closure (#1498).
+//
+// `Map.modify`'s closure is inlined into the caller. Its `return` was coerced
+// against the enclosing function's type, so in a function answering
+// `Vec<string>?` the closure's vector came back as `Some(Some(v))` natively
+// and the caller read the inner option's address as the vector.
+
+struct Block {
+    entries: Vec<string>
+    hits: i64
+}
+
+func touch(mutate blocks: Map<string, Block>, key: string) -> Vec<string>? {
+    if !blocks.contains(key) {
+        return none
+    }
+    return blocks.modify(key, |mutate b: Block| {
+        b.hits = b.hits + 1
+        return b.entries.clone()
+    })
+}
+
+func hits(mutate blocks: Map<string, Block>, key: string) -> i64? {
+    return blocks.modify(key, |mutate b: Block| {
+        return b.hits
+    })
+}
+
+test "an inlined closure's return lands in its own slot" {
+    mut blocks: Map<string, Block> = Map.new()
+    mut entries: Vec<string> = Vec.new()
+    entries.push("first-entry-long-enough-for-heap")
+    entries.push("second-entry-long-enough-for-heap")
+    blocks.insert("a", Block { entries, hits: 0 })
+
+    let got = touch(mutate blocks, "a") ?? panic("expected the block")
+    assert got.len() == 2
+    assert got[1] == "second-entry-long-enough-for-heap"
+    assert touch(mutate blocks, "b") is none
+    assert hits(mutate blocks, "a") ?? -1 == 1
+}

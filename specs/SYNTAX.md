@@ -327,7 +327,7 @@ create_user("Alice", "alice@x.com", false)
 // Named (must match declaration order)
 create_user(name: "Alice", email: "alice@x.com", admin: false)
 ```
-Named arguments improve readability but don't allow reordering. IDE shows parameter names as ghost annotations even for positional calls.
+Named arguments improve readability but don't allow reordering. A label has to be the name of the parameter in its position; anything else is a compile error (E0903), including a label on a callee with no parameter names, like a closure value or a tuple variant. IDE shows parameter names as ghost annotations even for positional calls.
 
 **Default arguments:**
 ```rask
@@ -590,7 +590,7 @@ func sort(items: Vec<T>) {
 // `using` installs a process-global slot for a block's lexical extent.
 // It never appears on a signature.
 using Multitasking {
-    let t = spawn(|| { return work() })
+    let t = spawn { return work() }
     t.join()
 }
 ```
@@ -678,6 +678,8 @@ type alias Handler = func(i32) -> string
 
 let coords: Pair<f64> = (1.0, 2.0)  // Pair<f64> IS (f64, f64)
 ```
+
+A function type says how each parameter is passed, the same way a declaration does: `func(take Vec<i64>)`, `func(mutate Counter)`. A function value only fits a type with its own modes ([functions.md](types/functions.md)).
 
 A function type's return runs to the end of the type, so a trailing `?` or `or E` belongs to the return. To apply it to the whole function, put the function in parentheses:
 
@@ -861,7 +863,7 @@ let input = loop {
 ```rask
 loop {
     let conn = server.accept()
-    spawn(|| { handle(conn) }).detach()
+    spawn { handle(conn) }.detach()
 }
 ```
 
@@ -1003,10 +1005,15 @@ Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinish
 ## Concurrency Syntax
 
 ```rask
-// Spawn and join
-let handle = spawn(|| { return compute() })
+// A task's body is a block; its value is the task's result
+let handle = spawn { compute() }
 let result = try handle.join()
-spawn(|| { background_work() }).detach()
+spawn { background_work() }.detach()
+// The block runs once, so it may consume what it captures
+spawn { conn.close() }.detach()
+// An OS thread, a pool job
+let t = Thread.spawn { work() }
+let j = ThreadPool.spawn { crunch(x) }
 
 // Channels
 let (tx, rx) = Channel<Message>.buffered(100)
@@ -1281,7 +1288,7 @@ println("{sum}")
 | Attributes | `@name` | Familiar from Python/Java |
 | Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |
 | Generics | Implicit single letters (`T`, `U`); explicit `<Name>` otherwise | `where` for constraints |
-| Closures | `\|x\| expr` | Rust-style pipes |
+| Closures | `\|x\| expr`, `\|take x: T\| expr` | Rust-style pipes; parameters take modes like a function's |
 | Named args | `name: value` | Order-fixed, optional (IDE ghosts) |
 | Default args | `param = value` | Constants only, after required |
 | Interpolation | `"{x}"` | In all strings |

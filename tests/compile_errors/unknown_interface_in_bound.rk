@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a bound or header naming an interface nobody declared, at the declaration
+//
+// A typo in a bound used to be reported at each call, and with no caller it
+// wasn't reported at all (#1483). The name is checkable on its own, so it's
+// reported once, where it's written, with a did-you-mean (E0833).
+
+interface Printable {
+    func print(self) -> string
+}
+
+// ERROR: no interface named `Printabel` — a function bound, never called
+func show<T: Printabel>(x: T) {
+}
+
+// ERROR: in a `where` clause
+func show_all<T>(xs: Vec<T>) where T: Printabel {
+}
+
+// ERROR: on a struct's parameter
+struct Holder<T: Printabel> {
+    item: T
+}
+
+// ERROR: on an enum's parameter
+enum Slot<T: Printabel> {
+    Full(T)
+    Empty
+}
+
+struct Doc {
+    n: i64
+}
+
+// ERROR: in an `implements` header
+Doc implements Printabel {
+    func print(self) -> string {
+        return "doc"
+    }
+}
+
+extend Doc {
+    // ERROR: on a method's own parameter
+    func pair<U: Printabel>(self, u: U) -> i64 {
+        return self.n
+    }
+}
+
+// ERROR: as a super-interface
+interface Loud: Printabel {
+    func shout(self) -> string
+}
+
+// ERROR: on an associated type
+interface Source {
+    type Item: Printabel
+}
+
+struct Page {
+    n: i64
+}
+
+Page implements Printable {
+    func print(self) -> string {
+        return "page"
+    }
+}
+
+// A bad bound beside a good one is reported here, once, and not again at the
+// call below.
+// ERROR: the second bound
+func both<T: Printable + Printabel>(x: T) -> string {
+    return x.print()
+}
+
+func main() {
+    println(both(Page { n: 1 }))
+}

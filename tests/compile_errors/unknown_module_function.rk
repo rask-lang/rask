@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a call through a stdlib module to a function the module doesn't have
+// (E0411, #1404).
+//
+// `async` has no namespace struct, so `async.join_all(…)` fell through to a
+// method lookup on the module's placeholder type, and the solver drops an
+// unresolved method on a placeholder without a word. The only error was
+// "couldn't work out the type of `rs`"; once the result was used, the program
+// type-checked and crashed in MIR lowering. `time` has a namespace, so the same
+// mistake there was caught by another path, with other wording.
+
+import async
+import time
+
+func collect() -> i64 {
+    // ERROR: `join_all` is a method on `Handles`, not a function of `async` [E0411]
+    let rs = async.join_all(5)
+    return rs.len() as i64
+}
+
+func wait() {
+    // ERROR: `time` has no `nosuch` either [E0411]
+    time.nosuch(5)
+}
+
+// What the module does have still resolves: a free function it exports and a
+// member of its namespace.
+func fine() -> bool {
+    time.sleep(time.Duration.from_millis(1))
+    return async.cancelled()
+}
+
+func main() {}

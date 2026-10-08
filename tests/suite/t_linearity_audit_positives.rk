@@ -273,9 +273,9 @@ test "conc.async/CH1 — and one carrying something ordinary" {
 // and the same with the task panicking. Both have to run the cleanup exactly
 // once and leave nobody owing it.
 //
-// `own` is what makes it writable at all. A plain closure borrows its
-// captures, so consuming one inside the body is E0891 — which is the whole
-// point of that rejection: nothing bounds how many times a closure runs.
+// The task block captures the latch and consumes it: it runs once, so it may
+// (conc.async/S6). A closure can't (mem.closures/CM4) — nothing bounds how
+// many times a closure runs.
 //
 // The interpreter used to report a leak here for a program that ran
 // correctly. A task runs on its own interpreter with its own resource
@@ -299,9 +299,9 @@ extend Latch {
 test "a task consumes the resource it was given" {
     using Multitasking {
         let latch = Latch { id: 3 }
-        let task = spawn(|| {
+        let task = spawn {
             return latch.release()
-        })
+        }
         let got = task.join() catch _ => {
             assert false
             return
@@ -313,10 +313,10 @@ test "a task consumes the resource it was given" {
 test "and does so while unwinding" {
     using Multitasking {
         let latch = Latch { id: 5 }
-        let task = spawn(|| {
+        let task = spawn {
             ensure latch.release()
             panic("the task dies here")
-        })
+        }
         // The task died, so the join answers with the failure — and
         // `released 5` above it says the `ensure` ran on the way out, which
         // is L4 under a panic. Both backends print the same two lines; a

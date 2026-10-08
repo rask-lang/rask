@@ -7,6 +7,10 @@
 use crate::{Diagnostic, ToDiagnostic};
 use rask_ast::Span;
 
+/// A match with guarded arms that still misses something: say why the guarded
+/// arm didn't count, since it looks like it covers the case.
+const GUARDED_ARMS_NOTE: &str = "an arm with an `if` guard covers nothing: when the guard is false the value goes on to the arms below, so the rest still needs an unguarded arm";
+
 /// Base name of a rendered type: `Map<_, _>` -> `Map`, `Vec<string>?` -> `Vec`.
 fn type_base(ty: &str) -> &str {
     let ty = ty.trim_end_matches(['?', '!']);
@@ -39,12 +43,16 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// match everything. Empty when the type has no registry entry — a user-defined
 /// type, where there's nothing to compare against.
 fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
-    let candidates = rask_stdlib::registry::type_method_names(type_base(ty));
+    nearest_names(rask_stdlib::registry::type_method_names(type_base(ty)), method)
+}
+
+/// The rules `nearest_methods` describes, over any list of names.
+fn nearest_names<'a>(candidates: &[&'a str], method: &str) -> Vec<&'a str> {
     if candidates.is_empty() || method.is_empty() {
         return Vec::new();
     }
     let budget = (method.len() / 3).max(1);
-    let mut scored: Vec<(usize, &'static str)> = candidates
+    let mut scored: Vec<(usize, &'a str)> = candidates
         .iter()
         // Never the name that was written. "did you mean `load`?" for a call
         // that says `load` is worse than no suggestion: it reads as a compiler
@@ -261,6 +269,32 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("`continue` can only skip to the next loop iteration")
             }
 
+            SpawnTakesABlock { form, receiver, handed } => {
+                let start = match receiver {
+                    Some(r) => format!("{r}.spawn"),
+                    None => "spawn".to_string(),
+                };
+                let fix = if form.ends_with("spawn_with") {
+                    let v = handed.as_deref().unwrap_or("value");
+                    format!(
+                        "name `{v}` in the block instead of passing it in — the block runs \
+                         once, so it may consume what it captures:\n\n  \
+                         {start} {{ … {v} … }}"
+                    )
+                } else {
+                    format!("drop the parentheses and the bars:\n\n  {start} {{ … }}")
+                };
+                Diagnostic::error(format!("`{}` takes a block, not a closure", form))
+                    .with_code("E0915")
+                    .with_primary(self.span, format!("write the task as `{start} {{ … }}`"))
+                    .with_fix(fix)
+                    .with_why(
+                        "a task's body is a block that runs once, not a closure value: it may \
+                         use up what it captures, and nothing can call it a second time \
+                         [conc.async/S1, S6]",
+                    )
+            }
+
             InvalidReturn => Diagnostic::error("return outside of function")
                 .with_code("E0206")
                 .with_primary(self.span, "cannot return here")
@@ -412,6 +446,29 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 }
             }
 
+            ShadowsModule { name, module, imported_at } => {
+                let what = if name == module {
+                    format!("`{}` is the module imported here", name)
+                } else {
+                    format!("`{}` is the `{}` module, imported here", name, module)
+                };
+                Diagnostic::error(format!("`{}` already names an imported module", name))
+                    .with_code("E0911")
+                    .with_primary(self.span, format!("a second `{}` in the same scope", name))
+                    .with_secondary(*imported_at, what)
+                    .with_fix(format!(
+                        "name this something else, or import the module under another name: \
+                         `import {} as {}_mod`",
+                        module, module
+                    ))
+                    .with_why(format!(
+                        "one name, one meaning: with both in scope nothing in the source \
+                         says whether `{}.x` means the module's member or a field of this \
+                         value [struct.modules/IM8]",
+                        name
+                    ))
+            }
+
             NoSuchStdlibExport { module, symbol, suggestion } => {
                 let d = Diagnostic::error(format!(
                     "`{}` has no `{}` to import", module, symbol
@@ -475,6 +532,16 @@ impl ToDiagnostic for rask_types::TypeError {
                         format!("expected `{}`, found `{}`", expected, found),
                     )
                     .with_why("Rask is statically typed — every expression must match its expected type");
+
+                // Two types that print alike: the program declares a type with
+                // a stdlib type's name, and the value is the stdlib's (#1333).
+                if expected.to_string() == found.to_string() {
+                    return diag.with_fix(format!(
+                        "two types are called `{}` here, the program's own and the standard \
+                         library's; rename the program's so they stop sharing a name",
+                        found
+                    ));
+                }
 
                 // An optional is `Result { ok: T, err: None }` underneath, so the
                 // Result branch below catches it too unless it's split off
@@ -656,6 +723,46 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_fix("check spelling or add an import for this type")
                 .with_why("all types must be defined or imported before use"),
 
+            FnParamModeMismatch { expected, found, index, span } => {
+                use rask_ast::ty::ParamMode;
+                let mode_at = |t: &rask_types::Type| match t {
+                    rask_types::Type::Fn { params, .. } => params.get(*index).map(|p| p.mode),
+                    _ => None,
+                };
+                let n = index + 1;
+                let help = match (mode_at(expected), mode_at(found)) {
+                    (Some(ParamMode::Take), _) => format!(
+                        "a `{expected}` hands parameter {n} over, and this function only lends \
+                         it, so nothing would free it. Declare that parameter `take` \
+                         (`|take p: T|` in a closure), or make the slot `{found}`"
+                    ),
+                    (_, Some(ParamMode::Take)) => format!(
+                        "this function takes ownership of parameter {n}. Through a `{expected}` \
+                         the caller would go on using what it gave away; write the slot as \
+                         `{found}` so a call through it moves the argument"
+                    ),
+                    (Some(ParamMode::Borrow), Some(ParamMode::Mutate)) => format!(
+                        "this function writes parameter {n}. Write the slot as `{found}` and \
+                         call it with `f(mutate x)`, so the write is visible where it happens"
+                    ),
+                    _ => format!(
+                        "the slot lends parameter {n} for writing. Declare it `mutate` in the \
+                         function (`|mutate x: T|` in a closure), or make the slot `{found}`"
+                    ),
+                };
+                Diagnostic::error(format!(
+                    "these function types pass parameter {n} differently"
+                ))
+                .with_code("E0912")
+                .with_primary(*span, format!("expected `{}`, found `{}`", expected, found))
+                .with_fix(help)
+                .with_why(
+                    "how a parameter is passed is part of a function's type: a call through a \
+                     function value moves, lends, or lends for writing exactly as a direct call \
+                     does, so the value's type has to say which [type.functions/FT1]",
+                )
+            }
+
             ArityMismatch {
                 expected,
                 found,
@@ -677,6 +784,62 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_help(fix_msg.clone())
                 .with_fix(fix_msg)
                 .with_why("function calls must provide exactly the number of arguments the function declares")
+            }
+
+            ArgLabelMismatch { callee, label, position, params, span } => {
+                let why = "named arguments label a call, they don't reorder it: each label is checked against the parameter in its position. Matched by name instead, `f(b: 2, a: 1)` and `f(2, 1)` would mean different things";
+                match params {
+                    Some(names) if names.contains(label) => {
+                        let declared = names.iter().position(|n| n == label).unwrap_or(0);
+                        let in_order = names
+                            .iter()
+                            .map(|n| format!("{n}: …"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        Diagnostic::error(format!("named argument `{}` is out of order", label))
+                            .with_code("E0903")
+                            .with_primary(*span, format!(
+                                "`{}` is parameter {} of `{}`, but this is argument {}",
+                                label, declared + 1, callee, position + 1
+                            ))
+                            .with_help("named arguments keep the declaration order")
+                            .with_fix(format!("write them in order: `{}({})`", callee, in_order))
+                            .with_why(why)
+                    }
+                    Some(names) => {
+                        let listed = if names.is_empty() {
+                            format!("`{}` takes no parameters", callee)
+                        } else {
+                            format!(
+                                "`{}`'s parameters are {}",
+                                callee,
+                                names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+                            )
+                        };
+                        let (primary, fix) = match names.get(*position) {
+                            Some(here) => (
+                                format!("this position is `{}`", here),
+                                format!("rename the label to `{}:`, or drop it", here),
+                            ),
+                            None => ("no parameter has this name".to_string(), format!("drop the label ({})", listed)),
+                        };
+                        Diagnostic::error(format!("`{}` has no parameter named `{}`", callee, label))
+                            .with_code("E0903")
+                            .with_primary(*span, primary)
+                            .with_help(listed)
+                            .with_fix(fix)
+                            .with_why(why)
+                    }
+                    None => Diagnostic::error(format!(
+                        "`{}` has no parameter names for `{}:` to match",
+                        callee, label
+                    ))
+                        .with_code("E0903")
+                        .with_primary(*span, "labeled argument")
+                        .with_help("a closure value, an extern function, a tuple variant and a compiler-generated method take their arguments by position only")
+                        .with_fix("drop the label and pass the argument by position")
+                        .with_why("a label is checked against the parameter's declared name. With no name to check it against, the label would be ignored, and an ignored label claims something the call doesn't do"),
+                }
             }
 
             NotCallable { ty, span } => {
@@ -874,6 +1037,57 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_help(format!("check available methods on `{}`", ty))
                         .with_fix(format!("check available methods on `{}`", ty))
                         .with_why("method calls are resolved at compile time against the type's extend blocks"),
+                }
+            }
+
+            PrivateModuleFunction { module, function, public, span } => {
+                Diagnostic::error(format!("`{}.{}` is not public", module, function))
+                    .with_code("E0412")
+                    .with_primary(*span, format!("internal to the stdlib's `{}` module", module))
+                    .with_fix(format!("use what `{}` makes public: {}", module, public.join(", ")))
+                    .with_why(
+                        "the stdlib is a package of its own, and a function it declares without \
+                         `public` belongs to that package. It can change or go away without \
+                         notice, which is the point of not making it public [struct.modules/V1, V2]",
+                    )
+            }
+
+            NoSuchModuleFunction { module, function, owner, available, span } => {
+                let diag = Diagnostic::error(format!(
+                    "`{}` has no function `{}`",
+                    module, function
+                ))
+                .with_code("E0411")
+                .with_primary(*span, format!("not declared in `{}`", module))
+                .with_why(
+                    "a call through a module names something the module declares, and \
+                     `module.name(…)` is looked up in that module only [structure.modules/IM1]",
+                );
+                if let Some((ty, takes_self)) = owner {
+                    return if *takes_self {
+                        let var = {
+                            let mut c = ty.chars();
+                            c.next()
+                                .map(|f| f.to_lowercase().chain(c).collect::<String>())
+                                .unwrap_or_default()
+                        };
+                        diag.with_help(format!("`{}` is a method on `{}`, not a function of `{}`", function, ty, module))
+                            .with_fix(format!("call it on a `{}`: `{}.{}()`", ty, var, function))
+                    } else {
+                        diag.with_help(format!("`{}` belongs to `{}`, not to `{}`", function, ty, module))
+                            .with_fix(format!("{}.{}(…)", ty, function))
+                    };
+                }
+                let names: Vec<&str> = available.iter().map(String::as_str).collect();
+                match nearest_names(&names, function).first() {
+                    Some(n) => diag
+                        .with_help(format!("did you mean `{}.{}`?", module, n))
+                        .with_fix(format!("{}.{}(…)", module, n)),
+                    None if available.is_empty() => diag.with_fix(format!(
+                        "`{}` has no functions of its own; call a method on one of its types",
+                        module
+                    )),
+                    None => diag.with_fix(format!("pick one `{}` has: {}", module, available.join(", "))),
                 }
             }
 
@@ -1348,6 +1562,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
             }
 
+            RackNodeNotStruct { node, span } => {
+                Diagnostic::error(format!("`Rack<{}>`: a rack's nodes have to be structs", node))
+                    .with_code("E0326")
+                    .with_primary(*span, format!("`{}` has no fields for an edge to live in", node))
+                    .with_fix(format!("a list of values is a `Vec<{}>`; a graph wants a struct node whose edges are `Link<T>?` fields", node))
+                    .with_why("a rack exists so its nodes can point at each other and `delete` can null the edges into one; a node with no fields has nothing to point with, so it would be a slower `Vec` [mem.racks/RK14]")
+            }
+
             NonOptionalLink { span } => {
                 Diagnostic::error("a required `Link<T>` edge is not supported yet")
                     .with_code("E0327")
@@ -1389,6 +1611,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("`==` asks whether two links name the same node; ordering needs something the nodes declare")
                     .with_fix("order by a field: `a.id < b.id`, or `links.sort_by_key(|l| l.id)`")
                     .with_why("a link is the address of its node [mem.racks/RK2], so `<` answers from wherever the allocator put the chunk. Padding the heap before the rack is built changes the result, which makes a sorted walk over links unreproducible [determinism/D11]. Two nodes have no order to define — only identity, which is what `==` compares [mem.racks/RK11]")
+            }
+
+            CollectionNotOrderable { op, recv, noun, span } => {
+                Diagnostic::error(format!("`{}` on `{}`: {} has no order", op, recv, noun))
+                    .with_code("E0414")
+                    .with_primary(*span, "vectors, arrays, maps and sets compare for equality only")
+                    .with_help("say which order you mean: by length, by one element, or by a key")
+                    .with_fix("`a.len() < b.len()`, `a[0] < b[0]`, or `rows.sort_by_key(|r| r[0])`")
+                    .with_why("`Vec<T>` is `Equal` and `Hashable` when `T` is [type.generics/EQ4, HA3b], and `Map`/`Set` are `Equal` when their contents are [EQ4a], but none is `Comparable` [CO1]. Shorter-first, element-by-element and sum-first are all reasonable orders for a collection, and none of them is the obvious one, so there is no `<` to guess at. A fixed array shares `Vec`'s methods and its answer")
+            }
+
+            TakeSelfThroughLink { method, node, span } => {
+                Diagnostic::error(format!("`{}` takes its `{}`, and a link only reaches one", method, node))
+                    .with_code("E0910")
+                    .with_primary(*span, format!("`{}` would move the node out of its rack", method))
+                    .with_help(format!("call it on a `{}` you own; a node's life ends with `rack.delete(link)`", node))
+                    .with_fix(format!("if `{}` doesn't need to consume the node, declare it `func {}(self, …)` or `mutate self`", method, method))
+                    .with_why("the rack owns its nodes for their whole life [mem.racks/RK1], and a link is a reference to one [RK2]. `take self` consumes the receiver, which would leave the rack holding a node that is gone — every other link to it would read freed memory")
             }
 
             LocalSharedSent { name, span } => {
@@ -1710,15 +1950,6 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
 
-            MissingOwnAnnotation { param_name, param_index: _, span } => {
-                Diagnostic::error(format!("parameter `{}` requires `own` annotation at call site", param_name))
-                    .with_code("E0305")
-                    .with_primary(*span, format!("add `own` before this argument"))
-                    .with_help(format!("call with `own {}`", param_name))
-                    .with_fix(format!("add `own` annotation"))
-                    .with_why("ownership transfer requires explicit annotation at call site for clarity")
-            }
-
             UnexpectedAnnotation { annotation, param_name, param_index: _, span } => {
                 Diagnostic::error(format!("unexpected `{}` annotation for parameter `{}`", annotation, param_name))
                     .with_code("E0306")
@@ -1728,25 +1959,25 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("annotations must match parameter declarations")
             }
 
-            MissingDeletingMarker { callee, arg, param_name, span } => {
+            MissingDeletingMarker { callee, arg, param_name, call, span } => {
                 Diagnostic::error(format!(
                     "`{}` can delete from `{}` — say `deleting`, not `mutate`",
                     callee, arg
                 ))
                     .with_code("E0330")
                     .with_primary(*span, format!("passed to the `deleting {}` parameter", param_name))
-                    .with_fix(format!("{}(deleting {}, …)", callee, arg))
+                    .with_fix(call.clone())
                     .with_why("PM5: the marker follows the signature. A `deleting` parameter is a `mutate` parameter that may also delete nodes the caller never named, and those are different contracts — writing `mutate` for both would print them the same. Your links into that rack are revoked at this call, which is worth seeing here rather than discovering at the next read [mem.parameters/PM4, PM5, analysis.fourth-option]")
             }
 
-            MissingMutateMarker { callee, arg, param_name, span } => {
+            MissingMutateMarker { callee, arg, param_name, call, span } => {
                 Diagnostic::error(format!(
                     "`{}` mutates `{}` — mark it at the call site",
                     callee, arg
                 ))
                     .with_code("E0373")
                     .with_primary(*span, format!("passed to the `mutate {}` parameter", param_name))
-                    .with_fix(format!("{}(mutate {}, …)", callee, arg))
+                    .with_fix(call.clone())
                     .with_why("the compiler backstops a misread *move* — using a value after it's moved is an error — but nothing backstops a misread mutation: both readings are legal code, so the one that can't be caught gets written down. The marker follows the signature, not the argument's size, so a Copy argument writes it too. A method receiver is exempt — `player.take_damage(10)` operates on the receiver by construction [mem.parameters/PM4, PM5]")
             }
 
@@ -1990,12 +2221,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", interface_name))
             }
 
-            InterfaceNotSatisfied { ty, interface_name, context, missing, span } => {
+            InterfaceNotSatisfied { ty, interface_name, context, missing, namesake, span } => {
                 use rask_types::InterfaceBoundContext as Ctx;
                 let title = match context {
                     Ctx::CopyBound => format!("`{}` isn't Copy", ty),
                     _ => format!("`{}` does not implement `{}`", ty, interface_name),
                 };
+                // Two interfaces share the name: the type implements the
+                // stdlib's, and this program's own is a different one (#1329).
+                if *namesake {
+                    return Diagnostic::error(title)
+                        .with_code("E0333")
+                        .with_primary(*span, format!(
+                            "`{}` implements the standard library's `{}`, not this program's",
+                            ty, interface_name
+                        ))
+                        .with_fix(format!(
+                            "declare the conformance to this one, or rename the program's interface so the two stop sharing a name:\n    {} implements {} {{ … }}",
+                            ty, interface_name
+                        ))
+                        .with_why("an interface is the declaration, not its name: the program's `interface` shadows the stdlib's for the program's own code, and a conformance to one says nothing about the other [type.generics/G1]");
+                }
                 let d = Diagnostic::error(title)
                     .with_code("E0333")
                     .with_primary(*span, match (context, missing) {
@@ -2017,12 +2263,36 @@ impl ToDiagnostic for rask_types::TypeError {
                             interface_name
                         ))
                         .with_why("the numeric interfaces are membership, not conformance: their contents are constants like MIN, MAX and BITS, and a type is a member because of what it is [type.primitives/NT1-NT3]"),
+                    Ctx::TypeParamBound { declarable } => d
+                        .with_fix(if *declarable {
+                            format!(
+                                "use a type that implements `{0}`, or declare the conformance:\n    {1} implements {0} {{ … }}",
+                                interface_name, ty
+                            )
+                        } else {
+                            format!("use a type that implements `{}`", interface_name)
+                        })
+                        .with_why("a type's bound on its parameter holds for every value of the type: each method in its `extend` blocks may rely on it, so no instance may break it [type.generics/GF6]"),
                     Ctx::GenericBound => d
                         .with_fix(format!(
                             "pass a type that implements `{0}`, or declare the conformance:\n    {1} implements {0} {{ … }}",
                             interface_name, ty
                         ))
                         .with_why("a type parameter's bound is a promise the body relies on, so it's checked against the type argument at the call [type.generics/G1]"),
+                    // No block can be written for these, so the conformance
+                    // half of the advice above would send the author nowhere.
+                    Ctx::BuiltinTypeBound => {
+                        let fix = if interface_name == "Comparable" {
+                            format!(
+                                "`{}` has no order of its own. Say which one you mean with a comparator: `sort_by(|a, b| …)`, `min_by`, `max_by`",
+                                ty
+                            )
+                        } else {
+                            format!("pass a type that implements `{}`", interface_name)
+                        };
+                        d.with_fix(fix)
+                            .with_why("a primitive, a stdlib collection, an optional, a result or a tuple has the conformances the language gives it and no others — there is no block a program may declare one in [type.generics/XC1]. `T?` and `T or E` in particular have operators but no methods [std.api/SD4]")
+                    }
                     Ctx::ConformanceHeader => d
                         .with_fix(match missing {
                             Some((m, sig)) => format!(
@@ -2097,18 +2367,35 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("an `implements` block is the contract: a reader sees exactly what `{}` asks of `{}` and nothing else, so a plain method lives in `extend {} {{ }}` [type.generics/CD2]", base, ty, ty))
             }
 
-            InterfaceArity { interface_name, params, expected, found, span } => {
-                let base = interface_name;
-                let written = if *expected == 1 { "argument" } else { "arguments" };
-                let d = Diagnostic::error(format!(
-                    "`{}` takes {} type {}, found {}",
-                    base, expected, written, found
-                ))
-                .with_code("E0885")
-                .with_primary(*span, if found < expected { "not enough here" } else { "too many here" });
-                let shown = format!("{}<{}>", base, params.join(", "));
-                d.with_fix(format!("write it out: `{}` — the conformance decides what each one is", shown))
-                    .with_why("an interface's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]")
+            TypeArgCount { name, params, expected, found, site, span } => {
+                let headline = match expected {
+                    0 => format!("`{}` takes no type arguments, found {}", name, found),
+                    1 => format!("`{}` takes 1 type argument, found {}", name, found),
+                    n => format!("`{}` takes {} type arguments, found {}", name, n, found),
+                };
+                let d = Diagnostic::error(headline)
+                    .with_code("E0885")
+                    .with_primary(*span, if found < expected { "not enough here" } else { "too many here" });
+                let shown = format!("{}<{}>", name, params.join(", "));
+                let not_generic = format!("`{}` declares no type parameters, so there is nothing for an argument to stand for", name);
+                let one_each = "each written argument stands for one declared parameter, in order; an extra one has no parameter to bind and a missing one would leave a parameter unbound";
+                match site {
+                    rask_types::TypeArgSite::Interface => d
+                        .with_fix(format!("write it out: `{}` — the conformance decides what each one is", shown))
+                        .with_why("an interface's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]"),
+                    rask_types::TypeArgSite::Variant if params.is_empty() => d
+                        .with_fix(format!("drop them: `{}.…`", name))
+                        .with_why(not_generic),
+                    rask_types::TypeArgSite::Variant => d
+                        .with_fix(format!("one per parameter, `{}`, or none at all and the payload decides: `{}.…`", shown, name))
+                        .with_why(one_each),
+                    rask_types::TypeArgSite::Type if params.is_empty() => d
+                        .with_fix(format!("drop them: `{}`", name))
+                        .with_why(not_generic),
+                    rask_types::TypeArgSite::Type => d
+                        .with_fix(format!("one per parameter: `{}`", shown))
+                        .with_why(one_each),
+                }
             }
 
             MissingAssocType { ty, interface_name, assoc, span } => {
@@ -2273,18 +2560,23 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
             }
 
-            NonExhaustiveMatch { missing, span } => {
+            NonExhaustiveMatch { missing, guarded, span } => {
                 let missing_str = missing.join(", ");
-                Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))
+                let d = Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))
                     .with_code("E0340")
                     .with_primary(*span, format!("missing variants: {}", missing_str))
                     .with_help("add the missing variants or a wildcard `_` arm")
                     .with_fix("add the missing variants or a wildcard `_` arm")
-                    .with_why("match expressions must cover all possible values")
+                    .with_why("match expressions must cover all possible values");
+                if *guarded {
+                    d.with_note(GUARDED_ARMS_NOTE)
+                } else {
+                    d
+                }
             }
 
-            MatchNeedsWildcard { ty, span } => {
-                Diagnostic::error(format!(
+            MatchNeedsWildcard { ty, guarded, span } => {
+                let d = Diagnostic::error(format!(
                     "this `match` on `{}` has no arm for the values the others don't name",
                     ty
                 ))
@@ -2296,7 +2588,46 @@ impl ToDiagnostic for rask_types::TypeError {
                      needs an arm that takes whatever is left. Without it there is no answer \
                      for the values nobody wrote down",
                     ty
-                ))
+                ));
+                if *guarded {
+                    d.with_note(GUARDED_ARMS_NOTE)
+                } else {
+                    d
+                }
+            }
+
+            ForMutateReadOnlySource { found, through_as_sequence, span } => {
+                let ty = found.to_string();
+                if *through_as_sequence {
+                    // A set's values are its keys: changing one in place would
+                    // leave it filed under the old one.
+                    Diagnostic::error(format!("can't mutate the values of a `{}` in place", ty))
+                        .with_code("E0914")
+                        .with_primary(*span, "lends each value read-only")
+                        .with_fix("remove the old value and insert the new one: `s.remove(old)` then `s.insert(new)`")
+                        .with_why(
+                            "a set's values are its keys — a value changed in place would sit \
+                             where the old one hashed, so the set walks them read-only \
+                             [type.sequence/SEQ45, std.collections]",
+                        )
+                } else {
+                    Diagnostic::error(format!(
+                        "`for mutate` needs a `SequenceMut`, and this is a `{}`",
+                        ty
+                    ))
+                    .with_code("E0914")
+                    .with_primary(*span, "lends each item read-only")
+                    .with_fix(
+                        "loop over the collection itself — `for mutate x in v` writes \
+                         through for a Vec or a Map's values — or have your type return a \
+                         `SequenceMut<T>`",
+                    )
+                    .with_why(
+                        "a `Sequence<T>` hands each item to the loop body as a borrow, so a \
+                         write would land in nothing the source keeps. Writing through takes \
+                         a source that lends items for writing [type.sequence/SEQ34, SEQ45]",
+                    )
+                }
             }
 
             BreakValueFromStatementLoop { form, header, span } => {
@@ -2341,14 +2672,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("valid contexts are: `Multitasking`, `ThreadPool`")
                     .with_fix("replace with a valid context name")
                     .with_why("`using` blocks require a known runtime context to initialize")
-            }
-
-            SpawnOutsideBlock { span } => {
-                Diagnostic::error("`spawn` must be inside a `using Multitasking { ... }` block")
-                    .with_code("E0352")
-                    .with_primary(*span, "`spawn` used here without a runtime")
-                    .with_help("wrap this code in `using Multitasking { ... }`")
-                    .with_why("spawn() requires an active runtime slot installed by `using Multitasking { }` [conc.async/CC1]")
             }
 
             CyclicTypeAlias { cycle, span } => {
@@ -2396,6 +2719,33 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_fix("rename the method, or the field")
                 .with_why("a type's fields and methods share one namespace, so a call site never has to know which of two things it reached [type.structs/M7]")
+            }
+
+            MethodNotVisible { ty, method, declared_by: None, span } => {
+                Diagnostic::error(format!("`{}.{}` is private", ty, method))
+                    .with_code("E0413")
+                    .with_primary(*span, format!("called from outside `{}`'s own methods", ty))
+                    .with_fix(format!(
+                        "call it from a method of `{}`, or drop `private` from its declaration",
+                        ty
+                    ))
+                    .with_why(
+                        "`private` keeps a method to the type's own `extend` blocks, so its \
+                         author can change it without checking every caller [struct.modules/V5]",
+                    )
+            }
+
+            MethodNotVisible { ty, method, declared_by: Some(owner), span } => {
+                Diagnostic::error(format!("`{}.{}` is not public", ty, method))
+                    .with_code("E0413")
+                    .with_primary(*span, format!("internal to {}", owner))
+                    .with_fix(format!("use a public method of `{}`", ty))
+                    .with_why(
+                        "a method declared without `public` belongs to the package that \
+                         declared it, and the stdlib is a package of its own. It can change or \
+                         go away without notice, which is the point of not making it public \
+                         [struct.modules/V1, V2]",
+                    )
             }
 
             PrivateFieldAccess { ty, field, span } => {
@@ -2661,8 +3011,8 @@ impl ToDiagnostic for rask_types::TypeError {
                     Diagnostic::error(format!("`is {}` needs a two-branch scrutinee", ty_name))
                         .with_code("E0398")
                         .with_primary(*span, format!("found `{}`", found))
-                        .with_fix("test a `T or E` or a `T?` — a plain value has no branch to pick")
-                        .with_why("`is Type as name` dispatches on one branch of a two-branch value [type.errors/ER23]")
+                        .with_fix("drop the test, or test a `T or E` or a `T?` — a plain value has only its own type, so the answer is already known")
+                        .with_why("`is Type` picks one branch of a two-branch value [type.errors/ER23]")
                 }
             }
             TypePatternNotInUnion { ty_name, union, span } => {
@@ -3196,8 +3546,88 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate } => {
+            FieldViewStored { into, path, root, field_ty, bound } => {
+                use rask_ownership::ViewSink;
+                // The value as written at the store: the field read, or the
+                // name that holds the view.
+                let shown = bound.as_ref().map(|(n, _)| n.as_str()).unwrap_or(path);
+                let (headline, owner) = match into {
+                    ViewSink::Place(target) => (
+                        format!("`{}` and `{}` would be the same `{}`", target, path, field_ty),
+                        format!("`{}`", target),
+                    ),
+                    ViewSink::StructField { ty, field } => (
+                        format!("the new `{}` would share its `{}` with `{}`", ty, field, path),
+                        format!("the new `{}`", ty),
+                    ),
+                    ViewSink::Element => (
+                        format!("`{}` stored in a tuple or array would get a second owner", path),
+                        "the tuple or array".to_string(),
+                    ),
+                    ViewSink::Payload { variant } => (
+                        format!("`{}` would share its payload with `{}`", variant, path),
+                        format!("`{}`", variant),
+                    ),
+                    ViewSink::Heap => (
+                        format!("`Heap({})` would be a second owner of `{}`", shown, path),
+                        "the `Heap`".to_string(),
+                    ),
+                    ViewSink::TakeArg { callee } => (
+                        format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
+                        format!("`{}`", callee),
+                    ),
+                };
+                let fix = match bound {
+                    Some((name, _)) => format!(
+                        "bind a separate value: `let {} = {}.clone()`",
+                        name, path
+                    ),
+                    None => match into {
+                        ViewSink::Place(target) => format!(
+                            "store a separate value: `{} = {}.clone()`",
+                            target, path
+                        ),
+                        _ => format!("use a separate value: `{}.clone()`", path),
+                    },
+                };
+                let mut d = Diagnostic::error(headline)
+                    .with_code("E0909")
+                    .with_primary(
+                        self.span,
+                        match bound {
+                            Some((name, _)) => format!("`{}` is a view of `{}`, not a copy", name, path),
+                            None => "a field read is a view, not a copy".to_string(),
+                        },
+                    );
+                if let Some((name, at)) = bound {
+                    d = d.with_secondary(*at, format!("`{}` views `{}` from here", name, path));
+                }
+                d.with_fix(fix).with_why(format!(
+                    "reading a field gives a view of storage `{}` still holds, \
+                     and {} would own it too: one value with two owners, so a \
+                     write through either changes both and each frees it \
+                     [mem.borrowing/S1, S3]",
+                    root,
+                    owner
+                ))
+            }
+
+            BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate, of_closure } => {
                 let mode = if *is_mutate { "`mutate` borrow" } else { "borrow" };
+                let fix = if *of_closure {
+                    format!(
+                        "return a copy — `{}.clone()` — or take the parameter: `|take {}: …|`",
+                        path, root
+                    )
+                } else {
+                    format!(
+                        "return a copy — `{}.clone()` — or take the {}: `{}`, \
+                         so the call site shows the value going",
+                        path,
+                        if root == "self" { "receiver" } else { "parameter" },
+                        if root == "self" { "take self".to_string() } else { format!("take {}: …", root) }
+                    )
+                };
                 Diagnostic::error(format!(
                     "`{}` belongs to the caller — returning it hands out a second name for it",
                     path
@@ -3205,15 +3635,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0872")
                 .with_primary(self.span, format!("`{}` isn't Copy, so this is a view, not a copy", field_ty))
                 .with_secondary(*declared_at, format!("`{}` is a {} — the caller keeps it", root, mode))
-                .with_fix(format!(
-                    "return a copy — `{}.clone()` — or take the receiver: `{}`, \
-                     so the call site shows the value going",
-                    path,
-                    if root == "self" { "take self".to_string() } else { format!("take {}: …", root) }
-                ))
+                .with_fix(fix)
                 .with_why(
-                    "a parameter without `take` is the caller's value on loan, and a \
-                     field of it is a view that lives until the block ends. Handing \
+                    "a parameter without `take` is the caller's value on loan. It, \
+                     a field of it, or a payload matched out of it is a view that \
+                     lives until the block ends. Handing \
                      that view back leaves the caller and the callee's caller both \
                      holding the same storage: a write through one is a write \
                      through the other, and whoever frees it second frees it twice \
@@ -3283,6 +3709,33 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            LentValueGivenAway { call, holder, lender, payload_ty, method, clone_form } => {
+                let fix = match clone_form {
+                    Some(c) => format!(
+                        "copy it with `{holder}.{c}(…)`, which hands back a `{payload_ty}` of your own — \
+                         or take it out with `{holder}.remove(…)` if `{holder}` is done with it"
+                    ),
+                    None => format!(
+                        "copy it first: `{call}.clone().{method}()` — the cost of the new `{payload_ty}` shows at the call"
+                    ),
+                };
+                Diagnostic::error(format!(
+                    "`{}` lends what `{}` still holds, and `{}` takes it",
+                    call, holder, method
+                ))
+                .with_code("E0906")
+                .with_primary(
+                    self.span,
+                    format!("`{}` takes this `{}`, and it stays in `{}`", method, payload_ty, holder),
+                )
+                .with_fix(fix)
+                .with_why(format!(
+                    "a `{lender}` lookup reads the element where the container keeps it, so it isn't yours \
+                     to give. A `take` owns what it's handed and frees it or passes it on, while \
+                     `{holder}` frees the same value again later [mem.borrowing/S3, mem.parameters/PM1]"
+                ))
+            }
+
             NonCopyElementCopiedOut { binding, elem_ty, collection } => {
                 let from = collection
                     .as_deref()
@@ -3311,6 +3764,39 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                      and has no such tie [mem.borrowing/E4]"
                         .to_string(),
                 )
+            }
+
+            LinearInGenericInstance { chain, type_args, inner, inner_span } => {
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let what = match inner.as_ref() {
+                    ResourceNotConsumed { name }
+                    | ResourceNotConsumedOpaque { name, .. }
+                    | OwnedNotConsumed { name } => format!("drops `{}` without consuming it", name),
+                    LinearWildcardDiscard { .. } | ResourceDiscardedAsStatement { .. } => {
+                        "throws a value away with `_`".to_string()
+                    }
+                    ResourceAlreadyConsumed { name, .. }
+                    | UseAfterMove { name, .. }
+                    | UseAfterMaybeMove { name, .. } => format!("uses `{}` after giving it away", name),
+                    _ => "does something to it a linear value can't take".to_string(),
+                };
+                let via = if chain.len() > 1 {
+                    format!(" (reached through {})", chain.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(" → "))
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!(
+                    "`{}` {} — with {} that's a linear value",
+                    func, what, type_args
+                ))
+                .with_code("E0904")
+                .with_primary(self.span, format!("this call makes it {}{}", type_args, via))
+                .with_secondary(*inner_span, format!("here, in `{}`: {}", func, inner))
+                .with_fix(format!(
+                    "consume it in `{}` on every path (pass it to a `take` parameter, call its consuming method, or return it), or don't pass a linear value here",
+                    func
+                ))
+                .with_why("a generic body is checked again for each type it's called with, and a linear value must be consumed exactly once. Fine for an ordinary `T`, this body isn't for that one [mem.linear/L1, L2, type.generics/G6]")
             }
 
             SmallInstantiationTooBig { type_name, base_name, size, offending_field } => {
@@ -3396,7 +3882,18 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
             }
 
-            ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {
+            ToVecOfLentItems { elem, adapter } => {
+                Diagnostic::error(format!("`to_vec` has nothing it may move — `{}` is lent, not owned", elem))
+                    .with_code("E0905")
+                    .with_primary(self.span, "needs an owned element")
+                    .with_fix("clone where you mean it — a `map` makes values the chain owns: `.map(|x| x.clone()).to_vec()`")
+                    .with_why(format!(
+                        "`{}` hands on what its source lent it, so every item still belongs to the source. A Vec owns what it holds, and `to_vec` won't deep-clone a `{}` on your behalf — the allocation would be invisible [type.sequence/SEQ47]",
+                        adapter, elem
+                    ))
+            }
+
+            ConsumeBorrowedParam { name, declared_at, is_mutate, sink, of_closure } => {
                 let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` isn't yours to give", s, name),
@@ -3411,7 +3908,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     .with_code("E0835")
                     .with_primary(self.span, label)
                     .with_secondary(*declared_at, format!("`{}` is declared as a {}", name, how))
-                    .with_fix(format!("take it: `take {}: …` in the signature — then the caller can see it goes", name))
+                    .with_fix(if *of_closure {
+                        format!("take it: `|take {}: …|` — then the caller can see it goes", name)
+                    } else {
+                        format!("take it: `take {}: …` in the signature — then the caller can see it goes", name)
+                    })
                     .with_why(format!(
                         "the caller keeps a parameter it didn't mark `take` and goes on using it, so consuming it here would leave them holding something that's gone. For a `@resource` that's a second close of a real handle.{} [mem.parameters/PM1, mem.linear/L1]",
                         mutate_note
@@ -3528,7 +4029,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
             } => {
                 let fix_msg = match (requested.participle(), existing.participle()) {
                     ("written to", "read") => {
-                        "wait until the read borrow ends, or pass ownership with `own`"
+                        "finish reading before you write, or read from a `.clone()` so the write has the original to itself"
                     }
                     _ => "restructure the code to avoid conflicting access",
                 };
@@ -3825,6 +4326,23 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
             }
 
+            EnsureConsumesNothing { name, acquired_at } => {
+                Diagnostic::error(format!("nothing in this `ensure` consumes `{}`", name))
+                    .with_code("E0908")
+                    .with_primary(
+                        self.span,
+                        format!("this doesn't consume `{}`, so nothing closes it at scope exit", name),
+                    )
+                    .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
+                    .with_fix(format!(
+                        "call a method that takes `{0}`: `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
+                        name
+                    ))
+                    .with_why(
+                        "`ensure` commits the cleanup its body runs, and a call that only borrows the resource is no cleanup",
+                    )
+            }
+
             ResourceDiscardedAsStatement { type_name } => {
                 Diagnostic::error(format!(
                     "value of resource type `{}` is dropped without being consumed",
@@ -3856,19 +4374,51 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            ResourceNotConsumedInClosure { name, context } => {
+            ResourceNotConsumedInClosure { name, in_task: true } => {
                 Diagnostic::error(format!(
-                    "resource `{}` captured by {} is not consumed on all code paths",
-                    name, context
+                    "resource `{}` is not consumed on every path through the task",
+                    name
                 ))
                 .with_code("E0810")
-                .with_primary(self.span, format!("{} body ends without consuming `{}`", context, name))
-                .with_help(format!(
-                    "consume `{}` on every code path, or use `ensure` inside the {} body",
-                    name, context
+                .with_primary(self.span, format!("this task captures `{}` and can end without consuming it", name))
+                .with_fix(format!("consume it in the task — `ensure {}.close()` at the top of the block", name))
+                .with_why("a task carries away what it captures, so the parent can't close it any more: the task owns it, and a resource is consumed exactly once [conc.async/S6, mem.linear/L1]")
+            }
+
+            ResourceNotConsumedInClosure { name, in_task: false } => {
+                Diagnostic::error(format!(
+                    "resource `{}` is not consumed on every path through the closure",
+                    name
                 ))
-                .with_fix(format!("consume `{}` (e.g. `ensure {{ {}.close() }}`) at the top of the {} body", name, name, context))
-                .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
+                .with_code("E0810")
+                .with_primary(self.span, format!("closure body ends without consuming `{}`", name))
+                .with_fix(format!("ensure {}.close()", name))
+                .with_why("the closure owns it — a `take` parameter or something the body acquired — and a resource is consumed exactly once [mem.linear/L1]")
+            }
+
+            LinearCaptureCarried { name, ty } => {
+                let ty = ty.clone().unwrap_or_else(|| "T".to_string());
+                Diagnostic::error(format!(
+                    "`{}` must be consumed, and a closure can't consume what it captures",
+                    name
+                ))
+                .with_code("E0913")
+                .with_primary(self.span, format!("this closure outlives its frame, so it would carry `{}` away and never let go of it", name))
+                .with_fix(format!(
+                    "pass it in as an argument the closure takes — a `take` parameter its \
+                     caller fills:\n\n  \
+                     |take {n}: {t}| {{ … }}\n\n\
+                     or, if this runs once as a task, a task block, which may consume what \
+                     it captures:\n\n  \
+                     spawn {{ … }}",
+                    n = name, t = ty
+                ))
+                .with_why(
+                    "a closure may run any number of times, so its body can't give away \
+                     what it captured [mem.closures/CM4]. One that outlives its frame moves \
+                     its captures in [CM2], and a linear value moved there could never be \
+                     consumed. A `take` parameter is a fresh value per call, so consuming it is fine",
+                )
             }
 
             ConsumeBorrowedPart { name, from, matched_at, sink } => {
@@ -3909,25 +4459,49 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
             }
 
-            ConsumeBorrowedCapture { name, closure_at } => {
+            ConsumeBorrowedCapture { name, closure_at, ty, linear } => {
+                let t = ty.as_deref().unwrap_or("…");
+                let copy = if *linear {
+                    String::new()
+                } else {
+                    format!("\n\nor give away a copy instead: `{}.clone()`", name)
+                };
                 Diagnostic::error(format!(
-                    "cannot consume `{}` — the closure borrowed it",
+                    "cannot consume `{}` — a closure can't give away what it captured",
                     name
                 ))
                 .with_code("E0891")
                 .with_primary(self.span, format!("this consumes `{}`", name))
-                .with_secondary(*closure_at, format!("this closure captured `{}` by borrow", name))
-                .with_help(format!(
-                    "write `own || …` so the closure takes `{}`, or consume `{}` \
-                     outside the closure",
-                    name, name
+                .with_secondary(*closure_at, format!("this closure captured `{}`", name))
+                .with_fix(format!(
+                    "pass `{n}` in instead of capturing it — a `take` parameter:\n\n  \
+                     |take {n}: {t}| {{ … }}\n\n\
+                     or, if this runs once as a task, a task block, which may consume what \
+                     it captures:\n\n  \
+                     spawn {{ … }}{copy}",
+                    n = name
                 ))
-                .with_fix("own ||".to_string())
                 .with_why(
-                    "a plain closure borrows what it captures, and a borrow is not \
-                     yours to give away. Nothing says how many times a closure runs \
-                     either, so one `close()` in the body can be any number of \
-                     closes at runtime [mem.closures, mem.linear/L2, L3]",
+                    "nothing says how many times a closure runs, so one `close()` in the \
+                     body can be any number of closes at runtime. A `take` parameter is a \
+                     new value on every call, so consuming it is fine [mem.closures/CM4]",
+                )
+            }
+
+            BorrowedCaptureEscapes { path, root, ty, closure_at } => {
+                Diagnostic::error(format!(
+                    "`{}` is a capture — a closure can't return what it captured",
+                    path
+                ))
+                .with_code("E0907")
+                .with_primary(self.span, format!("`{}` isn't Copy, so this hands out `{}` itself", ty, path))
+                .with_secondary(*closure_at, format!("this closure captured `{}`", root))
+                .with_fix(format!("return a copy: `{}.clone()`", path))
+                .with_why(
+                    "a closure can't give away what it captured: nothing says how many \
+                     times it runs, so every call would hand out the same value again, \
+                     and the scope or environment that holds it still owns it \
+                     [mem.closures/CM4]",
                 )
             }
 
@@ -4255,7 +4829,7 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
             RuntimeError::ForcedError(msg) => {
                 Diagnostic::error(format!("! on a value that was an error: {}", msg))
                     .with_code("R0019")
-                    .with_primary(self.span, format!("this call returned `{}`", msg))
+                    .with_primary(self.span, format!("`!` found the error `{}` here", msg))
                     .with_help("`try` propagates the error, `catch e =>` handles it here")
                     .with_fix("replace `r!` with `try r`")
                     .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")

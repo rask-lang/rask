@@ -3,7 +3,7 @@ error[E0373]: `deposit` mutates `account` — mark it at the call site
     |
  16 |     deposit(account, 50)
     |             ^^^^^^^ passed to the `mutate account` parameter
-    = fix: deposit(mutate account, …)
+    = fix: deposit(mutate account, 50)
     = why: the compiler backstops a misread *move* — using a value after it's
           moved is an error — but nothing backstops a misread mutation: both
           readings are legal code, so the one that can't be caught gets written

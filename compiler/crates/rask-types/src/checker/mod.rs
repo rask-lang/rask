@@ -29,6 +29,8 @@ mod resolve;
 pub mod operators;
 mod validate;
 mod derive;
+mod arg_labels;
+mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
@@ -36,7 +38,7 @@ pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode,
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
+pub use errors::{TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::resolve_type_expr;
 pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
@@ -176,6 +178,7 @@ pub struct TypeChecker {
     /// because the block is on a type that package doesn't own. Filled as each
     /// block registers — the answer is a property of that block alone.
     pub(super) conformance_disambiguation: HashMap<NodeId, String>,
+    pub(super) conformance_interfaces: HashMap<NodeId, String>,
     /// MN2: where each method name on a type was first defined by a block in
     /// this program, so a second block defining it is reported as a duplicate.
     pub(super) declared_methods: HashMap<(crate::types::TypeId, String), (rask_ast::Span, Option<String>)>,
@@ -222,9 +225,17 @@ pub struct TypeChecker {
     /// Types `write_derived_methods` has already written for. Collection runs
     /// once for the stdlib and once for the program.
     pub(super) derived_written: std::collections::HashSet<crate::types::TypeId>,
+    /// While auto-derive runs: which types will derive which methods, decided
+    /// up front so a type can lean on its own (`derivable_methods`).
+    pub(super) derive_assumed: std::collections::HashSet<(crate::types::TypeId, &'static str)>,
     /// The `eq`/`hash` pairs written for wrapper types, and their symbols.
     pub(super) wrapper_fns: Vec<derive::WrapperFns>,
     pub(super) wrapper_symbols: HashMap<String, rask_resolve::SymbolId>,
+    /// The generic `clone` functions written for a `T or E` over a generic
+    /// type's own parameters (`generic_result_clone`).
+    pub(super) generic_wrapper_clones: Vec<(Type, String)>,
+    /// `TypedProgram::derived_generic_methods`.
+    pub(super) derived_generic_methods: std::collections::HashSet<String>,
     pub(super) next_derived_id: u32,
     pub(super) derived_names: usize,
     /// Operator `eq` calls, as (call, receiver, argument) nodes. Decided once
@@ -233,23 +244,13 @@ pub struct TypeChecker {
     pub(super) pending_wrapper_eq: Vec<(NodeId, NodeId, NodeId)>,
     /// Those decided: call node → (callee node, function name).
     pub(super) wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
-    /// Every type parameter name in scope right here — the enclosing `extend
-    /// Foo<T>`'s and the method's own, bounded or not.
-    ///
-    /// Separate from the two bound maps above because it answers a different
-    /// question. Those say what `T` can do; this says that `T` *is* a parameter
-    /// and stands for one type the caller picks. A method's return type that
-    /// still mentions a name gets a fresh inference variable per call, which is
-    /// right for a stub's own unbound name and wrong for this one: freshening
-    /// `T` inside `func count<T>(v: Vec<T>)` cut the result loose from the
-    /// caller's binding, so the receiver of the next call in the chain had no
-    /// type left for MIR to dispatch on.
-    ///
-    /// Folding these into `current_type_param_bounds` would have routed every
-    /// call on an unbounded parameter through the bounded-parameter resolver,
-    /// where "no bounds" means "no methods" — and an unbounded `T` resolves by
-    /// waiting for monomorphization instead.
-    pub(super) type_params_in_scope: std::collections::HashSet<String>,
+    /// Each method call's argument nodes, in order. Method arguments are
+    /// checked as types inside the solver; this is how a coercion decided
+    /// there finds the expression it applies to.
+    pub(super) method_call_args: HashMap<NodeId, Vec<NodeId>>,
+    /// A collection filling a `Sequence<E>` slot (SEQ48): value node → the
+    /// node of the `as_sequence()` call that wraps it.
+    pub(super) sequence_coercions: HashMap<NodeId, NodeId>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -315,9 +316,9 @@ pub struct TypeChecker {
     /// types for `has<A>()` name resolution, but comptime-only: runtime
     /// construction is rejected.
     pub(super) annotation_types: std::collections::HashSet<String>,
-    /// Call-site bound obligations: (type-arg var, bound interface names, span).
-    /// Verified after constraint solving resolves the var to a concrete type.
-    pub(super) pending_bound_checks: Vec<(Type, Vec<TypeExpr>, rask_ast::Span)>,
+    /// Call-site bound obligations, verified after constraint solving resolves
+    /// the type args to concrete types.
+    pub(super) pending_bound_checks: Vec<validate::BoundObligation>,
     /// ER3a: call-site disjointness obligations read off the callee's signature.
     /// Verified after constraint solving resolves the type-arg vars.
     pub(super) pending_disjointness: Vec<validate::DisjointObligation>,
@@ -345,7 +346,8 @@ pub struct TypeChecker {
     /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
     /// Key is function name, value is (param_type_vars, return_type_var).
     pub(super) inferred_fn_types: HashMap<String, (Vec<(String, Type)>, Type)>,
-    /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
+    /// TR5: implicit interface coercion sites. NodeId of expression → the
+    /// interface's symbol (`TypeTable::interface_symbol`).
     /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
     pub(super) interface_coercions: HashMap<NodeId, String>,
     /// ER31a: `try` sites where the propagated error gets wrapped in a variant
@@ -360,6 +362,20 @@ pub struct TypeChecker {
     /// expression keeps the optional shape. Both backends read this to know
     /// whether the present path yields the payload or the operand as-is.
     pub(super) fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// The solver's last retry of the shape constraints: nothing else will
+    /// move, so a constraint that would rather wait has to commit now.
+    pub(super) final_shape_pass: bool,
+    /// `x ?? 0` whose operand was still open when its statement finished
+    /// solving. Carried from solve to solve, and settled for good by
+    /// `resolve_carried_coalesce` once the operators waiting on literals have
+    /// answered.
+    pub(super) carried_coalesce: Vec<TypeConstraint>,
+    /// Set while `resolve_carried_coalesce` runs: nothing is left to wait for.
+    pub(super) late_coalesce: bool,
+    /// `5 ?? 0`, or a generic that returned its unsuffixed argument: never
+    /// absent, reported once defaulting has given the number its type.
+    /// (`??` node, operand, operand span, default span, `??` span)
+    pub(super) pending_literal_coalesce: Vec<(NodeId, Type, rask_ast::Span, rask_ast::Span, rask_ast::Span)>,
     /// ER16b: `try` nodes that are the left half of a `try … ??` composite.
     /// Only there may a `try` take a flat `T? or E` operand (ER47).
     pub(super) flat_try_sites: std::collections::HashSet<NodeId>,
@@ -374,6 +390,8 @@ pub struct TypeChecker {
     /// operand itself. Lowering reads this to put the branch in the same place
     /// the checker did.
     pub(super) try_chain_placement: HashMap<NodeId, NodeId>,
+    /// ER22: the type `else as e` binds, keyed by the `if … is` node.
+    pub(super) else_binding_types: HashMap<NodeId, Type>,
     /// `??` nodes whose left side is an index expression. `m[k]` panics on a
     /// miss instead of yielding a `T?`, so a `??` after it is the mistake
     /// people actually make, and the fix is `.get(k)` rather than anything
@@ -393,11 +411,12 @@ pub struct TypeChecker {
     pub(super) mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
     /// D1: Bindings invalidated by `discard`. Maps name → discard span.
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
-    /// CC1: nesting depth of `using Multitasking { }` blocks in current function.
-    pub(super) multitasking_depth: u32,
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
+    /// `for mutate` loops: the source's node, type and span. Judged once the
+    /// source's type has settled, since a method call's often hasn't (SEQ45).
+    pub(super) pending_for_mutate: Vec<(rask_ast::NodeId, Type, rask_ast::Span)>,
     /// #310: index sites validated after literal defaults resolve their index
     /// type. Deferred so `v[0]` sees `i32`, not a fresh literal var.
     pub(super) pending_index: Vec<check_expr::PendingIndex>,
@@ -444,22 +463,29 @@ pub struct TypeChecker {
     /// `staged()` calls already reported. A body can be inferred more than once
     /// and the error is about where the call sits, not about a type.
     pub(super) staged_reported: std::collections::HashSet<rask_ast::NodeId>,
-    /// The argument spans of every `spawn` call seen, each with the local scope
-    /// depth at the call. A use inside one of these of a name from a scope no
-    /// deeper than that is a capture: the name is reached from another task.
-    pub(super) spawn_arg_spans: Vec<(rask_ast::Span, usize)>,
+    /// Every task block's body: its closure node, its span and the local scope
+    /// depth it was written at. A use inside one of these of a name from a
+    /// scope no deeper than that is a capture: the name is reached from
+    /// another task.
+    pub(super) spawn_spans: Vec<(NodeId, rask_ast::Span, usize)>,
     /// Closures bound to a name, keyed by the name and the depth of the scope
     /// holding it, each with its span and the scope depth where it was
-    /// written. `spawn(f)` runs these as surely as `spawn(|| …)` runs its
-    /// argument, so they are checked for captures the same way.
+    /// written. A task block that calls one by name runs its body on the task
+    /// as surely as its own, so the closure's captures are checked the same way.
     pub(super) closure_bindings:
         HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
-    /// Every closure expression, with its span and the scope depth it was
-    /// written at. A closure that captures a link or a `Local` box can't cross
-    /// a task however it gets to a `spawn`, and one that gets there by a
-    /// return or a field is invisible at the spawn site, so each closure is
-    /// judged on its own (#1356).
+    /// Every closure expression — task blocks' included — with its span and
+    /// the scope depth it was written at, for `mark_task_bound_closures`.
     pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
+    /// Calls that wrote a named argument, checked once callees are settled.
+    pub(super) labeled_calls: Vec<arg_labels::LabeledCall>,
+    /// Every method call with where it was written, for the visibility check.
+    pub(super) method_calls: Vec<method_visibility::PlacedCall>,
+    /// Parameter types a closure literal's slot gives it, keyed by the
+    /// closure's node. Set by `infer_expr_expecting` just before the closure
+    /// is checked, so an unannotated parameter has its type while the body is
+    /// checked rather than only after.
+    pub(super) closure_param_expectations: HashMap<NodeId, Vec<Type>>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -474,7 +500,7 @@ pub struct TypeChecker {
     /// `let x = 5` is an unsuffixed literal, so its type isn't `i32` until
     /// defaults land — and asking then is the whole point, since a match on an
     /// integer is exactly the shape that needs a wildcard (#1090).
-    pub(super) pending_match_wildcards: Vec<(Type, rask_ast::Span)>,
+    pub(super) pending_match_wildcards: Vec<(Type, bool, rask_ast::Span)>,
     /// `b.(comptime { … })` blocks whose value was still open when the access
     /// was walked. An unsuffixed literal is exactly that, and `comptime { 42 }`
     /// is the case worth catching (#1090).
@@ -494,6 +520,12 @@ pub struct TypeChecker {
     /// even when inference leaves the receiver as a bare type variable in
     /// `node_types` (deferred `Sender.send` resolution).
     pub(super) channel_send_sites: std::collections::HashSet<rask_ast::Span>,
+    /// Bare names in patterns read as a type test (`r is ParseError`), by the
+    /// span `check_pattern` was handed. See `TypedProgram::type_test_patterns`.
+    pub(super) type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
+    /// Defaults filled into method calls (`fill_default_args`): call → (position,
+    /// argument, its type).
+    pub(super) default_fills: HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr, Type)>>,
     /// ER3/ER4: `T or E` sites in type declarations (struct/enum/union/alias),
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
@@ -537,9 +569,10 @@ impl TypeChecker {
 
     /// `coerce_into`, naming the expression being coerced.
     ///
-    /// Worth the extra argument only where the decision has to reach a backend:
-    /// ER32's error branch erases a concrete error into `any Interface`, and MIR
-    /// boxes at the value, keyed by its node.
+    /// Needed where the decision has to reach a backend: ER32's error branch
+    /// erases a concrete error into `any Interface`, and MIR boxes at the
+    /// value, keyed by its node; a collection filling a `Sequence<T>` slot
+    /// gets its `as_sequence()` written around that node (SEQ48).
     pub(super) fn coerce_into_node(
         &mut self,
         site: rask_ast::coercion::CoercionSite,
@@ -562,6 +595,7 @@ impl TypeChecker {
         Self {
             resolved,
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             declared_methods: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
@@ -583,13 +617,17 @@ impl TypeChecker {
             pending_derived: Vec::new(),
             derived_decls: Vec::new(),
             derived_written: std::collections::HashSet::new(),
+            derive_assumed: std::collections::HashSet::new(),
             wrapper_fns: Vec::new(),
             wrapper_symbols: HashMap::new(),
+            generic_wrapper_clones: Vec::new(),
+            derived_generic_methods: std::collections::HashSet::new(),
             next_derived_id: derive::DERIVED_ID_BASE,
             derived_names: 0,
             pending_wrapper_eq: Vec::new(),
             wrapper_eq_calls: HashMap::new(),
-            type_params_in_scope: std::collections::HashSet::new(),
+            method_call_args: HashMap::new(),
+            sequence_coercions: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
@@ -618,18 +656,23 @@ impl TypeChecker {
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            final_shape_pass: false,
+            carried_coalesce: Vec::new(),
+            late_coalesce: false,
+            pending_literal_coalesce: Vec::new(),
             flat_try_sites: std::collections::HashSet::new(),
             try_chain_steps: std::collections::HashSet::new(),
             try_chain_unwrapped: None,
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             coalesce_index_operands: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             mutate_self_fns: std::collections::HashSet::new(),
             accumulate_errors: false,
             discarded_bindings: HashMap::new(),
-            multitasking_depth: 0,
             pending_casts: Vec::new(),
+            pending_for_mutate: Vec::new(),
             pending_int_literals: Vec::new(),
             pending_discards: Vec::new(),
             pending_match_wildcards: Vec::new(),
@@ -640,18 +683,23 @@ impl TypeChecker {
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
             task_bound_uses: Vec::new(),
-            task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: HashMap::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
-            spawn_arg_spans: Vec::new(),
-            closure_bindings: HashMap::new(),
+            spawn_spans: Vec::new(),
             closure_spans: Vec::new(),
+            closure_bindings: HashMap::new(),
+            task_bound_closures: std::collections::HashSet::new(),
+            labeled_calls: Vec::new(),
+            method_calls: Vec::new(),
+            closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
+            type_test_patterns: std::collections::HashSet::new(),
+            default_fills: HashMap::new(),
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
         }
@@ -710,6 +758,7 @@ impl TypeChecker {
         self.collect_type_declarations(decls);
         self.check_user_annotations(decls);
         self.check_allow_names(decls);
+        self.check_bound_names(decls);
 
         // Global scope for module-level bindings (imports, etc.)
         self.push_scope();
@@ -764,9 +813,6 @@ impl TypeChecker {
         self.validate_pending_mutations();
         self.validate_spawn_captures();
 
-        // #314: verify generic call type args satisfy their declared bounds.
-        self.validate_pending_bound_checks();
-
         // ER3a: verify no `T or E` in a callee's signature collapsed to `E or E`
         // once the type args are known.
         self.validate_pending_disjointness();
@@ -776,6 +822,12 @@ impl TypeChecker {
         // about it before defaulting, or the body reports `f64 * i32` for a
         // program with no i32 in it (#904).
         self.settle_operator_literals();
+        self.resolve_carried_coalesce();
+
+        // A `[...]` method argument whose call never gave it a slot is the
+        // fixed array of its elements. Before literal defaults, so the elements
+        // default inside it.
+        self.settle_collection_literals();
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
@@ -789,8 +841,27 @@ impl TypeChecker {
         // resolved now that the literal has a type.
         self.retry_deferred_methods();
 
+        // #314: verify generic type args satisfy their declared bounds. After
+        // literal defaults, so `Holder { item: 5 }` is checked as the `i64` it
+        // became rather than skipped as an open variable (#1462).
+        self.validate_pending_bound_checks();
+
+        // Every callee is known now, so every label has something to name.
+        self.validate_arg_labels();
+        self.validate_method_visibility();
+
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
+
+        for (node, value, value_span, default_span, span) in std::mem::take(&mut self.pending_literal_coalesce) {
+            self.errors.push(TypeError::CoalesceOnNonOptional {
+                found: self.ctx.apply(&value),
+                from_index: self.coalesce_index_operands.contains(&node),
+                value_span,
+                default_span,
+                span,
+            });
+        }
 
         // D2: `discard` on a Copy type frees nothing. Asked here because an
         // unsuffixed literal has a type only after defaulting.
@@ -810,6 +881,10 @@ impl TypeChecker {
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
+
+        // SEQ45: after literal defaults, so the message names `Sequence<i32>`
+        // rather than an open variable.
+        self.validate_for_mutate_sources();
 
         // RC1/RC3: reject Vec/Map holding linear elements now that inferred
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
@@ -997,6 +1072,11 @@ impl TypeChecker {
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let try_chain_placement = self.try_chain_placement.clone();
+        let else_binding_types: HashMap<_, _> = self
+            .else_binding_types
+            .iter()
+            .map(|(node, ty)| (*node, self.ctx.apply(ty)))
+            .collect();
 
         let unsafe_ops = self.unsafe_ops;
 
@@ -1033,22 +1113,33 @@ impl TypeChecker {
             interface_coercions,
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
+            conformance_interfaces: self.conformance_interfaces,
             error_wraps,
             fallback_keeps_shape,
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
+            field_reuses: std::collections::HashSet::new(),
             task_bound_closures: std::mem::take(&mut self.task_bound_closures),
             generic_closure_captures: std::mem::take(&mut self.generic_closure_captures),
             try_chain_placement,
+            else_binding_types,
             unsafe_ops,
             span_types,
             mutate_self_fns: self.mutate_self_fns,
             channel_send_sites: self.channel_send_sites,
+            type_test_patterns: self.type_test_patterns,
+            default_fills: self
+                .default_fills
+                .into_iter()
+                .map(|(call, fills)| (call, fills.into_iter().map(|(at, e, _)| (at, e)).collect()))
+                .collect(),
             inferred_fn_ret,
             inferred_fn_params,
             derived_decls: self.derived_decls,
             wrapper_eq_calls: self.wrapper_eq_calls,
+            sequence_coercions: self.sequence_coercions,
             wrapper_fns: self.wrapper_fns,
+            derived_generic_methods: self.derived_generic_methods,
         };
 
         (program, errors)
@@ -1068,7 +1159,7 @@ impl TypeChecker {
             }
             Type::Tuple(items) | Type::Union(items) => items.iter().any(Self::contains_type_var),
             Type::Fn { params, ret } => {
-                params.iter().any(Self::contains_type_var) || Self::contains_type_var(ret)
+                params.iter().any(|p| Self::contains_type_var(&p.ty)) || Self::contains_type_var(ret)
             }
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 args.iter().any(|a| match a {
@@ -1114,6 +1205,12 @@ impl TypeChecker {
             TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
                 expected: ctx.apply(&expected),
                 found: ctx.apply(&found),
+                span,
+            },
+            TypeError::FnParamModeMismatch { expected, found, index, span } => TypeError::FnParamModeMismatch {
+                expected: ctx.apply(&expected),
+                found: ctx.apply(&found),
+                index,
                 span,
             },
             TypeError::NotCallable { ty, span } => TypeError::NotCallable {
@@ -1180,6 +1277,135 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
+/// Spellings that reach a name through its module, rewritten to the bare name
+/// they mean before anything reads the program. Both backends run these
+/// declarations, so this is one rewrite instead of one per backend.
+fn drop_module_qualifiers(resolved: ResolvedProgram, decls: &mut [Decl]) -> ResolvedProgram {
+    let resolved = call_module_functions_bare(resolved, decls);
+    strip_module_from_patterns(&resolved, decls);
+    resolved
+}
+
+/// `async.cancelled()` becomes `cancelled()`: a free function a module
+/// exports, reached through the module, is the bare call
+/// (structure.modules/IM1).
+///
+/// The resolver points such a call node at the function's symbol. Rewriting
+/// the call rather than teaching each pass the qualified spelling is what lets
+/// every rule written against the bare call apply to it. Lowered as a method
+/// on a namespace, the qualified call failed natively with "unresolved
+/// variable `async`" (#1349).
+///
+/// The call keeps its node id; the callee takes the module name's, resolved
+/// to the function now.
+fn call_module_functions_bare(mut resolved: ResolvedProgram, decls: &mut [Decl]) -> ResolvedProgram {
+    use rask_ast::expr::{Expr, ExprKind};
+    use rask_ast::rewrite::{self, Rewrite};
+
+    struct Bare<'a> {
+        resolved: &'a mut ResolvedProgram,
+    }
+    impl Rewrite for Bare<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            let ExprKind::MethodCall { object, method, args, type_args } = &mut e.kind else {
+                return;
+            };
+            let through_module = self
+                .resolved
+                .resolutions
+                .get(&object.id)
+                .and_then(|&s| self.resolved.symbols.get(s))
+                .is_some_and(|s| matches!(s.kind, rask_resolve::SymbolKind::BuiltinModule { .. }));
+            if !through_module {
+                return;
+            }
+            let Some(fn_sym) = self.resolved.resolutions.remove(&e.id) else { return };
+            let kind = match type_args.take() {
+                Some(type_args) => ExprKind::GenericName { name: method.clone(), type_args },
+                None => ExprKind::Ident(method.clone()),
+            };
+            let func = Expr { id: object.id, span: object.span, kind };
+            self.resolved.resolutions.insert(object.id, fn_sym);
+            e.kind = ExprKind::Call { func: Box::new(func), args: std::mem::take(args) };
+        }
+    }
+    rewrite::rewrite_decls(decls, &mut Bare { resolved: &mut resolved });
+    resolved
+}
+
+/// `r is json.JsonError` becomes `r is JsonError`: a pattern names a type or
+/// a variant, so a module in front of the name only says where the type
+/// lives (structure.modules/IM1), and the bare name is the same type.
+///
+/// Every reader of a pattern took a dotted name for `Enum.Variant`, so the
+/// qualified spelling looked for a variant `JsonError` of an enum called
+/// `json` — the test came back false on both backends, and `is json.JsonError
+/// as e` never bound (#1352).
+///
+/// A module is whatever the program's imports bound as one, so `import json
+/// as j` makes `j.JsonError` the qualified spelling.
+///
+/// Except a type test. A type pattern keeps its module until checking is
+/// done, because while the program is checked a bare `JsonError` means the
+/// program's own type when it declares one, and the module is what says it
+/// doesn't (#1470). A bare `is json.JsonError` is made the same type pattern,
+/// rather than a name the checker would split into enum and variant.
+/// `TypedProgram::attach_derived` drops the module once the bare name means
+/// the stdlib's type again.
+fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
+    use rask_ast::expr::Pattern;
+    use rask_ast::rewrite::{self, Rewrite};
+    use rask_ast::ty::TypeExpr;
+
+    let modules: HashMap<String, &'static str> = resolved
+        .symbols
+        .iter()
+        .filter_map(|s| match &s.kind {
+            rask_resolve::SymbolKind::BuiltinModule { module } => Some((s.name.clone(), module.name())),
+            _ => None,
+        })
+        .collect();
+    if modules.is_empty() {
+        return;
+    }
+
+    struct Strip<'a> {
+        modules: &'a HashMap<String, &'static str>,
+    }
+    impl Strip<'_> {
+        fn strip(&self, name: &mut String) {
+            if let Some((head, tail)) = name.split_once('.') {
+                if self.modules.contains_key(head) {
+                    *name = tail.to_string();
+                }
+            }
+        }
+
+        /// `json.JsonError`, as the type the module exports.
+        fn module_type(&self, name: &str) -> Option<TypeExpr> {
+            let (head, tail) = name.split_once('.')?;
+            let module = self.modules.get(head)?;
+            rask_stdlib::modules::exports_type(module, tail).then(|| TypeExpr::Named {
+                path: vec![head.to_string(), tail.to_string()],
+                args: Vec::new(),
+            })
+        }
+    }
+    impl Rewrite for Strip<'_> {
+        fn pattern(&mut self, p: &mut Pattern) {
+            match p {
+                Pattern::Ident(name) => match self.module_type(name) {
+                    Some(ty) => *p = Pattern::TypePat { ty, binding: None },
+                    None => self.strip(name),
+                },
+                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.strip(name),
+                _ => {}
+            }
+        }
+    }
+    rewrite::rewrite_decls(decls, &mut Strip { modules: &modules });
+}
+
 ///
 /// Takes the declarations mutably to add the ones the checker wrote
 /// (`TypedProgram::attach_derived`): every caller goes on to read every body.
@@ -1188,6 +1414,7 @@ pub fn typecheck(
     decls: &mut Vec<Decl>,
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
+    let resolved = drop_module_qualifiers(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     let mut typed = checker.check(decls)?;
@@ -1202,6 +1429,7 @@ pub fn typecheck_with_stdlib(
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
+    let resolved = drop_module_qualifiers(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     // In stdlib scope: these registrations are what stdlib code means by a
@@ -1226,6 +1454,7 @@ pub fn typecheck_with_stdlib_lenient(
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> (TypedProgram, Vec<TypeError>) {
+    let resolved = drop_module_qualifiers(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     checker.types.stdlib_mode = true;

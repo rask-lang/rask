@@ -14,11 +14,11 @@
 
 test "a task joins another with one worker to run both" {
     using Multitasking(workers: 1) {
-        let outer = spawn(|| {
-            let inner = spawn(|| { return 7 })
+        let outer = spawn {
+            let inner = spawn { return 7 }
             let v = inner.join() catch e => { return 0 }
             return v
-        })
+        }
         let r = outer.join() catch e => { return }
         assert r == 7
     }
@@ -26,19 +26,19 @@ test "a task joins another with one worker to run both" {
 
 test "four levels deep, still one worker" {
     using Multitasking(workers: 1) {
-        let a = spawn(|| {
-            let b = spawn(|| {
-                let c = spawn(|| {
-                    let d = spawn(|| { return 1 })
+        let a = spawn {
+            let b = spawn {
+                let c = spawn {
+                    let d = spawn { return 1 }
                     let dv = d.join() catch e => { return -1 }
                     return dv + 1
-                })
+                }
                 let cv = c.join() catch e => { return -1 }
                 return cv + 1
-            })
+            }
             let bv = b.join() catch e => { return -1 }
             return bv + 1
-        })
+        }
         let r = a.join() catch e => { return }
         assert r == 4
     }
@@ -46,17 +46,17 @@ test "four levels deep, still one worker" {
 
 test "several tasks joining at once, one worker" {
     using Multitasking(workers: 1) {
-        let x = spawn(|| {
-            let inner = spawn(|| { return 2 })
+        let x = spawn {
+            let inner = spawn { return 2 }
             let v = inner.join() catch e => { return 0 }
             return v
-        })
+        }
         ensure x.detach()
-        let y = spawn(|| {
-            let inner = spawn(|| { return 3 })
+        let y = spawn {
+            let inner = spawn { return 3 }
             let v = inner.join() catch e => { return 0 }
             return v
-        })
+        }
         ensure y.detach()
         let xv = x.join() catch e => { return }
         let yv = y.join() catch e => { return }
@@ -69,7 +69,7 @@ test "several tasks joining at once, one worker" {
 // one worker, which is the path the new check sits on.
 test "a plain spawn and join is unchanged" {
     using Multitasking(workers: 1) {
-        let h = spawn(|| { return 11 })
+        let h = spawn { return 11 }
         let v = h.join() catch e => { return }
         assert v == 11
     }

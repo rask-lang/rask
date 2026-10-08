@@ -268,11 +268,8 @@ pub use rask_mono::is_stdlib_span;
 /// rest of the Path family segfaulted. Handing the same source to both backends
 /// is what makes "written in Rask" mean one implementation.
 ///
-/// The stdlib goes first and the program second, because registration is
-/// last-writer-wins and the program has to be the last writer. A program may
-/// reuse a stdlib type's name (rask#258) — `struct JsonError` over stdlib's
-/// `enum JsonError` — and with the program first, the stdlib's `message` body
-/// overwrote the user's and ran `match self` against a struct.
+/// The order doesn't matter: a program type or function that shares a stdlib
+/// name has its own symbol by now (#1333, #1307), so nothing here collides.
 pub fn program_decls(decls: &[Decl]) -> Vec<Decl> {
     let mut all = rask_stdlib::StubRegistry::compilable_decls();
     all.extend(decls.to_vec());
@@ -395,8 +392,8 @@ fn check_loaded(
 
     let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
-    // --- Comptime cfg elimination (CC1) ---
-    rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &config.cfg);
+    // --- Build configuration into `comptime` code (CC1) ---
+    rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
     let desugared = rask_desugar::desugar_with_stdlib(
@@ -423,10 +420,9 @@ fn check_loaded(
         .enumerate()
         .filter_map(|(idx, p)| Some((idx as u16, p.parent()?.to_path_buf())))
         .collect();
-    let resolved = match rask_resolve::resolve_with_stdlib_cfg_and_dirs(
+    let resolved = match rask_resolve::resolve_with_stdlib_and_dirs(
         &parse_result.decls,
         &stdlib_bodies,
-        config.cfg.to_cfg_values(),
         source_dirs,
     ) {
         Ok(r) => r,
@@ -461,9 +457,16 @@ fn check_loaded(
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    // Which writes build on the old value is a lowering input for every
+    // body, the stdlib's as well as the program's.
+    typed.field_reuses = rask_ownership::field_reuses(
+        &typed,
+        &[&parse_result.decls, &stdlib_decls],
+        &[&stdlib_decls, &parse_result.decls],
+    );
 
     // --- Effects (non-blocking metadata) ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
+    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls, &typed.method_call_names());
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -611,9 +614,6 @@ fn check_package_scoped(
         }
     }
 
-    // --- Comptime cfg elimination (CC1) ---
-    rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &config.cfg);
-
     // --- Merge external package declarations ---
     //
     // Before desugaring, not after. A dependency's bodies are ordinary Rask and
@@ -689,6 +689,10 @@ fn check_package_scoped(
     for (_, decls) in merged {
         pkg_ctx.all_decls.extend(decls);
     }
+
+    // --- Build configuration into `comptime` code (CC1) ---
+    // After the merge, so a dependency's `comptime if` is settled too.
+    rask_comptime::apply_cfg(&mut pkg_ctx.all_decls, &config.cfg);
     if diags.iter().any(|d| d.severity == Severity::Error) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -720,12 +724,11 @@ fn check_package_scoped(
     // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
     // (#203).
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_package_with_stdlib_and_cfg(
+    let resolved = match rask_resolve::resolve_package_with_stdlib(
         &pkg_ctx.all_decls,
         &pkg_ctx.registry,
         pkg_ctx.root_id,
         &stdlib_bodies,
-        config.cfg.to_cfg_values(),
     ) {
         Ok(r) => r,
         Err(errors) => {
@@ -810,9 +813,16 @@ fn check_package_scoped(
         diags.push(e.to_diagnostic());
     }
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    // Which writes build on the old value is a lowering input for every
+    // body, the stdlib's as well as the program's.
+    typed.field_reuses = rask_ownership::field_reuses(
+        &typed,
+        &[&pkg_ctx.all_decls, &stdlib_decls],
+        &[&stdlib_decls, &pkg_ctx.all_decls],
+    );
 
     // --- Effects ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls);
+    let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls, &typed.method_call_names());
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -1017,7 +1027,7 @@ fn finalize_compile_inner(
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            diags.push(mono_diagnostic(e));
+            diags.push(Diagnostic::error(e.to_string()));
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };
@@ -1207,17 +1217,6 @@ fn declared_name(decl: &Decl) -> Option<String> {
         DeclKind::Annotation(a) => Some(a.name.clone()),
         DeclKind::Union(u) => Some(u.name.clone()),
         _ => None,
-    }
-}
-
-fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
-    use rask_mono::MonomorphizeError as ME;
-    match &e {
-        ME::AmbiguousMethod { type_name, method, span, .. } => Diagnostic::error(e.to_string())
-            .with_code("E0823")
-            .with_primary(*span, format!("no `{}.{}` to call here", type_name, method))
-            .with_help(format!("rename one of the two `{}` types", type_name)),
-        _ => Diagnostic::error(e.to_string()),
     }
 }
 

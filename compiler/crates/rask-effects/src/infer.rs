@@ -10,18 +10,18 @@
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
-use crate::{Effects, EffectMap};
+use crate::{Effects, EffectMap, MethodTargets};
 use crate::sources;
 
 /// Qualified function name (plain name or "Type.method").
 type FuncName = String;
 
 /// Run effect inference on declarations.
-pub fn infer(decls: &[Decl]) -> EffectMap {
-    infer_with_reach(decls).0
+pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
+    infer_with_reach(decls, targets).0
 }
 
 /// Effects, plus the functions that can only ever run with a runtime installed.
@@ -31,14 +31,16 @@ pub fn infer(decls: &[Decl]) -> EffectMap {
 /// runtime whatever its own body looks like, so telling its author to install
 /// one is wrong twice over — the block is already there, and entering a second
 /// one segfaults (rask-lang/rask#524).
-pub fn infer_with_reach(decls: &[Decl]) -> (EffectMap, HashSet<FuncName>) {
-    let mut pass = InferPass::new();
+pub fn infer_with_reach(decls: &[Decl], targets: &MethodTargets) -> (EffectMap, HashSet<FuncName>) {
+    let mut pass = InferPass::new(targets);
     pass.run(decls);
     let runtime_only = pass.runtime_only();
     (pass.effects, runtime_only)
 }
 
-struct InferPass {
+struct InferPass<'t> {
+    /// The checker's name for each method call it resolved.
+    targets: &'t MethodTargets,
     /// Per-function direct effects (before transitive propagation).
     effects: EffectMap,
     /// Call graph: caller → callees.
@@ -58,9 +60,10 @@ struct InferPass {
     reachable_from_outside: HashSet<FuncName>,
 }
 
-impl InferPass {
-    fn new() -> Self {
+impl<'t> InferPass<'t> {
+    fn new(targets: &'t MethodTargets) -> Self {
         Self {
+            targets,
             effects: HashMap::new(),
             call_graph: HashMap::new(),
             direct_needs_runtime: HashSet::new(),
@@ -112,7 +115,7 @@ impl InferPass {
                 }
                 DeclKind::Impl(i) => {
                     for method in &i.methods {
-                        let qname = format!("{}.{}", i.target_ty, method.name);
+                        let qname = crate::method_key(&i.target_ty, &method.name);
                         self.collect_fn(&qname, method);
                     }
                 }
@@ -156,7 +159,7 @@ impl InferPass {
         // Classify direct effects from function body
         let mut direct = Effects::default();
         let mut callees = HashSet::new();
-        classify_body(body, &mut direct, &mut callees);
+        classify_body(body, &mut direct, &mut callees, self.targets);
 
         // @no_io suppresses conservative IO marking
         let has_no_io = attrs.iter().any(|a| a == "no_io");
@@ -175,7 +178,7 @@ impl InferPass {
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
-        let mut scan = ReachScan::default();
+        let mut scan = ReachScan::new(self.targets);
         let direct_needs_rt = rt_scan_stmts(body, 0, &mut scan);
         if direct_needs_rt {
             self.direct_needs_runtime.insert(qname.to_string());
@@ -349,70 +352,63 @@ impl InferPass {
                 break;
             }
         }
-
-        // AS3: Async implies IO — enforce invariant after propagation
-        for effects in self.effects.values_mut() {
-            if effects.async_ {
-                effects.io = true;
-            }
-        }
     }
 }
 
 // ── Body classification ──────────────────────────────────────────────
 
 /// Walk a function body, collecting direct effects and callee names.
-fn classify_body(stmts: &[Stmt], effects: &mut Effects, callees: &mut HashSet<String>) {
+fn classify_body(stmts: &[Stmt], effects: &mut Effects, callees: &mut HashSet<String>, t: &MethodTargets) {
     for stmt in stmts {
-        classify_stmt(stmt, effects, callees);
+        classify_stmt(stmt, effects, callees, t);
     }
 }
 
-fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<String>) {
+fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<String>, t: &MethodTargets) {
     match &stmt.kind {
-        StmtKind::Expr(e) => classify_expr(e, effects, callees),
+        StmtKind::Expr(e) => classify_expr(e, effects, callees, t),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
-            classify_expr(init, effects, callees);
+            classify_expr(init, effects, callees, t);
         }
         StmtKind::MutTuple { init, .. }
         | StmtKind::LetTuple { init, .. }
         | StmtKind::LetStruct { init, .. } => {
-            classify_expr(init, effects, callees);
+            classify_expr(init, effects, callees, t);
         }
         StmtKind::Assign { target, value, .. } => {
-            classify_expr(target, effects, callees);
-            classify_expr(value, effects, callees);
+            classify_expr(target, effects, callees, t);
+            classify_expr(value, effects, callees, t);
         }
-        StmtKind::Return(Some(e)) => classify_expr(e, effects, callees),
+        StmtKind::Return(Some(e)) => classify_expr(e, effects, callees, t),
         StmtKind::Return(None) => {}
-        StmtKind::Break { value: Some(v), .. } => classify_expr(v, effects, callees),
+        StmtKind::Break { value: Some(v), .. } => classify_expr(v, effects, callees, t),
         StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
         StmtKind::Discard { .. } => {}
         StmtKind::While { cond, body, .. } => {
-            classify_expr(cond, effects, callees);
-            classify_body(body, effects, callees);
+            classify_expr(cond, effects, callees, t);
+            classify_body(body, effects, callees, t);
         }
         StmtKind::WhileLet { expr, body, .. } => {
-            classify_expr(expr, effects, callees);
-            classify_body(body, effects, callees);
+            classify_expr(expr, effects, callees, t);
+            classify_body(body, effects, callees, t);
         }
-        StmtKind::Loop { body, .. } => classify_body(body, effects, callees),
+        StmtKind::Loop { body, .. } => classify_body(body, effects, callees, t),
         StmtKind::For { iter, body, .. } => {
-            classify_expr(iter, effects, callees);
-            classify_body(body, effects, callees);
+            classify_expr(iter, effects, callees, t);
+            classify_body(body, effects, callees, t);
         }
         StmtKind::Ensure { body, else_handler } => {
-            classify_body(body, effects, callees);
+            classify_body(body, effects, callees, t);
             if let Some((_, handler)) = else_handler {
-                classify_body(handler, effects, callees);
+                classify_body(handler, effects, callees, t);
             }
         }
-        StmtKind::Comptime(body) => classify_body(body, effects, callees),
-        StmtKind::ComptimeFor { body, .. } => classify_body(body, effects, callees),
+        StmtKind::Comptime(body) => classify_body(body, effects, callees, t),
+        StmtKind::ComptimeFor { body, .. } => classify_body(body, effects, callees, t),
     }
 }
 
-fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>) {
+fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>, t: &MethodTargets) {
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = extract_callee_name(func) {
@@ -421,161 +417,157 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
                 effects.union(direct);
                 callees.insert(name);
             }
-            classify_expr(func, effects, callees);
+            classify_expr(func, effects, callees, t);
             for arg in args {
-                classify_expr(&arg.expr, effects, callees);
+                classify_expr(&arg.expr, effects, callees, t);
             }
         }
 
         ExprKind::MethodCall { object, method, args, .. } => {
-            // Method calls: record the method name for call graph.
-            // Also check qualified "Type.method" form when we can extract
-            // the receiver type name.
-            if let Some(type_name) = object.name() {
-                let qname = format!("{}.{}", type_name, method);
-                let direct = sources::classify_call(&qname);
-                effects.union(direct);
-                callees.insert(qname);
+            for name in crate::method_callees(expr.id, object, method, t) {
+                effects.union(sources::classify_method(&name, method));
+                callees.insert(name);
             }
-            // Also record bare method name
-            let direct = sources::classify_call(method);
-            effects.union(direct);
-            callees.insert(method.clone());
 
-            classify_expr(object, effects, callees);
+            classify_expr(object, effects, callees, t);
             for arg in args {
-                classify_expr(&arg.expr, effects, callees);
+                classify_expr(&arg.expr, effects, callees, t);
             }
         }
 
         // IO3: unsafe blocks conservatively get IO
         ExprKind::Unsafe { body } => {
             effects.io = true;
-            classify_body(body, effects, callees);
+            classify_body(body, effects, callees, t);
         }
 
         // Spawn is an async source (AS1)
 
         // Recurse into all other expression kinds
         ExprKind::Binary { left, right, .. } => {
-            classify_expr(left, effects, callees);
-            classify_expr(right, effects, callees);
+            classify_expr(left, effects, callees, t);
+            classify_expr(right, effects, callees, t);
         }
-        ExprKind::Unary { operand, .. } => classify_expr(operand, effects, callees),
+        ExprKind::Unary { operand, .. } => classify_expr(operand, effects, callees, t),
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-            classify_expr(object, effects, callees);
+            classify_expr(object, effects, callees, t);
         }
         ExprKind::DynamicField { object, field_expr } => {
-            classify_expr(object, effects, callees);
-            classify_expr(field_expr, effects, callees);
+            classify_expr(object, effects, callees, t);
+            classify_expr(field_expr, effects, callees, t);
         }
         ExprKind::Index { object, index } => {
-            classify_expr(object, effects, callees);
-            classify_expr(index, effects, callees);
+            classify_expr(object, effects, callees, t);
+            classify_expr(index, effects, callees, t);
         }
-        ExprKind::Block(stmts) => classify_body(stmts, effects, callees),
+        ExprKind::Block(stmts) => classify_body(stmts, effects, callees, t),
         ExprKind::If { cond, then_branch, else_branch, .. } => {
-            classify_expr(cond, effects, callees);
-            classify_expr(then_branch, effects, callees);
+            classify_expr(cond, effects, callees, t);
+            classify_expr(then_branch, effects, callees, t);
             if let Some(e) = else_branch {
-                classify_expr(e, effects, callees);
+                classify_expr(e, effects, callees, t);
             }
         }
         ExprKind::IfLet { expr, then_branch, else_branch, .. } => {
-            classify_expr(expr, effects, callees);
-            classify_expr(then_branch, effects, callees);
+            classify_expr(expr, effects, callees, t);
+            classify_expr(then_branch, effects, callees, t);
             if let Some(e) = else_branch {
-                classify_expr(e, effects, callees);
+                classify_expr(e, effects, callees, t);
             }
         }
         ExprKind::GuardPattern { expr, else_branch, .. } => {
-            classify_expr(expr, effects, callees);
-            classify_expr(else_branch, effects, callees);
+            classify_expr(expr, effects, callees, t);
+            classify_expr(else_branch, effects, callees, t);
         }
-        ExprKind::IsPattern { expr, .. } => classify_expr(expr, effects, callees),
+        ExprKind::IsPattern { expr, .. } => classify_expr(expr, effects, callees, t),
         ExprKind::Match { scrutinee, arms } => {
-            classify_expr(scrutinee, effects, callees);
+            classify_expr(scrutinee, effects, callees, t);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    classify_expr(g, effects, callees);
+                    classify_expr(g, effects, callees, t);
                 }
-                classify_expr(&arm.body, effects, callees);
+                classify_expr(&arm.body, effects, callees, t);
             }
         }
         ExprKind::Try { expr: e } | ExprKind::Take { place: e } => {
-            classify_expr(e, effects, callees);
+            classify_expr(e, effects, callees, t);
         }
         ExprKind::Catch { value, clause } => {
-            classify_expr(value, effects, callees);
-            classify_expr(&clause.body, effects, callees);
+            classify_expr(value, effects, callees, t);
+            classify_expr(&clause.body, effects, callees, t);
         }
         ExprKind::IsPresent { expr: e, .. } => {
-            classify_expr(e, effects, callees);
+            classify_expr(e, effects, callees, t);
         }
         ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } | ExprKind::Convert { expr: e, .. } => {
-            classify_expr(e, effects, callees);
+            classify_expr(e, effects, callees, t);
         }
         ExprKind::NullCoalesce { value, default } => {
-            classify_expr(value, effects, callees);
-            classify_expr(default, effects, callees);
+            classify_expr(value, effects, callees, t);
+            classify_expr(default, effects, callees, t);
         }
         ExprKind::Range { start, end, .. } => {
-            if let Some(s) = start { classify_expr(s, effects, callees); }
-            if let Some(e) = end { classify_expr(e, effects, callees); }
+            if let Some(s) = start { classify_expr(s, effects, callees, t); }
+            if let Some(e) = end { classify_expr(e, effects, callees, t); }
         }
         ExprKind::StructLit { fields, spread, .. } => {
             for f in fields {
-                classify_expr(&f.value, effects, callees);
+                classify_expr(&f.value, effects, callees, t);
             }
             if let Some(s) = spread {
-                classify_expr(s, effects, callees);
+                classify_expr(s, effects, callees, t);
             }
         }
         ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
             for e in elems {
-                classify_expr(e, effects, callees);
+                classify_expr(e, effects, callees, t);
             }
         }
         ExprKind::ArrayRepeat { value, count } => {
-            classify_expr(value, effects, callees);
-            classify_expr(count, effects, callees);
+            classify_expr(value, effects, callees, t);
+            classify_expr(count, effects, callees, t);
         }
         ExprKind::UsingBlock { args, body, .. } => {
             for arg in args {
-                classify_expr(&arg.expr, effects, callees);
+                classify_expr(&arg.expr, effects, callees, t);
             }
-            classify_body(body, effects, callees);
+            classify_body(body, effects, callees, t);
         }
         ExprKind::WithAs { bindings, body } => {
             for binding in bindings {
-                classify_expr(&binding.source, effects, callees);
+                classify_expr(&binding.source, effects, callees, t);
             }
-            classify_body(body, effects, callees);
+            classify_body(body, effects, callees, t);
         }
-        ExprKind::Closure { body, .. } => classify_expr(body, effects, callees),
-        ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. }
+        ExprKind::Closure { body, .. } => classify_expr(body, effects, callees, t),
+        // Starting a task returns at once: concurrency, not a wait (AS1, #1362).
+        ExprKind::Spawn { body, .. } => {
+            effects.async_ = true;
+            classify_expr(body, effects, callees, t);
+        }
+        ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => {
-            classify_body(body, effects, callees);
+            classify_body(body, effects, callees, t);
         }
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
-            classify_expr(condition, effects, callees);
+            classify_expr(condition, effects, callees, t);
             if let Some(m) = message {
-                classify_expr(m, effects, callees);
+                classify_expr(m, effects, callees, t);
             }
         }
         ExprKind::Select { arms, .. } => {
             for arm in arms {
                 match &arm.kind {
                     rask_ast::expr::SelectArmKind::Recv { channel, .. } => {
-                        classify_expr(channel, effects, callees);
+                        classify_expr(channel, effects, callees, t);
                     }
                     rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                        classify_expr(channel, effects, callees);
-                        classify_expr(value, effects, callees);
+                        classify_expr(channel, effects, callees, t);
+                        classify_expr(value, effects, callees, t);
                     }
                     rask_ast::expr::SelectArmKind::Default => {}
                 }
-                classify_expr(&arm.body, effects, callees);
+                classify_expr(&arm.body, effects, callees, t);
             }
         }
         // Leaves
@@ -610,7 +602,7 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
 // ── CC2: runtime-needs scanning ────────────────────────────────────────
 //
 // These functions walk the AST tracking `using Multitasking {}` nesting depth.
-// At depth 0, a direct `spawn()` call sets `needs_runtime = true`.
+// At depth 0, a direct `spawn { }` sets `needs_runtime = true`.
 // Function calls at depth 0 are collected into `unguarded` for transitive propagation.
 
 fn is_multitasking_block(name: &str) -> bool {
@@ -629,15 +621,25 @@ fn is_multitasking_block(name: &str) -> bool {
 /// to method calls would change which programs it rejects. CW2 needs the
 /// methods — a handler that does its I/O in `room.broadcast()` is exactly the
 /// shape #1263 is about.
-#[derive(Default)]
-struct ReachScan {
+struct ReachScan<'t> {
+    targets: &'t MethodTargets,
     unguarded: HashSet<String>,
     plain: HashSet<String>,
     guarded: HashSet<String>,
     in_spawn: bool,
 }
 
-impl ReachScan {
+impl<'t> ReachScan<'t> {
+    fn new(targets: &'t MethodTargets) -> Self {
+        Self {
+            targets,
+            unguarded: HashSet::new(),
+            plain: HashSet::new(),
+            guarded: HashSet::new(),
+            in_spawn: false,
+        }
+    }
+
     /// A plain call: counts for both analyses.
     fn record(&mut self, depth: u32, name: String) {
         if depth == 0 && !self.in_spawn {
@@ -656,11 +658,11 @@ impl ReachScan {
     }
 }
 
-fn rt_scan_stmts(stmts: &[Stmt], depth: u32, rs: &mut ReachScan) -> bool {
+fn rt_scan_stmts(stmts: &[Stmt], depth: u32, rs: &mut ReachScan<'_>) -> bool {
     stmts.iter().fold(false, |acc, s| acc | rt_scan_stmt(s, depth, rs))
 }
 
-fn rt_scan_stmt(stmt: &Stmt, depth: u32, rs: &mut ReachScan) -> bool {
+fn rt_scan_stmt(stmt: &Stmt, depth: u32, rs: &mut ReachScan<'_>) -> bool {
     match &stmt.kind {
         StmtKind::Expr(e) => rt_scan_expr(e, depth, rs),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, depth, rs),
@@ -696,31 +698,31 @@ fn rt_scan_stmt(stmt: &Stmt, depth: u32, rs: &mut ReachScan) -> bool {
     }
 }
 
-fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan) -> bool {
+fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
     match &expr.kind {
         ExprKind::Call { func, args } => {
-            let mut direct = false;
-            let callee = extract_callee_name(func);
-            let spawning = callee.as_deref() == Some("spawn");
-            if let Some(name) = callee {
-                if spawning {
-                    direct = depth == 0;
-                } else {
-                    rs.record(depth, name);
-                }
+            if let Some(name) = extract_callee_name(func) {
+                rs.record(depth, name);
             }
-            direct |= rt_scan_expr(func, depth, rs);
-            // The closure handed to `spawn` runs on a task, so a runtime is
-            // installed for everything it reaches — the same thing `using
-            // Multitasking` means, arriving by a different route.
-            let was = rs.in_spawn;
-            rs.in_spawn |= spawning;
+            let mut r = rt_scan_expr(func, depth, rs);
             for arg in args {
-                direct |= rt_scan_expr(&arg.expr, depth, rs);
+                r |= rt_scan_expr(&arg.expr, depth, rs);
             }
-            rs.in_spawn = was;
-            direct
+            r
         }
+
+        // A green task runs on the scheduler, so a runtime is installed for
+        // everything its block reaches — the same thing `using Multitasking`
+        // means, arriving by a different route. An OS thread or a pool job
+        // needs no green runtime to start.
+        ExprKind::Spawn { target: SpawnTarget::Green, body, .. } => {
+            let was = rs.in_spawn;
+            rs.in_spawn = true;
+            rt_scan_expr(body, depth, rs);
+            rs.in_spawn = was;
+            depth == 0
+        }
+        ExprKind::Spawn { body, .. } => rt_scan_expr(body, depth, rs),
 
         // `using Multitasking { }` guards the body — increase depth
         ExprKind::UsingBlock { name, args, body } if is_multitasking_block(name) => {
@@ -733,10 +735,9 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan) -> bool {
 
         // All other expressions: recurse with same depth
         ExprKind::MethodCall { object, method, args, .. } => {
-            if let Some(type_name) = object.name() {
-                rs.reach(depth, format!("{}.{}", type_name, method));
+            for name in crate::method_callees(expr.id, object, method, rs.targets) {
+                rs.reach(depth, name);
             }
-            rs.reach(depth, method.clone());
             let mut r = rt_scan_expr(object, depth, rs);
             for arg in args { r |= rt_scan_expr(&arg.expr, depth, rs); }
             r
@@ -816,7 +817,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan) -> bool {
             r
         }
         ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, rs),
-        ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. }
+        ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, rs),
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
             let mut r = rt_scan_expr(condition, depth, rs);
@@ -912,6 +913,21 @@ mod tests {
         Stmt { id: NodeId(0), kind: StmtKind::Return(val), span: sp() }
     }
 
+    /// `spawn { }` — the parser's shape: an empty block in a closure node.
+    fn spawn_block() -> Expr {
+        let block = Expr { id: NodeId(0), kind: ExprKind::Block(vec![]), span: sp() };
+        let body = Expr {
+            id: NodeId(0),
+            kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(block) },
+            span: sp(),
+        };
+        Expr {
+            id: NodeId(0),
+            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, body: Box::new(body) },
+            span: sp(),
+        }
+    }
+
     fn expr_stmt(e: Expr) -> Stmt {
         Stmt { id: NodeId(0), kind: StmtKind::Expr(e), span: sp() }
     }
@@ -980,7 +996,7 @@ mod tests {
     #[test]
     fn pure_function() {
         let decls = vec![make_fn("add", vec![return_stmt(Some(ident("x")))])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["add"].is_pure());
     }
 
@@ -989,7 +1005,7 @@ mod tests {
         let decls = vec![make_fn("load", vec![
             expr_stmt(call("println", vec![])),
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["load"].io);
         assert!(!effects["load"].async_);
     }
@@ -997,28 +1013,44 @@ mod tests {
     #[test]
     fn direct_async_call() {
         let decls = vec![make_fn("run", vec![
-            expr_stmt(call("spawn", vec![])),
+            expr_stmt(spawn_block()),
         ])];
-        let effects = infer(&decls);
-        assert!(effects["run"].io, "AS3: Async implies IO");
+        let effects = infer(&decls, &Default::default());
+        assert!(!effects["run"].io, "spawning waits on nothing, so it isn't IO (#1362)");
         assert!(effects["run"].async_);
     }
 
     #[test]
     fn field_call_io_source() {
         let decls = vec![make_fn("read", vec![
-            expr_stmt(field_call("File", "open")),
+            expr_stmt(field_call("fs", "open")),
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["read"].io);
+    }
+
+    /// A method call is classed by the receiver's type as the checker resolved
+    /// it, not by the variable's name (#1418): `t.join()` on a `Handle` waits.
+    #[test]
+    fn method_call_classed_by_resolved_receiver() {
+        let decls = vec![make_fn("wait", vec![expr_stmt(method_call("t", "join"))])];
+        let targets: MethodTargets = [(NodeId(0), "Handle.join".to_string())].into();
+        let effects = infer(&decls, &targets);
+        assert!(effects["wait"].io);
+        assert!(effects["wait"].async_);
+
+        // A variable spelled like a source type, holding something else.
+        let decls = vec![make_fn("words", vec![expr_stmt(method_call("Handle", "join"))])];
+        let targets: MethodTargets = [(NodeId(0), "Vec.join".to_string())].into();
+        assert!(infer(&decls, &targets)["words"].is_pure());
     }
 
     #[test]
     fn method_call_io_source() {
         let decls = vec![make_fn("net", vec![
-            expr_stmt(method_call("Channel", "send")),
+            expr_stmt(method_call("Sender", "send")),
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["net"].io);
         assert!(effects["net"].async_);
     }
@@ -1031,7 +1063,7 @@ mod tests {
             make_fn("load", vec![expr_stmt(call("println", vec![]))]),
             make_fn("process", vec![expr_stmt(call("load", vec![]))]),
         ];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["load"].io);
         assert!(effects["process"].io, "Transitive IO via call to load");
     }
@@ -1044,7 +1076,7 @@ mod tests {
             make_fn("b", vec![expr_stmt(call("c", vec![]))]),
             make_fn("a", vec![expr_stmt(call("b", vec![]))]),
         ];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["a"].io);
         assert!(effects["b"].io);
         assert!(effects["c"].io);
@@ -1060,7 +1092,7 @@ mod tests {
             ]),
             make_fn("b", vec![expr_stmt(call("a", vec![]))]),
         ];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["a"].io);
         assert!(effects["b"].io, "b inherits IO from a via mutual recursion");
     }
@@ -1078,7 +1110,7 @@ mod tests {
                 span: sp(),
             },
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["ffi_call"].io, "IO3: unsafe blocks conservative IO");
     }
 
@@ -1090,7 +1122,7 @@ mod tests {
     #[test]
     fn a_comptime_func_is_measured_not_assumed() {
         let decls = vec![make_comptime_fn("table_gen")];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(
             effects["table_gen"].io,
             "PU2: inference confirms purity rather than granting it"
@@ -1110,7 +1142,7 @@ mod tests {
             f.body = vec![];
         }
         let decls = vec![decl];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["adds"].is_pure());
         assert!(crate::comptime_purity::check(&decls, &effects).is_empty());
     }
@@ -1118,19 +1150,8 @@ mod tests {
     #[test]
     fn extern_conservative_io() {
         let decls = vec![make_extern("c_function")];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["c_function"].io, "INF5: extern is conservative IO");
-    }
-
-    /// `spawn(|| …)` is a call, which is the only form there is — the block
-    /// form was a variant nothing produced (#1115). This used to build that
-    /// variant, so it proved a path no program could reach.
-    #[test]
-    fn spawn_is_async() {
-        let decls = vec![make_fn("run", vec![expr_stmt(call("spawn", vec![]))])];
-        let effects = infer(&decls);
-        assert!(effects["run"].async_);
-        assert!(effects["run"].io, "AS3: Async implies IO");
     }
 
     #[test]
@@ -1138,7 +1159,7 @@ mod tests {
         let decls = vec![make_fn("grow", vec![
             expr_stmt(method_call("pool", "insert")),
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["grow"].mutation());
         assert!(!effects["grow"].io, "Mutation is orthogonal to IO");
     }
@@ -1147,10 +1168,10 @@ mod tests {
     fn mixed_effects() {
         let decls = vec![make_fn("complex", vec![
             expr_stmt(call("println", vec![])),
-            expr_stmt(call("spawn", vec![])),
+            expr_stmt(spawn_block()),
             expr_stmt(method_call("pool", "insert")),
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         assert!(effects["complex"].io);
         assert!(effects["complex"].async_);
         assert!(effects["complex"].mutation());
@@ -1161,7 +1182,7 @@ mod tests {
         let decls = vec![make_fn("caller", vec![
             expr_stmt(call("some_unknown_fn", vec![])),
         ])];
-        let effects = infer(&decls);
+        let effects = infer(&decls, &Default::default());
         // Unknown function isn't in our source table, and there's no
         // declaration to propagate from → stays pure
         assert!(effects["caller"].is_pure());

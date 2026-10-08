@@ -171,7 +171,7 @@ extend Sequence<T> {
     }
 
     /// Reduce with a starting value.
-    public func fold<A>(self, init: A, f: func(A, T) -> A) -> A {
+    public func fold<A>(self, take init: A, f: func(A, T) -> A) -> A {
         mut acc = init
         for x in self {
             acc = f(acc, x)

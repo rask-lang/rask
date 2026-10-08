@@ -8,7 +8,7 @@
 //
 // CC1 was written but keyed off `BuiltinFunctionKind::Spawn`, which is only
 // ever minted for the qualified `async.spawn` spelling — so the form everyone
-// writes, a bare `spawn(|| { … })`, was never checked at all. CC2 (the
+// writes, a bare `spawn { … }`, was never checked at all. CC2 (the
 // transitive case) worked, but the walk never visited `test` blocks, so a test
 // body was exempt from both.
 //
@@ -21,14 +21,14 @@
 // A library function that spawns: no error here. Its callers are the ones who
 // have to open a scope.
 func launch_worker() {
-    let h = spawn(|| { return 1 })
+    let h = spawn { return 1 }
     h.detach()
 }
 
 // --- CC1: the entry point spawns with nothing installed ---
 func main() {
     // ERROR: `spawn` needs a `using Multitasking { }` scope [E0352]
-    let h = spawn(|| { return 1 })
+    let h = spawn { return 1 }
     h.detach()
 }
 
@@ -41,14 +41,14 @@ test "calls a function that spawns" {
 // --- CC1 inside a test body: T17, the same rule with no caller to blame ---
 test "spawns directly" {
     // ERROR: `spawn` needs a `using Multitasking { }` scope [E0352]
-    let h = spawn(|| { return 2 })
+    let h = spawn { return 2 }
     h.detach()
 }
 
 // --- the scope is one line, and it's all that's asked for ---
 test "opens the scope, so this is fine" {
     using Multitasking {
-        let h = spawn(|| { return 3 })
+        let h = spawn { return 3 }
         h.detach()
     }
 }

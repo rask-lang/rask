@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A plain struct with a field of a generic instance wider than a word.
+//
+// Natively `Holder` failed to compile ("field `o` holds 24 bytes but its slot
+// is 8"): declared types were laid out first, against the shared one-word
+// `One`, and the `One$Big` layout was made afterwards, so `Holder` never saw
+// it (#1444). Declarations and instances now go in one dependency order.
+
+struct Holder {
+    o: One<Big>
+    tail: i64
+}
+
+struct Outer {
+    deep: One<One<Big>>
+    name: string
+}
+
+struct One<T> {
+    v: T
+}
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+enum Slot {
+    Empty
+    Full(One<Big>, string)
+}
+
+test "a field of a wide instance keeps its bytes" {
+    let h = Holder { o: One { v: Big { a: 4, b: 5, c: 6 } }, tail: 7 }
+    assert h.o.v.a == 4
+    assert h.o.v.b == 5
+    assert h.o.v.c == 6
+    assert h.tail == 7
+}
+
+test "a nested instance as a field" {
+    let o = Outer { deep: One { v: One { v: Big { a: 1, b: 2, c: 3 } } }, name: "deep" }
+    assert o.deep.v.v.a == 1
+    assert o.deep.v.v.c == 3
+    assert o.name == "deep"
+}
+
+test "an enum payload of a wide instance" {
+    let s = Slot.Full(One { v: Big { a: 8, b: 9, c: 10 } }, "full")
+    match s {
+        Full(one, label) => {
+            assert one.v.b == 9
+            assert one.v.c == 10
+            assert label == "full"
+        }
+        Empty => assert false
+    }
+}

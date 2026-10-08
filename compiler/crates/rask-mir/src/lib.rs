@@ -13,6 +13,7 @@ pub mod dispatch_trace;
 pub mod elem_strs;
 pub mod vtable_layout;
 pub mod fallback;
+mod closure_reach;
 mod closure_targets;
 mod closures;
 mod display;
@@ -42,7 +43,13 @@ pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use transform::inline::InlineRegion;
 pub use operand::{BinOp, FieldAccess, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use rask_ast::expr::ConvertKind;
-pub use stmt::{CaptureAccess, ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span};
+pub use stmt::{CaptureAccess, ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
 pub use lower::ComptimeGlobalMeta;
 pub use program::MirProgram;
 pub use types::{spawn_payload_is_boxed, ContainerKind, MirType, StructLayoutId, EnumLayoutId};
+
+/// The runtime entries a task block's closure is handed to (`lower_spawn`):
+/// a green task, an OS thread, a pool job. Each keeps the closure and frees it
+/// when the task ends.
+pub const TASK_ENTRIES: &[&str] =
+    &["rask_green_closure_spawn", "rask_thread_spawn", "rask_threadpool_spawn"];

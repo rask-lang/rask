@@ -82,7 +82,9 @@ test "mem.ownership — a vector of structs used twice" {
         Sample { label: "the second row also has one", value: 2 },
     ]
     let values = rows.map(|r| r.value).to_vec()
-    let big = rows.filter(|r| r.value > 1).to_vec()
+    // A `Sample` is 24 bytes, so a lent one is cloned where it's collected
+    // (type.sequence/SEQ47).
+    let big = rows.filter(|r| r.value > 1).map(|r| r.clone()).to_vec()
     assert values[1] == 2
     assert big.len() == 1
     assert big[0].label == "the second row also has one"

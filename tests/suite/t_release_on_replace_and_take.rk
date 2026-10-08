@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Values that leaked natively, every answer right. The leak gate runs this
+// file under RASK_LEAK_CHECK, which is where these fail.
+//
+//   - A struct field written over with a new struct: the old one's vector
+//     was never freed (`self.active = MemTable.new()` in tiered_store).
+//   - `take` out of a `mutate self` field: the value became the method's,
+//     but was still counted as part of the caller's struct, so nobody freed it.
+//   - The new value built out of the old one, `self.list = More(Heap(self.list))`,
+//     must not free the old one; that is the list's tail now. One that only
+//     reads the old value must still free it. The ownership pass says which.
+//   - A string read out of a struct, then a `?? { continue }` past its last
+//     use: lowering leaves an unreachable block after `continue`, and the
+//     release pass took it as a path where the string was never assigned.
+//   - A method small enough to inline whose `match` builds the result: the
+//     result came out of each arm plus an impossible "no arm matched" path
+//     carrying garbage, and the release pass couldn't say who held it.
+
+import memory.Heap
+
+struct Bag {
+    items: Vec<string>
+    tag: string
+}
+
+struct Holder {
+    bag: Bag
+    spare: Bag?
+}
+
+extend Holder {
+    func reset(mutate self) {
+        self.bag = Bag { items: Vec.new(), tag: "a fresh bag with a long tag".to_uppercase() }
+    }
+
+    // Reads the old bag while building the new one, and keeps none of it.
+    func relabel(mutate self) {
+        self.bag = Bag { items: Vec.new(), tag: self.bag.tag.clone() }
+    }
+
+    func swap_spare(mutate self) -> string {
+        let old = take self.spare ?? {
+            return "none"
+        }
+        self.spare = Bag { items: Vec.new(), tag: "the replacement spare bag".to_uppercase() }
+        return old.tag
+    }
+}
+
+enum Chain {
+    End
+    Link(i64, Heap<Chain>)
+}
+
+struct Stack {
+    top: Chain
+}
+
+extend Stack {
+    func push(mutate self, n: i64) {
+        self.top = Chain.Link(n, Heap(self.top))
+    }
+
+    func sum(self) -> i64 {
+        return total(self.top)
+    }
+}
+
+func total(c: Chain) -> i64 {
+    return match c {
+        Chain.End => 0
+        Chain.Link(n, rest) => n + total(*rest)
+    }
+}
+
+enum Edit {
+    Insert { at: i64, text: string }
+    Remove { at: i64, text: string }
+}
+
+extend Edit {
+    func inverse(self) -> Edit {
+        return match self {
+            Insert(at, text) => Edit.Remove(at: at, text: text)
+            Remove(at, text) => Edit.Insert(at: at, text: text)
+        }
+    }
+}
+
+test "a struct field written over frees the old struct" {
+    mut h = Holder { bag: Bag { items: Vec.new(), tag: "first".to_string() }, spare: none }
+    h.bag.items.push("one long string to live on the heap".to_uppercase())
+    h.reset()
+    h.bag.items.push("two".to_string())
+    assert h.bag.items.len() == 1
+    assert h.bag.tag == "A FRESH BAG WITH A LONG TAG"
+}
+
+test "a new value that only reads the old one still frees it" {
+    mut h = Holder { bag: Bag { items: Vec.new(), tag: "kept tag, long enough for the heap".to_uppercase() }, spare: none }
+    h.bag.items.push("dropped with the old bag".to_uppercase())
+    h.relabel()
+    assert h.bag.tag == "KEPT TAG, LONG ENOUGH FOR THE HEAP"
+    assert h.bag.items.len() == 0
+}
+
+test "take out of a mutate self field frees what was taken" {
+    mut h = Holder { bag: Bag { items: Vec.new(), tag: "x".to_string() }, spare: none }
+    assert h.swap_spare() == "none"
+    h.spare = Bag { items: Vec.new(), tag: "the first spare bag of all".to_uppercase() }
+    assert h.swap_spare() == "THE FIRST SPARE BAG OF ALL"
+    assert h.swap_spare() == "THE REPLACEMENT SPARE BAG"
+}
+
+test "a new value built from the old one keeps it" {
+    mut s = Stack { top: Chain.End }
+    s.push(1)
+    s.push(2)
+    s.push(3)
+    assert s.sum() == 6
+}
+
+test "continue past a string's last use releases it" {
+    let input = "  [a]: a url long enough to live on the heap  \n  plain text long enough for the heap \n  [b] no colon on this long line at all  "
+    mut found = 0
+    for line in input.lines() {
+        let trimmed = line.trim().to_string()
+        if !trimmed.starts_with("[") {
+            continue
+        }
+        let close = trimmed.index_of("]:") ?? {
+            continue
+        }
+        let id = trimmed[1..close].to_string()
+        if id.is_empty() {
+            continue
+        }
+        found += trimmed.len() - close
+    }
+    assert found > 0
+}
+
+test "an inlined match result is released" {
+    let text = "another long string that lives on the heap".to_uppercase()
+    let e = Edit.Remove(at: 1, text: text)
+    let inv = e.inverse()
+    match inv {
+        Insert(at, t) => assert t.len() > 0
+        Remove(at, t) => assert false
+    }
+}

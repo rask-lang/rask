@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a generic body that can't handle the linear type it's called with (#1366)
+//
+// A generic body is checked once with `T` standing for nothing in particular,
+// and a type parameter is never linear, so `forget<T>` passed and silently
+// dropped the `Conn` it was handed. The body is now checked again for each
+// linear type argument, and the error lands on the call that supplied it,
+// pointing into the body at what goes wrong.
+
+import memory.Heap
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) {
+    }
+}
+
+enum List<T> {
+    Empty
+    More(T, Heap<List<T>>)
+}
+
+func forget<T>(take x: T) {
+}
+
+func drop_first<T>(take l: List<T>) {
+    match l {
+        List.Empty => {}
+        List.More(x, rest) => {}
+    }
+}
+
+func both<T>(take a: T, take b: T) {
+    discard a
+    discard b
+}
+
+func twice<T>(take x: T) {
+    // ERROR: `x` handed to two `take` parameters — already a move error for
+    // ERROR: any `T` that moves, and a double consume for a linear one
+    both(x, x)
+}
+
+func lose<T>(take x: T) {
+}
+
+func middle<T>(take x: T) {
+    lose(x)
+}
+
+func outer<T>(take x: T) {
+    middle(x)
+}
+
+struct Sink {
+    n: i64
+}
+
+extend Sink {
+    func swallow<T>(self, take x: T) {
+    }
+}
+
+struct Holder<T> {
+    item: T
+}
+
+extend Holder<T> {
+    func drop_it(take self) {
+    }
+}
+
+struct Pair {
+    c: Conn
+}
+
+extend Pair {
+    // ERROR: `take self` lets `self.c` go unconsumed — no generics needed
+    func leak(take self) {
+    }
+}
+
+func main() {
+    let s = Sink { n: 1 }
+    // ERROR: a generic method drops its `T`, here a `Conn`
+    s.swallow(Conn { id: 4 })
+
+    let h = Holder { item: Conn { id: 5 } }
+    // ERROR: `Holder<T>.drop_it` drops `self.item`, which is a `Conn` here
+    h.drop_it()
+
+    Pair { c: Conn { id: 6 } }.leak()
+
+    // ERROR: `forget` drops its `T`, and here `T` is `Conn`
+    forget(Conn { id: 1 })
+
+    // ERROR: the issue's case — the payload matched out of `List<Conn>` is dropped
+    drop_first(List.More(Conn { id: 2 }, Heap(List.Empty)))
+
+    // ERROR: `lose` drops it two generic calls down; reported here, where `Conn` came in
+    outer(Conn { id: 3 })
+
+    // Fine: an ordinary type argument
+    forget(5)
+}

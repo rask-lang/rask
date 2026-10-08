@@ -6,12 +6,12 @@
 //! CW2: IO function called in a loop without `using Multitasking` context
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{CallArg, Expr, ExprKind};
+use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use std::collections::HashSet;
 
-use crate::{EffectMap, EffectWarning};
+use crate::{EffectMap, EffectWarning, MethodTargets};
 
 /// Detect CW1 and CW2 warnings from declarations.
 ///
@@ -23,11 +23,13 @@ pub fn detect(
     decls: &[Decl],
     effects: &EffectMap,
     runtime_only: &HashSet<String>,
+    targets: &MethodTargets,
 ) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
     let program_is_concurrent = effects.values().any(|e| e.async_);
     let mut ctx = WarnContext {
         effects,
+        targets,
         runtime_only,
         program_is_concurrent,
         in_thread_pool: false,
@@ -47,7 +49,7 @@ pub fn detect(
                 for m in &e.methods { ctx.check_fn(&format!("{}.{}", e.name, m.name), m, false, &mut warnings); }
             }
             DeclKind::Impl(i) => {
-                for m in &i.methods { ctx.check_fn(&format!("{}.{}", i.target_ty, m.name), m, false, &mut warnings); }
+                for m in &i.methods { ctx.check_fn(&crate::method_key(&i.target_ty, &m.name), m, false, &mut warnings); }
             }
             DeclKind::Interface(t) => {
                 for m in &t.methods { ctx.check_fn(&format!("{}.{}", t.name, m.name), m, false, &mut warnings); }
@@ -90,6 +92,8 @@ fn is_root_fn(f: &FnDecl) -> bool {
 
 struct WarnContext<'a> {
     effects: &'a EffectMap,
+    /// The checker's name for each method call it resolved.
+    targets: &'a MethodTargets,
     /// Functions every path to which installs a runtime first — see
     /// `infer::infer_with_reach`. CW2 stays quiet inside one.
     runtime_only: &'a HashSet<String>,
@@ -114,27 +118,6 @@ impl<'a> WarnContext<'a> {
         self.in_root = is_root;
         self.under_runtime = self.runtime_only.contains(qname);
         self.check_stmts(&f.body, warnings);
-    }
-
-    /// A closure handed to `spawn` runs as a task, and a task only exists once a
-    /// runtime has accepted it — so its body is under a runtime wherever the
-    /// `spawn` is written. Without this, a function that recursed through a
-    /// spawned closure (divide-and-conquer) was rejected at its own recursive
-    /// call, a call that can never be missing a runtime.
-    fn check_args_maybe_spawned(
-        &mut self,
-        spawned: bool,
-        args: &[CallArg],
-        warnings: &mut Vec<EffectWarning>,
-    ) {
-        let was_mt = self.in_multitasking;
-        if spawned {
-            self.in_multitasking = true;
-        }
-        for arg in args {
-            self.check_expr(&arg.expr, warnings);
-        }
-        self.in_multitasking = was_mt;
     }
 
     fn check_stmts(&mut self, stmts: &[Stmt], warnings: &mut Vec<EffectWarning>) {
@@ -209,38 +192,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::Call { func, args } => {
                 let callee_name = extract_callee_name(func);
                 if let Some(ref name) = callee_name {
-                    self.maybe_warn_io_call(name, expr.span, warnings);
-                    // CC1: a `spawn` in a function nothing calls. Everywhere else
-                    // the error belongs at the call site instead (CC2), which is
-                    // what lets `http.serve` spawn per connection and leave the
-                    // block to its caller — reporting the definition would make
-                    // that function unwritable.
-                    if self.in_root
-                        && !self.in_multitasking
-                        && (name == "spawn" || name.ends_with(".spawn"))
-                    {
-                        warnings.push(EffectWarning {
-                            code: "E0352",
-                            message: "`spawn` needs a `using Multitasking { }` scope"
-                                .to_string(),
-                            span: expr.span,
-                            callee_name: name.clone(),
-                            is_error: true,
-                            label: "no block installs a runtime for this task".to_string(),
-                            fix: Some(
-                                "wrap the spawn and whatever joins it:\n    \
-                                 using Multitasking { let h = spawn(|| { … })  h.join() }"
-                                    .to_string(),
-                            ),
-                            why: Some(
-                                "`spawn` submits the task to the runtime the block installs, \
-                                 and nothing here installs one. Nested calls are reported at \
-                                 the call site instead, so a library function is free to spawn \
-                                 and leave the block to whoever calls it [conc.async/CC1]"
-                                    .to_string(),
-                            ),
-                        });
-                    }
+                    self.maybe_warn_io_call(name, name, expr.span, warnings);
                     // CC2: calling a needs_runtime function outside any using Multitasking block
                     if !self.in_multitasking {
                         if let Some(callee_effects) = self.effects.get(name.as_str()) {
@@ -271,38 +223,70 @@ impl<'a> WarnContext<'a> {
                     }
                 }
                 self.check_expr(func, warnings);
-                let is_spawn = callee_name
-                    .as_deref()
-                    .is_some_and(|n| n == "spawn" || n == "async.spawn");
-                self.check_args_maybe_spawned(is_spawn, args, warnings);
+                for arg in args {
+                    self.check_expr(&arg.expr, warnings);
+                }
+            }
+
+            ExprKind::Spawn { target, body, .. } => {
+                // CC1: a `spawn` in a function nothing calls. Everywhere else
+                // the error belongs at the call site instead (CC2), which is
+                // what lets `http.serve` spawn per connection and leave the
+                // block to its caller — reporting the definition would make
+                // that function unwritable.
+                if *target == SpawnTarget::Green && self.in_root && !self.in_multitasking {
+                    warnings.push(EffectWarning {
+                        code: "E0352",
+                        message: "`spawn` needs a `using Multitasking { }` scope".to_string(),
+                        span: expr.span,
+                        callee_name: "spawn".to_string(),
+                        is_error: true,
+                        label: "no block installs a runtime for this task".to_string(),
+                        fix: Some(
+                            "wrap the spawn and whatever joins it:\n    \
+                             using Multitasking { let h = spawn { … }  h.join() }"
+                                .to_string(),
+                        ),
+                        why: Some(
+                            "`spawn` submits the task to the runtime the block installs, \
+                             and nothing here installs one. Nested calls are reported at \
+                             the call site instead, so a library function is free to spawn \
+                             and leave the block to whoever calls it [conc.async/CC1]"
+                                .to_string(),
+                        ),
+                    });
+                }
+                if *target == SpawnTarget::Pool {
+                    // CW1 only covers code that actually runs on a pool worker:
+                    // the block of `ThreadPool.spawn { … }`, not whatever else
+                    // happens to be lexically inside a `using ThreadPool { }`
+                    // block (#590) — most of that block still runs on the
+                    // caller's thread.
+                    let was_in_tp = self.in_thread_pool;
+                    self.in_thread_pool = true;
+                    self.check_expr(body, warnings);
+                    self.in_thread_pool = was_in_tp;
+                } else {
+                    // A task only exists once a runtime has accepted it, so its
+                    // block is under a runtime wherever the `spawn` is written.
+                    // Without this, a function that recursed through a spawned
+                    // task (divide-and-conquer) was rejected at its own
+                    // recursive call, a call that can never be missing a runtime.
+                    let was_mt = self.in_multitasking;
+                    self.in_multitasking = true;
+                    self.check_expr(body, warnings);
+                    self.in_multitasking = was_mt;
+                }
             }
 
             ExprKind::MethodCall { object, method, args, .. } => {
-                // Check qualified form
-                let is_pool_spawn = if let Some(type_name) = object.name() {
-                    let qname = format!("{}.{}", type_name, method);
-                    self.maybe_warn_io_call(&qname, expr.span, warnings);
-                    is_thread_pool(type_name) && method == "spawn"
-                } else {
-                    false
-                };
-                self.maybe_warn_io_call(method, expr.span, warnings);
+                let names = crate::method_callees(expr.id, object, method, self.targets);
+                for name in &names {
+                    self.maybe_warn_io_call(name, method, expr.span, warnings);
+                }
                 self.check_expr(object, warnings);
-                // CW1 only covers code that actually runs on a pool worker: the
-                // body of the closure handed to `ThreadPool.spawn(...)`, not
-                // whatever else happens to be lexically inside a `using
-                // ThreadPool { }` block (#590) — most of that block still runs
-                // on the caller's thread.
-                if is_pool_spawn {
-                    let was_in_tp = self.in_thread_pool;
-                    self.in_thread_pool = true;
-                    for arg in args {
-                        self.check_expr(&arg.expr, warnings);
-                    }
-                    self.in_thread_pool = was_in_tp;
-                } else {
-                    // `Thread.spawn` — same as the free function.
-                    self.check_args_maybe_spawned(method == "spawn", args, warnings);
+                for arg in args {
+                    self.check_expr(&arg.expr, warnings);
                 }
             }
 
@@ -322,14 +306,6 @@ impl<'a> WarnContext<'a> {
                     self.check_expr(&arg.expr, warnings);
                 }
                 self.check_stmts(body, warnings);
-            }
-
-            // BlockCall: ThreadPool.spawn(|| { ... }) parsed as BlockCall
-            ExprKind::BlockCall { name, body } if is_thread_pool(name) => {
-                let was_in_tp = self.in_thread_pool;
-                self.in_thread_pool = true;
-                self.check_stmts(body, warnings);
-                self.in_thread_pool = was_in_tp;
             }
 
 
@@ -411,7 +387,7 @@ impl<'a> WarnContext<'a> {
             }
             ExprKind::Closure { body, .. } => self.check_expr(body, warnings),
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
-            | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
+            | ExprKind::Loop { body, .. } => {
                 self.check_stmts(body, warnings);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -442,15 +418,17 @@ impl<'a> WarnContext<'a> {
     }
 
     /// Check if a callee has IO effects and we're in a warning context.
+    /// `method` is the bare name the call was written with.
     fn maybe_warn_io_call(
         &self,
         callee: &str,
+        method: &str,
         span: rask_ast::Span,
         warnings: &mut Vec<EffectWarning>,
     ) {
         let has_io = self.effects.get(callee)
             .map_or(false, |e| e.io)
-            || crate::sources::classify_call(callee).io;
+            || crate::sources::classify_method(callee, method).io;
 
         if !has_io {
             return;
@@ -500,10 +478,6 @@ impl<'a> WarnContext<'a> {
     }
 }
 
-fn is_thread_pool(name: &str) -> bool {
-    name == "ThreadPool" || name == "thread_pool"
-}
-
 fn is_multitasking(name: &str) -> bool {
     name == "Multitasking" || name == "multitasking"
 }
@@ -526,7 +500,7 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
 mod tests {
     use super::*;
     use rask_ast::decl::{Decl, DeclKind, FnDecl};
-    use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
+    use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
     use rask_ast::stmt::{Stmt, StmtKind, ForBinding};
     use rask_ast::{NodeId, Span};
     use std::collections::HashMap;
@@ -570,30 +544,32 @@ mod tests {
         Stmt { id: NodeId(0), kind: StmtKind::Expr(e), span: sp() }
     }
 
-    /// `ThreadPool.spawn(|| { <inner> })` — the only place CW1 should fire.
-    fn pool_spawn(inner: Vec<Stmt>) -> Expr {
-        Expr {
+    /// A task block, built the way the parser builds one.
+    fn spawn_on(target: SpawnTarget, inner: Vec<Stmt>) -> Expr {
+        let body = Expr {
             id: NodeId(0),
-            kind: ExprKind::MethodCall {
-                object: Box::new(ident("ThreadPool")),
-                method: "spawn".into(),
-                type_args: None,
-                args: vec![CallArg {
-                    name: None,
-                    mode: ArgMode::Default,
-                    expr: Expr {
-                        id: NodeId(0),
-                        kind: ExprKind::Closure {
-                            params: vec![],
-                            ret_ty: None,
-                            body: Box::new(Expr { id: NodeId(0), kind: ExprKind::Block(inner), span: sp() }),
-                        },
-                        span: sp(),
-                    },
-                }],
+            kind: ExprKind::Closure {
+                params: vec![],
+                ret_ty: None,
+                body: Box::new(Expr { id: NodeId(0), kind: ExprKind::Block(inner), span: sp() }),
             },
             span: sp(),
+        };
+        Expr {
+            id: NodeId(0),
+            kind: ExprKind::Spawn { target, receiver: None, body: Box::new(body) },
+            span: sp(),
         }
+    }
+
+    /// `ThreadPool.spawn { <inner> }` — the only place CW1 should fire.
+    fn pool_spawn(inner: Vec<Stmt>) -> Expr {
+        spawn_on(SpawnTarget::Pool, inner)
+    }
+
+    /// `spawn { <inner> }`.
+    fn task_spawn(inner: Vec<Stmt>) -> Expr {
+        spawn_on(SpawnTarget::Green, inner)
     }
 
     fn make_fn(name: &str, body: Vec<Stmt>) -> Decl {
@@ -636,7 +612,7 @@ mod tests {
 
     #[test]
     fn cw1_io_in_pool_spawn_closure() {
-        // using ThreadPool { ThreadPool.spawn(|| { println() }) }
+        // using ThreadPool { ThreadPool.spawn { println() } }
         let body = vec![expr_stmt(Expr {
             id: NodeId(0),
             kind: ExprKind::UsingBlock {
@@ -648,7 +624,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
         assert!(warnings[0].message.contains("println"));
@@ -669,7 +645,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "CW1 should not fire for IO outside a spawn closure");
     }
 
@@ -689,7 +665,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -710,7 +686,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io("println"); // no async_ effect anywhere
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "CW2 should not fire in single-threaded programs");
     }
 
@@ -739,7 +715,7 @@ mod tests {
         })];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
 
@@ -758,7 +734,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = HashMap::new(); // add has no effects
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty());
     }
 
@@ -769,13 +745,13 @@ mod tests {
             kind: ExprKind::UsingBlock {
                 name: "ThreadPool".into(),
                 args: vec![],
-                body: vec![expr_stmt(pool_spawn(vec![expr_stmt(field_call("File", "read"))]))],
+                body: vec![expr_stmt(pool_spawn(vec![expr_stmt(field_call("fs", "read_text"))]))],
             },
             span: sp(),
         })];
         let decls = vec![make_fn("bad", body)];
         let effects = effects_with_io("File.read");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
     }
@@ -787,10 +763,10 @@ mod tests {
     #[test]
     fn cw2_silent_in_a_function_only_a_spawn_reaches() {
         // func serve_client() { loop { File.read() } }
-        // func main() { using Multitasking { spawn(|| serve_client()) } }
+        // func main() { using Multitasking { spawn { serve_client() } } }
         let handler = make_fn("serve_client", vec![Stmt {
             id: NodeId(0),
-            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("File", "read"))] },
+            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("fs", "read_text"))] },
             span: sp(),
         }]);
         let main = make_fn("main", vec![expr_stmt(Expr {
@@ -798,23 +774,12 @@ mod tests {
             kind: ExprKind::UsingBlock {
                 name: "Multitasking".into(),
                 args: vec![],
-                body: vec![expr_stmt(Expr {
-                    id: NodeId(0),
-                    kind: ExprKind::Call {
-                        func: Box::new(Expr { id: NodeId(0), kind: ExprKind::Ident("spawn".into()), span: sp() }),
-                        args: vec![rask_ast::expr::CallArg {
-                            name: None,
-                            mode: rask_ast::expr::ArgMode::Default,
-                            expr: call("serve_client"),
-                        }],
-                    },
-                    span: sp(),
-                })],
+                body: vec![expr_stmt(task_spawn(vec![expr_stmt(call("serve_client"))]))],
             },
             span: sp(),
         })]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &Default::default());
         assert!(
             warnings.iter().all(|w| w.code != "comp.effects/CW2"),
             "CW2 fired inside a spawn-only function: {:?}",
@@ -828,46 +793,22 @@ mod tests {
     fn cw2_still_fires_when_a_plain_call_reaches_the_loop() {
         let handler = make_fn("serve_client", vec![Stmt {
             id: NodeId(0),
-            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("File", "read"))] },
+            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("fs", "read_text"))] },
             span: sp(),
         }]);
         let main = make_fn("main", vec![
             expr_stmt(call("serve_client")),
-            expr_stmt(call("spawn")),
+            expr_stmt(task_spawn(vec![])),
         ]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &Default::default());
         assert!(
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
         );
     }
 
-    /// `spawn(|| { <inner> })`.
-    fn task_spawn(inner: Vec<Stmt>) -> Expr {
-        Expr {
-            id: NodeId(0),
-            kind: ExprKind::Call {
-                func: Box::new(ident("spawn")),
-                args: vec![CallArg {
-                    name: None,
-                    mode: ArgMode::Default,
-                    expr: Expr {
-                        id: NodeId(0),
-                        kind: ExprKind::Closure {
-                            params: vec![],
-                            ret_ty: None,
-                            body: Box::new(Expr { id: NodeId(0), kind: ExprKind::Block(inner), span: sp() }),
-                        },
-                        span: sp(),
-                    },
-                }],
-            },
-            span: sp(),
-        }
-    }
-
-    /// Divide-and-conquer: `func tree() { spawn(|| { tree() }) }`. The
+    /// Divide-and-conquer: `func tree() { spawn { tree() } }`. The
     /// recursive call runs inside a task, which only exists under a runtime,
     /// so it can't be missing one. It used to be E0353.
     #[test]
@@ -882,7 +823,7 @@ mod tests {
             },
             span: sp(),
         })]);
-        let (_, warnings) = crate::infer_effects(&[tree, main]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &Default::default());
         assert!(
             warnings.iter().all(|w| w.code != "E0353"),
             "E0353 fired inside a spawned closure: {:?}",
@@ -896,7 +837,7 @@ mod tests {
     fn cc2_still_fires_for_the_call_that_starts_the_tree() {
         let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
         let main = make_fn("main", vec![expr_stmt(call("tree"))]);
-        let (_, warnings) = crate::infer_effects(&[tree, main]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &Default::default());
         assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }

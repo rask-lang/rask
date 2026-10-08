@@ -67,11 +67,11 @@ Inside a spawn closure, `reader.read(buf)` through `any Reader` becomes a yield 
 
 <!-- test: skip -->
 ```rask
-spawn(|| {
+spawn {
     let reader: any Reader = get_reader()
     let n = try reader.read(buf)  // yield point — concrete type unknown
     process(buf[..n])
-})
+}
 ```
 
 State machine:
@@ -108,7 +108,7 @@ The spawn closure body is compiled exactly like any other function. It runs on t
 
 <!-- test: skip -->
 ```rask
-spawn(|| {
+spawn {
     let data = try File.read("input.txt")   // parks fiber if reactor says EAGAIN
 
     let items = data.lines().filter(|line| line.starts_with("#"))
@@ -116,7 +116,7 @@ spawn(|| {
     for item in items {
         try File.write("out.txt", item)        // parks fiber on backpressure
     }
-})
+}
 ```
 
 Parking is a runtime operation (`fiber_switch`), not a compile-time transform. The compiler does not need to know which call sites might park.
@@ -184,17 +184,17 @@ Go's runtime does exactly this for cgo calls. Cost: ~100µs for the temporary th
 <!-- test: skip -->
 ```rask
 using Multitasking, ThreadPool {
-    spawn(|| {
+    spawn {
         // Good: long-blocking FFI on thread pool
-        let rows = try ThreadPool.spawn(|| {
+        let rows = try ThreadPool.spawn {
             sqlite_query(db, "SELECT * FROM users")
-        }).join()
+        }.join()
 
         process(rows)
 
         // Fine: fast FFI inline
         let checksum = crc32(data)
-    }).detach()
+    }.detach()
 }
 ```
 

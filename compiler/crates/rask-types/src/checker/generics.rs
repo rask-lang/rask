@@ -7,7 +7,8 @@ use super::type_defs::TypeDef;
 use super::TypeChecker;
 use rask_ast::ty::TypeExpr;
 
-use crate::types::{GenericArg, Type, TypeVarId};
+use crate::types::{FnParam, GenericArg, Type, TypeVarId};
+use super::inference::TypeConstraint;
 
 impl TypeChecker {
     /// Resolve the self type for an extend block, handling generic params.
@@ -40,15 +41,11 @@ impl TypeChecker {
             let args = header_args
                 .iter()
                 .map(|arg| {
-                    // A bare parameter name stays symbolic — resolving it would
-                    // find any type that happens to share the letter.
-                    let ty = match arg.bare_name() {
-                        Some(n) if super::declarations::is_type_param_name(n) => {
-                            Type::UnresolvedNamed(n.to_string())
-                        }
-                        _ => super::resolve_type_expr(arg, &self.types)
-                            .unwrap_or_else(|_| Type::UnresolvedNamed(arg.to_string())),
-                    };
+                    // The block's parameters are in scope (`header_type_params`),
+                    // so a parameter stays symbolic even when it shares a name
+                    // with a real type.
+                    let ty = super::resolve_type_expr(arg, &self.types)
+                        .unwrap_or_else(|_| Type::UnresolvedNamed(arg.to_string()));
                     GenericArg::Type(Box::new(ty))
                 })
                 .collect();
@@ -136,7 +133,8 @@ impl TypeChecker {
                     _ => None,
                 } {
                     if let Some(bound) = self.types.assoc_binding_any(id, name) {
-                        return bound.clone();
+                        let bound = self.types.instantiate_assoc(&base_ty, bound);
+                        return self.resolve_named(&bound);
                     }
                 }
                 Type::Assoc { base: Box::new(base_ty), name: name.clone() }
@@ -146,6 +144,12 @@ impl TypeChecker {
                     if let Some(self_ty) = &self.current_self_type {
                         return self_ty.clone();
                     }
+                }
+                // A parameter in scope is the parameter, whatever else shares
+                // its name: `Holder<Output>`'s `self.v.clone()` dispatched to
+                // `os.Output`'s clone (#1487).
+                if self.types.is_type_param_in_scope(name) {
+                    return ty.clone();
                 }
                 if let Some(type_id) = self.types.get_type_id(name) {
                     return Type::Named(type_id);
@@ -232,7 +236,7 @@ impl TypeChecker {
                 Type::Tuple(elems.iter().map(|e| Self::substitute_type_params(e, subst)).collect())
             }
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| Self::substitute_type_params(p, subst)).collect(),
+                params: params.iter().map(|p| p.map(|p| Self::substitute_type_params(p, subst))).collect(),
                 ret: Box::new(Self::substitute_type_params(ret, subst)),
             },
             Type::Generic { base, args } => Type::Generic {
@@ -259,6 +263,78 @@ impl TypeChecker {
         }
     }
 
+    /// Rebuild `ty` with every projection `f` answers for replaced.
+    pub(super) fn map_projections(ty: &Type, f: &mut dyn FnMut(&Type, &str) -> Option<Type>) -> Type {
+        let mut arg = |a: &GenericArg, f: &mut dyn FnMut(&Type, &str) -> Option<Type>| match a {
+            GenericArg::Type(t) => GenericArg::Type(Box::new(Self::map_projections(t, f))),
+            other => other.clone(),
+        };
+        match ty {
+            Type::Assoc { base, name } => match f(base, name) {
+                Some(t) => t,
+                None => Type::Assoc { base: Box::new(Self::map_projections(base, f)), name: name.clone() },
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(Self::map_projections(ok, f)),
+                err: Box::new(Self::map_projections(err, f)),
+            },
+            Type::RawPtr(inner) => Type::RawPtr(Box::new(Self::map_projections(inner, f))),
+            Type::Array { elem, len } => Type::Array { elem: Box::new(Self::map_projections(elem, f)), len: *len },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
+            Type::Union(elems) => Type::Union(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| FnParam { mode: p.mode, ty: Self::map_projections(&p.ty, f) }).collect(),
+                ret: Box::new(Self::map_projections(ret, f)),
+            },
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|a| arg(a, f)).collect(),
+            },
+            Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+                name: name.clone(),
+                args: args.iter().map(|a| arg(a, f)).collect(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    /// AT8: a generic callee's `T.Out` means `Out` of the conformance `T`'s
+    /// bound names. Read once `T` is known, through that bound: a `Meters`
+    /// carrying both `Mul<f64>` and `Mul<Meters>` has two `Out`s, and only the
+    /// bound says which one `doubled<T: Mul<f64>>` returns (#1330).
+    ///
+    /// Each projection on a bounded parameter becomes a fresh variable here,
+    /// while the parameter is still spelled by name, and a `Projection`
+    /// constraint fills it in.
+    pub(super) fn project_through_bounds(
+        &mut self,
+        ty: &Type,
+        bounds: &HashMap<String, Vec<TypeExpr>>,
+        pairs: &[(String, Type)],
+        span: rask_ast::Span,
+    ) -> Type {
+        let mut pending = Vec::new();
+        let out = Self::map_projections(ty, &mut |base, assoc| {
+            let Type::UnresolvedNamed(param) = base else { return None };
+            let (_, fresh_base) = pairs.iter().find(|(p, _)| p == param)?;
+            let bound = self.types.projection_bound(bounds.get(param)?, assoc)?.clone();
+            let result = self.ctx.fresh_var();
+            pending.push(TypeConstraint::Projection {
+                base: fresh_base.clone(),
+                bound,
+                args: pairs.to_vec(),
+                assoc: assoc.to_string(),
+                result: result.clone(),
+                span,
+            });
+            Some(result)
+        });
+        for c in pending {
+            self.ctx.add_constraint(c);
+        }
+        out
+    }
+
     /// A generic function named as a value rather than called: `v.map(keep)`,
     /// `let f = keep`. That use is an instantiation of its own, so it gets a
     /// fresh variable per type parameter, recorded under the name's node the
@@ -282,17 +358,89 @@ impl TypeChecker {
         let bounds = self.fn_type_param_bounds.get(&sym).cloned();
         let pairs: Vec<(String, Type)> = params
             .into_iter()
-            .map(|name| {
-                let fresh = self.ctx.fresh_var();
-                if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
-                    self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
-                }
-                (name, fresh)
-            })
+            .map(|name| (name, self.ctx.fresh_var()))
             .collect();
+        if let Some(bounds) = &bounds {
+            self.note_bound_obligations(&pairs, bounds, span);
+        }
         self.pending_call_type_args.push((node, pairs.clone()));
         let subst: HashMap<&str, Type> = pairs.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         Self::substitute_type_params(&self.ctx.apply(&ty), &subst)
+    }
+
+    /// #314: each type argument in `pairs` has to satisfy its parameter's
+    /// bounds, read with the whole of `pairs` substituted in.
+    pub(super) fn note_bound_obligations<'b>(
+        &mut self,
+        pairs: &[(String, Type)],
+        bounds: impl IntoIterator<Item = (&'b String, &'b Vec<TypeExpr>)>,
+        span: rask_ast::Span,
+    ) {
+        self.note_bounds(pairs, bounds, false, span);
+    }
+
+    fn note_bounds<'b>(
+        &mut self,
+        pairs: &[(String, Type)],
+        bounds: impl IntoIterator<Item = (&'b String, &'b Vec<TypeExpr>)>,
+        on_type: bool,
+        span: rask_ast::Span,
+    ) {
+        for (name, param_bounds) in bounds {
+            let Some((_, ty)) = pairs.iter().find(|(p, _)| p == name) else { continue };
+            if param_bounds.is_empty() {
+                continue;
+            }
+            self.pending_bound_checks.push(super::validate::BoundObligation {
+                ty: ty.clone(),
+                bounds: param_bounds.clone(),
+                args: pairs.to_vec(),
+                on_type,
+                span,
+            });
+        }
+    }
+
+    /// A struct or enum's bounds on its parameters hold for every type it's
+    /// instantiated with — `struct Holder<T: Named>` means no `Holder<i64>`
+    /// (#1462). Walks `ty` so a bounded type nested in another counts too.
+    pub(super) fn note_type_bounds(&mut self, ty: &Type, span: rask_ast::Span) {
+        let walk_args = |this: &mut Self, args: &[GenericArg]| {
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    this.note_type_bounds(t, span);
+                }
+            }
+        };
+        match ty {
+            Type::Generic { base, args } => {
+                let bounds = self.types.param_bounds(*base).to_vec();
+                if !bounds.is_empty() {
+                    let pairs: Vec<(String, Type)> = bounds
+                        .iter()
+                        .zip(args.iter())
+                        .filter_map(|((name, _), a)| match a {
+                            GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
+                            GenericArg::ConstUsize(_) => None,
+                        })
+                        .collect();
+                    self.note_bounds(&pairs, bounds.iter().map(|(n, b)| (n, b)), true, span);
+                }
+                walk_args(self, args);
+            }
+            Type::UnresolvedGeneric { args, .. } => walk_args(self, args),
+            Type::Result { ok, err } => {
+                self.note_type_bounds(ok, span);
+                self.note_type_bounds(err, span);
+            }
+            Type::Array { elem, .. } => self.note_type_bounds(elem, span),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                for e in elems {
+                    self.note_type_bounds(e, span);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Build a substitution map from type param names to concrete types from generic args.
@@ -365,11 +513,11 @@ impl TypeChecker {
             matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
         }
         match ty {
-            // A parameter the enclosing function or extend block already binds
-            // keeps its name. Freshening it would hand this call a variable the
-            // caller's type argument never reaches, and the chain after it
-            // would have no receiver type at all.
-            Type::UnresolvedNamed(name) if self.type_params_in_scope.contains(name) => {
+            // A parameter the enclosing function, type or extend block already
+            // binds keeps its name. Freshening it would hand this call a
+            // variable the caller's type argument never reaches, and the chain
+            // after it would have no receiver type at all.
+            Type::UnresolvedNamed(name) if self.types.is_declared_type_param(name) => {
                 ty.clone()
             }
             Type::UnresolvedNamed(name) if is_param(name) => seen
@@ -381,7 +529,7 @@ impl TypeChecker {
                 err: Box::new(self.freshen_free_type_params(err, seen)),
             },
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| self.freshen_free_type_params(p, seen)).collect(),
+                params: params.iter().map(|p| p.map(|p| self.freshen_free_type_params(p, seen))).collect(),
                 ret: Box::new(self.freshen_free_type_params(ret, seen)),
             },
             Type::Tuple(elems) => Type::Tuple(
@@ -454,7 +602,7 @@ impl TypeChecker {
                 }
             }
             Type::Fn { params, ret } => {
-                for p in params {
+                for p in params.iter().map(|p| &p.ty) {
                     self.collect_type_vars(p, subst);
                 }
                 self.collect_type_vars(ret, subst);
@@ -504,7 +652,7 @@ impl TypeChecker {
             Type::Fn { params, ret } => Type::Fn {
                 params: params
                     .iter()
-                    .map(|p| self.apply_type_var_substitution(p, substitution))
+                    .map(|p| p.map(|p| self.apply_type_var_substitution(p, substitution)))
                     .collect(),
                 ret: Box::new(self.apply_type_var_substitution(ret, substitution)),
             },

@@ -17,7 +17,7 @@ Every panic source is a programmer bug by definition. Expected failures use `T o
 | **S2: Force operators** | `x!` / `r!` on empty/error values (`type.errors/ER15`) |
 | **S3: Checked arithmetic** | Overflow, divide-by-zero, `i32.MIN / -1` (`type.overflow/OV1–OV3`) |
 | **S4: Access checks** | Index out of bounds, `with` aliasing (`mem.borrowing/W3–W4`) |
-| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), `Handle` dropped unconsumed (`conc.async/H1`), stack overflow via guard page (`conc.runtime`) |
+| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), stack overflow via guard page (`conc.runtime`) |
 | **S6: Message + location** | Every panic carries a message and the source location of the failing operation |
 | **S7: Nothing the compiler already knows** | A condition the compiler can decide from the source alone must be a compile error, never a panic compiled into the program. This covers unimplemented paths too: "not supported yet" is a diagnostic, not a runtime message |
 
@@ -43,7 +43,7 @@ The test is whether a *value* is needed to decide. If the answer is fixed the mo
 <!-- test: parse -->
 ```rask
 func observe() {
-    let h = spawn(|| { risky_work() })
+    let h = spawn { risky_work() }
     match h.join() {
         T as val                => process(val),
         JoinError.Panicked(msg) => log("worker died: {msg}"),  // P3: only observation point
@@ -60,6 +60,7 @@ func observe() {
 | **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, an element binding ends |
 | **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
 | **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
+| **U6: Owned memory released** | Unwinding releases what each abandoned frame owns (its vectors, maps, strings, closures, boxes, and the structs, enums, tuples, `T?` and `T or E` that hold them) the way the frame's normal exit would have, after that frame's ensures run. Inner frames go before outer ones. A value handed to a callee is the callee's to release, not the caller's |
 
 Rask has no hidden destructors — that's the point of linear types + `ensure`.
 Panic-only drop glue would put invisible cleanup back to cover code that is, by
@@ -72,7 +73,23 @@ There used to be a leak no static rule could see — a `Pool<Resource>` whose
 contents were a runtime fact — and it had a runtime guard of its own. Pools are
 gone (rask-lang/rask#908), and no container can hold a linear value now
 (`mem.resources/RC1`–RC3), so the guard has nothing to fire on. Every case here
-is static.
+is static, and nothing fires at a scope exit during unwind: an ensure body is
+the only thing E3 has to contain. A runtime guard that comes back — a
+`Rack.take` handing a linear value out of a container would be one — has to
+say what it does mid-unwind, and get a test for it (rask-lang/rask#1296).
+
+U5 is about linear values; U6 is about memory, which U5 doesn't cover. A
+panicking task that keeps its heap forever turns every caught panic into a leak,
+and a skipped test is an unwind too. So a frame's memory is released on the way
+out just as it would have been at its end. That is not hidden cleanup in the
+sense above: it releases exactly what the frame's own scope ends release, never
+runs user code, and can't fail. Ensures go first so an ensure body still sees
+what its frame owns.
+
+Under `RASK_RUNTIME_CHECKS=1` the interpreter also panics if a linear value is
+still live when a function returns normally, as a debugging aid for holes in
+the static check; that's not part of the language's semantics, the static
+linearity check is.
 
 ## Locks: Released, Not Poisoned
 
@@ -95,7 +112,7 @@ Closes the panic half of [#280](https://github.com/rask-lang/rask/issues/280). S
 |------|-------------|
 | **E1: Ensure panic panics the task** | A panic inside an ensure body (or its `else` handler) ends that ensure and starts — or continues — unwind. The task dies |
 | **E2: Remaining ensures still run** | The other scheduled ensures, in this block and every outer block, run anyway in LIFO order. One failing cleanup never skips other releases |
-| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Any panic raised later in the same unwind — an ensure body, or a runtime guard firing at an unwound scope exit (`conc.async/H1`) — is contained at its boundary and reported to stderr as a secondary panic |
+| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. An ensure body that panics later in the same unwind is contained at its boundary and reported to stderr as a secondary panic |
 | **A1: Abort escape hatch** | If the runtime itself cannot continue unwinding (panic inside the unwind machinery, stack exhaustion during unwind), the process aborts (SIGABRT). This is a runtime failure mode, not a semantic rule programs may rely on |
 
 <!-- test: parse -->
@@ -113,7 +130,7 @@ func work() {
 // a.close(): ran anyway (E2) — no leak
 ```
 
-There is no Rust-style double-panic abort. The only code that executes during unwind is ensure bodies and runtime guards at scope exits — both bounded, runtime-invoked regions where containment is cheap (`ctrl.ensure/ER5` makes ensure *errors* independent; E2–E3 extend the same shape to unwind-time *panics*).
+There is no Rust-style double-panic abort. The only code that executes during unwind is ensure bodies, each a bounded, runtime-invoked region where containment is cheap (`ctrl.ensure/ER5` makes ensure *errors* independent; E2–E3 extend the same shape to unwind-time *panics*).
 
 ## What Survivors Observe
 
@@ -150,7 +167,6 @@ Resolves the panic open question in `determinism`.
 | Panic in ensure body during normal block exit | E1–E2 | Task dies with that panic; remaining ensures run |
 | Panic in ensure body during unwind | E3 | Contained, reported as secondary; original panic wins |
 | Panic in `else \|e\|` handler | E1 | Same as ensure-body panic |
-| Unconsumed `Handle` scope exits during unwind | E3 | H1 guard fires as secondary — reported, contained; the task keeps running as if detached |
 | Panic while holding nested `with` bindings (`with v[i] as a, v[j] as b`) | U3 | Both accesses released |
 | Task parked on I/O while holding a lock | LK4 | Not a death — lock stays held, waiters wait until the task resumes and exits |
 | Task cancelled while parked holding a lock | LK4 | Task wakes; the pending I/O returns `Cancelled` as an error value; the block exits through normal control flow and releases the lock — no unwind, writes kept |
@@ -210,7 +226,6 @@ The interpreter already implements most of this model; compiled code has the big
 - Matches E2/E3 (`interp/call.rs`, `run_ensures`): a panic in an ensure body no longer skips the remaining ensures — they all run in LIFO order; the first panic wins and later ones (including any raised while already unwinding) are reported to stderr as secondary panics.
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
-- Residual: the `conc.async/H1` runtime guard firing at an unwound scope exit still overrides the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
 - `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the `Shared` whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
 
 **Compiled** (`rask-codegen` + C runtime):
@@ -219,6 +234,7 @@ The interpreter already implements most of this model; compiled code has the big
 - `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` drains the hook stack before the longjmp, so ensures run there too.
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — still violates O1 (#288; needs a join ABI + codegen change to surface the message as a value, mirroring `thread.c`).
 - Locks release on unwind (U3/U4/LK1). Codegen emits the acquire and the release around a `with` block, but only the release is inline, so a panic in between jumped past it and left the lock held for the rest of the process — the next acquirer blocked forever, and the first one to ask is usually an ensure body running during that same unwind, which turned a panic into a hang with no output. Every `rask_mutex_acquire`/`rask_shared_{read,write}_acquire` registers its release on a per-thread held-access stack in `panic.c`; the matching release deregisters it; `rask_panic` drains what's left *before* the ensures, so a cleanup touching the same `Shared` can take the lock. `green.c` parks the stack per fiber alongside the ensure stack.
+- Owned memory is released on unwind (U6, rask-lang/rask#1422). The ensure hooks and frame unwind records share one per-thread LIFO list in `panic.c`. A frame that owns something pushes a record on entry and pops it on every return. The record holds one slot per value, armed where the value becomes the frame's and disarmed where it is handed over or released. The release passes do the arming from the same ownership plan that places their releases (`analysis::ownership::place_unwind`). Strings get theirs from the surviving `rc_dec`s (`transform::unwind`), which also builds `<fn>__unwind` to release each armed slot. Each handler's `setjmp` saves the list head, and `rask_panic` drains only down to it. A panic leaving `main` runs only the ensures. Aggregates are armed too (rask-lang/rask#1518). A struct literal stores each field as soon as it is evaluated, so it starts with a `ZeroAggregate` that zeroes its storage and is armed from there: a panic in a later field's expression releases the fields stored so far and reads the rest as empty, which every release treats as nothing to do. A value made by a bare field store (a wrapper's tag) is armed at once only when its other stores follow with nothing that can panic between them, and otherwise once something reads it. Codegen leaves out the zeroing in a frame with no record, and the record itself when every armed aggregate holds nothing to release. The interpreter needs none of this: a panic is an `Err` returned through every frame, and the frames' values drop with them.
 - Backtrace is now gated behind `RASK_BACKTRACE` (F2). Panic messages still truncate at 512 bytes.
 - Panic messages hold F3 on both backends, and are pinned there. Native's checked-arithmetic messages used to be wholly static — "integer overflow: addition exceeds i32 range [...]" where the interpreter printed "2147483647 + 1 exceeds i32 range [...]" — so a user natively couldn't see which values overflowed. The operands now go to a runtime formatter (`rask_panic_overflow_binary`, and an i128 pair in `int128.c` since `snprintf` has no conversion that wide); the static half it splices behind them is the type and range codegen already registered. Two other messages named `unwrap`, a method Rask doesn't have: `x!` says whether the value was absent or an error (the operand's type decides, so MIR passes a flag), and a missing map key says so without naming a method.
 - Residual F3 gap: `r!` on an error branch doesn't print the error's own `message()`, which is the value the reader wants. Both backends have it at the panic point and neither uses it.

@@ -29,7 +29,8 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 | **C5: Membership is `contains`** | `s.contains(v)`, not `contains`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains` because there a key is one of two things you could mean |
 | **C6: Insert and remove report change** | `s.insert(v)` and `s.remove(v)` return `bool` — whether the set changed. `insert` on a value already present is not an error, it answers `false` |
 | **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
-| **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so |
+| **C7a: Equal and Cloneable, nothing else** | Two maps are `==` when they hold the same keys with equal values, two sets when they hold the same values, in any insertion order. `clone()` copies every entry. Neither has an order or a hash (type.generics/EQ4a) |
+| **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so. A loop needs neither: `for v in s` walks the set where it is, through its `as_sequence` (type.sequence/SEQ48), in the map's order |
 
 <!-- test: skip -->
 ```rask
@@ -39,7 +40,7 @@ if seen.insert(name) {
 }
 if seen.contains(other) { … }
 seen.remove(name)
-for v in seen.to_vec() { … }
+for v in seen { … }
 ```
 
 `Set` has been in BI1's always-available list from the start. It resolved as a
@@ -211,14 +212,14 @@ let name = with vec[i] as v { v.name.clone() }
 | Method | Returns | Semantics |
 |--------|---------|-----------|
 | `map.insert_if_missing(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
-| `map.modify_with_default(k, \|\| v, \|v\| R)` | `R` | Insert default if missing, then mutate. One hash lookup. Panics on alloc failure |
+| `map.modify_with_default(k, \|\| v, \|mutate v: V\| R)` | `R` | Insert default if missing, then mutate. One hash lookup. Panics on alloc failure |
 
 Named for what they do — `ensure` is taken by the cleanup keyword (`ctrl.ensure`) and means something else.
 
 <!-- test: parse -->
 ```rask
 map.insert_if_missing(user_id, || User.new(user_id))
-map.modify_with_default(user_id, || User.new(user_id), |u| {
+map.modify_with_default(user_id, || User.new(user_id), |mutate u: User| {
     u.last_seen = now()
     u.visit_count += 1
 })
@@ -349,31 +350,18 @@ vec.shrink(to: n)  // the same, named
 | `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
 | `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink()` gives the difference back |
 
-## Comptime Collections with Freeze
+## Comptime Collections
 
-At compile time, collections use a compiler-managed allocator and must be frozen to escape comptime as const data. See `ctrl.comptime` for full details.
-
-| Collection | `freeze()` Returns | Description |
-|------------|-------------------|-------------|
-| `Vec<T>` | `[T; N]` | Fixed-size array, size inferred from length |
-| `Map<K,V>` | Static map | Perfect hash or similar compile-time representation |
-| `string` | `str` | String literal |
-
-| Rule | Description |
-|------|-------------|
-| **F1: Comptime only** | `.freeze()` is only valid in comptime context |
-| **F2: Required to escape** | Unfrozen collections cannot escape comptime |
-| **F3: Memory limits** | Subject to comptime memory limits (256MB total, 16MB per array) |
-| **F4: Immutable result** | After freeze, the data is immutable const |
+At compile time, collections use a compiler-managed allocator (256MB total, 16MB per array). A `Vec` or `Map` a comptime block hands back is embedded in the program as constant data, and a `const` can't be changed afterwards. See `ctrl.comptime` (CT17–CT18).
 
 <!-- test: parse -->
 ```rask
-let PRIMES: [u32; _] = comptime {
-    let v = Vec<u32>.new()
+const PRIMES: Vec<u32> = comptime {
+    mut v: Vec<u32> = Vec.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
-    v.freeze()
+    v
 }
 ```
 

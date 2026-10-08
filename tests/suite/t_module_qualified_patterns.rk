@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A match arm names a variant through its module, the same spelling that
+// builds it (structure.modules/IM1, #1474). The parser read at most two
+// segments of a pattern, so `bits.BinaryParseError.UnexpectedEnd { … } =>`
+// stopped at the second dot with "Expected '=>', found '.'".
+//
+// t_module_qualified_variants.rk covers the expression side.
+
+import io
+import bits
+import bits as bt
+
+func describe(e: bits.BinaryParseError) -> string {
+    match e {
+        bits.BinaryParseError.UnexpectedEnd { expected, actual } => return "end {expected} {actual}"
+        bits.BinaryParseError.InvalidData { message } => return "bad {message}"
+    }
+}
+
+func aliased(e: bt.BinaryParseError) -> string {
+    match e {
+        bt.BinaryParseError.UnexpectedEnd { expected: want, .. } => return "want {want}"
+        bt.BinaryParseError.InvalidData { message } => return message
+    }
+}
+
+func io_kind(e: io.IoError) -> string {
+    match e {
+        io.IoError.NotFound(path) => return "missing {path}"
+        io.IoError.BrokenPipe => return "pipe"
+        _ => return "other"
+    }
+}
+
+test "a struct-like variant through its module" {
+    assert describe(bits.BinaryParseError.UnexpectedEnd { expected: 4, actual: 2 }) == "end 4 2"
+    assert describe(bits.BinaryParseError.InvalidData { message: "tag" }) == "bad tag"
+}
+
+test "and through an alias" {
+    assert aliased(bt.BinaryParseError.UnexpectedEnd { expected: 8, actual: 1 }) == "want 8"
+    assert aliased(bt.BinaryParseError.InvalidData { message: "x" }) == "x"
+}
+
+test "a tuple-like and a fieldless variant through its module" {
+    assert io_kind(io.IoError.NotFound("a.txt")) == "missing a.txt"
+    assert io_kind(io.IoError.BrokenPipe) == "pipe"
+    assert io_kind(io.IoError.TimedOut) == "other"
+}
+
+test "an is-pattern through its module" {
+    let e = io.IoError.NotFound("b")
+    assert e is io.IoError.NotFound
+    assert !(e is io.IoError.BrokenPipe)
+}
+
+func main() {
+    println(describe(bits.BinaryParseError.UnexpectedEnd { expected: 4, actual: 2 }))
+    println(io_kind(io.IoError.NotFound("c")))
+    return
+}

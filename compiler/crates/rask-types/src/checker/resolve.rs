@@ -194,8 +194,9 @@ impl TypeChecker {
         }
 
         match &ty {
-            // Source error already reported — suppress cascading field errors
-            Type::Error => Ok(false),
+            // Source error already reported. The field is an error too, so
+            // nothing downstream reports it again (#1485).
+            Type::Error => Ok(self.poison(&expected)),
             // AT6: a projection whose base is still open. The conformance to
             // read `Out` off isn't known until the base settles, so put the
             // access back and come round again — same as an open variable.
@@ -274,13 +275,13 @@ impl TypeChecker {
                                 if fields.is_empty() {
                                     enum_self.clone()
                                 } else {
-                                    Type::Fn {
-                                        params: fields
+                                    Type::fn_borrowing(
+                                        fields
                                             .iter()
                                             .map(|t| Self::substitute_type_params(t, &param_map))
                                             .collect(),
-                                        ret: Box::new(enum_self.clone()),
-                                    }
+                                        enum_self.clone(),
+                                    )
                                 }
                             })
                         }
@@ -296,6 +297,11 @@ impl TypeChecker {
                 });
 
                 if let Some(field_ty) = result {
+                    // A variant of a generic enum: whatever its arguments
+                    // settle on has to meet the enum's bounds.
+                    if !enum_params.is_empty() {
+                        self.note_type_bounds(&enum_self, span);
+                    }
                     self.unify(&expected, &field_ty, span)
                 } else {
                     Err(TypeError::NoSuchField {
@@ -339,12 +345,12 @@ impl TypeChecker {
                                 if fields.is_empty() {
                                     ty.clone()
                                 } else {
-                                    Type::Fn {
-                                        params: fields.iter()
+                                    Type::fn_borrowing(
+                                        fields.iter()
                                             .map(|t| Self::substitute_type_params(t, &subst))
                                             .collect(),
-                                        ret: Box::new(ty.clone()),
-                                    }
+                                        ty.clone(),
+                                    )
                                 }
                             })
                         }
@@ -421,6 +427,24 @@ impl TypeChecker {
     /// Only the method's parameters — the receiver's are already fixed by the
     /// receiver's type, and mangling on them too would mint a separate copy per
     /// receiver instantiation for no reason.
+    /// AT8: a method's own `T.Out`, read through `T`'s bound — the same as a
+    /// generic function's (`project_through_bounds`).
+    fn project_method_type(
+        &mut self,
+        method_sig: &MethodSig,
+        ty: &Type,
+        subst: &std::collections::HashMap<&str, Type>,
+        span: Span,
+    ) -> Type {
+        if method_sig.type_params.iter().all(|(_, b)| b.is_empty()) {
+            return ty.clone();
+        }
+        let bounds: std::collections::HashMap<String, Vec<rask_ast::ty::TypeExpr>> =
+            method_sig.type_params.iter().cloned().collect();
+        let pairs: Vec<(String, Type)> = subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        self.project_through_bounds(ty, &bounds, &pairs, span)
+    }
+
     fn note_method_type_args(
         &mut self,
         call_node: Option<NodeId>,
@@ -432,14 +456,8 @@ impl TypeChecker {
             return;
         }
         // #314: whatever the argument settles on has to satisfy the bound.
-        for (name, bounds) in &method_sig.type_params {
-            if bounds.is_empty() {
-                continue;
-            }
-            if let Some(var) = subst.get(name.as_str()) {
-                self.pending_bound_checks.push((var.clone(), bounds.clone(), span));
-            }
-        }
+        let pairs: Vec<(String, Type)> = subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        self.note_bound_obligations(&pairs, method_sig.type_params.iter().map(|(n, b)| (n, b)), span);
         let Some(node) = call_node else { return };
         let args: Vec<(String, Type)> = method_sig
             .type_params
@@ -524,7 +542,7 @@ impl TypeChecker {
         let self_var = Type::Var(TypeVarId(0));
         for interface_name in with_interfaces {
             let Some(mut sig) = checker
-                .get_interface_methods_public(&super::TypeTable::conformance_key(interface_name))
+                .interface_methods_written(interface_name)
                 .into_iter()
                 .find(|m| m.name == method)
             else {
@@ -554,6 +572,21 @@ impl TypeChecker {
         }
     }
 
+    /// Does `ty`'s own method `method` consume its receiver?
+    fn takes_self(&self, ty: &Type, method: &str) -> bool {
+        let id = match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => *id,
+            _ => return false,
+        };
+        let methods = match self.types.get(id) {
+            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
+            _ => return false,
+        };
+        methods
+            .iter()
+            .any(|m| m.name == method && m.self_param == super::type_defs::SelfParam::Take)
+    }
+
     pub(super) fn resolve_method(
         &mut self,
         ty: Type,
@@ -564,6 +597,12 @@ impl TypeChecker {
         call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
+
+        // Source error already reported. The call answers an error too, so
+        // nothing downstream reports it again (#1485).
+        if matches!(ty, Type::Error) {
+            return Ok(self.poison(&ret));
+        }
 
         // `v == opt`: the bare value made present, the way `opt == v` makes
         // its right side present, and compared with the optional's `eq`.
@@ -617,7 +656,8 @@ impl TypeChecker {
         // receiver passes, so the user sees it at their call rather than as
         // `Function not found: Vec_reserve` out of codegen or a runtime error
         // part-way through a run.
-        if !matches!(ty, Type::Var(_) | Type::Error) {
+        let is_param = matches!(&ty, Type::UnresolvedNamed(n) if self.types.is_type_param_in_scope(n));
+        if !is_param && !matches!(ty, Type::Var(_) | Type::Error) {
             if let Some(prefix) = super::receiver_name(&ty, &self.types) {
                 if rask_stdlib::mir_metadata::is_unimplemented(&prefix, &method) {
                     return Err(TypeError::UnimplementedStdlibMethod {
@@ -637,6 +677,35 @@ impl TypeChecker {
         // and resolves through the registered method table instead.
         if let Some(err) = self.reject_link_ordering(&ty, &method, &args, &ret, span) {
             return Err(err);
+        }
+        if let Some(err) = self.reject_collection_ordering(&ty, &method, &args, &ret, span) {
+            return Err(err);
+        }
+
+        // A link reads like its node (`mem.racks/RK2`): `a.has_tag(t)` on a
+        // `Link<Task>` is `Task`'s method, the same way `a.tags` is `Task`'s
+        // field. Only identity — `eq`, `ne`, `hash` — is the link's own. Both
+        // spellings of `Link<T>` land here; the arm further down only ever saw
+        // the unresolved one, and a link from `Rack.insert` is resolved (#1285).
+        //
+        // `clone` stays the link's too: a link is a word that copies (RK2), and
+        // `l.clone()` has always been another link to the same node.
+        if let Some(node) = self.link_node_type(&ty) {
+            let own = matches!(method.as_str(), "eq" | "ne") && args.len() == 1
+                || matches!(method.as_str(), "hash" | "clone") && args.is_empty();
+            if !own {
+                if self.takes_self(&node, &method) {
+                    // Typed anyway, so the call's result doesn't add an error
+                    // of its own downstream.
+                    let _ = self.resolve_method(node.clone(), method.clone(), args, ret, span, None);
+                    return Err(TypeError::TakeSelfThroughLink {
+                        method,
+                        node: self.types.resolve_type_names(&node).to_string(),
+                        span,
+                    });
+                }
+                return self.resolve_method(node, method, args, ret, span, call_node);
+            }
         }
 
         if method == "clone" && args.is_empty() {
@@ -792,6 +861,27 @@ impl TypeChecker {
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),
+            // A type parameter is the parameter even when it shares a stdlib
+            // type's name. The name-keyed arms below would answer for
+            // `time.Duration` on a `Wrap<Duration>`'s field (#1487). What a
+            // parameter can do comes from its bounds, and an unbounded one
+            // waits for monomorphization like the fallback arm at the end.
+            Type::UnresolvedNamed(name) if self.types.is_type_param_in_scope(name) => {
+                if self.current_type_param_bounds.contains_key(name) {
+                    return self.resolve_bounded_type_param_method(
+                        name.clone(), method, args, ret, span, call_node,
+                    );
+                }
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: ty.clone(),
+                    method,
+                    args,
+                    ret,
+                    span,
+                    call_node,
+                });
+                Ok(false)
+            }
             Type::Var(id) => {
                 // A primitive arithmetic operator takes both operands at the
                 // same type, but desugaring rewrote `1000 / n` into
@@ -963,6 +1053,7 @@ impl TypeChecker {
                 };
 
                 if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
+                    let args = self.fill_default_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1011,17 +1102,20 @@ impl TypeChecker {
                             self.check_integer_arg(&ty, arg, span);
                             continue;
                         }
-                        let substituted = Self::substitute_type_params(param_ty, &subst);
+                        let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
+                        let substituted = Self::substitute_type_params(&param_ty, &subst);
                         // CV1a/CV2 (#649) and the wrapper coercion (#701) are
                         // the same question — which side is the slot — so one
                         // call answers both: `coerce_arg` runs `check_fits`
                         // before deciding whether layers are needed.
-                        if self.coerce_arg(&substituted, arg, span)? {
+                        let node = self.method_arg_node(call_node, i);
+                        if self.coerce_arg(&substituted, arg, node, span)? {
                             progress = true;
                         }
                     }
 
-                    let substituted_ret = Self::substitute_type_params(&method_sig.ret, &subst);
+                    let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
+                    let substituted_ret = Self::substitute_type_params(&ret_ty, &subst);
                     if self.unify(&substituted_ret, &ret, span)? {
                         progress = true;
                     }
@@ -1068,6 +1162,7 @@ impl TypeChecker {
                                     .map(|t| crate::types::GenericArg::Type(Box::new(t)))
                                     .collect(),
                             };
+                            self.note_type_bounds(&constructed, span);
                         } else {
                             // User-defined enum: instantiate any TypeVars with fresh vars
                             fields = self.instantiate_type_vars(&fields);
@@ -1166,7 +1261,7 @@ impl TypeChecker {
             }
             Type::Char => self.resolve_char_method(&method, &args, &ret, span),
             Type::Array { .. } => {
-                self.resolve_array_method(&ty, &method, &args, &ret, span)
+                self.resolve_array_method(&ty, &method, &args, &ret, span, call_node)
             }
             Type::UnresolvedNamed(name) if name == "File" => {
                 self.resolve_file_method(&method, &args, &ret, span)
@@ -1176,9 +1271,8 @@ impl TypeChecker {
                 self.resolve_rack_method(type_args, &method, &args, &ret, span)
             }
             // Link<T> — a reference. `eq`/`ne` compare node identity; anything
-            // else falls through to the node's own methods, the same way field
-            // access does.
-            Type::UnresolvedGeneric { name, args: type_args } if name == "Link" => {
+            // else went to the node's own methods above.
+            Type::UnresolvedGeneric { name, .. } if name == "Link" => {
                 match method.as_str() {
                     "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
                     // `hash` is the link's, not the node's. Falling through
@@ -1188,14 +1282,7 @@ impl TypeChecker {
                     // different. Equal keys have to hash equal, and here equal
                     // means the same node (#1268).
                     "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
-                    _ => {
-                        let node_ty = if let Some(GenericArg::Type(t)) = type_args.first() {
-                            *t.clone()
-                        } else {
-                            self.ctx.fresh_var()
-                        };
-                        self.resolve_method(node_ty, method, args, ret, span, None)
-                    }
+                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }
             }
             // Rack (bare, for Rack.new())
@@ -1233,28 +1320,6 @@ impl TypeChecker {
             _ if self.atomic_payload(&ty).is_some() => {
                 let payload = self.atomic_payload(&ty).expect("just checked");
                 self.resolve_atomic_method(payload, &method, &args, &ret, span)
-            }
-            // Thread.spawn(closure) → Handle<T>
-            Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
-                if method == "spawn" && args.len() == 1 {
-                    // Extract closure return type for Handle<T>
-                    let inner = if let Type::Fn { ret: fn_ret, .. } = &args[0] {
-                        *fn_ret.clone()
-                    } else {
-                        self.ctx.fresh_var()
-                    };
-                    let handle_ty = Type::UnresolvedGeneric {
-                        name: "Handle".to_string(),
-                        args: vec![GenericArg::Type(Box::new(inner))],
-                    };
-                    self.unify(&ret, &handle_ty, span)
-                } else {
-                    Err(TypeError::NoSuchMethod {
-                        ty,
-                        method,
-                        span,
-                    })
-                }
             }
             // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
             Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
@@ -1327,6 +1392,7 @@ impl TypeChecker {
                 }
 
                 if let Some(method_sig) = found {
+                    let args = self.fill_default_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1342,6 +1408,15 @@ impl TypeChecker {
                         subst.insert(name.as_str(), self.ctx.fresh_var());
                     }
                     self.note_method_type_args(call_node, method_sig, span, &subst);
+                    // CC3: the block's `where` clause, against what the
+                    // receiver's arguments turn out to be.
+                    let pairs: Vec<(String, Type)> =
+                        subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+                    self.note_bound_obligations(
+                        &pairs,
+                        method_sig.owner_bounds.iter().map(|(n, b)| (n, b)),
+                        span,
+                    );
 
                     // ER3a: same obligation on the explicitly-spelled type args.
                     self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);
@@ -1367,16 +1442,19 @@ impl TypeChecker {
                             self.check_integer_arg(&ty, arg, span);
                             continue;
                         }
-                        let substituted = Self::substitute_type_params(param_ty, &subst);
+                        let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
+                        let substituted = Self::substitute_type_params(&param_ty, &subst);
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
                         // Same direction as above, same one call (#649, #701).
-                        if self.coerce_arg(&substituted, arg, span)? {
+                        let node = self.method_arg_node(call_node, i);
+                        if self.coerce_arg(&substituted, arg, node, span)? {
                             progress = true;
                         }
                     }
 
-                    let ret_substituted = Self::substitute_type_params(&method_sig.ret, &subst);
+                    let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
+                    let ret_substituted = Self::substitute_type_params(&ret_ty, &subst);
                     let ret_substituted =
                         self.freshen_free_type_params(&ret_substituted, &mut method_params);
                     if self.unify(&ret_substituted, &ret, span)? {
@@ -1407,6 +1485,7 @@ impl TypeChecker {
                                 span,
                             });
                         }
+                        self.note_type_bounds(&ty, span);
                         let mut progress = false;
                         for (field_ty, arg) in fields.iter().zip(args.iter()) {
                             if self.unify(field_ty, arg, span)? {
@@ -1425,7 +1504,7 @@ impl TypeChecker {
                 }
             }
             // Interface object: look up method in interface definition
-            Type::InterfaceObject { ref interface_name } => {
+            Type::InterfaceObject { ref interface_name, decl } => {
                 let interface_name = interface_name.clone();
                 let checker = crate::interfaces::InterfaceChecker::new(&self.types);
                 // TR3: reject generic methods — they can't be monomorphized
@@ -1433,7 +1512,7 @@ impl TypeChecker {
                 // Checked before method lookup: interface method names carry their
                 // type params (`convert<T>`) while the call site does not, so
                 // an exact-name lookup would miss and report "no such method".
-                let is_generic = self.types.get_type_id(&interface_name)
+                let is_generic = decl
                     .and_then(|id| self.types.get(id))
                     .map_or(false, |def| def.is_generic_interface_method(&method));
                 if is_generic {
@@ -1444,7 +1523,7 @@ impl TypeChecker {
                     });
                 }
 
-                let interface_methods = checker.get_interface_methods_public(&interface_name);
+                let interface_methods = checker.interface_object_methods(&interface_name, *decl);
 
                 if let Some(method_sig) = interface_methods.iter().find(|m| m.name == method) {
                     // TR2: reject methods returning Self
@@ -1456,6 +1535,9 @@ impl TypeChecker {
                         });
                     }
 
+                    // The interface's own default: the call dispatches through
+                    // the vtable, so the declaration is all there is to go by.
+                    let args = self.fill_default_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1465,8 +1547,9 @@ impl TypeChecker {
                     }
 
                     let mut progress = false;
-                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
-                        if self.coerce_arg(param_ty, arg, span)? {
+                    for (i, ((param_ty, _mode), arg)) in method_sig.params.iter().zip(args.iter()).enumerate() {
+                        let node = self.method_arg_node(call_node, i);
+                        if self.coerce_arg(param_ty, arg, node, span)? {
                             progress = true;
                         }
                     }
@@ -1636,7 +1719,7 @@ impl TypeChecker {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             bounds.iter().find_map(|tr| {
                 checker
-                    .get_interface_methods_public(&super::TypeTable::conformance_key(tr))
+                    .interface_methods_written(tr)
                     .into_iter()
                     .find(|m| m.name == method)
             })
@@ -1651,12 +1734,12 @@ impl TypeChecker {
             if let Some(applied) = bounds
                 .iter()
                 .find(|b| {
-                    rask_ast::operators::operator_interface_method(&super::TypeTable::conformance_key(b))
+                    rask_ast::operators::operator_interface_method(&self.types.interface_name(b))
                         == Some(method.as_str())
                 })
                 .cloned()
             {
-                let applied_base = super::TypeTable::conformance_key(&applied);
+                let applied_base = self.types.interface_name(&applied);
                 let written_rhs = applied.args().first().and_then(TypeExpr::name);
                 let rhs = rask_ast::operators::filed_rhs(&param, &applied_base, written_rhs.as_deref());
                 if let Some(filed) =
@@ -1703,6 +1786,18 @@ impl TypeChecker {
             });
         };
 
+        // The bound is only in scope while this body is checked, so the
+        // labels' names are taken from it now.
+        if let Some(node) = call_node {
+            if sig.param_names.len() == sig.params.len() {
+                self.note_param_names(node, sig.param_names.clone());
+            }
+        }
+
+        // The bound's default: which type `T` turns out to be isn't known in
+        // this body, and the bound's declaration is what the call was written
+        // against.
+        let args = self.fill_default_args(call_node, &sig, args);
         if sig.params.len() != args.len() {
             return Err(TypeError::ArityMismatch {
                 expected: sig.params.len(),
@@ -1712,10 +1807,11 @@ impl TypeChecker {
         }
 
         let mut progress = false;
-        for ((param_ty, _mode), arg) in sig.params.iter().zip(args.iter()) {
+        for (i, ((param_ty, _mode), arg)) in sig.params.iter().zip(args.iter()).enumerate() {
             let substituted = Self::substitute_self_placeholder(param_ty, &receiver);
             // Same direction as above, same one call (#649, #701).
-            if self.coerce_arg(&substituted, arg, span)? {
+            let node = self.method_arg_node(call_node, i);
+            if self.coerce_arg(&substituted, arg, node, span)? {
                 progress = true;
             }
         }
@@ -1753,7 +1849,7 @@ impl TypeChecker {
                 elems.iter().map(|e| Self::substitute_self_placeholder(e, receiver)).collect(),
             ),
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| Self::substitute_self_placeholder(p, receiver)).collect(),
+                params: params.iter().map(|p| p.map(|t| Self::substitute_self_placeholder(t, receiver))).collect(),
                 ret: Box::new(Self::substitute_self_placeholder(ret, receiver)),
             },
             _ => ty.clone(),
@@ -1874,10 +1970,7 @@ impl TypeChecker {
             "min" | "max" if args.is_empty() => self.unify(ret, &Type::option(elem), span),
             "map" if args.len() == 1 => {
                 let out = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![elem],
-                    ret: Box::new(out.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem], out.clone());
                 self.unify(&args[0], &expected_fn, span)?;
                 let iter_out = Type::UnresolvedGeneric {
                     name: "Iterator".to_string(),
@@ -1886,19 +1979,13 @@ impl TypeChecker {
                 self.unify(ret, &iter_out, span)
             }
             "filter" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![elem],
-                    ret: Box::new(Type::Bool),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem], Type::Bool);
                 self.unify(&args[0], &expected_fn, span)?;
                 self.unify(ret, &self_ty, span)
             }
             "fold" if args.len() == 2 => {
                 let acc = args[0].clone();
-                let expected_fn = Type::Fn {
-                    params: vec![acc.clone(), elem],
-                    ret: Box::new(acc.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![acc.clone(), elem], acc.clone());
                 self.unify(&args[1], &expected_fn, span)?;
                 self.unify(ret, &acc, span)
             }
@@ -1915,18 +2002,12 @@ impl TypeChecker {
                 self.unify(ret, &iter_pairs, span)
             }
             "any" | "all" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![elem],
-                    ret: Box::new(Type::Bool),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem], Type::Bool);
                 self.unify(&args[0], &expected_fn, span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             "find" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![elem.clone()],
-                    ret: Box::new(Type::Bool),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem.clone()], Type::Bool);
                 self.unify(&args[0], &expected_fn, span)?;
                 self.unify(ret, &Type::option(elem), span)
             }
@@ -1954,7 +2035,7 @@ impl TypeChecker {
                     span,
                 });
             }
-            let ret_ty = super::builtins::stub_type(&method_def.ret_ty);
+            let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty));
             return self.unify(ret, &ret_ty, span);
         }
 
@@ -2016,7 +2097,7 @@ impl TypeChecker {
                 seen.insert("_Any".to_string(), first.clone());
             }
             let ret_ty = self.freshen_free_type_params(
-                &super::builtins::stub_type(&method_def.ret_ty),
+                &self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty)),
                 &mut seen,
             );
             return self.unify(ret, &ret_ty, span);
@@ -2088,6 +2169,8 @@ impl TypeChecker {
             "push" | "pop" | "push_all" | "insert" | "insert_at" | "remove" | "remove_at"
             | "remove_where" | "take_where" | "clear" | "truncate" | "resize"
             | "reserve" | "shrink" | "with_capacity" | "try_insert" | "try_push"
+            | "try_push_all" | "try_reserve" | "remove_unordered" | "take_all"
+            | "remove_adjacent_duplicates"
         )
     }
 
@@ -2098,6 +2181,7 @@ impl TypeChecker {
         args: &[Type],
         ret: &Type,
         span: Span,
+        call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         // Neither a fixed array nor a slice has a growth surface: one has a
         // length in its type, the other is a view into somebody else's storage.
@@ -2134,21 +2218,44 @@ impl TypeChecker {
         // only the registered path reads those. `resolve_named` turns the shape
         // into the registered type when there is one, and `resolve_method`
         // comes back here for anything that isn't declared.
+        //
+        // The call node goes along, so the call is recorded as the `Vec`
+        // method it is. Recorded as a call on the array, it named no type, mono
+        // couldn't tell which `Vec` instance to make, and queued the generic
+        // body: `[1, 2].hash()` reached MIR as `Vec_hash` over an unbound `T`
+        // (#1413).
         let vec_ty = self.resolve_named(&Type::UnresolvedGeneric {
             name: "Vec".to_string(),
             args: type_args.clone(),
         });
+        // A parameter `Vec` declares as its own type is the receiver's type
+        // here: `[1, 2] == [1, 2]` hands `Vec.eq` an array for `other`, the
+        // same way it hands it one for `self`. The argument has to be this
+        // array type, length included; the method then sees it as the `Vec`
+        // it reads like. MIR gives it a `Vec` view the way it does the
+        // receiver (#1413).
+        let mut args = args.to_vec();
+        if matches!(array_ty, Type::Array { .. }) {
+            if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method("Vec", method) {
+                for (arg, own) in args.iter_mut().zip(&stub.own_type_params) {
+                    if *own && matches!(self.ctx.apply(arg), Type::Array { .. }) {
+                        self.unify(array_ty, arg, span)?;
+                        *arg = vec_ty.clone();
+                    }
+                }
+            }
+        }
         if matches!(vec_ty, Type::Generic { .. }) {
             return self.resolve_method(
                 vec_ty,
                 method.to_string(),
-                args.to_vec(),
+                args,
                 ret.clone(),
                 span,
-                None,
+                call_node,
             );
         }
-        self.resolve_vec_method(&type_args, method, args, ret, span)
+        self.resolve_vec_method(&type_args, method, &args, ret, span)
     }
 
     pub(super) fn resolve_file_method(
@@ -2339,10 +2446,10 @@ impl TypeChecker {
                         });
                     }
                     for ((_, param_ty_str), arg) in stub.params.iter().zip(args.iter()) {
-                        let param_ty = super::builtins::stub_type(param_ty_str);
+                        let param_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(param_ty_str));
                         self.unify(arg, &param_ty, span)?;
                     }
-                    let ret_ty = super::builtins::stub_type(&stub.ret_ty);
+                    let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&stub.ret_ty));
                     return self.unify(ret, &ret_ty, span);
                 }
                 // Known runtime type but unknown method — hard error
@@ -2393,7 +2500,7 @@ impl TypeChecker {
         let result = match self.ctx.apply(closure_ty) {
             Type::Fn { params, ret: closure_ret } => {
                 if let Some(param) = params.first() {
-                    let _ = self.unify(param, inner_type, span);
+                    let _ = self.unify(&param.ty, inner_type, span);
                 }
                 *closure_ret
             }
@@ -2768,7 +2875,7 @@ impl TypeChecker {
             // raw ints — every read then came back absent natively and as a
             // bare i64 on the interpreter.
             "push" if args.len() == 1 => {
-                let _ = self.coerce_arg(&inner_type, &args[0], span);
+                let _ = self.coerce_arg(&inner_type, &args[0], None, span);
                 self.unify(ret, &Type::Unit, span)
             }
             "pop" if args.is_empty() => {
@@ -2785,7 +2892,7 @@ impl TypeChecker {
             }
             "set" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.coerce_arg(&inner_type, &args[1], span);
+                let _ = self.coerce_arg(&inner_type, &args[1], None, span);
                 self.unify(ret, &Type::Unit, span)
             }
             "clear" if args.is_empty() => {
@@ -2800,7 +2907,7 @@ impl TypeChecker {
             // vec.insert(index, value) -> ()
             "insert" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.coerce_arg(&inner_type, &args[1], span);
+                let _ = self.coerce_arg(&inner_type, &args[1], None, span);
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove(index) -> T
@@ -2911,10 +3018,7 @@ impl TypeChecker {
                 let key = self.ctx.fresh_var();
                 let _ = self.unify(
                     &args[0],
-                    &Type::Fn {
-                        params: vec![inner_type.clone()],
-                        ret: Box::new(key),
-                    },
+                    &Type::fn_borrowing(vec![inner_type.clone()], key),
                     span,
                 );
                 self.unify(ret, &Type::Unit, span)
@@ -2932,10 +3036,7 @@ impl TypeChecker {
             // and `doubled[0] == 2` reported "no method eq for type U" (#327).
             "map" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![inner_type],
-                    ret: Box::new(fresh.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![inner_type], fresh.clone());
                 let _ = self.unify(&args[0], &expected_fn, span);
                 let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
@@ -2948,10 +3049,7 @@ impl TypeChecker {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(fresh.clone()))],
                 };
-                let expected_fn = Type::Fn {
-                    params: vec![inner_type],
-                    ret: Box::new(inner_vec),
-                };
+                let expected_fn = Type::fn_borrowing(vec![inner_type], inner_vec);
                 let _ = self.unify(&args[0], &expected_fn, span);
                 let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
@@ -2984,10 +3082,7 @@ impl TypeChecker {
             // vec.fold(init, f) -> U, with f: func(U, T) -> U
             "fold" if args.len() == 2 => {
                 let acc = args[0].clone();
-                let expected_fn = Type::Fn {
-                    params: vec![acc.clone(), inner_type],
-                    ret: Box::new(acc.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![acc.clone(), inner_type], acc.clone());
                 let _ = self.unify(&args[1], &expected_fn, span);
                 let _ = self.unify(ret, &acc, span);
                 Ok(true)
@@ -3951,6 +4046,42 @@ impl TypeChecker {
     /// integer path does it: leaving `ret` open turns one error into two, the
     /// second being "couldn't work out the type of x" pointing at a binding
     /// that is fine.
+    /// `<` or `compare` on two vectors, fixed arrays, maps or sets.
+    ///
+    /// None of them is `Comparable` (`Collection::contract`, type.generics/CO1).
+    /// Nothing stopped the call, though — it fell through the `Vec` arms,
+    /// type-checked, and then the interpreter failed at run time while native
+    /// compared the two handles or failed to link `Vec_compare` (#1491). A
+    /// `Map` did the same (#1495). An array borrows `Vec`'s methods and shares
+    /// its answer.
+    fn reject_collection_ordering(
+        &mut self,
+        recv: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Option<TypeError> {
+        if args.len() != 1 {
+            return None;
+        }
+        let ordering = match method {
+            "lt" | "le" | "gt" | "ge" => false,
+            "compare" => true,
+            _ => return None,
+        };
+        let collection = crate::interfaces::Collection::of(&self.types, recv)?;
+        let answer = if ordering { self.ordering_type() } else { Type::Bool };
+        let _ = self.unify(ret, &answer, span);
+        let op = if ordering { "compare" } else { Self::operator_spelling(method) };
+        Some(TypeError::CollectionNotOrderable {
+            op: op.to_string(),
+            recv: self.types.resolve_type_names(&self.ctx.apply(recv)).to_string(),
+            noun: collection.kind.noun().to_string(),
+            span,
+        })
+    }
+
     fn reject_link_ordering(
         &mut self,
         recv: &Type,

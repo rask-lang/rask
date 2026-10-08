@@ -5,6 +5,37 @@
 
 use crate::{Type, TypeTable};
 
+/// What the Copy rule says about a type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyVerdict {
+    Copy,
+    Move,
+    /// The type isn't settled enough to say: an inference variable, a name
+    /// nothing resolved, a type parameter without a `Copy` bound.
+    Unknown,
+}
+
+impl CopyVerdict {
+    /// A compound is Copy when every part is; one part that moves is enough
+    /// to move it.
+    fn all(parts: impl IntoIterator<Item = CopyVerdict>) -> CopyVerdict {
+        let mut out = CopyVerdict::Copy;
+        for part in parts {
+            match part {
+                CopyVerdict::Move => return CopyVerdict::Move,
+                CopyVerdict::Unknown => out = CopyVerdict::Unknown,
+                CopyVerdict::Copy => {}
+            }
+        }
+        out
+    }
+
+    /// All-Copy parts still move once the whole is wider than 16 bytes.
+    fn within(self, size: usize) -> CopyVerdict {
+        if self == CopyVerdict::Copy && size > 16 { CopyVerdict::Move } else { self }
+    }
+}
+
 impl TypeTable {
     /// Compiler-native generic containers whose layout lives in the runtime
     /// rather than in a visible struct decl (an empty `struct Vec<T> { }`
@@ -57,78 +88,70 @@ impl TypeTable {
 
     /// `is_copy`, with a say for type parameters: inside a generic body the
     /// caller knows which of its names are bounded by `Copy`.
+    ///
+    /// A type the rule can't place counts as a move: the safe direction for
+    /// a move analysis.
     pub fn is_copy_with(&self, ty: &Type, param_is_copy: &dyn Fn(&str) -> bool) -> bool {
+        self.copy_verdict_with(ty, param_is_copy) == CopyVerdict::Copy
+    }
+
+    /// The Copy rule, with "couldn't tell" kept apart from "moves". A check
+    /// that rejects a program asks for `Move`: rejecting on an inference
+    /// variable or a name nothing resolved would reject on a guess.
+    pub fn copy_verdict_with(&self, ty: &Type, param_is_copy: &dyn Fn(&str) -> bool) -> CopyVerdict {
+        use CopyVerdict::{Copy, Move, Unknown};
         // L1: a linear value is never Copy, whatever its size or its fields.
         // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
         // this said Copy — and `consume_arg` skips a Copy argument, so passing a
         // connection to a `take` parameter consumed nothing and the caller was
         // then told it had leaked the value it had just handed away.
         if self.is_linear_value(ty) {
-            return false;
+            return Move;
         }
+        let verdict = |t: &Type| self.copy_verdict_with(t, param_is_copy);
+        let size = || self.value_size(ty);
         match ty {
-            // Primitives are always Copy
-            Type::Unit | Type::None | Type::Bool | Type::Char => true,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => true,
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => true,
-            Type::F32 | Type::F64 => true,
-            Type::Never => true,
+            Type::Unit | Type::None | Type::Bool | Type::Char => Copy,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Copy,
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => Copy,
+            Type::F32 | Type::F64 => Copy,
+            Type::Never => Copy,
 
             // String is Copy (immutable, refcounted, 16 bytes — std.strings/S1)
-            Type::String => true,
+            Type::String => Copy,
 
-            // Arrays: Copy if element is Copy and size <= 16 bytes
-            Type::Array { elem, len: _ } => {
-                self.is_copy_with(elem, param_is_copy) && self.value_size(ty) <= 16
-            }
-
-            // Tuples: Copy if all elements are Copy and size <= 16 bytes
-            Type::Tuple(elems) => {
-                elems.iter().all(|t| self.is_copy_with(t, param_is_copy)) && self.value_size(ty) <= 16
-            }
-
-            // Option (T or none): Copy if inner is Copy and size <= 16 bytes
-            ty if ty.is_option() => {
-                let inner = ty.as_option().unwrap();
-                self.is_copy_with(inner, param_is_copy) && self.value_size(ty) <= 16
-            }
+            // Arrays, tuples and `T?`: Copy when every part is, up to 16 bytes.
+            Type::Array { elem, len: _ } => verdict(elem).within(size()),
+            Type::Tuple(elems) => CopyVerdict::all(elems.iter().map(verdict)).within(size()),
+            ty if ty.is_option() => verdict(ty.as_option().unwrap()).within(size()),
 
             // Result: NOT Copy (usually contains error info)
-            Type::Result { .. } => false,
+            Type::Result { .. } => Move,
 
             // Union: NOT Copy (error union types)
-            Type::Union(_) => false,
+            Type::Union(_) => Move,
 
             // User-defined types: need to check size and fields
-            Type::Named(type_id) => {
-                if let Some(def) = self.get(*type_id) {
-                    match def {
-                        crate::TypeDef::Struct { fields, is_unique, .. } => {
-                            // U1: @unique disables implicit copy regardless of size
-                            if *is_unique { return false; }
-                            fields.iter().all(|(_, t)| self.is_copy_with(t, param_is_copy))
-                                && self.value_size(ty) <= 16
-                        }
-                        crate::TypeDef::Enum { variants, .. } => {
-                            variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy_with(t, param_is_copy)))
-                                && self.value_size(ty) <= 16
-                        }
-                        // A primitive is always Copy; it never reaches here as
-                        // a `Named` anyway.
-                        crate::TypeDef::Primitive { .. } => true,
-                        crate::TypeDef::Interface { .. } => false,
-                        crate::TypeDef::Union { fields, .. } => {
-                            fields.iter().all(|(_, t)| self.is_copy_with(t, param_is_copy))
-                                && self.value_size(ty) <= 16
-                        }
-                        crate::TypeDef::NominalAlias { underlying, .. } => {
-                            self.is_copy_with(underlying, param_is_copy)
-                        }
-                    }
-                } else {
-                    false
+            Type::Named(type_id) => match self.get(*type_id) {
+                None => Unknown,
+                Some(crate::TypeDef::Struct { fields, is_unique, .. }) => {
+                    // U1: @unique disables implicit copy regardless of size
+                    if *is_unique { return Move; }
+                    CopyVerdict::all(fields.iter().map(|(_, t)| verdict(t))).within(size())
                 }
-            }
+                Some(crate::TypeDef::Enum { variants, .. }) => {
+                    CopyVerdict::all(variants.iter().flat_map(|(_, data)| data.iter().map(verdict)))
+                        .within(size())
+                }
+                // A primitive is always Copy; it never reaches here as a
+                // `Named` anyway.
+                Some(crate::TypeDef::Primitive { .. }) => Copy,
+                Some(crate::TypeDef::Interface { .. }) => Move,
+                Some(crate::TypeDef::Union { fields, .. }) => {
+                    CopyVerdict::all(fields.iter().map(|(_, t)| verdict(t))).within(size())
+                }
+                Some(crate::TypeDef::NominalAlias { underlying, .. }) => verdict(underlying),
+            },
 
             // A `Link` is Copy: a machine word naming a node,
             // whose whole point is to be duplicated freely (mem.racks). For
@@ -150,70 +173,64 @@ impl TypeTable {
             Type::Generic { base, args } => {
                 let base_name = self.type_name(*base);
                 if Self::is_native_opaque_generic(&base_name) {
-                    base_name.as_str() == "Link"
-                } else if let Some(def) = self.get(*base) {
-                    match def {
-                        crate::TypeDef::Struct { type_params, fields, is_unique, .. } => {
-                            if *is_unique { return false; }
-                            let subst = Self::generic_field_subst(type_params, args);
-                            fields.iter().all(|(_, t)| self.is_copy_with(&Self::substitute_generic_field(t, &subst), param_is_copy))
-                                && self.value_size(ty) <= 16
-                        }
-                        crate::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy_with(&Self::substitute_generic_field(t, &subst), param_is_copy)))
-                                && self.value_size(ty) <= 16
-                        }
-                        // A primitive is always Copy; it never reaches here as
-                        // a `Named` anyway.
-                        crate::TypeDef::Primitive { .. } => true,
-                        crate::TypeDef::Interface { .. } => false,
-                        // Unions aren't generic (no type_params to substitute) —
-                        // reaching this arm through a `Type::Generic` would mean
-                        // a union name got parsed with type arguments, which
-                        // shouldn't happen.
-                        crate::TypeDef::Union { .. } => false,
-                        crate::TypeDef::NominalAlias { underlying, .. } => {
-                            self.is_copy_with(underlying, param_is_copy)
-                        }
+                    return if base_name.as_str() == "Link" { Copy } else { Move };
+                }
+                match self.get(*base) {
+                    None => Unknown,
+                    Some(crate::TypeDef::Struct { type_params, fields, is_unique, .. }) => {
+                        if *is_unique { return Move; }
+                        let subst = Self::generic_field_subst(type_params, args);
+                        CopyVerdict::all(fields.iter().map(|(_, t)| verdict(&Self::substitute_generic_field(t, &subst))))
+                            .within(size())
                     }
-                } else {
-                    false
+                    Some(crate::TypeDef::Enum { type_params, variants, .. }) => {
+                        let subst = Self::generic_field_subst(type_params, args);
+                        CopyVerdict::all(variants.iter().flat_map(|(_, data)| {
+                            data.iter().map(|t| verdict(&Self::substitute_generic_field(t, &subst)))
+                        }))
+                        .within(size())
+                    }
+                    Some(crate::TypeDef::Primitive { .. }) => Copy,
+                    Some(crate::TypeDef::Interface { .. }) => Move,
+                    // Unions aren't generic (no type_params to substitute) —
+                    // reaching this arm through a `Type::Generic` would mean
+                    // a union name got parsed with type arguments, which
+                    // shouldn't happen.
+                    Some(crate::TypeDef::Union { .. }) => Move,
+                    Some(crate::TypeDef::NominalAlias { underlying, .. }) => verdict(underlying),
                 }
             }
 
             // Function types are Copy (just a pointer)
-            Type::Fn { .. } => true,
+            Type::Fn { .. } => Copy,
 
-            // Type variables: conservative
-            Type::Var(_) => false,
+            // An inference variable that never settled.
+            Type::Var(_) => Unknown,
 
             // AT6: a projection is read off a conformance during type
-            // checking, so one reaching here never resolved. Conservative,
-            // same as a type variable.
-            Type::Assoc { .. } => false,
+            // checking, so one reaching here never resolved.
+            Type::Assoc { .. } => Unknown,
 
             // Raw pointers are always Copy (just an address)
-            Type::RawPtr(_) => true,
+            Type::RawPtr(_) => Copy,
 
             // SIMD vectors: NOT Copy (large, stack-allocated)
-            Type::SimdVector { .. } => false,
+            Type::SimdVector { .. } => Move,
 
-            // Unresolved types: conservative, except `Link`,
-            // which are Copy regardless of how the name was spelled — same
-            // three as the resolved `Type::Generic` arm above.
+            // An unresolved `Link` is still a `Link`, however it was spelled.
             Type::UnresolvedGeneric { name, .. } => {
-                name.as_str() == "Link"
+                if name.as_str() == "Link" { Copy } else { Unknown }
             }
             // A type parameter is Copy where its bound says so (`T: Copy`);
-            // the caller knows which names those are.
-            Type::UnresolvedNamed(name) => param_is_copy(name),
+            // the caller knows which names those are. Without the bound it
+            // may still be Copy at some instantiation.
+            Type::UnresolvedNamed(name) => if param_is_copy(name) { Copy } else { Unknown },
 
             // Interface objects: never Copy (TR11 — owns heap data)
-            Type::InterfaceObject { .. } => false,
+            Type::InterfaceObject { .. } => Move,
 
             // Error: don't report more errors
-            Type::Error => true,
+            Type::Error => Copy,
         }
     }
 

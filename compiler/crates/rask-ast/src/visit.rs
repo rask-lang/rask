@@ -50,7 +50,76 @@ pub fn walk_expr<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
 /// block's statements are lowered elsewhere — answers `false` there and keeps
 /// the rest of the walk.
 pub fn walk_expr_pruned<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr) -> bool) {
-    if !f(expr) {
+    visit_expr(expr, &mut ExprsOnly(f));
+}
+
+/// A walk that sees statements as well as expressions. `expr` and `stmt`
+/// answer whether to descend into what they were given, as the closure of
+/// `walk_expr_pruned` does; a visitor that only wants expressions keeps the
+/// default `stmt`.
+pub trait Visit<'a> {
+    fn expr(&mut self, expr: &'a Expr) -> bool;
+    fn stmt(&mut self, _stmt: &'a Stmt) -> bool {
+        true
+    }
+}
+
+struct ExprsOnly<F>(F);
+
+impl<'a, F: FnMut(&'a Expr) -> bool> Visit<'a> for ExprsOnly<F> {
+    fn expr(&mut self, expr: &'a Expr) -> bool {
+        (self.0)(expr)
+    }
+}
+
+/// Every expression and statement in a statement list, `v` deciding where to
+/// stop.
+pub fn visit_body<'a>(body: &'a [Stmt], v: &mut impl Visit<'a>) {
+    for stmt in body {
+        visit_stmt(stmt, v);
+    }
+}
+
+/// Every expression and statement in a declaration's bodies, as `walk_decl`.
+pub fn visit_decl<'a>(decl: &'a Decl, v: &mut impl Visit<'a>) {
+    match &decl.kind {
+        DeclKind::Fn(func) => visit_body(&func.body, v),
+        DeclKind::Struct(s) => {
+            for m in &s.methods {
+                visit_body(&m.body, v);
+            }
+        }
+        DeclKind::Enum(e) => {
+            for m in &e.methods {
+                visit_body(&m.body, v);
+            }
+        }
+        DeclKind::Interface(t) => {
+            for m in &t.methods {
+                visit_body(&m.body, v);
+            }
+        }
+        DeclKind::Impl(i) => {
+            for m in &i.methods {
+                visit_body(&m.body, v);
+            }
+        }
+        DeclKind::Const(c) => visit_expr(&c.init, v),
+        DeclKind::Test(t) => visit_body(&t.body, v),
+        DeclKind::Benchmark(b) => visit_body(&b.body, v),
+        DeclKind::Import(_)
+        | DeclKind::Export(_)
+        | DeclKind::CImport(_)
+        | DeclKind::TypeAlias(_)
+        | DeclKind::Union(_)
+        | DeclKind::Extern(_)
+        | DeclKind::Package(_)
+        | DeclKind::Annotation(_) => {}
+    }
+}
+
+pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
+    if !v.expr(expr) {
         return;
     }
     match &expr.kind {
@@ -69,75 +138,74 @@ pub fn walk_expr_pruned<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr) -> bool
             for seg in segments {
                 match seg {
                     StringSegment::Literal(_) => {}
-                    StringSegment::Expr(e, _) => walk_expr_pruned(e, f),
+                    StringSegment::Expr(e, _) => visit_expr(e, v),
                 }
             }
         }
 
         ExprKind::Binary { left, right, .. } => {
-            walk_expr_pruned(left, f);
-            walk_expr_pruned(right, f);
+            visit_expr(left, v);
+            visit_expr(right, v);
         }
-        ExprKind::Unary { operand, .. } => walk_expr_pruned(operand, f),
+        ExprKind::Unary { operand, .. } => visit_expr(operand, v),
 
         ExprKind::Call { func, args } => {
-            walk_expr_pruned(func, f);
+            visit_expr(func, v);
             for a in args {
-                walk_expr_pruned(&a.expr, f);
+                visit_expr(&a.expr, v);
             }
         }
         ExprKind::MethodCall { object, args, .. } => {
-            walk_expr_pruned(object, f);
+            visit_expr(object, v);
             for a in args {
-                walk_expr_pruned(&a.expr, f);
+                visit_expr(&a.expr, v);
             }
         }
 
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-            walk_expr_pruned(object, f)
+            visit_expr(object, v)
         }
         ExprKind::DynamicField { object, field_expr } => {
-            walk_expr_pruned(object, f);
-            walk_expr_pruned(field_expr, f);
+            visit_expr(object, v);
+            visit_expr(field_expr, v);
         }
         ExprKind::Index { object, index } => {
-            walk_expr_pruned(object, f);
-            walk_expr_pruned(index, f);
+            visit_expr(object, v);
+            visit_expr(index, v);
         }
 
         ExprKind::Block(body)
-        | ExprKind::BlockCall { body, .. }
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
-        | ExprKind::Loop { body, .. } => walk_body_pruned(body, f),
+        | ExprKind::Loop { body, .. } => visit_body(body, v),
 
         ExprKind::If { cond, then_branch, else_branch, .. } => {
-            walk_expr_pruned(cond, f);
-            walk_expr_pruned(then_branch, f);
+            visit_expr(cond, v);
+            visit_expr(then_branch, v);
             if let Some(e) = else_branch {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
         }
         ExprKind::IfLet { expr: scrutinee, then_branch, else_branch, .. } => {
-            walk_expr_pruned(scrutinee, f);
-            walk_expr_pruned(then_branch, f);
+            visit_expr(scrutinee, v);
+            visit_expr(then_branch, v);
             if let Some(e) = else_branch {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
         }
         ExprKind::GuardPattern { expr: scrutinee, else_branch, .. } => {
-            walk_expr_pruned(scrutinee, f);
-            walk_expr_pruned(else_branch, f);
+            visit_expr(scrutinee, v);
+            visit_expr(else_branch, v);
         }
-        ExprKind::IsPattern { expr: scrutinee, .. } => walk_expr_pruned(scrutinee, f),
+        ExprKind::IsPattern { expr: scrutinee, .. } => visit_expr(scrutinee, v),
 
         ExprKind::Match { scrutinee, arms } => {
-            walk_expr_pruned(scrutinee, f);
+            visit_expr(scrutinee, v);
             for arm in arms {
                 if let Some(g) = &arm.guard {
-                    walk_expr_pruned(g, f);
+                    visit_expr(g, v);
                 }
-                walk_expr_pruned(&arm.body, f);
+                visit_expr(&arm.body, v);
             }
         }
 
@@ -146,78 +214,84 @@ pub fn walk_expr_pruned<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr) -> bool
         | ExprKind::IsPresent { expr: inner, .. }
         | ExprKind::Unwrap { expr: inner, .. }
         | ExprKind::Cast { expr: inner, .. }
-        | ExprKind::Convert { expr: inner, .. } => walk_expr_pruned(inner, f),
+        | ExprKind::Convert { expr: inner, .. } => visit_expr(inner, v),
 
         ExprKind::Catch { value, clause } => {
-            walk_expr_pruned(value, f);
-            walk_expr_pruned(&clause.body, f);
+            visit_expr(value, v);
+            visit_expr(&clause.body, v);
         }
         ExprKind::NullCoalesce { value, default } => {
-            walk_expr_pruned(value, f);
-            walk_expr_pruned(default, f);
+            visit_expr(value, v);
+            visit_expr(default, v);
         }
 
         ExprKind::Range { start, end, .. } => {
             if let Some(e) = start {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
             if let Some(e) = end {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
         }
 
         ExprKind::StructLit { fields, spread, .. } => {
             for field in fields {
-                walk_expr_pruned(&field.value, f);
+                visit_expr(&field.value, v);
             }
             if let Some(e) = spread {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
         }
 
         ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
             for e in elems {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
         }
         ExprKind::ArrayRepeat { value, count } => {
-            walk_expr_pruned(value, f);
-            walk_expr_pruned(count, f);
+            visit_expr(value, v);
+            visit_expr(count, v);
         }
 
         ExprKind::UsingBlock { args, body, .. } => {
             for a in args {
-                walk_expr_pruned(&a.expr, f);
+                visit_expr(&a.expr, v);
             }
-            walk_body_pruned(body, f);
+            visit_body(body, v);
         }
         ExprKind::WithAs { bindings, body } => {
             for b in bindings {
-                walk_expr_pruned(&b.source, f);
+                visit_expr(&b.source, v);
             }
-            walk_body_pruned(body, f);
+            visit_body(body, v);
         }
 
-        ExprKind::Closure { body, .. } => walk_expr_pruned(body, f),
+        ExprKind::Closure { body, .. } => visit_expr(body, v),
+        ExprKind::Spawn { receiver, body, .. } => {
+            if let Some(r) = receiver {
+                visit_expr(r, v);
+            }
+            visit_expr(body, v);
+        }
 
         ExprKind::Select { arms, .. } => {
             for arm in arms {
                 match &arm.kind {
-                    SelectArmKind::Recv { channel, .. } => walk_expr_pruned(channel, f),
+                    SelectArmKind::Recv { channel, .. } => visit_expr(channel, v),
                     SelectArmKind::Send { channel, value } => {
-                        walk_expr_pruned(channel, f);
-                        walk_expr_pruned(value, f);
+                        visit_expr(channel, v);
+                        visit_expr(value, v);
                     }
                     SelectArmKind::Default => {}
                 }
-                walk_expr_pruned(&arm.body, f);
+                visit_expr(&arm.body, v);
             }
         }
 
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
-            walk_expr_pruned(condition, f);
+            visit_expr(condition, v);
             if let Some(m) = message {
-                walk_expr_pruned(m, f);
+                visit_expr(m, v);
             }
         }
     }
@@ -233,43 +307,50 @@ pub fn walk_stmt<'a>(stmt: &'a Stmt, f: &mut impl FnMut(&'a Expr)) {
 
 /// Every expression in `stmt` and below it, the visitor deciding where to stop.
 pub fn walk_stmt_pruned<'a>(stmt: &'a Stmt, f: &mut impl FnMut(&'a Expr) -> bool) {
+    visit_stmt(stmt, &mut ExprsOnly(f));
+}
+
+pub fn visit_stmt<'a>(stmt: &'a Stmt, v: &mut impl Visit<'a>) {
+    if !v.stmt(stmt) {
+        return;
+    }
     match &stmt.kind {
         StmtKind::Expr(e)
         | StmtKind::Mut { init: e, .. }
         | StmtKind::MutTuple { init: e, .. }
         | StmtKind::Let { init: e, .. }
         | StmtKind::LetTuple { init: e, .. }
-        | StmtKind::LetStruct { init: e, .. } => walk_expr_pruned(e, f),
+        | StmtKind::LetStruct { init: e, .. } => visit_expr(e, v),
 
         StmtKind::Assign { target, value, .. } => {
-            walk_expr_pruned(target, f);
-            walk_expr_pruned(value, f);
+            visit_expr(target, v);
+            visit_expr(value, v);
         }
 
         StmtKind::Return(value) | StmtKind::Break { value, .. } => {
             if let Some(e) = value {
-                walk_expr_pruned(e, f);
+                visit_expr(e, v);
             }
         }
         StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
 
         StmtKind::While { cond, body, .. } => {
-            walk_expr_pruned(cond, f);
-            walk_body_pruned(body, f);
+            visit_expr(cond, v);
+            visit_body(body, v);
         }
         StmtKind::WhileLet { expr, body, .. } => {
-            walk_expr_pruned(expr, f);
-            walk_body_pruned(body, f);
+            visit_expr(expr, v);
+            visit_body(body, v);
         }
-        StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => walk_body_pruned(body, f),
+        StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => visit_body(body, v),
         StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
-            walk_expr_pruned(iter, f);
-            walk_body_pruned(body, f);
+            visit_expr(iter, v);
+            visit_body(body, v);
         }
         StmtKind::Ensure { body, else_handler } => {
-            walk_body_pruned(body, f);
+            visit_body(body, v);
             if let Some((_, handler)) = else_handler {
-                walk_body_pruned(handler, f);
+                visit_body(handler, v);
             }
         }
     }

@@ -239,6 +239,7 @@ impl fmt::Display for MirStmt {
             MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let how = match access {
                     crate::CaptureAccess::Value => "",
+                    crate::CaptureAccess::Taken => "taken ",
                     crate::CaptureAccess::Borrowed => "_ref",
                     crate::CaptureAccess::Owned => "_own",
                 };
@@ -249,10 +250,13 @@ impl fmt::Display for MirStmt {
                     captures.iter().map(|c| format!("_{}", c.local_id.0)).collect::<Vec<_>>().join(", "))
             }
             MirStmtKind::EnsureHookPop => write!(f, "ensure_hook_pop()"),
+            MirStmtKind::UnwindArm { slot, value, .. } => write!(f, "unwind_arm({}, _{})", slot, value.0),
+            MirStmtKind::UnwindDisarm { slot } => write!(f, "unwind_disarm({})", slot),
             MirStmtKind::ClosureDrop { closure, made } => match made {
                 Some(m) if m != closure => write!(f, "closure_drop(_{}) made _{}", closure.0, m.0),
                 _ => write!(f, "closure_drop(_{})", closure.0),
             },
+            MirStmtKind::ClosureRetain { closure, .. } => write!(f, "closure_retain(_{})", closure.0),
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }
@@ -272,8 +276,11 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmtKind::InterfaceDrop { interface_object } => {
+            MirStmtKind::InterfaceDrop { interface_object, owns: false } => {
                 write!(f, "interface_drop(_{})", interface_object.0)
+            }
+            MirStmtKind::InterfaceDrop { interface_object, owns: true } => {
+                write!(f, "interface_drop_owned(_{})", interface_object.0)
             }
             MirStmtKind::Phi { dst, args } => {
                 write!(f, "_{} = phi [", dst.0)?;
@@ -292,9 +299,13 @@ impl fmt::Display for MirStmt {
             MirStmtKind::RcDecContents { local } => {
                 write!(f, "rc_dec_contents(_{})", local.0)
             }
+            MirStmtKind::RcIncContents { local } => {
+                write!(f, "rc_inc_contents(_{})", local.0)
+            }
             MirStmtKind::ReleaseSlot { addr, offset, ty } => {
                 write!(f, "release_slot(_{}+{}: {})", addr.0, offset, ty)
             }
+            MirStmtKind::ZeroAggregate { local } => write!(f, "zero_aggregate(_{})", local.0),
         }
     }
 }

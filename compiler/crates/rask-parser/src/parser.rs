@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
+use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::token::{IntSuffix, Token, TokenKind};
+use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
@@ -191,7 +191,7 @@ impl Parser {
                     }
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
-                TokenKind::Interface | TokenKind::Extend | TokenKind::Import |
+                TokenKind::Interface | TokenKind::Extend | TokenKind::Import | TokenKind::Type |
                 TokenKind::Extern | TokenKind::Public | TokenKind::Private | TokenKind::Package if brace_depth == 0 => {
                     return;
                 }
@@ -314,7 +314,7 @@ impl Parser {
 
     fn expect_string(&mut self) -> Result<String, ParseError> {
         match self.current_kind().clone() {
-            TokenKind::String(s) => {
+            TokenKind::String(s, _) => {
                 self.advance();
                 Ok(s)
             }
@@ -537,7 +537,7 @@ impl Parser {
                     let is_conformance = self.at_conformance_header();
                     if is_annotation_decl || is_conformance || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
-                        TokenKind::Union | TokenKind::Interface | TokenKind::Extend |
+                        TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
                         TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
                         TokenKind::Public | TokenKind::Private
@@ -838,7 +838,7 @@ impl Parser {
                 if depth > 0 {
                     // Preserve original token text for strings, idents, etc.
                     match self.current_kind() {
-                        TokenKind::String(s) => {
+                        TokenKind::String(s, _) => {
                             attr.push('"');
                             attr.push_str(s);
                             attr.push('"');
@@ -947,7 +947,7 @@ impl Parser {
         let name = self.expect_ident_or_keyword()?;
 
         let mut type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Function)?;
             params
         } else {
             vec![]
@@ -1126,13 +1126,18 @@ impl Parser {
 
     /// Parse one parameter inside a function type: `T`, `name: T`, or `mutate name: T`.
     /// In type position, names and modifiers are noise — only the type part is kept.
-    fn parse_func_type_param(&mut self) -> Result<TypeExpr, ParseError> {
-        // Skip optional `mutate` modifier
-        if matches!(self.current_kind(), TokenKind::MutateKw) {
-            self.advance();
-        }
+    /// One parameter of a function type: `T`, `mutate T`, `take T`, with an
+    /// optional `name:` before the type (names are noise in type position).
+    fn parse_func_type_param(&mut self) -> Result<rask_ast::ty::FuncParam, ParseError> {
+        use rask_ast::ty::ParamMode;
+        let mode = if self.match_token(&TokenKind::Take) {
+            ParamMode::Take
+        } else if self.match_token(&TokenKind::MutateKw) {
+            ParamMode::Mutate
+        } else {
+            ParamMode::Borrow
+        };
 
-        // If `name :` precedes the type, skip the name and colon
         if let TokenKind::Ident(_) = self.current_kind() {
             if matches!(self.peek(1), TokenKind::Colon) {
                 self.advance(); // name
@@ -1140,7 +1145,7 @@ impl Parser {
             }
         }
 
-        self.parse_type_name()
+        Ok(rask_ast::ty::FuncParam { mode, ty: self.parse_type_name()? })
     }
 
     /// The whole token stream as one type, or `None`.
@@ -1385,35 +1390,10 @@ impl Parser {
         // position took a qualified name, so the only way to write an interface
         // object of another module's interface was to import the interface under a name
         // of its own first.
-        //
-        // The optional suffix is deliberately *not* shared. `any Interface?`
-        // type-checks and the interpreter runs it, but native never boxes the
-        // value into the option's payload and reads an uninitialised slot —
-        // SIGSEGV in every position (#1308). Letting it parse here would turn a
-        // bad parse error into a crash, so it stays rejected until the backend
-        // has it, with a message that says which of the two it is.
         if name == "any" {
             if let TokenKind::Ident(_) = self.current_kind() {
                 let interface = self.parse_type_body()?;
-                if self.check(&TokenKind::Question) || self.check(&TokenKind::QuestionQuestion) {
-                    return Err(ParseError {
-                        span: self.current().span,
-                        message: "an optional interface object isn't built yet".to_string(),
-                        hint: Some(format!(
-                            "take `any {}` and use a sentinel, or wrap it in a struct field \
-                             you can leave unset",
-                            interface
-                        )),
-                        why: Some(
-                            "`any Interface?` checks, and the interpreter runs it — native never \
-                             boxes the value into the option's payload, so it reads an \
-                             uninitialised slot and crashes. Rejected here rather than \
-                             at run time [#1308]"
-                                .to_string(),
-                        ),
-                    });
-                }
-                return Ok(TypeExpr::Any(Box::new(interface)));
+                return Ok(self.parse_optional_suffix(TypeExpr::Any(Box::new(interface))));
             }
         }
 
@@ -1483,9 +1463,9 @@ impl Parser {
         base
     }
 
-    /// Parse type parameters like `<T, comptime N: usize>`.
-    /// Returns (type_params, name_suffix) where name_suffix is the string representation for display.
-    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {
+    /// Parse type parameters like `<T, comptime N: usize>`. `owner` is what
+    /// declares them, which decides whether a parameter may carry a default.
+    fn parse_type_params(&mut self, owner: ParamOwner) -> Result<Vec<TypeParam>, ParseError> {
         let mut type_params = Vec::new();
 
         loop {
@@ -1512,8 +1492,28 @@ impl Parser {
                 }
 
                 // GT4: `<Rhs = Self>` — the meaning of the bare interface name.
+                // Nothing else reads a default, so anywhere else it would be
+                // dropped without a word (#1486).
+                let eq_start = self.current().span.start;
                 let default = if self.match_token(&TokenKind::Eq) {
-                    Some(self.parse_type_name()?)
+                    let ty = self.parse_type_name()?;
+                    if let Some(kind) = owner.refuses_defaults() {
+                        let span = self.span(eq_start, self.tokens[self.pos.saturating_sub(1)].span.end);
+                        return Err(ParseError {
+                            span,
+                            message: format!("{}'s type parameter `{}` can't have a default", kind, param_name),
+                            hint: Some(format!(
+                                "remove `= {}` and write the argument where the type is used",
+                                ty
+                            )),
+                            why: Some(
+                                "only an interface's parameters take defaults (`interface Mul<Rhs = Self>`); \
+                                 a type's or function's arguments are written or inferred at each use"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    Some(ty)
                 } else {
                     None
                 };
@@ -1522,8 +1522,8 @@ impl Parser {
                     name: param_name.clone(),
                     is_comptime: false,
                     comptime_type: None,
-                    bounds: bounds.clone(),
-                    default: default.clone(),
+                    bounds,
+                    default,
                 });
             }
 
@@ -1541,26 +1541,18 @@ impl Parser {
         Ok(type_params)
     }
 
-    /// Parse a single interface bound, e.g. `Comparable` or `Iterator<Item>`.
-    fn parse_one_bound(&mut self) -> Result<TypeExpr, ParseError> {
-        let name = self.expect_ident()?;
-        // Generic interface bound: `Iterator<Item>`
-        let mut args = Vec::new();
-        if self.match_token(&TokenKind::Lt) {
-            args.push(self.parse_type_name()?);
-            while self.match_token(&TokenKind::Comma) {
-                args.push(self.parse_type_name()?);
+    /// Parse `+`-separated interface bounds: `A + B<X> + io.Writer`, each
+    /// with where it was written.
+    fn parse_interface_bounds(&mut self) -> Result<Vec<Bound>, ParseError> {
+        let mut bounds = Vec::new();
+        loop {
+            let start = self.current().span.start;
+            let ty = self.parse_type_body()?;
+            let end = self.tokens[self.pos.saturating_sub(1)].span.end;
+            bounds.push(Bound { ty, span: self.span(start, end.max(start)) });
+            if !self.match_token(&TokenKind::Plus) {
+                break;
             }
-            self.expect_gt_in_generic()?;
-        }
-        Ok(TypeExpr::generic(name, args))
-    }
-
-    /// Parse `+`-separated interface bounds: `A + B<X> + C`.
-    fn parse_interface_bounds(&mut self) -> Result<Vec<TypeExpr>, ParseError> {
-        let mut bounds = vec![self.parse_one_bound()?];
-        while self.match_token(&TokenKind::Plus) {
-            bounds.push(self.parse_one_bound()?);
         }
         Ok(bounds)
     }
@@ -1620,7 +1612,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Struct)?;
             params
         } else {
             vec![]
@@ -1811,7 +1803,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Enum)?;
             params
         } else {
             vec![]
@@ -1954,7 +1946,7 @@ impl Parser {
         // resolved to nothing and every conformance failed claiming a missing
         // method the block plainly had (#1164).
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Interface)?;
             params
         } else {
             Vec::new()
@@ -2091,7 +2083,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let mut type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Function)?;
             params
         } else {
             vec![]
@@ -2144,7 +2136,26 @@ impl Parser {
     /// `extend T { … }`: the type's own methods.
     fn parse_extend_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
-        let target_ty = self.parse_type_name()?;
+        let header_pos = self.pos;
+        let target_ty = match self.parse_type_name() {
+            Ok(t) => t,
+            // `extend Holder<T: Named>`: the bound already lives on the type.
+            Err(_) if self.check(&TokenKind::Colon) => {
+                let name = match &self.tokens[header_pos].kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => "T".to_string(),
+                };
+                return Err(ParseError {
+                    message: format!("a bound can't go in an `extend {}<…>` header", name),
+                    span: self.current().span,
+                    hint: Some(format!(
+                        "write `extend {name}<T>`: the bounds on `struct {name}<…>` hold in every method, and `extend {name}<T> where T: Bound` adds one"
+                    )),
+                    why: Some("a type's bounds are declared once, on the type, so its methods can't disagree about them".to_string()),
+                });
+            }
+            Err(e) => return Err(e),
+        };
         self.parse_impl_body(target_ty, None, is_pub, is_unsafe, doc)
     }
 
@@ -2484,7 +2495,7 @@ impl Parser {
         let name = self.expect_ident()?;
         let type_params = if self.check(&TokenKind::Lt) {
             self.advance();
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::TypeAlias)?;
             params
         } else {
             Vec::new()
@@ -2765,12 +2776,13 @@ impl Parser {
         let mut feature_deps = Vec::new();
         let mut options = Vec::new();
         let mut default = None;
+        let mut on_by_default = false;
 
         self.skip_newlines();
         if self.match_token(&TokenKind::LBrace) {
             self.skip_newlines();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                if exclusive && matches!(self.current_kind(), TokenKind::String(_)) {
+                if exclusive && matches!(self.current_kind(), TokenKind::String(..)) {
                     // String-named option block: "tokio" { dep ... }
                     let opt_name = self.expect_string()?;
                     let mut opt_deps = Vec::new();
@@ -2791,11 +2803,17 @@ impl Parser {
                 } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
                     feature_deps.push(self.parse_dep_item(None)?);
                 } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
-                    // default: "tokio"
+                    // `default: "tokio"` picks an exclusive option; `default: true`
+                    // turns an additive feature on (F3).
                     let key = self.expect_ident()?;
                     if key == "default" {
                         self.expect(&TokenKind::Colon)?;
-                        default = Some(self.expect_string()?);
+                        if let TokenKind::Bool(b) = *self.current_kind() {
+                            on_by_default = b;
+                            self.advance();
+                        } else {
+                            default = Some(self.expect_string()?);
+                        }
                     } else {
                         // skip unknown key
                         if self.match_token(&TokenKind::Colon) {
@@ -2810,7 +2828,7 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
         }
 
-        Ok(FeatureDecl { name, exclusive, deps: feature_deps, options, default })
+        Ok(FeatureDecl { name, exclusive, deps: feature_deps, options, default, on_by_default })
     }
 
     /// Parse a single dep item inside a package block.
@@ -2832,7 +2850,7 @@ impl Parser {
         let name = self.expect_string()?;
 
         // Optional version string
-        let version = if matches!(self.current_kind(), TokenKind::String(_)) {
+        let version = if matches!(self.current_kind(), TokenKind::String(..)) {
             Some(self.expect_string()?)
         } else {
             None
@@ -2903,7 +2921,7 @@ impl Parser {
                     }
                     other => {
                         // Could be an exclusive feature selection: runtime: "tokio"
-                        if matches!(self.current_kind(), TokenKind::String(_)) {
+                        if matches!(self.current_kind(), TokenKind::String(..)) {
                             let selection = self.expect_string()?;
                             exclusive_selections.push((other.to_string(), selection));
                         } else if self.check(&TokenKind::LBrace) {
@@ -3439,7 +3457,7 @@ impl Parser {
     fn is_expr_start(&self) -> bool {
         matches!(
             self.current_kind(),
-            TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(_) | TokenKind::Bool(_)
+            TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(..) | TokenKind::Bool(_)
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
                 | TokenKind::If | TokenKind::Match | TokenKind::With
                 | TokenKind::Select | TokenKind::SelectPriority
@@ -3940,6 +3958,19 @@ impl Parser {
         Ok(lhs)
     }
 
+    /// `a.b.c` as its segments, when the expression is nothing but names.
+    fn name_path(expr: &Expr) -> Option<Vec<String>> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(vec![name.clone()]),
+            ExprKind::Field { object, field } => {
+                let mut path = Self::name_path(object)?;
+                path.push(field.clone());
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
     fn parse_prefix(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
 
@@ -3952,13 +3983,13 @@ impl Parser {
                 self.advance();
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Float(n, suffix.clone()), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
-            TokenKind::String(s) => {
+            TokenKind::String(s, positions) => {
                 self.advance();
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
                 // `}` alone matters too: `"}}"` is an escaped brace with no
                 // `{` anywhere in it (fmt/F4).
                 if s.contains('{') || s.contains('}') {
-                    match self.parse_string_interpolation(&s, str_span) {
+                    match self.parse_string_interpolation(&s, &positions, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
                     }
@@ -3989,6 +4020,11 @@ impl Parser {
 
             TokenKind::Ident(name) => {
                 self.advance();
+
+                // `spawn { … }` — a task block (conc.async/S1).
+                if name == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                    return self.parse_spawn_block(SpawnTarget::Green, None, start);
+                }
 
                 // Labeled loop/for/while expression: `label: loop { ... }`
                 if self.check(&TokenKind::Colon)
@@ -4551,11 +4587,12 @@ impl Parser {
 
         let mut params = Vec::new();
         while !self.check(&TokenKind::Pipe) && !self.at_end() {
-            // Typed mutable parameter: |mutate x: T|. Explicit type is required
-            // (mem.closures/CP2). Untyped `|mutate x|` is mutable-capture syntax
-            // (CP3), not a parameter — and is not handled by this loop.
+            // `|mutate x: T|` needs its type (mem.closures/CP2); `|take x|`
+            // hands the argument over (CP4) and may leave it to inference.
             let mutate_span = self.current().span;
-            let is_mutate = self.match_token(&TokenKind::MutateKw);
+            let is_take = self.match_token(&TokenKind::Take);
+            let is_mutate = !is_take && self.match_token(&TokenKind::MutateKw);
+            let name_span = self.current().span;
             let name = self.expect_ident()?;
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
@@ -4592,7 +4629,7 @@ impl Parser {
             } else {
                 None
             };
-            params.push(ClosureParam { name, ty, is_mutate, is_take: false });
+            params.push(ClosureParam { name, name_span, ty, is_mutate, is_take });
             if !self.match_token(&TokenKind::Comma) { break; }
         }
 
@@ -4616,6 +4653,39 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::Closure { params, ret_ty, body: Box::new(body) },
+            span: self.span(start, end),
+        })
+    }
+
+    /// The block of `spawn { … }` and its `Thread`/`ThreadPool` forms, the
+    /// current token being its `{`. The block is wrapped in a parameterless
+    /// closure node that only the compiler sees (`ExprKind::Spawn`).
+    fn parse_spawn_block(
+        &mut self,
+        target: SpawnTarget,
+        receiver: Option<Box<Expr>>,
+        start: usize,
+    ) -> Result<Expr, ParseError> {
+        let block_start = self.current().span.start;
+        // The task is its own frame: `break` can't reach a loop outside it.
+        let outer_labels = std::mem::take(&mut self.loop_labels);
+        let stmts = self.parse_block_body();
+        self.loop_labels = outer_labels;
+        let stmts = stmts?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let block = Expr {
+            id: self.next_id(),
+            kind: ExprKind::Block(stmts),
+            span: self.span(block_start, end),
+        };
+        let body = Expr {
+            id: self.next_id(),
+            kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(block) },
+            span: self.span(block_start, end),
+        };
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Spawn { target, receiver, body: Box::new(body) },
             span: self.span(start, end),
         })
     }
@@ -4668,7 +4738,7 @@ impl Parser {
                 // it here read `{0}` as the integer zero and turned `{{x}}`
                 // back into a placeholder.
                 let raw_template = matches!(&lhs.kind, ExprKind::Ident(n) if n == "format")
-                    && matches!(self.current_kind(), TokenKind::String(_));
+                    && matches!(self.current_kind(), TokenKind::String(..));
                 let args = self.parse_args_with(raw_template)?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
@@ -4723,6 +4793,18 @@ impl Parser {
 
                 let field = self.expect_ident_or_keyword()?;
 
+                // `Thread.spawn { … }` / `ThreadPool.spawn { … }` (conc.async/S2–S3).
+                if field == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                    let target = match Self::name_path(&lhs).as_deref() {
+                        Some([.., last]) if last == "Thread" => Some(SpawnTarget::Thread),
+                        Some([.., last]) if last == "ThreadPool" => Some(SpawnTarget::Pool),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        return self.parse_spawn_block(target, Some(Box::new(lhs)), start);
+                    }
+                }
+
                 let type_args = if self.check(&TokenKind::Lt) && self.looks_like_generic_method_call() {
                     self.advance();
                     let mut args = Vec::new();
@@ -4760,16 +4842,33 @@ impl Parser {
                     // starts the body. Without that second guard,
                     // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
                     // literal and swallowed the if-block (#342).
-                    if let ExprKind::Ident(base) = &lhs.kind {
+                    //
+                    // The head is a name chain — `Shape.Circle`, but also
+                    // `bits.BinaryParseError.UnexpectedEnd` through a module
+                    // (#1461) — so the whole path is read, not just one dot.
+                    //
+                    // `Slot<i64>.Pair { … }` names the instantiation at the
+                    // variant (type.enums/E4a), as `Slot<i64>.Full(1)` does.
+                    if let ExprKind::GenericName { name, type_args } = &lhs.kind {
+                        if name.starts_with(|c: char| c.is_uppercase())
+                            && field.starts_with(|c: char| c.is_uppercase())
+                        {
+                            let name = format!("{}.{}", name, field);
+                            let type_args = type_args.clone();
+                            return self.parse_struct_literal(name, type_args, start);
+                        }
+                    }
+                    if let Some(mut path) = Self::name_path(&lhs) {
                         // A module namespace is lowercase by convention —
                         // `c.Rect { … }`, `http.Response { … }` — so the
                         // capitalised-head rule doesn't reach it. Only a name
                         // this file actually imports counts.
+                        let base = &path[0];
                         let head_names_a_type = base.starts_with(|c: char| c.is_uppercase())
                             || self.import_namespaces.contains(base);
                         if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
-                            let full_name = format!("{}.{}", base, field);
-                            self.parse_struct_literal(full_name, Vec::new(), start)
+                            path.push(field);
+                            self.parse_struct_literal(path.join("."), Vec::new(), start)
                         } else {
                             let end = self.tokens[self.pos - 1].span.end;
                             Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
@@ -4836,14 +4935,14 @@ impl Parser {
 
             // Unwrap operator (!) - panics if None/Err
             TokenKind::Bang => {
-                self.advance();
-                let mut end = self.tokens[self.pos - 1].span.end;
+                let bang = self.advance().span;
+                let mut end = bang.end;
 
                 // Check for optional custom message: x! "message"
-                let message = if matches!(self.peek(0), TokenKind::String(_)) {
+                let message = if matches!(self.peek(0), TokenKind::String(..)) {
                     let msg_token = self.advance();
                     end = msg_token.span.end;
-                    if let TokenKind::String(s) = &msg_token.kind {
+                    if let TokenKind::String(s, _) = &msg_token.kind {
                         Some(s.clone())
                     } else {
                         None
@@ -4852,7 +4951,7 @@ impl Parser {
                     None
                 };
 
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message }, span: self.span(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message, bang }, span: self.span(start, end) })
             }
 
             // Detect :: path separator (Rust syntax)
@@ -4904,7 +5003,7 @@ impl Parser {
     ) -> Result<(), ParseError> {
         loop {
             if raw_first_string && args.is_empty() {
-                if let TokenKind::String(s) = self.current_kind().clone() {
+                if let TokenKind::String(s, _) = self.current_kind().clone() {
                     let start = self.current().span.start;
                     self.advance();
                     let span = self.span(start, self.tokens[self.pos - 1].span.end);
@@ -5471,7 +5570,7 @@ impl Parser {
 
     /// Parse string interpolation segments from a string like "hello {name}, age {age}".
     /// Returns None if the string has no valid interpolation (e.g., escaped braces only).
-    fn parse_string_interpolation(&mut self, s: &str, str_span: Span) -> Option<Vec<StringSegment>> {
+    fn parse_string_interpolation(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> Option<Vec<StringSegment>> {
         let mut segments = Vec::new();
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
@@ -5523,11 +5622,8 @@ impl Parser {
                 let expr_str: String = chars[expr_start..i].iter().collect();
                 i += 1; // skip '}'
 
-                // Calculate byte offset of this expression within the string content
-                let abs_offset = str_span.start + 1 + s.char_indices()
-                    .nth(expr_start)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(0);
+                let hole_start = s.char_indices().nth(expr_start).map(|(pos, _)| pos).unwrap_or(0);
+                let to_file = |text_byte: usize| str_span.start + positions.source_offset(hole_start + text_byte);
                 // `{}` and `{:spec}` are placeholders the runtime formatter
                 // fills in — nothing to parse here.
                 if expr_str.is_empty() || expr_str.starts_with(':') {
@@ -5558,7 +5654,7 @@ impl Parser {
 
                 let bad_expr = |parser: &mut Self, detail: &str| {
                     parser.errors.push(ParseError {
-                        span: parser.span(abs_offset, abs_offset + expr_str.len()),
+                        span: parser.span(to_file(0), to_file(expr_str.len())),
                         message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
                         hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
                         why: None,
@@ -5576,8 +5672,15 @@ impl Parser {
                     bad_expr(self, "the text inside doesn't lex");
                     return None;
                 }
-                // Reuse this parser's file_id and get sequential NodeIds
-                let saved_tokens = std::mem::replace(&mut self.tokens, lex.tokens);
+                // Place the tokens where the text sits in the file, so every
+                // node built from them carries a file position.
+                let mut tokens = lex.tokens;
+                for tok in &mut tokens {
+                    tok.span.start = to_file(tok.span.start);
+                    tok.span.end = to_file(tok.span.end);
+                    tok.span.file_id = str_span.file_id;
+                }
+                let saved_tokens = std::mem::replace(&mut self.tokens, tokens);
                 let saved_pos = std::mem::replace(&mut self.pos, 0);
 
                 let result = self.parse_expr();
@@ -5588,7 +5691,7 @@ impl Parser {
                 self.tokens = saved_tokens;
                 self.pos = saved_pos;
 
-                let mut parsed = match result {
+                let parsed = match result {
                     Ok(expr) => expr,
                     Err(e) => {
                         bad_expr(self, &e.message);
@@ -5608,10 +5711,6 @@ impl Parser {
                     bad_expr(self, "a string literal on its own isn't something to interpolate");
                     return None;
                 }
-
-                // Remap spans from 0-based (within expr_str) to absolute file position.
-                // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
-                Self::offset_spans(&mut parsed, abs_offset);
 
                 segments.push(StringSegment::Expr(Box::new(parsed), parsed_spec));
             } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
@@ -5635,51 +5734,6 @@ impl Parser {
             Some(segments)
         } else {
             None
-        }
-    }
-
-    /// Offset all spans in an expression tree by a byte amount.
-    fn offset_spans(expr: &mut Expr, offset: usize) {
-        expr.span.start += offset;
-        expr.span.end += offset;
-        match &mut expr.kind {
-            ExprKind::Binary { left, right, .. } => {
-                Self::offset_spans(left, offset);
-                Self::offset_spans(right, offset);
-            }
-            ExprKind::Unary { operand, .. } => Self::offset_spans(operand, offset),
-            ExprKind::Call { func, args } => {
-                Self::offset_spans(func, offset);
-                for arg in args { Self::offset_spans(&mut arg.expr, offset); }
-            }
-            ExprKind::MethodCall { object, args, .. } => {
-                Self::offset_spans(object, offset);
-                for arg in args { Self::offset_spans(&mut arg.expr, offset); }
-            }
-            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-                Self::offset_spans(object, offset);
-            }
-            ExprKind::Index { object, index } => {
-                Self::offset_spans(object, offset);
-                Self::offset_spans(index, offset);
-            }
-            ExprKind::Try { expr } => Self::offset_spans(expr, offset),
-            ExprKind::Take { place } => Self::offset_spans(place, offset),
-            ExprKind::Catch { value, clause } => {
-                Self::offset_spans(value, offset);
-                Self::offset_spans(&mut clause.body, offset);
-            }
-            ExprKind::Unwrap { expr, .. } => Self::offset_spans(expr, offset),
-            ExprKind::Cast { expr, .. } => Self::offset_spans(expr, offset),
-            ExprKind::Convert { expr, .. } => Self::offset_spans(expr, offset),
-            ExprKind::NullCoalesce { value, default } => {
-                Self::offset_spans(value, offset);
-                Self::offset_spans(default, offset);
-            }
-            ExprKind::Array(exprs) | ExprKind::Tuple(exprs) => {
-                for e in exprs { Self::offset_spans(e, offset); }
-            }
-            _ => {}
         }
     }
 
@@ -5723,9 +5777,12 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
 
-                // Handle qualified paths: Enum.Variant or Enum.Variant(args) or Enum.Variant { fields }
+                // Qualified paths: `Enum.Variant`, and through a module,
+                // `bits.BinaryParseError.UnexpectedEnd`, each optionally with
+                // `(args)` or `{ fields }`. Stopping after one dot made the
+                // module-qualified arm a parse error (#1474).
                 let mut path = vec![name];
-                if self.match_token(&TokenKind::Dot) {
+                while self.match_token(&TokenKind::Dot) {
                     path.push(self.expect_ident()?);
                 }
 
@@ -5832,7 +5889,7 @@ impl Parser {
                 }
                 Ok(Pattern::Literal(start))
             }
-            TokenKind::String(s) => {
+            TokenKind::String(s, _) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
                 Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
@@ -5938,6 +5995,29 @@ impl ParseResult {
     /// Returns true if parsing completed without errors.
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
+    }
+}
+
+/// What declares a type parameter list.
+#[derive(Clone, Copy)]
+enum ParamOwner {
+    Interface,
+    Struct,
+    Enum,
+    Function,
+    TypeAlias,
+}
+
+impl ParamOwner {
+    /// GT4: defaults belong to interfaces. Anyone else's, named for the error.
+    fn refuses_defaults(self) -> Option<&'static str> {
+        match self {
+            ParamOwner::Interface => None,
+            ParamOwner::Struct => Some("a struct"),
+            ParamOwner::Enum => Some("an enum"),
+            ParamOwner::Function => Some("a function"),
+            ParamOwner::TypeAlias => Some("a type alias"),
+        }
     }
 }
 

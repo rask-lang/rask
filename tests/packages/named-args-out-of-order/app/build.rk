@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "app" "0.1.0" {
+    description: "Consumes libpkg by path"
+    license: "MIT OR Apache-2.0"
+    dep "libpkg" { path: "../libpkg" }
+}

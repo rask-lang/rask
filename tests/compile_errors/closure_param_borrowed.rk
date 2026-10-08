@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure parameter is a borrow (mem.closures/CP1), and a closure can't take
+// one (CP4).
+//
+// The ownership pass registered closure parameters as owned, so a closure
+// could return its parameter whole: `|p: Vec<i64>| { return p }` handed the
+// caller its own vector back under a second name, and a push through the
+// result grew the caller's `let` (#1458). Giving one to a `take` parameter
+// went through the same way.
+
+struct Bag {
+    items: Vec<string>
+}
+
+func eat(take b: Bag) -> u64 {
+    return b.items.len()
+}
+
+func main() {
+    let v: Vec<i64> = [1, 2]
+
+    // ERROR: returning the borrowed parameter whole [E0872]
+    let f = |p: Vec<i64>| {
+        return p
+    }
+
+    // ERROR: the same through an expression body [E0872]
+    let g = |p: Vec<i64>| p
+
+    // ERROR: giving it to a `take` parameter [E0835]
+    let h = |b: Bag| eat(b)
+
+    // ERROR: a `mutate` parameter is exclusive access, still not ownership [E0872]
+    let m = |mutate p: Vec<i64>| {
+        return p
+    }
+
+    // A copy is the closure's to hand out, and a Copy value copies.
+    let ok = |p: Vec<i64>| p.clone()
+    let n = |x: i64| x
+
+    println("{f(v).len()} {g(v).len()} {ok(v).len()} {n(3)}")
+}

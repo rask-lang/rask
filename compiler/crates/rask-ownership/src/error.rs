@@ -67,10 +67,26 @@ pub enum OwnershipErrorKind {
         field_ty: String,
     },
 
-    /// mem.borrowing/S3: a view into a borrowed parameter's field, returned.
+    /// mem.borrowing/S1, S3: a non-Copy field read handed to something that
+    /// owns what it holds: `out.items = src.items`, `Bag { items: src.items }`,
+    /// `v.push(src.items)`. The read is a view, so the two would be one value
+    /// with two owners.
+    #[error("`{path}` would get a second owner")]
+    FieldViewStored {
+        into: ViewSink,
+        path: String,
+        /// `src` of `src.items`.
+        root: String,
+        field_ty: String,
+        /// `let tmp = src.items` when the view reached the owner under a name
+        /// of its own: the name and where it was bound.
+        bound: Option<(String, Span)>,
+    },
+
+    /// mem.borrowing/S3: a borrowed parameter, or a view into one, returned.
     #[error("`{path}` belongs to the caller — returning it hands out a second name for it")]
     BorrowedFieldEscapes {
-        /// `self.value`, `p.items`.
+        /// `self.value`, `p.items`, or just `b` for the whole parameter.
         path: String,
         /// The parameter the path starts at.
         root: String,
@@ -78,6 +94,8 @@ pub enum OwnershipErrorKind {
         /// Where the parameter is declared, to point at and suggest `take` on.
         declared_at: Span,
         is_mutate: bool,
+        /// A closure's parameter: the fix is spelled between the pipes.
+        of_closure: bool,
     },
 
     /// mem.heap/HP3 with mem.linear/L5: `drop(x.field)` on an aggregate's field.
@@ -115,6 +133,24 @@ pub enum OwnershipErrorKind {
         lent_at: Span,
     },
 
+    /// mem.borrowing/S3 at a `take`: a value a container lent, handed to a
+    /// `take self` method or a `take` parameter. `obj.get(k)!.as_array()` gave
+    /// the method a value the map still holds, so two owners freed one buffer.
+    #[error("`{call}` lends what `{holder}` still holds, and `{method}` takes it")]
+    LentValueGivenAway {
+        /// `obj.get(…)`.
+        call: String,
+        /// The container the value belongs to.
+        holder: String,
+        /// `Vec` or `Map`.
+        lender: String,
+        payload_ty: String,
+        /// The method or function whose `take` it reaches.
+        method: String,
+        /// The copying twin, when the container has one (`get_clone`).
+        clone_form: Option<String>,
+    },
+
     /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
     /// Copy. Indexing hands the element back in place, so the binding is a
     /// second name for storage the collection still owns.
@@ -142,6 +178,17 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// type.sequence/SEQ47: `to_vec` over a chain that only lends its items,
+    /// of a type that isn't Copy. The chain owns nothing it could move into
+    /// the Vec, and `to_vec` doesn't deep-clone on its own.
+    #[error("`to_vec` has nothing it may move — `{elem}` is lent, not owned")]
+    ToVecOfLentItems {
+        /// The item type, as written for the reader.
+        elem: String,
+        /// The adapter nearest the source, which is what lends.
+        adapter: String,
+    },
+
     /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
     /// lent out can't be given away.
     ///
@@ -160,6 +207,8 @@ pub enum OwnershipErrorKind {
         is_mutate: bool,
         /// What the value was being handed to, when it has a name.
         sink: Option<String>,
+        /// A closure's parameter: the fix is spelled between the pipes.
+        of_closure: bool,
     },
 
     /// mem.parameters/PM2 with PM6: a `mutate` parameter consumed and not
@@ -320,7 +369,7 @@ pub enum OwnershipErrorKind {
 
     /// H1: a resource-typed value produced by an expression statement is
     /// never bound to anything, so it's dropped unconsumed the instant it's
-    /// produced (e.g. `spawn(|| { ... })` with no `let`).
+    /// produced (e.g. `spawn { ... }` with no `let`).
     #[error("value of resource type `{type_name}` is dropped without being consumed")]
     ResourceDiscardedAsStatement {
         type_name: String,
@@ -355,11 +404,32 @@ pub enum OwnershipErrorKind {
         acquired_at: Span,
     },
 
-    /// Resource captured by closure/spawn not consumed on all code paths.
-    #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
+    /// mem.linear/L4: an `ensure` in the commit window whose body doesn't
+    /// consume the resource — `ensure c.peek()` reads it and commits nothing.
+    #[error("nothing in this `ensure` consumes `{name}`")]
+    EnsureConsumesNothing {
+        name: String,
+        /// Where the resource was acquired.
+        acquired_at: Span,
+    },
+
+    /// A resource the closure body owns — a `take` parameter or a local it
+    /// acquired, or for a task block a capture — not consumed on every path
+    /// through the body.
+    #[error("resource `{name}` is not consumed on every path through the closure")]
     ResourceNotConsumedInClosure {
         name: String,
-        context: String,
+        /// The body is a task block's (`spawn { … }`).
+        in_task: bool,
+    },
+
+    /// A closure that outlives its frame would carry a linear value into an
+    /// environment that can never consume it: the body may not give a
+    /// capture away (mem.closures/CM4), and nothing else ever will.
+    #[error("`{name}` must be consumed, and a closure can't consume what it captures")]
+    LinearCaptureCarried {
+        name: String,
+        ty: Option<String>,
     },
 
     /// A part matched out of a borrowed value was given away. `match s {
@@ -387,16 +457,34 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
-    /// A non-`own` closure consumed a linear value it only borrowed.
+    /// A closure body gave away something it captured (mem.closures/CM4).
     ///
-    /// The parameter version of this is `ConsumeBorrowedParam` (#804). Same
-    /// rule, different door: a borrow can't be given away. What makes the
-    /// closure version worse is that nothing bounds how many times a closure
-    /// runs, so one consume in the body is any number of consumes at runtime.
-    #[error("cannot consume `{name}` — the closure borrowed it")]
+    /// The parameter version of this is `ConsumeBorrowedParam` (#804). What
+    /// makes the closure version worse is that nothing bounds how many times
+    /// a closure runs, so one consume in the body is any number of consumes
+    /// at runtime.
+    #[error("cannot consume `{name}` — a closure can't give away what it captured")]
     ConsumeBorrowedCapture {
         name: String,
         /// Where the closure literal is.
+        closure_at: Span,
+        /// The capture's type, for the fix.
+        ty: Option<String>,
+        /// Linear, so a copy is no way out.
+        linear: bool,
+    },
+
+    /// A closure returns a non-Copy capture, or a part of one. The body may
+    /// not give a capture away (`mem.closures/CM4`): every call would hand
+    /// out the same value again.
+    #[error("`{path}` is the closure's capture — returning it hands out a second name for it")]
+    BorrowedCaptureEscapes {
+        /// `b`, `b.items`.
+        path: String,
+        /// The captured variable the path starts at.
+        root: String,
+        ty: String,
+        /// Where the closure is.
         closure_at: Span,
     },
 
@@ -474,7 +562,7 @@ pub enum OwnershipErrorKind {
     #[error("`{name}` is written in a task and nothing reads it back")]
     TaskWriteLost {
         name: String,
-        /// Where the closure was handed to `spawn`.
+        /// The task block.
         spawn_span: Span,
     },
 
@@ -501,6 +589,37 @@ pub enum OwnershipErrorKind {
         /// The transitively-linear type that would be dropped.
         type_name: String,
     },
+
+    /// mem.linear/L1–L2 per instantiation (#1366): a generic body that is fine
+    /// for an ordinary `T` drops or reuses one, and this call makes `T` linear.
+    /// Reported at the call, since the call is what made it wrong.
+    #[error("`{}` can't be called with {type_args}: {inner}", chain.last().map(String::as_str).unwrap_or("?"))]
+    LinearInGenericInstance {
+        /// Generic functions from the call down to the one with the problem.
+        chain: Vec<String>,
+        /// `T = Conn`.
+        type_args: String,
+        /// What re-checking the body found, and where in the body.
+        inner: Box<OwnershipErrorKind>,
+        inner_span: Span,
+    },
+}
+
+/// What a field view was handed to. Drives the E0909 copy.
+#[derive(Debug, Clone)]
+pub enum ViewSink {
+    /// `out.items = …`, `v = …`: the place, rendered.
+    Place(String),
+    /// `Bag { items: … }`.
+    StructField { ty: String, field: String },
+    /// `(…, 1)` or `[…]`.
+    Element,
+    /// `Shape.One(…)`.
+    Payload { variant: String },
+    /// `Heap(…)`.
+    Heap,
+    /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
+    TakeArg { callee: String },
 }
 
 /// How a link escapes its rack's scope. Drives the E0379 copy.

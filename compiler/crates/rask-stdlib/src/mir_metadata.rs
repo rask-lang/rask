@@ -121,6 +121,8 @@ struct MetadataCache {
     method_metas: Vec<StdlibMethodMeta>,
     /// qualified_name → index into method_metas
     by_name: HashMap<std::string::String, usize>,
+    /// `Type_method` for every method a stdlib type declares.
+    method_symbols: HashSet<std::string::String>,
 }
 
 static CACHE: OnceLock<MetadataCache> = OnceLock::new();
@@ -131,6 +133,7 @@ fn build_cache() -> MetadataCache {
     let mut type_names = HashSet::new();
     let mut module_names = HashSet::new();
     let mut method_metas = Vec::new();
+    let mut method_symbols = HashSet::new();
 
     for type_name in reg.type_names() {
         // `fs`, `io`, `cli` are namespaces of free functions; `string`,
@@ -154,6 +157,7 @@ fn build_cache() -> MetadataCache {
 
         for method in reg.methods(type_name) {
             let qualified = format!("{}_{}", type_name, method.name);
+            method_symbols.insert(qualified.clone());
             let ret_cat = ret_category(&method.ret_ty);
             let ret_prefix = ret_type_prefix(&ret_cat);
             method_metas.push(StdlibMethodMeta {
@@ -194,6 +198,7 @@ fn build_cache() -> MetadataCache {
         module_names,
         method_metas,
         by_name,
+        method_symbols,
     }
 }
 
@@ -238,6 +243,15 @@ pub fn is_unimplemented(prefix: &str, method: &str) -> bool {
         .is_some_and(|m| m.unimplemented)
 }
 
+/// Is `name` the symbol of a stdlib method — its `Type_method`, or a spelling
+/// MIR mints for one?
+///
+/// A program function of that name has to be given another, or the two are
+/// one symbol to every backend (#1307).
+pub fn is_method_symbol(name: &str) -> bool {
+    cache().method_symbols.contains(name) || internal_spelling(name).is_some()
+}
+
 pub fn type_has_method(prefix: &str, method: &str) -> bool {
     cache().by_name.contains_key(&format!("{}_{}", prefix, method))
 }
@@ -279,6 +293,22 @@ enum Internal {
     /// `Vec_free` of a field's handle reads as the whole struct being handed
     /// away, and the struct then never got a release of its own.
     ReplacesSlot,
+    /// An element read out of its slot to be written back later by the
+    /// matching `WritesBack` — `with v[i] as e`, `for mutate e in v`,
+    /// `v[i].field = x`.
+    ///
+    /// The frame holds the slot's own references in between, so what comes
+    /// back is the frame's like a fresh value: a body that replaces the
+    /// binding releases the old one, and the write-back hands the binding's
+    /// references back to the slot. Borrows its receiver, keeps nothing.
+    /// Answering "a view" instead is what took a reference too many for a
+    /// `with` over a string element (#1431) and released nothing a `for
+    /// mutate` body replaced.
+    LendsElement,
+    /// Puts back what `LendsElement` took out: the slot keeps the last
+    /// argument and releases nothing. Borrows its receiver and only reads the
+    /// index or key.
+    WritesBack,
 }
 
 /// Every name MIR mints that looks like a stdlib method but isn't one.
@@ -310,7 +340,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_data", Internal::SameAs("Shared_read")),
     ("Mutex_acquire", Internal::SameAs("Shared_read")),
     ("Mutex_data", Internal::SameAs("Shared_read")),
-    ("Mutex_lock", Internal::SameAs("Shared_read")),
     ("Mutex_try_lock", Internal::SameAs("Shared_read")),
     ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
     // `with s.staged() as v` hands back the working copy the runtime holds
@@ -331,6 +360,22 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_replace", Internal::SameAs("Shared_replace")),
     ("Mutex_replace", Internal::SameAs("Shared_replace")),
     ("Map_set", Internal::SameAs("Map_insert")),
+
+    // ── Take an element out for a body, and put it back ──────────
+    // Putting a `with` binding back is not `v[i] = x`: the binding *is* what
+    // the slot held, so there is nothing to release. It has its own spelling
+    // rather than being recognised after the fact.
+    ("Vec_lend", Internal::LendsElement),
+    // `for x in v.take_all()` moves each element out of the vector `take_all`
+    // returned: a `remove` that zeroes the slot instead of shifting.
+    ("Vec_move_out", Internal::SameAs("Vec_remove")),
+    // `let old = self.f` ahead of `self.f = …` (mem.parameters/PM7): the
+    // field's value, handed to the binding. Argument zero is the field's
+    // address, borrowed; nothing in the slot is released.
+    ("Field_take", Internal::SameAs("Vec_remove")),
+    ("Map_lend", Internal::LendsElement),
+    ("Vec_write_back", Internal::WritesBack),
+    ("Map_write_back", Internal::WritesBack),
     ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
@@ -352,6 +397,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Link_hash", Internal::FreshFromReceiver),
     ("string_eq", Internal::FreshFromReceiver),
     ("string_gt", Internal::FreshFromReceiver),
+    ("string_ge", Internal::FreshFromReceiver),
     ("string_compare", Internal::FreshFromReceiver),
     ("string_substr", Internal::FreshFromReceiver),
     ("string_clone", Internal::FreshFromReceiver),
@@ -459,6 +505,9 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // user writes — so this is the only place its name appears beside the
     // `CTORS` line that emits it (#949).
     ("cstring_free", Internal::ConsumesReceiver),
+    // The free for an array receiver's view (`rask_vec_view`), emitted by the
+    // drop pass from its `CTORS` line.
+    ("Vec_free_view", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
 ];
@@ -479,7 +528,7 @@ fn accountable_family_of(name: &str) -> Option<&str> {
         return Some(head);
     }
     // Or a head the list itself uses — a strategy rather than a type, as in
-    // `Cell_acquire` and `Mutex_lock`, where `Shared<T, Cell>` is the type and
+    // `Cell_acquire` and `Mutex_acquire`, where `Shared<T, Cell>` is the type and
     // `Cell` is how the call site spells the family.
     //
     // A head here is a family by declaration, so spell it the way the thing it
@@ -510,7 +559,9 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
         | Some(Internal::NoReceiver)
-        | Some(Internal::ReplacesSlot) => return None,
+        | Some(Internal::ReplacesSlot)
+        | Some(Internal::LendsElement)
+        | Some(Internal::WritesBack) => return None,
         None => {}
     }
     // A generic method reaches MIR with its type argument welded on —
@@ -686,6 +737,9 @@ mod internal_spelling_tests {
 /// counts the receiver as argument zero, so a declared parameter sits one
 /// further along on a method.
 pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
+    if let Some(index) = written_back_at(qualified_name) {
+        return arg_index == index;
+    }
     let Some(m) = declared(qualified_name) else {
         // Unaccounted for: say it keeps everything. The caller then releases
         // nothing it passed, which leaks rather than double-frees.
@@ -726,10 +780,20 @@ const TRANSFERS_OUT: &[&str] = &[
     "Vec_pop",
     "Vec_remove",
     "Vec_remove_unordered",
+    "Vec_move_out",
+    "Field_take",
     "Map_insert",
     "Map_remove",
     "Pool_remove",
 ];
+
+/// Does this call take an element out of its receiver and hand it over?
+/// `TRANSFERS_OUT`, asked by name.
+pub fn transfers_out(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    TRANSFERS_OUT.contains(&base)
+}
 
 pub fn returns_a_view(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
@@ -780,6 +844,14 @@ fn internal_spelling(base: &str) -> Option<Internal> {
     INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
 }
 
+/// For a write-back, the position of the value it hands to the slot:
+/// `(collection, index or key, value)`.
+pub fn written_back_at(qualified_name: &str) -> Option<usize> {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::WritesBack)).then_some(2)
+}
+
 /// Runtime functions lowering calls by their own names, with no stdlib
 /// declaration behind them: which arguments each gives away, by position. The
 /// rest it only reads.
@@ -792,6 +864,9 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     // `[a, b]` builds a vector from a stack array, and the array's elements
     // move into it.
     ("rask_vec_from_static", &[0]),
+    // An array receiver's view and the copy back into it: both only read.
+    ("rask_vec_view", &[]),
+    ("rask_vec_copy_back", &[]),
     ("rask_free", &[0]),
     // A failed `assert a == b` prints both sides and stops; it keeps nothing.
     ("assert_fail_cmp_i64", &[]),
@@ -808,6 +883,14 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     ("RawPtr_add", &[]),
     ("RawPtr_offset", &[]),
     ("RawPtr_read", &[]),
+    // A task block's entry points keep the block's closure: the task runs it
+    // later and frees it when it ends. The second argument is a flag.
+    ("rask_green_closure_spawn", &[0]),
+    ("rask_thread_spawn", &[0]),
+    ("rask_threadpool_spawn", &[0]),
+    // Reads a closure's header before a task block captures it, and keeps
+    // nothing.
+    ("rask_closure_refuse_crossing", &[]),
 ];
 
 /// What a call does with the argument at `arg_index`, by its declaration.
@@ -851,7 +934,10 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
     }
     match internal_spelling(base)? {
         Internal::SameAs(_) => None,
-        Internal::FreshFromReceiver | Internal::NoReceiver => Some(ArgMode::Lent),
+        Internal::FreshFromReceiver | Internal::NoReceiver | Internal::LendsElement => {
+            Some(ArgMode::Lent)
+        }
+        Internal::WritesBack => Some(mode(Some(arg_index) == written_back_at(base))),
         // A free gives argument zero away. So does freeing what a slot held
         // (`ReplacesSlot`): argument zero is that handle, and the aggregate it
         // came out of is untouched.
@@ -871,8 +957,16 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 ///
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
-const BORROWS_ITS_CALLBACK: &[&str] =
-    &["Vec_sort_by", "Vec_sort_by_keys", "Vec_map", "Vec_filter"];
+///
+/// `rask_closure_refuse_crossing` is the check a task block makes of each
+/// closure value it captures: it reads the closure's header and hands it back.
+const BORROWS_ITS_CALLBACK: &[&str] = &[
+    "Vec_sort_by",
+    "Vec_sort_by_keys",
+    "Vec_map",
+    "Vec_filter",
+    "rask_closure_refuse_crossing",
+];
 
 /// Does this call use its callback up before returning?
 pub fn borrows_its_callback(qualified_name: &str) -> bool {
@@ -924,7 +1018,10 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
     // twice.
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
-    matches!(internal_spelling(base), Some(Internal::FreshFromReceiver))
+    matches!(
+        internal_spelling(base),
+        Some(Internal::FreshFromReceiver | Internal::LendsElement | Internal::WritesBack)
+    )
 }
 
 // ── Return types ─────────────────────────────────────────────────

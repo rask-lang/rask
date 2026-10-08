@@ -269,7 +269,11 @@ impl MiriEngine {
 
             // Runtime panic-unwind hooks. Comptime has no panic unwinding — the
             // inline cleanup path (CleanupReturn) handles scope exit here.
-            MirStmtKind::EnsureHookRegister { .. } | MirStmtKind::EnsureHookPop => {}
+            MirStmtKind::EnsureHookRegister { .. }
+            | MirStmtKind::EnsureHookPop
+            | MirStmtKind::UnwindArm { .. }
+            | MirStmtKind::UnwindDisarm { .. }
+            | MirStmtKind::ZeroAggregate { .. } => {}
 
             // Forbidden at comptime
             MirStmtKind::ResourceRegister { .. }
@@ -283,7 +287,8 @@ impl MiriEngine {
             MirStmtKind::ClosureCreate { .. }
             | MirStmtKind::ClosureCall { .. }
             | MirStmtKind::LoadCapture { .. }
-            | MirStmtKind::ClosureDrop { .. } => {
+            | MirStmtKind::ClosureDrop { .. }
+            | MirStmtKind::ClosureRetain { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "closures are not yet supported in compile-time evaluation".to_string(),
                 ));
@@ -306,6 +311,7 @@ impl MiriEngine {
             MirStmtKind::RcInc { .. }
             | MirStmtKind::RcDec { .. }
             | MirStmtKind::RcDecContents { .. }
+            | MirStmtKind::RcIncContents { .. }
             | MirStmtKind::ReleaseSlot { .. } => {}
         }
         Ok(())

@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A copy of a Copy struct shared the source's strings without taking a
+// reference. Anything that released them while the copy lived freed what
+// the copy read: `let p = items[0]` then `items[0].text = t` printed
+// garbage natively, and so did a copy of a `with` binding, a `mutate`
+// parameter or a plain local whose field was written after. Swapping
+// through a temporary only worked because `v[i] = x` on such an element
+// leaked the old value instead of releasing it (#1438).
+
+struct Line {
+    text: string
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func pick(v: Vec<Line>, i: i64) -> Line {
+    let l = v[i]
+    return l
+}
+
+func rewrite(mutate l: Line) -> string {
+    let before = l
+    l.text = heap("new")
+    return before.text
+}
+
+test "a copy outlives a field write to its slot" {
+    mut items: Vec<Line> = [Line { text: heap("first") }]
+    let p = items[0]
+    items[0].text = heap("second")
+    assert p.text == heap("first")
+    assert items[0].text == heap("second")
+}
+
+test "a copy outlives a with block writing the slot" {
+    mut items: Vec<Line> = [Line { text: heap("first") }]
+    let p = items[0]
+    with items[0] as l {
+        let inner = l
+        l.text = heap("second")
+        assert inner.text == heap("first")
+    }
+    assert p.text == heap("first")
+    assert items[0].text == heap("second")
+}
+
+test "swap through a temporary" {
+    mut lines: Vec<Line> = [Line { text: heap("one") }, Line { text: heap("two") }]
+    let tmp = lines[0]
+    lines[0] = lines[1]
+    lines[1] = tmp
+    assert lines[0].text == heap("two")
+    assert lines[1].text == heap("one")
+}
+
+test "a reassigned copy and a copy handed on" {
+    mut items: Vec<Line> = [Line { text: heap("a") }, Line { text: heap("b") }]
+    mut out: Vec<Line> = Vec.new()
+    mut q = items[0]
+    out.push(q)
+    q = items[1]
+    items[0] = Line { text: heap("x") }
+    items[1] = Line { text: heap("y") }
+    assert q.text == heap("b")
+    assert out[0].text == heap("a")
+    let r = pick(items, 0)
+    items[0] = Line { text: heap("z") }
+    assert r.text == heap("x")
+}
+
+test "a copy in a loop that replaces the slot" {
+    mut items: Vec<Line> = [Line { text: heap("start") }]
+    mut seen: Vec<string> = Vec.new()
+    for i in 0..3 {
+        let c = items[0]
+        items[0] = Line { text: heap("round {i}") }
+        seen.push(c.text)
+    }
+    assert seen[0] == heap("start")
+    assert seen[2] == heap("round 1")
+}
+
+test "map values" {
+    mut m: Map<string, Line> = Map.new()
+    m["k"] = Line { text: heap("m1") }
+    let q = m["k"]
+    m["k"] = Line { text: heap("m2") }
+    assert q.text == heap("m1")
+    assert m["k"].text == heap("m2")
+}
+
+test "copies of a local, a parameter and a for mutate binding" {
+    mut a = Line { text: heap("local") }
+    let c = a
+    a.text = heap("local new")
+    assert c.text == heap("local")
+    mut b = Line { text: heap("param") }
+    assert rewrite(mutate b) == heap("param")
+    assert b.text == heap("new")
+    mut items: Vec<Line> = [Line { text: heap("loop") }]
+    for mutate x in items {
+        let d = x
+        x.text = heap("loop new")
+        assert d.text == heap("loop")
+    }
+    assert items[0].text == heap("loop new")
+}

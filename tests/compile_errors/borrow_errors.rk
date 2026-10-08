@@ -102,3 +102,25 @@ func copy_out_non_copy() {
     // ERROR: `BigThing` is not Copy — use `with`, or clone it
     let x = items[0]
 }
+
+// A tuple or a fixed array is Copy by the same rule as a struct: every part
+// Copy and 16 bytes at most. `(Line, i64)` is 24, so binding one out of a Vec
+// named the slot's bytes twice, and replacing the slot freed the string the
+// binding read (#1443).
+struct Line { text: string }
+
+func copy_out_wide_tuple() {
+    mut rows: Vec<(Line, i64)> = Vec.new()
+    rows.push((Line { text: "t" }, 1))
+    // ERROR: `(Line, i64)` is not Copy — use `with`, or clone it
+    let t = rows[0]
+    rows[0] = (Line { text: "u" }, 2)
+    println("{t.0.text} {t.1}")
+}
+
+func copy_out_wide_array() {
+    mut grids: Vec<[Line; 2]> = Vec.new()
+    grids.push([Line { text: "a" }, Line { text: "b" }])
+    // ERROR: `[Line; 2]` is not Copy — use `with`, or clone it
+    let g = grids[0]
+}

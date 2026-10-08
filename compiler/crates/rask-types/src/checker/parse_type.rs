@@ -4,10 +4,59 @@
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
 
+use super::type_defs::TypeDef;
 use super::type_table::TypeTable;
-use super::errors::TypeError;
+use super::errors::{TypeArgSite, TypeError};
+use super::TypeChecker;
 
-use crate::types::{GenericArg, Type};
+use crate::types::{FnParam, GenericArg, Type, TypeId};
+
+impl TypeChecker {
+    /// A type the program wrote, resolved, with anything wrong with it
+    /// reported at `span`. `None` after reporting, so the caller falls back
+    /// the way it does for any type it can't use.
+    ///
+    /// The one place a written type's errors get reported. Resolution happens
+    /// in many places, several of them more than once for the same type, and
+    /// those stay quiet: each position the program writes a type in reports
+    /// through here exactly once.
+    ///
+    /// Two things can be wrong: the shape (`Box2<i64, string>` on a
+    /// one-parameter `Box2`), which resolution itself refuses, and a name
+    /// that names nothing (PC2). Resolution can't judge the second, because
+    /// an unknown name and a type parameter come out the same, so it's asked
+    /// here against the parameters in scope at this position.
+    pub(super) fn resolve_written(&mut self, ty: &TypeExpr, span: Span) -> Option<Type> {
+        let resolved = match resolve_type_expr(ty, &self.types) {
+            Ok(t) => t,
+            Err(e) => {
+                self.errors.push(e.at(span));
+                return None;
+            }
+        };
+        let unknown = self.unknown_type_names(&resolved);
+        if unknown.is_empty() {
+            return Some(resolved);
+        }
+        for name in unknown {
+            self.report_unknown_type_name(name, span);
+        }
+        None
+    }
+
+    /// Resolve written types with `params` in scope on top of whatever
+    /// encloses them: a declaration's own, for its header and members.
+    pub(super) fn with_type_params<R>(
+        &mut self,
+        params: Vec<String>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outer = self.types.push_type_params(params);
+        let out = f(self);
+        self.types.pop_type_params(outer);
+        out
+    }
+}
 
 /// The checker's type for a written one.
 pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeError> {
@@ -42,16 +91,17 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         )),
         TypeExpr::RawPtr(inner) => Ok(Type::RawPtr(Box::new(resolve_type_expr(inner, types)?))),
         TypeExpr::Func { params, ret } => Ok(Type::Fn {
-            params: resolve_all(params)?,
+            params: params
+                .iter()
+                .map(|p| Ok(FnParam { mode: p.mode, ty: resolve_type_expr(&p.ty, types)? }))
+                .collect::<Result<_, TypeError>>()?,
             ret: Box::new(resolve_type_expr(ret, types)?),
         }),
         // A qualified name is the module's interface under the name the table
         // holds it by — the same unwrapping `resolve_named` does for
         // `io.Buffer`. Without it, `any io.Writer` named an interface nothing
         // could satisfy.
-        TypeExpr::Any(inner) => Ok(Type::InterfaceObject {
-            interface_name: unqualify_interface(&inner.name().unwrap_or_else(|| inner.to_string()), types),
-        }),
+        TypeExpr::Any(inner) => Ok(types.interface_object_written(inner)),
         TypeExpr::Int(n) => Err(TypeError::GenericError(
             format!("`{}` is a value, not a type", n),
             Span::new(0, 0),
@@ -65,11 +115,23 @@ fn resolve_named_expr(
     args: &[TypeExpr],
     types: &TypeTable,
 ) -> Result<Type, TypeError> {
-    // `io.Buffer` is the module's `Buffer`.
-    let path = match path {
-        [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => rest,
-        _ => path,
+    // `io.Buffer` is the module's `Buffer`, whatever the program calls its
+    // own types (#1470).
+    let (path, module) = match path {
+        [module, rest @ ..] if !rest.is_empty() && types.module_named(module).is_some() => {
+            (rest, Some(module.as_str()))
+        }
+        _ => (path, None),
     };
+    if let (Some(module), [name]) = (module, path) {
+        if let Some(id) = types.module_type_id(module, name) {
+            if args.is_empty() {
+                return Ok(Type::Named(id));
+            }
+            let args = resolve_type_args(args, types)?;
+            return resolve_generic(name, Some(id), args, types);
+        }
+    }
 
     // AT3: a projection — `Self.Out`, `T.Out`. A dot that isn't one of these
     // belongs to a C namespace, registered under its dotted spelling.
@@ -85,20 +147,8 @@ fn resolve_named_expr(
     let name = path.join(".");
 
     if !args.is_empty() {
-        let args: Vec<GenericArg> = args
-            .iter()
-            .map(|a| match a {
-                TypeExpr::Int(n) => n
-                    .parse::<usize>()
-                    .map(GenericArg::ConstUsize)
-                    .map_err(|_| TypeError::GenericError(
-                        format!("`{}` is not a size", n),
-                        Span::new(0, 0),
-                    )),
-                t => Ok(GenericArg::Type(Box::new(resolve_type_expr(t, types)?))),
-            })
-            .collect::<Result<_, _>>()?;
-        return resolve_generic(&name, args, types);
+        let args = resolve_type_args(args, types)?;
+        return resolve_generic(&name, None, args, types);
     }
 
     // A declared type parameter wins over a type of the same name. Without
@@ -115,13 +165,48 @@ fn resolve_named_expr(
     // After the type-parameter check on purpose: a `<Error>` parameter is
     // still the parameter.
     if rask_ast::interfaces::is_bare_error(&name) {
-        return Ok(Type::InterfaceObject { interface_name: "Error".to_string() });
+        return Ok(types.interface_object("Error"));
     }
     Ok(Type::UnresolvedNamed(name))
 }
 
-/// `Name<args>` once the arguments are resolved.
-fn resolve_generic(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Result<Type, TypeError> {
+/// Written type arguments, resolved.
+fn resolve_type_args(args: &[TypeExpr], types: &TypeTable) -> Result<Vec<GenericArg>, TypeError> {
+    args.iter()
+        .map(|a| match a {
+            TypeExpr::Int(n) => n
+                .parse::<usize>()
+                .map(GenericArg::ConstUsize)
+                .map_err(|_| TypeError::GenericError(
+                    format!("`{}` is not a size", n),
+                    Span::new(0, 0),
+                )),
+            t => Ok(GenericArg::Type(Box::new(resolve_type_expr(t, types)?))),
+        })
+        .collect()
+}
+
+/// `Name<args>` once the arguments are resolved. `pinned` is the declaration
+/// a module-qualified spelling already named; `None` looks the name up.
+fn resolve_generic(
+    name: &str,
+    pinned: Option<TypeId>,
+    args: Vec<GenericArg>,
+    types: &TypeTable,
+) -> Result<Type, TypeError> {
+    if let Some((params, required)) = declared_params(name, pinned, types) {
+        let found = args.len();
+        if found < required || found > params.len() {
+            return Err(TypeError::TypeArgCount {
+                name: name.to_string(),
+                expected: if found > params.len() { params.len() } else { required },
+                params,
+                found,
+                site: TypeArgSite::Type,
+                span: Span::new(0, 0),
+            });
+        }
+    }
     match name {
         // `Heap<T>` keeps its wrapper. HP5 says it behaves as `T`, and this
         // used to implement that by unwrapping — which is transparency and
@@ -145,7 +230,7 @@ fn resolve_generic(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Resu
         "Shared" if args.len() == 1 => {
             let mut args = args;
             args.push(GenericArg::Type(Box::new(Type::UnresolvedNamed("Readers".to_string()))));
-            Ok(generic_named(name, args, types))
+            Ok(generic_named(name, pinned, args, types))
         }
         "Option" if args.len() == 1 => match args.into_iter().next() {
             Some(GenericArg::Type(ty)) => Ok(Type::option(*ty)),
@@ -164,38 +249,43 @@ fn resolve_generic(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Resu
                 )),
             }
         }
-        _ => Ok(generic_named(name, args, types)),
+        _ => Ok(generic_named(name, pinned, args, types)),
     }
 }
 
-fn generic_named(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Type {
-    match types.get_type_id(name) {
+/// The parameters a generic name declares, and how many of them have to be
+/// written. `None` where there's nothing to count against: a type parameter,
+/// an interface (GT2 counts those, in bounds and headers), a name nothing
+/// declares.
+///
+/// `Heap` and `Shared` are compiler-provided and have no declaration to read.
+/// `Shared`'s strategy is a defaulted parameter (conc.sync/SH2), the one
+/// type-side default there is.
+fn declared_params(name: &str, pinned: Option<TypeId>, types: &TypeTable) -> Option<(Vec<String>, usize)> {
+    match name {
+        "Heap" => return Some((vec!["T".to_string()], 1)),
+        "Shared" => return Some((vec!["T".to_string(), "S".to_string()], 1)),
+        _ => {}
+    }
+    let id = match pinned {
+        Some(id) => id,
+        None if types.is_type_param_in_scope(name) => return None,
+        None => types.get_type_id(name)?,
+    };
+    match types.get(id)? {
+        TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+            Some((type_params.clone(), type_params.len()))
+        }
+        _ => None,
+    }
+}
+
+fn generic_named(name: &str, pinned: Option<TypeId>, args: Vec<GenericArg>, types: &TypeTable) -> Type {
+    match pinned.or_else(|| types.get_type_id(name)) {
         Some(base) => Type::Generic { base, args },
         None => Type::UnresolvedGeneric { name: name.to_string(), args },
     }
 }
-
-/// The name an interface is registered under, for a possibly module-qualified
-/// spelling. `io.Writer` is `Writer` when that is what the table holds, or
-/// `io$Writer` when the module prefix was folded into the key. Anything the
-/// table doesn't know keeps the spelling it was written with, so the
-/// "no interface named `io.Writer`" message still names what the author typed.
-fn unqualify_interface(name: &str, types: &TypeTable) -> String {
-    if types.get_type_id(name).is_some() {
-        return name.to_string();
-    }
-    let Some(dot) = name.find('.') else { return name.to_string() };
-    let tail = &name[dot + 1..];
-    if types.get_type_id(tail).is_some() {
-        return tail.to_string();
-    }
-    let prefixed = format!("{}${}", &name[..dot], tail);
-    if types.get_type_id(&prefixed).is_some() {
-        return prefixed;
-    }
-    name.to_string()
-}
-
 
 /// AT3: does `head.tail` name an associated type rather than a module or C type?
 ///

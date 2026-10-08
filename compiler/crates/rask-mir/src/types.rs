@@ -328,17 +328,16 @@ impl MirType {
     /// that writes a word where the reader expects a value in place hands back the
     /// address of whatever the first eight bytes were.
     ///
-    /// Struct, enum and tuple only, deliberately — not every type that is
-    /// `passed_by_address`. A `string` is a pointer to its 16 bytes and the whole
-    /// read path expects that (#414). A wrapper element (`[i32?; 3]`) would want
-    /// to be inline but isn't supported end to end: its size isn't a multiple of
-    /// 8, and the `??` and tag reads expect a loaded value rather than an address,
-    /// so indexing one hands back the slot address as if it were the payload
-    /// (#783). Widening this without those is how that turns from "doesn't
-    /// compile" into "compiles and prints an address".
+    /// Not every type that is `passed_by_address`: each kind below was added
+    /// once its reads were checked end to end, because widening this without
+    /// them turns "doesn't compile" into "compiles and prints an address".
     pub fn stored_inline_in_array(&self) -> bool {
         match self {
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) => true,
+            // `[[i32; 2]; 3]`: the inner array's bytes are the element. Stored
+            // as a word, the slot held the address of the literal's temporary
+            // and `x[0][1]` read through the element's bytes as a pointer.
+            MirType::Array { .. } => true,
             // A `T?` element occupies its slot the way a struct does — tag beside
             // payload, 16 bytes for a scalar `T`. Left out, the store wrote one
             // word where the tag belongs and the read loaded one word back, so

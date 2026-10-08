@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An operator conformance written through its module, or an alias of it, is
+// filed like the bare one (#1482).
+//
+//     Meters implements ops.Mul<f64> { … }
+//     func scaled<T: ops.Mul<f64>>(x: T) -> T { return x * 2.0 }
+//     // native: Function not found: Meters_mul$f64
+//
+// The header's `mul` was filed by the header's text, and "ops.Mul" isn't an
+// operator interface name, so it went in plain while the bound's call asked
+// for `mul$f64`. Now the checker hands down which interface each block names.
+
+import ops
+import ops as o
+
+struct Meters {
+    v: f64
+}
+
+Meters implements ops.Mul<f64> {
+    func mul(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+Meters implements o.Mul<Meters> {
+    func mul(self, other: Meters) -> Meters {
+        return Meters { v: self.v * other.v }
+    }
+}
+
+func scaled<T: ops.Mul<f64>>(x: T) -> T {
+    return x * 2.0
+}
+
+func squared<T: o.Mul<T>>(x: T) -> T {
+    return x * x
+}
+
+test "qualified and aliased operator headers both resolve" {
+    assert (Meters { v: 1.5 } * 2.0).v == 3.0
+    assert (Meters { v: 1.5 } * Meters { v: 2.0 }).v == 3.0
+    assert scaled(Meters { v: 2.0 }).v == 4.0
+    assert squared(Meters { v: 3.0 }).v == 9.0
+}

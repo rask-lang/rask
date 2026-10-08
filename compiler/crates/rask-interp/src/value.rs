@@ -505,7 +505,6 @@ pub enum BuiltinKind {
     EPrintln, // eprintln(...) — same as println, to stderr
     Panic,
     Format,
-    AsyncSpawn,     // spawn(|| {}) from async module
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
@@ -817,8 +816,7 @@ impl fmt::Debug for ThreadPoolInner {
 /// end, and `join` gives its slot up while it waits.
 ///
 /// This used to start n worker threads reading a channel. Nothing ever sent to
-/// that channel — `spawn(|| …)` as a call, which is the only form, starts its
-/// own thread — so the workers sat idle for the lifetime of every block and
+/// that channel — every spawn starts its own thread — so the workers sat idle for the lifetime of every block and
 /// `workers: n` bounded nothing at all: `using Multitasking(2)` with two
 /// hundred spawns ran two hundred tasks at once here and two natively (#1111).
 pub struct MultitaskingRuntime {
@@ -1105,6 +1103,9 @@ pub enum Value {
     },
     /// Module (fs, io, cli, std, env)
     Module(ModuleKind),
+    /// A module's function imported bare (`import time.sleep`). Calling it is
+    /// calling `time.sleep(…)`.
+    ModuleFunction { module: ModuleKind, function: String },
     /// User package namespace (for cross-package qualified access)
     Package(String),
     /// Open file handle (Option allows close to invalidate)
@@ -1120,6 +1121,10 @@ pub enum Value {
         params: Vec<String>,
         body: Expr,
         captured_env: HashMap<String, crate::env::Slot>,
+        /// Captures that are the caller's storage behind a `mutate`
+        /// parameter. Shared even by a carrying closure, and still borrowed
+        /// inside its body, so a closure built there shares them too (CM3).
+        lent: std::collections::HashSet<String>,
         /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
         task_bound: bool,
         /// The type arguments of the generic body it was built in, for
@@ -1428,6 +1433,7 @@ impl Value {
             Value::TypeConstructor(_) => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
+            Value::ModuleFunction { .. } => "func",
             Value::Package(_) => "package",
             Value::File(_) => "File",
             Value::Closure { .. } => "closure",
@@ -1455,28 +1461,6 @@ impl Value {
             Value::RawPtr(_) => "raw pointer",
             Value::Nominal { .. } => "nominal",
             Value::NominalConstructor { .. } => "nominal constructor",
-        }
-    }
-
-    /// Produce the default value for a written type (DF4).
-    pub fn default_for_type(ty: &rask_ast::ty::TypeExpr) -> Value {
-        if *ty == rask_ast::ty::TypeExpr::Unit {
-            return Value::Unit;
-        }
-        match ty.bare_name().unwrap_or_default() {
-            "i8" | "i16" | "i32" | "i64" | "int" | "isize" |
-            "u8" => Value::Int(0, IntKind::U8),
-            "u16" => Value::Int(0, IntKind::U16),
-            "u32" => Value::Int(0, IntKind::U32),
-            "u64" | "uint" => Value::Int(0, IntKind::U64),
-            "usize" => Value::Int(0, IntKind::usize_kind()),
-            "i128" => Value::Int128(0),
-            "u128" => Value::Uint128(0),
-            "f32" | "f64" => Value::Float(0.0, FloatKind::Untyped),
-            "bool" => Value::Bool(false),
-            "char" => Value::Char('\0'),
-            "string" => Value::String(Arc::new(Mutex::new(String::new()))),
-            _ => Value::Unit,
         }
     }
 
@@ -1514,6 +1498,8 @@ impl Value {
                 type_name: type_name.clone(),
                 inner: Box::new(inner.copy_on_bind()),
             },
+            // A tuple's elements are owned the way a struct's fields are.
+            Value::Tuple(items) => Value::tuple(items.iter().map(|v| v.copy_on_bind()).collect()),
             // Reference/box types share; scalars are cheap clones.
             other => other.clone(),
         }
@@ -1521,19 +1507,35 @@ impl Value {
 
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
+        self.deep_clone_impl(false)
+    }
+
+    /// What a container's `clone` gives each element: a deep copy, except
+    /// that a closure is shared rather than detached, the way native's
+    /// cloned `Vec<func>` shares its closures.
+    ///
+    /// Not only a match for native. A closure's environment can hold the
+    /// container being cloned, so detaching it would lock that container
+    /// again from inside its own clone and hang.
+    pub fn clone_as_element(&self) -> Value {
+        self.deep_clone_impl(true)
+    }
+
+    fn deep_clone_impl(&self, share_closures: bool) -> Value {
         match self {
+            Value::Closure { .. } if share_closures => self.clone(),
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
-                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
+                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone_impl(share_closures)).collect();
                 Value::vec(deep)
             }
             Value::Tuple(items) => {
-                Value::tuple(items.iter().map(|v| v.deep_clone()).collect())
+                Value::tuple(items.iter().map(|v| v.deep_clone_impl(share_closures)).collect())
             }
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
                 let deep_fields: IndexMap<String, Value> = guard.fields.iter()
-                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .map(|(k, v)| (k.clone(), v.deep_clone_impl(share_closures)))
                     .collect();
                 Value::new_struct(guard.name.clone(), deep_fields, guard.resource_id)
             }
@@ -1541,25 +1543,27 @@ impl Value {
                 Value::Enum {
                     name: name.clone(),
                     variant: variant.clone(),
-                    fields: fields.iter().map(|f| f.deep_clone()).collect(),
+                    fields: fields.iter().map(|f| f.deep_clone_impl(share_closures)).collect(),
                     variant_index: *variant_index,
                     origin: origin.clone(),
                 }
             }
             Value::Cell(c) => {
-                let inner = c.lock().unwrap().deep_clone();
+                let inner = c.lock().unwrap().deep_clone_impl(share_closures);
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, task_bound, generics } => {
+            Value::Closure { params, body, captured_env, task_bound, generics, .. } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
-                    .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone())))
+                    .map(|(k, v)| (k.clone(), crate::env::slot(v.get().unwrap_or(Value::Unit).deep_clone_impl(share_closures))))
                     .collect();
                 Value::Closure {
                     params: params.clone(),
                     body: body.clone(),
                     captured_env: deep_env,
+                    // Detached: nothing in it is borrowed any more.
+                    lent: Default::default(),
                     task_bound: *task_bound,
                     generics: generics.clone(),
                 }
@@ -1567,13 +1571,13 @@ impl Value {
             Value::Map(m) => {
                 let map = m.lock().unwrap();
                 let deep: MapData = map.iter()
-                    .map(|(k, v)| (MapKey { value: k.value.deep_clone(), hash: k.hash }, v.deep_clone()))
+                    .map(|(k, v)| (MapKey { value: k.value.deep_clone_impl(share_closures), hash: k.hash }, v.deep_clone_impl(share_closures)))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }
             Value::RaskMutex(m) => {
                 let inner = m.lock().unwrap();
-                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone())))
+                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone_impl(share_closures))))
             }
             // Value types — regular clone is sufficient
             other => other.clone(),
@@ -1720,6 +1724,7 @@ impl fmt::Display for Value {
                 write!(f, "{}.{}", enum_name, variant_name)
             }
             Value::Module(kind) => write!(f, "<module {}>", kind.name()),
+            Value::ModuleFunction { module, function } => write!(f, "<func {}.{}>", module.name(), function),
             Value::Package(name) => write!(f, "<package {}>", name),
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {

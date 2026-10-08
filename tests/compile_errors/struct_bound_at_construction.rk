@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type's bound on its parameter holds for every value of it.
+//
+// `struct Holder<T: Named>` means there's no `Holder<i64>`. Every method in
+// `extend Holder<T>` may call `Named`'s methods on a `T` (type.generics/GF6),
+// so an unchecked `Holder<i64>` failed later, at a call that looked fine. Only
+// generic function calls checked their bounds; building a value, naming a
+// variant and writing the type in an annotation all slipped through (#1462).
+
+interface Named {
+    func name(self) -> string
+}
+
+struct Dog {
+    n: string
+}
+
+Dog implements Named {
+    func name(self) -> string {
+        return self.n
+    }
+}
+
+struct Plain {
+    x: i64
+}
+
+struct Holder<T: Named> {
+    item: T
+}
+
+enum Slot<T: Named> {
+    Empty
+    Full(T)
+    Pair { left: T, right: T }
+}
+
+func main() {
+    // Fine: `Dog` is `Named`.
+    let ok = Holder { item: Dog { n: "rex" } }
+    println(ok.item.name())
+
+    // ERROR: `Plain` does not implement `Named`
+    let h = Holder { item: Plain { x: 1 } }
+
+    // ERROR: an unsuffixed literal is checked as the type it defaults to
+    let k = Holder { item: 5 }
+
+    // ERROR: a variant's payload instantiates the enum
+    let s = Slot.Full(Plain { x: 2 })
+
+    // ERROR: and with the arguments written out
+    let w = Slot<Plain>.Full(Plain { x: 3 })
+
+    // ERROR: a written type names an instantiation too
+    let e: Slot<Plain> = Slot.Empty
+
+    // ERROR: and so does a variant with named fields (#1473)
+    let p = Slot.Pair { left: Plain { x: 4 }, right: Plain { x: 5 } }
+
+    // ERROR: with the arguments written at the variant (#1477)
+    let r = Slot<Plain>.Pair { left: Plain { x: 6 }, right: Plain { x: 7 } }
+}

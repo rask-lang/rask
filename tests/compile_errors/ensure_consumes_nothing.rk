@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an `ensure` whose body consumes nothing (mem.linear/L4, E0908)
+//
+// What an `ensure` commits is what its body consumes. The checker used to
+// commit whatever sat in the receiver slot, so `ensure latch.peek()` counted as
+// cleanup and the resource leaked silently, while a real consume one call
+// down, `ensure log.record(latch.release())`, wasn't seen at all (#1301).
+
+@resource
+struct Latch {
+    public id: i64
+}
+
+extend Latch {
+    public func peek(self) -> i64 {
+        return self.id
+    }
+
+    public func release(take self) -> i64 {
+        return self.id
+    }
+}
+
+func show(id: i64) {
+    println("{id}")
+}
+
+func borrowing_method() {
+    let latch = Latch { id: 1 }
+    // ERROR: `peek` borrows `latch`, so the ensure commits nothing
+    ensure latch.peek()
+    println("x")
+}
+
+func field_read() {
+    let latch = Latch { id: 2 }
+    // ERROR: reading a field consumes nothing
+    ensure show(latch.id)
+    println("y")
+}
+
+// Legal: the consume is an argument to the call the ensure runs.
+func nested_consume() {
+    let latch = Latch { id: 3 }
+    ensure show(latch.release())
+    println("z")
+}
+
+func main() {}

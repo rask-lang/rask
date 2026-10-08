@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `usize as n` arm covers a `usize or E` result (#1385).
+//
+// The checker resolves the result's `usize` to `u64` on a 64-bit target, but
+// the exhaustiveness check compared each arm by how it was spelled, so `usize`
+// didn't count and the match was "missing u64". Writing `u64 as n` compiled,
+// which ties the source to the target's pointer width. The arms are compared
+// as resolved types now, the same way the pattern itself is checked.
+
+enum Bad {
+    Nope
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return "nope"
+    }
+}
+
+func count(fail: bool) -> usize or Bad {
+    if fail {
+        return Bad.Nope
+    }
+    return 3
+}
+
+func describe(fail: bool) -> string {
+    match count(fail) {
+        usize as n => return "got {n}"
+        Bad as b => return "bad: {b.message()}"
+    }
+}
+
+func isize_or(fail: bool) -> isize or Bad {
+    if fail {
+        return Bad.Nope
+    }
+    return -2
+}
+
+test "a usize arm covers the usize branch" {
+    assert describe(false) == "got 3"
+    assert describe(true) == "bad: nope"
+}
+
+test "an isize arm covers the isize branch" {
+    let got = match isize_or(false) {
+        isize as n => n
+        Bad => 0
+    }
+    assert got == -2
+}

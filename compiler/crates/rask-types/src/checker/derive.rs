@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Derived `eq`, `hash` and `compare`, written by the checker.
+//! Derived `eq`, `hash`, `compare` and `clone`, written by the checker.
 //!
-//! The checker decides which types are Equal, Hashable and Comparable
-//! (`auto_derive_interfaces`), so it is also the one that writes what those
-//! methods do: once the field types are known, for the types that qualify and
+//! The checker decides which types are Equal, Hashable, Comparable and
+//! Cloneable (`auto_derive_interfaces`), so it is also the one that writes what
+//! those methods do: once the field types are known, for the types that qualify and
 //! no others. The bodies are ordinary declarations, checked here like a method
 //! somebody typed, and handed down with the program (`TypedProgram::
-//! derived_decls`). Both backends then answer `==`, `.hash()` and a map key's
-//! bucket from the same code (#1391).
+//! derived_decls`). Both backends then answer `==`, `.hash()`, `.clone()` and a
+//! map key's bucket from the same code (#1391, #1428).
 //!
 //! The wrapper shapes have no methods: `T?`, `T or E` and tuples are
 //! operator-only. So a wrapper that needs comparing through its parts' own
@@ -49,19 +49,25 @@ pub struct WrapperFns {
     pub hash: Option<String>,
     /// Tuples only: `T?` and `T or E` have no order.
     pub compare: Option<String>,
+    /// Only for a wrapper holding something a copy can't duplicate: a
+    /// `string?` or a `(Vec<i64>, i64)`. An `i64?` clones by being copied.
+    pub clone: Option<String>,
 }
 
 impl TypeChecker {
     // ─── Struct and enum methods ───────────────────────────────
 
     /// Write the derived bodies for every type `auto_derive_interfaces` gave a
-    /// derived `eq`, `hash` or `compare`.
+    /// derived `eq`, `hash`, `compare` or `clone`.
     ///
     /// Not for a fieldless stdlib struct: `Duration`, `File`, `Random` are
     /// stand-ins for a runtime object, and an `eq` derived from no fields says
     /// yes to every pair. A program's empty struct really is always equal to
     /// another. `compare` for any struct with fields, which is where it has
-    /// always been written (a `Vec<Metadata>` sorts by it).
+    /// always been written (a `Vec<Metadata>` sorts by it). `clone` on the
+    /// same terms as `eq`: a fieldless stdlib struct is a runtime object's
+    /// stand-in that each backend copies as one, while a stdlib struct with
+    /// fields (`Path`) is copied field by field like a program's.
     pub(super) fn write_derived_methods(&mut self, annotations: &[String]) {
         for idx in 0..self.types.types.len() {
             let id = TypeId(idx as u32);
@@ -77,9 +83,35 @@ impl TypeChecker {
                 methods.iter().any(|m| m.name == name && m.derived)
             };
             let mut written = Vec::new();
+            let mut params: &[String] = &[];
             match &def {
-                TypeDef::Struct { name, type_params, fields, methods, .. } => {
-                    if !type_params.is_empty() || annotations.contains(name) {
+                // A generic type gets its `clone`, written once over its
+                // parameters and instantiated like a hand-written method.
+                // Without one, native copied it in place, and freed the source
+                // before reading the vector it was deep-copying (#1434). `eq`,
+                // `hash` and `compare` say nothing about a bare `T`, so a
+                // generic type has none of them to write.
+                TypeDef::Struct { name, type_params, fields, methods, .. }
+                    if !type_params.is_empty() =>
+                {
+                    params = type_params;
+                    let has_body = program_type || !fields.is_empty();
+                    if has_body && !annotations.contains(name) && derived(methods, "clone") {
+                        let body = self.struct_clone(name, fields, params);
+                        written.push(self.method("clone", false, "Self", body));
+                    }
+                }
+                TypeDef::Enum { name, type_params, variants, methods, .. }
+                    if !type_params.is_empty() =>
+                {
+                    params = type_params;
+                    if !variants.is_empty() && derived(methods, "clone") {
+                        let body = self.enum_clone(name, variants, params);
+                        written.push(self.method("clone", false, "Self", body));
+                    }
+                }
+                TypeDef::Struct { name, fields, methods, .. } => {
+                    if annotations.contains(name) {
                         continue;
                     }
                     let has_body = program_type || !fields.is_empty();
@@ -95,9 +127,13 @@ impl TypeChecker {
                         let body = self.struct_compare(fields);
                         written.push(self.method("compare", true, "Ordering", body));
                     }
+                    if has_body && derived(methods, "clone") {
+                        let body = self.struct_clone(name, fields, &[]);
+                        written.push(self.method("clone", false, "Self", body));
+                    }
                 }
-                TypeDef::Enum { name, type_params, variants, methods, .. } => {
-                    if !type_params.is_empty() || variants.is_empty() {
+                TypeDef::Enum { name, variants, methods, .. } => {
+                    if variants.is_empty() {
                         continue;
                     }
                     if derived(methods, "eq") {
@@ -108,14 +144,18 @@ impl TypeChecker {
                         let body = self.enum_hash(name, variants);
                         written.push(self.method("hash", false, "u64", body));
                     }
+                    if derived(methods, "clone") {
+                        let body = self.enum_clone(name, variants, &[]);
+                        written.push(self.method("clone", false, "Self", body));
+                    }
                 }
                 _ => continue,
             }
             if written.is_empty() {
                 continue;
             }
-            // `eq` and `hash` have a body now, and a call to one is a call:
-            // `derived` is what lowering reads as "no body, compare in place".
+            // `eq`, `hash` and `clone` have a body now, and a call to one is a
+            // call: `derived` is what lowering reads as "no body, do it in place".
             // `compare` keeps the flag; `<` on a struct still lowers through it.
             let names: Vec<String> = written.iter().map(|f| f.name.clone()).collect();
             if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. }) =
@@ -127,12 +167,23 @@ impl TypeChecker {
                     }
                 }
             }
-            let target = self.types.type_name(id);
+            if !params.is_empty() {
+                let ty_name = self.types.type_name(id);
+                for n in &names {
+                    self.derived_generic_methods.insert(format!("{ty_name}_{n}"));
+                }
+            }
+            // `Slot<T>` for a generic type: its methods are checked, and later
+            // instantiated, over the type's own parameters.
+            let target = TypeExpr::generic(
+                self.types.type_name(id),
+                params.iter().map(|p| TypeExpr::named(p.as_str())).collect(),
+            );
             let decl = Decl {
                 id: self.derived_id(),
                 kind: DeclKind::Impl(ImplDecl {
                     interface: None,
-                    target_ty: TypeExpr::named(target.as_str()),
+                    target_ty: target,
                     methods: written,
                     is_unsafe: false,
                     is_pub: true,
@@ -297,6 +348,64 @@ impl TypeChecker {
         vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
     }
 
+    /// `return S { a: self.a.clone(), n: self.n }`
+    fn struct_clone(&mut self, name: &str, fields: &[(String, Type)], params: &[String]) -> Vec<Stmt> {
+        let mut body = Vec::new();
+        let inits = fields
+            .iter()
+            .map(|(f, ty)| {
+                let v = self.path("self", f);
+                rask_ast::expr::FieldInit { name: f.clone(), value: self.clone_of(v, ty, params, &mut body) }
+            })
+            .collect();
+        let lit = self.expr(ExprKind::StructLit {
+            name: name.to_string(),
+            type_args: Vec::new(),
+            fields: inits,
+            spread: None,
+        });
+        body.push(self.ret(lit));
+        body
+    }
+
+    /// ```text
+    /// match self {
+    ///     E.A(a0, a1) => return E.A(a0.clone(), a1)
+    ///     E.B => return E.B
+    /// }
+    /// ```
+    ///
+    /// Each payload is cloned out of the value being read, so the copy never
+    /// shares a buffer with it. A recursive enum recurses through its own
+    /// `clone`: `Node(Vec<Tree>)` clones the vector, and the vector clones
+    /// each `Tree` (#1428).
+    fn enum_clone(&mut self, name: &str, variants: &[(String, Vec<Type>)], params: &[String]) -> Vec<Stmt> {
+        let mut arms = Vec::new();
+        for (variant, tys) in variants {
+            let path = format!("{name}.{variant}");
+            let ty_name = self.ident(name);
+            let mut body = Vec::new();
+            let built = if tys.is_empty() {
+                self.field(ty_name, variant)
+            } else {
+                let parts: Vec<Expr> = tys
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ty)| {
+                        let v = self.ident(&format!("__a{i}"));
+                        self.clone_of(v, ty, params, &mut body)
+                    })
+                    .collect();
+                self.method_call(ty_name, variant, parts)
+            };
+            body.push(self.ret(built));
+            let block = self.block(body);
+            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), block));
+        }
+        let scrutinee = self.ident("self");
+        vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
+    }
+
     /// Check what `write_derived_methods` and `wrapper_fns` wrote, like any
     /// declaration. Checking one can ask for another wrapper's pair, so it
     /// drains until nothing is left.
@@ -313,19 +422,56 @@ impl TypeChecker {
                     // name back afterwards, for the passes that resolve names
                     // in their own scope.
                     (Some(id), DeclKind::Impl(mut imp)) => {
-                        let outer = self.current_self_type.replace(Type::Named(id));
-                        for m in &imp.methods {
-                            self.check_fn(m);
-                        }
-                        self.current_self_type = outer;
-                        let named = imp.target_ty.clone();
-                        for m in &mut imp.methods {
-                            for p in &mut m.params {
-                                if p.ty.as_ref().is_some_and(|t| t.is_name("Self")) {
-                                    p.ty = Some(named.clone());
+                        // `clone` builds a value, and building one names the
+                        // type. A program type of the same name takes that name
+                        // over — `struct IoError` beside the stdlib's enum — so
+                        // the body would build the program's type. Such a
+                        // stdlib type keeps its in-place copy. Asked the way
+                        // the body's struct literal asks, so an alias taking
+                        // the name (`type alias Span = Duration`) counts too.
+                        let named_here = imp.target_ty.name().and_then(|n| self.types.lookup(&n))
+                            == Some(Type::Named(id));
+                        if !named_here && imp.methods.iter().any(|m| m.name == "clone") {
+                            imp.methods.retain(|m| m.name != "clone");
+                            if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. }) =
+                                self.types.get_mut(id)
+                            {
+                                for m in methods.iter_mut().filter(|m| m.name == "clone") {
+                                    m.derived = true;
                                 }
                             }
+                            if imp.methods.is_empty() {
+                                continue;
+                            }
                         }
+                        let named = imp.target_ty.clone();
+                        let name_self = |imp: &mut ImplDecl| {
+                            for m in &mut imp.methods {
+                                for p in &mut m.params {
+                                    if p.ty.as_ref().is_some_and(|t| t.is_name("Self")) {
+                                        p.ty = Some(named.clone());
+                                    }
+                                }
+                                if m.ret_ty.as_ref().is_some_and(|t| t.is_name("Self")) {
+                                    m.ret_ty = Some(named.clone());
+                                }
+                            }
+                        };
+                        // A generic type's `Self` is the type over its own
+                        // parameters, `Slot<T>`, which only the written name
+                        // carries. The parameters come into scope from there.
+                        if !named.args().is_empty() {
+                            name_self(&mut imp);
+                        }
+                        let outer = self.current_self_type.replace(Type::Named(id));
+                        let params = super::declarations::header_type_params(&imp, &self.types);
+                        self.with_type_params(params, |this| {
+                            for m in &imp.methods {
+                                this.check_fn(m);
+                            }
+                        });
+                        self.current_self_type = outer;
+                        name_self(&mut imp);
                         Decl { id: decl.id, kind: DeclKind::Impl(imp), span: decl.span }
                     }
                     (_, kind) => {
@@ -372,10 +518,7 @@ impl TypeChecker {
             let sym = self.wrapper_symbols[&name];
             let callee = self.derived_id();
             self.resolved.resolutions.insert(callee, sym);
-            self.node_types.insert(callee, Type::Fn {
-                params: vec![a.clone(), a.clone()],
-                ret: Box::new(Type::Bool),
-            });
+            self.node_types.insert(callee, Type::fn_borrowing(vec![a.clone(), a.clone()], Type::Bool));
             self.call_targets.insert(call, super::type_defs::Callee::Free(sym));
             self.wrapper_eq_calls.insert(call, (callee, name));
         }
@@ -435,6 +578,8 @@ impl TypeChecker {
             hash: self.type_has_method(ty, "hash").then(|| derived_fn_name("hash", n)),
             compare: (matches!(ty, Type::Tuple(_)) && self.type_has_method(ty, "compare"))
                 .then(|| derived_fn_name("compare", n)),
+            clone: (!Self::clones_by_copy(ty) && self.type_has_method(ty, "clone"))
+                .then(|| derived_fn_name("clone", n)),
         };
         // Registered before the bodies are written: one holding another
         // wrapper asks for that one's pair while this one is half built.
@@ -456,6 +601,11 @@ impl TypeChecker {
             self.wrapper_symbols.insert(name.clone(), sym);
             written.push((name.clone(), 2, sym));
         }
+        if let Some(name) = &fns.clone {
+            let sym = self.wrapper_symbol(name, ty, ty.clone());
+            self.wrapper_symbols.insert(name.clone(), sym);
+            written.push((name.clone(), 3, sym));
+        }
         for (name, which, sym) in written {
             let f = match which {
                 0 => {
@@ -465,6 +615,12 @@ impl TypeChecker {
                 1 => {
                     let body = self.wrapper_hash_body(ty);
                     self.free_fn(&name, ty, false, "u64", body)
+                }
+                3 => {
+                    let body = self.wrapper_clone_body(ty);
+                    let mut f = self.free_fn(&name, ty, false, "void", body);
+                    f.ret_ty = Some(self.written(ty));
+                    f
                 }
                 _ => {
                     let body = self.wrapper_compare_body(ty);
@@ -491,9 +647,13 @@ impl TypeChecker {
             SP,
             false,
         );
-        // `hash` takes one value; `eq` and `compare` take two.
-        let params = if ret == Type::U64 { vec![ty.clone()] } else { vec![ty.clone(), ty.clone()] };
-        self.symbol_types.insert(sym, Type::Fn { params, ret: Box::new(ret) });
+        // `hash` and `clone` take one value; `eq` and `compare` take two.
+        let params = if ret == Type::U64 || &ret == ty {
+            vec![ty.clone()]
+        } else {
+            vec![ty.clone(), ty.clone()]
+        };
+        self.symbol_types.insert(sym, Type::fn_borrowing(params, ret));
         sym
     }
 
@@ -520,6 +680,251 @@ impl TypeChecker {
         let a = self.ident("a");
         let body = self.hash_by_shape(a, ty);
         vec![self.ret(body)]
+    }
+
+    /// A copy of a wrapper, part by part. Each shape returns, because a
+    /// `return` is where a part widens back into the wrapper.
+    ///
+    /// `if a? as x { return x.clone() }` then `return none`; `return (a.0.clone(),
+    /// a.1)`; `match a { T as x => { return x.clone() }, E as e => … }`.
+    fn wrapper_clone_body(&mut self, ty: &Type) -> Vec<Stmt> {
+        match ty {
+            Type::Result { ok, err } if **err == Type::None => {
+                let x = self.fresh_name();
+                let xe = self.ident(&x);
+                let copy = self.clone_of(xe, ok, &[], &mut Vec::new());
+                let then = self.ret_block(copy);
+                let a = self.ident("a");
+                let cond = self.expr(ExprKind::IsPresent { expr: Box::new(a), binding: Some(x) });
+                let check = self.expr_stmt(ExprKind::If {
+                    cond: Box::new(cond),
+                    then_branch: Box::new(then),
+                    else_branch: None,
+                    else_binding: None,
+                });
+                let none = self.expr(ExprKind::None);
+                vec![check, self.ret(none)]
+            }
+            Type::Result { .. } => self.result_clone_body(ty, &[]),
+            Type::Tuple(elems) => {
+                let parts: Vec<Expr> = elems
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let a = self.ident("a");
+                        let x = self.field(a, &i.to_string());
+                        self.clone_of(x, t, &[], &mut Vec::new())
+                    })
+                    .collect();
+                let tuple = self.expr(ExprKind::Tuple(parts));
+                vec![self.ret(tuple)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A copy of a value of `ty`, as the derived code spells it. A value whose
+    /// bytes are all of it is just read; a wrapper has no `.clone()` and goes
+    /// through its function; everything else calls its own `clone`.
+    ///
+    /// `params` are the generic type's own, whose body this is. A tuple or
+    /// optional naming one is copied in line: `(v.0.clone(), v.1)` for a
+    /// tuple, and for an optional, statements pushed onto `prelude` ahead of
+    /// the use:
+    ///
+    /// ```text
+    /// mut r: T? = none
+    /// if v? as x { r = x.clone() }
+    /// ```
+    ///
+    /// Not `if v? as x { x.clone() } else { none }`: an `if` doesn't widen its
+    /// branches to `T?`. A `T or E` goes through `generic_result_clone`.
+    fn clone_of(&mut self, v: Expr, ty: &Type, params: &[String], prelude: &mut Vec<Stmt>) -> Expr {
+        if Self::clones_by_copy(ty) {
+            return v;
+        }
+        if Self::is_wrapper(ty) && Self::names_param(ty, params) {
+            match ty {
+                Type::Tuple(elems) => {
+                    let parts = elems
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| {
+                            let x = self.field(v.clone(), &i.to_string());
+                            self.clone_of(x, t, params, prelude)
+                        })
+                        .collect();
+                    return self.expr(ExprKind::Tuple(parts));
+                }
+                t if t.is_option() => {
+                    let ok = t.as_option().expect("checked by is_option").clone();
+                    let (r, x) = (self.fresh_name(), self.fresh_name());
+                    let none = self.expr(ExprKind::None);
+                    prelude.push(self.stmt(StmtKind::Mut {
+                        name: r.clone(),
+                        name_span: SP,
+                        ty: Some(self.written(ty)),
+                        init: none,
+                    }));
+                    // The payload's own prelude runs where `x` is bound.
+                    let mut inner = Vec::new();
+                    let xe = self.ident(&x);
+                    let copy = self.clone_of(xe, &ok, params, &mut inner);
+                    let target = self.ident(&r);
+                    inner.push(self.stmt(StmtKind::Assign { target, value: copy, op: None }));
+                    let then = self.block(inner);
+                    let cond = self.expr(ExprKind::IsPresent { expr: Box::new(v), binding: Some(x) });
+                    prelude.push(self.expr_stmt(ExprKind::If {
+                        cond: Box::new(cond),
+                        then_branch: Box::new(then),
+                        else_branch: None,
+                        else_binding: None,
+                    }));
+                    return self.ident(&r);
+                }
+                Type::Result { err, .. } if **err != Type::None => {
+                    let name = self.generic_result_clone(ty, params);
+                    return self.call_wrapper(&name, vec![v]);
+                }
+                _ => {}
+            }
+        }
+        if Self::is_wrapper(ty) {
+            if let Some(clone) = self.wrapper_fns(ty).clone {
+                return self.call_wrapper(&clone, vec![v]);
+            }
+        }
+        self.method_call(v, "clone", vec![])
+    }
+
+    /// Whether `ty` mentions one of a generic type's own parameters.
+    fn names_param(ty: &Type, params: &[String]) -> bool {
+        !params.is_empty() && ty.contains(&|t| matches!(t, Type::UnresolvedNamed(n) if params.contains(n)))
+    }
+
+    /// `match a { T as x => { return x.clone() }, none => { return none }, E as e => … }`,
+    /// a `void` side being the trailing `_` with a bare `return`. Each arm
+    /// returns, since a `return` is where a branch widens back into the result.
+    fn result_clone_body(&mut self, ty: &Type, params: &[String]) -> Vec<Stmt> {
+        let a = self.ident("a");
+        let m = self.branch_match(a, ty, |s, _, branch, x| match branch {
+            Branch::Value(side) => {
+                let mut body = Vec::new();
+                let copy = s.clone_of(x.expect("a value branch binds"), side, params, &mut body);
+                body.push(s.ret(copy));
+                s.block(body)
+            }
+            Branch::None => {
+                let none = s.expr(ExprKind::None);
+                s.ret_block(none)
+            }
+            Branch::Void => {
+                let r = s.stmt(StmtKind::Return(None));
+                s.block(vec![r])
+            }
+        });
+        vec![self.stmt(StmtKind::Expr(m))]
+    }
+
+    /// `match scrutinee { … }` over a `T or E`, one arm per branch, each body
+    /// written by `body` from the branch's position, the branch, and its bound
+    /// payload. Derived clone, `==` and hash all build their matches here, so
+    /// they agree on what the branches are.
+    fn branch_match(
+        &mut self,
+        scrutinee: Expr,
+        ty: &Type,
+        mut body: impl FnMut(&mut Self, usize, &Branch, Option<Expr>) -> Expr,
+    ) -> Expr {
+        let mut arms = Vec::new();
+        for (i, branch) in result_branches(ty).iter().enumerate() {
+            let (pattern, bound) = self.branch_pattern(branch, true);
+            let e = body(self, i, branch, bound);
+            arms.push(arm(pattern, e));
+        }
+        self.expr(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })
+    }
+
+    /// The pattern naming `branch`, and the payload it binds when `bind` asks.
+    fn branch_pattern(&mut self, branch: &Branch, bind: bool) -> (Pattern, Option<Expr>) {
+        match branch {
+            Branch::Value(side) => {
+                let written = self.written(side);
+                if !bind {
+                    return (Pattern::TypePat { ty: written, binding: None }, None);
+                }
+                let x = self.fresh_name();
+                let xe = self.ident(&x);
+                (Pattern::TypePat { ty: written, binding: Some(x) }, Some(xe))
+            }
+            Branch::None => (Pattern::TypePat { ty: TypeExpr::NoneType, binding: None }, None),
+            Branch::Void => (Pattern::Wildcard, None),
+        }
+    }
+
+    /// The copy of a `T or E` naming a generic type's own parameters: a
+    /// generic function over the parameters it names.
+    ///
+    /// ```text
+    /// func derived#clone_generic#0<T>(a: T or MyErr) -> T or MyErr {
+    ///     match a {
+    ///         T as x => { return x.clone() }
+    ///         MyErr as x => { return x.clone() }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// A function because only a `return` widens a branch back into `T or E`,
+    /// and generic because the wrapper functions the concrete case uses are one
+    /// per concrete type. Without it the type kept MIR's in-place copy, which
+    /// freed the source before deep-copying out of it (#1439).
+    fn generic_result_clone(&mut self, ty: &Type, params: &[String]) -> String {
+        if let Some((_, name)) = self.generic_wrapper_clones.iter().find(|(t, _)| t == ty) {
+            return name.clone();
+        }
+        let name = derived_fn_name("clone_generic", self.generic_wrapper_clones.len());
+        self.generic_wrapper_clones.push((ty.clone(), name.clone()));
+        let named: Vec<String> = params
+            .iter()
+            .filter(|p| ty.contains(&|t| matches!(t, Type::UnresolvedNamed(n) if n == *p)))
+            .cloned()
+            .collect();
+
+        let body = self.result_clone_body(ty, params);
+
+        let sym = self.wrapper_symbol(&name, ty, ty.clone());
+        self.wrapper_symbols.insert(name.clone(), sym);
+        self.fn_type_params.insert(sym, named.clone());
+        let mut f = self.free_fn(&name, ty, false, "void", body);
+        f.ret_ty = Some(self.written(ty));
+        f.type_params = named
+            .into_iter()
+            .map(|name| rask_ast::decl::TypeParam {
+                name,
+                is_comptime: false,
+                comptime_type: None,
+                bounds: Vec::new(),
+                default: None,
+            })
+            .collect();
+        let id = self.derived_id();
+        self.resolved.decl_symbols.insert(id, sym);
+        self.pending_derived.push((Decl { id, kind: DeclKind::Fn(f), span: SP }, None));
+        name
+    }
+
+    /// Whether copying the bytes is the whole of a clone: scalars, and the
+    /// wrappers built only from them.
+    fn clones_by_copy(ty: &Type) -> bool {
+        match ty {
+            Type::Unit | Type::Bool | Type::Char | Type::None
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64 => true,
+            Type::Tuple(elems) => elems.iter().all(Self::clones_by_copy),
+            Type::Result { ok, err } => Self::clones_by_copy(ok) && Self::clones_by_copy(err),
+            _ => false,
+        }
     }
 
     /// `a == b` for two values of `ty`, as the derived code spells it: through
@@ -564,45 +969,36 @@ impl TypeChecker {
                 });
                 self.present(a, Some(x), both, b_absent)
             }
-            // `match a { T as x => match b { T as y => x == y, _ => false }, E as x => … }`
+            // `match a { T as x => match b { T as y => x == y, _ => false },
+            // none => match b { none => true, _ => false }, E as x => … }`
             //
-            // A `void` side has nothing to bind and no pattern of its own: it
-            // is the trailing `_`, and two of them are equal.
-            Type::Result { ok, err } => {
-                let mut arms = Vec::new();
-                let mut valued = Vec::new();
-                for side in [&**ok, &**err] {
-                    if *side == Type::Unit {
-                        continue;
+            // The trailing `_` of a `void` side matches when `b` is in none of
+            // the other branches.
+            Type::Result { .. } => {
+                let others: Vec<Branch> =
+                    result_branches(ty).into_iter().filter(|br| !matches!(br, Branch::Void)).collect();
+                self.branch_match(a, ty, |s, _, branch, x| {
+                    let mut arms = Vec::new();
+                    if let Branch::Void = branch {
+                        for other in &others {
+                            let (pattern, _) = s.branch_pattern(other, false);
+                            let no = s.bool_lit(false);
+                            arms.push(arm(pattern, no));
+                        }
+                        let yes = s.bool_lit(true);
+                        arms.push(arm(Pattern::Wildcard, yes));
+                    } else {
+                        let (pattern, y) = s.branch_pattern(branch, true);
+                        let same = match (branch, x, y) {
+                            (Branch::Value(side), Some(x), Some(y)) => s.eq_of(x, y, side),
+                            _ => s.bool_lit(true),
+                        };
+                        let no = s.bool_lit(false);
+                        arms.push(arm(pattern, same));
+                        arms.push(arm(Pattern::Wildcard, no));
                     }
-                    valued.push(side.clone());
-                    let (x, y) = (self.fresh_name(), self.fresh_name());
-                    let written = self.written(side);
-                    let (xe, ye) = (self.ident(&x), self.ident(&y));
-                    let same = self.eq_of(xe, ye, side);
-                    let no = self.bool_lit(false);
-                    let inner = self.expr(ExprKind::Match {
-                        scrutinee: Box::new(b.clone()),
-                        arms: vec![
-                            arm(Pattern::TypePat { ty: written.clone(), binding: Some(y) }, same),
-                            arm(Pattern::Wildcard, no),
-                        ],
-                    });
-                    arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, inner));
-                }
-                if valued.len() == 1 {
-                    let other = self.written(&valued[0]);
-                    let (no, yes) = (self.bool_lit(false), self.bool_lit(true));
-                    let inner = self.expr(ExprKind::Match {
-                        scrutinee: Box::new(b.clone()),
-                        arms: vec![
-                            arm(Pattern::TypePat { ty: other, binding: None }, no),
-                            arm(Pattern::Wildcard, yes),
-                        ],
-                    });
-                    arms.push(arm(Pattern::Wildcard, inner));
-                }
-                self.expr(ExprKind::Match { scrutinee: Box::new(a), arms })
+                    s.expr(ExprKind::Match { scrutinee: Box::new(b.clone()), arms })
+                })
             }
             // `a.0 == b.0 && a.1 == b.1`
             Type::Tuple(elems) => {
@@ -632,30 +1028,19 @@ impl TypeChecker {
                 let none = self.u64_lit(0);
                 self.present(v, Some(x), some, none)
             }
-            // `match v { T as o => mix(1, o), E as e => mix(2, e) }`, a `void`
-            // side being the trailing `_` and hashing to its tag.
-            Type::Result { ok, err } => {
-                let mut arms = Vec::new();
-                let mut unit_tag = None;
-                for (tag, side) in [(1, &**ok), (2, &**err)] {
-                    if *side == Type::Unit {
-                        unit_tag = Some(tag);
-                        continue;
+            // `match v { T as o => mix(1, o), none => 2, E as e => mix(3, e) }`,
+            // each branch seeded by its position and one with no payload
+            // hashing to that alone.
+            Type::Result { .. } => self.branch_match(v, ty, |s, i, branch, x| {
+                let tag = s.u64_lit(i as i128 + 1);
+                match (branch, x) {
+                    (Branch::Value(side), Some(x)) => {
+                        let inner = s.hash_of(x, side);
+                        s.mix(tag, vec![inner])
                     }
-                    let x = self.fresh_name();
-                    let written = self.written(side);
-                    let xe = self.ident(&x);
-                    let inner = self.hash_of(xe, side);
-                    let seed = self.u64_lit(tag);
-                    let mixed = self.mix(seed, vec![inner]);
-                    arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, mixed));
+                    _ => tag,
                 }
-                if let Some(tag) = unit_tag {
-                    let lit = self.u64_lit(tag);
-                    arms.push(arm(Pattern::Wildcard, lit));
-                }
-                self.expr(ExprKind::Match { scrutinee: Box::new(v), arms })
-            }
+            }),
             Type::Tuple(elems) => {
                 let parts: Vec<Expr> = elems
                     .iter()
@@ -674,7 +1059,7 @@ impl TypeChecker {
 
     // ─── AST shorthands ────────────────────────────────────────
 
-    fn derived_id(&mut self) -> NodeId {
+    pub(super) fn derived_id(&mut self) -> NodeId {
         let id = NodeId(self.next_derived_id);
         self.next_derived_id += 1;
         id
@@ -879,6 +1264,36 @@ fn arm(pattern: Pattern, body: Expr) -> MatchArm {
     MatchArm { pattern, guard: None, body: Box::new(body) }
 }
 
+/// One branch a `T or E` value can be in, as a match arm names it. A flat
+/// `T? or E` has three, `none` among them (OPT30). A `void` side has no
+/// pattern of its own and is the trailing `_`.
+enum Branch {
+    Value(Type),
+    None,
+    Void,
+}
+
+fn result_branches(ty: &Type) -> Vec<Branch> {
+    fn push(side: &Type, out: &mut Vec<Branch>, void: &mut bool) {
+        if *side == Type::Unit {
+            *void = true;
+        } else if let Some(inner) = side.as_option() {
+            push(inner, out, void);
+            out.push(Branch::None);
+        } else {
+            out.push(Branch::Value(side.clone()));
+        }
+    }
+    let Type::Result { ok, err } = ty else { return Vec::new() };
+    let (mut out, mut void) = (Vec::new(), false);
+    push(ok, &mut out, &mut void);
+    push(err, &mut out, &mut void);
+    if void {
+        out.push(Branch::Void);
+    }
+    out
+}
+
 fn variant_pattern(path: &str, n: usize, prefix: &str) -> Pattern {
     if n == 0 {
         Pattern::Ident(path.to_string())
@@ -912,7 +1327,7 @@ fn collect_wrapper_args(ty: &Type, out: &mut Vec<Type>) {
             collect_wrapper_args(err, out);
         }
         Type::Fn { params, ret } => {
-            params.iter().for_each(|p| collect_wrapper_args(p, out));
+            params.iter().for_each(|p| collect_wrapper_args(&p.ty, out));
             collect_wrapper_args(ret, out);
         }
         _ => {}
@@ -931,7 +1346,7 @@ fn is_concrete(ty: &Type) -> bool {
         }),
         Type::Tuple(elems) => elems.iter().all(is_concrete),
         Type::Result { ok, err } => is_concrete(ok) && is_concrete(err),
-        Type::Fn { params, ret } => params.iter().all(is_concrete) && is_concrete(ret),
+        Type::Fn { params, ret } => params.iter().all(|p| is_concrete(&p.ty)) && is_concrete(ret),
         Type::Array { elem, .. } => is_concrete(elem),
         _ => true,
     }

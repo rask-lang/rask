@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure's `take` parameter (mem.closures/CP4, #1264, #1318).
+//
+// A closure can't consume what it captured, because nothing says how many
+// times it runs: `twice(|| { c.close() })` closed one handle twice on native.
+// What a closure consumes comes in as a `take` parameter instead, so each call
+// is handed a value of its own. These are the shapes that has to allow: one
+// closure called with several values, the same closure through a
+// `func(take T)` slot, a `Heap` handed through and back, and a container the
+// body keeps.
+
+import memory.Heap
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) -> i32 {
+        println("closed {self.id}")
+        return self.id
+    }
+}
+
+func each(take f: func(take Conn) -> i32) -> i32 {
+    return f(Conn { id: 10 }) + f(Conn { id: 20 })
+}
+
+func apply(take c: Conn, f: func(take Conn) -> i32) -> i32 {
+    return f(c)
+}
+
+test "one closure, a handle per call" {
+    let close_it = |take c: Conn| { return c.close() }
+    let a = close_it(Conn { id: 1 })
+    let b = close_it(Conn { id: 2 })
+    assert a + b == 3
+}
+
+test "through a func(take T) slot" {
+    let offset = 100
+    assert each(|take c: Conn| { return c.close() + offset }) == 230
+    let c = Conn { id: 7 }
+    assert apply(c, |take c: Conn| { return c.close() }) == 7
+}
+
+test "a Heap goes in and comes back" {
+    let pass = |take p: Heap<i64>| { return p }
+    let back = pass(Heap(42))
+    ensure drop(back)
+    assert *back == 42
+}
+
+test "the body keeps what it is handed" {
+    mut kept: Vec<Vec<i64>> = Vec.new()
+    let keep = |take v: Vec<i64>| { kept.push(v) }
+    keep([1, 2])
+    keep([3])
+    assert kept.len() == 2
+    assert kept[0].len() == 2
+}
+
+test "a parameter type can come from the slot" {
+    let total = each(|take c| { return c.close() * 2 })
+    assert total == 60
+}

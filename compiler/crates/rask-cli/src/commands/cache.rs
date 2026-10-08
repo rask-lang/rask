@@ -42,22 +42,29 @@ pub fn compiler_fingerprint() -> u64 {
     })
 }
 
-/// Compute a cache key from source declarations, profile, target, and compiler.
+/// Compute a cache key from source declarations, profile, target, enabled
+/// features, and compiler.
 /// Not cryptographic — just needs deterministic collision resistance for local use.
 ///
 /// `compiler` keeps two compilers' objects apart rather than invalidating on
 /// every switch, so alternating between a release and a debug build (or a
-/// worktree) still hits its own entries.
+/// worktree) still hits its own entries. `features` is in because
+/// `comptime if cfg.features.contains(…)` makes the same source compile to
+/// different code.
 pub fn compute_cache_key(
     source_hash_inputs: &[u8],
     profile: &str,
     target: &str,
+    features: &[String],
     compiler: u64,
 ) -> String {
     let mut hasher = DefaultHasher::new();
     source_hash_inputs.hash(&mut hasher);
     profile.hash(&mut hasher);
     target.hash(&mut hasher);
+    let mut features: Vec<&String> = features.iter().collect();
+    features.sort();
+    features.hash(&mut hasher);
     compiler.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
@@ -294,26 +301,27 @@ mod tests {
     #[test]
     fn cache_key_separates_compilers() {
         let src = b"same source";
-        let a = compute_cache_key(src, "debug", "native", 0x1111);
-        let b = compute_cache_key(src, "debug", "native", 0x2222);
+        let a = compute_cache_key(src, "debug", "native", &[], 0x1111);
+        let b = compute_cache_key(src, "debug", "native", &[], 0x2222);
         assert_ne!(a, b);
     }
 
     #[test]
     fn cache_key_is_stable_for_the_same_inputs() {
         let src = b"same source";
-        let a = compute_cache_key(src, "debug", "native", 0x1111);
-        let b = compute_cache_key(src, "debug", "native", 0x1111);
+        let a = compute_cache_key(src, "debug", "native", &[], 0x1111);
+        let b = compute_cache_key(src, "debug", "native", &[], 0x1111);
         assert_eq!(a, b);
     }
 
     #[test]
     fn cache_key_still_separates_source_profile_and_target() {
         let fp = 0x1111;
-        let base = compute_cache_key(b"a", "debug", "native", fp);
-        assert_ne!(base, compute_cache_key(b"b", "debug", "native", fp));
-        assert_ne!(base, compute_cache_key(b"a", "release", "native", fp));
-        assert_ne!(base, compute_cache_key(b"a", "debug", "wasm32", fp));
+        let base = compute_cache_key(b"a", "debug", "native", &[], fp);
+        assert_ne!(base, compute_cache_key(b"b", "debug", "native", &[], fp));
+        assert_ne!(base, compute_cache_key(b"a", "release", "native", &[], fp));
+        assert_ne!(base, compute_cache_key(b"a", "debug", "wasm32", &[], fp));
+        assert_ne!(base, compute_cache_key(b"a", "debug", "native", &["logging".to_string()], fp));
     }
 
     // Two calls in one process describe one binary, so the fingerprint has to be

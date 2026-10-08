@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` of something this frame only borrowed has to stay a clone.
+//
+// Native turns a clone at a value's last use into a move. It took a borrowed
+// parameter's last use, and a `for` binding's, for the value's: `return
+// p.clone()` handed the caller its own vector back, so a push through the
+// result grew the caller's `let`, and `out.push(r.clone())` in a `for r in
+// rows` left two Vecs owning each row, freed twice at exit.
+
+func copy_of(p: Vec<i64>) -> Vec<i64> {
+    return p.clone()
+}
+
+test "a borrowed parameter's clone is its own" {
+    let v: Vec<i64> = [1, 2]
+    mut w = copy_of(v)
+    w.push(3)
+    assert v.len() == 2
+    assert w.len() == 3
+}
+
+test "a closure parameter's clone is its own" {
+    let v: Vec<i64> = [1, 2]
+    let f = |p: Vec<i64>| {
+        return p.clone()
+    }
+    mut w = f(v)
+    w.push(3)
+    assert v.len() == 2
+    assert w.len() == 3
+}
+
+test "a loop binding's clone is its own" {
+    let rows: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut out: Vec<Vec<i64>> = Vec.new()
+    for r in rows {
+        out.push(r.clone())
+    }
+    out[0].push(9)
+    assert rows[0].len() == 2
+    assert out[0].len() == 3
+    assert out[1][0] == 3
+}

@@ -10,14 +10,13 @@
 //
 // soak-expect: 100000
 
-import async.spawn
 
 func main() {
     using Multitasking(workers: 4) {
         mut done: i64 = 0
         mut i: i64 = 0
         while i < 100000 {
-            let h = spawn(|| { return 1 })
+            let h = spawn { return 1 }
             ensure h.detach()
             let v = h.join() catch e => { return }
             done = done + v

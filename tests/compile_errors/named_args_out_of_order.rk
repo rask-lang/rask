@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a named argument whose label isn't the parameter in its position
+// Expected: typecheck error E0903 at each labeled call below
+//
+// Labels document a call; they don't reorder it (SYNTAX.md, named arguments).
+// Nothing read them, so `digits(b: 2, a: 1)` bound by position and returned 21
+// on both backends instead of 12 (#1347). A label naming no parameter, and one
+// on a callee with no parameter names, were ignored the same way.
+
+struct Num {
+    n: i64
+}
+
+extend Num {
+    func pair(self, a: i64, b: i64) -> i64 {
+        return self.n + a * 10 + b
+    }
+
+    func make(a: i64, b: i64) -> i64 {
+        return a * 10 + b
+    }
+}
+
+enum Shape {
+    Rect { w: i64, h: i64 }
+    Pair(i64, i64)
+}
+
+func digits(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
+
+func connect(host: string, port: i64 = 80, timeout: i64 = 30) -> i64 {
+    if host != "h" {
+        return 0
+    }
+    return port * 100 + timeout
+}
+
+func main() {
+    // ERROR: free function, swapped
+    println("{digits(b: 2, a: 1)}")
+    let x = Num { n: 0 }
+    // ERROR: method, swapped
+    println("{x.pair(b: 2, a: 1)}")
+    // ERROR: static method, swapped
+    println("{Num.make(b: 2, a: 1)}")
+    // ERROR: struct variant, swapped
+    let r = Shape.Rect(h: 2, w: 1)
+    // ERROR: tuple variant has no names to label
+    let p = Shape.Pair(x: 1, y: 2)
+    // ERROR: defaults don't make reordering legal
+    println("{connect(timeout: 7, host: \"h\")}")
+    // ERROR: a label naming no parameter
+    println("{digits(1, z: 2)}")
+    mut v: Vec<i64> = Vec.new()
+    // ERROR: stdlib method, swapped
+    v.insert(value: 9, index: 0)
+    let g = |a: i64, b: i64| a * 10 + b
+    // ERROR: a closure value's parameters have no names
+    println("{g(a: 1, b: 2)}")
+}

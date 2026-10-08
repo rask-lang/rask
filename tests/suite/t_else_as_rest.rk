@@ -1,0 +1,246 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `else as e` binds what the test ruled out, as the type the leftover leaves
+// make (type.errors/ER22).
+//
+// A flat `string? or MyErr` has three leaves. After `is string` the else used
+// to be typed `none | MyErr`, which nothing could test or call, and native
+// read the error's payload even when the value was `none` (#1454). Now:
+//
+//   tested string → e: MyErr?
+//   tested none   → e: string or MyErr
+//   tested MyErr  → e: string?
+//
+// A union error less the member tested is a result over the members left.
+
+enum MyErr {
+    Bad(string)
+    Worse
+}
+
+extend MyErr {
+    func message(self) -> string {
+        match self {
+            MyErr.Bad(m) => return "bad {m}",
+            MyErr.Worse => return "worse",
+        }
+    }
+}
+
+// Long enough that every string is on the heap, so a wrong free shows.
+func pick(n: i64) -> string? or MyErr {
+    if n == 0 { return none }
+    if n == -2 { return MyErr.Worse }
+    if n < 0 { return MyErr.Bad("why, on the heap for sure") }
+    return "v{n}, on the heap for sure"
+}
+
+func after_string(n: i64) -> string {
+    if pick(n) is string as s {
+        return "s {s}"
+    } else as e {
+        if e? as err {
+            return "err {err.message()}"
+        }
+        return "none, {(e ?? MyErr.Worse).message()}"
+    }
+}
+
+func after_none(n: i64) -> string {
+    if pick(n) is none {
+        return "none"
+    } else as e {
+        if e is string as s {
+            return "s {s}"
+        } else as err {
+            return "err {err.message()}"
+        }
+    }
+}
+
+func after_err(n: i64) -> string {
+    if pick(n) is MyErr as err {
+        return "err {err.message()}"
+    } else as e {
+        return "opt {e ?? "absent"}"
+    }
+}
+
+// The bound value leaves the function and outlives the scrutinee.
+func err_of(n: i64) -> MyErr? {
+    if pick(n) is string as s {
+        return none
+    } else as e {
+        return e
+    }
+}
+
+func present(n: i64) -> string or MyErr {
+    if pick(n) is none {
+        return MyErr.Worse
+    } else as e {
+        return e
+    }
+}
+
+struct AErr {
+    public code: i64
+}
+
+extend AErr {
+    func message(self) -> string {
+        return "a {self.code}"
+    }
+}
+
+struct BErr {
+    public why: string
+}
+
+extend BErr {
+    func message(self) -> string {
+        return "b {self.why}"
+    }
+}
+
+struct CErr {
+    public note: string
+}
+
+extend CErr {
+    func message(self) -> string {
+        return "c {self.note}"
+    }
+}
+
+func get(n: i64) -> string or (AErr | BErr | CErr) {
+    if n == 0 { return AErr { code: 7 } }
+    if n == -1 { return BErr { why: "b, on the heap for sure" } }
+    if n < 0 { return CErr { note: "c, on the heap for sure" } }
+    return "ok {n}, on the heap for sure"
+}
+
+func after_member(n: i64) -> string {
+    if get(n) is BErr as b {
+        return b.message()
+    } else as e {
+        if e is CErr as c {
+            return c.message()
+        }
+        if e is AErr as a {
+            return a.message()
+        }
+        if e is string as s {
+            return s
+        }
+        return "?"
+    }
+}
+
+func after_member_then_success(n: i64) -> string {
+    if get(n) is AErr as a {
+        return a.message()
+    } else as e {
+        if e is string as s {
+            return s
+        } else as rest {
+            return "rest {rest.message()}"
+        }
+    }
+}
+
+test "after testing the payload, the else holds the error or none" {
+    assert after_string(3) == "s v3, on the heap for sure"
+    assert after_string(0) == "none, worse"
+    assert after_string(-1) == "err bad why, on the heap for sure"
+    assert after_string(-2) == "err worse"
+}
+
+test "after testing none, the else is a plain result" {
+    assert after_none(3) == "s v3, on the heap for sure"
+    assert after_none(0) == "none"
+    assert after_none(-1) == "err bad why, on the heap for sure"
+    assert after_none(-2) == "err worse"
+}
+
+test "after testing the error, the else is the optional" {
+    assert after_err(3) == "opt v3, on the heap for sure"
+    assert after_err(0) == "opt absent"
+    assert after_err(-1) == "err bad why, on the heap for sure"
+}
+
+test "the bound value outlives the scrutinee" {
+    assert err_of(3) is none
+    assert err_of(0) is none
+    assert (err_of(-1) ?? MyErr.Worse).message() == "bad why, on the heap for sure"
+    assert (present(4) catch _ => "failed") == "v4, on the heap for sure"
+    assert present(-2) is MyErr
+}
+
+test "a union error less one member" {
+    assert after_member(1) == "ok 1, on the heap for sure"
+    assert after_member(0) == "a 7"
+    assert after_member(-1) == "b b, on the heap for sure"
+    assert after_member(-2) == "c c, on the heap for sure"
+    assert after_member_then_success(1) == "ok 1, on the heap for sure"
+    assert after_member_then_success(0) == "a 7"
+    assert after_member_then_success(-1) == "rest b b, on the heap for sure"
+    assert after_member_then_success(-2) == "rest c c, on the heap for sure"
+}
+
+// The test needn't bind for the else to (#1516). Without the `as`, the bare
+// type name was read as a pattern nobody had checked for a complement, and
+// `else as e` was rejected even on a two-branch value.
+func two(n: i64) -> string or MyErr {
+    if n < 0 { return MyErr.Bad("two, on the heap for sure") }
+    return "v{n}, on the heap for sure"
+}
+
+func bare_two(n: i64) -> string {
+    if two(n) is string {
+        return "ok"
+    } else as e {
+        return e.message()
+    }
+}
+
+func bare_flat(n: i64) -> string {
+    if pick(n) is string {
+        return "ok"
+    } else as e {
+        return (e ?? MyErr.Worse).message()
+    }
+}
+
+func bare_err(n: i64) -> string {
+    if pick(n) is MyErr {
+        return "err"
+    } else as e {
+        return e ?? "absent"
+    }
+}
+
+func bare_member(n: i64) -> string {
+    if get(n) is AErr {
+        return "a"
+    } else as e {
+        if e is string as s {
+            return s
+        } else as rest {
+            return rest.message()
+        }
+    }
+}
+
+test "a bare type test binds the same else" {
+    assert bare_two(1) == "ok"
+    assert bare_two(-1) == "bad two, on the heap for sure"
+    assert bare_flat(3) == "ok"
+    assert bare_flat(0) == "worse"
+    assert bare_flat(-1) == "bad why, on the heap for sure"
+    assert bare_err(3) == "v3, on the heap for sure"
+    assert bare_err(0) == "absent"
+    assert bare_err(-1) == "err"
+    assert bare_member(1) == "ok 1, on the heap for sure"
+    assert bare_member(0) == "a"
+    assert bare_member(-1) == "b b, on the heap for sure"
+}

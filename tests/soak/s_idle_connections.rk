@@ -9,7 +9,7 @@
 //
 // soak-expect: 500
 
-import async.{spawn, Handles}
+import async.Handles
 import net
 import time
 import time.Duration
@@ -23,16 +23,16 @@ func main() {
         let addr = listener.local_addr()
         let n = 100
 
-        let server = spawn(|| {
+        let server = spawn {
             mut handlers = Handles<i64>.new()
             ensure handlers.detach()
             mut i = 0
             while i < n {
                 let conn = listener.accept() catch e => { return -1 }
-                handlers.add(spawn(|| {
+                handlers.add(spawn {
                     let text = conn.read_text() catch e => { return -1 }
                     return text.len().wrap<i64>()
-                }))
+                })
                 i += 1
             }
             mut total: i64 = 0
@@ -42,20 +42,20 @@ func main() {
                 }
             }
             return total
-        })
+        }
         ensure server.detach()
 
         mut clients = Handles<i64>.new()
         ensure clients.detach()
         mut k = 0
         while k < n {
-            clients.add(spawn(|| {
+            clients.add(spawn {
                 let conn = net.tcp_connect(addr) catch e => { return -1 }
                 let _ = time.sleep(Duration.millis(50))
                 conn.write_text("hello") catch e => { return -1 }
                 let _ = conn.close()
                 return 0
-            }))
+            })
             k += 1
         }
         let _ = clients.join_all()

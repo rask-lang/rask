@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spawning a closure that something else still holds (#1386).
+//
+// `let f = fs[0]` reads the vector's closure without taking it: the vector
+// still frees it when it dies. `spawn { f() }` handed the task that same block, the
+// task freed it at `join`, and the vector freed it again. A closure read out
+// of a struct field, or found by a sequence, went the same way. The keeper now
+// gets a reference of its own, and each side frees its own.
+//
+// The sequence cases are the same bug one step removed. A yield lends its item:
+// `map` makes a closure, lends it to `to_vec`'s yield, and frees it when the
+// yield returns. `to_vec` pushed it and `find` kept it without taking a
+// reference, so they held freed closures before anything was spawned. And
+// `to_vec` over closures shared the body built for 8-byte integers, whose
+// vector never freed what it held, which hid the double free as a leak.
+
+import sequence.Sequence
+
+struct Holder {
+    public f: func() -> i64
+}
+
+func keep_i(x: i64) -> func() -> i64 {
+    let tags: Vec<i64> = [x, x]
+    return || tags.len().wrap<i64>() + x
+}
+
+func counter() -> func() -> i64 {
+    mut n = 0
+    return || {
+        n += 1
+        return n
+    }
+}
+
+test "a closure read out of a vector, spawned" {
+    using Multitasking {
+        mut fs = Vec<func() -> i64>.new()
+        fs.push(keep_i(5))
+        let f = fs[0]
+        assert f() == 7
+        assert spawn { f() }.join()! == 7
+        assert fs[0]() == 7
+    }
+}
+
+test "read from the index, spawned twice" {
+    using Multitasking {
+        mut fs = Vec<func() -> i64>.new()
+        fs.push(keep_i(1))
+        fs.push(keep_i(2))
+        let g = fs[1]
+        assert spawn { g() }.join()! == 4
+        assert spawn { g() }.join()! == 4
+    }
+}
+
+test "a closure read out of a struct field, spawned" {
+    using Multitasking {
+        let h = Holder { f: keep_i(3) }
+        assert spawn { (h.f)() }.join()! == 5
+        assert (h.f)() == 5
+    }
+}
+
+test "a vector's closure, put in a struct and in another vector" {
+    mut fs = Vec<func() -> i64>.new()
+    fs.push(keep_i(5))
+    fs.push(keep_i(6))
+    let h = Holder { f: fs[1] }
+    mut gs = Vec<func() -> i64>.new()
+    gs.push(h.f)
+    gs.push(fs[0])
+    assert (h.f)() == 8
+    assert gs[0]() == 8
+    assert gs[1]() == 7
+}
+
+test "copies of a closure share its state" {
+    mut fs = Vec<func() -> i64>.new()
+    fs.push(counter())
+    let e = fs[0]
+    assert e() == 1
+    assert e() == 2
+    mut gs = Vec<func() -> i64>.new()
+    gs.push(fs[0])
+    assert gs[0]() == 3
+    assert fs[0]() == 4
+}
+
+test "closures collected by to_vec, spawned" {
+    using Multitasking {
+        let plain: Vec<i64> = [1, 2, 3]
+        let fs = plain.as_sequence().map(keep_i).to_vec()
+        assert fs[0]() == 3
+        let g = fs[2]
+        assert spawn { g() }.join()! == 5
+    }
+}
+
+test "a closure found in a sequence, spawned" {
+    using Multitasking {
+        let plain: Vec<i64> = [1, 2, 3]
+        let f = plain.as_sequence().map(keep_i).find(|f| f() > 3)!
+        assert spawn { f() }.join()! == 4
+    }
+}
+
+// A closure literal yielded straight out of a sequence body is fresh, but the
+// frame that built it ends when the body returns. It used to get a stack
+// environment, because a call through a closure never counted as somewhere a
+// closure could go, so `to_vec` took a reference on a block with no header
+// and kept a pointer into a popped frame (SIGSEGV). A call through a closure
+// that may keep its argument now puts the literal on the heap.
+
+func pair() -> Sequence<func(i64) -> i64> {
+    let k = 40
+    return |yield| {
+        if !yield(|n| { return n + 5 }) { return }
+        if !yield(|n| { return n + k }) { return }
+    }
+}
+
+test "closure literals yielded by a sequence, collected" {
+    let collected = pair().to_vec()
+    assert collected.len() == 2
+    assert collected[0](2) == 7
+    assert collected[1](2) == 42
+}
+
+test "yielded literals through an adapter, collected and spawned" {
+    using Multitasking {
+        let fs = pair().take(5).to_vec()
+        assert fs.len() == 2
+        let g = fs[1]
+        assert spawn { g(2) }.join()! == 42
+    }
+}
+
+test "a for loop over yielded closures still writes back" {
+    mut n = 0
+    for f in pair() {
+        n += f(1)
+    }
+    assert n == 47
+}

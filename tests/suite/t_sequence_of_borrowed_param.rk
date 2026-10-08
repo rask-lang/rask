@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A chain started on a borrowed parameter leaves the argument with the caller
+// (#1513).
+//
+// `for v in s.as_sequence()` inside a function, `s` a plain parameter: the
+// inlined `as_sequence` captures `s` in a closure the function builds and frees
+// itself. The drop pass read that capture as the function keeping `s`, so the
+// caller stopped owning its vector and nobody freed it. With strings in it the
+// caller's concatenation read freed memory and printed garbage.
+
+struct Point {
+    x: i64
+    y: i64
+    z: i64
+}
+
+func joined(s: Vec<string>) -> string {
+    mut out = ""
+    for v in s.as_sequence() {
+        out = "{out}{v};"
+    }
+    return out
+}
+
+func total(ps: Vec<Point>) -> i64 {
+    mut sum = 0
+    for p in ps.as_sequence() {
+        sum += p.x + p.y + p.z
+    }
+    return sum
+}
+
+func longest(s: Vec<string>) -> usize {
+    return s.map(|v| v.len()).fold(0, |a, b| if b > a { b } else { a })
+}
+
+test "a string vector walked in a callee is still the caller's" {
+    let a = "abcdefghijklmnopqrstuvwxyz"
+    mut s = Vec.new()
+    s.push("{a}0")
+    s.push("{a}1")
+    assert joined(s) == "abcdefghijklmnopqrstuvwxyz0;abcdefghijklmnopqrstuvwxyz1;"
+    assert s[0] == "abcdefghijklmnopqrstuvwxyz0"
+    assert joined(s) == "abcdefghijklmnopqrstuvwxyz0;abcdefghijklmnopqrstuvwxyz1;"
+}
+
+test "a struct vector walked in a callee" {
+    mut ps = Vec.new()
+    ps.push(Point { x: 1, y: 2, z: 3 })
+    ps.push(Point { x: 4, y: 5, z: 6 })
+    assert total(ps) == 21
+    assert ps.len() == 2
+}
+
+test "an adapter chain on a borrowed parameter" {
+    let a = "abcdefghijklmnopqrstuvwxyz"
+    mut s = Vec.new()
+    s.push("{a}")
+    s.push("{a}{a}")
+    assert longest(s) == 52
+    assert s.len() == 2
+}

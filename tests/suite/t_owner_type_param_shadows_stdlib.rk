@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A type's own parameter inside its methods, when the parameter is named like
+// a stdlib type (#1487).
+//
+// #915 made a parameter win over a type of the same name, but each function
+// was checked with only its *own* parameters in scope. A method replaced the
+// scope instead of adding to it, so the struct's parameters dropped out:
+//
+//     struct Holder<Output> {
+//         v: Output,
+//         func get(self) -> Output { return self.v.clone() }
+//     }
+//
+// The field was the parameter and `-> Output` was `os.Output`, so
+// `println(h.get())` refused an `i64` as "`Output` does not implement
+// `Displayable`". The same held in `extend` and conformance blocks, whose
+// header only counted a word as a parameter when no type had that name.
+// Once the checker saw it right, `self.v.clone()` still dispatched to
+// `os.Output`'s clone, because method lookup read the bare name back against
+// the type table.
+//
+// `t_week_generic_param_shadowing.rk` covers a function's own parameters;
+// this covers the ones a method gets from its owner.
+
+struct Holder<Output> {
+    v: Output,
+
+    func get(self) -> Output {
+        return self.v.clone()
+    }
+
+    // The method's own parameter stacks on top of the owner's.
+    func swap<Buffer>(self, take b: Buffer) -> Buffer {
+        return b
+    }
+}
+
+struct Pair<Duration, Buffer> {
+    a: Duration,
+    b: Buffer,
+}
+
+extend Pair<Duration, Buffer> {
+    func first(self) -> Duration {
+        let x: Duration = self.a.clone()
+        return x
+    }
+
+    func second(self) -> Buffer {
+        return self.b.clone()
+    }
+}
+
+struct Shown<Output> {
+    v: Output,
+}
+
+Shown<Output> implements Displayable where Output: Displayable {
+    func to_string(self) -> string {
+        let x: Output = self.v.clone()
+        return "Shown({x})"
+    }
+}
+
+enum Either2<Duration, Output> {
+    Left(Duration),
+    Right(Output),
+}
+
+extend Either2<Duration, Output> {
+    func left_or(take self, take d: Duration) -> Duration {
+        return match self {
+            Either2.Left(v) => v,
+            Either2.Right(_) => d,
+        }
+    }
+}
+
+// An interface's own parameter, in the signatures it declares.
+interface Convert<Output> {
+    func convert(self) -> Output
+}
+
+struct Meters {
+    v: i64,
+}
+
+Meters implements Convert<string> {
+    func convert(self) -> string {
+        return "{self.v}m"
+    }
+}
+
+test "a struct-body method returns the struct's parameter, not os.Output" {
+    let h = Holder { v: 3 }
+    assert h.get() == 3
+    let s = Holder { v: "held" }
+    assert s.get() == "held"
+}
+
+test "a method's own parameter sits beside its owner's" {
+    let h = Holder { v: 3 }
+    assert h.swap("b") == "b"
+}
+
+test "an extend block's parameters named Duration and Buffer" {
+    let p = Pair { a: 3, b: "hi" }
+    assert p.first() == 3
+    assert p.second() == "hi"
+}
+
+test "a conformance block's parameter, with a where bound" {
+    let s = Shown { v: 7 }
+    assert s.to_string() == "Shown(7)"
+    assert "{s}" == "Shown(7)"
+}
+
+test "an enum's parameters in its payloads and its extend block" {
+    let e: Either2<i64, string> = Either2.Left(5)
+    assert e.left_or(9) == 5
+    let r: Either2<i64, string> = Either2.Right("no")
+    assert r.left_or(9) == 9
+}
+
+test "an interface's parameter named Output" {
+    assert Meters { v: 4 }.convert() == "4m"
+}
+
+func main() {}

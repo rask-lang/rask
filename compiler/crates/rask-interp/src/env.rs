@@ -1,28 +1,91 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Environment for variable bindings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use crate::value::Value;
+use crate::value::{MapData, StructData, Value, VecData};
 
-/// A variable's storage, shared by everything bound to that variable.
+/// Storage a name is bound to: a variable of its own, or a place inside
+/// another value.
 ///
 /// A binding is a *slot*, not a value. The distinction is invisible until a
 /// closure captures the name: a closure that stays in its frame borrows the
 /// variable (`mem.closures/CM1`), so it has to reach the same storage the
 /// definer writes. Binding names to values instead made a capture a copy, and
 /// every write through it landed on the copy (#1038).
-pub type Slot = Arc<Mutex<Value>>;
+///
+/// The other three are what a `mutate` parameter binds when the argument is a
+/// field, an element or a map entry (`mutate b.n`, `mutate v[i]`). The
+/// parameter is that place, the way native passes its address: copying it in
+/// and back out at the return lost every write made after the return, by a
+/// Sequence driven later (#1489). Containers already share their storage
+/// through an `Arc`, so a place is the container plus where in it.
+#[derive(Clone, Debug)]
+pub enum Slot {
+    Var(Arc<Mutex<Value>>),
+    Field(Arc<Mutex<StructData>>, String),
+    Elem(Arc<Mutex<VecData>>, usize),
+    /// A map entry by position. A position stays put while the entry is
+    /// borrowed: nothing can remove from the map until the borrow ends.
+    Entry(Arc<Mutex<MapData>>, usize),
+}
 
 /// Wrap a value in fresh storage.
 pub fn slot(value: Value) -> Slot {
-    Arc::new(Mutex::new(value))
+    Slot::Var(Arc::new(Mutex::new(value)))
+}
+
+impl Slot {
+    /// The value stored here. `None` only for an element or entry that is no
+    /// longer there.
+    pub fn get(&self) -> Option<Value> {
+        match self {
+            Slot::Var(cell) => Some(cell.lock().unwrap().clone()),
+            Slot::Field(s, field) => s.lock().unwrap().fields.get(field).cloned(),
+            Slot::Elem(v, i) => v.lock().unwrap().items.get(*i).cloned(),
+            Slot::Entry(m, i) => m.lock().unwrap().get_index(*i).map(|(_, v)| v.clone()),
+        }
+    }
+
+    /// Replace the value stored here. A link written into a field or an
+    /// element records its backlink, as an assignment there does.
+    pub fn set(&self, value: Value) -> bool {
+        match self {
+            Slot::Var(cell) => {
+                *cell.lock().unwrap() = value;
+                true
+            }
+            Slot::Field(s, field) => {
+                let previous = s.lock().unwrap().fields.insert(field.clone(), value.clone());
+                crate::rack::register_field(s, field, previous.as_ref(), &value);
+                true
+            }
+            Slot::Elem(v, i) => {
+                let mut vec = v.lock().unwrap();
+                let Some(item) = vec.items.get_mut(*i) else { return false };
+                *item = value.clone();
+                drop(vec);
+                crate::rack::register_element(v, &value);
+                true
+            }
+            Slot::Entry(m, i) => match m.lock().unwrap().get_index_mut(*i) {
+                Some((_, item)) => {
+                    *item = value;
+                    true
+                }
+                None => false,
+            },
+        }
+    }
 }
 
 /// A scope in the environment.
 #[derive(Debug, Default)]
 struct Scope {
     bindings: HashMap<String, Slot>,
+    /// Names bound to storage this frame borrows from its caller: a `mutate`
+    /// parameter, or a closure's capture of one.
+    lent: HashSet<String>,
 }
 
 /// The environment holding variable bindings.
@@ -88,14 +151,39 @@ impl Environment {
         let Some(scope) = self.scopes.last_mut() else { return };
         // Redefining in the same scope replaces the binding; the index already
         // has an entry for it and must not get a second one.
+        scope.lent.remove(&name);
         if scope.bindings.insert(name.clone(), cell).is_none() {
             self.defined_at.entry(name).or_default().push(index);
         }
     }
 
+    /// Bind a name to storage the frame borrows rather than owns — the
+    /// caller's variable behind a `mutate` parameter (`mem.closures/CM3`).
+    /// A closure that outlives this frame still shares it instead of copying,
+    /// so its writes reach the caller whenever it runs.
+    pub fn define_lent(&mut self, name: String, cell: Slot) {
+        self.define_slot(name.clone(), cell);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.lent.insert(name);
+        }
+    }
+
+    /// Whether the innermost binding of `name` is borrowed storage.
+    fn is_lent(&self, name: &str) -> bool {
+        let Some(index) = self.defined_at.get(name).and_then(|ix| ix.last()) else {
+            return false;
+        };
+        self.scopes.get(*index).is_some_and(|s| s.lent.contains(name))
+    }
+
+    /// Every visible name whose binding is borrowed storage.
+    pub fn lent_names(&self) -> HashSet<String> {
+        self.defined_at.keys().filter(|n| self.is_lent(n)).cloned().collect()
+    }
+
     /// Read a variable's current value.
     pub fn get(&self, name: &str) -> Option<Value> {
-        Some(self.slot_of(name)?.lock().unwrap().clone())
+        self.slot_of(name)?.get()
     }
 
     /// The storage a name is bound to, for sharing it with a closure.
@@ -106,9 +194,7 @@ impl Environment {
 
     /// Assign to an existing variable, in place.
     pub fn assign(&mut self, name: &str, value: Value) -> bool {
-        let Some(cell) = self.slot_of(name) else { return false };
-        *cell.lock().unwrap() = value;
-        true
+        self.slot_of(name).is_some_and(|cell| cell.set(value))
     }
 
     /// Remove a variable from the environment (for `discard`).
@@ -123,35 +209,9 @@ impl Environment {
         }
     }
 
-    /// Apply `f` to a variable's value in place (for field assignment).
-    ///
-    /// The slot is locked for the length of `f`, so `f` must not reach back
-    /// into the environment for the same name.
-    pub fn with_mut<R>(&mut self, name: &str, f: impl FnOnce(&mut Value) -> R) -> Option<R> {
-        let cell = self.slot_of(name)?.clone();
-        let mut guard = cell.lock().unwrap();
-        Some(f(&mut guard))
-    }
-
     /// Get the current scope depth.
     pub fn scope_depth(&self) -> usize {
         self.scopes.len()
-    }
-
-    /// Apply `f` to each in-scope value (innermost scope first), returning the
-    /// first `Some`. Used for handle auto-deref, where the pool is located by the
-    /// handle's pool id rather than by name — the closure may recurse into
-    /// struct fields to reach a pool held in `self`.
-    pub fn find_map<T, F: Fn(&Value) -> Option<T>>(&self, f: F) -> Option<T> {
-        for scope in self.scopes.iter().rev() {
-            for cell in scope.bindings.values() {
-                let value = cell.lock().unwrap();
-                if let Some(found) = f(&value) {
-                    return Some(found);
-                }
-            }
-        }
-        None
     }
 
     /// Share every visible variable's storage — a scope-limited closure's
@@ -161,21 +221,29 @@ impl Environment {
         let mut captured = HashMap::new();
         for scope in &self.scopes {
             for (name, cell) in &scope.bindings {
-                captured.insert(name.clone(), Arc::clone(cell));
+                captured.insert(name.clone(), cell.clone());
             }
         }
         captured
     }
 
-    /// Copy every visible variable into storage of its own — an `own` closure's
-    /// captures, and a spawned task's. Neither may alias the definer: `own`
-    /// captures by move and outlives its creation scope, and a task that shared
-    /// its parent's locals would be a data race.
+    /// Copy every visible variable into storage of its own — the captures of a
+    /// closure that outlives its frame. It may not alias the definer's locals:
+    /// it carries them (`mem.closures/CM2`), and the frame is going away.
+    ///
+    /// Borrowed storage is the exception. A `mutate` parameter is the caller's
+    /// variable, so the closure borrows it like the frame did (CM3); copying it
+    /// sent every write the closure made later to a copy nobody reads (#1324).
     pub fn capture_snapshot(&self) -> HashMap<String, Slot> {
         let mut captured = HashMap::new();
         for scope in &self.scopes {
             for (name, cell) in &scope.bindings {
-                captured.insert(name.clone(), slot(cell.lock().unwrap().clone()));
+                let cell = if scope.lent.contains(name) {
+                    cell.clone()
+                } else {
+                    slot(cell.get().unwrap_or(Value::Unit))
+                };
+                captured.insert(name.clone(), cell);
             }
         }
         captured
@@ -264,18 +332,6 @@ mod tests {
         assert_eq!(as_int(env.get("v499")), Some(499));
     }
 
-    #[test]
-    fn with_mut_reaches_the_innermost_binding() {
-        let mut env = Environment::new();
-        env.define("x".into(), int(1));
-        env.push_scope();
-        env.define("x".into(), int(2));
-        env.with_mut("x", |v| *v = int(7));
-        assert_eq!(as_int(env.get("x")), Some(7));
-        env.pop_scope();
-        assert_eq!(as_int(env.get("x")), Some(1));
-    }
-
     // The capture that #1038 was about: a shared slot means a write through the
     // closure's name is a write to the definer's variable.
     #[test]
@@ -287,7 +343,7 @@ mod tests {
         // What calling the closure does: a fresh scope binding the same storage.
         env.push_scope();
         for (name, cell) in &captured {
-            env.define_slot(name.clone(), Arc::clone(cell));
+            env.define_slot(name.clone(), cell.clone());
         }
         env.assign("a", int(5));
         env.pop_scope();
@@ -305,11 +361,52 @@ mod tests {
 
         env.push_scope();
         for (name, cell) in &captured {
-            env.define_slot(name.clone(), Arc::clone(cell));
+            env.define_slot(name.clone(), cell.clone());
         }
         env.assign("a", int(5));
         env.pop_scope();
 
         assert_eq!(as_int(env.get("a")), Some(1), "the definer is untouched");
+    }
+
+    // A `mutate` parameter's storage is the caller's, so even a carrying
+    // closure reaches it (#1324).
+    #[test]
+    fn a_snapshot_shares_lent_storage() {
+        let mut env = Environment::new();
+        let caller = slot(int(1));
+        env.define_lent("a".into(), caller.clone());
+        env.define("b".into(), int(1));
+        assert_eq!(env.lent_names(), HashSet::from(["a".to_string()]));
+        let captured = env.capture_snapshot();
+        captured["a"].set(int(5));
+        captured["b"].set(int(5));
+        assert_eq!(as_int(caller.get()), Some(5));
+        assert_eq!(as_int(env.get("b")), Some(1));
+    }
+
+    #[test]
+    fn rebinding_a_lent_name_owns_it_again() {
+        let mut env = Environment::new();
+        env.define_lent("a".into(), slot(int(1)));
+        env.define("a".into(), int(2));
+        assert!(env.lent_names().is_empty());
+    }
+
+    // `mutate b.n`: the parameter is the field, so a write through it, at any
+    // time, is a write to the caller's struct (#1489).
+    #[test]
+    fn a_field_slot_reads_and_writes_the_struct() {
+        let data = StructData {
+            name: "Box2".into(),
+            fields: [("n".to_string(), int(1))].into_iter().collect(),
+            resource_id: None,
+        };
+        let s = Arc::new(Mutex::new(data));
+        let mut env = Environment::new();
+        env.define_lent("n".into(), Slot::Field(Arc::clone(&s), "n".into()));
+        assert_eq!(as_int(env.get("n")), Some(1));
+        assert!(env.assign("n", int(7)));
+        assert_eq!(as_int(s.lock().unwrap().fields.get("n").cloned()), Some(7));
     }
 }

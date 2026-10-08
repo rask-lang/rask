@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Calling a function value works however the name was bound (#1421).
+//
+// `for f in seq { f(1) }` over a `Sequence<func(i64) -> i64>` failed to compile
+// natively with "couldn't work out a type here". MIR decided whether `f(1)` was
+// a call through a variable by looking the name up in a list each binding site
+// had to fill in, and the `Sequence` element was one more site that didn't
+// (after `for` over a Vec, `x? as f` and `with … as f`). The call site now asks
+// the checker's type of `f` instead.
+
+import sequence.Sequence
+
+func pair() -> Sequence<func(i64) -> i64> {
+    return |yield| {
+        if !yield(|n| { return n + 5 }) { return }
+        if !yield(|n| { return n + 40 }) { return }
+    }
+}
+
+func apply(f: func(i64) -> i64, x: i64) -> i64 {
+    return f(x)
+}
+
+func pick(want: bool) -> (func(i64) -> i64)? {
+    if want {
+        return |n| { return n * 3 }
+    }
+    return none
+}
+
+test "a for loop over a sequence of functions" {
+    mut n = 0
+    for f in pair() {
+        n += f(1)
+    }
+    assert n == 47
+}
+
+test "a for loop over a vec of functions" {
+    let fs: Vec<func(i64) -> i64> = [|n| { return n + 1 }, |n| { return n + 2 }]
+    mut n = 0
+    for f in fs {
+        n += f(10)
+    }
+    assert n == 23
+}
+
+test "a parameter, a let, and an optional's payload" {
+    let double = |n: i64| { return n * 2 }
+    assert apply(double, 4) == 8
+    assert double(5) == 10
+    if pick(true)? as f {
+        assert f(2) == 6
+    } else {
+        assert false
+    }
+}
+
+test "a closure parameter holding a function" {
+    let fs: Vec<func(i64) -> i64> = [|n| { return n + 1 }, |n| { return n + 2 }]
+    let outs = fs.map(|f| f(3)).to_vec()
+    assert outs[0] == 4
+    assert outs[1] == 5
+}

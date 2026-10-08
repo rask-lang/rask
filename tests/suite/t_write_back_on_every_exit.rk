@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `with v[i]` binding and a `for mutate` binding are copies of the element,
+// written back when the body ends. Natively only the body's normal end did
+// that: `return`, `try`, `continue` or `break` out of a `with` block, and a
+// labelled `break` out of a `for mutate`, dropped the change. The interpreter
+// kept it.
+
+struct Counter {
+    n: i64
+}
+
+func bump_and_return(mutate v: Vec<Counter>) -> i64 {
+    with v[0] as c {
+        c.n = c.n + 1
+        if c.n > 0 {
+            return c.n
+        }
+    }
+    return -1
+}
+
+struct TooBig {
+    public n: i64
+}
+
+extend TooBig {
+    public func message(self) -> string {
+        return "too big: {self.n}"
+    }
+}
+
+func at_most_one(n: i64) -> i64 or TooBig {
+    if n > 1 {
+        return TooBig { n: n }
+    }
+    return n
+}
+
+func bump_and_fail(mutate v: Vec<Counter>) -> i64 or TooBig {
+    with v[0] as c {
+        c.n = c.n + 1
+        try at_most_one(c.n)
+    }
+    return 0
+}
+
+test "return out of a with block keeps the change" {
+    mut v: Vec<Counter> = [Counter { n: 1 }]
+    assert bump_and_return(mutate v) == 2
+    assert v[0].n == 2
+}
+
+test "try out of a with block keeps the change" {
+    mut v: Vec<Counter> = [Counter { n: 1 }]
+    let r = bump_and_fail(mutate v) catch e => e.n
+    assert r == 2
+    assert v[0].n == 2
+}
+
+test "continue and break out of a with block keep the change" {
+    mut v: Vec<Counter> = [Counter { n: 0 }]
+    mut i = 0
+    while i < 3 {
+        i += 1
+        with v[0] as c {
+            c.n = c.n + 1
+            if i == 2 {
+                continue
+            }
+            if i == 3 {
+                break
+            }
+        }
+    }
+    assert v[0].n == 3
+}
+
+test "a labelled break out of a for mutate keeps the change" {
+    mut v: Vec<Counter> = [Counter { n: 1 }, Counter { n: 10 }]
+    outer: for round in 0..2 {
+        for mutate c in v {
+            c.n = c.n * 2
+            break outer
+        }
+    }
+    assert v[0].n == 2
+    assert v[1].n == 10
+}
+
+test "a map value through with, left by continue" {
+    mut m: Map<string, Counter> = Map.new()
+    m.insert("a", Counter { n: 5 })
+    for round in 0..2 {
+        with m["a"] as c {
+            c.n = c.n + 1
+            continue
+        }
+    }
+    assert m["a"].n == 7
+}

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `let w = words[0]` copied the element without taking a reference: the
+// copy pointed at the vector's own. That held only while nothing released
+// the slot, and `words[0] = …` and a `for mutate` that replaces its binding
+// both do. The copy then read a freed buffer.
+//
+// A binding returned out of a `with` block has the same shape: the
+// write-back gives the slot its references back, and the caller gets the
+// same strings, so it needs references of its own.
+//
+// A struct of one string is Copy too, so `let tmp = lines[0]` is the same
+// case one level in; `t_copy_owns_its_strings.rk` has more of those.
+
+struct Line {
+    text: string
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func first_line(mutate v: Vec<Line>) -> Line {
+    with v[0] as l {
+        return l
+    }
+    return Line { text: "" }
+}
+
+func first_word(mutate v: Vec<string>) -> string {
+    with v[0] as w {
+        return w
+    }
+    return ""
+}
+
+test "a string copy outlives the slot being replaced" {
+    mut words: Vec<string> = [heap("word")]
+    let w = words[0]
+    words[0] = "z"
+    assert w == heap("word")
+}
+
+test "a string copy outlives a for mutate replacing it" {
+    mut words: Vec<string> = [heap("word")]
+    let w = words[0]
+    for mutate x in words {
+        x = "z"
+    }
+    assert w == heap("word")
+    assert words[0] == "z"
+}
+
+test "a binding returned out of with outlives the slot" {
+    mut lines: Vec<Line> = [Line { text: heap("line") }]
+    let l = first_line(mutate lines)
+    lines[0] = Line { text: "y" }
+    mut words: Vec<string> = [heap("word")]
+    let w = first_word(mutate words)
+    words[0] = "z"
+    assert l.text == heap("line")
+    assert w == heap("word")
+}
+
+test "swapping small struct elements through a copy" {
+    mut lines: Vec<Line> = [Line { text: heap("one") }, Line { text: heap("two") }]
+    let tmp = lines[0]
+    lines[0] = lines[1]
+    lines[1] = tmp
+    assert lines[0].text == heap("two")
+    assert lines[1].text == heap("one")
+}

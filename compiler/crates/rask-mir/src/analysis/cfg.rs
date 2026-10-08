@@ -85,3 +85,21 @@ pub fn reachable_from(func: &MirFunction, start: BlockId) -> HashSet<BlockId> {
 pub fn reachable_blocks(func: &MirFunction) -> HashSet<BlockId> {
     reachable_from(func, func.entry_block)
 }
+
+/// Blocks only a cleanup chain reaches: the `ensure` bodies a cleanup return
+/// runs on the way out, and whatever hangs off them. Every other block is on
+/// a path from the entry that crosses no cleanup return.
+pub fn cleanup_only_blocks(func: &MirFunction) -> HashSet<BlockId> {
+    let mut normal: HashSet<BlockId> = HashSet::new();
+    let mut stack = vec![func.entry_block];
+    while let Some(b) = stack.pop() {
+        if !normal.insert(b) {
+            continue;
+        }
+        let Some(block) = func.blocks.iter().find(|x| x.id == b) else { continue };
+        if !matches!(block.terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+            stack.extend(successors(&block.terminator));
+        }
+    }
+    func.blocks.iter().map(|b| b.id).filter(|b| !normal.contains(b)).collect()
+}

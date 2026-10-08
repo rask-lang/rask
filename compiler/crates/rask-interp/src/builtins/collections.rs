@@ -186,7 +186,9 @@ impl Interpreter {
             "len" | "count" => Ok(Value::int(v.lock().unwrap().len() as i64)),
             "get" => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match v.lock().unwrap().get(idx).cloned() {
+                // A copy out of the slot (std.collections/V3): sharing the
+                // element let a later write to the slot show through it.
+                match v.lock().unwrap().get(idx).map(Value::copy_on_bind) {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -214,7 +216,7 @@ impl Interpreter {
                 Ok(Value::vec(taken))
             }
             "first" => {
-                match v.lock().unwrap().first().cloned() {
+                match v.lock().unwrap().first().map(Value::copy_on_bind) {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -230,7 +232,7 @@ impl Interpreter {
                 }
             }
             "last" => {
-                match v.lock().unwrap().last().cloned() {
+                match v.lock().unwrap().last().map(Value::copy_on_bind) {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -281,14 +283,16 @@ impl Interpreter {
             // No `eq` or `hash` here: `collections.rk` writes both, element by
             // element through the element type's own, and this one compared
             // elements structurally — past a user `eq` on them (#1391).
-            // `freeze` is what a `comptime` block ends with to say the Vec it
-            // built is the constant's value. The block has already been
-            // evaluated by the time anything asks, so there is nothing left to
-            // do but hand it over — it was declared `comptime func` with an
-            // empty body and neither backend had an answer, which made every
-            // `const X = comptime { … v.freeze() }` fail (#1069).
-            "clone" | "to_vec" | "freeze" => {
-                let cloned = v.lock().unwrap().clone();
+            // A clone is a deep duplicate (mem.value-semantics), so each
+            // element gets its own copy of what it holds. Copying the item list
+            // shared a nested `Vec` between the two, and a push through the
+            // clone showed up in the source; native gives it a vector of its own.
+            "clone" | "to_vec" => {
+                let guard = v.lock().unwrap();
+                let cloned = crate::value::VecData {
+                    items: guard.items.iter().map(Value::clone_as_element).collect(),
+                    bound: guard.bound,
+                };
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
             // SEQ29: a Vec of pairs becomes a Map, later keys overwriting
@@ -638,52 +642,6 @@ impl Interpreter {
                     Ok(Value::int(sum))
                 }
             }
-            "min" => {
-                let vec = v.lock().unwrap();
-                if vec.is_empty() {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
-                }
-                let mut min = vec[0].clone();
-                for item in vec.iter().skip(1) {
-                    if let Some(std::cmp::Ordering::Less) = Self::value_cmp(item, &min) {
-                        min = item.clone();
-                    }
-                }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![min],
-                    variant_index: 0, origin: None,
-                })
-            }
-            "max" => {
-                let vec = v.lock().unwrap();
-                if vec.is_empty() {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
-                }
-                let mut max = vec[0].clone();
-                for item in vec.iter().skip(1) {
-                    if let Some(std::cmp::Ordering::Greater) = Self::value_cmp(item, &max) {
-                        max = item.clone();
-                    }
-                }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![max],
-                    variant_index: 0, origin: None,
-                })
-            }
             "take_all" => {
                 // Draining leaves the vector empty but keeps its bound — a
                 // fixed vector is still fixed after you empty it.
@@ -962,7 +920,8 @@ impl Interpreter {
             }
             "get" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let found = self.map_get(&m, key)?;
+                // Copied out, as `Vec.get` is.
+                let found = self.map_get(&m, key)?.map(|v| v.copy_on_bind());
                 Ok(option_of(found))
             }
             "remove" => {
@@ -973,11 +932,6 @@ impl Interpreter {
             "contains" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 Ok(Value::Bool(self.map_contains(&m, key)?))
-            }
-            // The identity, same as `Vec.freeze` — see the note there (#1069).
-            "freeze" => {
-                let cloned = m.lock().unwrap().clone();
-                Ok(Value::Map(Arc::new(Mutex::new(cloned))))
             }
             "keys" => {
                 let keys: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
@@ -1002,10 +956,8 @@ impl Interpreter {
                     .collect();
                 Ok(Value::vec(pairs))
             }
-            "clone" => {
-                let cloned: MapData = m.lock().unwrap().clone();
-                Ok(Value::Map(Arc::new(Mutex::new(cloned))))
-            }
+            // Deep, for the same reason as `Vec.clone`.
+            "clone" => Ok(Value::Map(Arc::clone(m)).clone_as_element()),
             "insert_if_missing" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {

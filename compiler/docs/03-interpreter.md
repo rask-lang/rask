@@ -288,7 +288,7 @@ Each module file implements the actual operations using Rust's standard library:
 
 The interpreter supports real concurrency:
 
-- **`spawn(|| { ... })`** creates an OS thread (via `std::thread::spawn`),
+- **`spawn { ... }`** creates an OS thread (via `std::thread::spawn`),
   captures the closure's environment, runs the body.
 - **Channels**: `Channel.new()` creates an `mpsc` channel pair. `.send()` and
   `.receive()` work across threads.

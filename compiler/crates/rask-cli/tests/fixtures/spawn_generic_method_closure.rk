@@ -25,10 +25,13 @@ extend Box<T> {
 func main() {
     using Multitasking {
         let plain = Box { v: 4 }
-        println("{spawn(plain.keep()).join()!}")
+        let plain_f = plain.keep()
+        let t1 = spawn { plain_f() }
+        println("{t1.join()!}")
         let b = Box { v: Vec<Link<Node>>.new() }
         let f = b.keep()
         println("before")
-        println("{spawn(f).join()!}")
+        let t2 = spawn { f() }
+        println("{t2.join()!}")
     }
 }

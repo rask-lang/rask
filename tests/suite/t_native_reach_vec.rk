@@ -36,5 +36,5 @@ test "vec zip, sort_by_key, read and modify" {
     assert((v.get(2) ?? -1) == 1)
 
     assert((v.read(0, |x| { return x * 2 }) ?? -1) == 6)
-    assert((v.modify(0, |x| { return x + 100 }) ?? -1) == 103)
+    assert((v.modify(0, |mutate x: i64| { return x + 100 }) ?? -1) == 103)
 }

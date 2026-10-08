@@ -615,7 +615,7 @@ impl<'a> Printer<'a> {
             } else {
                 self.emit(" + ");
             }
-            self.emit(&bound.source());
+            self.emit(&bound.ty.source());
         }
     }
 
@@ -1121,8 +1121,8 @@ impl<'a> Printer<'a> {
     }
 
     /// `A + B<X>`
-    fn bounds_text(bounds: &[rask_ast::ty::TypeExpr]) -> String {
-        bounds.iter().map(|b| b.source()).collect::<Vec<_>>().join(" + ")
+    fn bounds_text(bounds: &[rask_ast::decl::Bound]) -> String {
+        bounds.iter().map(|b| b.ty.source()).collect::<Vec<_>>().join(" + ")
     }
 
     /// `T`, `T: A + B`, `Rhs = Self`, `comptime N: usize`.
@@ -1495,6 +1495,11 @@ impl<'a> Printer<'a> {
             self.emit("default: \"");
             self.emit(default);
             self.emit("\"");
+            self.emit_newline();
+        }
+        if feat.on_by_default {
+            self.emit_indent();
+            self.emit("default: true");
             self.emit_newline();
         }
 
@@ -2217,7 +2222,7 @@ impl<'a> Printer<'a> {
                     self.emit(name);
                 }
             }
-            ExprKind::Unwrap { expr: inner, message } => {
+            ExprKind::Unwrap { expr: inner, message, .. } => {
                 self.format_postfix_receiver(inner);
                 self.emit("!");
                 if let Some(msg) = message {
@@ -2264,8 +2269,20 @@ impl<'a> Printer<'a> {
                 }
             }
             ExprKind::StructLit { name, type_args, fields, spread } => {
-                self.emit(name);
-                self.emit_type_args(type_args);
+                // A dotted name with arguments is a variant naming its enum's
+                // instantiation: the arguments go on the enum, `Slot<i64>.Pair`.
+                match name.rsplit_once('.') {
+                    Some((enum_path, variant)) if !type_args.is_empty() => {
+                        self.emit(enum_path);
+                        self.emit_type_args(type_args);
+                        self.emit(".");
+                        self.emit(variant);
+                    }
+                    _ => {
+                        self.emit(name);
+                        self.emit_type_args(type_args);
+                    }
+                }
                 let source_is_multiline = self.source_text(expr.span).contains('\n');
                 if fields.is_empty() && spread.is_none() {
                     self.emit(" {}");
@@ -2393,7 +2410,43 @@ impl<'a> Printer<'a> {
                     self.emit(&ty.source());
                 }
                 self.emit(" ");
-                self.format_expr(body);
+                // A one-line body stays on its line, the same rule a branch
+                // follows. Always expanding it broke idempotence: the literal
+                // or call around `|n| { return n * 10 }` had already chosen
+                // one line from the source, and the second pass saw the
+                // expanded body and broke the literal too.
+                match &body.kind {
+                    ExprKind::Block(stmts) if self.fits_one_line(body.span, stmts) => {
+                        self.emit("{ ");
+                        self.format_stmt_inline(&stmts[0]);
+                        self.emit(" }");
+                    }
+                    _ => self.format_expr(body),
+                }
+            }
+            ExprKind::Spawn { receiver, body, .. } => {
+                match receiver {
+                    Some(r) => {
+                        self.format_expr(r);
+                        self.emit(".spawn");
+                    }
+                    None => self.emit("spawn"),
+                }
+                // The parser wraps the block in a closure node; only the
+                // block is source. Laid out the way a closure's block body is.
+                let block = match &body.kind {
+                    ExprKind::Closure { body: block, .. } => block,
+                    _ => body,
+                };
+                self.emit(" ");
+                match &block.kind {
+                    ExprKind::Block(stmts) if self.fits_one_line(block.span, stmts) => {
+                        self.emit("{ ");
+                        self.format_stmt_inline(&stmts[0]);
+                        self.emit(" }");
+                    }
+                    _ => self.format_expr(block),
+                }
             }
             ExprKind::Cast { expr: inner, ty } => {
                 self.format_cast_operand(inner);
@@ -2412,16 +2465,6 @@ impl<'a> Printer<'a> {
                     self.emit(": ");
                 }
                 self.emit("loop {");
-                self.emit_newline();
-                self.indent += 1;
-                self.format_stmts(body);
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
-            }
-            ExprKind::BlockCall { name, body } => {
-                self.emit(name);
-                self.emit(" {");
                 self.emit_newline();
                 self.indent += 1;
                 self.format_stmts(body);
@@ -2740,6 +2783,7 @@ impl<'a> Printer<'a> {
                 | ExprKind::ArrayRepeat { .. }
                 | ExprKind::Tuple(_)
                 | ExprKind::Unwrap { .. }
+                | ExprKind::Spawn { .. }
         )
     }
 

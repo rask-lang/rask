@@ -1236,7 +1236,7 @@ and shares nothing. Implemented and running:
 ```rask
 using Multitasking {
     let frame = world.snapshot()            // the reader gets its own graph
-    let h: TaskHandle<i32> = spawn(own || { return walk(frame) })
+    let h: TaskHandle<i32> = spawn { return walk(frame) }
 
     mut i = 0                               // and the simulation keeps going
     while i < 1000 { a.id += 1  b.id += 1  i += 1 }
@@ -1573,7 +1573,7 @@ Both questions this analysis ended on are now answered.
    exceptions, so the signature-surface arithmetic favours it.
 2. ~~Is a task-local graph acceptable?~~ **Answered by `Rack.snapshot()`, which
    is built.** The rack crosses and no link does, so read-parallel access works
-   without a read-only type: `spawn(own || { walk(frame) })` while the original
+   without a read-only type: `spawn { walk(frame) }` while the original
    keeps mutating. Costs an eager O(nodes + edges) copy and one `corresponding`
    call to translate a root. What remains is a lint for read-only *intent*, which
    is information rather than enforcement — principle 5's job, not the type

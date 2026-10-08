@@ -9,6 +9,8 @@
 //!
 //! See `comp.clone-elision` spec for the full algorithm.
 
+use std::collections::HashSet;
+
 use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
 use crate::analysis::uses;
 use crate::analysis::dominators::DominatorTree;
@@ -26,10 +28,11 @@ const CLONE_NAMES: &[&str] = &[
     "sender_clone",
 ];
 
-/// Elide unnecessary clone calls across all functions.
-pub fn elide_clones(fns: &mut [MirFunction]) {
+/// Elide unnecessary clone calls across all functions. `own` is the program's
+/// own function names, for asking which calls hand back a view.
+pub fn elide_clones(fns: &mut [MirFunction], own: &HashSet<String>) {
     for func in fns.iter_mut() {
-        elide_clones_in_function(func);
+        elide_clones_with(func, own);
     }
 }
 
@@ -38,7 +41,12 @@ fn is_clone_call(name: &str) -> bool {
         || CLONE_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
+#[cfg(test)]
 fn elide_clones_in_function(func: &mut MirFunction) {
+    elide_clones_with(func, &HashSet::new());
+}
+
+fn elide_clones_with(func: &mut MirFunction, own: &HashSet<String>) {
     // Collect clone sites: (block_idx, stmt_idx, dst_local, source_local)
     let clone_sites: Vec<(usize, usize, LocalId, LocalId)> = func.blocks.iter()
         .enumerate()
@@ -67,12 +75,9 @@ fn elide_clones_in_function(func: &mut MirFunction) {
     // For each clone site, check if the source local is used anywhere after
     // the clone, on any control flow path.
     for (block_idx, stmt_idx, _dst, source) in &clone_sites {
-        // CE3: a projection is a view, not the value. `r.values.clone()` reads
-        // the field into a fresh temp, and that temp is never read again — so
-        // last-use said "move" and the clone was dropped, leaving `y` and
-        // `r.values` as one Vec: a `push` through either grew both. The temp
-        // dying says nothing about the struct that still holds the field.
-        if source_is_a_projection(func, *source) {
+        // CE3: the clone reads something this frame doesn't own, so the
+        // local dying says nothing about the value. See `source_is_borrowed`.
+        if source_is_borrowed(func, *source, own) {
             continue;
         }
         if is_last_use_with_liveness(func, *block_idx, *stmt_idx, *source, &live) {
@@ -90,20 +95,58 @@ fn elide_clones_in_function(func: &mut MirFunction) {
     }
 }
 
-/// True when the local was written by reading through something else — a struct
-/// field, an array element, a dereference. Such a local holds a view whose owner
-/// outlives it, so its own death is not the value's death.
+/// True when the value the local holds belongs to someone else, so its last use
+/// here is not the value's death and a clone of it can't become a move.
 ///
-/// A local assigned more than once is treated as a projection if any assignment
-/// is one: elision has to hold on every path.
-fn source_is_a_projection(func: &MirFunction, source: LocalId) -> bool {
-    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| match &stmt.kind {
-        MirStmtKind::Assign { dst, rvalue } if *dst == source => matches!(
-            rvalue,
-            MirRValue::Field { .. } | MirRValue::ArrayIndex { .. } | MirRValue::Deref(_)
-        ),
-        _ => false,
-    })
+/// Three ways to hold such a value, each followed back through plain copies
+/// (`_33 = _32`), since lowering puts a binding in between more often than not:
+///
+/// - Reading through something else: a struct field, an array element, a
+///   dereference. `r.values.clone()` read the field into a temp that was never
+///   read again, the clone was dropped, and `y` and `r.values` were one Vec: a
+///   `push` through either grew both.
+/// - A call that lends: `items[i]` on a `Vec` is `Vec_get_unchecked`, whose
+///   result points into the vector's buffer. `dst.push(items[i].clone())` left
+///   `dst` and `items` owning one inner vector — a double free at exit. A `for r
+///   in rows` binding is the same call one copy removed, and `out.push(r.clone())`
+///   crashed the same way.
+/// - A parameter. MIR doesn't carry parameter modes, and the caller still holds
+///   anything it lent: `return p.clone()` became `return p`, and the caller got
+///   its own vector back under a second name — the alias the clone was written
+///   to avoid (#1452 and #1458 both name `.clone()` as the fix). For a `take`
+///   parameter, skipping elision only misses an optimisation.
+///
+/// A local assigned more than once counts if any assignment does: elision has to
+/// hold on every path.
+fn source_is_borrowed(func: &MirFunction, source: LocalId, own: &HashSet<String>) -> bool {
+    let mut seen = HashSet::new();
+    let mut frontier = vec![source];
+    while let Some(local) = frontier.pop() {
+        if !seen.insert(local) {
+            continue;
+        }
+        if func.params.iter().any(|p| p.id == local) {
+            return true;
+        }
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            match &stmt.kind {
+                MirStmtKind::Assign { dst, rvalue } if *dst == local => match rvalue {
+                    MirRValue::Field { .. } | MirRValue::ArrayIndex { .. } | MirRValue::Deref(_) => {
+                        return true;
+                    }
+                    MirRValue::Use(MirOperand::Local(from)) => frontier.push(*from),
+                    _ => {}
+                },
+                MirStmtKind::Call { dst: Some(dst), func: fref, .. }
+                    if *dst == local && crate::own_names::returns_a_view(&fref.name, own) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
 }
 
 /// Check whether `source` has no uses after position (block_idx, stmt_idx).
@@ -195,6 +238,22 @@ mod tests {
         let mut f = single_block_fn(vec![clone_call(1, 0)]);
         elide_clones_in_function(&mut f);
         assert!(is_move(&f.blocks[0].statements[0]));
+    }
+
+    #[test]
+    fn clone_of_a_parameter_kept() {
+        // dst = clone(param) at its last use: the caller still holds the
+        // value, so this stays a clone. Through a copy of the parameter too.
+        let mut f = single_block_fn(vec![
+            MirStmt::dummy(MirStmtKind::Assign {
+                dst: local(3),
+                rvalue: MirRValue::Use(MirOperand::Local(local(0))),
+            }),
+            clone_call(1, 3),
+        ]);
+        f.params.push(f.locals[0].clone());
+        elide_clones_in_function(&mut f);
+        assert!(is_clone(&f.blocks[0].statements[1]));
     }
 
     #[test]

@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A 128-bit value handed to a runtime call by address gets a slot that fits it.
+//
+// `v.push(x)` passes the element by address, through a stack slot codegen
+// made for it. That slot was always eight bytes, so pushing an i128 or u128
+// wrote its high half into whatever sat next to it. In this test body that
+// was the slot holding the `u128::MAX` literal for the last assert, which then
+// compared as 0 — and only natively, only inside a `test`, and only while
+// nothing else (a `println`) moved the slots around (#1407).
+
+test "i128 then u128 in one body" {
+    mut s: Vec<i128> = Vec.new()
+    s.push(5)
+    s.push(170141183460469231731687303715884105727)
+    s.push(-3)
+    s.reverse()
+    assert s[1] == 170141183460469231731687303715884105727
+
+    mut u: Vec<u128> = Vec.new()
+    u.push(340282366920938463463374607431768211455)
+    u.push(5)
+    u.reverse()
+    assert u[0] == 5
+    assert u[1] == 340282366920938463463374607431768211455
+}
+
+test "pushes next to each other keep their high halves" {
+    mut u: Vec<u128> = Vec.new()
+    u.push(18446744073709551616)
+    u.push(36893488147419103232)
+    u.push(1)
+    let low: u128 = 18446744073709551615
+    assert u[0] == low + 1
+    assert u[1] == (low + 1) * 2
+    assert u[2] == 1
+    assert low == 18446744073709551615
+}

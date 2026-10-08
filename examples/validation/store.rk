@@ -94,13 +94,7 @@ extend Store {
             h.assignee = a
         }
         for tag in patch.add_tags {
-            // Written out rather than `h.has_tag(tag)`: a method declared on
-            // the node type can't be called through a link yet (#1285).
-            mut seen = false
-            for t in h.tags {
-                if t == tag { seen = true }
-            }
-            if !seen { h.tags.push(tag) }
+            if !h.has_tag(tag) { h.tags.push(tag) }
         }
 
         return to_view(h)

@@ -70,14 +70,14 @@ TYPES = {
     # their own carriers.
     "vec": dict(
         decl="Vec<i64>", val="Vec.from([7, 42])", val2="Vec.from([1, 2])",
-        show="42", read="{{{e}[1]}}"),
+        show="42", read="{{{e}[1]}}", owned=True),
 
     # A Map, built from pairs so it fits an expression slot like every other
     # payload (std.collections `Map.from`).
     "map": dict(
         decl="Map<string, i64>",
         val="Map.from([(\"k\", 42)])", val2="Map.from([(\"k\", 7)])",
-        show="42", read="{{{e}[\"k\"]}}"),
+        show="42", read="{{{e}[\"k\"]}}", owned=True),
 
     # A tuple — an aggregate with positional fields rather than named ones.
     "tuple": dict(
@@ -184,12 +184,14 @@ def commit(t, name):
 
 
 def take(t):
-    """`take ` for a linear payload's parameter, nothing for the rest.
+    """`take ` for the parameter of a payload that comes back out, when it's
+    linear or owns its storage; nothing for the rest.
 
-    A borrow hands the value back at the end of the call, so the caller still
-    owes the consume and the callee can't return it (mem.parameters/PM1). A
-    linear payload crossing a call boundary has to be taken."""
-    return "take " if TYPES[t].get("linear") else ""
+    A borrow hands the value back at the end of the call, so the callee can't
+    return it (mem.parameters/PM1, mem.borrowing/S3): for a linear payload the
+    caller still owes the consume, and for a container the caller still holds
+    the same storage (#1452). A Copy payload is copied on the way out."""
+    return "take " if TYPES[t].get("linear") or TYPES[t].get("owned") else ""
 
 
 # ── Carriers ─────────────────────────────────────────────────────
@@ -339,12 +341,28 @@ def c_closure_param(t, ty):
     from a capture, and a different lowering (mem.closures/CP1)."""
     return "", """\
     let x: {decl} = {val}
-    let f = |{take}p: {decl}| {{
+    let f = |p: {decl}| {{
         return p
     }}
     let y = f(x)
 {commit}    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], take=take(t), commit=commit(t, "y"),
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
+           show=read_expr(t, "y"))
+
+
+def c_closure_take_param(t, ty):
+    """The payload handed into a closure's `take` parameter and back out
+    (mem.closures/CP4): the closure owns what each call hands it. The closure
+    comes first so a linear payload is moved the statement after it's made
+    (mem.linear/L7)."""
+    return "", """\
+    let f = |take p: {decl}| {{
+        return p
+    }}
+    let x: {decl} = {val}
+    let y = f(x)
+{commit}    println("got={show}")
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
            show=read_expr(t, "y"))
 
 
@@ -428,6 +446,7 @@ CARRIERS = {
     "tuple":          c_tuple,
     "closure":        c_closure_capture,
     "closure_param":  c_closure_param,
+    "closure_take_param": c_closure_take_param,
     "escaping_closure": c_escaping_closure,
     "shared_box":     c_shared_box,
     "heap_box":       c_heap_box,
@@ -470,17 +489,41 @@ def skips():
         ("for_loop", "heap"): "std.collections/C4 — no linear resource in a Vec",
         ("seq_yield", "heap"): "std.collections/C4 — the items come back in a Vec",
         # A borrow hands the value back when the call returns, so the closure
-        # can't return it, and CP4 says a closure can't take it either — there
-        # is no spelling of "a Heap handed into a closure and back out".
+        # can't return it. `closure_take_param` is the spelling that can.
         ("closure_param", "heap"):
-            "mem.closures/CP4 — a closure can't take ownership through a parameter",
+            "mem.closures/CP1 — a closure can't return the parameter it borrowed",
         # A closure that stays in its frame borrows what it captured, and a
         # borrow is not its to hand out. Nothing bounds how many times a
         # closure runs, so returning a captured `Heap` would give the same box
         # to two callers. The shape that works is the one that outlives its
         # frame and carries the box in, which is the `escaping_closure` row.
+        # A closure can't give away what it captured, whichever kind it is
+        # (CM4), so no closure hands a capture back; a linear one can't even
+        # be carried (E0913).
         ("closure", "heap"):
             "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed",
+        # Same rule for any non-Copy capture, enforced as E0907 (#1449): the
+        # cell used to pass because each call quietly deep-cloned the Vec.
+        ("closure", "vec"):
+            "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)",
+        ("closure", "map"):
+            "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)",
+        # A closure parameter without `take` is a borrow (CP1), so the cell's
+        # `return p` hands the caller its own value back under a second name.
+        # Rejected as E0872 since #1458; the cells were green only because the
+        # parameter had been treated as owned. `closure_take_param` is green.
+        ("closure_param", "vec"):
+            "mem.closures/CP1 — a closure can't return the parameter it borrowed (E0872)",
+        ("closure_param", "map"):
+            "mem.closures/CP1 — a closure can't return the parameter it borrowed (E0872)",
+        # Carrying a capture doesn't make it the closure's to give away
+        # (CM4, #1318): every call would hand out the same value.
+        ("escaping_closure", "vec"):
+            "mem.closures/CM4 — a closure can't return what it captured (E0907)",
+        ("escaping_closure", "map"):
+            "mem.closures/CM4 — a closure can't return what it captured (E0907)",
+        ("escaping_closure", "heap"):
+            "mem.closures/CM4 — a linear value can't be carried into a closure (E0913)",
     }
 
 

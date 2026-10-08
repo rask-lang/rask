@@ -31,7 +31,7 @@ impl Interpreter {
                     value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
                 }
                 if let Some(id) = self.get_resource_id(&value) {
-                    self.resource_tracker.set_var_name(id, name.clone());
+                    self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
@@ -54,7 +54,7 @@ impl Interpreter {
                     value
                 };
                 if let Some(id) = self.get_resource_id(&value) {
-                    self.resource_tracker.set_var_name(id, name.clone());
+                    self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
@@ -496,6 +496,7 @@ impl Interpreter {
                             label: label.clone(),
                             escaped: None,
                             scope: self.env.capture_shared(),
+                            lent: self.env.lent_names(),
                         });
                         let driven = self.call_value(seq, vec![Value::Builtin(
                             crate::value::BuiltinKind::SequenceYield,
@@ -544,6 +545,27 @@ impl Interpreter {
                 match iter_val {
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
+                        // Every iteration first: native rejects the program
+                        // before any of it runs, so none of it runs here either.
+                        for item in &items {
+                            if let (ForBinding::Single(name), Value::Struct(s)) = (binding, item) {
+                                if s.lock().unwrap().name == "FieldInfo" {
+                                    let attrs = super::eval_expr::field_info_attrs(s);
+                                    if let Some((annotation, field, span)) =
+                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs)
+                                    {
+                                        let field = field.map(|f| format!(" `{f}`")).unwrap_or_default();
+                                        return Err(RuntimeDiagnostic::new(
+                                            RuntimeError::Generic(format!(
+                                                "`{}` has no `@{annotation}` to read{field} from — guard the read with `comptime if {name}.has<{annotation}>()`",
+                                                super::eval_expr::field_info_name(s),
+                                            )),
+                                            span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         for item in items {
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
@@ -607,7 +629,12 @@ impl Interpreter {
         // yield was called from.
         self.env.push_scope();
         for (name, cell) in &frame.scope {
-            self.env.define_slot(name.clone(), std::sync::Arc::clone(cell));
+            let cell = cell.clone();
+            if frame.lent.contains(name) {
+                self.env.define_lent(name.clone(), cell);
+            } else {
+                self.env.define_slot(name.clone(), cell);
+            }
         }
         self.define_for_binding(&frame.binding, item);
         let outcome = self.exec_stmts(&frame.body);

@@ -289,7 +289,7 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
             visit_expr(value, index);
             visit_expr(count, index);
         }
-        ExprKind::Closure { body, .. } => {
+        ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => {
             visit_expr(body, index);
         }
         ExprKind::Loop { body, .. } => {

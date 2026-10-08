@@ -59,7 +59,7 @@ func compact_sstables(a: SstMeta, b: SstMeta, new_id: i32, target_level: i32, di
 
     // Strip tombstones at bottom level
     if target_level == MAX_LEVELS - 1 {
-        merged = merged.filter(|kv| !kv.deleted)
+        merged.remove_where(|kv| kv.deleted)
     }
 
     if merged.is_empty() {
@@ -85,14 +85,14 @@ enum CompactionMsg {
 }
 
 func spawn_background_compaction(a: SstMeta, b: SstMeta, new_id: i32, target_level: i32, dir: string, tx: Sender<CompactionMsg>) {
-    spawn(|| {
+    spawn {
         tx.send(CompactionMsg.Started(a.id, b.id))
 
         match compact_sstables(a.clone(), b.clone(), new_id, target_level, dir) {
             SstMeta as meta => tx.send(CompactionMsg.Completed(meta, a.id, b.id))
             CompactionError as e => tx.send(CompactionMsg.Failed(e))
         }
-    }).detach()
+    }.detach()
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
@@ -103,13 +103,10 @@ test "merge entries deduplicates by seq" {
 
     let merged = merge_entries(a, b)
     assert merged.len() == 3
-    let m0 = merged[0]
-    let m1 = merged[1]
-    let m2 = merged[2]
-    assert m0.key == "a"
-    assert m0.value == "new_a"
-    assert m1.key == "b"
-    assert m2.key == "c"
+    assert merged[0].key == "a"
+    assert merged[0].value == "new_a"
+    assert merged[1].key == "b"
+    assert merged[2].key == "c"
 }
 
 test "merge preserves tombstones" {
@@ -120,7 +117,6 @@ test "merge preserves tombstones" {
 
     let merged = merge_entries(a, b)
     assert merged.len() == 1
-    let first = merged[0]
-    assert first.deleted
-    assert first.seq == 5
+    assert merged[0].deleted
+    assert merged[0].seq == 5
 }

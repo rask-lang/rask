@@ -202,12 +202,14 @@ test "std.json — decoding to JsonValue gives the untyped tree" {
         return
     }
     assert v.is_null() == false
-    let obj = v.as_object() ?? Map.new()
-    let list = (obj.get("k") ?? JsonValue.Null).as_array() ?? Vec.new()
+    assert json.encode(v) == "{{\"k\":[1,2]}}"
+    // `as_object` and `as_array` take the value, so the tree is taken apart
+    // from the top: the object out of `v`, then the array out of the object.
+    mut obj = v.as_object() ?? Map.new()
+    let list = (obj.remove("k") ?? JsonValue.Null).as_array() ?? Vec.new()
     assert list.len() == 2
     assert list[0].as_number() ?? 0.0 == 1.0
     assert list[1].as_number() ?? 0.0 == 2.0
-    assert json.encode(v) == "{{\"k\":[1,2]}}"
 }
 
 // Non-ASCII text through both halves. `write_escaped` used to rebuild each byte

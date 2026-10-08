@@ -41,9 +41,11 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 
 | Rule | Description |
 |------|-------------|
-| **S1: One task at a time** | Exactly one task executes Rask code at any moment. It runs until it reaches a scheduling point or completes. No stealing, no reactor thread, no timer thread |
-| **S2: Uniform among runnable** | At each scheduling point, the next task is drawn uniformly at random from the runnable set, from the scheduler stream |
-| **S3: Scheduling points** | Every operation through which one task can observe another: channel send/receive, `with` on a `Shared`, every `Atomic` operation, spawn, join, detach, cancel, sleep, simulated I/O, and clock reads. Nothing else. There is no preemption between them |
+| **S1: One thread at a time** | Exactly one thread executes at any moment: the test body, a `ThreadPool` worker, or one of the green scheduler's workers. It runs until it reaches a scheduling point or has nothing to do. No reactor thread, no timer thread |
+| **S1a: Tasks are the scheduler's** | Tasks run on the green scheduler's workers exactly as in production: the same run queues, work stealing, pinning, parking and preemption (`conc.runtime`). Each choice production leaves to timing comes from the scheduler stream instead: which worker runs next (S2), which deque a steal tries, and when a running task is cut off (S3a) |
+| **S2: Uniform among runnable** | At each scheduling point, the next thread is drawn uniformly at random from the runnable set, from the scheduler stream |
+| **S3: Scheduling points** | Every operation through which one task can observe another: channel send/receive, `with` on a `Shared`, every `Atomic` operation, spawn, join, detach, cancel, sleep, simulated I/O, and clock reads, plus each turn of a worker's loop. Nothing else |
+| **S3a: Seeded preemption** | A task gives its worker back after a number of safe points (`conc.runtime/P1`) drawn from the scheduler stream each time it is switched in, where production uses a time budget. Different seeds cut tasks off at different places; a replay cuts them off at the same ones |
 | **S4: Step counter** | Scheduling points are numbered from 0 as they are reached. The step number is the coordinate in every failure report and the unit `--seeds` search reasons about |
 | **S5: Deadlock is a failure** | All tasks parked, no timer pending, no simulated I/O outstanding → the test fails with a deadlock report naming what each task is waiting on. |
 | **S5a: A step budget bounds the test** | A test that spins — polling an atomic, `try_receive` or `try_lock` — never parks, so S5 can't prove it stuck. After 10 million scheduling steps it fails, with each task's state, at a step the seed decides. `--max-steps N` moves the budget, and the replay line carries it |
@@ -173,10 +175,11 @@ FAIL: tags the build
 | Loop polling an atomic or `try_receive` that nobody will satisfy | Fails when the step budget runs out, naming each task's state | S5a |
 | CPU loop that reaches no scheduling point and never exits | Takes no steps, so the budget never runs out. The runner kills the binary after 5 minutes of real time and says so | S3 |
 | Long CPU work between two channel ops | Runs uninterrupted. No other task could have seen the difference | S3 |
-| Test spawns and never joins | `Handle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
+| Test spawns and never joins | Compile error: an unconsumed `Handle` never gets as far as sim | conc.async/H1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |
-| `using Multitasking` with no worker count | No bound. The production default is one worker per CPU, and a replay can't depend on the machine | determinism/D1 |
-| `using Multitasking(workers: 2)` | At most two task bodies in flight, as in production. Waiting for a slot is a scheduling point | S3 |
+| `using Multitasking` with no worker count | Three or four workers, drawn from the seed. The production default is one worker per CPU, and a replay can't depend on the machine; fewer than three would hide what several workers stealing from each other do | determinism/D1 |
+| `using Multitasking(workers: 2)` | Two workers, as in production | S1a |
+| Task spins on an `Atomic` while the task that sets it waits on the same worker | Terminates. The spinner is cut off at its seeded budget and the worker runs the other | S3a |
 | A test reads a module-level value an earlier test wrote | Sees the initializer, not the write | I7 |
 | `sim.require` test under plain `rask test` | Skipped at that line, reported as sim-only | F3 |
 | `sim.require` test under the interpreter | Skipped the same way — the interpreter has no sim mode | F3 |
@@ -211,11 +214,9 @@ FAIL: tags the build
 
 **I7 (fresh state):** Carrying module state from one test into the next is what an ordinary run does, because the tests share a process. Under sim it would break I3 outright: `-f` replays one test alone, the tests that set the state never run, and the replay line reproduces nothing.
 
-**S3 (no preemption):** An earlier draft preempted CPU-bound code after a seeded number of function calls, like Go. It buys nothing observable. Rask tasks share no memory except through the operations S3 lists: closures move what they capture into a task (`mem.closures`), a link can't cross tasks at all (`mem.ownership/T2`), and there are no data races to interleave. Whatever a task does between two scheduling points, no other task can see it until the next one, so cutting it in half produces no ordering a program can tell apart from not cutting it.
+**S3a (seeded preemption):** An earlier draft had none, on the grounds that it buys nothing observable. Rask tasks share no memory except through the operations S3 lists, so whatever a task does between two scheduling points, no other task can see it until the next one. That holds for what a task can observe, and it is why scheduling points stay where S3 puts them. It stopped holding for progress once tasks ran on the real scheduler (S1a): a scheduling point lets another *thread* run, but only preemption hands a *worker* to another task. A task spinning on an atomic, on a worker whose other task is the one that would set it, waits forever without it. Production cuts it off on a timer; sim cuts it off on a count of the safe points codegen already emits, drawn from the seed.
 
-The one thing that forced care is atomics. They don't park, so under a park-points-only rule a spin on an atomic flag would never let the setter run. Making every atomic operation a scheduling point closes that, and they are all runtime calls already, so the hook exists.
-
-What it saves is large: preemption needs safe points in every function prologue, which codegen doesn't have, and a way to stop a task mid-function, which the scheduler below doesn't have either.
+Making every atomic operation a scheduling point is still what lets a spinner's setter run when the two are on different workers. They are all runtime calls already, so the hook exists.
 
 **S2 (uniform random):** Weighted or history-guided schedulers find bugs faster in papers. Uniform is the one you can hold in your head when reading a failure report, and it composes with seed search: a schedule that needs 1-in-10,000 luck is 10,000 seeds away, and 10,000 seeds is a coffee break.
 
@@ -281,9 +282,11 @@ The consequence is that sim is a sealed world: there is no way to read the machi
 
 Sim is built on the native runtime, as a link-time swap of the runtime's C side. What it finds is what ships.
 
-**Fibers on one thread.** Every task is a stackful fiber on the thread that runs the test: the same fibers, stacks and switch the native scheduler uses, with a task's thread-local runtime state swapped on and off at each switch. At a scheduling point the running task asks the seeded scheduler who is next and switches straight to it. Nothing else runs, so the program is single-threaded and ordering comes from the seed alone.
+**Threads as fibers on one thread.** Sim plays the operating system. Each thread the program would have — the test body, each pool worker, each green worker — is a stackful fiber on the one OS thread that runs the test, with its thread-local runtime state swapped on and off at each switch. At a scheduling point the running thread asks the seeded scheduler who is next and switches straight to it. Nothing else runs, so the program is single-threaded and ordering comes from the seed alone.
 
-The first version was a baton over OS threads: each task on the thread the runtime gave it, all but one asleep on a condition variable. That was enough to make the order a function of the seed, since scheduling points (S3) are all runtime calls and blocking a thread there is safe. Fibers replaced it once they shipped, so the tests run the switch that ships rather than a stand-in for it. The scheduler and its seed draws didn't change; only the handover did.
+Tasks are the green scheduler's, unchanged (S1a): its workers are those threads, and what they run comes off the run queues that ship. A task's wait parks its fiber and frees its worker the production way; only a thread with no task on it parks with sim.
+
+The first version was a baton over OS threads: each task on the thread the runtime gave it, all but one asleep on a condition variable. Fibers replaced it, so the tests ran the switch that ships, but sim still picked the next task from a table of its own and modelled `workers: n` as n slots. So a bug in the green scheduler's queues — a task that lands on no queue, a steal that races a push — couldn't show up under sim at all (#1381). Running the real scheduler with its timing choices drawn from the seed closes that: there is one scheduler, with a seeded mode.
 
 The interpreter was the other option: stepping evaluation makes "pick a random runnable task" nearly free. It also spawns OS threads today, and a scheduler built there would verify orderings the compiled program may not have.
 

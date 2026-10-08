@@ -117,6 +117,15 @@ mod tests {
         assert_eq!(format_source(input), input);
     }
 
+    /// #1358: the same blank line, before a method that opens with an
+    /// attribute and has no modifier or doc comment — the shape of a private
+    /// `@native` method in `stdlib/`.
+    #[test]
+    fn keeps_the_blank_line_before_an_attributed_method() {
+        let input = "extend A {\n    public func one(self) -> i64 {\n        return 1\n    }\n\n    @native(\"x_two\")\n    func two(self) -> i64 {}\n\n    @native(\"x_three\")\n    func three(self) -> i64 {}\n}\n";
+        assert_eq!(format_source(input), input);
+    }
+
     #[test]
     fn keeps_a_comment_between_an_attribute_and_its_method() {
         let input = "extend A {\n    @inline\n    // why it's inline\n    public func a() -> i64 {\n        return 1\n    }\n}\n";

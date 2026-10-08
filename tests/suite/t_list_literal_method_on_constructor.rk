@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `[...]` argument to a method called on a constructor's result.
+//
+// `Bytes.new().add([7, 8])` failed with "expected `Vec<u8>`, found
+// `[i32; 2]`" while `let s = Bytes.new()` then `s.add([7, 8])` worked. The
+// receiver's type isn't known until `new` resolves, so the parameter wasn't
+// either, and the literal typed itself as a fixed array (#1457). It now waits
+// for the call to say what it is.
+
+import bits
+
+struct Bytes {
+    data: Vec<u8>
+}
+
+extend Bytes {
+    func new() -> Bytes {
+        return Bytes { data: Vec.new() }
+    }
+
+    func add(take self, more: Vec<u8>) -> Bytes {
+        mut b = self
+        for x in more {
+            b.data.push(x)
+        }
+        return b
+    }
+}
+
+struct Grid {
+    rows: Vec<Vec<i64>>
+}
+
+extend Grid {
+    func new() -> Grid {
+        return Grid { rows: Vec.new() }
+    }
+
+    func with(take self, rows: Vec<Vec<i64>>) -> Grid {
+        return Grid { rows: rows.clone() }
+    }
+}
+
+struct Opt {
+    xs: Vec<i64?>
+}
+
+extend Opt {
+    func new() -> Opt {
+        return Opt { xs: Vec.new() }
+    }
+
+    func with(take self, xs: Vec<i64?>) -> Opt {
+        mut o = self
+        for x in xs {
+            o.xs.push(x)
+        }
+        return o
+    }
+}
+
+struct Sum {
+    n: i64
+}
+
+extend Sum {
+    func new() -> Sum {
+        return Sum { n: 0 }
+    }
+
+    func last_of(take self, a: [i64; 3]) -> Sum {
+        return Sum { n: self.n + a[2] }
+    }
+}
+
+test "vec parameter" {
+    let b = Bytes.new().add([7, 8, 255])
+    assert b.data.len() == 3
+    assert b.data[2] == 255
+}
+
+test "nested literal" {
+    let g = Grid.new().with([[1, 2], [3]])
+    assert g.rows.len() == 2
+    assert g.rows[0][1] == 2
+    assert g.rows[1][0] == 3
+}
+
+test "optional elements" {
+    let o = Opt.new().with([1, none, 3])
+    assert o.xs.len() == 3
+    assert o.xs[1] is none
+    assert o.xs[2]! == 3
+}
+
+test "fixed array parameter" {
+    let s = Sum.new().last_of([4, 5, 6000000000])
+    assert s.n == 6000000000
+}
+
+test "stdlib builder" {
+    let out = bits.BinaryBuilder.new().write_bytes([7, 8]).write_u8(9).build()
+    assert out.len() == 3
+    assert out[0] == 7
+    assert out[2] == 9
+}

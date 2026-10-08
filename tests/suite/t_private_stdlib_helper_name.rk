@@ -34,8 +34,8 @@ test "a program's type and the stdlib's private one are two types" {
     let p = JsonParser { depth: 3 }
     assert r.label == "mine"
     assert p.depth == 3
-    // json.parse runs on the stdlib's JsonParser, not this one
-    let items = match try json.parse("[1, 2]") {
+    // the untyped decode runs on the stdlib's JsonParser, not this one
+    let items = match try json.decode<JsonValue>("[1, 2]") {
         JsonValue.Array(a) => a.len(),
         _ => 0,
     }

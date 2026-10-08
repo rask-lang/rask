@@ -65,8 +65,6 @@ pub enum ArgAdapt {
     AppendOutParam,
     /// Append iconst(0) (Channel_unbuffered capacity)
     AppendZero,
-    /// Append iconst(8) as elem_size (Shared_read/write)
-    AppendElemSize,
     /// Atomic compare-exchange: append an out_ok pointer (result written there).
     AtomicCas,
     /// parse: append an out-param for the value; the call returns 0/1 status,
@@ -217,6 +215,16 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
+        // A fixed array's receiver seen as a Vec, and the copy back after a
+        // `mutate self` method (#1405).
+        StdlibEntry {
+            mir_name: "rask_vec_view", c_name: "rask_vec_view",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry::simple("Vec_free_view", "rask_vec_free_view", &[types::I64], None, false),
+        StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         // Giving back the reference a captured variable's slot held, on the way
         // to the slot holding another one. Spelled apart from the refcount
@@ -270,6 +278,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
             arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
         },
+        // An element taken out for `with`, `for mutate` or a field write, and
+        // put back afterwards. The read is `v[i]`'s; only who owns the copy
+        // differs (see `Internal::LendsElement`).
+        StdlibEntry {
+            mir_name: "Vec_lend", c_name: "rask_vec_get",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Vec_write_back", c_name: "rask_vec_write_back",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
+            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Vec_clear", "rask_vec_clear", &[types::I64], None, false),
         StdlibEntry::simple("Vec_is_empty", "rask_vec_is_empty", &[types::I64], Some(types::I64), false),
         // CP1-CP3: `capacity()` is the *bound*, not the allocation — `none` when
@@ -307,6 +328,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "Vec_remove_at", c_name: "rask_vec_remove_at",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        // `for x in v.take_all()`: the binding takes the element over, and the
+        // slot is zeroed so the vector's free skips it.
+        // `let old = self.f` before a refill: the field's bytes, handed over.
+        StdlibEntry {
+            mir_name: "Field_take", c_name: "rask_field_take",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Vec_move_out", c_name: "rask_vec_move_out",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
@@ -354,24 +388,22 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
-        // Vec<f64> needs the float total order — the default compares elements
-        // as int64_t, which orders negatives backwards (type.operators/ORD3).
-        StdlibEntry::simple("Vec_sort_f64", "rask_vec_sort_f64", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_str", "rask_vec_sort_str", &[types::I64], None, false),
-        // `{m:debug}` sorting a map's entries by key — the key is at offset 0
-        // of each pair. Args: (vec, key kind, key size in bytes).
+        // Sort by the scalar at offset 0 of each element: `sort()` on a Vec
+        // of scalars, and `{m:debug}` ordering a map's (key, value) pairs.
+        // Args: (vec, RASK_DEBUG_ELEM_* kind, size in bytes).
         StdlibEntry::simple(
-            "Vec_sort_pairs", "rask_vec_sort_pairs",
+            "Vec_sort_scalar", "rask_vec_sort_scalar",
             &[types::I64, types::I64, types::I64], None, false,
         ),
         StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
-        StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64, types::I64], None, false),
         // `sort_by_key`: the elements, the parallel keys, and a comparator over
         // two keys. Panics only on a keys/elements length mismatch, which is
         // lowering's own bug rather than the program's.
         StdlibEntry::simple(
             "Vec_sort_by_keys", "rask_vec_sort_by_keys",
-            &[types::I64, types::I64, types::I64], None, true,
+            &[types::I64, types::I64, types::I64, types::I64], None, true,
         ),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
         StdlibEntry::simple("Vec_swap", "rask_vec_swap", &[types::I64, types::I64, types::I64], None, true),
@@ -887,10 +919,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::DerefOption,
         },
-        // LP13: for mutate writeback — insert/replace value by key (same as Map_insert)
+        // `m[k] = v`: insert or replace, releasing the value it replaces.
         StdlibEntry {
             mir_name: "Map_set", c_name: "rask_map_insert",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+        },
+        // The Map twins of `Vec_lend` / `Vec_write_back`, by key.
+        StdlibEntry {
+            mir_name: "Map_lend", c_name: "rask_map_get_unwrap",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
+        },
+        StdlibEntry {
+            mir_name: "Map_write_back", c_name: "rask_map_write_back",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
@@ -1000,22 +1043,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── File instance methods ─────────────────────────────────
         StdlibEntry::simple("File_close_raw", "rask_file_close", &[types::I64], Some(types::I64), false),
-        // `int64_t rask_file_read_all(RaskStr *out, int64_t file)` — the string
-        // comes back through the out-param, the return value is the ok/err tag
-        // for `string or IoError`. Declared as a 1-arg call returning i64, the
-        // FILE* landed in `out` and the runtime wrote a 16-byte RaskStr over
-        // it (#654).
-        StdlibEntry {
-            mir_name: "File_read_text", c_name: "rask_file_read_all",
-            // (out, file, err_out) — the third is the failure message (#682).
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        // read_bytes/write_bytes return/take a Vec<u8> pointer directly — a
-        // plain heap pointer never looks negative, so the existing
-        // negative-return-means-error convention (used elsewhere for handles
-        // like TcpConnection) applies cleanly with no out-param plumbing.
-        StdlibEntry::neg_err("File_read_bytes", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
+        // `none` or -1 with errno set; stdlib/io.rk builds the IoError. The
+        // negative-means-error adapter that used to answer `read_bytes` itself
+        // left the raw -1 as the error payload (#1340).
+        StdlibEntry::neg_none("File_read_bytes_raw", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
         // The writes and close answer 0 or -1 with errno set; stdlib/io.rk
         // turns -1 into the IoError, which the runtime can't build.
         StdlibEntry::simple("File_write_raw", "rask_file_write", &[types::I64, types::I64], Some(types::I64), false),
@@ -1285,16 +1316,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("json_parse", "rask_json_parse", &[types::I64], Some(types::I64), false),
-        StdlibEntry {
-            mir_name: "json_get_string", c_name: "rask_json_get_string",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("json_get_i64", "rask_json_get_i64", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_get_f64", "rask_json_get_f64", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_get_bool", "rask_json_get_bool", &[types::I64, types::I64], Some(types::I8), false),
-        StdlibEntry::simple("json_decode", "rask_json_decode", &[types::I64], Some(types::I64), false),
 
         // Typed decode: the call site builds a shape describing the target
         // type, then hands it to the decoder (json.c).
@@ -1328,8 +1349,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
-        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
-        StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        // `ThreadPool.spawn { … }` and `Thread.spawn { … }`: see the green
+        // task's entry below for the arguments.
+        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("rask_thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry {
             mir_name: "time_sleep", c_name: "rask_sleep_ns",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -1342,10 +1365,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
         // Two args: the closure, then whether its result is a heap box the task
         // owns and must free if no join ever comes for it (#963).
-        // Panics when the closure is bound to its task (#1356), so the call
+        // Panics when the task block is bound to its task (#1356), so the call
         // records where it is; without that the report named the last line
-        // that happened to record one.
-        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        // that happened to record one. `lower_spawn` calls the three task
+        // entries by their C names: they're the runtime's, not stdlib methods.
+        StdlibEntry::simple("rask_green_closure_spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        // A closure value a task block captured: refused if it captured a link
+        // or a `Local` box itself.
+        StdlibEntry::simple("rask_closure_refuse_crossing", "rask_closure_refuse_crossing", &[types::I64], None, true),
         // One handle for every spawn form (conc.async/H5); the runtime reads
         // which kind it is.
         StdlibEntry::join_outcome("join", "rask_handle_join"),
@@ -1372,6 +1399,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Ensure hooks ──────────────────────────────────────────
         StdlibEntry::simple("rask_ensure_push", "rask_ensure_push", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("rask_ensure_pop", "rask_ensure_pop", &[], None, false),
+        StdlibEntry::simple("rask_unwind_push", "rask_unwind_push", &[types::I64], None, false),
+        StdlibEntry::simple("rask_unwind_pop", "rask_unwind_pop", &[types::I64], None, false),
 
         // ── Resource tracking (C1/C2 consumption cancellation) ───
         StdlibEntry::simple("rask_resource_is_consumed", "rask_resource_is_consumed", &[types::I64], Some(types::I64), false),
@@ -1437,8 +1466,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Shared_write", "rask_shared_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         // Cell — the internal spelling of `Shared<T, Local>`, the strategy that
         // takes no lock (`conc.sync/SH1`). `new` takes
         // the value by pointer plus its size, the same way Shared does; `get`
@@ -1537,7 +1564,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Shared_staged_data", "rask_shared_staged_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_staged_commit", "rask_shared_staged_commit", &[types::I64], None, false),
-        StdlibEntry::simple("Shared_staged_ptr", "rask_shared_staged_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_clone", "rask_shared_clone_i64", &[types::I64], Some(types::I64), false),
@@ -1549,7 +1575,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "Mutex_acquire", c_name: "rask_mutex_acquire",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -1937,8 +1962,6 @@ mod tests {
     ("Vec.any",                   Ok_("t_native_reach_vec")),
     ("Vec.find",                  Ok_("t_native_reach_vec")),
     ("Vec.fold",                  Ok_("t_native_reach_vec")),
-    ("Vec.max",                   Ok_("t_native_reach_vec")),
-    ("Vec.min",                   Ok_("t_native_reach_vec")),
     ("Vec.modify",                Ok_("t_native_reach_vec")),
     ("Vec.position",              Ok_("t_native_reach_vec")),
     ("Vec.read",                  Ok_("t_native_reach_vec")),
@@ -1951,6 +1974,7 @@ mod tests {
     ("Wide.min",                  Gap("#1287")),
     ("Wide.reduce",               Gap("#1287")),
     ("Wide.zip_with",             Gap("#1287")),
+    ("json.decode",               Ok_("t_json_decode_qualified_value")),
     ("json.encode_pretty",        Ok_("t_native_reach_map_math_json")),
     ("math.acos",                 Ok_("t_native_reach_map_math_json")),
     ("math.asin",                 Ok_("t_native_reach_map_math_json")),

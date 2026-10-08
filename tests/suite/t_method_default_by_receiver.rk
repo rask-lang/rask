@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A method's default is the one its receiver's type declares (#1312).
+//
+//     extend Box { func shrink(mutate self, to: usize) -> usize { … } }
+//     v.shrink()     // error[E0310]: expected 1 argument, found 0
+//
+// `Vec.shrink(to: usize = 0)` has a default, and the program's `shrink` was
+// enough to take it away. Defaults were filled during desugaring, before there
+// are types, so a call was matched to its method by name — and with two
+// methods of one name, filling either default could have been the wrong one.
+// The checker fills them now, where it knows which method the call reaches.
+
+struct Box {
+    n: i64
+}
+
+extend Box {
+    func shrink(mutate self, to: usize) -> usize {
+        return to
+    }
+}
+
+struct Meter {
+    reading: i64
+}
+
+extend Meter {
+    func scaled(self, by: i64 = 10, plus: i64 = 0) -> i64 {
+        return self.reading * by + plus
+    }
+
+    func make(start: i64 = 7) -> Meter {
+        return Meter { reading: start }
+    }
+}
+
+struct Gauge {
+    reading: i64
+}
+
+extend Gauge {
+    // Same name and shape as `Meter.scaled`, different default.
+    func scaled(self, by: i64 = 2, plus: i64 = 1) -> i64 {
+        return self.reading * by + plus
+    }
+}
+
+test "a stdlib default survives a program method of the same name" {
+    mut b = Box { n: 1 }
+    assert b.shrink(3) == 3
+    mut v: Vec<i64> = Vec.with_capacity(32)
+    v.push(1)
+    v.shrink()
+    assert v.len() == 1
+}
+
+test "two types, one method name, each its own default" {
+    let m = Meter { reading: 3 }
+    let g = Gauge { reading: 3 }
+    assert m.scaled() == 30
+    assert g.scaled() == 7
+    assert m.scaled(2) == 6
+    assert g.scaled(5) == 16
+}
+
+test "a label skips a defaulted parameter" {
+    let m = Meter { reading: 3 }
+    assert m.scaled(plus: 1) == 31
+    let g = Gauge { reading: 3 }
+    assert g.scaled(plus: 0) == 6
+}
+
+test "a static method's default" {
+    assert Meter.make().reading == 7
+    assert Meter.make(2).reading == 2
+}

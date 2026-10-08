@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that stays in its frame can't give away a non-Copy capture (E0907,
+// E0891, #1449).
+//
+// Such a closure points at the variable (mem.closures/CM1), so its captures
+// are borrowed. `|| b` handed the caller the frame's own `Bag` on every call:
+// `x`, `y` and `b` all claimed one vector. Natively it only stayed safe because
+// each call quietly deep-cloned it. Giving one to a `take` was the same hole.
+
+struct Bag {
+    items: Vec<i64>
+}
+
+func eat(take b: Bag) -> u64 {
+    return b.items.len()
+}
+
+func main() {
+    let b = Bag { items: [1, 2] }
+    // ERROR: returns the borrowed capture itself [E0907]
+    let f = || b
+    let x = f()
+
+    // ERROR: a field of one is the same storage [E0907]
+    let g = || b.items
+    let v = g()
+
+    // ERROR: block body, explicit return [E0907]
+    let h = || {
+        return b
+    }
+    let w = h()
+
+    // ERROR: a `take` gives it away too [E0891]
+    let k = || eat(b)
+    let n = k()
+
+    // Fine: a copy per call, and the cost shows.
+    let c = || b.clone()
+    let y = c()
+
+    // Fine: a Copy part is copied.
+    let m = || b.items.len()
+    let z = m()
+
+    // Fine: a local inside the body shadows the capture.
+    let s = || {
+        let b = Bag { items: [3] }
+        return b
+    }
+    let u = s()
+    println("{x.items.len()} {v.len()} {w.items.len()} {n} {y.items.len()} {z} {u.items.len()}")
+}

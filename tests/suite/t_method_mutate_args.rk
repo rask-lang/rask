@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` argument to a method writes back, as it does for a free function.
+//
+// The interpreter wrote `mutate` parameters back only for plain calls. Through
+// a method, static or instance, the callee changed a copy and `n` kept its old
+// value, while native wrote it. A `mutate self` body that replaced all of
+// `self` had the same problem: the receiver kept its old value.
+
+struct Counter {
+    step: i64
+}
+
+extend Counter {
+    func bump(mutate n: i64) {
+        n = n + 1
+    }
+
+    func advance(self, mutate n: i64) {
+        n = n + self.step
+    }
+
+    func advance_both(self, mutate a: i64, mutate b: i64) {
+        a = a + self.step
+        b = b - self.step
+    }
+}
+
+enum Light {
+    Red
+    Green
+}
+
+extend Light {
+    func flip(mutate self) {
+        match self {
+            Light.Red => self = Light.Green
+            Light.Green => self = Light.Red
+        }
+    }
+}
+
+extend Counter {
+    func replace(mutate self) {
+        self = Counter { step: 99 }
+    }
+}
+
+test "a static method's mutate argument writes back" {
+    mut n: i64 = 1
+    Counter.bump(mutate n)
+    assert n == 2
+}
+
+test "an instance method's mutate argument writes back" {
+    mut n: i64 = 1
+    let c = Counter { step: 10 }
+    c.advance(mutate n)
+    assert n == 11
+}
+
+test "each mutate argument lands on its own place" {
+    mut a: i64 = 0
+    mut b: i64 = 0
+    let c = Counter { step: 3 }
+    c.advance_both(mutate a, mutate b)
+    assert a == 3
+    assert b == -3
+}
+
+test "replacing all of a mutate self reaches the receiver" {
+    mut l = Light.Red
+    l.flip()
+    assert l == Light.Green
+    mut c = Counter { step: 1 }
+    c.replace()
+    assert c.step == 99
+}

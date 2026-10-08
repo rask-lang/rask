@@ -31,7 +31,7 @@ fn visit_operand_uses(op: &MirOperand, f: &mut impl FnMut(LocalId)) {
 }
 
 /// Visit every local read by an rvalue.
-fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
+pub(crate) fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
     match rv {
         MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_uses(o, f),
         MirRValue::Ref(id) => f(*id),
@@ -73,7 +73,7 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             captures.iter().for_each(|c| f(c.local_id));
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(*env_ptr),
-        MirStmtKind::ClosureDrop { closure, .. } => f(*closure),
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(*closure),
         MirStmtKind::ResourceConsume { resource_id } => f(*resource_id),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(*base);
@@ -85,19 +85,30 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             f(*interface_object);
             args.iter().for_each(|a| visit_operand_uses(a, f));
         }
-        MirStmtKind::InterfaceDrop { interface_object } => f(*interface_object),
+        MirStmtKind::InterfaceDrop { interface_object, .. } => f(*interface_object),
         MirStmtKind::Phi { args, .. } => {
             args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
         }
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
-        | MirStmtKind::RcDecContents { local } => f(*local),
+        | MirStmtKind::RcDecContents { local }
+        | MirStmtKind::RcIncContents { local } => f(*local),
         MirStmtKind::ReleaseSlot { addr, .. } => f(*addr),
+        // Bookkeeping: an arm copies the value into the frame's unwind record
+        // and nothing reads it there but a panic. Counted as a read, every
+        // analysis that treats an unknown reader as a keeper would stop
+        // owning what it just armed. `dce` keeps an armed value's def itself.
+        // Zeroing a literal's storage is the same: only the unwind glue reads
+        // the zeroes, and counted as a read it made a struct built for a box
+        // look read by something else, so the box stopped owning it.
         MirStmtKind::ResourceRegister { .. }
+        | MirStmtKind::ZeroAggregate { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop => {}
+        | MirStmtKind::EnsureHookPop
+        | MirStmtKind::UnwindArm { .. }
+        | MirStmtKind::UnwindDisarm { .. } => {}
     }
 }
 
@@ -170,7 +181,9 @@ pub fn visit_stmt_use_locals_mut(
             }
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
-        MirStmtKind::ClosureDrop { closure, .. } => f(closure, UseKind::Value),
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
+            f(closure, UseKind::Value)
+        }
         MirStmtKind::ResourceConsume { resource_id } => f(resource_id, UseKind::Value),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(base, UseKind::Value);
@@ -182,21 +195,27 @@ pub fn visit_stmt_use_locals_mut(
             f(interface_object, UseKind::Value);
             args.iter_mut().for_each(|a| visit_operand_local_mut(a, f));
         }
-        MirStmtKind::InterfaceDrop { interface_object } => f(interface_object, UseKind::Value),
+        MirStmtKind::InterfaceDrop { interface_object, .. } => f(interface_object, UseKind::Value),
         MirStmtKind::Phi { args, .. } => {
             args.iter_mut().for_each(|(_, o)| visit_operand_local_mut(o, f))
         }
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
-        | MirStmtKind::RcDecContents { local } => f(local, UseKind::Value),
+        | MirStmtKind::RcDecContents { local }
+        | MirStmtKind::RcIncContents { local } => f(local, UseKind::Value),
         // The same shape as a `Store`'s destination: the local holds an address
         // and the release reads through it.
         MirStmtKind::ReleaseSlot { addr, .. } => f(addr, UseKind::Value),
+        // Not a read (see `visit_stmt_uses`), but it names the storage, so a
+        // pass that moves the aggregate to another local moves this too.
+        MirStmtKind::ZeroAggregate { local } => f(local, UseKind::Value),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop => {}
+        | MirStmtKind::EnsureHookPop
+        | MirStmtKind::UnwindArm { .. }
+        | MirStmtKind::UnwindDisarm { .. } => {}
     }
 }
 

@@ -104,6 +104,7 @@ fn identifier_completion(source: &str, offset: usize, cached: &CompilationResult
             rask_resolve::SymbolKind::EnumVariant { .. } => (CompletionItemKind::ENUM_MEMBER, "variant".to_string()),
             rask_resolve::SymbolKind::BuiltinType { .. } => (CompletionItemKind::CLASS, "type".to_string()),
             rask_resolve::SymbolKind::BuiltinFunction { .. } => (CompletionItemKind::FUNCTION, "builtin".to_string()),
+            rask_resolve::SymbolKind::ModuleFunction { .. } => (CompletionItemKind::FUNCTION, "func".to_string()),
             rask_resolve::SymbolKind::BuiltinModule { .. } => (CompletionItemKind::MODULE, "module".to_string()),
             rask_resolve::SymbolKind::ExternalPackage { .. } => (CompletionItemKind::MODULE, "package".to_string()),
             rask_resolve::SymbolKind::ExternFunction { .. } => (CompletionItemKind::FUNCTION, "extern func".to_string()),

@@ -2,7 +2,6 @@
 //! Pass 1: declaration collection and checking.
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
-use super::type_table::TypeTable;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, BinaryFieldSpec, BinaryStructInfo, Endian};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
@@ -12,6 +11,14 @@ use super::TypeChecker;
 
 use crate::types::Type;
 use rask_ast::Span;
+
+/// A struct or enum as deriving sees it (`TypeChecker::derive_shape`).
+#[derive(Clone)]
+struct DeriveShape {
+    parts: Vec<Type>,
+    type_params: Vec<String>,
+    methods: Vec<MethodSig>,
+}
 
 impl TypeChecker {
     // ------------------------------------------------------------------------
@@ -44,6 +51,22 @@ impl TypeChecker {
             if self.types.check_alias_cycle(&name, &target).is_none() {
                 self.types.register_alias(name, target);
             }
+        }
+        // `import time as tm`, so `tm.Duration` in a signature finds the
+        // module the way `time.Duration` does.
+        let modules: Vec<(String, String)> = self
+            .resolved
+            .symbols
+            .iter()
+            .filter_map(|sym| match &sym.kind {
+                rask_resolve::SymbolKind::BuiltinModule { module } if sym.name != module.name() => {
+                    Some((sym.name.clone(), module.name().to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (alias, module) in modules {
+            self.types.register_module_alias(alias, module);
         }
     }
 
@@ -173,97 +196,24 @@ impl TypeChecker {
     }
 
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        // Transparent aliases first: a struct field or another declaration's
+        // signature may name one declared further down, and resolving it
+        // before the alias is in the table gives a type nobody declared.
         for decl in decls {
-            match &decl.kind {
-                DeclKind::Struct(s) => {
-                    self.check_declared_type_name(&s.name, "struct", decl.span);
-                    let id = self.register_struct(s);
-                    self.types.record_method_decl(id, decl.id);
-                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+            if let DeclKind::TypeAlias(a) = &decl.kind {
+                if a.is_transparent {
+                    self.register_transparent_alias(a, decl.span);
                 }
-                DeclKind::Enum(e) => {
-                    self.check_declared_type_name(&e.name, "enum", decl.span);
-                    let id = self.register_enum(e, decl.span);
-                    self.types.record_method_decl(id, decl.id);
-                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
-                }
-                DeclKind::Interface(t) => {
-                    self.check_declared_type_name(&t.name, "interface", decl.span);
-                    // DT1: shape-matching stops at the package boundary
-                    if t.is_pub && t.is_duck {
-                        self.errors.push(TypeError::PublicDuckInterface {
-                            name: t.name.clone(),
-                            span: decl.span,
-                        });
-                    }
-                    self.register_interface(t);
-                }
-                DeclKind::Union(u) => {
-                    self.check_declared_type_name(&u.name, "union", decl.span);
-                    self.register_union(u);
-                }
-                // AN6: annotations register as nominal struct types so
-                // `field.has<validate>()` can name them as type arguments.
-                // The restricted shape (AN1) is enforced in annotations.rs.
-                DeclKind::Annotation(a) => {
-                    self.check_declared_type_name(&a.name, "annotation", decl.span);
-                    self.annotation_types.insert(a.name.clone());
-                    let s = rask_ast::decl::StructDecl {
-                        name: a.name.clone(),
-                        type_params: vec![],
-                        fields: a.fields.clone(),
-                        methods: vec![],
-                        is_pub: a.is_pub,
-                        attrs: vec![],
-                        doc: a.doc.clone(),
-                    };
-                    let id = self.register_struct(&s);
-                    self.types.record_method_decl(id, decl.id);
-                }
-                DeclKind::TypeAlias(a) => {
-                    self.check_declared_type_name(&a.name, "type alias", decl.span);
-                    self.register_type_alias(a, decl.span);
-                    // A nominal type (`type MyDoc = interfacepkg.Doc`) belongs to
-                    // whoever wrote it, which is what makes it XC1's way out.
-                    if let Some(id) = self.types.get_type_id(&a.name) {
-                        self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
-                    }
-                }
-                // `const W = 4` then `[i32; W]`. The length has to be known
-                // before any declared type is parsed, so it's recorded in this
-                // pass rather than where the const is checked (#906).
-                DeclKind::Const(c) => {
-                    if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
-                        if let Ok(len) = usize::try_from(*n) {
-                            self.types.register_const_length(c.name.clone(), len);
-                        }
-                    }
-                }
-                DeclKind::Fn(f) => {
-                    // PC1: explicit <T> declarations plus implicit single-letter
-                    // type params from the signature.
-                    let type_param_names = signature_type_param_names(f);
-                    if !type_param_names.is_empty() {
-                        if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
-                            self.fn_type_params.insert(sym_id, type_param_names);
-                            // #314: record bounds so call sites can verify the
-                            // type arg satisfies the declared interface bounds.
-                            let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
-                                .filter(|tp| !tp.bounds.is_empty())
-                                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
-                                .collect();
-                            if !bounds.is_empty() {
-                                self.fn_type_param_bounds.insert(sym_id, bounds);
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
         }
         for decl in decls {
+            let params = owner_type_params(&decl.kind, &self.types);
+            self.with_type_params(params, |this| this.collect_type_declaration(decl));
+        }
+        for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
-                self.register_impl_methods(i, decl.id, decl.span);
+                let params = owner_type_params(&decl.kind, &self.types);
+                self.with_type_params(params, |this| this.register_impl_methods(i, decl.id, decl.span));
             }
         }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
@@ -292,6 +242,98 @@ impl TypeChecker {
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
         self.pre_register_inferred_fns(decls);
+    }
+
+    /// Register one type declaration, with its own type parameters in scope.
+    fn collect_type_declaration(&mut self, decl: &Decl) {
+        match &decl.kind {
+            DeclKind::Struct(s) => {
+                self.check_declared_type_name(&s.name, "struct", decl.span);
+                let id = self.register_struct(s);
+                self.types.record_param_bounds(id, &s.type_params);
+                self.types.record_method_decl(id, decl.id);
+                self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+            }
+            DeclKind::Enum(e) => {
+                self.check_declared_type_name(&e.name, "enum", decl.span);
+                let id = self.register_enum(e, decl.span);
+                self.types.record_param_bounds(id, &e.type_params);
+                self.types.record_method_decl(id, decl.id);
+                self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+            }
+            DeclKind::Interface(t) => {
+                self.check_declared_type_name(&t.name, "interface", decl.span);
+                // DT1: shape-matching stops at the package boundary
+                if t.is_pub && t.is_duck {
+                    self.errors.push(TypeError::PublicDuckInterface {
+                        name: t.name.clone(),
+                        span: decl.span,
+                    });
+                }
+                self.register_interface(t);
+            }
+            DeclKind::Union(u) => {
+                self.check_declared_type_name(&u.name, "union", decl.span);
+                self.register_union(u);
+            }
+            // AN6: annotations register as nominal struct types so
+            // `field.has<validate>()` can name them as type arguments.
+            // The restricted shape (AN1) is enforced in annotations.rs.
+            DeclKind::Annotation(a) => {
+                self.check_declared_type_name(&a.name, "annotation", decl.span);
+                self.annotation_types.insert(a.name.clone());
+                let s = rask_ast::decl::StructDecl {
+                    name: a.name.clone(),
+                    type_params: vec![],
+                    fields: a.fields.clone(),
+                    methods: vec![],
+                    is_pub: a.is_pub,
+                    attrs: vec![],
+                    doc: a.doc.clone(),
+                };
+                let id = self.register_struct(&s);
+                self.types.record_method_decl(id, decl.id);
+            }
+            DeclKind::TypeAlias(a) => {
+                self.check_declared_type_name(&a.name, "type alias", decl.span);
+                self.register_type_alias(a, decl.span);
+                // A nominal type (`type MyDoc = interfacepkg.Doc`) belongs to
+                // whoever wrote it, which is what makes it XC1's way out.
+                if let Some(id) = self.types.get_type_id(&a.name) {
+                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+                }
+            }
+            // `const W = 4` then `[i32; W]`. The length has to be known
+            // before any declared type is parsed, so it's recorded in this
+            // pass rather than where the const is checked (#906).
+            DeclKind::Const(c) => {
+                if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
+                    if let Ok(len) = usize::try_from(*n) {
+                        self.types.register_const_length(c.name.clone(), len);
+                    }
+                }
+            }
+            DeclKind::Fn(f) => {
+                // PC1: explicit <T> declarations plus implicit single-letter
+                // type params from the signature.
+                let type_param_names = signature_type_param_names(f);
+                if !type_param_names.is_empty() {
+                    if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
+                        self.fn_type_params.insert(sym_id, type_param_names);
+                        // #314: record bounds so call sites can verify the
+                        // type arg satisfies the declared interface bounds.
+                        let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
+                            .filter(|tp| !tp.bounds.is_empty())
+                            .map(|tp| (tp.name.clone(), tp.bound_types()))
+                            .collect();
+                        if !bounds.is_empty() {
+                            self.fn_type_param_bounds.insert(sym_id, bounds);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Create fresh type vars for functions with omitted parameter types or return types.
@@ -337,7 +379,10 @@ impl TypeChecker {
                         Some(t) => resolve_type_expr(t, &self.types).unwrap_or(Type::Error),
                     };
                     param_vars.push((p.name.clone(), ty.clone()));
-                    param_types.push(ty);
+                    param_types.push(crate::types::FnParam {
+                        mode: ParamMode::from_flags(p.is_take, p.is_mutate),
+                        ty,
+                    });
                 }
 
                 let ret_ty = if let Some(ok) = inferred_error_ok {
@@ -414,6 +459,70 @@ impl TypeChecker {
         }
     }
 
+    /// G1: every bound and `implements` header names an interface that exists,
+    /// checked once at the declaration. A typo in `func show<T: Printabel>`
+    /// used to surface at each call, and with no caller, nowhere (#1483). The
+    /// call-site check leaves these names alone.
+    pub(super) fn check_bound_names(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Fn(f) => self.check_fn_bound_names(f),
+                DeclKind::Struct(s) => {
+                    self.check_param_bound_names(&s.type_params);
+                    s.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                DeclKind::Enum(e) => {
+                    self.check_param_bound_names(&e.type_params);
+                    e.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                DeclKind::Impl(i) => {
+                    if let Some(interface) = &i.interface {
+                        self.check_interface_named(interface, decl.span);
+                    }
+                    self.check_param_bound_names(&i.where_bounds);
+                    i.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                DeclKind::Interface(d) => {
+                    self.check_param_bound_names(&d.type_params);
+                    for parent in &d.super_interfaces {
+                        self.check_interface_named(parent, decl.span);
+                    }
+                    for a in &d.assoc_types {
+                        for b in &a.bounds {
+                            self.check_interface_named(&b.ty, b.span);
+                        }
+                    }
+                    d.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn check_fn_bound_names(&mut self, f: &FnDecl) {
+        self.check_param_bound_names(&f.type_params);
+    }
+
+    fn check_param_bound_names(&mut self, params: &[rask_ast::decl::TypeParam]) {
+        for b in params.iter().flat_map(|p| &p.bounds) {
+            self.check_interface_named(&b.ty, b.span);
+        }
+    }
+
+    fn check_interface_named(&mut self, interface: &TypeExpr, span: Span) {
+        if !matches!(interface, TypeExpr::Named { .. }) {
+            return;
+        }
+        if crate::interfaces::InterfaceChecker::new(&self.types).names_an_interface(interface) {
+            return;
+        }
+        self.errors.push(TypeError::NoSuchInterface {
+            interface_name: interface.name().unwrap_or_default(),
+            known: self.declared_interface_names(),
+            span,
+        });
+    }
+
     fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span) {
         if is_type_param_name(name) {
             self.errors.push(TypeError::SingleLetterTypeName {
@@ -426,9 +535,8 @@ impl TypeChecker {
 
     /// AT1: does this interface (by its written reference) declare `assoc`?
     fn interface_declares_assoc(&self, interface_ref: &TypeExpr, assoc: &str) -> bool {
-        let Some(base) = interface_ref.name() else { return false };
         matches!(
-            self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
+            self.types.interface_decl(interface_ref).and_then(|id| self.types.get(id)),
             Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
         )
     }
@@ -436,9 +544,8 @@ impl TypeChecker {
     /// GT2/GT4: does a written interface reference give each parameter an argument
     /// (or leave one that has a default)? Reports and returns false if not.
     fn check_interface_arity(&mut self, interface_ref: &TypeExpr, span: rask_ast::Span) -> bool {
-        let Some(base) = interface_ref.name() else { return true };
         let Some(TypeDef::Interface { type_params, .. }) =
-            self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+            self.types.interface_decl(interface_ref).and_then(|id| self.types.get(id))
         else {
             return true;
         };
@@ -451,11 +558,12 @@ impl TypeChecker {
         if found >= required && found <= type_params.len() {
             return true;
         }
-        self.errors.push(TypeError::InterfaceArity {
-            interface_name: TypeTable::conformance_key(interface_ref),
+        self.errors.push(TypeError::TypeArgCount {
+            name: interface_ref.name().unwrap_or_default(),
             expected: if found > type_params.len() { type_params.len() } else { required },
             params,
             found,
+            site: super::errors::TypeArgSite::Interface,
             span,
         });
         false
@@ -487,10 +595,10 @@ impl TypeChecker {
     /// An unknown interface is reported elsewhere, so nothing is said here.
     fn check_block_is_the_contract(&mut self, i: &ImplDecl) {
         let Some(interface) = &i.interface else { return };
-        let interface_name = TypeTable::conformance_key(interface);
+        let interface_name = interface.name().unwrap_or_default();
         let allowed = {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
-            checker.declared_method_names(&interface_name)
+            checker.declared_method_names(interface)
         };
         let Some(allowed) = allowed else { return };
         for m in &i.methods {
@@ -516,14 +624,14 @@ impl TypeChecker {
             None => return,
         };
         let Some(interface) = &i.interface else { return };
-        let Some(base) = interface.name() else { return };
+        let base = self.types.interface_name(interface);
         let interface_ref = interface;
         if rask_ast::operators::operator_interface_method(&base).is_some() {
             return;
         }
         let siblings: Vec<TypeExpr> = self
             .types
-            .applied_conformances(type_id, &base)
+            .applied_conformances(type_id, &self.types.written_interface_ident(interface))
             .into_iter()
             .filter(|k| !self.same_applied_interface(k, interface_ref, &i.target_ty))
             .collect();
@@ -586,7 +694,7 @@ impl TypeChecker {
             let (interface_name, known) = match i.interface.as_ref() {
                 Some(t) => {
                     let base = t.name().unwrap_or_default();
-                    let known = match self.types.get_type_id(&base).and_then(|id| self.types.get(id)) {
+                    let known = match self.types.interface_decl(t).and_then(|id| self.types.get(id)) {
                         Some(TypeDef::Interface { assoc_types, .. }) => {
                             assoc_types.iter().map(|a| a.name.clone()).collect()
                         }
@@ -612,10 +720,9 @@ impl TypeChecker {
         }
 
         if let Some(interface) = &i.interface {
-            let base = interface.name().unwrap_or_default();
             let interface_ref = &interface.to_string();
             if let Some(TypeDef::Interface { assoc_types, .. }) =
-                self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+                self.types.interface_decl(interface).and_then(|id| self.types.get(id))
             {
                 let assoc_types = assoc_types.clone();
                 for a in &assoc_types {
@@ -662,6 +769,7 @@ impl TypeChecker {
                             interface_name: want.to_string(),
                             context: super::InterfaceBoundContext::ConformanceHeader,
                             missing: None,
+                            namesake: false,
                             span: bound_span,
                         });
                     }
@@ -696,7 +804,7 @@ impl TypeChecker {
     pub(super) fn check_conformance_ambiguity(
         &mut self,
         type_id: crate::types::TypeId,
-        interface_key: &TypeExpr,
+        interface_key: &super::type_table::ConformanceKey,
         span: rask_ast::Span,
     ) {
         let here = self.package_of(span).map(str::to_string);
@@ -720,13 +828,13 @@ impl TypeChecker {
         if visible.len() < 2 {
             return;
         }
-        let once = (type_id, interface_key.to_string(), here.unwrap_or_default());
+        let once = (type_id, interface_key.applied.to_string(), here.unwrap_or_default());
         if !self.reported_ambiguous_conformances.insert(once) {
             return;
         }
         self.errors.push(TypeError::AmbiguousConformance {
             ty: self.types.type_name(type_id),
-            interface_name: TypeTable::conformance_key(interface_key),
+            interface_name: interface_key.applied.name().unwrap_or_default(),
             sites: visible,
             span,
         });
@@ -746,7 +854,7 @@ impl TypeChecker {
         }
         let Some(type_id) = self.named_type_id(ty) else { return };
         for key in self.types.ambiguous_conformance_keys(type_id) {
-            if TypeTable::conformance_key(bound) == TypeTable::conformance_key(&key) {
+            if self.types.written_interface_ident(bound) == key.iface {
                 self.check_conformance_ambiguity(type_id, &key, span);
             }
         }
@@ -768,9 +876,12 @@ impl TypeChecker {
             return;
         }
         for key in self.types.ambiguous_conformance_keys(type_id) {
-            let base = TypeTable::conformance_key(&key);
+            let declared = match key.iface {
+                super::type_table::InterfaceIdent::Declared(id) => self.types.get(id),
+                super::type_table::InterfaceIdent::Builtin(_) => None,
+            };
             let declares = matches!(
-                self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
+                declared,
                 Some(TypeDef::Interface { methods, .. })
                     if methods.iter().any(|m| super::type_defs::method_base(&m.name) == method)
             );
@@ -831,11 +942,11 @@ impl TypeChecker {
         }
         let Some(interface) = &i.interface else { return };
         let interface_name = interface;
-        let Some(encoding) = Self::core_interface(&TypeTable::conformance_key(interface_name)) else { return };
+        let Some(encoding) = Self::core_interface(&self.types.interface_name(interface_name)) else { return };
         self.errors.push(TypeError::ForeignCoreConformance {
             ty: i.target_ty.to_string(),
             type_name: i.target_ty.last_segment().unwrap_or_default().to_string(),
-            interface_name: TypeTable::conformance_key(interface_name),
+            interface_name: interface_name.name().unwrap_or_default(),
             owner: None,
             here: match &here {
                 TypeOwner::Package(p) => Some(p.clone()),
@@ -938,19 +1049,24 @@ impl TypeChecker {
             }
         };
         self.types.record_method_decl(type_id, decl_id);
+        if i.interface.is_none() {
+            for m in &i.methods {
+                self.note_method_access(type_id, m);
+            }
+        }
         // G1: record each declared conformance.
         let mut dup_pair = false;
         // CC1/CC2: a `where` clause makes every listed conformance conditional
         // (CD3: one condition per block).
         let condition: Vec<(String, Vec<TypeExpr>)> = i.where_bounds.iter()
-            .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+            .map(|tp| (tp.name.clone(), tp.bound_types()))
             .collect();
         if let Some(interface_name) = &interface_name {
             self.types.record_conformance(type_id, interface_name);
             // XC1: six interfaces belong to the package that declares the type.
             // Checked before the duplicate rule below, because a foreign block
             // claiming one of them is wrong whether or not the owner wrote one.
-            if let Some(encoding) = Self::core_interface(&TypeTable::conformance_key(interface_name)) {
+            if let Some(encoding) = Self::core_interface(&self.types.interface_name(interface_name)) {
                 use super::type_table::TypeOwner;
                 let here = self.type_owner(span);
                 let owner = self.types.declared_by(type_id);
@@ -965,7 +1081,7 @@ impl TypeChecker {
                         // rejected header did.
                         ty: i.target_ty.to_string(),
                         type_name: i.target_ty.last_segment().unwrap_or_default().to_string(),
-                        interface_name: TypeTable::conformance_key(interface_name),
+                        interface_name: interface_name.name().unwrap_or_default(),
                         owner: name_of(&owner),
                         here: name_of(&here),
                         encoding,
@@ -992,7 +1108,7 @@ impl TypeChecker {
                 dup_pair = true;
                 self.errors.push(TypeError::DuplicateConformance {
                     ty: base_name.to_string(),
-                    interface_name: TypeTable::conformance_key(interface_name),
+                    interface_name: interface_name.name().unwrap_or_default(),
                     first,
                     span,
                 });
@@ -1001,11 +1117,25 @@ impl TypeChecker {
                 self.types.record_conformance_condition(type_id, interface_name, condition.clone());
             }
         }
+        // AT10: a binding may name the block's type parameters. It's filed in
+        // the declaration's spelling of them, so a lookup on `Cell1<i32>` can
+        // substitute the instance's arguments by name whatever the header
+        // called them (#1365).
+        let to_declared = self.header_to_declared_params(type_id, &i.target_ty);
+        let normalize = |ty: Type| -> Type {
+            if to_declared.is_empty() {
+                return ty;
+            }
+            let subst: std::collections::HashMap<&str, Type> =
+                to_declared.iter().map(|(h, d)| (h.as_str(), d.clone())).collect();
+            Self::substitute_type_params(&ty, &subst)
+        };
         // AT2/AT8: file each `type Out = ...` under the conformance that asked
         // for it. A binding no listed interface declares is reported at the check
         // pass, where the block's span is available.
         for b in &i.assoc_bindings {
             let Ok(bound_ty) = resolve_type_expr(&b.ty, &self.types) else { continue };
+            let bound_ty = normalize(bound_ty);
             if let (Some(interface), Some(interface_name)) = (&i.interface, &interface_name) {
                 if self.interface_declares_assoc(interface, &b.name) {
                     self.types.record_assoc_binding(type_id, interface_name, &b.name, bound_ty.clone());
@@ -1020,9 +1150,8 @@ impl TypeChecker {
         // code came back unresolved.
         let self_ty = self.resolve_impl_self_type(&i.target_ty);
         if let Some(interface_name) = &interface_name {
-            let base = TypeTable::conformance_key(interface_name);
             if let Some(TypeDef::Interface { assoc_types, .. }) =
-                self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+                self.types.interface_decl(interface_name).and_then(|id| self.types.get(id))
             {
                 let defaults: Vec<(String, TypeExpr)> = assoc_types
                     .iter()
@@ -1036,6 +1165,7 @@ impl TypeChecker {
                         resolve_type_expr(&default, &self.types).ok()
                     };
                     if let Some(ty) = resolved {
+                        let ty = normalize(ty);
                         self.types.record_assoc_binding(type_id, interface_name, &name, ty);
                     }
                 }
@@ -1076,16 +1206,19 @@ impl TypeChecker {
         // blocks call their method `mul`. The applied argument goes into the
         // name it's filed under so the two don't overwrite each other here —
         // and so they don't emit one symbol between them downstream.
+        let interface = i.interface.as_ref().map(|t| (t, self.types.interface_name(t)));
+        if let Some((_, name)) = &interface {
+            self.conformance_interfaces.insert(decl_id, name.clone());
+        }
         let new_methods: Vec<_> = i
             .methods
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
-                if let Some(filed) = rask_ast::operators::conformance_method_name(
-                    &i.target_ty,
-                    i.interface.as_ref(),
-                    &m.name,
-                ) {
+                sig.owner_bounds = condition.clone();
+                if let Some(filed) = interface.as_ref().and_then(|(t, name)| {
+                    rask_ast::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
+                }) {
                     sig.name = filed;
                 }
                 sig
@@ -1128,9 +1261,8 @@ impl TypeChecker {
         // wanting one method (E0889) are each already reported with a message
         // that names the real problem, so they are not reported again here.
         let same_base_sibling = i.interface.as_ref().map_or(false, |iface| {
-            let base = iface.name().unwrap_or_default();
             self.types
-                .applied_conformances(type_id, &base)
+                .applied_conformances(type_id, &self.types.written_interface_ident(iface))
                 .iter()
                 .any(|k| !self.same_applied_interface(k, iface, &i.target_ty))
         });
@@ -1192,10 +1324,9 @@ impl TypeChecker {
     }
 
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
-        // The declaration's own parameters win over types of the same name for
-        // as long as its field types are being parsed (#915).
+        // The declaration's own parameters are in scope (`owner_type_params`),
+        // so a field written `Output` is the parameter, not `os.Output` (#915).
         let type_params = struct_type_param_names(s);
-        let outer_params = self.types.push_type_params(type_params.clone());
         let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
@@ -1204,7 +1335,6 @@ impl TypeChecker {
                 (f.name_span, ty)
             })
             .collect();
-        self.types.pop_type_params(outer_params);
         // ER3/ER4: validate nested `T or E` in field types (deferred — see
         // pending_result_validations; extend-defined `message()` must be visible).
         for (fspan, fty) in &field_tys {
@@ -1311,7 +1441,25 @@ impl TypeChecker {
         if let Some(info) = binary_info {
             self.types.register_binary_info(type_id, info);
         }
+        for m in &s.methods {
+            self.note_method_access(type_id, m);
+        }
         type_id
+    }
+
+    /// V1, V2, V5: who may call `m`, unless it's public. Methods in a
+    /// conformance block never come here: their visibility is the
+    /// conformance's (TV1).
+    fn note_method_access(&mut self, type_id: crate::types::TypeId, m: &FnDecl) {
+        use super::method_visibility::MethodAccess;
+        let access = if m.is_private {
+            MethodAccess::Private
+        } else if !m.is_pub {
+            MethodAccess::Package(self.type_owner(m.span))
+        } else {
+            return;
+        };
+        self.types.record_method_access(type_id, &m.name, access);
     }
 
     pub(super) fn register_enum(&mut self, e: &EnumDecl, span: Span) -> crate::types::TypeId {
@@ -1454,6 +1602,9 @@ impl TypeChecker {
                 .variant_field_names
                 .insert((enum_id, variant), field_names);
         }
+        for m in &e.methods {
+            self.note_method_access(enum_id, m);
+        }
         enum_id
     }
 
@@ -1468,25 +1619,21 @@ impl TypeChecker {
             let assoc_names: Vec<String> =
                 t.assoc_types.iter().map(|a| a.name.clone()).collect();
             for m in &t.methods {
-                let mut allowed = signature_type_param_names(m);
-                // GT1: the interface's own parameters are in scope for every
-                // signature it declares.
-                allowed.extend(t.type_params.iter().map(|p| p.name.clone()));
+                let mut params = interface_type_param_names(t);
+                params.extend(signature_type_param_names(m));
                 self.validate_interface_projections(m, t, &assoc_names);
-                for p in &m.params {
-                    let Some(pty) = &p.ty else { continue };
-                    if p.name == "self" {
-                        continue;
+                self.with_type_params(params, |this| {
+                    for p in &m.params {
+                        let Some(pty) = &p.ty else { continue };
+                        if p.name == "self" {
+                            continue;
+                        }
+                        this.resolve_written(pty, p.name_span);
                     }
-                    if let Ok(ty) = resolve_type_expr(pty, &self.types) {
-                        self.validate_signature_names(&ty, &allowed, p.name_span);
+                    if let Some(rt) = &m.ret_ty {
+                        this.resolve_written(rt, m.span);
                     }
-                }
-                if let Some(rt) = &m.ret_ty {
-                    if let Ok(ty) = resolve_type_expr(rt, &self.types) {
-                        self.validate_signature_names(&ty, &allowed, m.span);
-                    }
-                }
+                });
             }
         }
     }
@@ -1534,14 +1681,14 @@ impl TypeChecker {
             .filter(|p| !p.is_comptime)
             .map(|p| super::InterfaceTypeParam {
                 name: p.name.clone(),
-                bounds: p.bounds.clone(),
+                bounds: p.bound_types(),
                 default: p.default.clone(),
             })
             .collect();
         let assoc_types = t.assoc_types.iter()
             .map(|a| super::InterfaceAssocType {
                 name: a.name.clone(),
-                bounds: a.bounds.clone(),
+                bounds: a.bounds.iter().map(|b| b.ty.clone()).collect(),
                 default: a.default.clone(),
             })
             .collect();
@@ -1558,20 +1705,28 @@ impl TypeChecker {
         });
     }
 
+    /// Put a transparent alias in the table. Runs before any other declaration
+    /// is registered; `register_type_alias` checks its target later, once
+    /// every type it may name is known.
+    fn register_transparent_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
+        // T6: check for cycles before registering
+        if let Some(path) = self.types.check_alias_cycle(&a.name, &a.target) {
+            self.errors.push(TypeError::CyclicTypeAlias {
+                cycle: path.join(" → "),
+                span,
+            });
+            return;
+        }
+        self.types.register_alias(a.name.clone(), a.target.clone());
+    }
+
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
         if a.is_transparent {
-            // T6: check for cycles before registering
-            if let Some(path) = self.types.check_alias_cycle(&a.name, &a.target) {
-                self.errors.push(TypeError::CyclicTypeAlias {
-                    cycle: path.join(" → "),
-                    span,
-                });
-                return;
-            }
-            self.types.register_alias(a.name.clone(), a.target.clone());
             // RC1/RC3: `alias Files = Vec<File>` is itself a rejected type.
-            if let Ok(target) = resolve_type_expr(&a.target, &self.types) {
-                self.note_linear_container_site(span, target);
+            if self.types.alias_target(&a.name).is_some() {
+                if let Ok(target) = resolve_type_expr(&a.target, &self.types) {
+                    self.note_linear_container_site(span, target);
+                }
             }
         } else {
             // `type X = Y` — nominal, gets its own TypeId
@@ -1633,7 +1788,22 @@ impl TypeChecker {
     /// binds them once, and a method claiming them again takes a *second* fresh
     /// variable per call that shadows the first, so `self.value.width()` loses
     /// the type it was already given (#872).
+    ///
+    /// The signature is read with the method's own parameters in scope on top
+    /// of the owner's, which the caller has already pushed.
     pub(super) fn method_signature(
+        &mut self,
+        m: &FnDecl,
+        owner_params: &[String],
+        owner_patterns: &[TypeExpr],
+    ) -> MethodSig {
+        let outer = self.types.push_type_params(signature_type_param_names(m));
+        let sig = self.method_signature_scoped(m, owner_params, owner_patterns);
+        self.types.pop_type_params(outer);
+        sig
+    }
+
+    fn method_signature_scoped(
         &self,
         m: &FnDecl,
         owner_params: &[String],
@@ -1669,10 +1839,24 @@ impl TypeChecker {
                 } else if p.is_mutate {
                     ParamMode::Mutate
                 } else {
-                    ParamMode::Default
+                    ParamMode::Borrow
                 };
                 (ty, mode)
             })
+            .collect();
+
+        let param_names = m
+            .params
+            .iter()
+            .filter(|p| p.name != "self")
+            .map(|p| p.name.clone())
+            .collect();
+
+        let defaults = m
+            .params
+            .iter()
+            .filter(|p| p.name != "self")
+            .map(|p| p.default.clone())
             .collect();
 
         let ret = m
@@ -1682,6 +1866,7 @@ impl TypeChecker {
             .unwrap_or(Type::Unit);
 
         MethodSig {
+            param_names,
             derived: false,
             // The parser folds `<E>` into the declared name for display, so the
             // stored name is `tag<E>`. Method lookup compares against what the
@@ -1695,15 +1880,15 @@ impl TypeChecker {
             // plus every single uppercase letter appearing in the signature.
             //
             // This used to read the explicit list only. A stdlib method almost
-            // never has one — `Thread.spawn(f: func() -> T) -> Handle<T>`
+            // never has one — `Handles.add(take h: Handle<T>)`
             // declares `T` by using it — so nothing gave `T` a variable, the
             // argument had nothing to bind to, and the handle's payload stayed
             // unresolved all the way to MIR (#963).
             type_params: {
-                let declared: std::collections::HashMap<&str, &Vec<TypeExpr>> = m
+                let declared: std::collections::HashMap<&str, &rask_ast::decl::TypeParam> = m
                     .type_params
                     .iter()
-                    .map(|tp| (tp.name.as_str(), &tp.bounds))
+                    .map(|tp| (tp.name.as_str(), tp))
                     .collect();
                 // A name the header introduced belongs to the receiver too,
                 // even though the declaration never mentions it: `K` and `V` in
@@ -1723,13 +1908,15 @@ impl TypeChecker {
                     .map(|name| {
                         let bounds = declared
                             .get(name.as_str())
-                            .map(|b| (*b).clone())
+                            .map(|tp| tp.bound_types())
                             .unwrap_or_default();
                         (name, bounds)
                     })
                     .collect()
             },
             owner_patterns: owner_patterns.to_vec(),
+            owner_bounds: Vec::new(),
+            defaults,
         }
     }
 
@@ -1840,302 +2027,203 @@ impl TypeChecker {
         }
     }
 
-    fn auto_derive_interfaces(&mut self) {
+    /// Which types derive which of `eq`, `hash`, `clone` and `compare`,
+    /// decided all at once.
+    ///
+    /// A type's derive can depend on its own — `Node(Vec<Tree>)`, a JSON value
+    /// holding an array of JSON values — or on a type declared below it.
+    /// Asked one type at a time in declaration order, both answered no: the
+    /// type had no `clone` (#1428), and `==` on it was a type error (#1433).
+    /// Start from every candidate and drop the ones a field rules out until
+    /// nothing changes. `auto_derive_interfaces` then asks its per-field
+    /// questions against this answer and gets the same answer back.
+    fn derivable_methods(&mut self) -> std::collections::HashSet<(crate::types::TypeId, &'static str)> {
         use crate::types::TypeId;
-
-        let type_count = self.types.types.len();
-        for idx in 0..type_count {
+        const DERIVABLE: [&str; 4] = ["eq", "hash", "clone", "compare"];
+        let mut candidates: Vec<(TypeId, &'static str, DeriveShape)> = Vec::new();
+        for idx in 0..self.types.types.len() {
             let id = TypeId(idx as u32);
-            let def = self.types.get(id).unwrap().clone();
-            match &def {
-                TypeDef::Struct { fields, methods, is_resource, type_params, .. } => {
-                    if *is_resource { continue; }
-                    let field_types: Vec<Type> = fields.iter().map(|(_, ty)| ty.clone()).collect();
-                    let self_ty = Self::self_type_with_params(id, type_params);
-                    let mut new_methods = Vec::new();
-
-                    // EQ1: auto-derive eq if all fields are Equatable
-                    if !methods.iter().any(|m| m.name == "eq")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "eq".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: Type::Bool,
-                        });
-                    }
-
-                    // HA1: auto-derive hash if all fields are Hashable (requires eq too)
-                    if !methods.iter().any(|m| m.name == "hash")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "hash"))
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "hash".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::U64,
-                        });
-                    }
-
-                    // DF1: auto-derive default if all fields are Default (structs only)
-                    if !methods.iter().any(|m| m.name == "default")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "default".to_string(),
-                            self_param: SelfParam::None,
-                            params: vec![],
-                            ret: self_ty.clone(),
-                        });
-                    }
-
-                    // CL1: auto-derive clone if all fields are Clone and no raw pointers (CL2)
-                    if !methods.iter().any(|m| m.name == "clone")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "clone".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: self_ty.clone(),
-                        });
-                    }
-
-                    // CO1/ORD2: auto-derive compare if all fields are Comparable
-                    // Comparable is a superinterface of Equal, so eq is implied.
-                    // CO4: f32/f64 excluded (NaN breaks totality).
-                    if !methods.iter().any(|m| m.name == "compare")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "compare"))
-                    {
-                        let ordering_ty = self.ordering_type();
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "compare".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: ordering_ty.clone(),
-                        });
-                        // ORD1: lt/le/gt/ge derived from compare
-                        for op in &["lt", "le", "gt", "ge"] {
-                            if !methods.iter().any(|m| m.name == *op) {
-                                new_methods.push(MethodSig {
-                                    derived: true,
-                                    owner_patterns: Vec::new(),
-                                    type_params: Vec::new(),
-                                    name: op.to_string(),
-                                    self_param: SelfParam::Value,
-                                    params: vec![(self_ty.clone(), ParamMode::Default)],
-                                    ret: Type::Bool,
-                                });
-                            }
-                        }
-                    }
-
-                    // G2: auto-derive debug for all types
-                    if !methods.iter().any(|m| m.name == "debug") {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "debug".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::String,
-                        });
-                    }
-
-                    if !new_methods.is_empty() {
-                        if let Some(TypeDef::Struct { methods, .. }) = self.types.get_mut(id) {
-                            methods.extend(new_methods);
-                        }
-                    }
-
-                    // G1: mark auto-derived conformances so the nominal check
-                    // accepts eligible types without an explicit `T implements`.
-                    let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
-                    let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
-                    let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
-                    let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, &TypeExpr::named("Equal")); }
-                    if hash_ok { self.types.record_conformance(id, &TypeExpr::named("Hashable")); }
-                    if clone_ok { self.types.record_conformance(id, &TypeExpr::named("Cloneable")); }
-                    if cmp_ok { self.types.record_conformance(id, &TypeExpr::named("Comparable")); }
-                    self.types.record_conformance(id, &TypeExpr::named("Debug"));
+            let Some(shape) = self.derive_shape(id) else { continue };
+            for m in DERIVABLE {
+                if shape.methods.iter().any(|s| s.name == m) {
+                    continue;
                 }
-                TypeDef::Enum { variants, methods, type_params, .. } => {
-                    let payload_types: Vec<Type> = variants.iter()
-                        .flat_map(|(_, fields)| fields.iter().cloned())
-                        .collect();
-                    let self_ty = Self::self_type_with_params(id, type_params);
-                    let mut new_methods = Vec::new();
-
-                    // EQ3: auto-derive eq for enums (tag + payload equality)
-                    if !methods.iter().any(|m| m.name == "eq")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "eq".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: Type::Bool,
-                        });
-                    }
-
-                    // HA1: auto-derive hash for enums
-                    if !methods.iter().any(|m| m.name == "hash")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"))
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "hash".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::U64,
-                        });
-                    }
-
-                    // DF2: enums do NOT auto-derive Default
-
-                    // CL1: auto-derive clone for enums
-                    if !methods.iter().any(|m| m.name == "clone")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
-                    {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "clone".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: self_ty.clone(),
-                        });
-                    }
-
-                    // CO1/ORD2: auto-derive compare for enums (variant order, then payload)
-                    if !methods.iter().any(|m| m.name == "compare")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "compare"))
-                    {
-                        let ordering_ty = self.ordering_type();
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "compare".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: ordering_ty.clone(),
-                        });
-                        // ORD1: lt/le/gt/ge derived from compare
-                        for op in &["lt", "le", "gt", "ge"] {
-                            if !methods.iter().any(|m| m.name == *op) {
-                                new_methods.push(MethodSig {
-                                    derived: true,
-                                    owner_patterns: Vec::new(),
-                                    type_params: Vec::new(),
-                                    name: op.to_string(),
-                                    self_param: SelfParam::Value,
-                                    params: vec![(self_ty.clone(), ParamMode::Default)],
-                                    ret: Type::Bool,
-                                });
-                            }
-                        }
-                    }
-
-                    // G2: auto-derive debug for all types
-                    if !methods.iter().any(|m| m.name == "debug") {
-                        new_methods.push(MethodSig {
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "debug".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::String,
-                        });
-                    }
-
-                    if !new_methods.is_empty() {
-                        if let Some(TypeDef::Enum { methods, .. }) = self.types.get_mut(id) {
-                            methods.extend(new_methods);
-                        }
-                    }
-
-                    // G1: mark auto-derived conformances (enum eligibility).
-                    let eq_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "eq"));
-                    let hash_ok = eq_ok && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"));
-                    let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
-                    let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, &TypeExpr::named("Equal")); }
-                    if hash_ok { self.types.record_conformance(id, &TypeExpr::named("Hashable")); }
-                    if clone_ok { self.types.record_conformance(id, &TypeExpr::named("Cloneable")); }
-                    if cmp_ok { self.types.record_conformance(id, &TypeExpr::named("Comparable")); }
-                    self.types.record_conformance(id, &TypeExpr::named("Debug"));
-                }
-                _ => {}
+                candidates.push((id, m, shape.clone()));
             }
+        }
+        let mut set: std::collections::HashSet<(TypeId, &'static str)> =
+            candidates.iter().map(|(id, m, _)| (*id, *m)).collect();
+        loop {
+            self.derive_assumed = set.clone();
+            let keep: std::collections::HashSet<(TypeId, &'static str)> = candidates
+                .iter()
+                .filter(|(id, m, shape)| set.contains(&(*id, *m)) && self.parts_derive(shape, m))
+                .map(|(id, m, _)| (*id, *m))
+                .collect();
+            if keep.len() == set.len() {
+                return set;
+            }
+            set = keep;
         }
     }
 
-    /// Check if a type has a given method (for auto-derive field checking).
+    /// What deriving reads off a struct or enum: its fields' (or payloads')
+    /// types, its type parameters and the methods it already has. `None` for
+    /// anything that derives nothing, a `@resource` struct among them.
+    fn derive_shape(&self, id: crate::types::TypeId) -> Option<DeriveShape> {
+        let (parts, methods, type_params) = match self.types.get(id)? {
+            TypeDef::Struct { fields, methods, is_resource: false, type_params, .. } => {
+                (fields.iter().map(|(_, ty)| ty.clone()).collect(), methods, type_params)
+            }
+            TypeDef::Enum { variants, methods, type_params, .. } => {
+                (variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect(), methods, type_params)
+            }
+            _ => return None,
+        };
+        Some(DeriveShape { parts, type_params: type_params.clone(), methods: methods.clone() })
+    }
+
+    /// Whether a type of this shape derives `method`: each field has it,
+    /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2).
+    fn parts_derive(&self, shape: &DeriveShape, method: &str) -> bool {
+        let all = |m: &str| shape.parts.iter().all(|ty| self.type_has_method_in(ty, m, &shape.type_params));
+        all(method)
+            && (method != "hash" || all("eq"))
+            && (method != "clone" || !shape.parts.iter().any(|ty| matches!(ty, Type::RawPtr(_))))
+    }
+
+    fn auto_derive_interfaces(&mut self) {
+        use crate::types::TypeId;
+
+        self.derive_assumed = self.derivable_methods();
+        for idx in 0..self.types.types.len() {
+            let id = TypeId(idx as u32);
+            let Some(shape) = self.derive_shape(id) else { continue };
+            let (methods, type_params) = (&shape.methods, &shape.type_params);
+            let self_ty = Self::self_type_with_params(id, type_params);
+            let declared = |name: &str| methods.iter().any(|m| m.name == name);
+            let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
+                param_names: Vec::new(),
+                derived: true,
+                owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
+                type_params: Vec::new(),
+                name: name.to_string(),
+                self_param,
+                params,
+                ret,
+                defaults: Vec::new(),
+            };
+            let other = vec![(self_ty.clone(), ParamMode::Borrow)];
+
+            // EQ1/EQ3, HA1, CL1/CL2, CO1/ORD2: each when every field or
+            // payload has it (`parts_derive`). No `default`: there is no
+            // Default interface (type.generics, "No Default Interface").
+            let eq_ok = self.parts_derive(&shape, "eq");
+            let hash_ok = self.parts_derive(&shape, "hash");
+            let clone_ok = self.parts_derive(&shape, "clone");
+            let cmp_ok = self.parts_derive(&shape, "compare");
+
+            let mut new_methods = Vec::new();
+            if eq_ok && !declared("eq") {
+                new_methods.push(sig("eq", SelfParam::Value, other.clone(), Type::Bool));
+            }
+            if hash_ok && !declared("hash") {
+                new_methods.push(sig("hash", SelfParam::Value, vec![], Type::U64));
+            }
+            if clone_ok && !declared("clone") {
+                new_methods.push(sig("clone", SelfParam::Value, vec![], self_ty.clone()));
+            }
+            if cmp_ok && !declared("compare") {
+                let ordering_ty = self.ordering_type();
+                new_methods.push(sig("compare", SelfParam::Value, other.clone(), ordering_ty));
+                // ORD1: lt/le/gt/ge derived from compare
+                for op in ["lt", "le", "gt", "ge"] {
+                    if !declared(op) {
+                        new_methods.push(sig(op, SelfParam::Value, other.clone(), Type::Bool));
+                    }
+                }
+            }
+            // G2: auto-derive debug for all types
+            if !declared("debug") {
+                new_methods.push(sig("debug", SelfParam::Value, vec![], Type::String));
+            }
+            if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. }) = self.types.get_mut(id) {
+                methods.extend(new_methods);
+            }
+
+            // G1: mark auto-derived conformances so the nominal check
+            // accepts eligible types without an explicit `T implements`.
+            if eq_ok { self.types.record_derived_conformance(id, "Equal"); }
+            if hash_ok { self.types.record_derived_conformance(id, "Hashable"); }
+            if clone_ok { self.types.record_derived_conformance(id, "Cloneable"); }
+            if cmp_ok { self.types.record_derived_conformance(id, "Comparable"); }
+            self.types.record_derived_conformance(id, "Debug");
+        }
+        self.derive_assumed.clear();
+    }
+
     /// The Comparable family — `compare` and the four operators ORD1 derives
     /// from it.
     fn is_ordering_method(method: &str) -> bool {
         matches!(method, "compare" | "lt" | "le" | "gt" | "ge")
     }
 
+    /// Check if a type has a given method (for auto-derive field checking).
     pub(super) fn type_has_method(&self, ty: &Type, method: &str) -> bool {
+        self.type_has_method_in(ty, method, &[])
+    }
+
+    /// `type_has_method` inside a generic type's declaration, whose own
+    /// parameters are `params`.
+    ///
+    /// A parameter clones: `.clone()` on a `T` is written once and means the
+    /// instantiation's own clone, a copy for a scalar (#1210). Nothing else
+    /// is known about it — `==` on a bare `T` is a type error.
+    fn type_has_method_in(&self, ty: &Type, method: &str, params: &[String]) -> bool {
         match ty {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
-            // CO4: f32/f64 NOT Comparable (NaN breaks totality)
+            // CO4: floats are Comparable — `compare` is the total order — but
+            // not Hashable (HA4).
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default" | "debug")
+                matches!(method, "eq" | "clone" | "compare" | "debug")
             }
             Type::Bool | Type::Char => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
             Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "debug")
             }
             Type::String => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
+            // A type that names itself in its own fields — `Node(Vec<Tree>)` —
+            // is registered with that use still a name, because the type
+            // didn't exist yet when its fields were read.
+            Type::UnresolvedNamed(name) if params.contains(name) => method == "clone",
+            Type::UnresolvedNamed(name) => match self.types.get_type_id(name) {
+                Some(id) => self.type_has_method_in(&Type::Named(id), method, params),
+                None => false,
+            },
             // Named types: check registered methods
             Type::Named(id) => {
                 if let Some(def) = self.types.get(*id) {
                     match def {
                         TypeDef::Struct { methods, .. } |
                         TypeDef::Enum { methods, .. } => {
+                            let family = match method {
+                                "eq" => Some("eq"),
+                                "hash" => Some("hash"),
+                                "clone" => Some("clone"),
+                                m if Self::is_ordering_method(m) => Some("compare"),
+                                _ => None,
+                            };
                             methods.iter().any(|m| m.name == method)
+                                || family.is_some_and(|f| self.derive_assumed.contains(&(*id, f)))
                         }
                         _ => false,
                     }
@@ -2146,7 +2234,7 @@ impl TypeChecker {
             // Option/Result: delegate to the inner types, except for order.
             //
             // `T?` and `T or E` are operator-only — the wrapper shapes have no
-            // methods (std.api/SD4) — but eq, hash, clone and default are
+            // methods (std.api/SD4) — but eq, hash and clone are
             // generated over the whole slot, so a struct with an optional field
             // still gets them. Ordering has no such implementation: claiming a
             // wrapper is Comparable made the checker derive a `compare` that
@@ -2157,32 +2245,69 @@ impl TypeChecker {
             t if t.is_option() => {
                 !Self::is_ordering_method(method)
                     && t.as_option()
-                        .map(|inner| self.type_has_method(inner, method))
+                        .map(|inner| self.type_has_method_in(inner, method, params))
                         .unwrap_or(false)
             }
             Type::Result { ok, err } => {
                 !Self::is_ordering_method(method)
-                    && self.type_has_method(ok, method)
-                    && self.type_has_method(err, method)
+                    && self.type_has_method_in(ok, method, params)
+                    && self.type_has_method_in(err, method, params)
             }
             // Tuples: all elements must have the method
-            Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method(e, method)),
-            // Arrays: element must have the method
-            Type::Array { elem, .. } => self.type_has_method(elem, method),
+            Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method_in(e, method, params)),
             // `Vec<T>` is Equal and Hashable when `T` is (EQ1/HA1), compared
             // and hashed element by element. Not Comparable: no order is
-            // defined on it.
+            // defined on it. A fixed array borrows `Vec`'s methods, so it
+            // answers the same: claiming an order for it derived a `compare`
+            // that called a `lt` nothing declares (#1413).
+            Type::Array { elem, .. } => {
+                !Self::is_ordering_method(method)
+                    && matches!(method, "eq" | "hash" | "clone" | "debug")
+                    && self.type_has_method_in(elem, method, params)
+            }
             Type::Generic { base, args }
                 if self.types.type_name(*base) == "Vec" =>
             {
                 !Self::is_ordering_method(method)
-                    && matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
+                    && matches!(method, "eq" | "hash" | "clone" | "debug")
                     && match args.first() {
                         Some(crate::types::GenericArg::Type(elem)) => {
-                            self.type_has_method(elem, method)
+                            self.type_has_method_in(elem, method, params)
                         }
                         _ => false,
                     }
+            }
+            // `Map<K, V>` clones entry by entry when both halves do. Missing,
+            // a struct or enum holding a map never derived `clone`.
+            Type::Generic { base, args }
+                if self.types.type_name(*base) == "Map" && method == "clone" =>
+            {
+                args.iter().all(|a| match a {
+                    crate::types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
+                    _ => false,
+                })
+            }
+            // A program's generic type clones when its own declaration does
+            // and each argument does: `Vec<List<T>>` inside `List<T>`.
+            Type::Generic { base, args }
+                if method == "clone"
+                    && !matches!(self.types.declared_by(*base), super::type_table::TypeOwner::Stdlib) =>
+            {
+                self.type_has_method_in(&Type::Named(*base), method, params)
+                    && args.iter().all(|a| match a {
+                        crate::types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
+                        _ => true,
+                    })
+            }
+            Type::UnresolvedGeneric { name, args } if method == "clone" => {
+                match self.types.get_type_id(name) {
+                    Some(base) => self.type_has_method_in(
+                        &Type::Generic { base, args: args.clone() },
+                        method,
+                        params,
+                    ),
+                    None => false,
+                }
             }
             _ => false,
         }
@@ -2318,7 +2443,15 @@ impl TypeChecker {
         }
     }
 
+    /// Check a declaration with the type parameters it owns in scope for
+    /// everything inside it: fields, payloads, and every method's signature
+    /// and body. `check_fn` stacks a method's own on top.
     pub(super) fn check_decl(&mut self, decl: &Decl) {
+        let params = owner_type_params(&decl.kind, &self.types);
+        self.with_type_params(params, |this| this.check_decl_scoped(decl));
+    }
+
+    fn check_decl_scoped(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
@@ -2332,16 +2465,17 @@ impl TypeChecker {
                 // and turns them into the runtime types. Judging the raw
                 // spelling here as well rejected every `@binary` struct there
                 // is, with a message telling you to declare `u16be`.
-                let allowed: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
                 if !s.attrs.iter().any(|a| a == "binary") {
                     let owner = self.types.get_type_id(&s.name);
-                    for field in &s.fields {
-                        if let Ok(ty) = resolve_type_expr(&field.ty, &self.types) {
-                            self.validate_signature_names(&ty, &allowed, field.name_span);
-                            self.reject_non_optional_link(&ty, field.name_span);
-                            if let Some(owner) = owner {
-                                self.reject_recursive_type(owner, &ty, field.name_span);
-                            }
+                    let fields: Vec<_> = s
+                        .fields
+                        .iter()
+                        .filter_map(|f| Some((self.resolve_written(&f.ty, f.name_span)?, f.name_span)))
+                        .collect();
+                    for (ty, span) in fields {
+                        self.reject_non_optional_link(&ty, span);
+                        if let Some(owner) = owner {
+                            self.reject_recursive_type(owner, &ty, span);
                         }
                     }
                 }
@@ -2353,17 +2487,17 @@ impl TypeChecker {
             }
             DeclKind::Enum(e) => {
                 // PC2: variant payload types must name declared types
-                let allowed: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
                 let owner = self.types.get_type_id(&e.name);
-                for variant in &e.variants {
-                    for field in &variant.fields {
-                        if let Ok(ty) = resolve_type_expr(&field.ty, &self.types) {
-                            self.validate_signature_names(&ty, &allowed, field.name_span);
-                            self.reject_non_optional_link(&ty, field.name_span);
-                            if let Some(owner) = owner {
-                                self.reject_recursive_type(owner, &ty, field.name_span);
-                            }
-                        }
+                let payloads: Vec<_> = e
+                    .variants
+                    .iter()
+                    .flat_map(|v| v.fields.iter())
+                    .filter_map(|f| Some((self.resolve_written(&f.ty, f.name_span)?, f.name_span)))
+                    .collect();
+                for (ty, span) in payloads {
+                    self.reject_non_optional_link(&ty, span);
+                    if let Some(owner) = owner {
+                        self.reject_recursive_type(owner, &ty, span);
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
@@ -2376,8 +2510,7 @@ impl TypeChecker {
                 // UT1: implementing an unsafe interface requires `unsafe extend`
                 if let Some(interface) = &i.interface {
                     let interface_name = interface.to_string();
-                    let base = interface.name().unwrap_or_default();
-                    if let Some(type_id) = self.types.get_type_id(&base) {
+                    if let Some(type_id) = self.types.interface_decl(interface) {
                         if let Some(TypeDef::Interface { is_unsafe: true, .. }) = self.types.get(type_id) {
                             if !i.is_unsafe {
                                 self.errors.push(TypeError::UnsafeRequired {
@@ -2388,6 +2521,9 @@ impl TypeChecker {
                         }
                     }
                 }
+                // The receiver is written like any other type: `extend Box2<T, U>`
+                // on a one-parameter `Box2` names nothing.
+                self.resolve_written(&i.target_ty, decl.span);
                 self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
 
                 // G1: verify the declared conformance at the extend site — the
@@ -2422,7 +2558,14 @@ impl TypeChecker {
                             // A header naming an interface that doesn't exist is a
                             // name problem, not a missing method — the block
                             // may well define everything the author meant.
+                            // `check_bound_names` reported a name that isn't
+                            // an interface already.
                             if matches!(e, crate::interfaces::InterfaceError::UnknownInterface(_)) {
+                                if !crate::interfaces::InterfaceChecker::new(&self.types)
+                                    .names_an_interface(&interface_name)
+                                {
+                                    continue;
+                                }
                                 self.errors.push(TypeError::NoSuchInterface {
                                     interface_name: interface_name.to_string(),
                                     known: self.declared_interface_names(),
@@ -2464,6 +2607,7 @@ impl TypeChecker {
                                 interface_name: interface_name.to_string(),
                                 context: super::InterfaceBoundContext::ConformanceHeader,
                                 missing,
+                                namesake: false,
                                 span: decl.span,
                             });
                         }
@@ -2473,22 +2617,22 @@ impl TypeChecker {
                 // method in the block, so a call like `t.wrapping_add(u)`
                 // inside one of these methods needs to see them the same way
                 // a method's own `where` clause would (#838).
-                self.current_impl_type_param_bounds = i.where_bounds.iter()
-                    .map(|tp| (tp.name.clone(), tp.bounds.clone()))
-                    .collect();
-                // `extend Vec<T>` binds `T` for every method in the block,
-                // whether or not a `where` clause says anything about it.
-                self.type_params_in_scope = header_type_params(&i.target_ty, &self.types);
+                self.current_impl_type_param_bounds = self.declared_bounds_for_header(&i.target_ty);
+                for tp in &i.where_bounds {
+                    self.current_impl_type_param_bounds
+                        .entry(tp.name.clone())
+                        .or_default()
+                        .extend(tp.bound_types());
+                }
                 for method in &i.methods {
                     self.check_fn(method);
                 }
                 self.current_impl_type_param_bounds = std::collections::HashMap::new();
-                self.type_params_in_scope.clear();
                 self.current_self_type = None;
             }
             DeclKind::Const(c) => {
                 let (init_ty, declared_ty) = if let Some(ty) = &c.ty {
-                    if let Ok(declared) = resolve_type_expr(ty, &self.types) {
+                    if let Some(declared) = self.resolve_written(ty, decl.span) {
                         let init_ty = self.infer_expr_expecting(&c.init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -2518,6 +2662,10 @@ impl TypeChecker {
                 let old_allowed =
                     std::mem::replace(&mut self.allowed_warnings, allowed_from(&t.attrs));
                 self.in_test_body = true;
+                // A test body is a scope of its own, like a function's. Without
+                // one its locals landed in module scope, and a `let area` in
+                // one test hid `func area` from every declaration after it (#1464).
+                self.push_scope();
                 for stmt in &t.body {
                     self.check_stmt(stmt);
                     // Solve as we go, same as check_fn — a later statement
@@ -2526,6 +2674,7 @@ impl TypeChecker {
                     // or it stays an unbound type var forever (#390).
                     self.solve_constraints();
                 }
+                self.pop_scope();
                 self.in_test_body = false;
                 self.allowed_warnings = old_allowed;
             }
@@ -2533,10 +2682,12 @@ impl TypeChecker {
                 let old_allowed =
                     std::mem::replace(&mut self.allowed_warnings, allowed_from(&b.attrs));
                 self.in_test_body = true;
+                self.push_scope();
                 for stmt in &b.body {
                     self.check_stmt(stmt);
                     self.solve_constraints();
                 }
+                self.pop_scope();
                 self.in_test_body = false;
                 self.allowed_warnings = old_allowed;
             }
@@ -2565,7 +2716,18 @@ impl TypeChecker {
                     }
                 }
             }
-            DeclKind::Union(_) => {} // No methods to check
+            // Registration resolved these quietly, before every type they
+            // may name was in the table. What's wrong with them is reported
+            // here, once.
+            DeclKind::Union(u) => {
+                for field in &u.fields {
+                    self.resolve_written(&field.ty, field.name_span);
+                }
+            }
+            DeclKind::TypeAlias(a) => {
+                let params = a.type_params.iter().map(|p| p.name.clone()).collect();
+                self.with_type_params(params, |this| this.resolve_written(&a.target, decl.span));
+            }
             _ => {}
         }
     }
@@ -2610,31 +2772,40 @@ impl TypeChecker {
 
             let mut methods = vec![
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "parse".to_string(),
                     self_param: SelfParam::None,
-                    params: vec![(bytes.clone(), ParamMode::Default)],
+                    params: vec![(bytes.clone(), ParamMode::Borrow)],
                     ret: parse_result,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "build".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: vec_u8,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "build_into".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(bytes.clone(), ParamMode::Mutate)],
                     ret: build_into_result,
+                    defaults: Vec::new(),
                 },
             ];
 
@@ -2874,6 +3045,25 @@ pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
     )
 }
 
+/// GT1: an interface's own parameters, in scope for every signature it declares.
+pub(super) fn interface_type_param_names(t: &InterfaceDecl) -> Vec<String> {
+    t.type_params.iter().map(|p| p.name.clone()).collect()
+}
+
+/// The type parameters a declaration puts in scope for everything inside it:
+/// fields, payloads, and every method's signature and body. Registering and
+/// checking a declaration both run under these, and a method stacks its own
+/// on top, so a method sees its owner's parameters (#1487).
+pub(super) fn owner_type_params(kind: &DeclKind, types: &crate::TypeTable) -> Vec<String> {
+    match kind {
+        DeclKind::Struct(s) => struct_type_param_names(s),
+        DeclKind::Enum(e) => enum_type_param_names(e),
+        DeclKind::Interface(t) => interface_type_param_names(t),
+        DeclKind::Impl(i) => header_type_params(i, types),
+        _ => Vec::new(),
+    }
+}
+
 /// Walk a parsed type tree, calling `f` on every unresolved base name.
 pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
     use crate::types::GenericArg;
@@ -2908,7 +3098,7 @@ pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
         | Type::SimdVector { elem, .. } => for_each_unresolved_name(elem, f),
         Type::Fn { params, ret } => {
             for p in params {
-                for_each_unresolved_name(p, f);
+                for_each_unresolved_name(&p.ty, f);
             }
             for_each_unresolved_name(ret, f);
         }
@@ -2930,21 +3120,108 @@ pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
 ///
 /// `extend Sequence<(K, V)>` binds `K` and `V`, so the scan goes through the
 /// punctuation rather than splitting on commas.
-pub(super) fn header_type_params(
-    target_ty: &TypeExpr,
-    types: &crate::TypeTable,
-) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    for arg in target_ty.args() {
+impl TypeChecker {
+    /// Header parameter name → the declaration's parameter at that position:
+    /// `Cell1<U> implements Unwrap` on a `struct Cell1<T>` gives `U → T`.
+    /// Empty when the header names none.
+    fn header_to_declared_params(&self, type_id: crate::types::TypeId, target_ty: &TypeExpr) -> Vec<(String, Type)> {
+        let declared = self.declared_type_params(type_id);
+        let header = target_ty.args();
+        if declared.len() != header.len() {
+            return Vec::new();
+        }
+        header
+            .iter()
+            .zip(declared)
+            .filter_map(|(arg, decl)| {
+                let name = arg.bare_name().filter(|n| is_type_param_name(n))?;
+                Some((name.to_string(), Type::UnresolvedNamed(decl)))
+            })
+            .collect()
+    }
+
+    /// The bounds the type's own declaration puts on the parameters an `extend`
+    /// header names. A `Holder<T>` can't exist unless `T: Named`, so every
+    /// method in `extend Holder<U>` may assume `U: Named` (#1364). Matched by
+    /// position, so the header may rename the parameter.
+    fn declared_bounds_for_header(
+        &self,
+        target_ty: &TypeExpr,
+    ) -> std::collections::HashMap<String, Vec<TypeExpr>> {
+        let mut out: std::collections::HashMap<String, Vec<TypeExpr>> = std::collections::HashMap::new();
+        let Some(type_id) = target_ty.name().and_then(|n| self.types.get_type_id(&n)) else {
+            return out;
+        };
+        let declared = self.types.param_bounds(type_id);
+        let header = target_ty.args();
+        if declared.len() != header.len() {
+            return out;
+        }
+        let rename = |name: &str| {
+            declared
+                .iter()
+                .position(|(p, _)| p == name)
+                .map(|i| header[i].clone())
+        };
+        for ((_, bounds), arg) in declared.iter().zip(header) {
+            let Some(name) = arg.bare_name() else { continue };
+            if bounds.is_empty() || !is_type_param_name(name) {
+                continue;
+            }
+            out.entry(name.to_string())
+                .or_default()
+                .extend(bounds.iter().map(|b| b.substitute(&rename)));
+        }
+        out
+    }
+}
+
+/// The type parameters an `extend` or conformance block brings into scope for
+/// its header and every method in it.
+///
+/// A header word is a parameter when it names no type, or when it's the name
+/// the target's declaration gives that position: `extend Holder<Output>` on a
+/// `struct Holder<Output>` is the parameter, not `os.Output` (#1487). A header
+/// that leaves the arguments off (`extend Wrapper` on a `Wrapper<T>`) has the
+/// declaration's names, and a `where` clause can only bound a parameter.
+pub(super) fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<String> {
+    let declared: Vec<String> = i
+        .target_ty
+        .name()
+        .and_then(|n| types.get_type_id(&n))
+        .and_then(|id| match types.get(id)? {
+            TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+                Some(type_params.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    let args = i.target_ty.args();
+    let mut out: Vec<String> = if args.is_empty() { declared.clone() } else { Vec::new() };
+    let mut add = |name: &str| {
+        if !out.iter().any(|o| o == name) {
+            out.push(name.to_string());
+        }
+    };
+    for (pos, arg) in args.iter().enumerate() {
+        if let Some(word) = arg.bare_name() {
+            if declared.get(pos).is_some_and(|d| d == word) {
+                add(word);
+                continue;
+            }
+        }
         arg.walk_paths(&mut |path| {
             if let [word] = path {
                 if word.starts_with(|c: char| c.is_ascii_uppercase())
                     && types.get_type_id(word).is_none()
                 {
-                    out.insert(word.clone());
+                    add(word);
                 }
             }
         });
+    }
+    for tp in &i.where_bounds {
+        add(&tp.name);
     }
     out
 }

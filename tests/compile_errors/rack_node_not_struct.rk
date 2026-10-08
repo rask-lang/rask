@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a rack whose node isn't a struct
+//
+// Spec: mem.racks (RK14)
+//
+// A rack's edges are `Link<T>?` fields on its nodes, and delete nulls them.
+// A scalar, a string or an enum has no fields, so there is nothing for a rack
+// to do with one. Native used to accept `Rack<i32>` and the interpreter
+// failed at the first insert with "expects a struct node" (#1297).
+
+import memory.Rack
+import memory.Link
+
+struct Node {
+    value: i32
+    next: Link<Node>?
+}
+
+enum Colour {
+    Red
+    Blue
+}
+
+// A generic node is checked where it is filled in, not here.
+func count<T>(r: Rack<T>) -> usize {
+    return r.len()
+}
+
+func main() {
+    // ERROR[E0326]: an i32 has no fields for an edge to live in
+    mut a = Rack<i32>.new()
+    let _ = a.insert(1)
+
+    // ERROR[E0326]: the node type is only known from the insert
+    mut b = Rack.new()
+    let _ = b.insert("text")
+
+    // ERROR[E0326]: an enum isn't a node either
+    mut c: Rack<Colour> = Rack.new()
+    let _ = c.insert(Colour.Red)
+
+    // A struct node is what a rack is for.
+    mut d = Rack<Node>.new()
+    let _ = d.insert(Node { value: 1, next: none })
+    println("{count(d)}")
+}

@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Elements leaving a Vec are released exactly once, natively (#1500).
+//
+// Three holes, one theme — who owns an element once it leaves its vector:
+//   - `clear()` dropped the length and released nothing, so every string a
+//     cleared `Vec<string>` held leaked.
+//   - `for x in v.take_all()` read each element as a view of the vector
+//     `take_all` made, then freed that vector with everything in it. A string
+//     came out even (a retain on the move), a `Vec<Vec<T>>` element was freed
+//     twice: once by the vector, once by whoever it was pushed into.
+//   - A container taken out of a container (`vv.remove(i)`, `vv.pop()`) was
+//     never freed — nothing told the frame it owned a `Vec`.
+// The leak and memcheck gates are what hold these; the asserts check the
+// answers didn't move.
+
+struct Rec {
+    name: string
+    n: i64
+}
+
+func words(n: i64, tag: string) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    for i in 0..n {
+        out.push("{tag}-string-number-{i}-past-inline-size")
+    }
+    return out
+}
+
+func nested(n: i64) -> Vec<Vec<string>> {
+    mut out: Vec<Vec<string>> = Vec.new()
+    for i in 0..n {
+        out.push(words(i + 1, "inner{i}"))
+    }
+    return out
+}
+
+test "clear releases what the elements own" {
+    mut v = words(5, "clear")
+    v.clear()
+    assert v.len() == 0
+    v.push("pushed-after-clear-long-enough-for-heap")
+    assert v.len() == 1
+    mut vv = nested(3)
+    vv.clear()
+    assert vv.is_empty()
+    mut recs: Vec<Rec> = Vec.new()
+    recs.push(Rec { name: "record-with-a-heap-string-name", n: 1 })
+    recs.clear()
+    assert recs.is_empty()
+}
+
+test "for over take_all moves each element out" {
+    mut v = words(4, "move")
+    mut dst: Vec<string> = Vec.new()
+    for w in v.take_all() {
+        dst.push(w)
+    }
+    assert dst.len() == 4
+    assert v.len() == 0
+
+    mut vv = nested(4)
+    mut moved: Vec<Vec<string>> = Vec.new()
+    for inner in vv.take_all() {
+        moved.push(inner)
+    }
+    assert moved.len() == 4
+    assert moved[3].len() == 4
+}
+
+test "a take_all body that only reads releases each element" {
+    mut vv = nested(3)
+    mut total = 0
+    for inner in vv.take_all() {
+        total = total + inner.len()
+    }
+    assert total == 6
+}
+
+test "break leaves the rest to the vector take_all made" {
+    mut vv = nested(5)
+    mut kept: Vec<Vec<string>> = Vec.new()
+    for inner in vv.take_all() {
+        if inner.len() == 3 {
+            break
+        }
+        kept.push(inner)
+    }
+    assert kept.len() == 2
+}
+
+test "filtered-out elements stay with the vector take_all made" {
+    mut vv = nested(5)
+    mut odd: Vec<Vec<string>> = Vec.new()
+    for inner in vv.take_all().filter(|x| x.len() % 2 == 1) {
+        odd.push(inner)
+    }
+    assert odd.len() == 3
+}
+
+test "a split through take_all puts survivors back" {
+    mut recs: Vec<Rec> = Vec.new()
+    for i in 0..6 {
+        recs.push(Rec { name: "record-name-long-enough-{i}", n: i })
+    }
+    mut odd: Vec<Rec> = Vec.new()
+    for r in recs.take_all() {
+        if r.n % 2 == 1 {
+            odd.push(r)
+        } else {
+            recs.push(r)
+        }
+    }
+    assert odd.len() == 3
+    assert recs.len() == 3
+    assert recs[1].name == "record-name-long-enough-2"
+}
+
+test "a container removed from a container is the caller's" {
+    mut vv = nested(5)
+    let first = vv.remove(0)
+    assert first.len() == 1
+    vv.remove(0)
+    let last = vv.pop()!
+    assert last.len() == 5
+    vv.pop()
+    assert vv.len() == 1
+}

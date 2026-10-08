@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that outlives its frame still can't give away what it captured
+// (mem.closures/CM4, E0891, E0907, #1318).
+//
+// It carries the capture into its environment, so consuming it looked
+// legitimate, and it was the same double close as the pointing case:
+// `store` below may call what it keeps any number of times, and native
+// closed one handle once per call. A `take` parameter is how a closure gets
+// something to consume.
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) {
+        println("closed {self.id}")
+    }
+}
+
+struct Bag {
+    items: Vec<i64>
+}
+
+func eat(take b: Bag) -> u64 {
+    return b.items.len()
+}
+
+func store(take f: func()) {
+    f()
+    f()
+}
+
+func make_eater() -> func() -> u64 {
+    let b = Bag { items: [1, 2] }
+    // ERROR: the returned closure would hand `b` to `eat` on every call [E0891]
+    return || eat(b)
+}
+
+func make_giver() -> func() -> Bag {
+    let b = Bag { items: [3] }
+    // ERROR: returning a carried capture gives every caller the same `Bag` [E0907]
+    return || b
+}
+
+func consumes_resource() {
+    let c = Conn { id: 1 }
+    store(|| {
+        // ERROR: `store` keeps the closure, and the body would close `c` per call [E0891]
+        c.close()
+    })
+}
+
+// Fine: the value is the closure's parameter, so each call is handed its own.
+func sink(take f: func(take Conn)) {
+    f(Conn { id: 2 })
+    f(Conn { id: 3 })
+}
+
+func good() {
+    sink(|take c: Conn| {
+        c.close()
+    })
+    // Fine: a copy per call.
+    let b = Bag { items: [4] }
+    let f = make_copier(b)
+    println("{f().items.len()}")
+}
+
+func make_copier(take b: Bag) -> func() -> Bag {
+    return || b.clone()
+}
+
+func main() {}

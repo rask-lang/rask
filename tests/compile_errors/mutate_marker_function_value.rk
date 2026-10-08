@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a call through a `func(mutate T)` value without the marker
+// Rejects: mark it at the call site
+//
+// PM4 holds for a function value exactly as for a declared function. The
+// error lands on the argument, and the fix is the call with the marker in it.
+//
+// The yield of a `SequenceMut` source is such a value. Its type comes from the
+// return slot, so a bare `yield(c)` is the missing marker. It used to type the
+// yield from that call instead and report a function-type mismatch at the
+// closure header, asking for a `mutate` closure parameter (#1514).
+
+import sequence.SequenceMut
+
+struct Counter { n: i64 }
+
+struct Bag { items: Vec<Counter> }
+
+extend Bag {
+    func each_mut(mutate self) -> SequenceMut<Counter> {
+        return |yield| {
+            for mutate c in self.items {
+                // ERROR: `yield` mutates `c` — mark it at the call site
+                if !yield(c) {
+                    return
+                }
+            }
+        }
+    }
+}
+
+func bump(mutate c: Counter) {
+    c.n += 1
+}
+
+func apply(f: func(mutate Counter), mutate c: Counter) {
+    // ERROR: `f` mutates `c` — mark it at the call site
+    f(c)
+}
+
+func main() {
+    mut b = Bag { items: Vec.new() }
+    b.items.push(Counter { n: 1 })
+    for mutate c in b.each_mut() {
+        c.n += 1
+    }
+    mut c = Counter { n: 0 }
+    apply(bump, mutate c)
+    println("{c.n}")
+}

@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `[...]` argument that waited for its method still has to fit the parameter.
+//
+// On `Sum.new().last_of([4, 5])` the receiver isn't known when the literal is
+// walked, so the literal waits for the call to resolve before taking its
+// shape (#1457). Waiting must not mean accepting: a wrong length or a slot that
+// isn't a collection is still a mismatch, reported at the literal.
+
+struct Sum {
+    n: i64
+}
+
+extend Sum {
+    func new() -> Sum {
+        return Sum { n: 0 }
+    }
+
+    func last_of(take self, a: [i64; 3]) -> Sum {
+        return Sum { n: self.n + a[2] }
+    }
+
+    func named(take self, s: string) -> Sum {
+        return Sum { n: self.n + s.len() }
+    }
+}
+
+func main() {
+    // ERROR: two elements for a three-element array [E0308]
+    let s = Sum.new().last_of([4, 5])
+    // ERROR: a list literal can't fill a string [E0308]
+    let t = Sum.new().named([1])
+    println("{s.n} {t.n}")
+}

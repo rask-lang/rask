@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A bound naming another module's interface (#1466).
+//
+//     func send<W: io.Writer>(w: W, s: string) -> bool
+//     // error: Expected '>', found '.'
+//
+// A bound was read by a parse of its own that took one name and its generic
+// arguments, so the qualification every other type position accepts stopped
+// it. Bounds now go through the ordinary type-name parse.
+
+import io
+
+func send<W: io.Writer>(w: W, s: string) -> bool {
+    w.write_text(s) catch _ => { return false }
+    return true
+}
+
+// The `where` clause reads its bounds the same way, `+` included.
+func send_all<W>(w: W, parts: Vec<string>) -> i64 where W: io.Writer + Debug {
+    mut n = 0
+    for p in parts {
+        w.write_text(p) catch _ => { return -1 }
+        n += 1
+    }
+    return n
+}
+
+struct Tally {
+    seen: i64
+}
+
+Tally implements io.Writer {
+    func write(self, data: Vec<u8>) -> i64 or io.IoError {
+        return data.len().to<i64>()!
+    }
+    func write_bytes(self, data: Vec<u8>) -> void or io.IoError {
+    }
+    func write_text(self, data: string) -> void or io.IoError {
+        if data.is_empty() {
+            return io.IoError.Other("nothing to write")
+        }
+    }
+}
+
+test "a qualified bound accepts the module's own type" {
+    mut buf = io.Buffer.new()
+    assert send(buf, "hello")
+    assert buf.len() == 5
+}
+
+test "and a program type conforming to it" {
+    let t = Tally { seen: 0 }
+    assert send(t, "hi")
+    assert !send(t, "")
+}
+
+test "in a where clause" {
+    let t = Tally { seen: 0 }
+    assert send_all(t, ["a", "b", "c"]) == 3
+    assert send_all(t, ["a", ""]) == -1
+}

@@ -28,6 +28,16 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
+    /// Two function types that agree on every parameter's type but not on
+    /// how one of them is passed (type.functions/FT1).
+    #[error("function types pass parameter {} differently: expected {expected}, found {found}", index + 1)]
+    FnParamModeMismatch {
+        expected: Type,
+        found: Type,
+        /// Zero-based position of the first parameter whose modes differ.
+        index: usize,
+        span: Span,
+    },
     #[error("undefined type: {0}")]
     Undefined(String),
     /// Inference finished and this binding's type is still open. Either nothing
@@ -46,6 +56,19 @@ pub enum TypeError {
     ArityMismatch {
         expected: usize,
         found: usize,
+        span: Span,
+    },
+    /// A named argument whose label isn't the parameter in its position.
+    /// Labels never reorder a call, so this is either a reordering, a name the
+    /// callee doesn't have, or a callee with no names at all.
+    #[error("named argument `{label}` doesn't match the parameter in its position")]
+    ArgLabelMismatch {
+        callee: String,
+        label: String,
+        /// Zero-based position of the labeled argument.
+        position: usize,
+        /// The callee's parameter names in order; `None` when it has none.
+        params: Option<Vec<String>>,
         span: Span,
     },
     #[error("type {ty} is not callable")]
@@ -79,6 +102,30 @@ pub enum TypeError {
     UnimplementedStdlibMethod {
         ty: String,
         method: String,
+        span: Span,
+    },
+    /// `module.f(…)` where the module has no function `f`. Reached through a
+    /// module with no namespace struct, the call used to be a method lookup on
+    /// the module's placeholder type, which is dropped unreported (#1404).
+    #[error("`{module}` has no function `{function}`")]
+    NoSuchModuleFunction {
+        module: String,
+        function: String,
+        /// A type in the module that declares `function`, and whether it
+        /// takes `self` — `async.join_all` is `Handles.join_all`.
+        owner: Option<(String, bool)>,
+        /// What the module does have, for a near-name suggestion.
+        available: Vec<String>,
+        span: Span,
+    },
+    /// `module.f(…)` where the module declares `f` without `public`. The
+    /// stdlib is its own package, so that member is the module's (#1410).
+    #[error("`{module}.{function}` is not public")]
+    PrivateModuleFunction {
+        module: String,
+        function: String,
+        /// The module's public functions.
+        public: Vec<String>,
         span: Span,
     },
     /// std.fmt/D4: `{}` (and a bare `to_string()`) needs `Displayable`, and
@@ -255,6 +302,13 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    /// mem.racks/RK14: a rack's node is a struct. Its edges are `Link<T>?`
+    /// fields, and a scalar, a string or an enum has none for `delete` to null.
+    #[error("`Rack<{node}>`: a rack's nodes have to be structs")]
+    RackNodeNotStruct {
+        node: Type,
+        span: Span,
+    },
     /// A struct or enum that reaches itself through inline storage only, so no
     /// finite layout exists. `through` spells the chain when it goes via other
     /// types: `Node -> Edge -> Node`.
@@ -271,6 +325,24 @@ pub enum TypeError {
     LinkNotOrderable {
         op: String,
         recv: String,
+        span: Span,
+    },
+    /// type.generics/CO1: `<` or `compare` on a `Vec`, fixed array, `Map` or
+    /// `Set`, none of which is Comparable. `op` is what the source wrote;
+    /// `noun` is "a sequence", "a map" or "a set".
+    #[error("`{op}` on `{recv}`: {noun} has no order")]
+    CollectionNotOrderable {
+        op: String,
+        recv: String,
+        noun: String,
+        span: Span,
+    },
+    /// mem.racks/RK1: a `take self` method called through a link would move
+    /// the node out of the rack that owns it.
+    #[error("`{method}` takes its `{node}`, and a link only reaches one")]
+    TakeSelfThroughLink {
+        method: String,
+        node: String,
         span: Span,
     },
     #[error("`{method}` on a `Shared` doesn't take a closure")]
@@ -413,12 +485,6 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
-    #[error("parameter `{param_name}` requires `own` annotation at call site")]
-    MissingOwnAnnotation {
-        param_name: String,
-        param_index: usize,
-        span: Span,
-    },
     #[error("unexpected `{annotation}` annotation for parameter `{param_name}`")]
     UnexpectedAnnotation {
         annotation: String,
@@ -433,6 +499,8 @@ pub enum TypeError {
         callee: String,
         arg: String,
         param_name: String,
+        /// The call as it should read, for the fix: `f(mutate c)`.
+        call: String,
         span: Span,
     },
     /// PM4: an argument going into a `mutate` parameter is written
@@ -442,6 +510,8 @@ pub enum TypeError {
         callee: String,
         arg: String,
         param_name: String,
+        /// The call as it should read, for the fix: `f(mutate c)`.
+        call: String,
         span: Span,
     },
     /// mem.borrowing/W1: a `with` source that is neither an element reached by
@@ -520,6 +590,18 @@ pub enum TypeError {
     #[error("this `match` on `{ty}` has no arm for the values the others don't name")]
     MatchNeedsWildcard {
         ty: String,
+        /// A guarded arm would have taken the rest, had it no guard.
+        guarded: bool,
+        span: Span,
+    },
+    /// `for mutate x in src` where `src` lends its items read-only
+    /// (type.sequence/SEQ45). A `Sequence<T>` hands each item to the body as a
+    /// borrow, so the writes went to a copy and vanished (#1512).
+    #[error("`for mutate` over a `{found}`, which lends its items read-only")]
+    ForMutateReadOnlySource {
+        found: Type,
+        /// A chain head walked through its `as_sequence()` — a `Set`.
+        through_as_sequence: bool,
         span: Span,
     },
     /// `break 42` from a `while` or a `for` (ctrl.flow/CF20, CF21).
@@ -564,6 +646,10 @@ pub enum TypeError {
         /// `Hashable` needs `eq` as well as `hash`, and nothing said so. The
         /// second half is the signature to write.
         missing: Option<(String, String)>,
+        /// The type implements another interface of this name — the stdlib's,
+        /// shadowed by the program's own (#1329). "Missing methods" would be
+        /// wrong: it may well have every one of them.
+        namesake: bool,
         span: Span,
     },
     /// A bound, conformance header or cast naming an interface that doesn't exist.
@@ -636,15 +722,20 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// GT2: a bound or conformance header giving a generic interface the wrong
-    /// number of arguments, or leaving an undefaulted one out.
-    #[error("`{interface_name}` takes {expected} type argument(s), found {found}")]
-    InterfaceArity {
-        interface_name: String,
-        /// Parameters as declared, for the message: `["Rhs"]`.
+    /// A generic name written with the wrong number of type arguments: a bound
+    /// or conformance header on an interface (GT2), or an enum named at a
+    /// variant, `Slot<i64, i64>.Full(1)` (#1480), or a type written wherever
+    /// a type goes, `func f(b: Box2<i64, string>)` (#1481).
+    #[error("`{name}` takes {expected} type argument(s), found {found}")]
+    TypeArgCount {
+        name: String,
+        /// Parameters as declared, for the message: `["Rhs"]`. Empty for a
+        /// type that isn't generic.
         params: Vec<String>,
         expected: usize,
         found: usize,
+        /// The fix differs by where it was written.
+        site: TypeArgSite,
         span: Span,
     },
 
@@ -759,6 +850,8 @@ pub enum TypeError {
     #[error("non-exhaustive match: missing variants {missing:?}")]
     NonExhaustiveMatch {
         missing: Vec<String>,
+        /// The match has guarded arms, which don't count toward coverage.
+        guarded: bool,
         span: Span,
     },
 
@@ -802,12 +895,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// CC1: `spawn` used outside any `using Multitasking` block
-    #[error("`spawn` must be inside a `using Multitasking {{ ... }}` block")]
-    SpawnOutsideBlock {
-        span: Span,
-    },
-
     /// T6: cyclic type alias
     #[error("cyclic type alias: {cycle}")]
     CyclicTypeAlias {
@@ -836,6 +923,17 @@ pub enum TypeError {
     FieldMethodCollision {
         ty: String,
         name: String,
+        span: Span,
+    },
+
+    /// V1, V2, V5: a method called from code that may not see it.
+    /// `declared_by` names the package for a method without `public`; `None`
+    /// is a `private` one.
+    #[error("`{ty}.{method}` is not visible here")]
+    MethodNotVisible {
+        ty: String,
+        method: String,
+        declared_by: Option<String>,
         span: Span,
     },
 
@@ -1330,6 +1428,10 @@ pub enum InterfaceBoundContext {
     InterfaceObjectCast,
     /// `f<T: Interface>(…)` at a call site — the type argument doesn't qualify.
     GenericBound,
+    /// The same, for a type argument nobody can declare a conformance on — a
+    /// primitive, an optional, a result, a tuple. Suggesting `T implements I`
+    /// there names a block that can't be written.
+    BuiltinTypeBound,
     /// `T implements Interface { … }` — the block claims a conformance it doesn't
     /// deliver.
     ConformanceHeader,
@@ -1340,6 +1442,11 @@ pub enum InterfaceBoundContext {
     /// `T: Copy` — the copy rule, not a method list, so there is nothing to
     /// implement either.
     CopyBound,
+    /// `struct Holder<T: Named>` instantiated with a `T` that isn't — by a
+    /// literal, a variant or a written type. No call is involved, so "the type
+    /// argument at the call" named nothing the author wrote (#1462).
+    /// `declarable` is false where no conformance block can be written.
+    TypeParamBound { declarable: bool },
 }
 
 /// Why an `as` cast is rejected — drives the diagnostic and suggested fix.
@@ -1363,7 +1470,34 @@ pub enum InvalidCastClass {
     Other,
 }
 
+/// Where a miscounted generic was written, for `TypeError::TypeArgCount`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeArgSite {
+    /// A bound or conformance header: the arguments are substituted through
+    /// the interface's signatures.
+    Interface,
+    /// A variant naming its enum, where writing none also works: the payload
+    /// decides.
+    Variant,
+    /// Anywhere else a type is written: a parameter, field, annotation, cast,
+    /// struct literal.
+    Type,
+}
+
 impl TypeError {
+    /// Place an error from type resolution. A `TypeExpr` carries no position,
+    /// so `resolve_type_expr` builds its errors without one and whoever knows
+    /// where the type was written puts it there.
+    pub fn at(self, span: Span) -> Self {
+        match self {
+            TypeError::GenericError(msg, _) => TypeError::GenericError(msg, span),
+            TypeError::TypeArgCount { name, params, expected, found, site, .. } => {
+                TypeError::TypeArgCount { name, params, expected, found, site, span }
+            }
+            other => other,
+        }
+    }
+
     /// Rewrite every type this error carries.
     ///
     /// Diagnostics print a `Type`, and `Type::Named(id)` carries no name — the
@@ -1405,6 +1539,7 @@ impl TypeError {
             | ForceUnwrapOnNonOptional { found, .. }
             | GuardElseMustDiverge { found, .. }
             | NotIterable { found, .. }
+            | ForMutateReadOnlySource { found, .. }
             | NotOnOptional { found, .. }
             | PresenceTestOnResult { found, .. }
             | TakeOnNonOptional { found, .. }
@@ -1423,6 +1558,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            RackNodeNotStruct { node, .. } => *node = f(node),
             UnhashableMapKey { key, .. } => *key = f(key),
             ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
@@ -1445,7 +1581,7 @@ impl TypeError {
                 *src_ty = f(src_ty);
             }
 
-            Mismatch { expected, found, .. } => {
+            Mismatch { expected, found, .. } | FnParamModeMismatch { expected, found, .. } => {
                 *expected = f(expected);
                 *found = f(found);
             }
@@ -1493,7 +1629,10 @@ impl TypeError {
             | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
+            | ArgLabelMismatch { .. }
             | UnimplementedStdlibMethod { .. }
+            | NoSuchModuleFunction { .. }
+            | PrivateModuleFunction { .. }
             | NotDisplayable { .. }
             | UnboundedTypeParamMethod { .. }
             | CannotInfer { .. }
@@ -1516,6 +1655,8 @@ impl TypeError {
             | NonOptionalLink { .. }
             | RecursiveTypeHasNoSize { .. }
             | LinkNotOrderable { .. }
+            | CollectionNotOrderable { .. }
+            | TakeSelfThroughLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
             | StringIsImmutable { .. }
@@ -1529,7 +1670,6 @@ impl TypeError {
             | TornLockUpdate { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
-            | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
             | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }
@@ -1550,7 +1690,7 @@ impl TypeError {
             | MethodOutsideInterface { .. }
             | StaticCallOnInterface { .. }
             | DuplicateMethod { .. }
-            | InterfaceArity { .. }
+            | TypeArgCount { .. }
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
             | InherentMethodOnPrimitive { .. }
@@ -1564,12 +1704,12 @@ impl TypeError {
             | NonExhaustiveMatch { .. }
             | UndefinedName { .. }
             | UnknownContext { .. }
-            | SpawnOutsideBlock { .. }
             | CyclicTypeAlias { .. }
             | CallableFieldNotAMethod { .. }
             | TakeOnCopyType { .. }
             | FieldMethodCollision { .. }
             | PrivateFieldAccess { .. }
+            | MethodNotVisible { .. }
             | MissingFields { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }

@@ -85,6 +85,15 @@ pub enum SymbolKind {
         /// The built-in module kind.
         module: BuiltinModuleKind,
     },
+    /// A stdlib module's function brought in bare by `import m.f` (IM4) —
+    /// `sleep` after `import time.sleep`. The same function `m.f(…)` calls:
+    /// one declared in the module's `extend m { }` block.
+    ModuleFunction {
+        /// The module the function lives in (`time`).
+        module: String,
+        /// The function's own name there, which an alias doesn't change.
+        function: String,
+    },
     /// An external package namespace (for `import pkg` where pkg is a real package).
     ExternalPackage {
         /// The PackageId this namespace refers to.
@@ -162,8 +171,6 @@ pub enum BuiltinFunctionKind {
     Panic,
     /// format - string formatting
     Format,
-    /// spawn - spawn a concurrent task
-    Spawn,
     /// transmute - reinterpret bits as different type (unsafe)
     Transmute,
     /// todo - panic with "not yet implemented"
@@ -301,8 +308,6 @@ pub const BUILTIN_FUNCTIONS: &[BuiltinFnEntry] = &[
     bf("todo", BuiltinFunctionKind::Todo, true),
     bf("unreachable", BuiltinFunctionKind::Unreachable, true),
     bf("transmute", BuiltinFunctionKind::Transmute, true),
-    // `spawn` is BF1's eighth. It's registered by `async`'s companions rather
-    // than here, because `spawn(|| …)` needs `using Multitasking` in scope.
     bf("min", BuiltinFunctionKind::Min, false),
     bf("max", BuiltinFunctionKind::Max, false),
     bf("clamp", BuiltinFunctionKind::Clamp, false),
@@ -311,7 +316,8 @@ pub const BUILTIN_FUNCTIONS: &[BuiltinFnEntry] = &[
     bf("drop", BuiltinFunctionKind::Drop, false),
 ];
 
-/// BF1's set — the names BF3 reserves.
+/// BF1's set — the names BF3 reserves. `spawn` isn't a function but starts a
+/// task block (`spawn { … }`), so no declaration may take the name either.
 pub fn is_reserved_builtin_fn(name: &str) -> bool {
     name == "spawn"
         || BUILTIN_FUNCTIONS.iter().any(|f| f.name == name && f.reserved)

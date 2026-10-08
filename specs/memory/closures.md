@@ -23,9 +23,29 @@ compiler works it out.
 
 | Rule | Description |
 |------|-------------|
-| **CM1: Outliving decides** | A closure carries its captures exactly when it outlives its frame: handed to a `take` parameter (which is where `spawn` lives), returned, or stored into a field. Everything else points |
-| **CM2: Carrying consumes** | A carried non-Copy capture is moved, so the outer name is gone and a later use is the ordinary use-after-move error. A Copy capture is copied and the outer name is fine (VS1/VS2) |
+| **CM1: Outliving decides** | A closure carries its captures exactly when it outlives its frame: handed to a `take` parameter, returned, or stored into a field. Everything else points |
+| **CM2: Carrying moves** | A carried non-Copy capture is moved into the environment, so the outer name is gone and a later use is the ordinary use-after-move error. A Copy capture is copied and the outer name is fine (VS1/VS2) |
 | **CM3: Lent parameters are still borrowed** | A carrying closure can't move what the frame doesn't own. A `param: T`, `mutate param: T` or `self` belongs to the caller and is still there when the call returns, so it stays borrowed and SL4's limit rides the return |
+| **CM4: A closure never consumes what it captured** | The body may read and write a capture, never give it away: not to a `take`, not as its result, not by a `take self` method. Pointing or carrying makes no difference (E0891, E0907). A linear value can't be carried at all, since nothing could ever consume it there (E0913). What a closure consumes comes in as a `take` parameter (CP4). A task block isn't a closure and may (`conc.async/S6`) |
+
+CM4 is there because nothing says how many times a closure runs. One
+`close()` in the body reads as one consumption and is any number at runtime:
+
+```rask
+func twice(take f: func()) { f()  f() }
+
+let c = Conn.open(1)
+twice(|| { c.close() })                // error[E0891]: one `c`, closed once per call
+
+let close_it = |take c: Conn| { c.close() }
+close_it(Conn.open(1))
+close_it(Conn.open(2))                  // each call is handed its own Conn
+```
+
+A `take` parameter is a fresh value on every call, so consuming it is fine,
+and handing the same value in twice is the ordinary use-after-move error at the
+call site. The `twice` above closed one handle twice on native before this rule;
+the interpreter's runtime flag caught it, native has none.
 
 ## Capture rules
 
@@ -121,17 +141,11 @@ nowhere else for the borrow to go.
 
 **Which means the signature has to be true.** SL4 reads parameter modes and nothing else —
 there is no "and if the mode can't be determined, assume the worst" clause, because a rule
-whose meaning depends on what the compiler managed to look up is not a rule. `spawn` is the
-case that proves it: it is declared
-
-```rask
-public func spawn(take f: func() -> T) -> Handle<T>
-```
-
-and the `take` is not decoration. The task keeps the closure and runs it after the call
-returns, so a scope-limited closure handed to `spawn` is the MC3 error, and that falls out of
-the signature rather than out of `spawn` being special. It said `f: func() -> T` for a long
-time — a borrow — which is how `conc.tasks/T3` came to be enforced by a guess.
+whose meaning depends on what the compiler managed to look up is not a rule. `spawn` was the
+case that proved it while it took a closure: it was declared `spawn(f: func() -> T)` for a
+long time, a borrow, though the task kept the closure and ran it after the call returned —
+which is how `conc.tasks/T3` came to be enforced by a guess. A task is a block now
+(`conc.async/S1`), and the block is carried into the task by construction.
 
 I had this written as a flat "scope-limited closures cannot escape", which is what SL1-SL2 were
 originally drafted against. That was never what the compiler did, and it contradicted the escape
@@ -147,7 +161,7 @@ Parameters are independent of capture mode. Both closure modes use the same para
 | **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
 | **CP2: Mutable parameter** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. The type is required for the same reason a public function's is — this parameter writes back to the caller, so the shape it writes gets named |
 | **CP3: Only parameters live in the pipes** | Everything in `\|…\|` is a parameter. Captures never appear there — they're inferred (MC1) — so there is nothing for a reader to disambiguate |
-| **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
+| **CP4: Take parameter** | `\|take x: T\|` takes ownership of its argument, like a function's `take` parameter: the body owes what it was handed, and a call through it moves the argument (`type.functions/FT1`). Its type is `func(take T)`, so it fills `func(take T)` slots; `\|mutate x: T\|` fills `func(mutate T)` (FT2). The type can be left to the slot, as for a borrowed parameter: nothing writes back through this one |
 
 <!-- test: parse -->
 ```rask
@@ -156,6 +170,9 @@ let print_name = |u: User| print(u.name)
 
 // Mutable-borrow parameter (explicit type required)
 let grow = |mutate item: Item| { item.level += 1 }
+
+// Take parameter: the body owns what each call hands it
+let finish = |take c: Conn| { c.close() }
 ```
 
 **Return semantics:** `return` inside a closure exits the closure, not the enclosing function
@@ -240,54 +257,63 @@ and it is not needed once captures are inferred.
 
 ## spawn
 
-`spawn` declares `take f: func() -> T`, so a closure handed to it outlives the frame and
-CM1 makes it carry. A task gets its own copy of everything its closure captured, and that
-copy lives in the task's environment, which dies when the task does.
+A task's body is a block, not a closure (`conc.async/S1`), but it captures the way a
+carrying closure does: the task outlives the frame that started it, so it gets its own copy
+of everything the block names, and that copy lives in the task's environment, which dies
+when the task does.
 
 ```rask
-spawn(|| {
+spawn {
     vec.push(1)  // the task's vec — carried in, the outer name is gone
-})
+}
+```
+
+The difference is CM4. A closure may run any number of times, so it can't give away what it
+captured. A task block runs once — nothing can name it, so nothing can run it again — and it
+may (`conc.async/S6`):
+
+```rask
+spawn { responder.respond(handler(req)) }    // the task owns `responder` and answers it
 ```
 
 Carrying keeps the task memory-safe; it doesn't make the program right.
 
 | Rule | Description |
 |------|-------------|
-| **SP1: A write the task never uses is an error** | Inside a spawned closure, a write to a capture that nothing downstream puts to use is a compile error (E0896). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
+| **SP1: A write the task never uses is an error** | Inside a task block, a write to a capture that nothing downstream puts to use is a compile error (E0896). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
 
 SP1 exists because carrying is silent for the sizes that matter least. A `Vec` capture is
 moved and the outer name dies with it, which a reader can't miss; an `i64` is copied and
-the outer name reads fine, so `mut count = 0` followed by `spawn(|| { count += 1 })` used
+the outer name reads fine, so `mut count = 0` followed by `spawn { count += 1 }` used
 to type-check, run, and print `0`. Memory-safe and wrong, which is the worst quadrant.
 
 ```rask
 mut count = 0
-spawn(|| { count += 1 })          // error E0896 — lands on the task's copy
+spawn { count += 1 }          // error E0896 — lands on the task's copy
 
 let total = Shared.new(0)         // the fix: one value, two holders
 let t = total.clone()
-spawn(|| { with t.write() as c { c += 1 } })
+spawn { with t.write() as c { c += 1 } }
 ```
 
 A write the task puts to use is doing work, so it stays legal — a task that sums into a
 local and returns it, or counts something for its own output, is unaffected. `join()` hands
-back the closure's return value; it is not a write-back for captures.
+back the block's value; it is not a write-back for captures.
 
 "Puts to use" is stricter than "reads again", and the loop is why:
 
 ```rask
-spawn(|| {
+spawn {
     for i in 0..10 { total += i }     // error E0896
-})
+}
 ```
 
 Every write here is read — by the next iteration. The accumulation is still thrown away,
 because the only thing those reads feed is another write that goes nowhere. So a read only
 counts when it reaches a use, which lets the whole chain collapse at once.
 
-Deadness here is decidable from the closure body alone, which is why it's an error and not
-a lint: no program wants the write it rejects.
+Deadness here is decidable from the block alone, which is why it's an error and not a lint:
+no program wants the write it rejects.
 
 ## Error messages
 
@@ -313,6 +339,25 @@ There is no "closure cannot escape" error any more. A closure that escapes takes
 what it captured; the only thing left to report is the outer name being gone,
 which is the move error every other consumption prints.
 
+**Closure consumes a capture [CM4]:**
+```
+ERROR [E0891]: cannot consume `c` — a closure can't give away what it captured
+   |
+3  |  twice(|| { c.close() })
+   |        --   ^^^^^^^^^ this consumes `c`
+   |        |
+   |        this closure captured `c`
+
+FIX: pass `c` in instead of capturing it — a `take` parameter:
+
+  |take c: Conn| { … }
+
+or, if this runs once as a task, a task block, which may consume what
+it captures:
+
+  spawn { … }
+```
+
 **Mutable capture conflict [MC2]:**
 ```
 ERROR [mem.closures/MC2]: variable already mutably captured
@@ -335,26 +380,28 @@ FIX: Use Shared<T> for shared mutable state:
 |------|----------|
 | Carrying closure captures Copy type | Value copied; the outer name is untouched |
 | Carrying closure captures move-only type | Type moved in, source invalid |
-| Carrying closure captures resource type | Resource consumed by the closure; must be used within or returned |
-| Pointing closure captures resource type | Resource borrowed; consuming it in the body is an error (E0891) |
+| Carrying closure captures resource type | Error (E0913): it would sit in an environment nothing can consume. Pass it as a `take` parameter; a task block may capture and consume it (`conc.async/S6`) |
+| Pointing closure captures resource type | Resource borrowed; reading it is fine, consuming it in the body is an error (E0891) |
+| Any closure gives away a non-Copy capture | CM4: returning it or a non-Copy field of it (E0907), or handing it to a `take` (E0891), is an error. `\|\| b.clone()` returns a copy |
+| `\|take x: T\|` called twice | Each call needs its own argument; passing one value twice is the use-after-move error |
 | Nested closures | Each level borrows or carries from its immediate outer scope |
 | Pure closure (no captures) | Self-contained either way; nothing to decide |
 | Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |
 
-The resource rows are the same rule as `mem.linear/L3` — a borrow isn't a
-consumption — and there is a second reason for them here: nothing says how many
-times a closure runs. A `close()` in the body of a pointing closure is one
-consumption to read and any number at runtime, so it has to be the carrying
-kind, which takes the resource in and leaves the outer binding with nothing to
-owe.
+I had carrying closures allowed to consume a resource capture for a while: the
+closure owned it, so the `close()` looked legitimate. It wasn't — `store(||
+{ c.close() })` and a `store` that calls its callback twice closed one handle
+twice on native. Nothing in a closure's type says "runs once", and I didn't want
+one: a `take` parameter already says "this call owns this value", per call. The
+one place that really runs once is a task, and its body is a block for exactly
+that reason (`conc.async/S6`).
 
 ```rask
-func twice(f: func()) { f() f() }
-func store(take f: func()) { … }
+func store(take f: func(take Conn)) { … }
 
 let c = Conn.open(1)
-twice(|| { c.close() })         // error[E0891] — `twice` borrows, so the closure does
-store(|| { c.close() })         // fine: `store` takes it, so `c` is the closure's now
+store(|| { c.close() })             // error[E0891]
+store(|take c: Conn| { c.close() }) // fine: whoever calls it hands it a Conn
 ```
 
 ---
@@ -379,7 +426,7 @@ shapes of it:
 |---|---|---|
 | Points | The variable's address (8 bytes) | The creating frame's variable |
 | Carries | The variable itself | The environment — so it survives to the next call |
-| `spawn` | A copy | The task's own state, by construction |
+| Task block | A copy | The task's own state, by construction |
 
 The carrying row is the one that's easy to get wrong. Loading the value out at
 the top of the call and working on the loaded copy reads correctly and throws
@@ -388,8 +435,14 @@ The environment *is* the variable's home once the closure carried it there, so
 the body works through the slot's address for its whole life.
 
 The block itself is owned like any other value: whoever is holding it when their
-frame ends frees it. What that free doesn't yet do is release the captures inside
-— a carrying closure holding a `Vec` frees the block and leaks the Vec (#1045).
+frame ends frees it. A closure value is Copy, so one block can end up with two
+holders — `fs.push(c)` twice, or `spawn { c() }` and then `c()`. The block carries a
+reference count for that: a hand-off to something that keeps the closure, while
+the frame still uses it afterwards, gives the keeper a reference of its own, and
+only the last use hands the frame's over. The free releases what the block carries too: a
+capture moved in is the environment's, so the environment gives it back when it dies, the
+same way the frame would have. A Copy capture is copied in, and the frame keeps its own, so the
+environment holds references of its own to the strings in its copy and gives those back.
 
 ### Closure block layout
 
@@ -447,6 +500,8 @@ struct with a method, which is how it reads anyway.
 | Iterator adapter | `items.filter(\|i\| condition)` — points at the source, dies with the chain |
 | Simple callback | `\|x\| x * 2` (pure, no captures) |
 | Callback with context | `\|event\| process(context, event)` handed to a `take` parameter — carries `context` |
+| Callback that consumes | `\|take item: T\|` — the caller hands each call its own value |
+| Task that consumes | `spawn { … value.close() … }` — a task block runs once, so it may |
 | Mutating a local | `\|x\| count += x` — the mutable capture is inferred (MC1) |
 | Shared mutable state (multiple closures) | `Shared<T>` |
 | Callback stored for later | Whatever stores it declares `take`, and the closure carries |
@@ -468,10 +523,10 @@ button2.on_click(|event| {
 
 | Context | Ghost annotation |
 |---------|------------------|
-| Non-`own` closure, no captures | `[inline]` |
-| Non-`own` closure with borrows | `[borrows: name, other]` |
-| `own` closure with copies | `[copies: name (i32)]` |
-| `own` closure with moves | `[moves: name (Vec<string>)]` |
+| Closure, no captures | `[inline]` |
+| Pointing closure | `[borrows: name, other]` |
+| Carrying closure with copies | `[copies: name (i32)]` |
+| Carrying closure with moves | `[moves: name (Vec<string>)]` |
 | Mutable capture | `[mutate: count]` |
 
 ### See also
@@ -481,6 +536,6 @@ button2.on_click(|event| {
 - [Shared, Rack and Heap](shared-rack-heap.md) — The three that hand out scoped access (`mem.shared-rack-heap`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>`, the single-value container (`conc.sync`)
 - [Racks and Links](racks.md) — a reference that can live in a field, for graph-shaped state (`mem.racks`)
-- [Linearity](linear.md) — Closures capturing linear values must consume them (`mem.linear`)
-- [Heap Values](heap.md) — Moving an `Heap<T>` into a closure consumes it (`mem.heap`)
-- [Concurrency](../concurrency/sync.md) — Closures sent cross-task must use `own` (`conc.sync`)
+- [Linearity](linear.md) — A linear value reaches a closure as a `take` parameter (`mem.linear`)
+- [Heap Values](heap.md) — a `Heap<T>` is linear, so it can't be carried either (`mem.heap`)
+- [Execution Model](../concurrency/async.md) — a task block runs once, so it consumes what it captures (`conc.async/S6`)

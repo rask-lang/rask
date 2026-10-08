@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A Copy struct holding a string, copied out of borrowed storage by anything
+// but a plain `let`/`=`, took no references of its own: a tuple
+// destructure, a `v.get(i)` result (bound directly, through `?`, `??` or
+// `!`), and a payload bound by `match`/`is` on a slot. Changing or freeing
+// the slot while the copy lived freed the strings it read, and natively it
+// printed garbage. The interpreter shared the element for `v.get(i)` and
+// for a tuple literal, so the write showed through the copy there (#1442).
+
+struct Line {
+    text: string
+}
+
+struct Row {
+    line: Line
+    n: i64
+}
+
+enum Slot {
+    Full(Line)
+    Named { line: Line, tag: i64 }
+    Empty
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func full(s: string) -> Slot {
+    return Slot.Full(Line { text: heap(s) })
+}
+
+func lines(a: string, b: string) -> Vec<Line> {
+    return [Line { text: heap(a) }, Line { text: heap(b) }]
+}
+
+test "tuple destructure of a Vec element" {
+    mut v: Vec<(Line, i64)> = [(Line { text: heap("t") }, 1)]
+    let (l, n) = v[0]
+    v[0] = (Line { text: heap("u") }, 2)
+    assert l.text == heap("t")
+    assert n == 1
+}
+
+test "tuple literal of two elements" {
+    mut v = lines("a", "b")
+    let (a, b) = (v[0], v[1])
+    v[0].text = heap("x")
+    v[1] = Line { text: heap("y") }
+    assert a.text == heap("a")
+    assert b.text == heap("b")
+}
+
+test "nested tuple destructure of a Vec element" {
+    mut v: Vec<((Line, i64), i64)> = [((Line { text: heap("t") }, 1), 2)]
+    let ((l, _), _) = v[0]
+    v[0] = ((Line { text: heap("u") }, 3), 4)
+    assert l.text == heap("t")
+}
+
+test "struct destructure of a Vec element" {
+    mut v: Vec<Row> = [Row { line: Line { text: heap("r") }, n: 1 }]
+    let Row { line, n } = v[0]
+    v[0] = Row { line: Line { text: heap("s") }, n: 2 }
+    assert line.text == heap("r")
+    assert n == 1
+}
+
+test "get bound directly" {
+    mut v = lines("a", "b")
+    let o = v.get(0)
+    v[0].text = heap("x")
+    assert o!.text == heap("a")
+}
+
+test "get through force" {
+    mut v = lines("a", "b")
+    let l = v.get(1)!
+    v[1] = Line { text: heap("y") }
+    assert l.text == heap("b")
+}
+
+test "get through present-as" {
+    mut v = lines("a", "b")
+    if v.get(0)? as l {
+        v[0].text = heap("x")
+        assert l.text == heap("a")
+    } else {
+        assert false
+    }
+}
+
+test "get through coalesce" {
+    mut v = lines("a", "b")
+    let l = v.get(0) ?? Line { text: "none" }
+    v[0].text = heap("x")
+    assert l.text == heap("a")
+    let d = Line { text: heap("d") }
+    let missing = v.get(9) ?? d
+    assert missing.text == heap("d")
+    assert d.text == heap("d")
+}
+
+test "map get through present-as and coalesce" {
+    mut m: Map<string, Line> = Map.new()
+    m.insert("k", Line { text: heap("m") })
+    if m.get("k")? as l {
+        m.insert("k", Line { text: heap("n") })
+        assert l.text == heap("m")
+    } else {
+        assert false
+    }
+    let l2 = m.get("k") ?? Line { text: "none" }
+    m.insert("k", Line { text: heap("o") })
+    assert l2.text == heap("n")
+}
+
+test "present-as on a Vec slot" {
+    mut v: Vec<Line?> = [Line { text: heap("a") }]
+    if v[0]? as l {
+        v[0] = none
+        assert l.text == heap("a")
+    } else {
+        assert false
+    }
+}
+
+test "match payload on a Vec slot" {
+    mut v: Vec<Slot> = [Slot.Full(Line { text: heap("p") })]
+    match v[0] {
+        Slot.Full(l) => {
+            v[0] = Slot.Empty
+            assert l.text == heap("p")
+        }
+        _ => assert false
+    }
+}
+
+test "match struct-shaped payload on a Vec slot" {
+    mut v: Vec<Slot> = [Slot.Named { line: Line { text: heap("q") }, tag: 7 }]
+    match v[0] {
+        Slot.Named { line, tag } => {
+            v[0] = Slot.Empty
+            assert line.text == heap("q")
+            assert tag == 7
+        }
+        _ => assert false
+    }
+}
+
+test "is pattern on a Vec slot" {
+    mut v: Vec<Slot> = [Slot.Full(Line { text: heap("i") })]
+    if v[0] is Slot.Full(l) {
+        v[0] = Slot.Empty
+        assert l.text == heap("i")
+    } else {
+        assert false
+    }
+}
+
+test "match payload on a local that is written after" {
+    mut s = Slot.Full(Line { text: heap("loc") })
+    match s {
+        Slot.Full(l) => {
+            s = Slot.Empty
+            assert l.text == heap("loc")
+        }
+        _ => assert false
+    }
+}
+
+test "tuple-literal match reads each element where it lives" {
+    mut v: Vec<Slot> = [Slot.Full(Line { text: heap("e") })]
+    match (v[0], 1) {
+        (Slot.Full(l), _) => {
+            v[0] = Slot.Empty
+            assert l.text == heap("e")
+        }
+        _ => assert false
+    }
+}
+
+test "a fresh value bound by a pattern owns it once" {
+    match full("fresh") {
+        Slot.Full(l) => assert l.text == heap("fresh")
+        _ => assert false
+    }
+    if lines("c", "d").get(0)? as l {
+        assert l.text == heap("c")
+    }
+}

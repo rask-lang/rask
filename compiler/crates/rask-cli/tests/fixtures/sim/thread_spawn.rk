@@ -2,7 +2,7 @@
 import thread.Thread
 
 test "a raw thread" {
-    Thread.spawn(|| {
+    Thread.spawn {
         return
-    }).join()
+    }.join()
 }

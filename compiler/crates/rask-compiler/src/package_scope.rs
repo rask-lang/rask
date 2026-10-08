@@ -207,15 +207,26 @@ impl Rewrite for ReferenceQualifier<'_> {
                 None => None,
             },
             // `libpkg.Cat { … }` — the parser keeps the package in the name.
+            // `libpkg.Shape.Circle { … }` names a variant of the package's enum.
             ExprKind::StructLit { name, type_args, fields, spread } => match name.split_once('.') {
-                Some((pkg, tail)) => self.resolve(pkg, tail).map(|q| ExprKind::StructLit {
-                    name: q.clone(),
-                    type_args: type_args.clone(),
-                    fields: fields.clone(),
-                    spread: spread.clone(),
-                }),
+                Some((pkg, tail)) => {
+                    let (ty, variant) = match tail.split_once('.') {
+                        Some((ty, variant)) => (ty, Some(variant)),
+                        None => (tail, None),
+                    };
+                    self.resolve(pkg, ty).map(|q| match variant {
+                        Some(v) => format!("{q}.{v}"),
+                        None => q.clone(),
+                    })
+                }
                 None => None,
-            },
+            }
+            .map(|q| ExprKind::StructLit {
+                name: q,
+                type_args: type_args.clone(),
+                fields: fields.clone(),
+                spread: spread.clone(),
+            }),
             _ => None,
         };
         if let Some(kind) = replacement {
@@ -226,6 +237,8 @@ impl Rewrite for ReferenceQualifier<'_> {
     fn pattern(&mut self, p: &mut Pattern) {
         let name = match p {
             Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => name,
+            // A fieldless `libpkg.Colour.Red` parses as an identifier pattern.
+            Pattern::Ident(name) if name.contains('.') => name,
             Pattern::Wildcard
             | Pattern::Ident(_)
             | Pattern::Literal(_)

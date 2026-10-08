@@ -66,27 +66,22 @@ extend Vec<T> {
     /// Push every element of `items`. Hands back the first one that didn't
     /// fit. `push_all`, not `extend` — that word is the declaration keyword.
     ///
-    /// `Vec<T>`, not the `Iterator<T>` this was declared with. A method taking
-    /// `Iterator<T>` couldn't be called at all: the for-loop lowering doesn't
-    /// recognise the type and a collection has no `.iter()` to hand one over
-    /// (SEQ31).
-    ///
-    /// `Sequence<T>` would be the general shape, and SEQ48 says a collection
-    /// stands for its own chain head — but the insertion of `as_sequence()`
-    /// only happens inside Vec's own adapter bodies, not at an arbitrary
-    /// `Sequence<T>` parameter, so `a.try_push_all(b)` wouldn't compile. Widen
-    /// this to `Sequence<T>` when that coercion exists (#1325); it's one word.
+    /// Takes any `Sequence<T>`: `a.try_push_all(b)` with `b` a `Vec` or a
+    /// `Set` (a collection fills the slot itself, SEQ48), or a chain like
+    /// `a.try_push_all(b.filter(p))`.
     ///
     /// Written in Rask so both backends share the rule, like `try_push` next
     /// to it. Stopping at the first refusal is what the doc says.
-    public func try_push_all(mutate self, items: Vec<T>) -> void or GrowError<T> {
-        mut i = 0
-        while i < items.len() {
+    ///
+    /// A sequence lends its items, so what goes in — and what comes back
+    /// refused — is a copy. Pushing the item itself gave `self` an element
+    /// the source still owned (E0906, #1429).
+    public func try_push_all(mutate self, items: Sequence<T>) -> void or GrowError<T> {
+        for item in items {
             if self.is_full() {
-                return GrowError.Full(items[i])
+                return GrowError.Full(item.clone())
             }
-            self.push(items[i])
-            i = i + 1
+            self.push(item.clone())
         }
     }
 
@@ -158,7 +153,7 @@ extend Vec<T> {
 
     /// Modify element at index through a closure.
     @native
-    public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> {}
+    public func modify(mutate self, index: i64, f: func(mutate T) -> R) -> Option<R> {}
 
     /// Swap elements at two indices.
     @native("rask_vec_swap")
@@ -186,32 +181,41 @@ extend Vec<T> {
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
     ///
-    /// Order-preserving, so a removal shifts what follows it: O(n·m) for m
-    /// removals. `take_where` is this plus the elements.
+    /// One pass, in place: each survivor is swapped down to the next free slot,
+    /// which keeps survivors in order and gathers the removed ones at the end,
+    /// where `pop` releases each exactly once.
     public func remove_where(mutate self, f: func(T) -> bool) -> usize {
-        mut dropped: usize = 0
+        let n = self.len()
+        mut kept: usize = 0
         mut i: usize = 0
-        while i < self.len() {
-            if f(self[i]) {
-                self.remove(i)
-                dropped = dropped + 1
-            } else {
-                i = i + 1
+        while i < n {
+            if !f(self[i]) {
+                if kept != i {
+                    self.swap(kept.wrap<i64>(), i.wrap<i64>())
+                }
+                kept = kept + 1
             }
+            i = i + 1
         }
-        return dropped
+        while self.len() > kept {
+            self.pop()
+        }
+        return n - kept
     }
 
     /// Remove and return elements where f returns true, in the order they
     /// were in.
+    ///
+    /// One pass. Swapping in place would scramble the removed elements, so
+    /// this splits the contents instead; `take_all` keeps this vector's
+    /// buffer, so pushing the survivors back doesn't grow it.
     public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> {
         mut taken: Vec<T> = Vec.new()
-        mut i: usize = 0
-        while i < self.len() {
-            if f(self[i]) {
-                taken.push(self.remove(i))
+        for item in self.take_all() {
+            if f(item) {
+                taken.push(item)
             } else {
-                i = i + 1
+                self.push(item)
             }
         }
         return taken
@@ -229,10 +233,6 @@ extend Vec<T> {
     @native("rask_vec_join")
     public func join(self, sep: string) -> string {}
 
-    /// Sort elements in ascending order.
-    @native("rask_vec_sort")
-    public func sort(mutate self) {}
-
     /// Sort using a custom comparator, which answers with an `Ordering`.
     /// An integer comparator isn't accepted — `|a, b| a - b` is a type error.
     @native("rask_vec_sort_by")
@@ -241,7 +241,7 @@ extend Vec<T> {
     /// Sort by a key extracted from each element. Not stable, like `sort` —
     /// only `sort_by` promises that.
     @native
-    public func sort_by_key(mutate self, f: func(T) -> K) {}
+    public func sort_by_key<K: Comparable>(mutate self, f: func(T) -> K) {}
 
     /// Remove consecutive duplicate elements. Only runs of equal neighbors
     /// collapse — sort first for full dedup.
@@ -317,14 +317,6 @@ extend Vec<T> {
     @native
     public func sum(self) -> T {}
 
-    /// Minimum element.
-    @native
-    public func min(self) -> Option<T> {}
-
-    /// Maximum element.
-    @native
-    public func max(self) -> Option<T> {}
-
     /// Clone the vector.
     @native("rask_vec_clone")
     public func clone(self) -> Vec<T> {}
@@ -354,9 +346,6 @@ extend Vec<T> {
     /// through it legal, not a different buffer.
     @native("rask_vec_as_ptr")
     public unsafe func as_mut_ptr(mutate self) -> *T {}
-
-    /// Freeze into a compile-time array.
-    public comptime func freeze(self) -> Vec<T> {}
 }
 
 // A copy out, for an element too wide to hand back by borrow. `get` lends the
@@ -395,6 +384,58 @@ extend Vec<T> where T: Equal {
             i = i + 1
         }
         return true
+    }
+}
+
+// `sort`, `min` and `max` order by `T`'s own `compare` (SO3). An element with
+// no order, like `i64?`, is a type error here rather than something each
+// backend improvises: native used to compare the option's tag word and leave
+// the payloads in push order (#1313).
+extend Vec<T> where T: Comparable {
+    /// Sort elements in ascending order.
+    @native("rask_vec_sort")
+    public func sort(mutate self) {}
+
+    /// Minimum element. The first of several equal ones.
+    ///
+    /// Through `compare`, like `sort`. Both used to be native: the interpreter
+    /// ordered field by field whatever `compare` said, and native compared a
+    /// struct element's address and segfaulted (#1406).
+    ///
+    /// The loop keeps an index rather than the element: the elements are
+    /// `self`'s, and the answer is handed out the way `get` hands one out.
+    public func min(self) -> T? {
+        let i = self.extreme_index(Ordering.Less)
+        if i < 0 {
+            return none
+        }
+        return self.get(i)
+    }
+
+    /// Maximum element. The first of several equal ones.
+    public func max(self) -> T? {
+        let i = self.extreme_index(Ordering.Greater)
+        if i < 0 {
+            return none
+        }
+        return self.get(i)
+    }
+
+    /// Index of the first element no other beats in direction `wins`, or -1
+    /// when there are none.
+    func extreme_index(self, wins: Ordering) -> i64 {
+        if self.len() == 0 {
+            return -1
+        }
+        mut best: usize = 0
+        mut i: usize = 1
+        while i < self.len() {
+            if self[i].compare(self[best]) == wins {
+                best = i
+            }
+            i = i + 1
+        }
+        return best.to<i64>()!
     }
 }
 
@@ -510,7 +551,7 @@ extend Map<K, V> {
 
     /// Modify value for key through a closure.
     @native
-    public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> {}
+    public func modify(mutate self, key: K, f: func(mutate V) -> R) -> Option<R> {}
 
     /// Insert default if key absent, no-op if present. Panics on alloc failure.
     /// Named for what it does — `ensure` is the cleanup keyword.
@@ -520,7 +561,7 @@ extend Map<K, V> {
     /// `Map_insert_if_missing` reached codegen as a function nothing emits, while
     /// the interpreter's own copy ran (#886). One source, so the two can't
     /// disagree about it.
-    public func insert_if_missing(mutate self, key: K, f: func() -> V) -> void {
+    public func insert_if_missing(mutate self, take key: K, f: func() -> V) -> void {
         if self.contains(key) {
             return
         }
@@ -531,15 +572,15 @@ extend Map<K, V> {
     /// Insert default if key absent, then modify the value. One hash lookup.
     /// Panics on alloc failure.
     @native
-    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
+    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(mutate V) -> R) -> R {}
 
     /// The chain head: each entry as a `(key, value)` pair (type.sequence/SEQ49).
     ///
     /// Every other sequence method on `Map` is generated from this one.
     public func as_sequence(self) -> Sequence<(K, V)> {
         return |yield| {
-            for (k, v) in self {
-                if !yield((k, v)) {
+            for entry in self {
+                if !yield(entry) {
                     return
                 }
             }
@@ -553,9 +594,27 @@ extend Map<K, V> {
     /// Iterate over values.
     @native("rask_map_values")
     public func values(self) -> Iterator<V> {}
+}
 
-    /// Freeze into a compile-time map.
-    public comptime func freeze(self) -> Map<K, V> {}
+// Two maps are equal when they hold the same keys with equal values (EQ4a).
+// Insertion order doesn't count: a map has none to promise. The keys are
+// already Equal, since a map finds them by `eq` (HA3c).
+extend Map<K, V> where V: Equal {
+    public func eq(self, other: Map<K, V>) -> bool {
+        if self.len() != other.len() {
+            return false
+        }
+        for (key, value) in self {
+            if other.get(key)? as theirs {
+                if theirs != value {
+                    return false
+                }
+            } else {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 // The copying read, for the same reason `Vec.get_clone` exists: `get` lends the
@@ -588,10 +647,9 @@ extend Vec<Vec<T>> {
         return |yield| {
             mut i = 0
             while i < self.len() {
-                let inner = self[i]
                 mut j = 0
-                while j < inner.len() {
-                    if !yield(inner[j]) {
+                while j < self[i].len() {
+                    if !yield(self[i][j]) {
                         return
                     }
                     j = j + 1
@@ -713,5 +771,17 @@ extend Set<T> {
     /// Named for what it builds, not for what you do with it (SEQ31).
     public func to_vec(self) -> Vec<T> {
         return self.entries.keys().to_vec()
+    }
+
+    /// Clone the set.
+    public func clone(self) -> Set<T> {
+        return Set { entries: self.entries.clone() }
+    }
+}
+
+// Two sets are equal when they hold the same values, in any order (EQ4a).
+extend Set<T> where T: Equal {
+    public func eq(self, other: Set<T>) -> bool {
+        return self.entries == other.entries
     }
 }

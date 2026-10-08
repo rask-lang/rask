@@ -39,8 +39,8 @@ func bump() {
 
 func main() {
     using Multitasking {
-        let a = spawn(|| { hammer() })
-        let b = spawn(|| { hammer() })
+        let a = spawn { hammer() }
+        let b = spawn { hammer() }
         let _ = a.join()
         let _ = b.join()
     }

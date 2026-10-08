@@ -43,8 +43,8 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
 /// different things with them: these are valid in `import m.name` but must not
 /// be registered as a struct.
 const EXTRA_NAMES: &[(&str, &[&str])] = &[
-    // `spawn(…)` reads as a language feature, not as `async.spawn(…)`.
-    ("async", &["spawn", "cancelled"]),
+    // `cancelled()` reads as a language feature, not as `async.cancelled()`.
+    ("async", &["cancelled"]),
     ("core", &["transmute"]),
     // `std` re-exports the reflection module.
     ("std", &["reflect", "exit"]),
@@ -113,6 +113,11 @@ pub fn module_names() -> &'static [&'static str] {
     })
 }
 
+/// True for a module the compiler answers itself, with no `.rk` file behind it.
+pub fn is_compiler_module(name: &str) -> bool {
+    COMPILER_MODULES.contains(&name)
+}
+
 /// True when `name` is an importable stdlib module.
 pub fn is_module(name: &str) -> bool {
     module_names().binary_search(&name).is_ok()
@@ -127,6 +132,9 @@ pub struct ModuleExports {
     pub enums: Vec<(String, Vec<String>)>,
     /// Free functions that come into scope with the module.
     pub functions: Vec<String>,
+    /// The interfaces it declares: `io.Writer` in a bound, a conformance
+    /// header or `any`. Not names an `import m.name` reaches.
+    pub interfaces: Vec<String>,
 }
 
 impl ModuleExports {
@@ -263,6 +271,10 @@ fn derived() -> HashMap<String, ModuleExports> {
     }
 
     let mut out: HashMap<String, ModuleExports> = HashMap::new();
+    for (file, name) in StubRegistry::public_interfaces() {
+        let Some(module) = file.strip_suffix(".rk") else { continue };
+        out.entry(module.to_string()).or_default().interfaces.push(name);
+    }
     for name in registry.type_names() {
         let Some(module) = type_module(name) else { continue };
         // A module carries a same-named namespace struct (`struct http { }`) to
@@ -302,6 +314,11 @@ pub fn exports(module: &str) -> &'static ModuleExports {
 /// True when `module` exports a type or enum called `name`.
 pub fn exports_type(module: &str, name: &str) -> bool {
     exports(module).exports_type(name)
+}
+
+/// True when `module` declares a public interface called `name`.
+pub fn exports_interface(module: &str, name: &str) -> bool {
+    exports(module).interfaces.iter().any(|i| i == name)
 }
 
 /// `time.Duration` → `Duration`: drop the module a dotted name is reached
@@ -409,9 +426,9 @@ mod tests {
     #[test]
     fn module_functions_are_separate_from_types() {
         let a = exports("async");
-        assert!(a.functions.iter().any(|f| f == "spawn"));
-        assert!(!a.exports_type("spawn"), "spawn is a function, not a type");
-        assert!(a.exports("spawn"));
+        assert!(a.functions.iter().any(|f| f == "cancelled"));
+        assert!(!a.exports_type("cancelled"), "cancelled is a function, not a type");
+        assert!(a.exports("cancelled"));
     }
 
     /// Every extra has to be pulling its weight. Once a module's own `.rk` file

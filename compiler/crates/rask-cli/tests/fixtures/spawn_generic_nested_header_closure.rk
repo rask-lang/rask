@@ -25,10 +25,13 @@ extend Wrap<Wrap<U>> {
 func main() {
     using Multitasking {
         let plain = Wrap { v: Wrap { v: 3 } }
-        println("{spawn(plain.inner_keep()).join()!}")
+        let plain_f = plain.inner_keep()
+        let t1 = spawn { plain_f() }
+        println("{t1.join()!}")
         let w = Wrap { v: Wrap { v: Vec<Link<Node>>.new() } }
         let f = w.inner_keep()
         println("before")
-        println("{spawn(f).join()!}")
+        let t2 = spawn { f() }
+        println("{t2.join()!}")
     }
 }

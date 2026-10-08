@@ -146,6 +146,8 @@ pub struct Interpreter {
     /// `main` (#1110). Taken and restored around each call, never read as
     /// ambient state.
     pub(crate) failed_call_span: Option<Span>,
+    /// `RASK_RUNTIME_CHECKS`: report a linear value still live at scope exit.
+    pub(crate) runtime_checks: bool,
     /// The whole declaration list, kept so a layout can be computed from it.
     ///
     /// `reflect.fields<T>()` reports each field's offset and size, and there was
@@ -228,6 +230,8 @@ pub struct Interpreter {
     /// package is currently executing. Both empty outside a package build.
     pub(crate) file_packages: HashMap<u16, String>,
     pub(crate) conformance_disambiguation: HashMap<rask_ast::NodeId, String>,
+    /// OR4: each `implements` block's interface by its own name (the checker's).
+    pub(crate) conformance_interfaces: HashMap<rask_ast::NodeId, String>,
     /// The package whose function is running, innermost last.
     pub(crate) package_stack: Vec<Option<String>>,
     /// OR1: operator calls the checker resolved to a conformance, so `2.0 * m`
@@ -251,18 +255,39 @@ pub struct Interpreter {
     /// isn't the operand itself. `try read_file(p).len()` propagates at the
     /// call and hands `.len()` the payload.
     pub(crate) try_chain_placement: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
+    /// ER22: the type `else as e` binds, keyed by the `if … is` node.
+    pub(crate) else_binding_types: HashMap<rask_ast::NodeId, rask_types::Type>,
     /// ER16a: the `try` whose propagation is still owed, and the step it waits
     /// for. Armed when a `try` node is evaluated, discharged at that step.
     pub(crate) pending_try_step: Option<(rask_ast::NodeId, rask_ast::NodeId)>,
-    /// Final values of `mutate` parameters from the most recent user-function
-    /// call, keyed by parameter index (mem.parameters/PM2). The call site reads
-    /// this to write each value back to its argument place. Cleared before every
-    /// call so stale entries can't leak into an unrelated call's arguments.
-    pub(crate) mutate_writebacks: Vec<(usize, Value)>,
+    /// The caller's place behind each `mutate` argument of the call about to
+    /// start, so the callee binds that place instead of a copy.
+    pub(crate) lent_args: Option<LentArgs>,
     /// The `for` loops currently driving a `Sequence<T>`, innermost last
     /// (type.sequence/SEQ6). A `SequenceYield` builtin call runs the top
     /// frame's body; nesting works because each frame is pushed by its own loop.
     pub(crate) yield_stack: Vec<YieldFrame>,
+}
+
+/// The caller's places behind a call's `mutate` arguments, per parameter
+/// index (self is 0 for a method): a variable, a field, an element or a map
+/// entry (`env::Slot`).
+///
+/// A `mutate` parameter is the caller's place, not a copy of it
+/// (mem.parameters/PM2). Copy-in at the call and copy-back at the return look
+/// the same until something writes after the return: a `Sequence` built from
+/// the parameter runs when a terminal drives it, long after the callee
+/// returned, and its writes landed on the copy (#1324, #1489). Binding the
+/// place makes the write the caller's whenever it happens.
+///
+/// Handed over through a field because the call machinery between the call
+/// site and the binding passes values only. `callee` and `depth` pin it to
+/// the call it was made for: a builtin running user code of its own in
+/// between (`sort` calling `compare`) must not pick it up.
+pub(crate) struct LentArgs {
+    pub(crate) depth: usize,
+    pub(crate) callee: String,
+    pub(crate) slots: Vec<Option<crate::env::Slot>>,
 }
 
 /// A `for` loop driving a `Sequence<T>`.
@@ -288,6 +313,8 @@ pub(crate) struct YieldFrame {
     /// names. An `own` sequence captures by copy, so `for x in seq { sum += x }`
     /// wrote to the copy and the loop read `sum` back as 0.
     pub(crate) scope: std::collections::HashMap<String, crate::env::Slot>,
+    /// Which of `scope` are borrowed storage (`Environment::define_lent`).
+    pub(crate) lent: std::collections::HashSet<String>,
 }
 
 /// Source location info for computing error origins (ER15).
@@ -297,9 +324,9 @@ pub struct SourceInfo {
     pub line_map: LineMap,
 }
 
-/// What every spawn form says to a closure that captured a link or a `Local`
+/// What every spawn form says when the task would hold a link or a `Local`
 /// box. Worded as native's `rask_task_adopt_closure` words it.
-const TASK_BOUND_SPAWN: &str = "spawn: this closure captured a link or a `Local` box, and \
+pub(crate) const TASK_BOUND_SPAWN: &str = "spawn: this task would hold a link or a `Local` box, and \
 another task would then reach what this one still can [mem.ownership/T2, conc.sync/SH7]. \
 Copy the values the task needs out before spawning, or use a Mutex or Readers box";
 
@@ -406,11 +433,16 @@ impl Interpreter {
     pub(crate) fn enter_closure<'c>(
         &mut self,
         captured_env: impl IntoIterator<Item = (&'c String, &'c crate::env::Slot)>,
+        lent: &std::collections::HashSet<String>,
         generics: &GenericFrame,
     ) {
         self.env.push_scope();
         for (name, slot) in captured_env {
-            self.env.define_slot(name.clone(), slot.clone());
+            if lent.contains(name) {
+                self.env.define_lent(name.clone(), slot.clone());
+            } else {
+                self.env.define_slot(name.clone(), slot.clone());
+            }
         }
         self.generic_frames.push(generics.clone());
     }
@@ -427,6 +459,7 @@ impl Interpreter {
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             failed_call_span: None,
+            runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -449,14 +482,16 @@ impl Interpreter {
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            mutate_writebacks: Vec::new(),
+            lent_args: None,
             yield_stack: Vec::new(),
         }
     }
@@ -468,6 +503,7 @@ impl Interpreter {
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             failed_call_span: None,
+            runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -488,16 +524,18 @@ impl Interpreter {
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             build_state: None,
             source_info: None,
-            mutate_writebacks: Vec::new(),
+            lent_args: None,
             yield_stack: Vec::new(),
         }
     }
@@ -511,6 +549,7 @@ impl Interpreter {
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             failed_call_span: None,
+            runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -533,17 +572,24 @@ impl Interpreter {
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            mutate_writebacks: Vec::new(),
+            lent_args: None,
             yield_stack: Vec::new(),
         };
         (interp, buffer)
+    }
+
+    /// Turn the scope-exit leak check on or off, whatever `RASK_RUNTIME_CHECKS` said.
+    pub fn set_runtime_checks(&mut self, on: bool) {
+        self.runtime_checks = on;
     }
 
     /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
@@ -639,6 +685,7 @@ impl Interpreter {
         self.node_types = typed.node_types.clone();
         self.error_wraps = typed.error_wraps.clone();
         self.try_chain_placement = typed.try_chain_placement.clone();
+        self.else_binding_types = typed.else_binding_types.clone();
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
@@ -650,6 +697,7 @@ impl Interpreter {
         // carry their package in the method name.
         self.file_packages = typed.file_packages.clone();
         self.conformance_disambiguation = typed.conformance_disambiguation.clone();
+        self.conformance_interfaces = typed.conformance_interfaces.clone();
     }
 
     /// The package whose code is running. `None` outside a package build, and
@@ -773,18 +821,21 @@ impl Interpreter {
         ));
     }
 
-    /// Clones function/enum/method tables and captured environment for spawned thread.
-    /// Build the interpreter a task will run on, and hand it what it owns.
+    /// Build the interpreter a task will run on: the program's tables, the
+    /// block's captures, and the resources among them, which the task owes
+    /// from here on (conc.async/S6). Every spawn form goes through
+    /// `task_from_closure`, which calls this. One path, because patching one
+    /// copy and not the others is how #882's first fix changed nothing: two
+    /// copies looked identical and only one was reached.
     ///
-    /// Every spawn form makes one of these — `spawn`, `Thread.spawn`, the
-    /// pool submit — and the resource handover belongs to all of them, so it
-    /// lives here rather than at each. Patching one copy and not the others is
-    /// how #882's first fix changed nothing: two copies looked identical and
-    /// only one was reached.
+    /// `named` is every name the block mentions. The snapshot holds the whole
+    /// visible environment, and handing a resource the block never names to
+    /// the task would leave the parent closing something it no longer tracks.
     pub(crate) fn spawn_child(
         &mut self,
         captured_vars: HashMap<String, crate::env::Slot>,
         generics: &GenericFrame,
+        named: &std::collections::HashSet<String>,
     ) -> Self {
         let mut child = Interpreter::new();
         // The body is the closure's, so it runs under the frame it was built in.
@@ -803,11 +854,13 @@ impl Interpreter {
         child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
+        child.else_binding_types = self.else_binding_types.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
         child.source_info = self.source_info.clone();
+        child.runtime_checks = self.runtime_checks;
         // The same capture buffer, not a fresh one. A `test` block's runner
         // captures the main thread's output and prints it under the test's
         // name; a task writing to the real stdout instead put its lines
@@ -816,15 +869,14 @@ impl Interpreter {
         // reason, which is the failure std.testing/T19 exists to surface
         // (#1093). Shared rather than copied, because there is one report.
         child.output_buffer = self.output_buffer.clone();
-        // The task owns what it was handed. A task runs on its own
-        // interpreter with its own resource tracker, so without this the
-        // parent went on owing a resource the task had already closed:
-        // `spawn(own || { ensure c.close() … })` ran correctly and then died
-        // at the enclosing scope's exit claiming a leak, while native — which
-        // has no tracker — printed nothing (#882).
+        // The task owns what it captured. It runs on its own interpreter with
+        // its own resource tracker, so without this the parent went on owing
+        // a resource the task had already closed, and died at the scope's exit
+        // claiming a leak native never had (#882).
         let handed: Vec<Value> = captured_vars
-            .values()
-            .map(|slot| slot.lock().unwrap().clone())
+            .iter()
+            .filter(|(name, _)| named.contains(*name))
+            .filter_map(|(_, slot)| slot.get())
             .collect();
         for (name, cell) in captured_vars {
             child.env.define_slot(name, cell);
@@ -836,7 +888,7 @@ impl Interpreter {
     }
 
     /// Wrap a spawned body's thread as the `Handle` every spawn form returns,
-    /// tracked so an unconsumed one is reported (conc.async/H1).
+    /// tracked so `join`/`detach` consume it.
     fn hand_out_handle(
         &mut self,
         join_handle: std::thread::JoinHandle<Result<Value, String>>,
@@ -848,187 +900,131 @@ impl Interpreter {
         Value::Handle(inner)
     }
 
-    /// Spawn an OS thread from a closure (Thread.spawn).
-    pub(crate) fn spawn_os_thread(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        if args.is_empty() {
-            return Err(RuntimeError::TypeError(
-                "Thread.spawn requires a closure argument".to_string(),
-            ));
-        }
-
-        let closure = &args[0];
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                task_bound,
-                generics,
-            } => {
-                if !params.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "Thread.spawn closure must take no parameters".to_string(),
-                    ));
-                }
-                if *task_bound {
-                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
-                }
-
-                let body = body.clone();
-                let captured = captured_env.clone();
-                let child = self.spawn_child(captured, generics);
-                let cancel = Arc::new(crate::value::CancelToken::default());
-                let flag = cancel.clone();
-                let join_handle = crate::spawn_interp_thread(move || {
-                    crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
-                })?;
-                Ok(self.hand_out_handle(join_handle, cancel))
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "Thread.spawn expects a closure, got {}",
+    /// What every spawn form needs: the task's interpreter, holding what the
+    /// block captured, and the body it runs. `block` is the task block's
+    /// closure node, read for the names it mentions.
+    fn task_from_closure(
+        &mut self,
+        form: &str,
+        closure: Value,
+        block: &rask_ast::expr::Expr,
+    ) -> Result<(Interpreter, rask_ast::expr::Expr), RuntimeError> {
+        let Value::Closure { body, captured_env, task_bound, generics, .. } = closure else {
+            return Err(RuntimeError::TypeError(format!(
+                "{form}: a task block evaluated to {}",
                 closure.type_name()
-            ))),
+            )));
+        };
+        if task_bound {
+            return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
+        let mut named = std::collections::HashSet::new();
+        rask_ast::visit::walk_expr(block, &mut |e| {
+            if let rask_ast::expr::ExprKind::Ident(n) = &e.kind {
+                named.insert(n.clone());
+            }
+        });
+        // A closure value the block captures carries what it captured out of
+        // sight of the checker (#1356).
+        let crossing_bound_closure = captured_env.iter().any(|(name, slot)| {
+            named.contains(name)
+                && matches!(slot.get(), Some(Value::Closure { task_bound: true, .. }))
+        });
+        if crossing_bound_closure {
+            return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
+        }
+        let child = self.spawn_child(captured_env, &generics, &named);
+        Ok((child, body))
     }
 
-    /// Spawn an async task from a closure (spawn() in using Multitasking).
-    /// In interpreter: uses OS thread.
-    pub(crate) fn spawn_async_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        if args.is_empty() {
-            return Err(RuntimeError::TypeError(
-                "spawn() requires a closure argument".to_string(),
-            ));
-        }
+    /// Start an OS thread (`Thread.spawn { … }`).
+    pub(crate) fn spawn_os_thread(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
+        let (child, body) = self.task_from_closure("Thread.spawn", closure, block)?;
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+        let join_handle = crate::spawn_interp_thread(move || {
+            crate::value::with_cancel_flag(flag, move || run_task_body(child, body))
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
+    }
 
+    /// Start a green task (`spawn { … }` in `using Multitasking`). In the
+    /// interpreter it's an OS thread.
+    pub(crate) fn spawn_async_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         // Check for active runtime slot (CC3 fallback)
         if crate::value::ACTIVE_RUNTIME.read().unwrap().is_none() {
             return Err(RuntimeError::Panic(
-                "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
+                "RUNTIME PANIC: spawn with no active `using Multitasking` scope\n\
+                 \n\
+                 This can happen when:\n\
+                 - A closure containing a spawn is stored and called outside a block\n\
+                 - An interface object dispatches to an impl that spawns\n\
+                 - FFI calls back into Rask outside any scope\n\
+                 \n\
                  Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
+        let (child, body) = self.task_from_closure("spawn", closure, block)?;
 
-        let closure = &args[0];
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                task_bound,
-                generics,
-            } => {
-                if !params.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "spawn() closure must take no parameters".to_string(),
-                    ));
-                }
-                if *task_bound {
-                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
-                }
-
-                let body = body.clone();
-                let captured = captured_env.clone();
-                let child = self.spawn_child(captured, generics);
-
-                // The thread starts now; the body waits for one of the scope's
-                // task slots before running, so `workers: n` bounds how many
-                // run at once (#1111).
-                let cancel = Arc::new(crate::value::CancelToken::default());
-                let flag = cancel.clone();
-                let join_handle = crate::spawn_interp_thread(move || {
-                    crate::with_task_slot(move || {
-                        crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
-                    })
-                })?;
-                Ok(self.hand_out_handle(join_handle, cancel))
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "spawn() expects a closure, got {}",
-                closure.type_name()
-            ))),
-        }
+        // The thread starts now; the body waits for one of the scope's
+        // task slots before running, so `workers: n` bounds how many
+        // run at once (#1111).
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+        let join_handle = crate::spawn_interp_thread(move || {
+            crate::with_task_slot(move || {
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body))
+            })
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    /// Spawn a thread pool task from a closure (ThreadPool.spawn).
-    pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    /// Start a job on the thread pool (`ThreadPool.spawn { … }`).
+    pub(crate) fn spawn_pool_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         use crate::value::PoolTask;
 
-        if args.is_empty() {
+        // Check for thread pool context
+        let pool = match self.env.get("__thread_pool") {
+            Some(Value::ThreadPool(p)) => p,
+            _ => {
+                return Err(RuntimeError::TypeError(
+                    "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
+                ))
+            }
+        };
+        let (child, body) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
+
+        let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+
+        let task = PoolTask {
+            work: Box::new(move || {
+                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body));
+                let _ = result_tx.send(ended);
+            }),
+        };
+
+        let sender = pool.sender.lock().unwrap();
+        if let Some(ref tx) = *sender {
+            tx.send(task).map_err(|_| {
+                RuntimeError::ResourceClosed {
+                    resource_type: "ThreadPool".to_string(),
+                    operation: "spawn on".to_string(),
+                }
+            })?;
+        } else {
             return Err(RuntimeError::TypeError(
-                "ThreadPool.spawn requires a closure argument".to_string(),
+                "thread pool is shut down".to_string(),
             ));
         }
 
-        let closure = &args[0];
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                task_bound,
-                generics,
-            } => {
-                if !params.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "ThreadPool.spawn closure must take no parameters".to_string(),
-                    ));
-                }
-                if *task_bound {
-                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
-                }
-
-                // Check for thread pool context
-                let pool = self.env.get("__thread_pool");
-                let pool = match pool {
-                    Some(Value::ThreadPool(p)) => p,
-                    _ => {
-                        return Err(RuntimeError::TypeError(
-                            "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
-                        ))
-                    }
-                };
-
-                let body = body.clone();
-                let captured = captured_env.clone();
-                let child = self.spawn_child(captured, generics);
-
-                let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
-                let cancel = Arc::new(crate::value::CancelToken::default());
-                let flag = cancel.clone();
-
-                let task = PoolTask {
-                    work: Box::new(move || {
-                        let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, &body));
-                        let _ = result_tx.send(ended);
-                    }),
-                };
-
-                let sender = pool.sender.lock().unwrap();
-                if let Some(ref tx) = *sender {
-                    tx.send(task).map_err(|_| {
-                        RuntimeError::ResourceClosed {
-                            resource_type: "ThreadPool".to_string(),
-                            operation: "spawn on".to_string(),
-                        }
-                    })?;
-                } else {
-                    return Err(RuntimeError::TypeError(
-                        "thread pool is shut down".to_string(),
-                    ));
-                }
-
-                let join_handle = crate::spawn_interp_thread(move || {
-                    result_rx
-                        .recv()
-                        .unwrap_or(Err("thread pool task dropped".to_string()))
-                })?;
-                Ok(self.hand_out_handle(join_handle, cancel))
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "ThreadPool.spawn expects a closure, got {}",
-                closure.type_name()
-            ))),
-        }
+        let join_handle = crate::spawn_interp_thread(move || {
+            result_rx
+                .recv()
+                .unwrap_or(Err("thread pool task dropped".to_string()))
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
     }
 
     /// Divert print output into a fresh buffer, handing back whatever was
@@ -1171,7 +1167,7 @@ impl Interpreter {
 
     /// Hand what a call stored into a `mutate` argument to the caller.
     ///
-    /// `self.tasks = Tasks.More(spawn(f), …)` puts a handle made in this call
+    /// `self.tasks = Tasks.More(spawn { f() }, …)` puts a handle made in this call
     /// into the caller's value, and the return value is not the only way out
     /// of a call. Outward only: an entry already owned further out stays
     /// where it is.
@@ -1639,9 +1635,10 @@ impl std::fmt::Display for RuntimeDiagnostic {
 
 impl std::error::Error for RuntimeDiagnostic {}
 
-/// Run a spawned closure's body to its result, or the message it failed with.
-fn run_task_body(mut interp: Interpreter, body: &rask_ast::expr::Expr) -> Result<Value, String> {
-    match interp.eval_expr(body) {
+/// Run a task block to its result, or the message it failed with. A `return`
+/// in the block ends the task with that value.
+fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr) -> Result<Value, String> {
+    match interp.eval_expr(&body) {
         Ok(val) => Ok(val),
         Err(diag) => match diag.error {
             RuntimeError::Return(val) => Ok(val),

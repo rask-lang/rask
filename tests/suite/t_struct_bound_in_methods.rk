@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// type.generics/GF6: a bound on a generic type holds in its methods (#1364).
+// `struct Holder<T: Named>` declared the bound, but inside `extend Holder<T>`
+// the checker treated `T` as unbounded, so `self.item.name()` was "no method
+// `name` found for type `T`".
+
+func main() {}
+
+interface Named {
+    func name(self) -> string
+}
+
+struct Dog {
+    n: string
+}
+
+Dog implements Named {
+    func name(self) -> string {
+        return self.n
+    }
+}
+
+struct Holder<T: Named> {
+    item: T
+}
+
+extend Holder<T> {
+    func label(self) -> string {
+        return "<{self.item.name()}>"
+    }
+}
+
+// The header matches parameters by position, so it may rename them.
+struct Pair<K, V: Named> {
+    key: K
+    item: V
+}
+
+extend Pair<A, B> {
+    func label(self) -> string {
+        return self.item.name()
+    }
+}
+
+enum Slot<T: Named> {
+    Empty
+    Full(T)
+}
+
+extend Slot<T> {
+    func label(self) -> string {
+        match self {
+            Slot.Empty => return "-"
+            Slot.Full(x) => return x.name()
+        }
+    }
+}
+
+test "a struct's bound reaches its extend block" {
+    let h = Holder { item: Dog { n: "rex" } }
+    assert h.label() == "<rex>"
+}
+
+test "the header may rename the parameter" {
+    let p = Pair { key: 1, item: Dog { n: "a" } }
+    assert p.label() == "a"
+}
+
+test "an enum's bound reaches its extend block" {
+    let s: Slot<Dog> = Slot.Full(Dog { n: "b" })
+    assert s.label() == "b"
+    let e: Slot<Dog> = Slot.Empty
+    assert e.label() == "-"
+}

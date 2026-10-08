@@ -3,7 +3,7 @@
 // A consuming call owns its value from the moment it's made, even when what it
 // returns sends control out early.
 //
-//     let h = spawn(|| { panic("boom") })
+//     let h = spawn { panic("boom") }
 //     ensure h.detach()
 //     let v = h.join() catch e => { return -1 }
 //
@@ -16,23 +16,22 @@
 // Each case runs many times: one double free can pass unnoticed, a few
 // hundred can't.
 
-import async.spawn
 
 func joined_after_panic() -> i64 {
-    let h = spawn(|| {
+    let h = spawn {
         panic("boom")
         return 1
-    })
+    }
     ensure h.detach()
     let v = h.join() catch e => { return -1 }
     return v
 }
 
 func joined_in_a_match() -> i64 {
-    let h = spawn(|| {
+    let h = spawn {
         panic("boom")
         return 1
-    })
+    }
     ensure h.detach()
     match h.join() {
         i64 as v => { return v },

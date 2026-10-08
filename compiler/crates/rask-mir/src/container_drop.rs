@@ -23,8 +23,10 @@
 //! *receiver* — argument zero — and escapes the rest: `v.push(inner)` hands
 //! `inner` over and keeps `v`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::closure_reach::ClosureReach;
+use crate::closure_targets::ClosureTargets;
 use crate::{
     BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminatorKind, MirType,
@@ -182,8 +184,10 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // and the "hands a container back" fixed point needs it.
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let handing_over = functions_that_hand_a_container_back(fns, &targets);
-    let kept = params_a_callee_keeps(fns);
+    let reach = ClosureReach::build(fns);
+    let kept = params_a_callee_keeps(fns, &targets, &reach);
     let interface_kept = interface_method_args_kept(fns, &kept);
+    let keeps = Keeps { by_name: &kept, interface: &interface_kept, targets: &targets, reach: &reach };
     let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
     // A snapshot, because tracing a container through a capture cell has to
     // read the closure that captured it while the frame it belongs to is being
@@ -192,12 +196,24 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // What the program declares for itself, so a call to one of those is never
     // mistaken for a runtime free (see `find_already_freed`).
     let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
+    // Bodies something other than a call by name may run — through a value
+    // the runtime may be holding — whose arguments nobody here hands over.
+    let closure_bodies: HashSet<String> = fns
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureCreate { func_name, .. } => Some(func_name.clone()),
+            MirStmtKind::EnsureHookRegister { thunk, .. } => Some(thunk.clone()),
+            _ => None,
+        })
+        .collect();
     for func in fns.iter_mut() {
         insert_for_function(
-            func, &snapshot, &handing_over, &interface_handing, &kept, &interface_kept, &targets, &own,
+            func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &own,
+            &closure_bodies,
         );
     }
-    let glue = env_drop_glue(fns, &handing_over, &targets);
+    let glue = env_drop_glue(fns, &handing_over, &targets, &kept, &reach);
     fns.extend(glue);
 }
 
@@ -243,6 +259,8 @@ fn env_drop_glue(
     fns: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
     targets: &crate::closure_targets::ClosureTargets,
+    kept: &HashMap<String, Vec<bool>>,
+    closure_reach: &ClosureReach,
 ) -> Vec<MirFunction> {
     // How many escaping closures capture each container by value, per frame.
     // Two means the container has two candidate owners and the answer is to
@@ -265,17 +283,23 @@ fn env_drop_glue(
     }
 
     // What each closure body gives up by itself, by capture offset. A capture
-    // the body consumes is not the glue's to free:
+    // the body consumes is not the glue's to free. A closure's can only be a
+    // Copy one — `mem.closures/CM4` refuses the rest — and a channel end is
+    // one:
     //
-    //     spawn(own || { for i in 1..n { tx.send(i) }  tx.close() })
+    //     let f = || { for i in 1..n { tx.send(i) }  tx.close() }
     //
     // `close` takes the sender away — closing an end *is* dropping it — so the
     // glue freeing it again on the way out aborted the process on a double
-    // free. Nothing had noticed because until channels were released at all,
-    // no capture was both owned and consumable.
+    // free. A task block may give away anything it captured, since it runs
+    // once (conc.async/S6).
     let consumed: HashMap<&str, HashSet<u32>> = fns
         .iter()
-        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
+        .map(|f| {
+            let mut gone = captures_the_body_consumes(f);
+            gone.extend(task_captures_given_away(f, kept, targets, closure_reach));
+            (f.name.as_str(), gone)
+        })
         .collect();
 
     // One glue per closure *function*, because the block header holds a
@@ -283,7 +307,7 @@ fn env_drop_glue(
     // site that builds this closure has to agree about what its environment
     // owns — inlining copies a create site into each caller, and a site that
     // owns nothing must not get a glue that frees something.
-    let interface_handing = interface_methods_that_hand_back(fns, handing_over);
+    let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
     let mut answers: HashMap<String, Vec<Vec<EnvSlot>>> = HashMap::new();
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     for func in fns {
@@ -321,11 +345,9 @@ fn env_drop_glue(
         follow_copies(func, &mut made_here);
         // Closures this frame drops. `closures::insert_drops` emits one only
         // for a closure the frame owns, so its presence says the frame will
-        // free what this closure swallowed and the glue must not.
-        let frame_drops: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
-            .into_iter()
-            .map(|(create, _, _)| create)
-            .collect();
+        // free what this closure swallowed and the glue must not — unless it
+        // shared the closure with a keeper, when the glue is what runs last.
+        let frame_drops = crate::closures::closures_the_frame_frees_last(func);
         for block in &func.blocks {
             for stmt in &block.statements {
                 let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true, .. } = &stmt.kind
@@ -532,6 +554,119 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
+/// The capture offsets a task block's body gives away: returns, stores, hands
+/// to something that keeps it, or carries into a task of its own. A closure
+/// value it captured counts whatever it does with it: the body frees that one
+/// itself, like any closure it holds.
+///
+/// A task block runs once, so it owns what it captured (conc.async/S6), and
+/// what it gives away is not the environment's to free when the task ends.
+/// The question is the one a parameter is asked (`param_is_kept_by`), asked
+/// of each capture the block loads. Conservative the same way: a capture given
+/// away on one path counts, which leaks on the other path rather than freeing
+/// twice.
+pub(crate) fn task_captures_given_away(
+    func: &MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
+) -> HashSet<u32> {
+    let none = HashMap::new();
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            // A closure value the block frees itself (`closures::insert_drops`).
+            MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. }
+                if matches!(func.local_ty(*dst), Some(MirType::FuncPtr(_))) =>
+            {
+                Some(*offset)
+            }
+            MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. } => {
+                param_is_kept_by(func, *dst, kept, &none, targets, reach).then_some(*offset)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Release the aggregates a closure's environment owns.
+///
+/// A struct carried into a closure that leaves its frame — a task block,
+/// returned, stored — is the environment's from then on (`mem.closures/CM2`),
+/// and the frame stops owning it at the create. `env_drop_glue` only knew
+/// handles and strings, so nothing released the struct, and `http.serve`
+/// leaked a `Request` per connection (#1507).
+///
+/// Which captures those are is the aggregate release's answer
+/// (`rc_insert::insert_aggregate_release`), so this runs after it: one slot
+/// per capture it saw handed over whole, by the frame that owned it. Every site
+/// that builds the closure has to give the same answer, because the glue is
+/// one function per closure body. A site that kept its value — the frame
+/// drops the closure itself, or still reads the value — releases it there, so
+/// a glue that also released it would be a double free; disagreeing sites get
+/// no aggregate releases at all, which leaks instead.
+///
+/// A Copy aggregate is the other kind: copied in, not handed over, with
+/// references of its own taken at the create (`rc_insert::retain_copy_captures`),
+/// so the glue gives those back whatever the frame does with its value (#1508).
+/// The sites have to agree on those too, since a site that took no references
+/// must not have them released.
+///
+/// The release is the same walk a frame does for its own aggregate
+/// (`ReleaseSlot`), pointed at the slot.
+pub(crate) fn add_carried_releases(
+    fns: &mut Vec<MirFunction>,
+    sites: Vec<crate::transform::rc_insert::CarriedSite>,
+    kept: &HashMap<String, Vec<bool>>,
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
+) {
+    let mut answers: HashMap<String, Vec<crate::transform::rc_insert::CarriedSite>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for site in sites {
+        if !answers.contains_key(&site.closure) {
+            order.push(site.closure.clone());
+        }
+        answers.entry(site.closure.clone()).or_default().push(site);
+    }
+    for name in order {
+        let all = &answers[&name];
+        let first = &all[0];
+        let mut slots: Vec<(u32, MirType)> = Vec::new();
+        if all.iter().all(|s| s.slots == first.slots) {
+            slots.extend(first.slots.iter().cloned());
+        }
+        if all.iter().all(|s| s.copies == first.copies) {
+            slots.extend(first.copies.iter().cloned());
+        }
+        // What a task block gave away is the receiver's now. A closure gives
+        // nothing here away: CM4 refuses consuming a non-Copy capture or a
+        // non-Copy field of one, and the Copy things a body can consume — a
+        // channel end's `close` — are not what the walk releases.
+        if let Some(body) = fns.iter().find(|f| f.name == name) {
+            let gone = task_captures_given_away(body, kept, targets, reach);
+            slots.retain(|(offset, _)| !gone.contains(offset));
+        }
+        if slots.is_empty() {
+            continue;
+        }
+        let releases = slots.into_iter().map(|(offset, ty)| {
+            MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: LocalId(0), offset, ty })
+        });
+        let glue_name = format!("{name}{ENV_DROP_SUFFIX}");
+        match fns.iter_mut().find(|f| f.name == glue_name) {
+            Some(glue) => glue.blocks[0].statements.extend(releases),
+            None => {
+                let source_file = fns.iter().find(|f| f.name == name).and_then(|f| f.source_file.clone());
+                let mut glue = build_env_drop(&name, &[], source_file);
+                glue.blocks[0].statements.extend(releases);
+                fns.push(glue);
+            }
+        }
+    }
+}
+
 /// `<closure>__env_drop(env: ptr)` — give back everything the environment owns.
 ///
 /// `LoadCapture` is the same statement the closure's own body reads a capture
@@ -621,9 +756,17 @@ fn build_env_drop(
 ///
 /// Grows to a fixed point because "passed on to something that keeps it" is
 /// itself one of these answers.
-pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+pub(crate) fn params_a_callee_keeps(
+    fns: &[MirFunction],
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
+) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
+    let consumed: HashMap<&str, HashSet<u32>> = fns
+        .iter()
+        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
+        .collect();
 
     loop {
         let mut grew = false;
@@ -632,7 +775,7 @@ pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<
                 if kept.get(&func.name).is_some_and(|v| v[i]) {
                     continue;
                 }
-                if param_is_kept_by(func, param.id, &kept) {
+                if param_is_kept_by(func, param.id, &kept, &consumed, targets, reach) {
                     if let Some(v) = kept.get_mut(&func.name) {
                         v[i] = true;
                         grew = true;
@@ -713,8 +856,11 @@ fn interface_methods_that_hand_back(
         if ty.is_empty() || method.is_empty() {
             continue;
         }
-        let entry = per_method.entry(method).or_insert_with(|| handing.get(&func.name).copied());
-        let agrees = match (entry.as_ref(), handing.get(&func.name)) {
+        // Only a container the implementation built: a vtable call has no
+        // argument list this pass reads the way `pass_edges` needs.
+        let mine = handing.get(&func.name).filter(|b| b.made().is_some()).cloned();
+        let entry = per_method.entry(method).or_insert(mine.clone());
+        let agrees = match (entry.as_ref(), mine.as_ref()) {
             (Some(a), Some(b)) => a.free == b.free && a.wrapped == b.wrapped,
             _ => false,
         };
@@ -733,10 +879,26 @@ fn param_is_kept_by(
     func: &MirFunction,
     param: LocalId,
     kept: &HashMap<String, Vec<bool>>,
+    consumed: &HashMap<&str, HashSet<u32>>,
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
 ) -> bool {
     // Follow the value through renames: lowering copies a parameter into a
     // local before doing anything with it often enough that reading only the
     // parameter's own id saw nothing.
+    //
+    // Not into a copy that took references of its own: that one is a new
+    // value, and handing it on hands on its references, not the parameter.
+    // `return p` on a Copy aggregate parameter returns such a copy (#1447).
+    let owns_copy: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::RcIncContents { local } => Some(*local),
+            _ => None,
+        })
+        .collect();
     let mut names: HashSet<LocalId> = HashSet::from([param]);
     loop {
         let before = names.len();
@@ -744,7 +906,7 @@ fn param_is_kept_by(
             for stmt in &block.statements {
                 match &stmt.kind {
                     MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                        if names.contains(src) =>
+                        if names.contains(src) && !owns_copy.contains(dst) =>
                     {
                         names.insert(*dst);
                     }
@@ -763,6 +925,13 @@ fn param_is_kept_by(
     }
 
     let holds = |op: &MirOperand| matches!(op, MirOperand::Local(id) if names.contains(id));
+    // A closure this frame builds and frees itself holds the parameter only
+    // while the frame runs, so capturing it is a borrow. Its glue frees only
+    // what the frame made (`env_drop_glue`), never a parameter. Read as a keep,
+    // the caller stopped owning the argument and nobody freed it: an inlined
+    // `s.as_sequence()` on a borrowed `s` leaked the caller's vector, and
+    // `for v in s` over a `Set` parameter goes through exactly that.
+    let frees_last = crate::closures::closures_the_frame_frees_last(func);
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -774,7 +943,16 @@ fn param_is_kept_by(
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { args, .. } | MirStmtKind::InterfaceCall { args, .. } => {
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if holds(arg)
+                            && closure_call_keeps_argument(targets, reach, kept, &func.name, *closure, i, args.len())
+                        {
+                            return true;
+                        }
+                    }
+                }
+                MirStmtKind::InterfaceCall { args, .. } => {
                     if args.iter().any(holds) {
                         return true;
                     }
@@ -786,8 +964,14 @@ fn param_is_kept_by(
                         return true;
                     }
                 }
-                MirStmtKind::ClosureCreate { captures, .. } => {
-                    if captures.iter().any(|c| names.contains(&c.local_id)) {
+                MirStmtKind::ClosureCreate { dst, func_name, captures, .. } => {
+                    let body_consumes = |offset: u32| {
+                        consumed.get(func_name.as_str()).is_none_or(|offs| offs.contains(&offset))
+                    };
+                    if captures.iter().any(|c| {
+                        names.contains(&c.local_id)
+                            && (!frees_last.contains(dst) || body_consumes(c.offset))
+                    }) {
                         return true;
                     }
                 }
@@ -824,8 +1008,70 @@ pub(crate) fn call_keeps_argument(
     rask_stdlib::mir_metadata::keeps_argument(head, index)
 }
 
-/// Functions that build a container and return it, so the caller owns what
-/// comes back.
+/// Does `closure(args)` in `func` keep the argument at `index`?
+///
+/// A closure call has no name to look up, but `ClosureTargets` says which
+/// bodies it reaches, and each of those answers for itself. The call borrows
+/// only when every one of them does. Argument `i` is the body's parameter
+/// `i + 1`, after the environment.
+///
+/// Reading every closure call as a hand-over left the argument to nobody: the
+/// caller stopped owing it and the body, which only borrows, never freed it
+/// (#1468).
+///
+/// When `ClosureTargets` can't say which bodies — a closure loaded out of a
+/// `Vec` — the call asks every body `ClosureReach` says it might hold, the way
+/// an interface call asks every implementation. Answering "kept" there instead
+/// leaked the argument (#1469).
+fn closure_call_keeps_argument(
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
+    kept: &HashMap<String, Vec<bool>>,
+    func: &str,
+    closure: LocalId,
+    index: usize,
+    arg_count: usize,
+) -> bool {
+    let body_keeps = |b: &str| kept.get(b).and_then(|v| v.get(index + 1)).copied().unwrap_or(true);
+    match targets.known(func, closure) {
+        Some(bodies) => bodies.iter().any(|b| body_keeps(b)),
+        None => {
+            // A body taking a different number of arguments can't be behind
+            // it; one this pass has no MIR for could be anything.
+            let fits = |b: &&str| kept.get(*b).map_or(true, |v| v.len() == arg_count + 1);
+            let bodies: Vec<&str> = reach.may_hold(func, closure).into_iter().filter(fits).collect();
+            // Nothing at all could be behind it: nothing is known either.
+            bodies.is_empty() || bodies.into_iter().any(body_keeps)
+        }
+    }
+}
+
+/// What a call does with each argument, for every kind of call: by name, through
+/// a vtable slot, or through a closure.
+struct Keeps<'a> {
+    by_name: &'a HashMap<String, Vec<bool>>,
+    interface: &'a HashMap<String, Vec<bool>>,
+    targets: &'a ClosureTargets,
+    reach: &'a ClosureReach,
+}
+
+impl Keeps<'_> {
+    /// `self` isn't in an interface call's argument list, so this is already
+    /// shifted to match it (`interface_method_args_kept`).
+    fn interface_call(&self, method: &str, index: usize) -> bool {
+        self.interface.get(method).and_then(|v| v.get(index)).copied().unwrap_or(true)
+    }
+
+    fn closure_call(&self, func: &str, closure: LocalId, index: usize, arg_count: usize) -> bool {
+        closure_call_keeps_argument(self.targets, self.reach, self.by_name, func, closure, index, arg_count)
+    }
+}
+
+/// Functions whose caller owns what they return.
+///
+/// That is a function where every returning path hands back either a container
+/// it built, bare or inside a wrapper (`-> Vec<i64>?`, `-> Vec<i64> or E`), or
+/// one of its own `take` arguments.
 ///
 /// Without this a container only ever belonged to the frame that called the
 /// constructor. `make_vec()` returning a `Vec<string>` was freed by nobody:
@@ -833,11 +1079,24 @@ pub(crate) fn call_keeps_argument(
 /// caller saw a call result, which is somebody else's by default. Nine
 /// allocations a call, silently.
 ///
+/// A `take` argument handed back is the caller's for the same reason: the
+/// caller gave it up at the call, and nobody else holds it. Asking for every
+/// path to be the *same* argument, or every path to be fresh, left the result
+/// of `if c { return Vec.new() }  return p` to nobody (#1502, #1504), and so did
+/// returning `a` on one path and `b` on another (#1505). The caller owns that
+/// result exactly when it owned every argument that might come back, which is
+/// what `Event::Remake` says at the call.
+///
+/// A path returning anything else — a field, a map's own vector, a borrowed
+/// parameter's contents — means the whole function is left out:
+/// `lookup` returns `index.get(word) ?? Vec.new()`, and calling that "the
+/// caller's" frees a vector the map still holds.
+///
 /// It's a fixed point because handing one back is transitive — a wrapper that
-/// returns what `make_vec` gave it is handing one back too. Only functions
-/// this pass can see count: a container from the runtime (`split`, `map.keys`)
-/// still has no owner named here, because reading an element out of one
-/// doesn't take a reference — #1035.
+/// returns what `make_vec` gave it is handing one back too, and so is
+/// `return stash(q)`. Only functions this pass can see count: a container from
+/// the runtime (`split`, `map.keys`) still has no owner named here, because
+/// reading an element out of one doesn't take a reference — #1035.
 fn functions_that_hand_a_container_back(
     fns: &[MirFunction],
     targets: &crate::closure_targets::ClosureTargets,
@@ -849,77 +1108,268 @@ fn functions_that_hand_a_container_back(
             if handing.contains_key(&func.name) {
                 continue;
             }
-            // No interface answer yet — it is built from this one, and a
-            // half-built map would make the fixed point depend on iteration
-            // order. An interface call's result is nobody's here, which is what the
-            // whole map said before it existed.
-            let fresh =
-                collect_fresh_containers_with(func, fns, &handing, &HashMap::new(), targets);
-            // A forwarder makes nothing of its own — `return s.to_cstring()`
-            // hands its caller the wrapper it was just given, untouched. So
-            // there is no fresh name here and no store into a wrapper to read
-            // one off; the answer is the callee's answer.
-            let forwarded = forwarded_wrappers(func, &handing);
-            if fresh.is_empty() && forwarded.is_empty() {
-                continue;
-            }
-            // Every returning path has to hand back one this frame made. One
-            // that doesn't is the whole risk here: `lookup` returns
-            // `index.get(word) ?? Vec.new()` — a fresh vector on one path and
-            // the map's own on the other — and calling that "the caller's"
-            // frees a vector the map still holds.
-            let mut free_fn: Option<&'static str> = None;
-            let mut all_fresh = true;
-            let mut wrapped = false;
-            let mut any = false;
-            for b in &func.blocks {
-                // A function with an `ensure` returns through the cleanup chain.
-                // Reading only `Return` left every such function handing nothing
-                // back, so `ensure g.detach(); return g.join_all()` gave its
-                // caller a vector nobody freed.
-                let (MirTerminatorKind::Return { value: Some(v), .. }
-                | MirTerminatorKind::CleanupReturn { value: Some(v), .. }) = &b.terminator.kind
-                else {
-                    continue;
-                };
-                any = true;
-                let MirOperand::Local(id) = v else {
-                    all_fresh = false;
-                    continue;
-                };
-                if let Some(f) = fresh.get(id) {
-                    free_fn = Some(f);
-                    continue;
-                }
-                if let Some(f) = forwarded.get(id) {
-                    free_fn = Some(f);
-                    wrapped = true;
-                    continue;
-                }
-                // The container may be *inside* what is returned. `-> Vec<i64>?`
-                // and `-> Vec<i64> or E` return the wrapper aggregate, and the
-                // vector is a slot in it — so the returned local is never the
-                // fresh one, `all_fresh` was false, and nobody freed the vector
-                // the caller unwrapped and used (#1117).
-                match container_stored_into(func, *id, &fresh) {
-                    WrapperHoldings::Fresh(f) => {
-                        free_fn = Some(f);
-                        wrapped = true;
-                    }
-                    // The error path of a `T or E` stores no container at all.
-                    // That is not a path handing one back, and not a path
-                    // handing back somebody else's either.
-                    WrapperHoldings::None => {}
-                    WrapperHoldings::Foreign => all_fresh = false,
-                }
-            }
-            if let (true, true, Some(free)) = (any, all_fresh, free_fn) {
-                handing.insert(func.name.clone(), HandBack { free, wrapped });
+            if let Some(back) = what_comes_back(func, fns, &handing, targets) {
+                handing.insert(func.name.clone(), back);
                 grew = true;
             }
         }
         if !grew {
             return handing;
+        }
+    }
+}
+
+/// What one returning path hands back.
+enum Path {
+    /// A container this frame made, and its free.
+    Made(&'static str),
+    /// One of the arguments at these indices.
+    Args(BTreeSet<usize>),
+}
+
+/// `func`'s answer for `functions_that_hand_a_container_back`, given what is
+/// already known about its callees.
+fn what_comes_back(
+    func: &MirFunction,
+    fns: &[MirFunction],
+    handing: &HashMap<String, HandBack>,
+    targets: &ClosureTargets,
+) -> Option<HandBack> {
+    // No interface answer yet — it is built from this one, and a half-built
+    // map would make the fixed point depend on iteration order. An interface
+    // call's result is nobody's here, which is what the whole map said before
+    // it existed.
+    let fresh = collect_fresh_containers_with(func, fns, handing, &HashMap::new(), targets);
+    // A forwarder makes nothing of its own — `return s.to_cstring()` hands its
+    // caller the wrapper it was just given, untouched. The answer is the
+    // callee's answer.
+    let forwarded = forwarded_wrappers(func, handing);
+    let edges = pass_edges(func, handing, targets);
+    // Which parameters' owners each name has. Asked before `fresh`: what
+    // `stash(p)` hands back is this frame's, since a frame owns the `take`
+    // parameters it keeps (`params_this_frame_owns`) — but to *this*
+    // function's caller it is still the argument it passed, which it may not
+    // have owned.
+    let param_of = owned_like_params(func, &edges, &fresh);
+
+    let mut paths: Vec<Path> = Vec::new();
+    let mut wrapped = false;
+    let mut any = false;
+    for b in &func.blocks {
+        // A function with an `ensure` returns through the cleanup chain.
+        // Reading only `Return` left every such function handing nothing back,
+        // so `ensure g.detach(); return g.join_all()` gave its caller a vector
+        // nobody freed.
+        let (MirTerminatorKind::Return { value: Some(v), .. }
+        | MirTerminatorKind::CleanupReturn { value: Some(v), .. }) = &b.terminator.kind
+        else {
+            continue;
+        };
+        any = true;
+        let MirOperand::Local(id) = v else {
+            return None;
+        };
+        // Empty when only containers this frame made reach it: that is `fresh`.
+        if let Some(from) = param_of.get(id).filter(|from| !from.is_empty()) {
+            paths.push(Path::Args(from.clone()));
+            continue;
+        }
+        if let Some(f) = fresh.get(id) {
+            paths.push(Path::Made(f));
+            continue;
+        }
+        if let Some(f) = forwarded.get(id) {
+            paths.push(Path::Made(f));
+            wrapped = true;
+            continue;
+        }
+        // The container may be *inside* what is returned. `-> Vec<i64>?` and
+        // `-> Vec<i64> or E` return the wrapper aggregate, and the vector is a
+        // slot in it — so the returned local is never the fresh one, and
+        // nobody freed the vector the caller unwrapped and used (#1117).
+        //
+        // An argument handed back inside a wrapper isn't one of these: the
+        // wrapper is `rc_insert`'s to release with what it holds, whoever
+        // filled it, and the payload read out of it is a part of that.
+        match container_stored_into(func, *id, &fresh) {
+            WrapperHoldings::Fresh(f) => {
+                paths.push(Path::Made(f));
+                wrapped = true;
+            }
+            // The error path of a `T or E` stores no container at all. That is
+            // not a path handing one back, and not a path handing back
+            // somebody else's either.
+            WrapperHoldings::None => {}
+            WrapperHoldings::Foreign => return None,
+        }
+    }
+    if !any {
+        return None;
+    }
+    let mut free: Option<&'static str> = None;
+    let mut args: BTreeSet<usize> = BTreeSet::new();
+    for p in paths {
+        match p {
+            Path::Made(f) => free = Some(f),
+            Path::Args(from) => args.extend(from),
+        }
+    }
+    // A fresh container needs a free to be named here; an argument handed
+    // back is freed the way the caller's argument is.
+    match (args.is_empty(), free) {
+        (true, None) => None,
+        (false, _) if wrapped => None,
+        _ => Some(HandBack { free, wrapped, args }),
+    }
+}
+
+/// What a call that may hand back one of its arguments was passed there: per
+/// call destination, each such argument's index and the local passed for it.
+type Passes = HashMap<LocalId, Vec<(usize, LocalId)>>;
+
+/// The calls in `func` that may hand back one of their arguments.
+///
+/// What comes back is the caller's exactly when every one of those arguments
+/// was, so each frame reads such a call as `Event::Remake`, and follows the
+/// container's free from the arguments to the result.
+fn pass_edges(func: &MirFunction, handing: &HashMap<String, HandBack>, targets: &ClosureTargets) -> Passes {
+    let bare_args = |name: &str| handing.get(name).filter(|b| !b.wrapped).map(|b| &b.args);
+    let mut out = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let (dst, indices, args): (LocalId, BTreeSet<usize>, _) = match &stmt.kind {
+            MirStmtKind::Call { dst: Some(dst), func: fref, args } => {
+                let Some(from) = bare_args(&fref.name).filter(|from| !from.is_empty()) else { continue };
+                (*dst, from.clone(), args)
+            }
+            // Every body the closure can be hands back what its caller owns.
+            // Any argument one of them may hand back counts. Argument `i` is
+            // the body's parameter `i + 1`, after the environment.
+            MirStmtKind::ClosureCall { dst: Some(dst), closure, args, .. } => {
+                let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                let mut from = BTreeSet::new();
+                let all = !bodies.is_empty()
+                    && bodies.iter().all(|b| match bare_args(b) {
+                        Some(ps) if !ps.contains(&0) => {
+                            from.extend(ps.iter().map(|p| p - 1));
+                            true
+                        }
+                        _ => false,
+                    });
+                if !all || from.is_empty() {
+                    continue;
+                }
+                (*dst, from, args)
+            }
+            _ => continue,
+        };
+        let srcs: Option<Vec<(usize, LocalId)>> = indices
+            .into_iter()
+            .map(|i| match args.get(i) {
+                Some(MirOperand::Local(src)) => Some((i, *src)),
+                _ => None,
+            })
+            .collect();
+        if let Some(srcs) = srcs {
+            out.insert(dst, srcs);
+        }
+    }
+    out
+}
+
+/// Every name whose owner is certainly whoever owned what arrived in some of
+/// `func`'s parameters, and which ones: copies, phis whose every input is one,
+/// and what a call that may hand one back returned (`pass_edges`). A phi of
+/// `a` and `b` is owned like both.
+///
+/// A container this frame made (`fresh`) counts too, owned like no parameter:
+/// it is the caller's once handed back, whatever the caller owned.
+///
+/// Every definition of the name has to be one of those — lowering assigns a
+/// loop variable in more than one place. Not a copy that took references of
+/// its own — that is a new value (#1447).
+fn owned_like_params(
+    func: &MirFunction,
+    edges: &Passes,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> HashMap<LocalId, BTreeSet<usize>> {
+    let owns_copy: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::RcIncContents { local } => Some(*local),
+            _ => None,
+        })
+        .collect();
+    let mut from: HashMap<LocalId, BTreeSet<usize>> =
+        fresh.keys().map(|id| (*id, BTreeSet::new())).collect();
+    for (i, p) in func.params.iter().enumerate() {
+        from.insert(p.id, BTreeSet::from([i]));
+    }
+    let seeds: HashSet<LocalId> = from.keys().copied().collect();
+    // What one definition says `d` is owned like, when it says anything.
+    let def_from = |from: &HashMap<LocalId, BTreeSet<usize>>, stmt: &MirStmt, d: LocalId| {
+        let union = |srcs: &mut dyn Iterator<Item = Option<LocalId>>| {
+            let mut out = BTreeSet::new();
+            for s in srcs {
+                out.extend(from.get(&s?)?.iter().copied());
+            }
+            Some(out)
+        };
+        match &stmt.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
+                if owns_copy.contains(&d) {
+                    return None;
+                }
+                from.get(src).cloned()
+            }
+            MirStmtKind::Phi { args, .. } if !args.is_empty() => union(&mut args.iter().map(|(_, op)| match op {
+                MirOperand::Local(s) => Some(*s),
+                _ => None,
+            })),
+            MirStmtKind::Phi { .. } => None,
+            _ => union(&mut edges.get(&d)?.iter().map(|(_, s)| Some(*s))),
+        }
+    };
+    let defs = || {
+        func.blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| Some((stmt, crate::analysis::uses::stmt_def(stmt)?)))
+            .filter(|(_, d)| !seeds.contains(d))
+    };
+    // Grown on "some definition is one"; the sets only widen, so this ends.
+    loop {
+        let mut grew = false;
+        for (stmt, d) in defs() {
+            let Some(more) = def_from(&from, stmt, d) else { continue };
+            match from.get_mut(&d) {
+                Some(cur) if more.is_subset(cur) => {}
+                Some(cur) => {
+                    cur.extend(more);
+                    grew = true;
+                }
+                None => {
+                    from.insert(d, more);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // Keep only names where every definition is one.
+    loop {
+        let doomed: Vec<LocalId> = defs()
+            .filter(|(stmt, d)| from.contains_key(d) && def_from(&from, stmt, *d).is_none())
+            .map(|(_, d)| d)
+            .collect();
+        if doomed.is_empty() {
+            return from;
+        }
+        for d in doomed {
+            from.remove(&d);
         }
     }
 }
@@ -939,8 +1389,8 @@ fn forwarded_wrappers(
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
             if let Some(back) = handing.get(&fref.name) {
-                if back.wrapped {
-                    out.insert(*dst, back.free);
+                if let (true, Some(free)) = (back.wrapped, back.made()) {
+                    out.insert(*dst, free);
                 }
             }
         }
@@ -949,14 +1399,29 @@ fn forwarded_wrappers(
 }
 
 /// How a function hands a container to its caller.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct HandBack {
-    /// What frees it.
-    free: &'static str,
+    /// What frees it, when a path builds one. Always there when `args` is
+    /// empty.
+    free: Option<&'static str>,
     /// The container is a slot inside what is returned (`-> Vec<i64>?`), not
     /// the returned value itself. The caller owns what it reads out of that
-    /// slot, not the wrapper.
+    /// slot, not the wrapper. Never with `args`.
     wrapped: bool,
+    /// Some paths hand back one of the arguments at these indices instead of
+    /// building one. The caller owns the result exactly when it owned every
+    /// one of them.
+    args: BTreeSet<usize>,
+}
+
+impl HandBack {
+    /// The free, when every path builds what it returns.
+    fn made(&self) -> Option<&'static str> {
+        if !self.args.is_empty() {
+            return None;
+        }
+        self.free
+    }
 }
 
 /// What the aggregate `wrapper` holds in its container-shaped slots.
@@ -1037,33 +1502,79 @@ fn is_container_shaped(func: &MirFunction, local: LocalId) -> bool {
         .is_some_and(|l| matches!(l.ty, MirType::Ptr))
 }
 
+/// The `take` container parameters this frame owns, with the free for each.
+///
+/// A parameter the body keeps is one every caller gave up at the call
+/// (`params_a_callee_keeps`, read the same way on both sides), so it is this
+/// frame's on every path, not just the one that keeps it.
+/// `if c { return Vec.new() }  return p` returns `p` on one path and drops it
+/// on the other, and nobody freed it there (#1504).
+///
+/// Not a closure body or an exported function: what calls those may be the
+/// runtime or C, which hands over nothing.
+fn params_this_frame_owns(
+    func: &MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    closure_bodies: &HashSet<String>,
+) -> Vec<(LocalId, &'static str)> {
+    if func.is_extern_c || closure_bodies.contains(&func.name) {
+        return Vec::new();
+    }
+    let Some(flags) = kept.get(&func.name) else { return Vec::new() };
+    // A caller doesn't hand over a container method's receiver, kept or not
+    // (`container_facts`).
+    let head = func.name.rsplit("::").next().unwrap_or(&func.name);
+    let receiver_lent = rask_stdlib::mir_metadata::borrows_receiver(head);
+    func.params
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| flags.get(*i).copied().unwrap_or(false) && !(*i == 0 && receiver_lent))
+        .filter_map(|(_, p)| match unerased_type(func, p.id) {
+            Some(MirType::Container(kind)) => Some((p.id, container_free(kind))),
+            _ => None,
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn insert_for_function(
     func: &mut MirFunction,
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
     interface_handing: &HashMap<String, HandBack>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
-    targets: &crate::closure_targets::ClosureTargets,
+    keeps: &Keeps,
+    targets: &ClosureTargets,
     own: &HashSet<String>,
+    closure_bodies: &HashSet<String>,
 ) {
+    let kept = keeps.by_name;
     // Every name that may hold a container this frame made, and where each
     // is made. Whether a given name holds one of this frame's on a given path
     // is the ownership analysis's question, not a property of the name:
     // `index.get(word) ?? Vec.new()` holds the map's vector on one path and a
     // fresh one on the other, and only the second is this frame's.
-    let (tracked, made_here) =
+    let (mut tracked, made_here) =
         containers_and_makers(func, all, handing_over, interface_handing, targets);
-    if made_here.is_empty() {
+    let owned = params_this_frame_owns(func, kept, closure_bodies);
+    if made_here.is_empty() && owned.is_empty() {
         return;
+    }
+    let passed = pass_edges(func, handing_over, targets);
+    if !owned.is_empty() {
+        for (id, free) in &owned {
+            tracked.insert(*id, free);
+        }
+        follow_copies_and_passes(func, &mut tracked, &passed);
     }
     // The pruned answer, for the two rules below that still key on a name:
     // a container captured by a closure the frame drops, and one in a cell.
     let fresh = collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
-    let ensured = consumed_by_an_ensure(func, all, &fresh, kept, interface_kept);
+    let ensured = consumed_by_an_ensure(func, all, &fresh, keeps);
 
-    let facts = container_facts(func, &tracked, &made_here, &ensured, kept, interface_kept, own);
+    let lent = lent_slots(func, &mut tracked, kept);
+    let owned: HashSet<LocalId> = owned.into_iter().map(|(id, _)| id).collect();
+    let facts =
+        container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, own, &passed, &owned);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
@@ -1073,7 +1584,7 @@ fn insert_for_function(
     // A container in a capture cell is reached through a store, which reads
     // as handing it over — so its free goes in separately, keyed on the cell
     // rather than on a name.
-    let cells = cells_this_frame_frees(func, all, &fresh, kept, interface_kept, interface_handing);
+    let cells = cells_this_frame_frees(func, all, &fresh, keeps, &lent.slots);
 
     // A capture the frame frees itself, because it frees the closure too. The
     // capture is a hand-over as far as the analysis is concerned, so the two
@@ -1081,38 +1592,99 @@ fn insert_for_function(
     let with_closure = captures_freed_with_the_closure(func, &fresh);
     let with_closure = one_free_per_group(func, with_closure, &value_groups(func, &fresh));
 
-    let free_of = |name: LocalId| tracked[&name];
+    // A release under a lent slot frees what the slot holds *now*: the callee
+    // may have put a different container there, so the handle is loaded at the
+    // release rather than taken from any earlier name.
+    let mut next_local = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
+    let mut release = |func: &mut MirFunction, name: LocalId| -> Vec<MirStmt> {
+        let free = FunctionRef::internal(tracked[&name].to_string());
+        if !lent.slots.contains_key(&name) {
+            return vec![MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: free,
+                args: vec![MirOperand::Local(name)],
+            })];
+        }
+        let tmp = LocalId(next_local);
+        next_local += 1;
+        func.locals.push(crate::MirLocal {
+            id: tmp,
+            name: None,
+            ty: MirType::Ptr,
+            is_param: false,
+            unerased: None,
+        });
+        vec![
+            MirStmt::dummy(MirStmtKind::Assign {
+                dst: tmp,
+                rvalue: MirRValue::Deref(MirOperand::Local(name)),
+            }),
+            MirStmt::dummy(MirStmtKind::Call { dst: None, func: free, args: vec![MirOperand::Local(tmp)] }),
+        ]
+    };
+    // Ahead of the releases, which go at block ends and on edges: the marks
+    // index into the blocks as planned.
+    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+        func,
+        plan.unwind,
+        &mut |func: &mut MirFunction, name: LocalId, _| release(func, name),
+    );
     let mut at_end: Vec<(usize, LocalId)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
-    for r in plan {
+    for r in plan.releases {
         match r {
             crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
-            crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => on_edges.push((
-                from,
-                to,
-                vec![MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal(free_of(name).to_string()),
-                    args: vec![MirOperand::Local(name)],
-                })],
-            )),
+            crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
+                let stmts = release(func, name);
+                on_edges.push((from, to, stmts));
+            }
         }
     }
     at_end.sort_by_key(|(b, l)| (*b, l.0));
     for (block, name) in at_end {
-        func.blocks[block].statements.push(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal(free_of(name).to_string()),
-            args: vec![MirOperand::Local(name)],
-        }));
+        let stmts = release(func, name);
+        func.blocks[block].statements.extend(stmts);
     }
-    crate::analysis::ownership::insert_on_edges(func, on_edges);
+    crate::analysis::ownership::insert_on_edges(
+        func,
+        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+    );
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
     }
     if !with_closure.is_empty() {
         insert_capture_drops(func, &with_closure);
     }
+}
+
+/// Stack closures that copied one of the frame's containers into their
+/// environment, and the names they are copied into.
+///
+/// Lowering carries a closure's captures by value when the closure looks like
+/// it leaves its frame, and `closures::decide_allocation` puts the environment
+/// back on the stack once inlining shows it doesn't: `consume(f)` with
+/// `consume` inlined calls `f` right there. The container is still the frame's
+/// then, and reading the capture as a hand-over gave it to an environment that
+/// frees nothing.
+fn stack_environments(
+    func: &MirFunction,
+    tracked: &HashMap<LocalId, &'static str>,
+) -> HashSet<LocalId> {
+    let mut envs: HashMap<LocalId, &'static str> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureCreate { dst, captures, heap: false, .. }
+                if captures.iter().any(|c| !c.by_ref && tracked.contains_key(&c.local_id)) =>
+            {
+                Some((*dst, ""))
+            }
+            _ => None,
+        })
+        .collect();
+    follow_copies(func, &mut envs);
+    envs.into_keys().collect()
 }
 
 /// What each statement does to the containers this frame may hold.
@@ -1129,14 +1701,19 @@ fn container_facts(
     tracked: &HashMap<LocalId, &'static str>,
     made_here: &HashSet<LocalId>,
     ensured: &HashSet<LocalId>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    lent: &LentSlots,
+    keeps: &Keeps,
     own: &HashSet<String>,
+    passed: &Passes,
+    owned: &HashSet<LocalId>,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
     use crate::analysis::uses;
-    let names: std::collections::BTreeSet<LocalId> = tracked.keys().copied().collect();
+    let envs = stack_environments(func, tracked);
+    let names: std::collections::BTreeSet<LocalId> =
+        tracked.keys().chain(envs.iter()).copied().collect();
     let is = |l: &LocalId| tracked.contains_key(l);
+    let env = |l: &LocalId| envs.contains(l);
     let mut facts = crate::analysis::ownership::Facts {
         names: names.clone(),
         events: Vec::new(),
@@ -1144,8 +1721,12 @@ fn container_facts(
         reads: Vec::new(),
         kills: Vec::new(),
         terminator_reads: Vec::new(),
-        foreign: func.params.iter().map(|p| p.id).filter(|p| is(p)).collect(),
+        foreign: func.params.iter().map(|p| p.id).filter(|p| is(p) && !owned.contains(p)).collect(),
+        owned: func.params.iter().map(|p| p.id).filter(|p| is(p) && owned.contains(p)).collect(),
     };
+    // The first name each wrapper's payload was read into. See the `Field`
+    // arm below.
+    let mut first_read: HashMap<(LocalId, u32), LocalId> = HashMap::new();
     for block in &func.blocks {
         let mut events = Vec::new();
         let mut reads = Vec::new();
@@ -1159,6 +1740,23 @@ fn container_facts(
                     }
                 }
             };
+            // A call that may hand back one of its arguments: the result is
+            // ours exactly when every one of them was (`Event::Remake`). Only
+            // when all ends are tracked — otherwise the arguments are handed
+            // over as before, and the result is nobody's.
+            let pass = match &stmt.kind {
+                MirStmtKind::Call { dst: Some(d), .. } | MirStmtKind::ClosureCall { dst: Some(d), .. }
+                    if is(d) && !made_here.contains(d) =>
+                {
+                    passed.get(d).filter(|srcs| srcs.iter().all(|(_, s)| is(s))).map(|srcs| (srcs, *d))
+                }
+                _ => None,
+            };
+            let passes_arg = |i: usize| pass.is_some_and(|(srcs, _)| srcs.iter().any(|(p, _)| *p == i));
+            let remake = |srcs: &[(usize, LocalId)], d: LocalId| Event::Remake {
+                dst: d,
+                srcs: srcs.iter().map(|(_, s)| *s).collect(),
+            };
             match &stmt.kind {
                 MirStmtKind::Phi { .. } => {}
                 MirStmtKind::Call { func: fref, args, dst } => {
@@ -1171,6 +1769,9 @@ fn container_facts(
                     let frees = !own.contains(&fref.name)
                         && (base.ends_with("_free") || base.ends_with("_free_elems"));
                     for (i, arg) in args.iter().enumerate() {
+                        if passes_arg(i) {
+                            continue;
+                        }
                         if i == 0 && (takes || frees) {
                             give(&mut ev, arg);
                             continue;
@@ -1178,11 +1779,13 @@ fn container_facts(
                         if i == 0 && borrows {
                             continue;
                         }
-                        if call_keeps_argument(fref, i, kept) {
+                        if call_keeps_argument(fref, i, keeps.by_name) {
                             give(&mut ev, arg);
                         }
                     }
-                    if let Some(d) = dst.filter(|d| is(d)) {
+                    if let Some((srcs, d)) = pass {
+                        ev.push(remake(srcs, d));
+                    } else if let Some(d) = dst.filter(|d| is(d)) {
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
                 }
@@ -1192,9 +1795,7 @@ fn container_facts(
                 // the right (#1199).
                 MirStmtKind::InterfaceCall { method_name, args, dst, .. } => {
                     for (i, arg) in args.iter().enumerate() {
-                        let keeps =
-                            interface_kept.get(method_name).and_then(|v| v.get(i)).copied().unwrap_or(true);
-                        if keeps {
+                        if keeps.interface_call(method_name, i) {
                             give(&mut ev, arg);
                         }
                     }
@@ -1202,23 +1803,87 @@ fn container_facts(
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
                 }
-                MirStmtKind::ClosureCall { args, dst, .. } => {
-                    for arg in args {
-                        give(&mut ev, arg);
+                MirStmtKind::ClosureCall { closure, args, dst, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if !passes_arg(i) && keeps.closure_call(&func.name, *closure, i, args.len()) {
+                            give(&mut ev, arg);
+                        }
                     }
-                    if let Some(d) = dst.filter(|d| is(d)) {
+                    if let Some((srcs, d)) = pass {
+                        ev.push(remake(srcs, d));
+                    } else if let Some(d) = dst.filter(|d| is(d)) {
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
+                    }
+                }
+                // Filling a lent slot: the slot is the variable, so it holds
+                // the value from here on rather than taking it away.
+                MirStmtKind::Store { addr, value, .. } if lent.slots.contains_key(addr) => {
+                    match uses::operand_local(value).filter(|v| is(v)) {
+                        Some(src) => ev.push(Event::Alias { dst: *addr, src }),
+                        None => ev.push(Event::Other(*addr)),
                     }
                 }
                 MirStmtKind::Store { value, .. }
                 | MirStmtKind::ArrayStore { value, .. }
                 | MirStmtKind::InterfaceBox { value, .. } => give(&mut ev, value),
+                // The slot's address, lent to a `mutate` parameter. Whatever
+                // reaches the slot through it keeps the value needed, and the
+                // callee may put a new container there, so from here the slot
+                // is the only name that certainly holds what is in it.
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } if lent.slots.contains_key(src) => {
+                    ev.push(Event::View { dst: *dst, base: *src });
+                    ev.push(Event::WriteThrough(*src));
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(src)) }
+                    if lent.slots.contains_key(src) =>
+                {
+                    ev.push(Event::Alias { dst: *dst, src: *src });
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base: MirOperand::Local(base), .. }
+                        | MirRValue::Deref(MirOperand::Local(base)),
+                } if lent.refs.contains(base) && is(dst) => {
+                    ev.push(Event::View { dst: *dst, base: *base });
+                }
+                // A second read of a payload already read out is the same
+                // container under another name. `let files = r is Vec<T> as f
+                // else { … }` reads the result's payload once for `f` and once
+                // for `files`, and each read was freed (#1494). Keyed by the
+                // field as well as the base: two fields are two containers.
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base: MirOperand::Local(base), field_index, .. },
+                } if is(dst) && made_here.contains(dst) => {
+                    match first_read.get(&(*base, *field_index)) {
+                        Some(first) => ev.push(Event::Alias { dst: *dst, src: *first }),
+                        None => {
+                            first_read.insert((*base, *field_index), *dst);
+                        }
+                    }
+                }
+                // A stack environment holds the frame's own container: it dies
+                // with the frame, so nothing else will free what is in it. It
+                // reaches into the container for as long as the closure is
+                // used.
+                MirStmtKind::ClosureCreate { dst, captures, heap: false, .. } if env(dst) => {
+                    for cap in captures.iter().filter(|c| is(&c.local_id)) {
+                        ev.push(if cap.by_ref {
+                            Event::HandOver(cap.local_id)
+                        } else {
+                            Event::View { dst: *dst, base: cap.local_id }
+                        });
+                    }
+                }
                 MirStmtKind::ClosureCreate { captures, .. } => {
                     for cap in captures {
                         if is(&cap.local_id) {
                             ev.push(Event::HandOver(cap.local_id));
                         }
                     }
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } if env(dst) => {
+                    ev.push(if env(src) { Event::Alias { dst: *dst, src: *src } } else { Event::Other(*dst) });
                 }
                 MirStmtKind::EnsureHookRegister { captures, .. } => {
                     for cap in captures {
@@ -1228,7 +1893,7 @@ fn container_facts(
                     }
                 }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
-                    if is(src) && !lent_for_the_call(func, *dst, kept) {
+                    if is(src) && !lent_for_the_call(func, *dst, keeps.by_name) {
                         ev.push(Event::HandOver(*src));
                     }
                 }
@@ -1242,7 +1907,7 @@ fn container_facts(
             if let Some(d) = uses::stmt_def(stmt).filter(|d| is(d)) {
                 let bound = ev.iter().any(|e| {
                     matches!(e, Event::Make(n) | Event::Other(n) if *n == d)
-                        || matches!(e, Event::Alias { dst, .. } if *dst == d)
+                        || matches!(e, Event::Alias { dst, .. } | Event::View { dst, .. } | Event::Remake { dst, .. } if *dst == d)
                 });
                 if !bound && !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
                     ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
@@ -1250,11 +1915,27 @@ fn container_facts(
             }
             let (mut r, mut k) = (Vec::new(), Vec::new());
             if !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
+                // A store into a lent slot writes the variable; it reads
+                // nothing of what was there.
+                let fills = match &stmt.kind {
+                    MirStmtKind::Store { addr, value, .. } if lent.slots.contains_key(addr) => {
+                        Some((*addr, value))
+                    }
+                    _ => None,
+                };
                 for n in &names {
-                    if uses::stmt_reads(stmt, *n) {
+                    let reads = match fills {
+                        Some((slot, value)) if slot == *n => uses::operand_local(value) == Some(*n),
+                        _ => uses::stmt_reads(stmt, *n),
+                    };
+                    if reads {
                         r.push(*n);
                     }
-                    if uses::stmt_def(stmt) == Some(*n) {
+                    let writes = match fills {
+                        Some((slot, _)) => slot == *n,
+                        None => uses::stmt_def(stmt) == Some(*n),
+                    };
+                    if writes {
                         k.push(*n);
                     }
                 }
@@ -1311,12 +1992,9 @@ fn captures_freed_with_the_closure(
     func: &MirFunction,
     fresh: &HashMap<LocalId, &'static str>,
 ) -> Vec<(LocalId, u32, LocalId, &'static str)> {
-    // Closures this frame drops. `closures::insert_drops` emits one only for
-    // a closure the frame owns, so its presence is the answer.
-    let dropped: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
-        .into_iter()
-        .map(|(create, _, _)| create)
-        .collect();
+    // Closures this frame drops, and holds the last reference to.
+    // `closures::insert_drops` emits a drop only for a closure the frame owns.
+    let dropped = crate::closures::closures_the_frame_frees_last(func);
     if dropped.is_empty() {
         return Vec::new();
     }
@@ -1529,6 +2207,7 @@ fn collect_fresh_containers_with(
 ) -> HashMap<LocalId, &'static str> {
     let (mut fresh, made_here) =
         containers_and_makers(func, all, handing_over, interface_handing, targets);
+    let edges = pass_edges(func, handing_over, targets);
 
     // A name is only this frame's if *every* way of reaching it is. Following
     // a copy forwards says "one path put a fresh container here"; it doesn't
@@ -1545,7 +2224,7 @@ fn collect_fresh_containers_with(
         let doomed: Vec<LocalId> = fresh
             .keys()
             .copied()
-            .filter(|id| !made_here.contains(id) && !every_def_is_fresh(func, *id, &fresh))
+            .filter(|id| !made_here.contains(id) && !every_def_is_fresh(func, *id, &fresh, &edges))
             .collect();
         if doomed.is_empty() {
             break;
@@ -1555,6 +2234,21 @@ fn collect_fresh_containers_with(
         }
     }
     fresh
+}
+
+/// A local's type with its container kinds still named (`MirLocal::unerased`).
+fn unerased_type(func: &MirFunction, local: LocalId) -> Option<MirType> {
+    let l = func.locals.iter().find(|l| l.id == local)?;
+    Some(l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
+}
+
+/// The free that gives back a container of this kind.
+fn container_free(kind: crate::ContainerKind) -> &'static str {
+    match kind {
+        crate::ContainerKind::Vec => "Vec_free",
+        crate::ContainerKind::Map => "Map_free",
+        crate::ContainerKind::Rack => "Rack_free",
+    }
 }
 
 /// Every name that may hold a container this frame made, with the free that
@@ -1572,22 +2266,52 @@ fn containers_and_makers(
     // Calls whose result is a wrapper holding the container, rather than the
     // container: the caller owns what it unwraps, and the wrapper is a value.
     let mut unwrap_for: HashMap<LocalId, &'static str> = HashMap::new();
+    // Calls that may hand back the argument they took. The result is this
+    // frame's exactly when the argument was, so it is followed below with the
+    // copies.
+    let edges = pass_edges(func, handing_over, targets);
     for block in &func.blocks {
         for stmt in &block.statements {
+            if matches!(&stmt.kind,
+                MirStmtKind::Call { dst: Some(d), .. } | MirStmtKind::ClosureCall { dst: Some(d), .. }
+                    if edges.contains_key(d))
+            {
+                continue;
+            }
             if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
                 let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
                 // A monomorphized name carries a `$` suffix.
                 let base = head.split('$').next().unwrap_or(head);
                 if let Some(free) = free_for(base) {
                     fresh.insert(*dst, free);
+                } else if rask_stdlib::mir_metadata::transfers_out(base) {
+                    // A container taken out of a container — `vv.remove(i)`,
+                    // `vv.pop()`, the binding of `for v in vv.take_all()` — is
+                    // the caller's now, like one a constructor made. Nothing
+                    // listed it, so a `Vec<Vec<T>>` element that was removed
+                    // and never moved on was never freed. `pop` wraps it in an
+                    // optional, which the unwrap below reads it out of.
+                    match unerased_type(func, *dst) {
+                        Some(MirType::Container(kind)) => {
+                            fresh.insert(*dst, container_free(kind));
+                        }
+                        Some(MirType::Option(inner)) => {
+                            if let MirType::Container(kind) = *inner {
+                                unwrap_for.insert(*dst, container_free(kind));
+                            }
+                        }
+                        _ => {}
+                    }
                 } else if let Some(free) = crate::elem_strs::wrapped_free_fn(base) {
                     unwrap_for.insert(*dst, free);
-                } else if let Some(back) = handing_over.get(&fref.name) {
+                } else if let Some((back, free)) =
+                    handing_over.get(&fref.name).and_then(|b| Some((b, b.made()?)))
+                {
                     // The callee's own constructor decided which free this is.
                     if back.wrapped {
-                        unwrap_for.insert(*dst, back.free);
+                        unwrap_for.insert(*dst, free);
                     } else {
-                        fresh.insert(*dst, back.free);
+                        fresh.insert(*dst, free);
                     }
                 }
             }
@@ -1595,11 +2319,13 @@ fn containers_and_makers(
             // hands one back — the same rule as the closure case below, and
             // for the same reason: there is no callee name to look up.
             if let MirStmtKind::InterfaceCall { dst: Some(dst), method_name, .. } = &stmt.kind {
-                if let Some(back) = interface_handing.get(method_name) {
+                if let Some((back, free)) =
+                    interface_handing.get(method_name).and_then(|b| Some((b, b.made()?)))
+                {
                     if back.wrapped {
-                        unwrap_for.insert(*dst, back.free);
+                        unwrap_for.insert(*dst, free);
                     } else {
-                        fresh.insert(*dst, back.free);
+                        fresh.insert(*dst, free);
                     }
                 }
             }
@@ -1613,14 +2339,14 @@ fn containers_and_makers(
                 if let Some(bodies) = targets.known(&func.name, *closure) {
                     let mut agreed: Option<&'static str> = None;
                     let all_hand_back = bodies.iter().all(|body| {
-                        match handing_over.get(body) {
+                        match handing_over.get(body).and_then(|b| Some((b, b.made()?))) {
                             // A wrapper needs the unwrap step below, which is
                             // keyed on the call's own destination — one closure
                             // returning a bare container and another a wrapped
                             // one have no single answer, so neither gets one.
-                            Some(back) if !back.wrapped => {
-                                let same = agreed.is_none_or(|f| f == back.free);
-                                agreed = Some(back.free);
+                            Some((back, free)) if !back.wrapped => {
+                                let same = agreed.is_none_or(|f| f == free);
+                                agreed = Some(free);
                                 same
                             }
                             _ => false,
@@ -1661,7 +2387,7 @@ fn containers_and_makers(
 
     // The same value under a new name: follow it, so the name still holding it
     // at its death is the one that gets freed.
-    follow_copies(func, &mut fresh);
+    follow_copies_and_passes(func, &mut fresh, &edges);
 
     // A container the loop body touches lives in a cell, and the frame reads it
     // back out with a load. Asked after the copies are followed, because the
@@ -1674,7 +2400,7 @@ fn containers_and_makers(
         fresh.insert(dst, free);
     }
     if !from_cells.is_empty() {
-        follow_copies(func, &mut fresh);
+        follow_copies_and_passes(func, &mut fresh, &edges);
     }
 
     // Every name reached without a copy — a constructor's own destination, or a
@@ -1691,6 +2417,9 @@ fn containers_and_makers(
             | MirStmtKind::ClosureCall { dst: Some(dst), .. } => Some(*dst),
             _ => None,
         })
+        // What a call that may hand back its argument returns follows the
+        // argument, like a copy.
+        .filter(|id| !edges.contains_key(id))
         .filter(|id| fresh.contains_key(id))
         .chain(from_cells)
         // A container read out of the wrapper a callee handed back is reached
@@ -1700,6 +2429,29 @@ fn containers_and_makers(
         .chain(unwrapped)
         .collect();
     (fresh, made_here)
+}
+
+/// `follow_copies`, also through calls that may hand back their argument.
+fn follow_copies_and_passes(
+    func: &MirFunction,
+    fresh: &mut HashMap<LocalId, &'static str>,
+    edges: &Passes,
+) {
+    loop {
+        follow_copies(func, fresh);
+        let mut added = false;
+        for (dst, srcs) in edges {
+            let frees: Option<Vec<&'static str>> = srcs.iter().map(|(_, s)| fresh.get(s).copied()).collect();
+            if let Some(&free) = frees.as_deref().and_then(|f| f.first()) {
+                if fresh.insert(*dst, free).is_none() {
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            return;
+        }
+    }
 }
 
 /// Does every definition of `local` put a container this frame made into it?
@@ -1848,10 +2600,10 @@ fn cells_this_frame_frees(
     func: &MirFunction,
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
-    _interface_handing: &HashMap<String, HandBack>,
+    keeps: &Keeps,
+    lent: &HashMap<LocalId, &'static str>,
 ) -> Vec<(LocalId, Holds, BlockId)> {
+    let kept = keeps.by_name;
     let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -1883,7 +2635,9 @@ fn cells_this_frame_frees(
             .filter(|c| c.by_ref)
             .map(|c| c.local_id),
     );
-    by_ref_cells.extend(slots_whose_address_is_taken(func));
+    // A slot only lent to `mutate` parameters is released by the ownership
+    // plan, which knows where each value in it dies (`lent_slots`).
+    by_ref_cells.extend(slots_whose_address_is_taken(func).into_iter().filter(|s| !lent.contains_key(s)));
     if by_ref_cells.is_empty() {
         return Vec::new();
     }
@@ -1960,11 +2714,21 @@ fn cells_this_frame_frees(
                     }
                 }
             }
-            // No name to ask about, so the conservative answer.
-            MirStmtKind::InterfaceCall { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
-                for arg in args {
+            MirStmtKind::InterfaceCall { method_name, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
                     if let MirOperand::Local(id) = arg {
-                        kept_by_a_call.insert(*id);
+                        if keeps.interface_call(method_name, i) {
+                            kept_by_a_call.insert(*id);
+                        }
+                    }
+                }
+            }
+            MirStmtKind::ClosureCall { closure, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    if let MirOperand::Local(id) = arg {
+                        if keeps.closure_call(&func.name, *closure, i, args.len()) {
+                            kept_by_a_call.insert(*id);
+                        }
                     }
                 }
             }
@@ -2023,13 +2787,171 @@ fn cells_this_frame_frees(
         // way out of the frame, so a value already taken away must not be
         // named at all. The path-sensitivity below is for a frame's own locals,
         // which have a placement to be sensitive about.
-        let (escapes, taken) = find_escaping(func, &carried, kept, interface_kept);
+        let (escapes, taken) = find_escaping(func, &carried, keeps);
         if !escapes.is_empty() || !taken.is_empty() {
             continue;
         }
         out.push((*cell, Holds::Handle(free), *store_block));
     }
     out
+}
+
+/// Container variables the frame lends by address and nothing else:
+/// `touch(mutate v)`.
+///
+/// `mutate` makes the variable memory-resident (`transform::addr_taken`), so
+/// `mut v = Vec.new()` is a store into a slot and every later `v` a load. The
+/// cell rule frees a slot once, on the way out of the frame, and only where
+/// the store dominates the exit — which a variable declared inside a loop body
+/// never does. Every turn's vector leaked (#1423).
+///
+/// A slot like this is just the variable, so the ownership plan can follow it
+/// like any other name: the store binds the slot to the value, a load is a
+/// copy, and the address is a view that keeps the value needed. The plan then
+/// frees the old value where the variable's scope ends, on the back edge
+/// before the next turn's store.
+///
+/// Only when the address provably stays in this frame: copied, read through,
+/// written through, or handed to a call that doesn't keep it. Anything else is
+/// left to the cell rule.
+struct LentSlots {
+    /// The slot, and what frees the container in it.
+    slots: HashMap<LocalId, &'static str>,
+    /// The slots' addresses and their copies.
+    refs: HashSet<LocalId>,
+}
+
+fn lent_slots(
+    func: &MirFunction,
+    tracked: &mut HashMap<LocalId, &'static str>,
+    kept: &HashMap<String, Vec<bool>>,
+) -> LentSlots {
+    let mut out = LentSlots { slots: HashMap::new(), refs: HashSet::new() };
+    let captured: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureCreate { captures, .. }
+            | MirStmtKind::EnsureHookRegister { captures, .. } => Some(captures),
+            _ => None,
+        })
+        .flatten()
+        .map(|c| c.local_id)
+        .collect();
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    let stmts: Vec<&MirStmt> = func.blocks.iter().flat_map(|b| b.statements.iter()).collect();
+
+    for slot in slots_whose_address_is_taken(func) {
+        if captured.contains(&slot) || params.contains(&slot) || !is_container_shaped(func, slot) {
+            continue;
+        }
+        // Every store fills the whole slot with a local, and at least one of
+        // them is a container this frame made.
+        let mut free = None;
+        let mut whole = true;
+        for stmt in &stmts {
+            if let MirStmtKind::Store { addr, offset, value, .. } = &stmt.kind {
+                if *addr != slot {
+                    continue;
+                }
+                match crate::analysis::uses::operand_local(value) {
+                    Some(v) if *offset == 0 => {
+                        if let Some(f) = tracked.get(&v) {
+                            free = Some(*f);
+                        }
+                    }
+                    _ => whole = false,
+                }
+            }
+        }
+        let (true, Some(free)) = (whole, free) else { continue };
+
+        // The addresses, followed through copies, and checked to stay here.
+        let mut refs: HashSet<LocalId> = stmts
+            .iter()
+            .filter_map(|s| match &s.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } if *src == slot => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        loop {
+            let before = refs.len();
+            for s in &stmts {
+                if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &s.kind {
+                    if refs.contains(src) {
+                        refs.insert(*dst);
+                    }
+                }
+            }
+            if refs.len() == before {
+                break;
+            }
+        }
+        if !refs.iter().all(|r| address_stays_here(func, &stmts, *r, &refs, kept)) {
+            continue;
+        }
+
+        // What comes back out of the slot is the same container, under a new
+        // name, and so is a read through one of its addresses.
+        tracked.insert(slot, free);
+        for s in &stmts {
+            if let MirStmtKind::Assign { dst, rvalue } = &s.kind {
+                let from = match rvalue {
+                    MirRValue::Deref(MirOperand::Local(src)) => *src == slot || refs.contains(src),
+                    MirRValue::Field { base: MirOperand::Local(src), .. } => refs.contains(src),
+                    _ => false,
+                };
+                if from && is_container_shaped(func, *dst) {
+                    tracked.insert(*dst, free);
+                }
+            }
+        }
+        for r in &refs {
+            tracked.insert(*r, free);
+        }
+        out.slots.insert(slot, free);
+        out.refs.extend(refs);
+    }
+    if !out.slots.is_empty() {
+        follow_copies(func, tracked);
+    }
+    out
+}
+
+/// Does the address in `r` stay in this frame? Copied into another of `refs`,
+/// read through, written through, or lent to a call.
+fn address_stays_here(
+    func: &MirFunction,
+    stmts: &[&MirStmt],
+    r: LocalId,
+    refs: &HashSet<LocalId>,
+    kept: &HashMap<String, Vec<bool>>,
+) -> bool {
+    use crate::analysis::uses;
+    for stmt in stmts {
+        if !uses::stmt_reads(stmt, r) {
+            continue;
+        }
+        let ok = match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(_)) } => refs.contains(dst),
+            MirStmtKind::Assign {
+                rvalue: MirRValue::Deref(MirOperand::Local(_)) | MirRValue::Field { base: MirOperand::Local(_), .. },
+                ..
+            } => true,
+            MirStmtKind::Store { addr, value, .. } => *addr == r && uses::operand_local(value) != Some(r),
+            MirStmtKind::Call { func: fref, args, .. } => args
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| uses::operand_local(a) == Some(r))
+                .all(|(i, _)| !call_keeps_argument(fref, i, kept)),
+            _ => false,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    !func.blocks.iter().any(|b| uses::terminator_reads(&b.terminator, r))
 }
 
 /// The other way a variable becomes a cell: something took its address.
@@ -2039,8 +2961,9 @@ fn cells_this_frame_frees(
 /// `mutate` ones. Same shape and the same reasoning either way. The store into
 /// the slot hands the value to the slot, and the `&` on the slot puts the slot
 /// itself out of reach, so no name is left holding it — a `StringBuilder`
-/// passed to a `mutate` parameter was freed by nobody (#1203). A `Vec` doesn't
-/// hit this: a `mutate` vector goes by value with a writeback, not by address.
+/// passed to a `mutate` parameter was freed by nobody (#1203). A slot whose
+/// address only ever goes to `mutate` parameters is `lent_slots`' instead, and
+/// is left out of the cells.
 ///
 /// What makes the slot safe to free at every exit is mem.parameters/PM2: a
 /// `mutate` callee has to leave something valid there, so whether it replaced
@@ -2071,6 +2994,7 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let return_blocks = exit_blocks(func);
+    let slots = arm_cells(func, cells);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
     for (block_idx, consumed_here) in return_blocks {
@@ -2082,6 +3006,9 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             // Already handed away on the path that reaches this exit.
             if consumed_here.contains(cell) {
                 continue;
+            }
+            if let Some(slot) = slots.get(cell) {
+                func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::UnwindDisarm { slot: *slot }));
             }
             // A string's 16-byte header *is* the slot, so the release takes the
             // cell's address as it stands — the same shape a struct field's
@@ -2119,6 +3046,70 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             }));
         }
     }
+}
+
+/// Arm each cell's unwind slot right after the store that fills it: from there
+/// on a panic releases what it holds, the way the frame's last exit would
+/// (ctrl.panic/U6). The release reads the cell when it runs, so the slot holds
+/// the cell's address.
+///
+/// Not a cell an `ensure`'s resource names: on the path where that resource is
+/// consumed the cell's contents were handed away, and nothing here can see
+/// when that happened to disarm it.
+fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> HashMap<LocalId, u32> {
+    let registered: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ResourceRegister { slot: Some(slot), .. } => Some(*slot),
+            _ => None,
+        })
+        .collect();
+    let mut next_slot = crate::analysis::ownership::next_unwind_slot(func);
+    let mut next_local = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
+    let mut slots = HashMap::new();
+    for (cell, holds, store_block) in cells {
+        if registered.contains(cell) {
+            continue;
+        }
+        let Some(bi) = func.blocks.iter().position(|b| b.id == *store_block) else { continue };
+        let Some(si) = func.blocks[bi]
+            .statements
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::Store { addr, offset: 0, .. } if addr == cell))
+        else {
+            continue;
+        };
+        let stmts = match holds {
+            Holds::Str => vec![MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::String })],
+            Holds::Handle(free) => {
+                let tmp = LocalId(next_local);
+                next_local += 1;
+                func.locals.push(crate::MirLocal { id: tmp, name: None, ty: MirType::Ptr, is_param: false, unerased: None });
+                vec![
+                    MirStmt::dummy(MirStmtKind::Assign { dst: tmp, rvalue: MirRValue::Deref(MirOperand::Local(*cell)) }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(free.to_string()),
+                        args: vec![MirOperand::Local(tmp)],
+                    }),
+                ]
+            }
+        };
+        let slot = next_slot;
+        next_slot += 1;
+        func.blocks[bi].statements.insert(
+            si + 1,
+            MirStmt::dummy(MirStmtKind::UnwindArm {
+                slot,
+                value: *cell,
+                release: crate::UnwindRelease { placeholder: *cell, stmts },
+            }),
+        );
+        slots.insert(*cell, slot);
+    }
+    slots
 }
 
 /// Where a free belongs: the blocks that are the last thing to run before the
@@ -2335,6 +3326,7 @@ fn every_def_is_fresh(
     func: &MirFunction,
     local: LocalId,
     fresh: &HashMap<LocalId, &'static str>,
+    edges: &Passes,
 ) -> bool {
     let mut any = false;
     for block in &func.blocks {
@@ -2350,7 +3342,9 @@ fn every_def_is_fresh(
                 MirStmtKind::Phi { args, .. } => args.iter().all(|(_, op)| {
                     matches!(op, MirOperand::Local(src) if fresh.contains_key(src))
                 }),
-                _ => false,
+                // A call that may hand back one of its arguments is owned like
+                // all of them.
+                _ => edges.get(&local).is_some_and(|srcs| srcs.iter().all(|(_, s)| fresh.contains_key(s))),
             };
             if !ok {
                 return false;
@@ -2522,9 +3516,9 @@ fn lent_for_the_call(
 fn find_escaping(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    keeps: &Keeps,
 ) -> (HashSet<LocalId>, HashMap<LocalId, HashSet<BlockId>>) {
+    let kept = keeps.by_name;
     let mut escaping = HashSet::new();
     // Where a container is handed to a stdlib method declared `take self`.
     //
@@ -2578,19 +3572,16 @@ fn find_escaping(
                 // so an implementation's parameters sit one to the right.
                 MirStmtKind::InterfaceCall { method_name, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
-                        let keeps = interface_kept
-                            .get(method_name)
-                            .and_then(|v| v.get(i))
-                            .copied()
-                            .unwrap_or(true);
-                        if keeps {
+                        if keeps.interface_call(method_name, i) {
                             mark(arg, &mut escaping);
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { args, .. } => {
-                    for arg in args {
-                        mark(arg, &mut escaping);
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if keeps.closure_call(&func.name, *closure, i, args.len()) {
+                            mark(arg, &mut escaping);
+                        }
                     }
                 }
                 MirStmtKind::Store { value, .. }
@@ -2639,8 +3630,7 @@ fn consumed_by_an_ensure(
     func: &MirFunction,
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    keeps: &Keeps,
 ) -> HashSet<LocalId> {
     let mut out = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
@@ -2662,7 +3652,7 @@ fn consumed_by_an_ensure(
                     _ => {}
                 }
             }
-            let (escaping, consumed) = find_escaping(body, &names, kept, interface_kept);
+            let (escaping, consumed) = find_escaping(body, &names, keeps);
             if !escaping.is_empty() || !consumed.is_empty() {
                 out.insert(cap.local_id);
             }

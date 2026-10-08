@@ -5,10 +5,12 @@
 // Every lock and condition variable that one task can wait on for another goes
 // through these wrappers. In an ordinary build a wait on a green fiber parks it
 // and anything else is the pthread call (determinism/D2). Built with -DRASK_SIM, the same call sites
-// become the places the seeded scheduler decides who runs next: a wait parks
-// the task on a key, a signal marks one task parked on that key runnable (a
-// broadcast marks all of them), and the thread itself sleeps until the baton
-// comes back (sim.c).
+// become the places the seeded scheduler decides who runs next. A wait inside
+// a green task parks the fiber, as it would in production, and leaves its
+// worker to the green scheduler (green.c). A wait anywhere else — the test
+// body, a pool worker, a green worker with nothing to run — parks that thread
+// on a key, and a signal marks one thread parked on that key runnable (a
+// broadcast marks all of them). Which thread runs next is the seed's (sim.c).
 //
 // A lock that is only ever held for a few instructions and never across a wait
 // (a channel's own mutex, the print lock) doesn't need to be here. Under sim
@@ -32,6 +34,29 @@ int  rask_task_slot_release(void);
 void rask_task_slot_retake(int released);
 
 static inline void rask_task_mutex_lock(pthread_mutex_t *m, const char *what);
+
+// The green scheduler's waits (green.c). `active` says whether the caller is a
+// green task; off Linux green_threads.c answers no and every wait is a thread's.
+// A thread blocking outside one says so (thread.c), so the scheduler can tell a
+// deadlock from a task waiting on a thread that is still working.
+int  rask_fiber_active(void);
+void rask_fiber_notify(const void *key, int all);
+void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m, const char *what);
+void rask_fiber_mutex_lock(pthread_mutex_t *m, const char *what);
+void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l, const char *what);
+void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what);
+// Park the running task on `key` until a notify on it; the caller loops on its
+// own condition. Only called on a green task.
+void rask_fiber_park(const void *key, const char *what);
+int  rask_fiber_sleep_ns(int64_t ns);
+void rask_thread_wait_begin(const char *what);
+void rask_thread_wait_end(void);
+
+// green.c's per-thread state — which worker a thread is and which task it is
+// running — swapped with the rest when sim switches threads on its one OS
+// thread. Size 0 off Linux, where there is none.
+size_t rask_green_thread_tls_size(void);
+void   rask_green_thread_tls_swap(void *blob);
 
 #ifdef RASK_SIM
 
@@ -67,6 +92,12 @@ const char *rask_sim_fault_log(void);
 // returns.
 void *rask_sim_task_spawn(int64_t task_id, void (*entry)(void *), void *arg);
 void *rask_sim_worker_spawn(void (*entry)(void *), void *arg);
+void *rask_sim_green_worker_spawn(int64_t worker, void (*entry)(void *), void *arg);
+// A uniform draw below `n` from the schedule's stream (green.c's choices).
+uint64_t rask_sim_draw(uint64_t n);
+// The green tasks parked and what on, appended for a stuck report. Returns
+// what it wrote.
+size_t rask_green_describe_waits(char *buf, size_t cap);
 void rask_sim_task_join(void *task);
 
 // Test lifecycle, called from test.c. A sim test runs alone in its process,
@@ -115,6 +146,11 @@ static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
         pthread_cond_wait(c, m);
         return;
     }
+    // Not a scheduling point before it: the caller holds `m`.
+    if (rask_fiber_active()) {
+        rask_fiber_cond_wait(c, m, what);
+        return;
+    }
     pthread_mutex_unlock(m);
     int released = rask_task_slot_release();
     rask_sim_park(c, what);
@@ -140,6 +176,10 @@ static inline void rask_task_mutex_lock(pthread_mutex_t *m, const char *what) {
         return;
     }
     rask_sim_point();
+    if (rask_fiber_active()) {
+        rask_fiber_mutex_lock(m, what);
+        return;
+    }
     if (pthread_mutex_trylock(m) == 0) return;
     int released = rask_task_slot_release();
     while (pthread_mutex_trylock(m) != 0) rask_sim_park(m, what);
@@ -162,6 +202,10 @@ static inline void rask_task_rwlock_rdlock(pthread_rwlock_t *l, const char *what
         return;
     }
     rask_sim_point();
+    if (rask_fiber_active()) {
+        rask_fiber_rwlock_rdlock(l, what);
+        return;
+    }
     if (pthread_rwlock_tryrdlock(l) == 0) return;
     int released = rask_task_slot_release();
     while (pthread_rwlock_tryrdlock(l) != 0) rask_sim_park(l, what);
@@ -174,6 +218,10 @@ static inline void rask_task_rwlock_wrlock(pthread_rwlock_t *l, const char *what
         return;
     }
     rask_sim_point();
+    if (rask_fiber_active()) {
+        rask_fiber_rwlock_wrlock(l, what);
+        return;
+    }
     if (pthread_rwlock_trywrlock(l) == 0) return;
     int released = rask_task_slot_release();
     while (pthread_rwlock_trywrlock(l) != 0) rask_sim_park(l, what);
@@ -203,19 +251,7 @@ static inline void rask_task_rwlock_unlock(pthread_rwlock_t *l) {
 // Outside sim, a wait on a green fiber parks the fiber and gives its worker
 // back (green.c); anywhere else — the scope's own thread, `Thread.spawn`, a
 // pool worker — it is the pthread call. A signal reaches both kinds of waiter,
-// so a fiber and a thread can wait on the same condvar or lock. Off Linux,
-// green_threads.c answers "not a fiber" and every wait is the pthread one.
-//
-// A thread blocking here says so (thread.c), so the scheduler can tell a
-// deadlock from a task waiting on a thread that is still working.
-int  rask_fiber_active(void);
-void rask_fiber_notify(const void *key, int all);
-void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m, const char *what);
-void rask_fiber_mutex_lock(pthread_mutex_t *m, const char *what);
-void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l, const char *what);
-void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what);
-void rask_thread_wait_begin(const char *what);
-void rask_thread_wait_end(void);
+// so a fiber and a thread can wait on the same condvar or lock.
 
 static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
                                        const char *what) {

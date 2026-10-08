@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Returning a Copy struct parameter gives the caller a copy of its own.
+//
+// Natively, `id(held)` returned `held`'s own strings without a reference, and
+// the caller counted the call as `id` keeping `held`, so it handed `held`
+// over at every call. `held` is Copy, so it can be passed twice: two calls,
+// two releases of one string, and the second result read freed memory
+// (#1447). The recursion keeps `id` from being inlined, which hid it.
+
+struct Line { text: string }
+struct Wrap { line: Line }
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func id(l: Line, n: i64) -> Line {
+    if n > 0 {
+        return id(l, n - 1)
+    }
+    return l
+}
+
+func inner(w: Wrap, n: i64) -> Line {
+    if n > 0 {
+        return inner(w, n - 1)
+    }
+    return w.line
+}
+
+func through(mutate l: Line, n: i64) -> Line {
+    if n > 0 {
+        return through(mutate l, n - 1)
+    }
+    return l
+}
+
+extend Line {
+    func me(self) -> Line {
+        return self
+    }
+}
+
+test "a returned parameter can be passed again" {
+    let held = Line { text: heap("param") }
+    let a = id(held, 1)
+    let b = id(held, 2)
+    assert a.text == "param, long enough to live on the heap"
+    assert b.text == a.text
+    assert held.text == a.text
+}
+
+test "a returned field of a parameter" {
+    let w = Wrap { line: Line { text: heap("wrapped") } }
+    let a = inner(w, 1)
+    let b = inner(w, 2)
+    assert b.text == "wrapped, long enough to live on the heap"
+    assert a.text == b.text
+    assert w.line.text == b.text
+}
+
+test "a returned mutate parameter and self" {
+    mut m = Line { text: heap("mutate") }
+    let e = through(mutate m, 1)
+    let f = through(mutate m, 2)
+    assert e.text == f.text
+    assert m.text == "mutate, long enough to live on the heap"
+    let g = m.me()
+    let h = m.me()
+    assert g.text == h.text
+}
+
+test "a closure returning its parameter" {
+    let held = Line { text: heap("closure") }
+    let f = |l: Line| -> Line { return l }
+    let a = f(held)
+    let b = f(held)
+    assert a.text == b.text
+    assert held.text == "closure, long enough to live on the heap"
+}

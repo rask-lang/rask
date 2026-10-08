@@ -104,21 +104,31 @@ test "primitive arithmetic is untouched" {
 // checker never saw — native lowered it as a machine multiply on two struct
 // pointers before the dispatch record was carried across.
 //
-// `Feet` rather than `Meters`: a type carrying two `Mul`s has two `Out`s, and
-// a bare `T.Out` doesn't say which bound it was projected through (#1330).
-struct Feet { v: f64 }
-
-Feet implements Mul<f64> {
-    func mul(self, k: f64) -> Feet {
-        return Feet { v: self.v * k }
-    }
-}
-
+// AT8: `Meters` carries both `Mul<f64>` and `Mul<Meters>`, so it has two
+// `Out`s. The bound says which one: `T: Mul<f64>` reads `Mul<f64>`'s. The
+// projection used to forget its bound and find two answers (#1330).
 func doubled<T: Mul<f64>>(x: T) -> T.Out {
     return x.mul(2.0)
 }
 
+func scaled_by<T: Mul<Meters>>(x: T, y: Meters) -> T.Out {
+    return x.mul(y)
+}
+
+// The same through a method's own bound.
+struct Scaler { k: f64 }
+
+extend Scaler {
+    func apply<T: Mul<f64>>(self, x: T) -> T.Out {
+        return x.mul(self.k)
+    }
+}
+
 test "OR1 — through a generic bound" {
-    let f = Feet { v: 4.5 }
-    assert doubled(f).v == 9.0
+    let m = Meters { v: 4.5 }
+    assert doubled(m).v == 9.0
+    let a: SquareMeters = scaled_by(m, Meters { v: 2.0 })
+    assert a.v == 9.0
+    let s = Scaler { k: 3.0 }
+    assert s.apply(Meters { v: 1.5 }).v == 4.5
 }

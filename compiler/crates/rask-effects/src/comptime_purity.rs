@@ -93,8 +93,8 @@ fn check_fn(f: &FnDecl, qname: &str, effects: &EffectMap, out: &mut Vec<Comptime
 /// the function stays inside the subset.
 fn names_the_effect(e: &Effects) -> Option<&'static str> {
     if e.async_ {
-        // AS3 makes async imply io, so this has to be asked first or every
-        // spawn reads as I/O.
+        // Asked first: a channel op or a join is both, and "concurrency" is
+        // the better name for it at compile time.
         Some("concurrency")
     } else if e.io {
         Some("I/O")

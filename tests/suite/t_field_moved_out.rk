@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A field's value moved out stays the mover's, natively (#1496, #1497).
+//
+// mem.parameters/PM7 makes consume-and-replace the way to take a value out of
+// a `mutate` place: `let old = self.f` then `self.f = …`. The refill released
+// what the slot held, which `old` now owned, so `old` was a freed vector. And a
+// `take self` method called on a field was handed the field's address, an
+// interior pointer the release analysis didn't know about: the outer value
+// was released before the callee read its part, and the part again after.
+
+struct Memtable {
+    entries: Vec<string>
+    size: i64
+}
+
+extend Memtable {
+    func new() -> Memtable {
+        return Memtable { entries: Vec.new(), size: 0 }
+    }
+
+    func drain(mutate self) -> Vec<string> {
+        let out = self.entries
+        self.entries = Vec.new()
+        self.size = 0
+        return out
+    }
+
+    func take_sorted(take self) -> Vec<string> {
+        return self.entries
+    }
+}
+
+struct Db {
+    name: string
+    mt: Memtable
+    flushed: i64
+}
+
+extend Db {
+    func flush(mutate self) -> i64 {
+        let old = self.mt
+        self.mt = Memtable.new()
+        let entries = old.take_sorted()
+        self.flushed = self.flushed + entries.len().wrap<i64>()
+        return entries.len().wrap<i64>()
+    }
+
+    func close(take self) -> i64 {
+        let rest = self.mt.take_sorted()
+        return self.flushed + rest.len().wrap<i64>()
+    }
+}
+
+func filled(n: i64) -> Db {
+    mut db = Db { name: "a-database-name-long-enough-for-heap", mt: Memtable.new(), flushed: 0 }
+    for i in 0..n {
+        db.mt.entries.push("entry-number-{i}-long-enough-for-heap")
+    }
+    return db
+}
+
+test "a vector moved out of a field and replaced" {
+    mut m = Memtable.new()
+    for i in 0..3 {
+        m.entries.push("key-number-{i}-long-enough-for-heap")
+    }
+    let got = m.drain()
+    assert got.len() == 3
+    assert got[2] == "key-number-2-long-enough-for-heap"
+    assert m.entries.is_empty()
+}
+
+test "a struct moved out of a field and replaced" {
+    mut db = filled(4)
+    assert db.flush() == 4
+    assert db.mt.entries.is_empty()
+    db.mt.entries.push("after-the-flush-long-enough-for-heap")
+    assert db.flush() == 1
+    assert db.flushed == 5
+}
+
+test "a take self method on a field" {
+    let db = filled(3)
+    assert db.close() == 3
+}
+
+test "a take self method on a field, the long way round" {
+    mut db = filled(2)
+    db.flush()
+    db.mt.entries.push("one-more-entry-long-enough-for-heap")
+    assert db.close() == 3
+}

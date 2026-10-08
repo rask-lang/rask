@@ -48,13 +48,43 @@ impl IntSuffix {
     }
 }
 
+/// Where a string literal's text sits in its source. The opening delimiter and
+/// each escape shift the two apart, so a `{hole}` found in the text needs this
+/// to point back at the file.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StrPositions {
+    /// `(text byte, source byte from the token's start)`, one at the start and
+    /// one after each escape, in order.
+    anchors: Vec<(u32, u32)>,
+}
+
+impl StrPositions {
+    pub fn new(delimiter_len: usize) -> Self {
+        StrPositions { anchors: vec![(0, delimiter_len as u32)] }
+    }
+
+    /// Record that text byte `text` comes from source byte `source`.
+    pub fn anchor(&mut self, text: usize, source: usize) {
+        self.anchors.push((text as u32, source as u32));
+    }
+
+    /// Source byte, from the token's start, of text byte `text`.
+    pub fn source_offset(&self, text: usize) -> usize {
+        let (t, s) = self.anchors.iter().rev()
+            .find(|(t, _)| *t as usize <= text)
+            .copied()
+            .unwrap_or((0, 0));
+        s as usize + (text - t as usize)
+    }
+}
+
 /// The kind of token.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
     Int(i128, Option<IntSuffix>),
     Float(f64, Option<FloatSuffix>),
-    String(String),
+    String(String, StrPositions),
     Char(char),
     Bool(bool),
 
@@ -189,7 +219,7 @@ impl TokenKind {
             // Literals
             TokenKind::Int(_, _) => "a number",
             TokenKind::Float(_, _) => "a number",
-            TokenKind::String(_) => "a string",
+            TokenKind::String(..) => "a string",
             TokenKind::Char(_) => "a character",
             TokenKind::Bool(_) => "'true' or 'false'",
 

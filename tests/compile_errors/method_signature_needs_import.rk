@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a method signature names a stdlib type with no import for it
+// Rejects: is not in scope
+//
+// IM1: a stdlib type comes from its import, in a method signature as much as
+// in a field (#1488). Signatures used to be checked in a pass over top-level
+// declarations that looked at free functions, interface methods and extend
+// blocks, but never at a method written inside a struct or enum body. So
+// `func span(self, d: Duration) -> Duration` inside `struct Clock` compiled
+// with no `import time`, while a field `n2: Duration` was refused.
+//
+// A signature is now checked where its body is resolved, so every function
+// and method goes through the same check wherever it's written. Each type is
+// reported once per program, so each marker uses a different one.
+
+struct Clock {
+    n: i64,
+
+    // ERROR: `Duration` is not in scope
+    func span(self, d: Duration) -> i64 {
+        return self.n
+    }
+}
+
+enum Light {
+    On,
+    Off,
+
+    // ERROR: `Instant` is not in scope
+    func since(self) -> Instant {
+        return todo()
+    }
+}
+
+interface Clocked {
+    // ERROR: `SystemTime` is not in scope
+    func stamp(self) -> SystemTime
+
+    // ERROR: `File` is not in scope
+    func open_log(self, f: File) -> i64 {
+        return 0
+    }
+}
+
+struct Wall {
+    n: i64,
+}
+
+Wall implements Clocked {
+    func stamp(self) -> SystemTime {
+        return todo()
+    }
+
+    // ERROR: `Buffer` is not in scope
+    func dump(self, b: Buffer) -> i64 {
+        return self.n
+    }
+}
+
+func main() {
+    // ERROR: `Shared` is not in scope
+    let f = |s: Shared<i64, Local>| 1
+    let c = Clock { n: 2 }
+    println(c.n)
+}

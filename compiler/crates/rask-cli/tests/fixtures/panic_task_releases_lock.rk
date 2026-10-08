@@ -15,13 +15,13 @@ const C: Shared<Counter9, Mutex> = Shared.mutex(Counter9 { n: 5 })
 
 func main() {
     using Multitasking {
-        let h = Thread.spawn(|| {
+        let h = Thread.spawn {
             with C.write() as c {
                 c.n = 99
                 panic("worker boom")
             }
             return 0
-        })
+        }
         match h.join() {
             i64 as v => println("joined {v}"),
             JoinError.Panicked(msg) => println("panicked"),

@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A test that passes and leaks. A closure handed to a `take` parameter carries
-// the vector it captured in a heap environment, and freeing that environment
-// doesn't release what's inside it (#1045, tests/known_leaks.txt).
-// When that is fixed this needs another leak, or the sim test using it fails.
+// A test that passes and leaks: a block from the allocator that nothing gives
+// back. Raw memory is the program's to free, so this stays a leak whatever the
+// compiler learns about releasing values.
 
-func consume(take f: func(i64) -> i64) -> i64 {
-    return f(1)
+extern "C" func rask_alloc(size: i64) -> *u8
+
+func never_given_back() -> bool {
+    let block = unsafe rask_alloc(64)
+    return !block.is_null()
 }
 
-func hands_it_to_a_take() -> i64 {
-    let tags: Vec<i64> = [1, 2, 3]
-    let f = |x| x + tags.len().wrap<i64>()
-    return consume(f)
-}
-
-test "a closure handed to a take parameter carries its vector along" {
-    assert hands_it_to_a_take() == 4
+test "a raw block nothing frees" {
+    assert never_given_back()
 }

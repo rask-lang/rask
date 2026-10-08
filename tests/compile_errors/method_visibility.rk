@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a method called from code that may not see it (E0413, #1417).
+//
+// `private` keeps a method to its own type's `extend` blocks (struct.modules/V5),
+// and a method without `public` belongs to the package that declared it — the
+// stdlib is a package of its own (V1, V2). Nothing checked either, so both
+// calls below compiled and ran on both backends.
+
+import json.JsonValue
+
+struct Pt {
+    x: i64
+}
+
+extend Pt {
+    private func secret(self) -> i64 {
+        return self.x
+    }
+
+    // Its own type's method may call it.
+    func revealed(self) -> i64 {
+        return self.secret() + 1
+    }
+}
+
+struct Other {
+    p: Pt
+}
+
+extend Other {
+    func peek(self) -> i64 {
+        // ERROR: another type's methods may not [E0413]
+        return self.p.secret()
+    }
+}
+
+func main() {
+    let p = Pt { x: 3 }
+    // ERROR: `Pt.secret` is private [E0413]
+    println("{p.secret()}")
+    println("{p.revealed()}")
+
+    let r = 0..5
+    // ERROR: `Range.last_value` is the stdlib's own [E0413]
+    println("{r.last_value()}")
+
+    // A conformance's method has no visibility of its own: `JsonValue
+    // implements Displayable` declares `to_string` without `public`, and it's
+    // callable.
+    let v = JsonValue.Bool(true)
+    println(v.to_string())
+
+    let o = Other { p: p }
+    println("{o.peek()}")
+}

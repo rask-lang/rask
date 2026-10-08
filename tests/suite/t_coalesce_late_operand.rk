@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `?? -1` on an operand whose type only settles at the end of checking:
+// `modify_with_default` returns what its closure returns, and `v + 1` waits on
+// its literal until the whole program is walked. The checker used to commit
+// the operand to `i32 or _` before that and, when it came out a plain `i64`,
+// blamed an unrelated line (#1290). The fix waits for the operand; this pins
+// that waiting still lands on the payload when the operand is optional.
+
+func half(v: i64) -> i64? {
+    if v % 2 == 0 {
+        return v / 2
+    }
+    return none
+}
+
+test "the operand settles late and turns out optional" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("even", 1)
+    m.insert("odd", 2)
+    let hit = m.modify_with_default("even", || { return 7 }, |mutate v: i64| { return half(v + 1) }) ?? -1
+    let miss = m.modify_with_default("odd", || { return 7 }, |mutate v: i64| { return half(v + 1) }) ?? -1
+    assert hit == 1
+    assert miss == -1
+}
+
+func main() {}

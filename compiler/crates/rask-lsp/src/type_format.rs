@@ -62,7 +62,10 @@ impl<'a> TypeFormatter<'a> {
 
             Type::Fn { params, ret } => {
                 let params_str = params.iter()
-                    .map(|p| self.format(p))
+                    .map(|p| match p.mode.keyword() {
+                        Some(kw) => format!("{} {}", kw, self.format(&p.ty)),
+                        None => self.format(&p.ty),
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("func({}) -> {}", params_str, self.format(ret))
@@ -91,7 +94,7 @@ impl<'a> TypeFormatter<'a> {
                     .join(" | ")
             }
             Type::SimdVector { elem, lanes } => format!("{}x{}", self.format(elem), lanes),
-            Type::InterfaceObject { interface_name } => format!("any {}", interface_name),
+            Type::InterfaceObject { interface_name, .. } => format!("any {}", interface_name),
             Type::Var(_) => "_".to_string(),
             Type::None => "none".to_string(),
             Type::UnresolvedNamed(name) => name.clone(),

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Closure and spawn lowering.
+//! Closure and task block lowering.
 
 use rask_ast::ty::TypeExpr;
 use super::{LoweringError, MirLowerer, TypedOperand};
@@ -29,7 +29,7 @@ impl<'a> MirLowerer<'a> {
     /// Returns `None` if the name isn't a known function, so the caller can
     /// report its own unresolved-variable error.
     pub(super) fn lower_fn_as_value(&mut self, name: &str) -> Option<TypedOperand> {
-        let sig = self.func_sigs.get(name)?;
+        let sig = self.func_sigs.get(name)?.clone();
         let ret_ty = sig.ret_ty.clone();
         let param_tys = sig.param_tys.clone();
 
@@ -45,10 +45,16 @@ impl<'a> MirLowerer<'a> {
 
             let mut args = Vec::new();
             for (i, ty_str) in param_tys.iter().enumerate() {
-                let ty = ty_str
-                    .as_ref()
-                    .map(|t| self.ctx.resolve_type_expr(t))
-                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"));
+                // A scalar `mutate` parameter arrives as the caller's address
+                // and goes on to the function as one.
+                let ty = if sig.scalar_mutate_params.get(i).is_some_and(Option::is_some) {
+                    MirType::Ptr
+                } else {
+                    ty_str
+                        .as_ref()
+                        .map(|t| self.ctx.resolve_type_expr(t))
+                        .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"))
+                };
                 let id = wb.add_param(format!("__a{}", i), ty);
                 args.push(MirOperand::Local(id));
             }
@@ -328,7 +334,7 @@ impl<'a> MirLowerer<'a> {
         // into a loaded copy. A task's copy is its own and dies with it, so
         // there is nothing to write back to.
         let capture_access = if for_spawn {
-            crate::CaptureAccess::Value
+            crate::CaptureAccess::Taken
         } else if carries {
             crate::CaptureAccess::Owned
         } else {
@@ -336,7 +342,7 @@ impl<'a> MirLowerer<'a> {
         };
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
-        for (_name, local_id, ty) in &free_vars {
+        for (_name, local_id, ty, copy) in &free_vars {
             // An address is a word regardless of what it points at.
             let size = if by_ref { 8 } else { ty.size() };
             let aligned_offset = (env_offset + 7) & !7;
@@ -345,6 +351,7 @@ impl<'a> MirLowerer<'a> {
                 offset: aligned_offset,
                 size,
                 by_ref,
+                copy: *copy,
             });
             env_offset = aligned_offset + size;
         }
@@ -389,26 +396,16 @@ impl<'a> MirLowerer<'a> {
             .and_then(|id| self.ctx.lookup_raw_type(id))
             .and_then(|ty| match ty {
                 rask_types::Type::Fn { params, .. } => Some(
-                    params.iter().map(|p| self.ctx.type_to_mir(p)).collect()
+                    params.iter().map(|p| self.ctx.type_to_mir(&p.ty)).collect()
                 ),
                 _ => None,
             })
             .unwrap_or_default();
 
-        // The same parameter list, unconverted. A function type has no MIR shape
-        // beyond "pointer", so whether a parameter holds one is only visible
-        // before the conversion.
-        let checked_param_tys: Vec<rask_types::Type> = closure_id
-            .and_then(|id| self.ctx.lookup_raw_type(id))
-            .and_then(|ty| match ty {
-                rask_types::Type::Fn { params, .. } => Some(params.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        // Parameter names this closure registered as callable, so they can be
-        // taken back out of the outer lowerer's sets afterwards.
-        let mut callable_params: Vec<String> = Vec::new();
-
+        // The parameters' metadata is the closure's own. One flat table holds
+        // every name, so an outer binding the parameter shadows gets its own
+        // back once the body is lowered.
+        let outer_param_names = self.save_names(params.iter().map(|p| p.name.as_str()).collect());
         let mut closure_locals = std::collections::HashMap::new();
         for (i, param) in params.iter().enumerate() {
             // Written annotation first, then the type the callee declares for
@@ -419,30 +416,18 @@ impl<'a> MirLowerer<'a> {
                 .map(|t| self.ctx.resolve_type_expr(t))
                 .or_else(|| checked_params.get(i).cloned())
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
-            let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
-            closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
-            // A parameter that holds a function — `fs.map(|f| { return f(3) })`.
-            // Registering it is what makes the call site emit an indirect call
-            // instead of looking for a function named `f`; without it, lowering
-            // found no signature and gave up on the return type (#870). The same
-            // registration a `for` binding gets in #869, one level down.
-            if let Some(ret_mir) = checked_param_tys.get(i)
-                .and_then(|ty| self.ctx.callable_ret_ty(ty, self.ctx.type_names))
-            {
-                if self.closure_locals.insert(param.name.clone()) {
-                    callable_params.push(param.name.clone());
-                }
-                self.func_sigs.insert(
-                    param.name.clone(),
-                    super::FuncSig {
-                        ret_ty: ret_mir,
-                        scalar_mutate_params: Vec::new(),
-                        aggregate_mutate_params: Vec::new(),
-                        ret_vec_elem: None,
-                        param_tys: Vec::new(),
-                    },
-                );
+            // A `mutate` parameter takes the caller's address the way a
+            // declared function's does, so one function type means one calling
+            // convention whichever kind of function is behind the value.
+            let mode = rask_ast::ty::ParamMode::from_flags(param.is_take, param.is_mutate);
+            let (scalar_mutate, _) = super::mutate_param_passing(mode, &param.name, &param_ty);
+            let local_ty = if scalar_mutate.is_some() { MirType::Ptr } else { param_ty.clone() };
+            let param_id = closure_builder.add_param(param.name.clone(), local_ty.clone());
+            closure_locals.insert(param.name.clone(), (param_id, local_ty));
+            if param.is_mutate {
+                self.meta_mut(&param.name).assigns_through = true;
             }
+            self.meta_mut(&param.name).scalar_through_ptr = scalar_mutate;
             if let Some(prefix) = self.mir_type_name(&param_ty) {
                 self.meta_mut(&param.name).type_prefix = Some(prefix);
             } else if let Some(t) = written.as_ref() {
@@ -453,9 +438,13 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Emit LoadCapture for each free variable
-        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
+        let mut addressed_captures = std::collections::HashSet::new();
+        for (i, (name, _outer_id, ty, _)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
+            if capture_access.is_addressed() {
+                addressed_captures.insert(local_id);
+            }
             closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id,
@@ -469,6 +458,7 @@ impl<'a> MirLowerer<'a> {
         {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
+            let saved_captures = std::mem::replace(&mut self.addressed_captures, addressed_captures);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
@@ -490,14 +480,10 @@ impl<'a> MirLowerer<'a> {
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
+            self.addressed_captures = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
-            // The closure's parameters are out of scope again — don't leave a
-            // name like `f` registered as callable for the enclosing function.
-            for name in &callable_params {
-                self.closure_locals.remove(name);
-                self.func_sigs.remove(name);
-            }
+            self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
 
@@ -661,16 +647,16 @@ impl<'a> MirLowerer<'a> {
             ForBinding::Tuple(_) => format!("__seq_item_{}", self.closure_counter),
         };
         // The body's free variables, minus whatever the binding introduces.
-        let mut free_vars: Vec<(String, LocalId, MirType)> = self
+        let mut free_vars: Vec<(String, LocalId, MirType, bool)> = self
             .collect_free_vars_block(body)
             .into_iter()
-            .filter(|(name, _, _)| !names.contains(name))
+            .filter(|(name, _, _, _)| !names.contains(name))
             .collect();
         // The two the loop just made are captured like any other local, so a
         // `return` in the body writes the enclosing frame's storage.
-        free_vars.push((format!("__flag_{closure_name}"), ret_flag, MirType::I64));
+        free_vars.push((format!("__flag_{closure_name}"), ret_flag, MirType::I64, true));
         if let Some(v) = ret_value {
-            free_vars.push((format!("__value_{closure_name}"), v, outer_ret.clone()));
+            free_vars.push((format!("__value_{closure_name}"), v, outer_ret.clone(), false));
         }
 
         let mut captures = Vec::new();
@@ -684,11 +670,13 @@ impl<'a> MirLowerer<'a> {
                 offset: env_offset,
                 size: 8,
                 by_ref: true,
+                copy: false, // filled in below
             });
             env_offset += 8;
         }
-        for (cap, (_, id, _)) in captures.iter_mut().zip(free_vars.iter()) {
+        for (cap, (_, id, _, copy)) in captures.iter_mut().zip(free_vars.iter()) {
             cap.local_id = *id;
+            cap.copy = *copy;
         }
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
@@ -702,7 +690,7 @@ impl<'a> MirLowerer<'a> {
 
         let mut inner_flag = None;
         let mut inner_value = None;
-        for (i, (name, outer_id, ty)) in free_vars.iter().enumerate() {
+        for (i, (name, outer_id, ty, _)) in free_vars.iter().enumerate() {
             let dst = yb.alloc_local(name.clone(), ty.clone());
             yb.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst,
@@ -735,6 +723,8 @@ impl<'a> MirLowerer<'a> {
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
             let saved_inline = self.inline_return_target.take();
+            // Element write-backs are the enclosing function's for the same reason.
+            let saved_write_backs = std::mem::take(&mut self.pending_write_backs);
 
             // `break` and `continue` in the body are this loop's, and this loop
             // is one call of the yield.
@@ -744,13 +734,14 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: None,
                 ensure_depth: self.ensure_stack.len(),
+                writeback_depth: self.pending_write_backs.len(),
             });
             // `return v` assigns to the captured value local and jumps to the
             // block that raises the flag. Writing the local *is* a store through
             // the capture pointer — `transform::addr_taken` rewrites it.
             self.inline_return_target = inner_value
                 .or(inner_flag)
-                .map(|dst| (dst, nonlocal_block));
+                .map(|dst| (dst, nonlocal_block, 0, Some(outer_ret.clone())));
 
             // `for (k, v) in seq` — read the names off the item, the same way
             // the index loop reads them off a Map entry. Has to happen with the
@@ -762,7 +753,7 @@ impl<'a> MirLowerer<'a> {
                     .map(|n| rask_ast::stmt::TuplePat::Name(n.clone()))
                     .collect();
                 if let Err(e) = self.destructure_tuple_pattern(
-                    &pats, &MirOperand::Local(item_param), &elem_ty,
+                    &pats, &MirOperand::Local(item_param), &elem_ty, None,
                 ) {
                     body_result = Err(e);
                 }
@@ -783,6 +774,7 @@ impl<'a> MirLowerer<'a> {
 
             self.loop_stack = saved_loops;
             self.ensure_stack = saved_ensure_stack;
+            self.pending_write_backs = saved_write_backs;
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
@@ -866,6 +858,82 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
+    /// A task block: `spawn { … }`, `Thread.spawn { … }`, `ThreadPool.spawn { … }`.
+    ///
+    /// The block is lowered as the carrying closure the parser wrapped it in,
+    /// and the closure goes to the runtime entry for its target, with the flag
+    /// saying whether the word the task hands back is a box the runtime owns
+    /// (#963).
+    pub(super) fn lower_spawn(
+        &mut self,
+        expr: &Expr,
+        target: rask_ast::expr::SpawnTarget,
+        body: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        let rask_ast::expr::ExprKind::Closure { params, ret_ty, body: block } = &body.kind else {
+            return Err(LoweringError::InvalidConstruct(
+                "a task block's body is the closure the parser builds".to_string(),
+            ));
+        };
+        // A closure value the block captures carries what it captured out of
+        // sight of the checker. One holding a link or a `Local` box would hand
+        // it to the task, so each is asked before the task starts (#1356).
+        for local in self.captured_closure_values(block, params) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("rask_closure_refuse_crossing".to_string()),
+                args: vec![MirOperand::Local(local)],
+            }));
+        }
+        let (task, _) = self.lower_closure_expecting(
+            params, ret_ty.as_ref(), block, true, &[], Some(body.id), true,
+        )?;
+        let boxes_result = self.spawn_result_boxed;
+        let entry = match target {
+            rask_ast::expr::SpawnTarget::Green => crate::TASK_ENTRIES[0],
+            rask_ast::expr::SpawnTarget::Thread => crate::TASK_ENTRIES[1],
+            rask_ast::expr::SpawnTarget::Pool => crate::TASK_ENTRIES[2],
+        };
+        let handle_ty = self.lookup_expr_type(expr).unwrap_or(MirType::Ptr);
+        let handle = self.builder.alloc_temp(handle_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(handle),
+            func: FunctionRef::internal(entry.to_string()),
+            args: vec![
+                task,
+                MirOperand::Constant(crate::operand::MirConst::Int(i64::from(boxes_result))),
+            ],
+        }));
+        Ok((MirOperand::Local(handle), handle_ty))
+    }
+
+    /// The locals a task block captures that hold a function value, by the
+    /// checker's type of the name where the block uses it.
+    fn captured_closure_values(
+        &self,
+        block: &Expr,
+        params: &[rask_ast::expr::ClosureParam],
+    ) -> Vec<LocalId> {
+        let captured: std::collections::HashMap<String, LocalId> = self
+            .collect_free_vars(block, params)
+            .into_iter()
+            .map(|(name, local, _, _)| (name, local))
+            .collect();
+        let mut out = Vec::new();
+        rask_ast::visit::walk_expr(block, &mut |e| {
+            let rask_ast::expr::ExprKind::Ident(name) = &e.kind else { return };
+            let Some(&local) = captured.get(name) else { return };
+            let is_fn = self
+                .ctx
+                .lookup_raw_type(e.id)
+                .is_some_and(|t| matches!(t, rask_types::Type::Fn { .. }));
+            if is_fn && !out.contains(&local) {
+                out.push(local);
+            }
+        });
+        out
+    }
+
     /// Build the one-word entry point for a spawned closure whose result is
     /// wider than a word, and return its name.
     ///
@@ -915,7 +983,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn collect_free_vars_block(
         &self,
         body: &[Stmt],
-    ) -> Vec<(String, LocalId, MirType)> {
+    ) -> Vec<(String, LocalId, MirType, bool)> {
         let mut free = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let bound = std::collections::HashSet::new();

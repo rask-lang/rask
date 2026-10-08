@@ -5,7 +5,7 @@ const SQUARES = comptime {
     for i in 0..20 {
         v.push(i * i)
     }
-    v.freeze()
+    v
 }
 
 const FACTORIALS = comptime {
@@ -16,7 +16,7 @@ const FACTORIALS = comptime {
         f = f * i as i64
         v.push(f)
     }
-    v.freeze()
+    v
 }
 
 const STD_ATMOSPHERE = comptime {
@@ -29,7 +29,7 @@ const STD_ATMOSPHERE = comptime {
             v.push(216.65)
         }
     }
-    v.freeze()
+    v
 }
 
 func std_temperature(altitude_m: i32) -> f64 {
@@ -42,7 +42,7 @@ const IS_UPPER = comptime {
     for i in 0..128 {
         v.push(i >= 65 && i <= 90)
     }
-    v.freeze()
+    v
 }
 
 func is_uppercase(c: i32) -> bool {

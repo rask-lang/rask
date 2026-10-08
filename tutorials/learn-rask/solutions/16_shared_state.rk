@@ -6,7 +6,6 @@
 //   2. try h.join() — propagate JoinError (function must return or JoinError)
 //   3. match h.join() { T as v => ..., JoinError as e => ... } — explicit handling
 //
-import async.spawn
 import async.Handles
 import sync.Atomic
 import sync.Relaxed
@@ -29,23 +28,23 @@ func flight_tracker() -> i32 {
         let s2 = sightings.clone()
         let s3 = sightings.clone()
 
-        let h1 = spawn(|| {
+        let h1 = spawn {
             with s1.write() as s {
                 s.push("SAS937")
                 s.push("BAW123")
             }
-        })
+        }
         ensure h1.detach()
-        let h2 = spawn(|| {
+        let h2 = spawn {
             with s2.write() as s {
                 s.push("DLH456")
                 s.push("AFR789")
             }
-        })
+        }
         ensure h2.detach()
-        let h3 = spawn(|| {
+        let h3 = spawn {
             s3.write().push("UAL100")
-        })
+        }
         ensure h3.detach()
 
         h1.join()!
@@ -74,13 +73,13 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
         mut tasks = Handles<void>.new()
         ensure tasks.detach()
         for i in 0..num_tasks {
-            tasks.add(spawn(|| {
+            tasks.add(spawn {
                 for j in 0..count_per_task {
                     // Relaxed is enough: nothing here depends on the order of
                     // anything but the counter itself.
                     COUNTER.fetch_add(1, Relaxed)
                 }
-            }))
+            })
         }
         for r in tasks.join_all() {
             r!
@@ -97,16 +96,16 @@ func shared_config_update() -> i32 {
 
         // `Shared` holds a Copy value here, so `set`/`get` are the whole API —
         // `write()` is for reaching into something with methods or fields.
-        let atc = spawn(|| {
+        let atc = spawn {
             config.set(37000)
             tx.send(true)
-        })
+        }
         ensure atc.detach()
 
-        let pilot = spawn(|| {
+        let pilot = spawn {
             rx.receive()!
             return config.get()
-        })
+        }
         ensure pilot.detach()
 
         atc.join()!
@@ -133,12 +132,12 @@ test "shared config update" {
 // Example showing error handling approaches
 //
 // Approach 1: Use ! to panic on task failure (simplest)
-//   let h = spawn(|| { work() })
+//   let h = spawn { work() }
 //   h.join()!  // panics if task panicked
 //
 // Approach 2: Propagate errors with try
 //   func process() -> T or JoinError {
-//       let h = spawn(|| { work() })
+//       let h = spawn { work() }
 //       try h.join()  // propagates JoinError
 //       return result
 //   }

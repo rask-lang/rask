@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.collections/SO3: `sort()` needs `T: Comparable`, and so do `min`, `max`
+// and `sort_by_key`'s key. `T?` has no order (std.api/SD4: the wrapper shapes
+// are operator-only), so a `Vec<i64?>` can't be sorted.
+//
+// It used to compile, and the backends improvised: the interpreter ordered the
+// payloads and put `none` last, native compared the option's tag word and
+// left the payloads in push order (#1313). The `where` clause on the block
+// that declares `sort` was never checked at a call.
+
+func sort_optionals() {
+    mut v: Vec<i64?> = Vec.new()
+    v.push(3)
+    v.push(none)
+    v.sort()   // ERROR: i64? is not Comparable
+}
+
+func min_of_optionals() -> i64 {
+    mut v: Vec<i64?> = Vec.new()
+    v.push(3)
+    let best = v.min()   // ERROR: min needs Comparable too
+    return 0
+}
+
+func maybe(x: i64) -> i64? {
+    return x
+}
+
+func key_is_optional() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(3)
+    v.sort_by_key(|x| maybe(x))   // ERROR: the key has no order either
+}
+
+// The same `where`-clause check covers every method in such a block: `hash`
+// is declared in `extend Vec<T> where T: Hashable`.
+func hash_floats() -> u64 {
+    mut v: Vec<f64> = Vec.new()
+    v.push(1.5)
+    return v.hash()   // ERROR: f64 is not Hashable
+}
+
+// Floats are Comparable (CO4), and so is a struct of them.
+struct Reading {
+    value: f64
+}
+
+func sort_floats() {
+    mut v: Vec<f64> = Vec.new()
+    v.push(2.5)
+    v.sort()
+    mut r: Vec<Reading> = Vec.new()
+    r.push(Reading { value: 1.0 })
+    r.sort()
+}

@@ -36,6 +36,12 @@ fn hosts() -> Vec<(TypeExpr, TypeExpr)> {
     ]
 }
 
+/// Is `name` a chain head — a collection that stands for its own sequence
+/// (SEQ48), and so fills a `Sequence<E>` slot through its `as_sequence`?
+pub fn is_chain_head(name: &str) -> bool {
+    hosts().iter().any(|(header, _)| header.name().as_deref() == Some(name))
+}
+
 /// Rask source declaring every host's generated forwarders.
 pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
     let seq = parse(sequence_src);
@@ -108,7 +114,7 @@ fn forwarder(m: &FnDecl, elem: &TypeExpr, host_params: &[String]) -> String {
                 if p.bounds.is_empty() {
                     name_of(&p.name)
                 } else {
-                    let bounds: Vec<String> = p.bounds.iter().map(|b| b.source()).collect();
+                    let bounds: Vec<String> = p.bounds.iter().map(|b| b.ty.source()).collect();
                     format!("{}: {}", name_of(&p.name), bounds.join(" + "))
                 }
             })
@@ -122,10 +128,21 @@ fn forwarder(m: &FnDecl, elem: &TypeExpr, host_params: &[String]) -> String {
         .iter()
         .map(|p| {
             let ty = p.ty.as_ref().map(&over_host).unwrap_or_default();
-            format!("{}: {}", p.name, ty)
+            let mode = if p.is_take {
+                "take "
+            } else if p.is_mutate {
+                "mutate "
+            } else {
+                ""
+            };
+            format!("{}{}: {}", mode, p.name, ty)
         })
         .collect();
-    let args: Vec<String> = rest.iter().map(|p| p.name.clone()).collect();
+    // `mutate` is written at the call too; `take` isn't.
+    let args: Vec<String> = rest
+        .iter()
+        .map(|p| if p.is_mutate { format!("mutate {}", p.name) } else { p.name.clone() })
+        .collect();
     let returns_nothing = matches!(m.ret_ty, None | Some(TypeExpr::Unit));
     let ret = match &m.ret_ty {
         Some(t) if !returns_nothing => format!(" -> {}", over_host(t)),

@@ -16,6 +16,7 @@ mod annotation_defaults;
 mod defaults;
 mod generalize;
 mod interface_defaults;
+mod ordering_operators;
 pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
@@ -141,7 +142,8 @@ fn desugar_inner_from(
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
     // sees a `message()` an interface supplied by default.
-    let injected = interface_defaults::inject(decls);
+    let mut injected = interface_defaults::inject(decls);
+    ordering_operators::inject(decls, &mut injected);
 
 
     // Before anything rewrites an operator: this reads the body's operators as
@@ -674,7 +676,7 @@ impl Desugarer {
                 self.desugar_expr(&mut clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.desugar_expr(e),
-            ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
+            ExprKind::Unwrap { expr: e, .. } => self.desugar_expr(e),
             ExprKind::GuardPattern {
                 expr,
                 else_branch,
@@ -731,10 +733,13 @@ impl Desugarer {
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
+            ExprKind::Spawn { body, .. } => {
+                self.desugar_expr(body);
+            }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }
-            ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. }
+            ExprKind::Unsafe { body }
             | ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 for s in body {
                     self.desugar_stmt(s);

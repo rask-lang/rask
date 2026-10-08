@@ -1101,26 +1101,6 @@ fn a_type_that_contains_itself_is_rejected() {
 }
 
 #[test]
-fn an_optional_interface_object_is_rejected_with_its_own_reason() {
-    // #1159 made the parse after `any` share the real type-name parse, so
-    // `any io.Reader` works. Sharing it whole would also have admitted
-    // `any Shape?`, which type-checks and then segfaults natively — the value
-    // is never boxed into the option's payload (#1308). The suffix stays
-    // refused, but with a message about the feature rather than the old
-    // "Expected ')', found '?'".
-    let (failed, out) = compile_error_output("optional_interface_object.rk");
-    assert!(failed, "`any Interface?` must be rejected: {}", out);
-    assert!(
-        out.contains("an optional interface object isn't built yet"),
-        "should name the feature, not the punctuation: {}", out,
-    );
-    assert!(
-        out.contains("1308"),
-        "should point at the issue that lifts it: {}", out,
-    );
-}
-
-#[test]
 fn a_failing_benchmark_body_is_reported_not_timed() {
     // #1182: every pass discarded its result, so a body that panicked still
     // produced min/max/mean/median — timings for how long it took to fail,
@@ -1354,16 +1334,19 @@ fn error_interface_bound_messages() {
 // they were rewritten into, and reported it that way — `n ?? -1` said "expected
 // `i64`, found `i32 or _`" and advised changing the type to the one already
 // written (#645). Pins the message, the `.get(k)` advice for the index case,
-// and the count: six mistakes, six errors, nothing extra from the cascade and
-// nothing for the legal shapes in the same file.
+// and the count: eight mistakes, eight errors, nothing extra from the cascade and
+// nothing for the legal shapes in the same file. Two of the `??`s have an
+// operand whose type settles late; those used to blame `m.insert` (#1290).
 #[test]
 fn error_optional_operators_need_optionals() {
     let (failed, out) = compile_error_output("optional_operators_need_optionals.rk");
     assert!(failed, "`??`/`!`/`take` on a non-optional must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0831").count(), 4,
-        "one per `??`: a local, a string, a map index, a struct field: {}", out,
+        out.matches("E0831").count(), 6,
+        "one per `??`: a local, a string, a map index, a struct field, a call \
+         whose closure settles last, a generic handing back a number: {}", out,
     );
+    assert!(!out.contains("E0308"), "no mismatch blamed on another line: {}", out);
     assert_eq!(
         out.matches("E0832").count(), 1,
         "one `!` on a non-optional: {}", out,
@@ -1830,6 +1813,7 @@ fn error_missing_call_site_mutate_marker() {
         out.contains("`apply_damage` mutates `player` — mark it at the call site"),
         "should name callee and argument: {}", out,
     );
+    assert!(out.contains("fix: apply_damage(mutate player, 10)"), "the fix is the call: {}", out);
     // PM5: the marker follows the signature, not the argument's size.
     assert!(
         out.contains("`bump_scalar` mutates `count`"),
@@ -1845,6 +1829,21 @@ fn error_missing_call_site_mutate_marker() {
         !out.contains("mutates `c` —"),
         "a method receiver takes no marker: {}", out,
     );
+}
+
+// #1514 / PM4: a call through a `func(mutate T)` value is marked like any
+// other. A `SequenceMut` yield takes its type from the return slot, so a bare
+// `yield(c)` is reported at the argument with the call as the fix, not as a
+// function-type mismatch at the closure header.
+#[test]
+fn error_missing_mutate_marker_through_function_value() {
+    let (failed, out) = compile_error_output("mutate_marker_function_value.rk");
+    assert!(failed, "a `mutate` argument through a function value needs its marker: {}", out);
+    assert!(out.contains("`yield` mutates `c` — mark it at the call site"), "the yield call: {}", out);
+    assert!(out.contains("fix: yield(mutate c)"), "the yield fix is the call: {}", out);
+    assert!(out.contains("`f` mutates `c` — mark it at the call site"), "the plain value call: {}", out);
+    assert!(out.contains("fix: f(mutate c)"), "the plain value fix is the call: {}", out);
+    assert!(!out.contains("E0912"), "no function-type mismatch at the closure: {}", out);
 }
 
 // ER47 (#598): bare `try` sends the operand's other branch out unchanged, so
@@ -1966,18 +1965,55 @@ fn main_ok_return_exits_0() {
 #[test]
 fn error_stdlib_renames() {
     // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each
-    // old name must be rejected as an unknown method (E0313), not silently
-    // resolved. Witnesses recv/try_recv, as_secs*, getpid, os.vars,
+    // old name must be rejected, not silently resolved: a method as an unknown
+    // method (E0313), a module function as one the module doesn't have (E0411).
+    // Witnesses recv/try_recv, as_secs*, getpid, os.vars,
     // fs.read_file/write_file/append_file, and the removed File.lines().
     let (failed, out) = compile_error_output("stdlib_renames.rk");
     assert!(failed, "old stdlib names must be rejected: {}", out);
-    assert!(out.contains("E0313"), "should be an unknown-method error (E0313): {}", out);
-    for old in ["recv", "try_recv", "as_secs", "getpid", "read_file", "lines"] {
+    for old in ["recv", "try_recv", "as_secs", "lines"] {
         assert!(
             out.contains(&format!("no method `{}`", old)),
             "old name `{}` should be rejected as unknown method: {}", old, out,
         );
     }
+    for (module, old) in [("os", "getpid"), ("os", "vars"), ("fs", "read_file")] {
+        assert!(
+            out.contains(&format!("`{}` has no function `{}`", module, old)),
+            "old name `{}.{}` should be rejected as not in the module: {}", module, old, out,
+        );
+    }
+    assert!(out.contains("fix: os.pid(…)"), "the renamed one is named: {}", out);
+}
+
+// `json.parse` is declared without `public` — it's the body behind
+// `json.decode<JsonValue>` — and programs could call it anyway (#1410). A
+// selective import of it is refused the same way.
+#[test]
+fn error_private_stdlib_function() {
+    let (failed, out) = compile_error_output("private_stdlib_function.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0412]").count(), 2, "two private calls, the public one fine: {}", out);
+    assert!(out.contains("`json.parse` is not public"), "{}", out);
+    assert!(out.contains("use what `json` makes public: encode, decode"), "{}", out);
+    assert!(!out.contains("to_value"), "an unimplemented function is no suggestion: {}", out);
+
+    let import = check_output("import json.parse\nfunc main() {}\n");
+    assert!(import.contains("`json` has no `parse` to import"), "{}", import);
+}
+
+// `async` has no namespace struct, so `async.join_all(5)` was a method lookup
+// on the module's placeholder type, dropped unreported: the only error was
+// "couldn't work out the type of `y`", and with the result used, a crash in
+// MIR lowering (#1404). `time.nosuch` was caught, by a different path.
+#[test]
+fn error_unknown_module_function() {
+    let (failed, out) = compile_error_output("unknown_module_function.rk");
+    assert!(failed, "{}", out);
+    assert!(out.contains("`async` has no function `join_all`"), "{}", out);
+    assert!(out.contains("`time` has no function `nosuch`"), "{}", out);
+    assert!(out.contains("call it on a `Handles`: `handles.join_all()`"), "{}", out);
+    assert!(!out.contains("couldn't work out the type"), "the call is the error, not its result: {}", out);
 }
 
 /// Run a .rk file given by repo-relative path via `rask run --interp`.
@@ -2669,6 +2705,43 @@ fn error_unknown_type_name() {
     assert!(compile_error("unknown_type_name.rk"), "should reject unknown PascalCase type in signature (PC2)");
 }
 
+/// #1484: the unknown-name check ran per signature position, so a cast or a
+/// closure parameter naming nothing type-checked. Once per written type, and a
+/// declared parameter (`Holder<Thing>`) still passes.
+#[test]
+fn error_unknown_type_in_body() {
+    let (failed, out) = compile_error_output("unknown_type_in_body.rk");
+    assert!(failed, "{out}");
+    for name in ["Nowhere", "Nope", "Nada", "Missing", "Elsewhere"] {
+        assert_eq!(out.matches(&format!("unknown type `{name}`")).count(), 1, "{name}:\n{out}");
+    }
+    assert_eq!(out.matches("unknown type `Nonexistent`").count(), 2, "{out}");
+    assert!(!out.contains("`Thing`"), "a declared parameter was reported:\n{out}");
+    assert_eq!(out.matches("error[").count(), 7, "{out}");
+}
+
+/// #1485: a result read off an error is an error, so the binding holding it
+/// isn't reported again as un-inferrable.
+#[test]
+fn error_type_absorbs_follow_on_errors() {
+    let (failed, out) = compile_error_output("error_type_no_cascade.rk");
+    assert!(failed, "{out}");
+    assert!(!out.contains("E0361"), "{out}");
+    assert_eq!(out.matches("error[").count(), 3, "{out}");
+}
+
+/// #1486: a default on anything but an interface's parameter was parsed and
+/// ignored.
+#[test]
+fn error_type_param_default_outside_interface() {
+    let (failed, out) = compile_error_output("type_param_default_outside_interface.rk");
+    assert!(failed, "{out}");
+    for owner in ["a struct's", "an enum's", "a function's", "a type alias's"] {
+        assert!(out.contains(&format!("{owner} type parameter `T` can't have a default")), "{owner}:\n{out}");
+    }
+    assert_eq!(out.matches("error[").count(), 4, "{out}");
+}
+
 #[test]
 fn error_single_letter_type_name() {
     assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");
@@ -2909,7 +2982,7 @@ fn error_linear_consumed_if_without_else() {
 #[test]
 fn error_task_handle_bound_but_never_consumed() {
     let output = check_output(
-        "import async.Handle\n\nfunc leaky() -> i64 {\n    let h: Handle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+        "import async.Handle\n\nfunc leaky() -> i64 {\n    let h: Handle<i64> = spawn { return 1 }\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "a Handle bound but never joined/detached should be E0805 (H1): {}", output);
@@ -2920,17 +2993,17 @@ fn error_task_handle_dropped_as_bare_statement() {
     // The exact form specs/concurrency/async.md's H1 example rejects: nothing
     // even binds the handle, so it's dropped the instant it's produced.
     let output = check_output(
-        "func main() {\n    using Multitasking {\n        spawn(|| { return 1 })\n    }\n}"
+        "func main() {\n    using Multitasking {\n        spawn { return 1 }\n    }\n}"
     );
     assert!(output.contains("E0840"),
-        "an unbound spawn() used as a statement should be E0840 (H1): {}", output);
+        "an unbound spawn used as a statement should be E0840 (H1): {}", output);
 }
 
 #[test]
 fn ok_task_handle_joined_or_detached_or_cancelled() {
     for method in ["let _ = h.join()", "h.detach()", "let _ = h.cancel()"] {
         let output = check_output(&format!(
-            "func main() {{\n    using Multitasking {{\n        let h = spawn(|| {{ return 1 }})\n        {}\n    }}\n}}",
+            "func main() {{\n    using Multitasking {{\n        let h = spawn {{ return 1 }}\n        {}\n    }}\n}}",
             method
         ));
         assert!(output.contains("Typecheck OK"),
@@ -2981,6 +3054,58 @@ fn check_output(source: &str) -> String {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     format!("{}{}", stdout, stderr)
+}
+
+// Starting a thread or handing work to a pool returns at once, but `spawn` was
+// classed as I/O, so every spawn loop got CW2's "blocks thread on each
+// iteration" and an advice to wrap it in `using Multitasking`, which doesn't
+// change what `Thread.spawn` does (#1362). Real I/O in a loop of the same
+// concurrent program still warns.
+#[test]
+fn spawn_in_a_loop_is_not_blocking_io() {
+    let output = check_output(
+        "import thread.Thread\nimport async.Handles\n\
+         func main() {\n\
+         \x20   mut hs = Handles<i64>.new()\n\
+         \x20   ensure hs.detach()\n\
+         \x20   mut i = 0\n\
+         \x20   while i < 4 {\n\
+         \x20       let k = i\n\
+         \x20       hs.add(Thread.spawn { return k })\n\
+         \x20       i += 1\n\
+         \x20   }\n\
+         \x20   for j in 0..2 {\n\
+         \x20       println(\"{j}\")\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(output.contains("Typecheck OK"), "{}", output);
+    assert!(!output.contains("`spawn` in loop"), "a spawn doesn't block: {}", output);
+    assert!(output.contains("`println` in loop"), "real I/O still warns: {}", output);
+}
+
+// A method call is classed by the receiver's type, not by how the variable is
+// spelled. `t.join()` only matched the `Handle.join` source when the variable
+// itself was named `Handle`, so a join in a loop carried no I/O and CW2 never
+// fired (#1418). A `join` on a `Vec<string>` is still no I/O at all.
+#[test]
+fn join_through_a_variable_is_io() {
+    let output = check_output(
+        "import thread.Thread\n\
+         func main() {\n\
+         \x20   mut j = 0\n\
+         \x20   while j < 3 {\n\
+         \x20       let t = Thread.spawn { return 1 }\n\
+         \x20       let _ = t.join()\n\
+         \x20       let parts: Vec<string> = [\"a\", \"b\"]\n\
+         \x20       let _ = parts.join(\",\")\n\
+         \x20       j += 1\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(output.contains("Typecheck OK"), "{}", output);
+    assert!(output.contains("`Handle.join` in loop"), "a join waits: {}", output);
+    assert_eq!(output.matches("in loop without").count(), 1, "only the handle's join: {}", output);
 }
 
 #[test]
@@ -3949,14 +4074,13 @@ fn panic_ensure_e3_first_panic_wins() {
     }
 }
 
-// E3 (issue #298) — a runtime guard tripping at scope exit while already
-// unwinding must not replace the panic in flight — has no test any more. The
-// guard it was reached through was R5, a pool still holding a resource,
-// and no container takes a linear value now that pools are gone: Vec, Map and
-// Rack are all compile errors (mem.resource-types/RC1-RC3). Every earlier
-// trigger went the same way — an unconsumed Handle behind a `join()` is
-// mem.linear/L7. The rule stands, the path is unreachable from Rask source, and
-// rask-lang/rask#1296 tracks it.
+// E3 used to cover a runtime guard tripping at scope exit mid-unwind too. Its
+// last trigger was a pool still holding a resource; with pools gone, every
+// unconsumed linear value is a compile error, so the guard and that half of
+// the rule were deleted (rask-lang/rask#1296). A guard that comes back needs
+// its unwind behaviour specified and tested here. The interpreter's
+// RASK_RUNTIME_CHECKS leak check isn't one: it skips a scope a panic is
+// unwinding (rask-interp `resource::tests`).
 
 #[test]
 fn panic_detached_task_reports_to_stderr() {
@@ -4270,11 +4394,11 @@ fn panic_in_a_lock_closure_releases_the_lock() {
     }
 }
 
-// A closure that captured a link or a `Local` box can't reach another task,
-// however it gets to the spawn (#1356). Written at the spawn, the checker
-// rejects it; returned from a function or read out of a field, the spawn site
-// shows nothing, so the closure carries a flag and every spawn form refuses a
-// flagged one when it starts the task.
+// A link or a `Local` box can't reach another task, however the task block
+// gets hold of it (#1356). Named in the block, the checker rejects it. Inside
+// a closure value the block captures — one returned from a function, or read
+// out of a field — the block shows nothing, so the closure carries a flag and
+// the spawn refuses a flagged capture when it starts the task.
 #[test]
 fn a_task_bound_closure_is_refused_at_spawn() {
     // The report names the spawn's own line. Natively `spawn` didn't record a
@@ -4282,14 +4406,14 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // an earlier spawn that succeeded.
     for (fixture, line) in [
         ("spawn_returned_closure_with_link.rk", 21),
-        ("spawn_field_closure_with_local_box.rk", 19),
+        ("spawn_field_closure_with_local_box.rk", 20),
     ] {
         for mode in ["--interp", "--native"] {
             let (stdout, stderr, code) = run_capture(mode, fixture);
             assert_ne!(code, 0, "{mode} {fixture}: the spawn has to fail; stdout: {stdout}");
             assert!(stdout.starts_with("before"), "{mode} {fixture}: {stdout}");
             assert!(
-                stderr.contains("this closure captured a link or a `Local` box"),
+                stderr.contains("this task would hold a link or a `Local` box"),
                 "{mode} {fixture}: {stderr}",
             );
             assert!(stderr.contains(&format!("{fixture}:{line}:")), "{mode} {fixture}: {stderr}");
@@ -4302,16 +4426,24 @@ fn a_task_bound_closure_is_refused_at_spawn() {
         assert_eq!(stdout, "15\n", "{mode}");
     }
     // A closure in a generic body captures a `T`, so it's decided per
-    // instantiation: `keep<i64>`'s crosses, `keep<Link<Node>>`'s doesn't.
+    // instantiation: `keep<i64>`'s crosses, `keep<Link<Node>>`'s doesn't. The
+    // same goes for a task block written in the generic body itself.
+    for (fixture, line) in [
+        ("spawn_generic_closure_with_link.rk", 27),
+        ("spawn_generic_block_with_link.rk", 13),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_ne!(code, 0, "{mode} {fixture}: the link spawn has to fail; stdout: {stdout}");
+            assert_eq!(stdout, "1\nbefore\n", "{mode} {fixture}");
+            assert!(
+                stderr.contains("this task would hold a link or a `Local` box"),
+                "{mode} {fixture}: {stderr}",
+            );
+            assert!(stderr.contains(&format!("{fixture}:{line}:")), "{mode} {fixture}: {stderr}");
+        }
+    }
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_with_link.rk");
-        assert_ne!(code, 0, "{mode}: the link spawn has to fail; stdout: {stdout}");
-        assert_eq!(stdout, "1\nbefore\n", "{mode}");
-        assert!(
-            stderr.contains("this closure captured a link or a `Local` box"),
-            "{mode}: {stderr}",
-        );
-        assert!(stderr.contains("spawn_generic_closure_with_link.rk:26:"), "{mode}: {stderr}");
         let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_that_may_cross.rk");
         assert_eq!(code, 0, "{mode}: {stderr}");
         assert_eq!(stdout, "1\n", "{mode}");
@@ -4325,12 +4457,12 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // `fn_value` ones pass a generic function as a value, so its type arguments
     // come from where it was named, not from the call that runs it.
     for (file, line) in [
-        ("spawn_generic_closure_empty_vec.rk", 24),
-        ("spawn_generic_closure_none_link.rk", 30),
-        ("spawn_generic_method_closure.rk", 32),
-        ("spawn_generic_tuple_header_closure.rk", 33),
-        ("spawn_generic_nested_header_closure.rk", 32),
-        ("spawn_generic_fn_value_apply.rk", 30),
+        ("spawn_generic_closure_empty_vec.rk", 25),
+        ("spawn_generic_closure_none_link.rk", 31),
+        ("spawn_generic_method_closure.rk", 34),
+        ("spawn_generic_tuple_header_closure.rk", 35),
+        ("spawn_generic_nested_header_closure.rk", 34),
+        ("spawn_generic_fn_value_apply.rk", 31),
         ("spawn_generic_fn_value_map.rk", 16),
     ] {
         for mode in ["--interp", "--native"] {
@@ -4338,7 +4470,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
             assert_ne!(code, 0, "{mode} {file}: the spawn has to fail; stdout: {stdout}");
             assert_eq!(stdout, "1\nbefore\n", "{mode} {file}");
             assert!(
-                stderr.contains("this closure captured a link or a `Local` box"),
+                stderr.contains("this task would hold a link or a `Local` box"),
                 "{mode} {file}: {stderr}",
             );
             assert!(stderr.contains(&format!("{file}:{line}:")), "{mode} {file}: {stderr}");
@@ -5176,6 +5308,100 @@ fn panic_reports_the_line_it_happened_on() {
     }
 }
 
+const BANG_ON_A_MULTI_LINE_CALL_SRC: &str = r#"import builtins.ConvertError
+
+func fails(a: i64, b: i64) -> i64 or ConvertError {
+    return ConvertError.OutOfRange
+}
+
+func main() {
+    let x = fails(
+        1,
+        2,
+    )!
+    println("{x}")
+}
+"#;
+
+const BANG_ON_A_MULTI_LINE_SELECT_SRC: &str = r#"import async.Channel
+
+func main() {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    tx.close()!
+    let got = select {
+        rx -> v: v,
+    }!
+    println("{got}")
+}
+"#;
+
+/// A `!` on an expression spanning several lines panics at the `!`'s line
+/// (ctrl.panic/S6: the failing operation is the `!`). The interpreter named
+/// the line the operand started on; native named the last line it lowered
+/// before the panic — the last argument, or the arm above `}!` (#1372).
+#[test]
+fn bang_panic_names_the_line_of_the_bang() {
+    for (src, want) in [
+        (BANG_ON_A_MULTI_LINE_CALL_SRC, 11),
+        (BANG_ON_A_MULTI_LINE_SELECT_SRC, 8),
+    ] {
+        for interp in [false, true] {
+            let backend = if interp { "interp" } else { "native" };
+            let out = run_rask_run_source(src, interp);
+            assert!(
+                out.contains(&format!(":{want}:")),
+                "{backend}: expected the panic at line {want}, the `!`:\n{out}"
+            );
+        }
+    }
+}
+
+/// AN6: inside a `comptime for`, only a `comptime if` removes a branch. A
+/// plain `if f.has<label>()` leaves `f.get<label>()` in the iteration for the
+/// field without one, and there is nothing there to read. Native rejected it
+/// at unroll time; the interpreter never reached the read and ran the program
+/// (#1291). Both reject it now, before printing anything, and both still run
+/// the `comptime if` form.
+#[test]
+fn a_runtime_if_does_not_guard_an_annotation_read() {
+    const SRC: &str = r#"import std.reflect
+
+annotation @label { name: string }
+
+struct Row {
+    @label(name: "id")
+    public id: i64
+    public value: string
+}
+
+func main() {
+    comptime for f in reflect.fields<Row>() {
+        println("field={f.name}")
+        GUARD f.has<label>() {
+            println("  label={f.get<label>().name}")
+        }
+    }
+}
+"#;
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        let out = run_rask_run_source(&SRC.replace("GUARD", "if"), interp);
+        assert!(
+            out.contains("`value` has no `@label` to read `name` from"),
+            "{backend}: a plain `if` should leave the read in and be rejected:\n{out}"
+        );
+        assert!(
+            !out.contains("field="),
+            "{backend}: rejected before any of the loop runs:\n{out}"
+        );
+        let out = run_rask_run_source(&SRC.replace("GUARD", "comptime if"), interp);
+        assert_eq!(
+            out, "field=id\n  label=id\nfield=value\n",
+            "{backend}: `comptime if` drops the read for `value`"
+        );
+    }
+}
+
 /// Editing a file in a sub-package rebuilds the binary.
 ///
 /// The compilation cache keyed on the *root* package's files alone, and a
@@ -5840,16 +6066,18 @@ fn method_dispatch_never_falls_back_to_guessing() {
     let rask = rask_binary();
     let mut seen: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for name in files {
+        let bin = std::env::temp_dir()
+            .join(format!("rask_disp_{}_{}", std::process::id(), next_tmp_id()));
         let out = Command::new(&rask)
             .arg("compile")
             .arg(fixture(name))
             .arg("-o")
-            .arg(std::env::temp_dir()
-                .join(format!("rask_disp_{}_{}", std::process::id(), next_tmp_id())))
+            .arg(&bin)
             .env("RASK_RUNTIME_DIR", runtime_dir())
             .env("RASK_TRACE_DISPATCH", "1")
             .output()
             .expect("failed to run rask compile");
+        let _ = std::fs::remove_file(&bin);
         let stderr = String::from_utf8_lossy(&out.stderr);
         for line in stderr.lines() {
             let Some(rest) = line.strip_prefix("[dispatch]   ") else { continue };
@@ -6449,7 +6677,7 @@ nums[1]=20
 // `let fs = Vec.from(…)` then `fs.len()` failed with "no method `len` found for
 // type `fs`". The method-call checker tried its namespace routes without asking
 // whether a local of that name existed, so an unimported module name beat the
-// variable. Imported module names can't be shadowed at all (E0209), so a local
+// variable. Imported module names can't be shadowed at all (IM8, E0911), so a local
 // always means "no module here".
 #[test]
 fn a_variable_named_after_a_module_wins_on_both_backends() {
@@ -6746,6 +6974,89 @@ fn error_mutate_param_left_empty() {
     assert!(!out.contains("`consume`"), "and so is `take`: {}", out);
 }
 
+// A closure can't give away what it captured (mem.closures/CM4, #1318). The
+// fix names both ways out, as code: a `take` parameter, and a task block for
+// work that runs once. E0891's fix line once said `own ||`, which no longer
+// parses (#1361).
+// The fixture's legal case takes its `Conn` as a parameter and must stay clean.
+#[test]
+fn error_closure_consumes_borrowed_capture() {
+    let (failed, out) = compile_error_output("linearity_exits.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 1, "the `take` parameter must compile: {}", out);
+    assert!(!out.contains("own ||") && !out.contains("`own`"), "still suggests `own`: {}", out);
+    assert!(out.contains("|take c: Conn| { … }"), "the fix should show a `take` parameter: {}", out);
+    assert!(out.contains("spawn { … }"), "the fix should show a task block: {}", out);
+    assert!(!out.contains("spawn_with"), "`spawn_with` is gone: {}", out);
+    assert!(!out.contains("c.clone()"), "a resource has no copy to offer: {}", out);
+}
+
+// The carrying side of the same rule: a returned closure and one a `take`
+// keeps (#1318). Each consumption is one E0891 or E0907, and the legal shapes
+// beside them stay clean.
+#[test]
+fn error_carrying_closure_consumes_capture() {
+    let (failed, out) = compile_error_output("closure_consumes_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 2, "{}", out);
+    assert_eq!(out.matches("error[E0907]").count(), 1, "{}", out);
+    assert!(out.contains("`b.clone()`"), "a non-linear capture can offer a copy: {}", out);
+}
+
+// A task block isn't a closure: it runs once, so it may consume what it
+// captures, and a resource it captures is its to consume on every path
+// (conc.async/S6, #1318). One that only reads it is one error, not a leak at
+// the `return` and another at the block's end; the task that closes its
+// resource and the one that gives a `Vec` away compile.
+#[test]
+fn error_task_leaves_capture_unconsumed() {
+    let (failed, out) = compile_error_output("task_leaves_capture_unconsumed.rk");
+    assert!(failed, "{}", out);
+    let errors = out.matches("error[").count();
+    assert_eq!(errors, 1, "one mistake, one error: {}", out);
+    assert!(out.contains("`c`"), "{}", out);
+    assert!(!out.contains("E0891"), "a task block may consume its captures: {}", out);
+}
+
+// The closure spellings of a task are gone (E0915). Each one names the block
+// form as its fix, with the value `spawn_with` was handed named in it.
+#[test]
+fn error_spawn_closure_form() {
+    let (failed, out) = compile_error_output("spawn_closure_form.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0915]").count(), 4, "{}", out);
+    assert!(out.contains("spawn { … }"), "{}", out);
+    assert!(out.contains("Thread.spawn { … }"), "{}", out);
+    assert!(out.contains("ThreadPool.spawn { … }"), "{}", out);
+    assert!(out.contains("spawn { … n … }"), "the handed value is named: {}", out);
+}
+
+// A linear value can't be carried at all: nothing in the closure could ever
+// consume it (E0913). The message points at a `take` parameter, with the
+// value's type filled in, and at a task block for work that runs once.
+#[test]
+fn error_closure_carries_linear_capture() {
+    let (failed, out) = compile_error_output("closure_carries_linear_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0913]").count(), 2, "{}", out);
+    assert!(out.contains("|take c: Conn| { … }"), "{}", out);
+    assert!(out.contains("|take h: Heap<i64>| { … }"), "{}", out);
+    assert!(out.contains("spawn {"), "{}", out);
+    assert!(!out.contains("error[E0805]"), "a refused capture is one error, not a leak too: {}", out);
+}
+
+// A closure that stays borrows its non-Copy captures, so it can't hand one
+// back or give one to a `take` (#1449). Three returns and one consume, and the
+// legal shapes below them stay clean.
+#[test]
+fn error_closure_returns_borrowed_capture() {
+    let (failed, out) = compile_error_output("closure_returns_borrowed_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0907]").count(), 3, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 1, "{}", out);
+    assert!(out.contains("`b.clone()`"), "the fix should be a copy: {}", out);
+}
+
 // mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
 // can't be given away. This made "consumed exactly once" false in the shipped
 // compiler — the interpreter caught the double-consume with a runtime flag, and
@@ -6757,7 +7068,7 @@ fn error_mutate_param_left_empty() {
 fn error_consume_borrowed_param() {
     let (failed, out) = compile_error_output("consume_borrowed_param.rk");
     assert!(failed, "giving away a borrowed parameter must be rejected: {}", out);
-    assert_eq!(out.matches("E0835").count(), 4, "four sites, no more: {}", out);
+    assert_eq!(out.matches("E0835").count(), 3, "three sites, no more: {}", out);
     assert!(
         out.contains("borrowed, not owned"),
         "should say the parameter isn't owned: {}", out,
@@ -8459,6 +8770,71 @@ fn a_target_name_emits_the_object_format_it_names() {
     }
 }
 
+// `comptime if cfg.os` answered for the host on every `--target`: the
+// single-file path ran the front end with the host's cfg and built the
+// target's afterwards, for codegen only. And a full triple split on '-' gave
+// `cfg.os == "apple"` for `aarch64-apple-darwin` (#1315). Read off the MIR,
+// which is where the branch has already been chosen — no cross-linker needed.
+#[test]
+fn comptime_cfg_answers_for_the_target_not_the_host() {
+    let dir = std::env::temp_dir().join(format!("rask_cfg_target_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("cfg.rk");
+    std::fs::write(
+        &src,
+        "func main() {\n\
+         \x20   comptime if cfg.os == \"macos\" { println(\"os=macos\") }\n\
+         \x20   comptime if cfg.os == \"linux\" { println(\"os=linux\") }\n\
+         \x20   comptime if cfg.os == \"windows\" { println(\"os=windows\") }\n\
+         \x20   comptime if cfg.os == \"apple\" { println(\"os=apple\") }\n\
+         \x20   comptime if cfg.arch == \"aarch64\" { println(\"arch=aarch64\") }\n\
+         \x20   comptime if cfg.arch == \"x86_64\" { println(\"arch=x86_64\") }\n\
+         \x20   comptime if cfg.env == \"musl\" { println(\"env=musl\") }\n\
+         \x20   comptime if cfg.env == \"gnu\" { println(\"env=gnu\") }\n\
+         \x20   comptime if cfg.env == \"msvc\" { println(\"env=msvc\") }\n\
+         \x20   comptime if cfg.debug { println(\"debug\") } else { println(\"release\") }\n\
+         }\n",
+    )
+    .unwrap();
+    let branches = |target: &str, release: bool| -> Vec<String> {
+        let mut cmd = Command::new(rask_binary());
+        cmd.arg("compile").arg("--dump-mir").arg("--target").arg(target);
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(&src)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        let text = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{target}: dump failed:\n{text}");
+        let mut seen: Vec<String> = text
+            .lines()
+            .filter_map(|l| l.split("println(\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_string)
+            .collect();
+        seen.sort();
+        seen.dedup();
+        seen
+    };
+    let want = |xs: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = xs.iter().map(|s| s.to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(branches("aarch64-macos", false), want(&["arch=aarch64", "debug", "os=macos"]));
+    assert_eq!(branches("aarch64-apple-darwin", false), want(&["arch=aarch64", "debug", "os=macos"]));
+    assert_eq!(branches("x86_64-linux-musl", false), want(&["arch=x86_64", "debug", "env=musl", "os=linux"]));
+    assert_eq!(branches("aarch64-linux", true), want(&["arch=aarch64", "env=gnu", "os=linux", "release"]));
+    assert_eq!(
+        branches("x86_64-windows-msvc", false),
+        want(&["arch=x86_64", "debug", "env=msvc", "os=windows"]),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // The other half: a name nobody declared is an error, not a guess at what was
 // meant. It used to be accepted by anything shaped like `arch-os`.
 #[test]
@@ -8540,4 +8916,66 @@ fn macho_debug_sections_use_the_macho_spelling() {
 
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&obj);
+}
+
+const BUILT_MESSAGE_SRC: &str = r#"
+func label(n: i64) -> string {
+    return "label number {n} of many"
+}
+
+func skip_at(depth: i64) -> i64 {
+    let w: Vec<i64> = [depth]
+    if depth > 2 {
+        skip("deep enough")
+    }
+    return skip_at(depth + 1) + w.len().to<i64>()!
+}
+
+test "deep skip" {
+    let k = skip_at(0)
+}
+
+test "built skip" {
+    let s = label(4)
+    skip("built {s}")
+}
+
+test "built assert" {
+    let s = label(7)
+    assert s.len() == 0, "msg {s}"
+}
+
+test "built check" {
+    let s = label(8)
+    check s.len() == 0, "chk {s}"
+}
+
+test "built panic" {
+    let s = label(3)
+    panic("deep {s}")
+}
+
+func main() {}
+"#;
+
+// A message the program builds at run time is a Rask string, not a C string.
+// Native handed it to the C side as `char *`, so a built panic, assert or
+// check message printed the string's header bytes, and a built skip reason
+// was dropped for "skipped" (#1517). A skip deep in a call also picked up a
+// `file:line:` left over from an earlier call (#1519).
+#[test]
+fn built_failure_messages_print_on_both_backends() {
+    for interp in [true, false] {
+        let mode = if interp { "interp" } else { "native" };
+        let out = run_rask_test_source(BUILT_MESSAGE_SRC, interp);
+        for want in [
+            "SKIP deep skip (deep enough)",
+            "SKIP built skip (built label number 4 of many)",
+            "msg label number 7 of many",
+            "chk label number 8 of many",
+            "deep label number 3 of many",
+        ] {
+            assert!(out.contains(want), "{mode}: missing {want:?} in:\n{out}");
+        }
+    }
 }

@@ -57,13 +57,17 @@ extend JsonValue {
         }
         return none
     }
-    public func as_array(self) -> Vec<JsonValue>? {
+    // These two take the value: the container is the value's, and handing it
+    // out of a borrowed one gives the caller a second owner for it. A borrowed
+    // value is read in place with `if v is Array(items)`, or copied with
+    // `v.clone().as_array()` (#1425).
+    public func as_array(take self) -> Vec<JsonValue>? {
         if self is Array(a) {
             return a
         }
         return none
     }
-    public func as_object(self) -> Map<string, JsonValue>? {
+    public func as_object(take self) -> Map<string, JsonValue>? {
         if self is Object(m) {
             return m
         }
@@ -446,7 +450,7 @@ extend json {
     /// Compiler-expanded: the call site describes T to the decoder, which
     /// fills the value in one pass. Missing required fields, wrong types, and
     /// malformed input all come back as JsonError.
-    @native("rask_json_decode")
+    @native
     public func decode<T: Decode>(str: string) -> T or JsonError {}
 
     /// The untyped path: `json.decode<JsonValue>(text)` lowers to this call.

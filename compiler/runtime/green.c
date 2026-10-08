@@ -34,6 +34,13 @@
 // What a task produced, and its handle, live in thread.c's `RaskTask`, shared
 // with threads and pooled jobs. This file owns only the fiber and its place in
 // the scheduler, and frees it when the body is done.
+//
+// Under sim (sim.c) this is the same scheduler with the machine taken out. The
+// workers are threads sim switches between on its one OS thread, not pthreads;
+// a worker with nothing to do parks there instead of sleeping; the clock is
+// sim's; and the choices timing would make here — which deque a steal tries,
+// when a running fiber is cut off — come from the seed. Everything else, the
+// queues and the parking and the pinning, is what ships (#1381).
 
 #include "fiber.h"
 #include "rask_runtime.h"
@@ -219,6 +226,11 @@ typedef struct GreenScheduler GreenScheduler;
 typedef struct {
     GreenScheduler *sched;
     int             id;
+    // Under sim: the thread sim runs this worker as, and the safe points the
+    // fiber on it has passed against the budget the seed gave it.
+    void           *sim_thread;
+    int64_t         sim_points;
+    int64_t         sim_budget;
     WorkDeque       deque;      // unstarted tasks, stealable
     TaskQueue       inbox;      // started tasks resuming here
     // Tasks this worker took off the CPU for running past their budget. Run
@@ -298,7 +310,19 @@ static uint32_t xorshift32(void) {
     return x;
 }
 
+// Under sim the machine's choices come from the seed (sim.c).
+static int under_sim(void) {
+#ifdef RASK_SIM
+    return rask_sim_active();
+#else
+    return 0;
+#endif
+}
+
 static int64_t now_ns(void) {
+#ifdef RASK_SIM
+    if (under_sim()) return rask_sim_time_ns();
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
@@ -306,6 +330,14 @@ static int64_t now_ns(void) {
 
 static void worker_wake(Worker *w) {
     if (!atomic_load_explicit(&w->sleeping, memory_order_seq_cst)) return;
+#ifdef RASK_SIM
+    // Parked on its key, or asleep until a timer.
+    if (under_sim()) {
+        rask_sim_notify(&w->sleep_cond);
+        rask_sim_wake(w->sim_thread);
+        return;
+    }
+#endif
     if (atomic_load_explicit(&w->polling, memory_order_seq_cst)) {
         uint64_t one = 1;
         ssize_t ignored = write(w->sched->wakefd, &one, sizeof(one));
@@ -457,6 +489,12 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     rask_task_tls_swap(t->tls);
     rask_task_set_current(t->task);
     atomic_store_explicit(&w->running_since, now_ns(), memory_order_release);
+#ifdef RASK_SIM
+    if (under_sim()) {
+        w->sim_points = 0;
+        w->sim_budget = rask_sim_preempt_budget();
+    }
+#endif
     rask_fiber_switch(&w->fiber, &t->fiber);
     atomic_store_explicit(&w->running_since, 0, memory_order_release);
     // A mark the fiber never reached a safe point for (it parked, finished, or
@@ -474,7 +512,7 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
         rask_fiber_destroy(&t->fiber);
         if (atomic_fetch_sub_explicit(&s->active_tasks, 1, memory_order_acq_rel) == 1) {
             pthread_mutex_lock(&s->done_lock);
-            pthread_cond_broadcast(&s->done_cond);
+            rask_task_cond_broadcast(&s->done_cond);
             pthread_mutex_unlock(&s->done_lock);
         }
         task_free(t);
@@ -629,6 +667,16 @@ void rask_preempt_point(void) {
     Worker *w = tl_worker;
     GreenTask *t = tl_current_task;
     if (!w || !t) return;
+#ifdef RASK_SIM
+    // No timer: the flag stays up and the budget is counted in safe points,
+    // so a seed cuts a fiber off at the same place every replay.
+    if (under_sim()) {
+        if (++w->sim_points < w->sim_budget) return;
+        if (rask_preempt_unsafe()) return;
+        switch_to_worker(t, SWITCH_PREEMPTED);
+        return;
+    }
+#endif
     if (!atomic_exchange_explicit(&w->preempt, 0, memory_order_acq_rel)) {
         return;
     }
@@ -814,6 +862,14 @@ static int netpoll(GreenScheduler *s, int timeout_ms) {
 
 // ─── Worker loop ────────────────────────────────────────────
 
+// Which deque a steal tries.
+static uint32_t steal_draw(uint32_t n) {
+#ifdef RASK_SIM
+    if (under_sim()) return (uint32_t)rask_sim_draw(n);
+#endif
+    return xorshift32() % n;
+}
+
 static GreenTask *find_work(GreenScheduler *s, Worker *w) {
     GreenTask *t = tq_pop(&w->inbox);
     if (t) return t;
@@ -821,7 +877,7 @@ static GreenTask *find_work(GreenScheduler *s, Worker *w) {
     if (t) return t;
     int n = s->worker_count;
     if (n > 1) {
-        int target = (int)(xorshift32() % (uint32_t)n);
+        int target = (int)steal_draw((uint32_t)n);
         if (target != w->id) {
             t = deque_steal(&s->workers[target].deque);
             if (t) return t;
@@ -929,6 +985,44 @@ static void *worker_entry(void *arg) {
     return NULL;
 }
 
+#ifdef RASK_SIM
+// A worker under sim. The same order of looking for work as `worker_entry`,
+// with a scheduling point per turn so the seed decides which worker moves.
+// Idle, it parks until something lands in its queues or, with a sleeper
+// pending, until sim's clock reaches the first deadline. Between looking and
+// parking nothing else runs, so a wake can't fall in the gap.
+static void sim_worker_entry(void *arg) {
+    Worker *w = (Worker *)arg;
+    GreenScheduler *s = w->sched;
+    tl_worker = w;
+    rask_fiber_init_thread(&w->fiber);
+
+    while (!atomic_load_explicit(&s->shutdown, memory_order_acquire)) {
+        rask_sim_point();
+        GreenTask *task = find_work(s, w);
+        if (task) {
+            atomic_fetch_add_explicit(&w->runs, 1, memory_order_relaxed);
+            run_task(s, w, task);
+            continue;
+        }
+        int64_t next_timer = fire_timers(s);
+        if (atomic_load_explicit(&w->inbox.len, memory_order_acquire) != 0 ||
+            atomic_load_explicit(&s->global.len, memory_order_acquire) != 0 ||
+            atomic_load_explicit(&s->shutdown, memory_order_acquire)) {
+            continue;
+        }
+        atomic_store_explicit(&w->sleeping, 1, memory_order_seq_cst);
+        if (next_timer) {
+            rask_sim_sleep(next_timer - now_ns());
+        } else {
+            rask_sim_park(&w->sleep_cond, "work");
+        }
+        atomic_store_explicit(&w->sleeping, 0, memory_order_release);
+    }
+    tl_worker = NULL;
+}
+#endif
+
 // ─── Public API ─────────────────────────────────────────────
 
 void rask_runtime_init(int64_t worker_count) {
@@ -940,6 +1034,13 @@ void rask_runtime_init(int64_t worker_count) {
         abort();
     }
 
+    // The machine's CPU count can't be an input to a replay (determinism/D1),
+    // so under sim a default scope gets three or four workers, by seed. Fewer
+    // would hide what only shows with several workers stealing from each
+    // other, which every real machine a default scope runs on has.
+#ifdef RASK_SIM
+    if (worker_count <= 0 && under_sim()) worker_count = 3 + (int64_t)rask_sim_draw(2);
+#endif
     if (worker_count <= 0) {
         worker_count = sysconf(_SC_NPROCESSORS_ONLN);
         if (worker_count <= 0) worker_count = 4;
@@ -981,8 +1082,9 @@ void rask_runtime_init(int64_t worker_count) {
     // socket blocks its worker instead of parking; everything else still works.
     atomic_init(&s->poller_taken, 0);
     atomic_init(&s->io_waiters, 0);
-    s->epfd = epoll_create1(EPOLL_CLOEXEC);
-    s->wakefd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    // Sim's sockets aren't the kernel's, so there is nothing to poll.
+    s->epfd = under_sim() ? -1 : epoll_create1(EPOLL_CLOEXEC);
+    s->wakefd = under_sim() ? -1 : eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (s->epfd >= 0 && s->wakefd >= 0) {
         struct epoll_event ev = { .events = EPOLLIN, .data.u64 = WAKE_TAG };
         if (epoll_ctl(s->epfd, EPOLL_CTL_ADD, s->wakefd, &ev) < 0) {
@@ -997,6 +1099,16 @@ void rask_runtime_init(int64_t worker_count) {
     pthread_once(&overflow_once, install_overflow_handler);
 
     g_sched = s;
+#ifdef RASK_SIM
+    if (under_sim()) {
+        __atomic_store_n(&rask_preempt_requested, 1, __ATOMIC_RELEASE);
+        for (int i = 0; i < s->worker_count; i++) {
+            Worker *w = &s->workers[i];
+            w->sim_thread = rask_sim_green_worker_spawn(i, sim_worker_entry, w);
+        }
+        return;
+    }
+#endif
     preempt_timer_start(s);
 
     for (int i = 0; i < s->worker_count; i++) {
@@ -1009,15 +1121,22 @@ void rask_runtime_init(int64_t worker_count) {
     }
 }
 
-void rask_runtime_shutdown(void) {
-    GreenScheduler *s = g_sched;
-    if (!s) return;
-
-    // Wait for all active tasks to complete. Timed only so a missed broadcast
-    // can't hang it; the thread can't wake anyone meanwhile, so it counts as
-    // waiting for the deadlock check.
-    rask_thread_wait_begin("the end of `using Multitasking`");
+// The scope's end waits for every task (conc.async/C4). Timed only so a missed
+// broadcast can't hang it; the thread can't wake anyone meanwhile, so it
+// counts as waiting for the deadlock check. Under sim it parks like any other
+// thread with nothing to do.
+static void wait_tasks_done(GreenScheduler *s) {
     pthread_mutex_lock(&s->done_lock);
+#ifdef RASK_SIM
+    if (under_sim()) {
+        while (atomic_load_explicit(&s->active_tasks, memory_order_acquire) > 0) {
+            rask_task_cond_wait(&s->done_cond, &s->done_lock, "the end of `using Multitasking`");
+        }
+        pthread_mutex_unlock(&s->done_lock);
+        return;
+    }
+#endif
+    rask_thread_wait_begin("the end of `using Multitasking`");
     while (atomic_load_explicit(&s->active_tasks, memory_order_acquire) > 0) {
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -1028,13 +1147,27 @@ void rask_runtime_shutdown(void) {
         }
         pthread_cond_timedwait(&s->done_cond, &s->done_lock, &ts);
     }
-    pthread_mutex_unlock(&s->done_lock);
     rask_thread_wait_end();
+    pthread_mutex_unlock(&s->done_lock);
+}
 
-    preempt_timer_stop();
-
-    // Signal shutdown and wake all workers, the poller through its eventfd.
+// Signal shutdown, wake every worker (the poller through its eventfd), and
+// wait for them to leave their loops.
+static void stop_workers(GreenScheduler *s) {
     atomic_store_explicit(&s->shutdown, 1, memory_order_release);
+#ifdef RASK_SIM
+    if (under_sim()) {
+        for (int i = 0; i < s->worker_count; i++) {
+            Worker *w = &s->workers[i];
+            rask_sim_notify(&w->sleep_cond);
+            rask_sim_wake(w->sim_thread);
+        }
+        for (int i = 0; i < s->worker_count; i++) {
+            rask_sim_task_join(s->workers[i].sim_thread);
+        }
+        return;
+    }
+#endif
     if (s->wakefd >= 0) {
         uint64_t one = 1;
         ssize_t ignored = write(s->wakefd, &one, sizeof(one));
@@ -1049,6 +1182,15 @@ void rask_runtime_shutdown(void) {
     for (int i = 0; i < s->worker_count; i++) {
         pthread_join(s->workers[i].thread, NULL);
     }
+}
+
+void rask_runtime_shutdown(void) {
+    GreenScheduler *s = g_sched;
+    if (!s) return;
+
+    wait_tasks_done(s);
+    preempt_timer_stop();
+    stop_workers(s);
 
     // Cleanup
     if (s->epfd >= 0) close(s->epfd);
@@ -1195,6 +1337,17 @@ static void park_until(const void *key, int (*try_take)(void *), void *obj,
     }
 }
 
+void rask_fiber_park(const void *key, const char *what) {
+    GreenTask *t = tl_current_task;
+    WaitBucket *b = bucket_for(key);
+    t->wait_what = what;
+    pthread_mutex_lock(&b->lock);
+    atomic_store_explicit(&t->park, PARK_PARKING, memory_order_release);
+    bucket_add(b, t, key);
+    pthread_mutex_unlock(&b->lock);
+    switch_to_worker(t, SWITCH_PARKED);
+}
+
 static int try_mutex(void *m) { return pthread_mutex_trylock((pthread_mutex_t *)m) == 0; }
 static int try_rd(void *l) { return pthread_rwlock_tryrdlock((pthread_rwlock_t *)l) == 0; }
 static int try_wr(void *l) { return pthread_rwlock_trywrlock((pthread_rwlock_t *)l) == 0; }
@@ -1261,6 +1414,44 @@ int rask_io_wait(int64_t fd, int64_t want_write) {
     rask_cancel_wait_end();
     return rask_cancel_requested();
 }
+
+// What makes a thread a worker here, carried with the rest of a thread's
+// state when sim switches threads on its one OS thread.
+typedef struct {
+    Worker    *worker;
+    GreenTask *task;
+    uint32_t   rng;
+} GreenThreadTls;
+
+size_t rask_green_thread_tls_size(void) {
+    return sizeof(GreenThreadTls);
+}
+
+#define SWAP(a, b) do { __typeof__(a) tmp_ = (a); (a) = (b); (b) = tmp_; } while (0)
+void rask_green_thread_tls_swap(void *blob) {
+    GreenThreadTls *t = (GreenThreadTls *)blob;
+    SWAP(tl_worker, t->worker);
+    SWAP(tl_current_task, t->task);
+    SWAP(tl_rng_state, t->rng);
+}
+#undef SWAP
+
+#ifdef RASK_SIM
+// Sim's stuck report lists threads; the tasks park here, so they come from here.
+size_t rask_green_describe_waits(char *buf, size_t cap) {
+    size_t used = 0;
+    for (int i = 0; i < WAIT_BUCKETS && used < cap; i++) {
+        for (GreenTask *t = g_wait[i].head; t && used < cap; t = t->wait_next) {
+            char who[32];
+            snprintf(who, sizeof(who), "task %lld", (long long)rask_task_id(t->task));
+            int n = snprintf(buf + used, cap - used, "\n  %-18s waiting on %s", who,
+                             t->wait_what ? t->wait_what : "a wakeup");
+            if (n > 0) used += (size_t)n;
+        }
+    }
+    return used < cap ? used : cap;
+}
+#endif
 
 // Every parked task and what it waits on, for the deadlock report.
 static void report_waits(FILE *out) {

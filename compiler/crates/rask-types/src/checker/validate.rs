@@ -21,6 +21,20 @@ pub(super) struct DisjointObligation {
     pub span: Span,
 }
 
+/// A type argument that has to satisfy its parameter's bounds (#314).
+///
+/// `args` pairs every type parameter of the same instantiation with what stands
+/// in for it, because a bound can name a sibling or the parameter itself:
+/// `T: Mul<T>` at a call where `T` is `Meters` asks for `Mul<Meters>` (#1463).
+pub(super) struct BoundObligation {
+    pub ty: Type,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
+    pub args: Vec<(String, Type)>,
+    /// The bound is a type's, met by building a value of it, not a callee's.
+    pub on_type: bool,
+    pub span: Span,
+}
+
 /// Gather every `T or E` node in a type as an `(ok, err)` pair.
 fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
     match ty {
@@ -37,7 +51,7 @@ fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
             }
         }
         Type::Fn { params, ret } => {
-            for p in params {
+            for p in params.iter().map(|p| &p.ty) {
                 collect_result_nodes(p, out);
             }
             collect_result_nodes(ret, out);
@@ -80,17 +94,45 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_bound_checks);
         // Dedup identical (type, interface, span) reports.
         let mut reported: Vec<(String, String, Span)> = Vec::new();
-        for (var, interfaces, span) in pending {
+        for BoundObligation { ty: var, bounds, args, on_type, span } in pending {
             // Resolve `UnresolvedNamed("Foo")` to `Named(id)` so `check_satisfies`
             // can find the type's methods (an unresolved name reports none).
             let ty = self.resolve_named(&self.ctx.apply(&var));
             // Only check concrete, registered types — skip vars, errors, and
             // bare type parameters (unresolved names with no registered type).
+            // A `Vec`, `Map` or `Set` still in its written spelling is checked
+            // for the four contract interfaces, which `check_satisfies` answers
+            // from the type arguments alone. Skipped, `T: Comparable` took a
+            // `Vec` or a `Map` and `vv.sort()` ran on a `Vec<Vec<T>>`, which
+            // has no order (#1491, #1495).
+            let written_collection = match &ty {
+                Type::UnresolvedGeneric { .. } => crate::interfaces::Collection::of(&self.types, &ty),
+                _ => None,
+            };
             match &ty {
                 Type::Var(_) | Type::Error => continue,
+                Type::UnresolvedGeneric { .. } if written_collection.is_some() => {}
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
+            // The bound as this instantiation reads it: every type parameter it
+            // names replaced by that parameter's argument. One still unsolved
+            // drops the bound rather than checking the literal spelling.
+            let args: Vec<(String, Type)> = args
+                .iter()
+                .map(|(p, t)| (p.clone(), self.resolve_named(&self.ctx.apply(t))))
+                .collect();
+            let interfaces: Vec<rask_ast::ty::TypeExpr> = bounds
+                .iter()
+                .filter(|b| !args.iter().any(|(p, t)| t.has_unsolved_var() && b.mentions(&|n| n == p)))
+                .map(|b| {
+                    b.substitute(&|n| {
+                        args.iter()
+                            .find(|(p, _)| p == n)
+                            .map(|(_, t)| self.types.resolve_type_names(t).to_type_expr())
+                    })
+                })
+                .collect();
             // XC3: a bound is a place that needs the conformance, so it's a
             // place two of them collide. Checked before satisfaction — with two
             // declarations in scope the type does satisfy the bound, it just
@@ -98,6 +140,19 @@ impl TypeChecker {
             for t in &interfaces {
                 self.check_bound_conformance_ambiguity(&ty, t, span);
             }
+            // A bound naming no interface was reported at its declaration
+            // (`check_bound_names`), once; nothing can satisfy it here.
+            let interfaces: Vec<_> = {
+                let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+                interfaces
+                    .into_iter()
+                    .filter(|t| checker.names_an_interface(t))
+                    .filter(|t| match &written_collection {
+                        Some(c) => c.contract(&self.types.interface_name(t)).is_some(),
+                        None => true,
+                    })
+                    .collect()
+            };
             let bound = crate::interfaces::InterfaceBound::new("_", interfaces);
             if let Err(errs) = crate::interfaces::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
                 for e in errs {
@@ -118,7 +173,19 @@ impl TypeChecker {
                         });
                         continue;
                     }
-                    let err = self.bound_error(&ty, ty_name, interface_name, span);
+                    let mut err = self.bound_error(&ty, ty_name, interface_name, span);
+                    if on_type {
+                        if let TypeError::InterfaceNotSatisfied { context, .. } = &mut err {
+                            let declarable = match context {
+                                super::InterfaceBoundContext::GenericBound => Some(true),
+                                super::InterfaceBoundContext::BuiltinTypeBound => Some(false),
+                                _ => None,
+                            };
+                            if let Some(declarable) = declarable {
+                                *context = super::InterfaceBoundContext::TypeParamBound { declarable };
+                            }
+                        }
+                    }
                     self.errors.push(err);
                 }
             }
@@ -225,8 +292,17 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_linear_containers);
         let mut reported: Vec<Span> = Vec::new();
         let mut bad_key_reported: Vec<Span> = Vec::new();
+        let mut rack_reported: Vec<Span> = Vec::new();
         for (span, ty) in pending {
             let ty = self.ctx.apply(&ty);
+            // RK14 rides on the same sites: `Rack.new()`'s node type is often
+            // only known once the inserts have been seen.
+            if let Some(node) = self.types.find_rack_of_non_struct(&ty) {
+                if !rack_reported.contains(&span) {
+                    rack_reported.push(span);
+                    self.errors.push(TypeError::RackNodeNotStruct { node, span });
+                }
+            }
             if let Some((key, fix)) = self.types.find_unhashable_map_key(&ty) {
                 if !bad_key_reported.contains(&span) {
                     bad_key_reported.push(span);
@@ -271,7 +347,7 @@ fn collect_result_errors(
             }
         }
         Type::Fn { params, ret } => {
-            for p in params {
+            for p in params.iter().map(|p| &p.ty) {
                 collect_result_errors(p, span, checker, errs);
             }
             collect_result_errors(ret, span, checker, errs);
@@ -398,7 +474,7 @@ fn validate_single_result(
             continue;
         }
         // `any Error` is the interface itself — no need to check it satisfies itself
-        if matches!(comp, Type::InterfaceObject { interface_name } if interface_name == "Error") {
+        if matches!(comp, Type::InterfaceObject { interface_name, .. } if interface_name == "Error") {
             continue;
         }
         if !implements_error_message(comp, checker) {
@@ -475,16 +551,38 @@ impl TypeChecker {
         interface_name: String,
         span: Span,
     ) -> TypeError {
+        // A collection's missing order has its own message: the generic one
+        // offers `Vec<i64> implements Comparable`, which XC1 forbids and CO1
+        // says has no right answer anyway.
+        if interface_name == "Comparable" {
+            if let Some(c) = crate::interfaces::Collection::of(&self.types, ty) {
+                return TypeError::CollectionNotOrderable {
+                    op: "Comparable".to_string(),
+                    recv: ty_name,
+                    noun: c.kind.noun().to_string(),
+                    span,
+                };
+            }
+        }
         if interface_name != "Encode" && interface_name != "Decode" {
             let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
                 super::InterfaceBoundContext::NumericBound
             } else if interface_name == "Copy" {
                 super::InterfaceBoundContext::CopyBound
-            } else {
+            } else if matches!(ty, Type::Named(_) | Type::Generic { .. })
+                // `Set<T>` is a struct, but its contract interfaces are the
+                // stdlib's to declare (XC1): "declare the conformance" would
+                // be advice the compiler then rejects.
+                && crate::interfaces::Collection::of(&self.types, ty).is_none()
+            {
                 super::InterfaceBoundContext::GenericBound
+            } else {
+                super::InterfaceBoundContext::BuiltinTypeBound
             };
+            let namesake = self.types.conformance_target(ty)
+                .is_some_and(|id| self.types.conforms_to_namesake(id, &interface_name));
             return TypeError::InterfaceNotSatisfied {
-                ty: ty_name, interface_name, context, missing: None, span,
+                ty: ty_name, interface_name, context, missing: None, namesake, span,
             };
         }
         let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };

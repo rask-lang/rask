@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container declared inside a loop and passed `mutate` (#1423).
+//
+// `touch(mutate v)` lends the variable by address, so `v` lives in a stack
+// slot. The slot was only ever freed on the way out of the frame, and only
+// when the store into it ran on every path there, which a loop body's never
+// does. Every turn's vector leaked. Now the slot is freed where the variable
+// goes out of scope, each turn.
+
+func touch(mutate v: Vec<i64>) {
+    v.push(1)
+}
+
+func replace(mutate v: Vec<i64>) {
+    v = [7, 8, 9]
+}
+
+func take_it(take v: Vec<i64>) -> i64 {
+    return v.len().to<i64>()!
+}
+
+func per_turn(n: i64) -> i64 {
+    mut total = 0
+    for k in 0..n {
+        mut v: Vec<i64> = Vec.new()
+        touch(mutate v)
+        touch(mutate v)
+        total += v.len().to<i64>()!
+    }
+    return total
+}
+
+func replaced_each_turn(n: i64) -> i64 {
+    mut total = 0
+    for k in 0..n {
+        mut v: Vec<i64> = [1]
+        replace(mutate v)
+        total += v[0]
+    }
+    return total
+}
+
+func early_exit(n: i64) -> i64 {
+    for k in 0..n {
+        mut v: Vec<i64> = Vec.new()
+        touch(mutate v)
+        if k == 2 {
+            return v.len().to<i64>()! + k
+        }
+    }
+    return 0
+}
+
+func taken_on_one_turn(n: i64) -> i64 {
+    mut total = 0
+    for k in 0..n {
+        mut v: Vec<i64> = Vec.new()
+        touch(mutate v)
+        if k % 2 == 0 {
+            total += take_it(v)
+        } else {
+            total += 10
+        }
+    }
+    return total
+}
+
+func outside_the_loop(n: i64) -> i64 {
+    mut v: Vec<i64> = Vec.new()
+    for k in 0..n {
+        touch(mutate v)
+    }
+    return v.len().to<i64>()!
+}
+
+test "a vector made each turn and lent to mutate is freed each turn" {
+    assert per_turn(3) == 6
+}
+
+test "a replacement the callee stored is what gets freed" {
+    assert replaced_each_turn(3) == 21
+}
+
+test "a return out of the loop frees the current turn's vector" {
+    assert early_exit(5) == 3
+}
+
+test "a turn that hands the vector on doesn't free it again" {
+    assert taken_on_one_turn(4) == 22
+}
+
+test "one vector lent every turn is freed once" {
+    assert outside_the_loop(4) == 4
+}
+
+func main() {
+    println("{per_turn(3)} {replaced_each_turn(3)} {early_exit(5)} {taken_on_one_turn(4)} {outside_the_loop(4)}")
+}

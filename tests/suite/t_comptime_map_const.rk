@@ -27,7 +27,7 @@ const CODES = comptime {
     m.insert("alpha", 1)
     m.insert("bravo", 2)
     m.insert("a key comfortably past the fifteen byte inline limit", 3)
-    m.freeze()
+    m
 }
 
 const SQUARES = comptime {
@@ -35,14 +35,14 @@ const SQUARES = comptime {
     for i in 1..6 {
         m.insert(i, i * i)
     }
-    m.freeze()
+    m
 }
 
 const NAMES = comptime {
     mut m = Map.new()
     m.insert(1, "one")
     m.insert(2, "two")
-    m.freeze()
+    m
 }
 
 // The annotation isn't about folding — an empty map has nothing to read its
@@ -50,14 +50,14 @@ const NAMES = comptime {
 // what a key is. Without it the block fails to lower either way.
 const EMPTY: Map<string, i64> = comptime {
     mut m = Map.new()
-    m.freeze()
+    m
 }
 
 const OVERWRITTEN = comptime {
     mut m = Map.new()
     m.insert("k", 1)
     m.insert("k", 2)
-    m.freeze()
+    m
 }
 
 const AFTER_REMOVE = comptime {
@@ -65,7 +65,7 @@ const AFTER_REMOVE = comptime {
     m.insert("keep", 1)
     m.insert("drop", 2)
     m.remove("drop")
-    m.freeze()
+    m
 }
 
 test "a string-keyed table reads back" {

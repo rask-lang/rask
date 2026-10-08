@@ -37,6 +37,14 @@ int rask_leak_check_enabled = 0;
 
 #define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
 #define RASK_RC_SENTINEL UINT32_MAX
+
+// The count, read on its own. A string shared between tasks has its count
+// changed by atomic adds on other threads, so a plain read of it is a data
+// race even when all it asks is "is this a literal" — the sentinel never
+// changes, which is why relaxed is enough.
+static inline uint32_t rc_load(const uint32_t *rc) {
+    return __atomic_load_n(rc, __ATOMIC_RELAXED);
+}
 #define RASK_SSO_MAX     15
 
 // ─── Inline helpers ─────────────────────────────────────────
@@ -135,7 +143,7 @@ void rask_string_from_bytes(RaskStr *out, const char *data, int64_t len) {
 int rask_string_debug_enabled = 0;
 
 static void rc_poison_check(const uint32_t *rc, const char *op) {
-    if (*rc != RASK_RC_POISON) return;
+    if (rc_load(rc) != RASK_RC_POISON) return;
     fprintf(stderr,
             "rask: string %s on a buffer that was already released\n"
             "  the last reference was dropped and something still points at it\n",
@@ -147,7 +155,7 @@ static void rc_poison_check(const uint32_t *rc, const char *op) {
 void rask_string_free(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
-    if (*rc == RASK_RC_SENTINEL) return;
+    if (rc_load(rc) == RASK_RC_SENTINEL) return;
     if (__builtin_expect(rask_string_debug_enabled, 0)) {
         rc_poison_check(rc, "release");
     }
@@ -205,6 +213,11 @@ void rask_leak_check(void) {
     if (live_allocs <= 0) return;
     int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
 
+    // `_exit` below skips stdio's flush, and to a pipe stdout is fully
+    // buffered: a leaking program's whole output vanished, leaving only the
+    // report to debug from.
+    fflush(stdout);
+
     int64_t live_strings = atomic_load_explicit(&rask_string_live_buffers, memory_order_acquire);
     fprintf(stderr,
             "rask: %lld allocation%s never released (%lld bytes, undercounted)\n",
@@ -225,7 +238,7 @@ void rask_leak_check(void) {
 void rask_string_clone(const RaskStr *s) {
     if (!str_is_heap(s)) return;
     uint32_t *rc = heap_rc(s);
-    if (*rc == RASK_RC_SENTINEL) return;
+    if (rc_load(rc) == RASK_RC_SENTINEL) return;
     if (__builtin_expect(rask_string_debug_enabled, 0)) {
         rc_poison_check(rc, "retain");
     }
@@ -1057,7 +1070,8 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         return header;
     }
     uint32_t *rc = heap_rc(s);
-    if (*rc != 1 && *rc != RASK_RC_SENTINEL) {
+    uint32_t count = __atomic_load_n(rc, __ATOMIC_ACQUIRE);
+    if (count != 1 && count != RASK_RC_SENTINEL) {
         // Shared — detach (COW)
         const char *d = str_data(s);
         int64_t cap = len;
@@ -1071,7 +1085,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         out->heap.tagged_len = (uint64_t)len | RASK_HEAP_FLAG;
         return header;
     }
-    if (*rc == RASK_RC_SENTINEL) {
+    if (count == RASK_RC_SENTINEL) {
         // Literal — create mutable copy
         const char *d = str_data(s);
         int64_t cap = len;

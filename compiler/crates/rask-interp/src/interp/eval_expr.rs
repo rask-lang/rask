@@ -4,26 +4,30 @@
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
-use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, Expr, ExprKind, UnaryOp};
 use rask_ast::ty::TypeExpr;
 
 use crate::value::{FloatKind, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
 
+use crate::env::Slot;
 use super::{AssertDetail, Interpreter, RuntimeDiagnostic, RuntimeError};
 
-/// CC3 runtime panic message for spawn() without an active `using Multitasking` block.
-const SPAWN_NO_RUNTIME_MSG: &str =
-    "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
-     \n\
-     This can happen when:\n\
-     - A closure containing spawn is stored and called outside a block\n\
-     - An interface object dispatches to an impl that spawns\n\
-     - FFI calls back into Rask outside any scope\n\
-     \n\
-     Install a `using Multitasking { ... }` block that encloses the call.";
+/// What `locate` found: storage a write can reach, or only a value.
+enum Located {
+    Place(Slot),
+    Value(Value),
+}
 
-/// Copy scalar primitives are copied into a `mutate` param, so a whole-variable
-/// argument of scalar type isn't written back (mem.parameters Copy interaction).
+impl Located {
+    fn into_value(self) -> Value {
+        match self {
+            Located::Place(cell) => cell.get().unwrap_or(Value::Unit),
+            Located::Value(v) => v,
+        }
+    }
+}
+
+
 /// type.primitives/NT1 — associated constants on the numeric types.
 /// `MIN`/`MAX` carry the receiver's own width so overflow checks see the right
 /// bounds; `ZERO`/`ONE` are the same value everywhere.
@@ -418,6 +422,23 @@ impl Interpreter {
     /// The numeric type a `parse` call was inferred to produce, spelled the way
     /// a turbofish would have spelled it. `None` when the slot isn't a number
     /// the parse surface has a width for.
+    /// What `json.decode<T>` builds, as the checker resolved `T`: the ok side
+    /// of the call's type, named the way struct declarations name types.
+    ///
+    /// The written argument is only a spelling. `json.JsonValue` and an
+    /// imported `JsonValue` are the same type, and comparing the spelling
+    /// sent the qualified one down the struct-decoding path (#1435).
+    fn json_decode_target(&self, node_id: rask_ast::NodeId) -> Option<TypeExpr> {
+        let rask_types::Type::Result { ok, .. } = self.node_types.get(&node_id)? else {
+            return None;
+        };
+        if ok.has_unsolved_var() {
+            return None;
+        }
+        let named = rask_mono::Monomorphizer::nameable_type(ok, &self.types)?;
+        Some(self.resolve_type_param(&named.to_type_expr()))
+    }
+
     fn parse_target_from_node(&self, node_id: rask_ast::NodeId) -> Option<&'static str> {
         use rask_types::Type as T;
         let T::Result { ok, .. } = self.node_types.get(&node_id)? else {
@@ -486,34 +507,334 @@ impl Interpreter {
         )
     }
 
-    /// Write each `mutate` parameter's captured final value back to its argument
-    /// place (mem.parameters/PM2). Consumes the pending writebacks. Parameter
-    /// index i maps to `args[i]` for a plain call.
-    fn apply_mutate_writebacks(&mut self, args: &[rask_ast::expr::CallArg]) -> Result<(), RuntimeError> {
-        let writebacks = std::mem::take(&mut self.mutate_writebacks);
-        for (param_idx, final_value) in writebacks {
-            if let Some(call_arg) = args.get(param_idx) {
-                self.writeback_mutate_place(&call_arg.expr, final_value)?;
+    /// Where an expression's value lives, when a write can reach it there: a
+    /// variable, or a field, element or map entry inside one. Anything else is
+    /// just its value. Each part of the expression is evaluated once, so a
+    /// caller can read the value from the place instead of evaluating twice.
+    fn locate(&mut self, expr: &Expr) -> Result<Located, RuntimeDiagnostic> {
+        match &expr.kind {
+            ExprKind::Ident(name) => match self.env.slot_of(name) {
+                Some(cell) => Ok(Located::Place(cell.clone())),
+                None => Ok(Located::Value(self.eval_expr(expr)?)),
+            },
+            // `*owned` is the owned value itself (mem.owned/OW3).
+            ExprKind::Unary { op: UnaryOp::Deref, operand } => match self.locate(operand)? {
+                Located::Place(cell)
+                    if !matches!(cell.get(), Some(Value::RawPtr(_))) => Ok(Located::Place(cell)),
+                _ => Ok(Located::Value(self.eval_expr(expr)?)),
+            },
+            // A name that isn't a variable heads a type or module path
+            // (`Color.Red`, `i32.MAX`), which only `eval_expr` knows.
+            ExprKind::Field { object, .. }
+                if matches!(&object.kind, ExprKind::Ident(n) if self.env.slot_of(n).is_none()) =>
+            {
+                Ok(Located::Value(self.eval_expr(expr)?))
             }
+            ExprKind::Field { object, field } => {
+                let base = self.locate(object)?.into_value();
+                let place = match &base {
+                    Value::Struct(s) | Value::Link { node: s, .. }
+                        if s.lock().unwrap().fields.contains_key(field) =>
+                    {
+                        Some(Slot::Field(Arc::clone(s), field.clone()))
+                    }
+                    Value::Vec(v) => field
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|i| *i < v.lock().unwrap().len())
+                        .map(|i| Slot::Elem(Arc::clone(v), i)),
+                    _ => None,
+                };
+                match place {
+                    Some(place) => Ok(Located::Place(place)),
+                    None => Ok(Located::Value(self.read_field(base, field, expr.span)?)),
+                }
+            }
+            ExprKind::Index { object, index } => {
+                let base = self.locate(object)?.into_value();
+                let idx = self.eval_expr(index)?;
+                let place = match (&base, &idx) {
+                    (Value::Vec(v), Value::Int(i, _)) => usize::try_from(*i)
+                        .ok()
+                        .filter(|i| *i < v.lock().unwrap().len())
+                        .map(|i| Slot::Elem(Arc::clone(v), i)),
+                    (Value::Map(m), _) => {
+                        let key = self
+                            .map_key(idx.clone())
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                        let map = m.lock().unwrap();
+                        self.map_index(&map, &key)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?
+                            .map(|i| Slot::Entry(Arc::clone(m), i))
+                    }
+                    _ => None,
+                };
+                match place {
+                    Some(place) => Ok(Located::Place(place)),
+                    // Out of bounds, a missing key, a string byte: the read
+                    // says what's wrong.
+                    None => Ok(Located::Value(self.read_index(base, idx, expr.span)?)),
+                }
+            }
+            _ => Ok(Located::Value(self.eval_expr(expr)?)),
         }
-        Ok(())
     }
 
-    /// Write a `mutate` param's final value back to its argument place
-    /// (mem.parameters/PM2).
-    ///
-    /// A scalar used to be exempt, on the strength of one edge-case row that
-    /// said a Copy type is copied in. PM2 itself says the caller keeps the value
-    /// and gets the write, and every other mode reading agrees, so the scalar
-    /// now writes back like everything else — `bump(mutate n)` was a silent
-    /// no-op on both backends before (#899).
-    fn writeback_mutate_place(&mut self, arg: &Expr, value: Value) -> Result<(), RuntimeError> {
-        match &arg.kind {
-            ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
-                self.assign_target(arg, value)
+    /// Evaluate a call's arguments, and find the place behind each `mutate`
+    /// one. The callee binds its parameter to that place, so every write
+    /// lands on the caller's storage the moment it happens — including one
+    /// made after the call returned, by a Sequence driven later (#1324, #1489).
+    fn eval_call_args(
+        &mut self,
+        args: &[rask_ast::expr::CallArg],
+    ) -> Result<(Vec<Value>, Vec<Option<Slot>>), RuntimeDiagnostic> {
+        let mut values = Vec::with_capacity(args.len());
+        let mut places = Vec::with_capacity(args.len());
+        for arg in args {
+            if matches!(arg.mode, ArgMode::Mutate | ArgMode::Deleting) {
+                match self.locate(&arg.expr)? {
+                    Located::Place(cell) => {
+                        values.push(cell.get().unwrap_or(Value::Unit));
+                        places.push(Some(cell));
+                    }
+                    Located::Value(v) => {
+                        values.push(v);
+                        places.push(None);
+                    }
+                }
+            } else {
+                values.push(self.eval_expr(&arg.expr)?);
+                places.push(None);
             }
-            // Non-place arguments (temporaries) have nowhere to write back.
-            _ => Ok(()),
+        }
+        Ok((values, places))
+    }
+
+    /// Hand the next call to `callee` the places behind its `mutate`
+    /// parameters, indexed by parameter (see `LentArgs`).
+    fn lend_places(&mut self, callee: &str, places: Vec<Option<Slot>>) {
+        self.lent_args = places.iter().any(Option::is_some).then(|| super::LentArgs {
+            depth: self.call_depth,
+            callee: callee.to_string(),
+            slots: places,
+        });
+    }
+
+    /// `obj.field`, once `obj` is evaluated.
+    fn read_field(&mut self, obj: Value, field: &str, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
+        match obj {
+            Value::Struct(ref s) => {
+                Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
+            }
+            // Following a link: one deref, nothing to check. No lookup,
+            // no liveness test — the link holds the node.
+            Value::Link { ref node, .. } => {
+                Ok(node.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
+            }
+            // Nominal type .value extraction
+            Value::Nominal { ref inner, .. } if field == "value" => {
+                Ok(*inner.clone())
+            }
+            // Tuple field access: tuple.0, tuple.1, ...
+            Value::Tuple(ref items) if field.parse::<usize>().is_ok() => {
+                let idx = field.parse::<usize>().unwrap();
+                Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
+            }
+            Value::Vec(v) if field.parse::<usize>().is_ok() => {
+                let idx = field.parse::<usize>().unwrap();
+                let vec = v.lock().unwrap();
+                Ok(vec.get(idx).cloned().unwrap_or(Value::Unit))
+            }
+            // `time.Instant`, `http.Response`, `json.JsonValue` — an
+            // exported type name resolves to the type, so the qualified
+            // and unqualified spellings mean the same thing. `math` is the
+            // one module whose members are values rather than types.
+            Value::Module(kind) => {
+                if kind.exports_type(field) {
+                    return Ok(Value::Type(field.to_string()));
+                }
+                if kind == ModuleKind::Math {
+                    return self.get_math_field(field)
+                        .map_err(|e| RuntimeDiagnostic::new(e, span));
+                }
+                Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError(format!(
+                        "module has no member '{}'",
+                        field
+                    )),
+                    span
+                ))
+            }
+            // Package field access: lib.Color → look up lib$Color
+            Value::Package(pkg_name) => {
+                let prefixed = format!("{}${}", pkg_name, field);
+                // Enums and structs both resolve to Value::Type so
+                // `lib.Color.Red` works through the normal enum
+                // variant dispatch on the next `.Red` access.
+                if self.enums.contains_key(&prefixed)
+                    || self.struct_decls.contains_key(&prefixed)
+                    || self.methods.contains_key(&prefixed)
+                {
+                    return Ok(Value::Type(prefixed));
+                }
+                if let Some(func) = self.functions.get(&prefixed) {
+                    return Ok(Value::Function { name: func.name.clone(), generics: None });
+                }
+                // A stdlib module with no Rust side of its own (`bits`)
+                // is bound as a package, but its types are registered
+                // under their bare names, like every stdlib type. The
+                // prefixed lookup above never found `bits$BinaryBuilder`
+                // and the type was unreachable through its module
+                // (#1456). Same answer `Value::Module` gives.
+                if rask_stdlib::modules::exports_type(&pkg_name, field) {
+                    return Ok(Value::Type(field.to_string()));
+                }
+                Err(RuntimeDiagnostic::new(
+                    RuntimeError::UndefinedVariable(field.to_string()),
+                    span,
+                ))
+            }
+            // Type-level field access: handles lib.Color.Red after
+            // lib.Color resolved to Value::Type("lib$Color").
+            Value::Type(type_name) => {
+                if let Some(enum_decl) = self.enums.get(&type_name).cloned() {
+                    if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| v.name == *field) {
+                        let field_count = variant.fields.len();
+                        if field_count == 0 {
+                            return Ok(Value::Enum {
+                                name: type_name,
+                                variant: field.to_string(),
+                                fields: vec![],
+                                variant_index: vidx as u32, origin: None,
+                            });
+                        } else {
+                            return Ok(Value::EnumConstructor {
+                                enum_name: type_name,
+                                variant_name: field.to_string(),
+                                field_count,
+                                variant_index: vidx as u32,
+                            });
+                        }
+                    }
+                }
+                // G4: @binary SIZE and SIZE_BITS constants
+                if let Some(meta) = self.binary_structs.get(&type_name) {
+                    match field {
+                        "SIZE" => return Ok(Value::int(meta.size_bytes as i64)),
+                        "SIZE_BITS" => return Ok(Value::int(meta.total_bits as i64)),
+                        _ => {}
+                    }
+                }
+                Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError(format!(
+                        "type '{}' has no field '{}'",
+                        type_name, field
+                    )),
+                    span,
+                ))
+            }
+            _ => Err(RuntimeDiagnostic::new(
+                RuntimeError::TypeError(format!(
+                    "cannot access field on {}",
+                    obj.type_name()
+                )),
+                span
+            )),
+        }
+    }
+
+    /// `obj[idx]`, once both are evaluated.
+    fn read_index(&mut self, obj: Value, idx: Value, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
+        match (&obj, &idx) {
+            (Value::Vec(v), Value::Int(i, _)) => {
+                let vec = v.lock().unwrap();
+                let idx = *i as usize;
+                match vec.get(idx).cloned() {
+                    Some(val) => Ok(val),
+                    None => Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(format!(
+                            "index out of bounds: index is {} but length is {}",
+                            i, vec.len()
+                        )),
+                        span,
+                    )),
+                }
+            }
+            // `[]` on a string means bytes in both forms
+            // (std.strings/U1b): a range slices, a scalar index reads
+            // one byte. It used to yield the character at index `i`,
+            // scanning from byte zero, so the same bracket counted two
+            // different units. Indexing panics out of range; `byte_at`
+            // is the probe.
+            (Value::String(s), Value::Int(i, _)) => {
+                let str_val = s.lock().unwrap();
+                match usize::try_from(*i).ok().and_then(|n| str_val.as_bytes().get(n)) {
+                    Some(&b) => Ok(Value::Int(b as i64, crate::value::IntKind::U8)),
+                    None => Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(format!(
+                            "string index out of bounds: index is {} but length is {} bytes",
+                            i,
+                            str_val.len()
+                        )),
+                        span,
+                    )),
+                }
+            }
+            // Byte offsets (std.strings/U1, S5). Out of range clamps;
+            // an offset inside a character panics, because the result
+            // would be a `string` that isn't valid UTF-8. Both have to
+            // match `rask_string_substr` — an empty range used to reach
+            // Rust's slicing and abort the process with a Rust panic
+            // instead of a Rask one.
+            (Value::String(s), idx_range) if crate::interp::as_range(idx_range).is_some() => {
+                let (start, end, inclusive, _, _, bounded) =
+                    crate::interp::as_range(idx_range).unwrap();
+                let (start, end, inclusive) =
+                    (&start, &if bounded { end } else { i64::MAX }, &inclusive);
+                let str_val = s.lock().unwrap();
+                let len = str_val.len() as i64;
+                let start_idx = (*start).max(0).min(len) as usize;
+                let end_idx = if *end == i64::MAX {
+                    str_val.len()
+                } else {
+                    let e = if *inclusive { *end + 1 } else { *end };
+                    e.max(0).min(len) as usize
+                };
+                if start_idx >= end_idx {
+                    return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
+                }
+                let Some(slice) = str_val.get(start_idx..end_idx) else {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(format!(
+                            "s[{start_idx}..{end_idx}] cuts a character in half - \
+                             these are byte offsets, and one of them lands inside \
+                             a multi-byte character. `char_indices()` gives offsets \
+                             that don't."
+                        )),
+                        span,
+                    ));
+                };
+                Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
+            }
+            (Value::Map(m), _) => {
+                let found = self
+                    .map_get(m, idx.clone())
+                    .map_err(|e| RuntimeDiagnostic::new(e, span))?;
+                found.ok_or_else(|| {
+                    RuntimeDiagnostic::new(
+                        RuntimeError::Panic("key not found in map".to_string()),
+                        span,
+                    )
+                })
+            }
+            _ => Err(RuntimeDiagnostic::new(
+                RuntimeError::TypeError(format!(
+                    "cannot index {} with {}",
+                    obj.type_name(),
+                    idx.type_name()
+                )),
+                span
+            )),
         }
     }
 
@@ -858,29 +1179,28 @@ impl Interpreter {
                         _ => diag,
                     }
                 })?;
-                let arg_vals: Vec<Value> = args
-                    .iter()
-                    .map(|a| self.eval_expr(&a.expr))
-                    .collect::<Result<_, _>>()?;
-
-                // Clear any writebacks left by sub-calls during arg evaluation, so
-                // only this call's `mutate` finals are applied below.
-                self.mutate_writebacks.clear();
+                let (arg_vals, places) = self.eval_call_args(args)?;
                 // What the callee's type parameters stand for here, written
                 // (`count<Plain>()`, #968) or inferred: the checker recorded
                 // both under this call.
                 let generics = self.call_generics(expr.id);
+                if let Value::Closure { .. } = &func_val {
+                    return self
+                        .call_closure(func_val, arg_vals, places)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+                if let Value::Function { name, .. } = &func_val {
+                    if let Some(decl) = self.functions.get(name) {
+                        let callee = decl.name.clone();
+                        self.lend_places(&callee, places);
+                    }
+                }
                 // The callee's own line when it has one — a panic several
                 // frames down belongs where it happened, not at the outermost
                 // call (#1110).
-                let result = self
-                    .call_value_spanned(func_val, arg_vals, generics)
-                    .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)))?;
-                // mem.parameters/PM2: write each `mutate` param's final value back
-                // to its argument place. For a plain call, param index i is args[i].
-                self.apply_mutate_writebacks(args)
-                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                Ok(result)
+                let result = self.call_value_spanned(func_val, arg_vals, generics);
+                self.lent_args = None;
+                result.map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)))
             }
 
             ExprKind::MethodCall {
@@ -1047,12 +1367,13 @@ impl Interpreter {
                             // markdown_renderer with it.
                             let is_module = ModuleKind::from_name(name).is_some();
                             if is_static && has_body && !is_module {
-                                let arg_vals: Vec<Value> = args
-                                    .iter()
-                                    .map(|a| self.eval_expr(&a.expr))
-                                    .collect::<Result<_, _>>()?;
+                                let (arg_vals, places) = self.eval_call_args(args)?;
                                 let generics = self.call_generics(expr.id);
-                                return self.call_function(method_fn, arg_vals, generics);
+                                let callee = method_fn.name.clone();
+                                self.lend_places(&callee, places);
+                                let result = self.call_function(method_fn, arg_vals, generics);
+                                self.lent_args = None;
+                                return result;
                             }
                         }
                     }
@@ -1062,23 +1383,29 @@ impl Interpreter {
                 // through the environment rather than the tables above —
                 // `Duration.from_millis` is a value in scope, `Zwibble` is not.
                 // Look up what the alias names (#998).
-                let receiver = match &object.kind {
+                //
+                // A receiver that is a place is kept as one: a `mutate self`
+                // method binds `self` to it, the way a `mutate` argument binds.
+                let aliased = match &object.kind {
                     ExprKind::Ident(ident) => {
                         let target = self.resolve_transparent_alias(ident);
-                        match (target != *ident)
-                            .then(|| self.env.get(&target))
-                            .flatten()
-                        {
-                            Some(v) => v,
-                            None => self.eval_expr(object)?,
-                        }
+                        (target != *ident).then(|| self.env.get(&target)).flatten()
                     }
-                    _ => self.eval_expr(object)?,
+                    _ => None,
                 };
-                let mut arg_vals: Vec<Value> = args
-                    .iter()
-                    .map(|a| self.eval_expr(&a.expr))
-                    .collect::<Result<_, _>>()?;
+                let (receiver, receiver_place) = match aliased {
+                    Some(v) => (v, None),
+                    None => match &object.kind {
+                        ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                            match self.locate(object)? {
+                                Located::Place(cell) => (cell.get().unwrap_or(Value::Unit), Some(cell)),
+                                Located::Value(v) => (v, None),
+                            }
+                        }
+                        _ => (self.eval_expr(object)?, None),
+                    },
+                };
+                let (mut arg_vals, arg_places) = self.eval_call_args(args)?;
 
                 // A value going into a container's element slot widens the way a
                 // declared parameter does: `v.push(1)` on a `Vec<i32?>` stores
@@ -1130,8 +1457,9 @@ impl Interpreter {
                 {
                     match &receiver {
                         Value::Module(ModuleKind::Json) if method == "decode" => {
+                            let target = self.json_decode_target(expr.id).unwrap_or(first_type);
                             return self
-                                .json_decode(&first_type, arg_vals)
+                                .json_decode(&target, arg_vals)
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                         Value::Module(ModuleKind::Reflect) => {
@@ -1257,7 +1585,11 @@ impl Interpreter {
                 // can't leave a stale span for something later (#1110).
                 let outer = self.failed_call_span.take();
                 let generics = self.method_call_generics(expr.id, object.id, &method);
+                let mut places = vec![receiver_place];
+                places.extend(arg_places);
+                self.lend_places(&method, places);
                 let result = self.call_method(receiver, &method, arg_vals, generics);
+                self.lent_args = None;
                 let inner = self.failed_call_span.take();
                 self.failed_call_span = outer;
                 result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))
@@ -1580,7 +1912,16 @@ impl Interpreter {
                 // without it a field declared `T` never looks like the `i64?`
                 // it was instantiated to, so the wrap below never fires (#1080).
                 let concrete_name = name.clone();
-                let decl_name = if type_args.is_empty() {
+                // `Slot<i64>.Pair { … }` (E4a): the arguments are the enum's,
+                // and an enum value doesn't carry them, so there's no struct
+                // to instantiate.
+                let names_a_variant = name.rsplit_once('.').is_some_and(|(enum_path, variant)| {
+                    let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
+                    self.enums
+                        .get(enum_name)
+                        .is_some_and(|decl| decl.variants.iter().any(|v| v.name == variant))
+                });
+                let decl_name = if type_args.is_empty() || names_a_variant {
                     name.clone()
                 } else {
                     let args: Vec<TypeExpr> =
@@ -1594,7 +1935,11 @@ impl Interpreter {
                 // struct named "A4.N" it was the wrong kind of value everywhere
                 // downstream: a `N { v }` arm compares against the variant name
                 // and never matched, so every such arm fell through (#910).
-                if let Some((enum_name, variant_name)) = concrete_name.split_once('.') {
+                // The enum is the segment before the variant: a module in front,
+                // `bits.BinaryParseError.UnexpectedEnd { … }`, only says where
+                // the enum lives (#1461).
+                if let Some((enum_path, variant_name)) = concrete_name.rsplit_once('.') {
+                    let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
                     if let Some(decl) = self.enums.get(enum_name) {
                         if let Some((idx, variant)) = decl
                             .variants
@@ -1668,7 +2013,9 @@ impl Interpreter {
                 }
 
                 let resource_id = if self.is_resource_type(&concrete_name) {
-                    Some(self.resource_tracker.register(&concrete_name, self.env.scope_depth()))
+                    let id = self.resource_tracker.register(&concrete_name, self.env.scope_depth());
+                    self.resource_tracker.set_born(id, expr.span);
+                    Some(id)
                 } else {
                     None
                 };
@@ -1719,116 +2066,7 @@ impl Interpreter {
                 }
 
                 let obj = self.eval_expr(object)?;
-                match obj {
-                    Value::Struct(ref s) => {
-                        Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
-                    }
-                    // Following a link: one deref, nothing to check. No lookup,
-                    // no liveness test — the link holds the node.
-                    Value::Link { ref node, .. } => {
-                        Ok(node.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
-                    }
-                    // Nominal type .value extraction
-                    Value::Nominal { ref inner, .. } if field == "value" => {
-                        Ok(*inner.clone())
-                    }
-                    // Tuple field access: tuple.0, tuple.1, ...
-                    Value::Tuple(ref items) if field.parse::<usize>().is_ok() => {
-                        let idx = field.parse::<usize>().unwrap();
-                        Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
-                    }
-                    Value::Vec(v) if field.parse::<usize>().is_ok() => {
-                        let idx = field.parse::<usize>().unwrap();
-                        let vec = v.lock().unwrap();
-                        Ok(vec.get(idx).cloned().unwrap_or(Value::Unit))
-                    }
-                    // `time.Instant`, `http.Response`, `json.JsonValue` — an
-                    // exported type name resolves to the type, so the qualified
-                    // and unqualified spellings mean the same thing. `math` is the
-                    // one module whose members are values rather than types.
-                    Value::Module(kind) => {
-                        if kind.exports_type(field) {
-                            return Ok(Value::Type(field.clone()));
-                        }
-                        if kind == ModuleKind::Math {
-                            return self.get_math_field(field)
-                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                        }
-                        Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(format!(
-                                "module has no member '{}'",
-                                field
-                            )),
-                            expr.span
-                        ))
-                    }
-                    // Package field access: lib.Color → look up lib$Color
-                    Value::Package(pkg_name) => {
-                        let prefixed = format!("{}${}", pkg_name, field);
-                        // Enums and structs both resolve to Value::Type so
-                        // `lib.Color.Red` works through the normal enum
-                        // variant dispatch on the next `.Red` access.
-                        if self.enums.contains_key(&prefixed)
-                            || self.struct_decls.contains_key(&prefixed)
-                            || self.methods.contains_key(&prefixed)
-                        {
-                            return Ok(Value::Type(prefixed));
-                        }
-                        if let Some(func) = self.functions.get(&prefixed) {
-                            return Ok(Value::Function { name: func.name.clone(), generics: None });
-                        }
-                        Err(RuntimeDiagnostic::new(
-                            RuntimeError::UndefinedVariable(field.clone()),
-                            expr.span,
-                        ))
-                    }
-                    // Type-level field access: handles lib.Color.Red after
-                    // lib.Color resolved to Value::Type("lib$Color").
-                    Value::Type(type_name) => {
-                        if let Some(enum_decl) = self.enums.get(&type_name).cloned() {
-                            if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| v.name == *field) {
-                                let field_count = variant.fields.len();
-                                if field_count == 0 {
-                                    return Ok(Value::Enum {
-                                        name: type_name,
-                                        variant: field.clone(),
-                                        fields: vec![],
-                                        variant_index: vidx as u32, origin: None,
-                                    });
-                                } else {
-                                    return Ok(Value::EnumConstructor {
-                                        enum_name: type_name,
-                                        variant_name: field.clone(),
-                                        field_count,
-                                        variant_index: vidx as u32,
-                                    });
-                                }
-                            }
-                        }
-                        // G4: @binary SIZE and SIZE_BITS constants
-                        if let Some(meta) = self.binary_structs.get(&type_name) {
-                            match field.as_str() {
-                                "SIZE" => return Ok(Value::int(meta.size_bytes as i64)),
-                                "SIZE_BITS" => return Ok(Value::int(meta.total_bits as i64)),
-                                _ => {}
-                            }
-                        }
-                        Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(format!(
-                                "type '{}' has no field '{}'",
-                                type_name, field
-                            )),
-                            expr.span,
-                        ))
-                    }
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "cannot access field on {}",
-                            obj.type_name()
-                        )),
-                        expr.span
-                    )),
-                }
+                self.read_field(obj, field, expr.span)
             }
 
             // CT49: Dynamic field access — value.(expr) resolves to field access by string
@@ -1928,103 +2166,16 @@ impl Interpreter {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
 
-                match (&obj, &idx) {
-                    (Value::Vec(v), Value::Int(i, _)) => {
-                        let vec = v.lock().unwrap();
-                        let idx = *i as usize;
-                        match vec.get(idx).cloned() {
-                            Some(val) => Ok(val),
-                            None => Err(RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!(
-                                    "index out of bounds: index is {} but length is {}",
-                                    i, vec.len()
-                                )),
-                                expr.span,
-                            )),
-                        }
-                    }
-                    // `[]` on a string means bytes in both forms
-                    // (std.strings/U1b): a range slices, a scalar index reads
-                    // one byte. It used to yield the character at index `i`,
-                    // scanning from byte zero, so the same bracket counted two
-                    // different units. Indexing panics out of range; `byte_at`
-                    // is the probe.
-                    (Value::String(s), Value::Int(i, _)) => {
-                        let str_val = s.lock().unwrap();
-                        match usize::try_from(*i).ok().and_then(|n| str_val.as_bytes().get(n)) {
-                            Some(&b) => Ok(Value::Int(b as i64, crate::value::IntKind::U8)),
-                            None => Err(RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!(
-                                    "string index out of bounds: index is {} but length is {} bytes",
-                                    i,
-                                    str_val.len()
-                                )),
-                                expr.span,
-                            )),
-                        }
-                    }
-                    // Byte offsets (std.strings/U1, S5). Out of range clamps;
-                    // an offset inside a character panics, because the result
-                    // would be a `string` that isn't valid UTF-8. Both have to
-                    // match `rask_string_substr` — an empty range used to reach
-                    // Rust's slicing and abort the process with a Rust panic
-                    // instead of a Rask one.
-                    (Value::String(s), idx_range) if crate::interp::as_range(idx_range).is_some() => {
-                        let (start, end, inclusive, _, _, bounded) =
-                            crate::interp::as_range(idx_range).unwrap();
-                        let (start, end, inclusive) =
-                            (&start, &if bounded { end } else { i64::MAX }, &inclusive);
-                        let str_val = s.lock().unwrap();
-                        let len = str_val.len() as i64;
-                        let start_idx = (*start).max(0).min(len) as usize;
-                        let end_idx = if *end == i64::MAX {
-                            str_val.len()
-                        } else {
-                            let e = if *inclusive { *end + 1 } else { *end };
-                            e.max(0).min(len) as usize
-                        };
-                        if start_idx >= end_idx {
-                            return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
-                        }
-                        let Some(slice) = str_val.get(start_idx..end_idx) else {
-                            return Err(RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!(
-                                    "s[{start_idx}..{end_idx}] cuts a character in half - \
-                                     these are byte offsets, and one of them lands inside \
-                                     a multi-byte character. `char_indices()` gives offsets \
-                                     that don't."
-                                )),
-                                expr.span,
-                            ));
-                        };
-                        Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
-                    }
-                    (Value::Map(m), _) => {
-                        let found = self
-                            .map_get(m, idx.clone())
-                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                        found.ok_or_else(|| {
-                            RuntimeDiagnostic::new(
-                                RuntimeError::Panic("key not found in map".to_string()),
-                                expr.span,
-                            )
-                        })
-                    }
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "cannot index {} with {}",
-                            obj.type_name(),
-                            idx.type_name()
-                        )),
-                        expr.span
-                    )),
-                }
+                self.read_index(obj, idx, expr.span)
             }
 
+            // A literal's elements are new owners, like a struct literal's
+            // fields: `(v[0], v[1])` copies the elements out, so a later
+            // write to `v[0]` doesn't show through the tuple.
             ExprKind::Array(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
-                    .map(|e| self.eval_expr(e))
+                    .map(|e| self.eval_owned(e))
                     .collect::<Result<_, _>>()?;
                 Ok(Value::vec(values))
             }
@@ -2047,7 +2198,7 @@ impl Interpreter {
             ExprKind::Tuple(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
-                    .map(|e| self.eval_expr(e))
+                    .map(|e| self.eval_owned(e))
                     .collect::<Result<_, _>>()?;
                 Ok(Value::tuple(values))
             }
@@ -2083,13 +2234,13 @@ impl Interpreter {
             }
 
             ExprKind::IfLet {
-                expr,
+                expr: scrutinee,
                 pattern,
                 then_branch,
                 else_branch,
                 else_binding,
             } => {
-                let value = self.eval_expr(expr)?;
+                let value = self.eval_expr(scrutinee)?;
 
                 if let Some(bindings) = self.match_pattern(pattern, &value) {
                     self.env.push_scope();
@@ -2100,16 +2251,13 @@ impl Interpreter {
                     self.env.pop_scope();
                     result
                 } else if let Some(else_br) = else_branch {
-                    // ER22: `else as e` binds the branch the test ruled out.
+                    // ER22: `else as e` binds what the test ruled out.
                     self.env.push_scope();
                     if let Some(name) = else_binding {
-                        let payload = match &value {
-                            Value::Enum { fields, .. } => {
-                                fields.first().cloned().unwrap_or(Value::Unit)
-                            }
-                            other => other.clone(),
-                        };
-                        self.env.define(name.clone(), payload);
+                        let scrutinee_ty = self.node_types.get(&scrutinee.id);
+                        let rest_ty = self.else_binding_types.get(&expr.id);
+                        let rest = Self::else_binding_value(scrutinee_ty, value, rest_ty);
+                        self.env.define(name.clone(), rest);
                     }
                     let result = self.eval_expr(else_br);
                     self.env.pop_scope();
@@ -2134,7 +2282,22 @@ impl Interpreter {
                     for (name, val) in &bindings {
                         self.env.define(name.clone(), val.clone());
                     }
-                    // Return the payload (first field of Ok/Some variant)
+                    // A bare type test yields what its `as` form would bind,
+                    // as the checker types it: on a flat `T? or E` the `T`,
+                    // not the `T?` around it (#1455).
+                    if let Some(narrowed) = self.guard_type_test_value(pattern, &value) {
+                        return Ok(narrowed);
+                    }
+                    // The guard's value is what the pattern binds, as the
+                    // checker types it. On a flat `T? or E` the outer payload
+                    // is the `T?`, so `is string as s` handed back an option
+                    // where a string was promised.
+                    if let Some(first) = pattern.bound_names().first() {
+                        if let Some(bound) = bindings.get(*first) {
+                            return Ok(bound.clone());
+                        }
+                    }
+                    // Nothing bound: the payload (first field of Ok/Some).
                     match &value {
                         Value::Enum { fields, .. } => {
                             Ok(fields.first().cloned().unwrap_or(Value::Unit))
@@ -2272,7 +2435,9 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Unwrap { expr: inner, message } => {
+            ExprKind::Unwrap { expr: inner, message, bang } => {
+                // Reported at the `!`, not where the operand starts (ctrl.panic/S6, #1372).
+                let bang = *bang;
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum {
@@ -2283,10 +2448,10 @@ impl Interpreter {
                             if let Some(msg) = message {
                                 Err(RuntimeDiagnostic::new(
                                     RuntimeError::Panic(msg.clone()),
-                                    expr.span
+                                    bang
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, bang))
                             }
                         }
                         "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
@@ -2294,7 +2459,7 @@ impl Interpreter {
                             if let Some(msg) = message {
                                 Err(RuntimeDiagnostic::new(
                                     RuntimeError::Panic(msg.clone()),
-                                    expr.span
+                                    bang
                                 ))
                             } else {
                                 // ER15: `!` panics *using* the error's message.
@@ -2306,7 +2471,7 @@ impl Interpreter {
                                 let text = self.describe_error_value(&payload);
                                 Err(RuntimeDiagnostic::new(
                                     RuntimeError::ForcedError(text),
-                                    expr.span,
+                                    bang,
                                 ))
                             }
                         }
@@ -2315,7 +2480,7 @@ impl Interpreter {
                                 "! operator requires Option or Result, got {}",
                                 variant
                             )),
-                            expr.span
+                            bang
                         )),
                     },
                     _ => Err(RuntimeDiagnostic::new(
@@ -2323,7 +2488,7 @@ impl Interpreter {
                             "! operator requires Option or Result, got {}",
                             val.type_name()
                         )),
-                        expr.span
+                        bang
                     )),
                 }
             }
@@ -2349,9 +2514,22 @@ impl Interpreter {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
+                    lent: self.env.lent_names(),
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
                 })
+            }
+
+            // A task block: build its body as the carrying closure it is
+            // underneath, and hand that to the task.
+            ExprKind::Spawn { target, body, .. } => {
+                let closure = self.eval_expr(body)?;
+                let started = match target {
+                    rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
+                    rask_ast::expr::SpawnTarget::Thread => self.spawn_os_thread(closure, body),
+                    rask_ast::expr::SpawnTarget::Pool => self.spawn_pool_task(closure, body),
+                };
+                started.map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
             ExprKind::Cast { expr, ty } => {
@@ -2593,20 +2771,12 @@ impl Interpreter {
                     }
                 };
 
-                // Check for unconsumed handles (conc.async/H1)
-                if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
-                    runtime.shutdown();
-                    *ACTIVE_RUNTIME.write().unwrap() = None;
-                    self.env.pop_scope();
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic(msg),
-                        expr.span,
-                    ));
-                }
+                let leak = self.end_resource_scope(scope_depth, expr.span);
 
                 runtime.shutdown();
                 *ACTIVE_RUNTIME.write().unwrap() = None;
                 self.env.pop_scope();
+                leak?;
                 Ok(result)
             }
 
@@ -3115,7 +3285,7 @@ impl Interpreter {
 /// The raw attachment strings a reflect FieldInfo carries in its hidden
 /// `__attrs` (type.annotations/AN6). Mirrors the native lowering's
 /// `ReflectFieldConst.attrs`.
-fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
+pub(super) fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
     let guard = s.lock().unwrap();
     match guard.fields.get("__attrs") {
         Some(Value::Vec(v)) => v
@@ -3133,12 +3303,101 @@ fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
 }
 
 /// The field's own name, for a diagnostic that says which field went wrong.
-fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
+pub(super) fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
     let guard = s.lock().unwrap();
     match guard.fields.get("name") {
         Some(Value::String(text)) => text.lock().unwrap().clone(),
         _ => "field".to_string(),
     }
+}
+
+/// AN6: a `get<A>()` read that one iteration of a `comptime for` keeps, on an
+/// item that doesn't carry `A`. The annotation, the field read off it, and
+/// where.
+///
+/// Native unrolls the loop, drops the branch each `comptime if` rules out and
+/// rejects any read left over, whether or not anything would reach it at run
+/// time. The interpreter walks the loop instead, so a plain `if f.has<A>()`
+/// kept it from ever arriving at the read and the program ran here and failed
+/// to build natively (#1291). Asking before the iteration runs gives the same
+/// answer as unrolling: `comptime if` decides with the same rules
+/// (`rask_ast::comptime_if`), and every other statement is kept.
+pub(super) fn unguarded_annotation_read(
+    body: &[rask_ast::stmt::Stmt],
+    binding: &str,
+    attrs: &[String],
+) -> Option<(String, Option<String>, rask_ast::Span)> {
+    use rask_ast::comptime_if;
+    use rask_ast::stmt::{Stmt, StmtKind};
+    use rask_ast::visit::{visit_body, Visit};
+    use rask_ast::Span;
+
+    struct Reads<'b> {
+        binding: &'b str,
+        attrs: &'b [String],
+        found: Option<(String, Option<String>, Span)>,
+    }
+
+    /// `binding.<method><A>()`: the annotation it names.
+    fn names_annotation<'e>(expr: &'e Expr, binding: &str, want: &str) -> Option<&'e str> {
+        let ExprKind::MethodCall { object, method, type_args, .. } = &expr.kind else {
+            return None;
+        };
+        if method != want || object.name() != Some(binding) {
+            return None;
+        }
+        type_args.as_ref()?.first()?.bare_name()
+    }
+
+    fn carries(attrs: &[String], annotation: &str) -> bool {
+        attrs
+            .iter()
+            .any(|a| rask_ast::decl::field_attrs::attachment_name(a) == annotation)
+    }
+
+    impl<'a> Visit<'a> for Reads<'_> {
+        fn stmt(&mut self, stmt: &'a Stmt) -> bool {
+            if self.found.is_some() {
+                return false;
+            }
+            let StmtKind::Comptime(stmts) = &stmt.kind else { return true };
+            let Some((cond, then_branch, else_branch)) = comptime_if::parts(stmts) else {
+                return true;
+            };
+            let (binding, attrs) = (self.binding, self.attrs);
+            let taken = comptime_if::decide(cond, &mut |call| {
+                names_annotation(call, binding, "has").map(|a| carries(attrs, a))
+            });
+            match taken.and_then(|t| comptime_if::branch(t, then_branch, else_branch)) {
+                Some(kept) => {
+                    visit_body(kept, self);
+                    false
+                }
+                None => true,
+            }
+        }
+
+        fn expr(&mut self, expr: &'a Expr) -> bool {
+            if self.found.is_some() {
+                return false;
+            }
+            let (call, field) = match &expr.kind {
+                ExprKind::Field { object, field } => (&**object, Some(field.clone())),
+                _ => (expr, None),
+            };
+            if let Some(annotation) = names_annotation(call, self.binding, "get") {
+                if !carries(self.attrs, annotation) {
+                    self.found = Some((annotation.to_string(), field, expr.span));
+                }
+                return false;
+            }
+            true
+        }
+    }
+
+    let mut reads = Reads { binding, attrs, found: None };
+    visit_body(body, &mut reads);
+    reads.found
 }
 
 impl Interpreter {

@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+
+func main() {
+    // Labels don't reorder a call, in another package or this one (#1347).
+    // This used to bind by position and print 21.
+    println("{libpkg.digits(b: 2, a: 1)}")
+    return
+}

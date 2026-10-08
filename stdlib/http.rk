@@ -7,7 +7,6 @@
 // and response formatting are implemented in Rask; socket I/O delegates to
 // the C runtime.
 
-import async.spawn
 import net
 import io.IoError
 
@@ -122,18 +121,15 @@ extend Request {
     }
     /// Replace the whole header set, for a request being rebuilt from another
     /// one. `with_header` adds them one at a time.
-    public func with_headers(take self, headers: Headers) -> Request {
+    public func with_headers(take self, take headers: Headers) -> Request {
         mut out = self
         out.headers = headers
         return out
     }
     public func with_body(take self, body: string) -> Request {
-        return Request {
-            method: self.method,
-            url: self.url,
-            headers: self.headers,
-            body,
-        }
+        mut out = self
+        out.body = body
+        return out
     }
 
     // URL path before '?'.
@@ -223,11 +219,9 @@ extend Response {
 
     // ── Builder ──
     public func with_status(take self, status: u16) -> Response {
-        return Response {
-            status,
-            headers: self.headers,
-            body: self.body,
-        }
+        mut out = self
+        out.status = status
+        return out
     }
     public func with_header(take self, name: string, value: string) -> Response {
         self.headers.set(name, value)
@@ -900,13 +894,12 @@ extend http {
             let (req, responder) = server.accept() catch _ => {
                 continue
             }
-            // `own` moves req/responder into the task. Borrowing them
-            // leaves the task reading this iteration's frame, which the
-            // next accept() reuses while the task is still running — the
-            // request's method came out as garbage (#474).
-            spawn(|| {
+            // The task carries `req` and `responder` away, so it never reads
+            // this iteration's frame, which the next accept() reuses (#474),
+            // and it sends the one response the responder owes.
+            spawn {
                 responder.respond(handler(req))
-            }).detach()
+            }.detach()
         }
     }
     public func get(url: string) -> Response or HttpError {

@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `dst.push(items[i].clone())` with a vector of vectors.
+//
+// Native turned the clone into a move: the temp `items[i]` came back in is never
+// read again, so clone elision called it a last use. But that temp is a view
+// into `items`, which still owns the element, so `dst` and `items` ended up
+// sharing every inner vector and the second free crashed at exit.
+
+func copy_vecs(mutate dst: Vec<Vec<i64>>, items: Vec<Vec<i64>>) {
+    mut i = 0
+    while i < items.len() {
+        dst.push(items[i].clone())
+        i = i + 1
+    }
+}
+
+func copy_all<T>(mutate dst: Vec<T>, items: Vec<T>) {
+    mut i = 0
+    while i < items.len() {
+        dst.push(items[i].clone())
+        i = i + 1
+    }
+}
+
+test "a concrete copy is a copy" {
+    let src: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut dst: Vec<Vec<i64>> = Vec.new()
+    copy_vecs(mutate dst, src)
+    dst[0].push(9)
+    assert dst[0].len() == 3
+    assert src[0].len() == 2
+}
+
+test "a generic copy is a copy" {
+    let src: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut dst: Vec<Vec<i64>> = Vec.new()
+    copy_all(mutate dst, src)
+    dst[1].push(9)
+    assert dst[1].len() == 2
+    assert src[1].len() == 1
+}

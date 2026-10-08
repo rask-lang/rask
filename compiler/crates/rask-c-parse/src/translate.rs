@@ -249,7 +249,7 @@ impl Translator {
             return void_ptr();
         }
         TypeExpr::RawPtr(Box::new(TypeExpr::Func {
-            params: params.iter().map(|p| self.translate_type(p)).collect(),
+            params: params.iter().map(|p| rask_ast::ty::FuncParam::borrowed(self.translate_type(p))).collect(),
             ret: Box::new(self.translate_type(ret)),
         }))
     }

@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `v[i] = x` copied the new element over the slot and gave nothing back for
+// the old one, so every assignment through an index leaked whatever the
+// element owned (#1430). `m[k] = v` did the same to the old value. The call
+// also put back what `v[i].field = x` and `modify` had taken out, where
+// releasing the slot would free what was just written.
+//
+// Putting back has its own operation now, and assigning a string or a
+// container releases. Run under RASK_LEAK_CHECK=1 to see the leaks; the
+// asserts check nothing was freed early.
+
+struct Line {
+    text: string
+    n: i64
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+test "assigning a string element releases the one it replaces" {
+    mut a: Vec<string> = [heap("first"), heap("second")]
+    a[0] = heap("third")
+    a.set(1, heap("fourth"))
+    assert a[0] == heap("third")
+    assert a[1] == heap("fourth")
+}
+
+test "assigning an element to itself or a sibling keeps both alive" {
+    mut a: Vec<string> = [heap("first"), heap("second")]
+    a[0] = a[0]
+    a[1] = a[0]
+    assert a[0] == heap("first")
+    assert a[1] == heap("first")
+}
+
+test "assigning a struct element releases its strings" {
+    mut lines: Vec<Line> = [Line { text: heap("one"), n: 1 }]
+    lines[0] = Line { text: heap("two"), n: 2 }
+    lines[0].text = heap("three")
+    assert lines[0].text == heap("three")
+    assert lines[0].n == 2
+}
+
+test "assigning a nested vector releases the old one" {
+    mut rows: Vec<Vec<string>> = [[heap("a")], [heap("b")]]
+    rows[0] = [heap("c"), heap("d")]
+    assert rows[0].len() == 2
+    assert rows[1][0] == heap("b")
+}
+
+test "assigning an existing map key releases the old value" {
+    mut m: Map<i64, string> = Map.new()
+    m[1] = heap("old")
+    m[1] = heap("new")
+    assert m[1] == heap("new")
+    assert m.len() == 1
+}
+
+test "modify replaces the element it was handed" {
+    mut words: Vec<string> = [heap("alpha")]
+    words.modify(0, |mutate w: string| {
+        w = heap("beta")
+    })
+    mut m: Map<i64, string> = Map.new()
+    m[1] = heap("one")
+    m.modify(1, |mutate s: string| {
+        s = heap("uno")
+    })
+    m.modify_with_default(2, || heap("dos"), |mutate s: string| {
+        s = "{s}!"
+    })
+    assert words[0] == heap("beta")
+    assert m[1] == heap("uno")
+    assert m[2] == "{heap("dos")}!"
+}

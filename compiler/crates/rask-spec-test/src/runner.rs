@@ -224,10 +224,9 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
     );
 
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_with_stdlib_and_cfg(
+    let resolved = match rask_resolve::resolve_with_stdlib(
         &parse_result.decls,
         &stdlib_bodies,
-        std::collections::HashMap::new(),
     ) {
         Ok(r) => r,
         Err(errors) => return Err((FailStage::Resolve, format!("{:?}", errors))),

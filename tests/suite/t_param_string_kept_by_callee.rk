@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A string parameter pushed into a vector the caller lent: the vector keeps
+// it, so the callee has to take a reference of its own. It didn't. The push
+// copied the caller's reference in, the caller released it at its last use,
+// and the vector was left holding freed memory. The first print after that
+// read whatever the allocator had put there.
+
+func add(mutate v: Vec<string>, s: string) {
+    v.push(s)
+}
+
+struct Line {
+    text: string
+    n: i64
+}
+
+test "a pushed parameter outlives the caller's reference" {
+    mut v: Vec<string> = Vec.new()
+    for i in 0..4 {
+        let s = "string number {i} that lives on the heap"
+        add(mutate v, s)
+    }
+    let filler = "allocated after, to reuse a freed buffer".to_uppercase()
+    assert filler.len() > 0
+    assert v[0] == "string number 0 that lives on the heap"
+    assert v[3] == "string number 3 that lives on the heap"
+}
+
+test "a field write through a vector element frees the old string" {
+    mut lines: Vec<Line> = Vec.new()
+    lines.push(Line { text: "the first text, long enough for the heap".to_uppercase(), n: 1 })
+    let t = "the replacement text, also on the heap".to_uppercase()
+    lines[0].text = t
+    assert lines[0].text == "THE REPLACEMENT TEXT, ALSO ON THE HEAP"
+    assert lines[0].n == 1
+}

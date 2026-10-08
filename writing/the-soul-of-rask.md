@@ -169,7 +169,7 @@ Of course, we lose some coherence by treating Result, Error and Option different
 
 ## Stealing good ideas
 
-Swift's optional syntax is great—so Rask has `T?` with `??` fallback. Zig's comptime is powerful—so Rask has compile-time execution. Go's goroutines are ergonomic—so Rask has `spawn(|| {})` without async/await.
+Swift's optional syntax is great—so Rask has `T?` with `??` fallback. Zig's comptime is powerful—so Rask has compile-time execution. Go's goroutines are ergonomic—so Rask has `spawn {}` without async/await.
 
 That's pragmatism. I'd rather take a proven solution than invent a worse one for the sake of originality. I compare against *whichever language is simplest for each task*—not just Rust or Go. If Python solves a CLI tool in 20 lines, that's the bar.
 

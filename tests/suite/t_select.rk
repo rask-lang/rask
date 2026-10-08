@@ -80,10 +80,10 @@ test "select drains one value per evaluation" {
 test "select blocks until a spawned producer sends" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
-        let h = spawn(|| {
+        let h = spawn {
             let _ = tx.send(5)
             return 0
-        })
+        }
         ensure h.detach()
         let got = select {
             rx -> v: v,
@@ -191,7 +191,7 @@ test "CN1 — a cancel ends a select that is waiting" {
     using Multitasking(workers: 2) {
         mut (tx, rx) = Channel<i64>.buffered(1)
         ensure tx.close()
-        assert cancel_later(spawn(|| { return wait_on(rx) })) == "cancelled"
+        assert cancel_later(spawn { return wait_on(rx) }) == "cancelled"
     }
 }
 
@@ -200,7 +200,7 @@ test "a value already there wins over the cancel" {
         mut (tx, rx) = Channel<i64>.buffered(1)
         ensure tx.close()
         tx.send(8)!
-        assert cancel_later(spawn(|| { return wait_on(rx) })) == "value 8"
+        assert cancel_later(spawn { return wait_on(rx) }) == "value 8"
     }
 }
 
@@ -209,11 +209,11 @@ test "select { … }! panics when every channel is closed" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
         tx.close()!
-        let h = spawn(|| {
+        let h = spawn {
             return select {
                 rx -> v: v,
             }!
-        })
+        }
         match h.join() {
             i64 as v => assert false
             JoinError.Panicked(m) => assert m.contains("every channel in the select is closed")

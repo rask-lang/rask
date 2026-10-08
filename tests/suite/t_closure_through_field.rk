@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure read back out of a struct field (#1334).
+//
+// `let g = h.f` with a closure that carried a Vec answered garbage natively.
+// Reading the field was taken as the struct's last use, so the struct was
+// released right there, and releasing a struct frees the closures in its
+// fields. `g` was left pointing at a freed environment. A Vec field read the
+// same way already kept the struct alive; a closure field didn't.
+
+struct Holder {
+    public f: func(i64) -> i64
+}
+
+struct Named {
+    public name: string
+    public f: func(i64) -> i64
+}
+
+func make_holder() -> Holder {
+    let tags: Vec<i64> = [1, 2, 3]
+    return Holder { f: |x| x + tags.len().wrap<i64>() }
+}
+
+func call_it(f: func(i64) -> i64, x: i64) -> i64 {
+    return f(x)
+}
+
+test "a closure carrying a Vec, read back out of a field" {
+    let tags: Vec<i64> = [1, 2, 3]
+    let h = Holder { f: |x| x + tags.len().wrap<i64>() }
+    let g = h.f
+    assert g(1) == 4
+    assert g(10) == 13
+}
+
+test "the field's closure, called through a parameter" {
+    let tags: Vec<i64> = [1, 2]
+    let h = Holder { f: |x| x * tags.len().wrap<i64>() }
+    let g = h.f
+    assert call_it(g, 5) == 10
+}
+
+test "a struct handed back by a function, its closure read out" {
+    let h = make_holder()
+    let g = h.f
+    assert g(0) == 3
+}
+
+test "a closure carrying a string, beside a string field" {
+    let suffix = "abcd"
+    let h = Named { name: "n", f: |x| x + suffix.len().wrap<i64>() }
+    let g = h.f
+    assert g(1) == 5
+    assert h.name == "n"
+}

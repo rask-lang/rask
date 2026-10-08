@@ -83,7 +83,7 @@ fn stub_file_id(index: usize) -> u16 {
 
 /// Every stdlib file, parsed once. Each accessor below is a view of this, so a
 /// declaration has one `NodeId` whichever list it reached a pass through — the
-/// resolver's symbol for `spawn` and the checker's declaration of it agree on
+/// resolver's symbol for `cancelled` and the checker's declaration of it agree on
 /// which node they mean. They used to be six separate parses, each numbering
 /// from its own base.
 fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
@@ -209,6 +209,11 @@ pub struct CompilableStdlib {
 #[derive(Debug, Clone)]
 pub struct MethodStub {
     pub name: String,
+    /// Visible to a program: declared `public`, or part of a conformance,
+    /// whose methods carry the conformance's visibility (TV1). A stdlib module
+    /// is its own package, so a member without it is the module's own and a
+    /// program can't name it (struct.modules/V1, V2).
+    pub is_pub: bool,
     pub takes_self: bool,
     /// True if declared `mutate self` — method mutates the receiver.
     pub mutate_self: bool,
@@ -223,6 +228,11 @@ pub struct MethodStub {
     /// over, `m.get(k)` only reads it — and before this it had to guess from a
     /// list of method names kept by hand in two passes.
     pub param_modes: Vec<StubParamMode>,
+    /// Each parameter declared as the receiver's own type, positionally
+    /// matching `params`: `other: Vec<T>` in `extend Vec<T> { func eq(self,
+    /// other: Vec<T>) }`. A fixed array borrows `Vec`'s methods, and for it
+    /// such a parameter is the array's type, not a `Vec` (#1413).
+    pub own_type_params: Vec<bool>,
     /// `void` when nothing is declared.
     pub ret_ty: TypeExpr,
     pub doc: Option<String>,
@@ -261,7 +271,7 @@ pub struct MethodStub {
     /// nothing could distinguish "written in Rask" from "declared only".
     pub has_body: bool,
     /// Declared `comptime func` — evaluated by the comptime engine, so the
-    /// keyword already says where the body lives. `Vec.freeze` is one.
+    /// keyword already says where the body lives.
     pub is_comptime: bool,
     /// Interface bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
@@ -512,6 +522,22 @@ impl StubRegistry {
         decls
     }
 
+    /// Every public interface the stub sources declare, with the file it's in.
+    pub fn public_interfaces() -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        for (stub_index, (file, _)) in all_sources().iter().enumerate() {
+            let Some(parsed) = &parsed_stdlib()[stub_index] else { continue };
+            for decl in parsed {
+                if let DeclKind::Interface(i) = &decl.kind {
+                    if i.is_pub {
+                        out.push((*file, i.name.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn process_decl(&mut self, decl: &rask_ast::decl::Decl, filename: &str, source: &str) {
         let decl_span = decl.span;
         match &decl.kind {
@@ -528,7 +554,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !s.is_pub;
                 for m in &s.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&s.name, &s.type_params)));
                 }
             }
             DeclKind::Enum(e) => {
@@ -544,7 +570,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !e.is_pub;
                 for m in &e.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&e.name, &e.type_params)));
                 }
             }
             DeclKind::Impl(i) => {
@@ -558,10 +584,11 @@ impl StubRegistry {
                 // stdlib-implemented — `extend char { … }` in char.rk is where
                 // their methods come from — so an inherent block on a primitive
                 // still files the type it's written on.
-                if i.interface.is_some() && rask_ast::primitives::is_scalar(&base_name) {
+                let in_conformance = i.interface.is_some();
+                if in_conformance && rask_ast::primitives::is_scalar(&base_name) {
                     if let Some(entry) = self.types.get_mut(&base_name) {
                         for m in &i.methods {
-                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, true, &i.target_ty));
                         }
                     }
                     return;
@@ -575,7 +602,7 @@ impl StubRegistry {
                     span: find_name_span(source, &base_name, "extend", decl_span),
                 });
                 for m in &i.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, in_conformance, &i.target_ty));
                 }
             }
             DeclKind::Fn(f) => {
@@ -702,7 +729,17 @@ fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeE
     )
 }
 
-fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span) -> MethodStub {
+/// `in_conformance`: the method is part of an `implements` block, so its
+/// visibility is the conformance's rather than its own. `own_ty` is the type
+/// the block extends, as its header spells it.
+fn fn_to_method_stub(
+    f: &FnDecl,
+    filename: &str,
+    source: &str,
+    parent_span: Span,
+    in_conformance: bool,
+    own_ty: &TypeExpr,
+) -> MethodStub {
     let self_param = f.params.iter().find(|p| p.name == "self");
     let takes_self = self_param.is_some();
     let mutate_self = self_param.map_or(false, |p| p.is_mutate);
@@ -719,6 +756,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
             is_deleting: p.is_deleting,
         })
         .collect();
+    let own_type_params: Vec<bool> = params.iter().map(|(_, ty)| ty == own_ty).collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
@@ -726,11 +764,13 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
 
     MethodStub {
         name: bare_name,
+        is_pub: f.is_pub || in_conformance,
         takes_self,
         mutate_self,
         take_self,
         params,
         param_modes,
+        own_type_params,
         ret_ty: f.ret_ty.clone().unwrap_or(TypeExpr::Unit),
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),
@@ -750,7 +790,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
                 .map(|sym| sym.to_string())
         }),
         type_param_bounds: f.type_params.iter()
-            .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.clone())))
+            .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
     }
 }
@@ -979,7 +1019,7 @@ mod tests {
             "new", "with_capacity", "len", "is_empty",
             "insert", "remove", "clear", "get", "get_clone", "contains",
             "read", "modify", "insert_if_missing", "modify_with_default",
-            "keys", "values", "freeze",
+            "keys", "values",
         ];
         for method in &expected {
             assert!(reg.has_method("Map", method), "Map missing method: {}", method);
@@ -1253,8 +1293,8 @@ mod boundary_tests {
         assert!(
             unmarked.is_empty(),
             "{} stdlib functions have an empty body and no marker. Every one has to \
-             say where its body lives — `@native(\"symbol\")`, `@unimplemented`, \
-             `comptime func`, or a Rask body:\n  {}",
+             say where its body lives — `@native(\"symbol\")`, `@builtin`, \
+             `@unimplemented`, `comptime func`, or a Rask body:\n  {}",
             unmarked.len(),
             unmarked.join("\n  ")
         );

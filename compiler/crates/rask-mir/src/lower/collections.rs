@@ -193,9 +193,11 @@ impl<'a> MirLowerer<'a> {
                     continue;
                 }
             };
+            // `Map_set`, not `Map_insert`: nothing takes the value a repeated
+            // key displaces, so the map has to release it.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Map_insert".to_string()),
+                func: FunctionRef::internal("Map_set".to_string()),
                 args: vec![MirOperand::Local(map_local), key_op, val_op],
             }));
         }

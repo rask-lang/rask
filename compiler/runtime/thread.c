@@ -125,17 +125,23 @@ RaskTask *rask_task_new(void) {
     return t;
 }
 
-void rask_task_adopt_closure(RaskTask *t, void *closure_base, int64_t result_owned) {
-    // Every spawn form hands its closure over here, so this is the one place
-    // a closure that got to `spawn` by a return, a field or a container is
-    // seen at all. The checker catches the ones written at the spawn.
+// A closure bound to its task may not reach another one. The checker refuses
+// a link or a `Local` box a task block names; this catches the two it can't
+// see: a block in a generic body whose `T` turned out to be one (checked as
+// the task adopts the block), and a closure value the block captured, which
+// carries what it captured out of sight (checked by lowering for each one).
+void rask_closure_refuse_crossing(void *closure_base) {
     if (rask_closure_task_bound(closure_base)) {
-        rask_panic("spawn: this closure captured a link or a `Local` box, and "
+        rask_panic("spawn: this task would hold a link or a `Local` box, and "
                    "another task would then reach what this one still can "
                    "[mem.ownership/T2, conc.sync/SH7]. Copy the values the "
                    "task needs out before spawning, or use a Mutex or Readers "
                    "box");
     }
+}
+
+void rask_task_adopt_closure(RaskTask *t, void *closure_base, int64_t result_owned) {
+    rask_closure_refuse_crossing(closure_base);
     t->closure_base = closure_base;
     t->result_owned = result_owned;
 }
@@ -716,7 +722,8 @@ static int thread_sleep_cancellable(int64_t ns) {
 int64_t rask_sleep_ns(int64_t ns) {
     int cancelled = 0;
 #ifdef RASK_SIM
-    if (rask_sim_active()) {
+    // A green task sleeps on green.c's timers, which run on sim's clock.
+    if (rask_sim_active() && !rask_fiber_active()) {
         RaskCancelWake w = { .wake = wake_sim_sleeper, .a = rask_sim_self() };
         cancelled = rask_cancel_wait_begin(&w);
         if (!cancelled) {

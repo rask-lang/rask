@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `m[k].field = x` on a Map of structs wrote into a copy of the value on
+// native, so the map kept the old field and the new string leaked. The Vec
+// form already lent the element out and wrote it back (#1440).
+
+struct Line {
+    text: string
+    n: i64
+}
+
+struct Pos {
+    x: i64
+    y: i64
+}
+
+struct Row {
+    pos: Pos
+    label: string
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+test "a field write lands in the map" {
+    mut m: Map<string, Line> = Map.new()
+    m["k"] = Line { text: heap("one"), n: 1 }
+    m["k"].text = heap("two")
+    m["k"].n = 2
+    assert m["k"].text == heap("two")
+    assert m["k"].n == 2
+}
+
+test "repeated writes release what they replace" {
+    mut m: Map<i64, Line> = Map.new()
+    m[7] = Line { text: heap("start"), n: 0 }
+    for i in 0..5 {
+        m[7].text = heap("round {i}")
+        m[7].n = i
+    }
+    assert m[7].text == heap("round 4")
+    assert m[7].n == 4
+}
+
+test "a nested field write lands in the map" {
+    mut m: Map<string, Row> = Map.new()
+    m["a"] = Row { pos: Pos { x: 1, y: 2 }, label: heap("a") }
+    m["a"].pos.y = 20
+    m["a"].label = heap("b")
+    assert m["a"].pos.x == 1
+    assert m["a"].pos.y == 20
+    assert m["a"].label == heap("b")
+}
+
+test "a heap key reaches the right entry" {
+    mut m: Map<string, Line> = Map.new()
+    m[heap("key")] = Line { text: heap("old"), n: 0 }
+    m[heap("key")].text = heap("new")
+    assert m[heap("key")].text == heap("new")
+    assert m.len() == 1
+}

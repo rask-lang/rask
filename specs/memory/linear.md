@@ -33,7 +33,7 @@ Same tradeoff as "everything is a value": cost transparency over hidden mechanis
 
 Consumption happens via:
 - A method declared with `take self` (e.g. `file.close()`, `tx.commit()`)
-- Passing to a `take` parameter (`consume(file)`)
+- Passing to a `take` parameter (`consume(file)`), a closure's included (`|take f: File| { … }`)
 - Channel send (`ch.send(file)` — ownership transfers to the receiver)
 - `ensure expr` (defers consumption to scope exit; satisfies L1 immediately)
 
@@ -214,6 +214,8 @@ WHY: Linear values can be consumed exactly once. A second consumption
 | Draining a list in a `loop` | L1, L7 | `match rest` moves `rest`; `rest = *next` gives the name a new value with its own window. After the loop, `rest` is what it was at each `break` |
 | `take` parameter | L7 | Arrives owed; the body's first statement commits it |
 | `take self` method of the linear type | — | The method is the consumption, so L7 doesn't apply to `self` |
+| Closure captures a linear value | L2 | A closure may run any number of times, so its body can't consume a capture (`mem.closures/CM4`, E0891), and one that outlives its frame can't carry a linear value at all (E0913). The value comes in as a `take` parameter instead |
+| Handing a linear value to a task | L5 | `spawn { … file.close() … }` — the task block captures it and, running once, consumes it on every path (`conc.async/S6`) |
 
 ## See Also
 

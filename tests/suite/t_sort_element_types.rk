@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `sort()` on every kind of element it accepts, both backends in agreement.
+//
+// `Vec<i64?>.sort()` used to compile, and native compared the option's tag
+// word while the interpreter ordered the payloads (#1313). That's a type error
+// now (tests/compile_errors/sort_needs_comparable.rk); these are the element
+// types that stay legal, and several of them were wrong too:
+//
+// - native read every scalar slot as an int64_t, so a u64 above i64::MAX sorted
+//   first and an i128 compared its low word only. The interpreter made the
+//   same u64 mistake.
+// - a struct of floats wasn't Comparable at all, though CO4 says floats are.
+// - a struct that fits in one word segfaulted natively: the comparator wants
+//   its address, and the runtime guessed "a word is a value" from the slot
+//   width. `sort_by` and `sort_by_key` had the same guess.
+
+struct Reading {
+    value: f64
+}
+
+struct Wrap {
+    n: i64
+}
+
+test "sort orders unsigned values above i64::MAX last" {
+    mut v: Vec<u64> = Vec.new()
+    v.push(18000000000000000000)
+    v.push(3)
+    v.push(1)
+    v.sort()
+    assert v[0] == 1
+    assert v[1] == 3
+    assert v[2] == 18000000000000000000
+    assert (v.max() ?? 0) == 18000000000000000000
+    assert (v.min() ?? 0) == 1
+}
+
+test "sort orders i128 by its whole value" {
+    mut s: Vec<i128> = Vec.new()
+    s.push(5)
+    s.push(170141183460469231731687303715884105727)
+    s.push(-3)
+    s.sort()
+    assert s[0] == -3
+    assert s[1] == 5
+    assert s[2] == 170141183460469231731687303715884105727
+}
+
+test "sort orders u128 by its whole value" {
+    mut u: Vec<u128> = Vec.new()
+    u.push(340282366920938463463374607431768211455)
+    u.push(5)
+    u.sort()
+    assert u[0] == 5
+    assert u[1] == 340282366920938463463374607431768211455
+}
+
+test "sort orders narrow integers, floats, chars, bools and strings" {
+    mut i: Vec<i8> = Vec.new()
+    i.push(5)
+    i.push(-3)
+    i.push(1)
+    i.sort()
+    assert i[0] == -3
+    assert i[2] == 5
+
+    mut b: Vec<u8> = Vec.new()
+    b.push(200)
+    b.push(3)
+    b.sort()
+    assert b[0] == 3
+    assert b[1] == 200
+
+    mut f: Vec<f32> = Vec.new()
+    f.push(2.5)
+    f.push(-1.5)
+    f.push(-2.5)
+    f.sort()
+    assert f[0] == -2.5
+    assert f[1] == -1.5
+    assert f[2] == 2.5
+
+    mut c: Vec<char> = Vec.new()
+    c.push('c')
+    c.push('a')
+    c.sort()
+    assert c[0] == 'a'
+
+    mut t: Vec<bool> = Vec.new()
+    t.push(true)
+    t.push(false)
+    t.sort()
+    assert t[0] == false
+    assert t[1] == true
+
+    mut s: Vec<string> = Vec.new()
+    s.push("pear")
+    s.push("apple")
+    s.sort()
+    assert s[0] == "apple"
+}
+
+test "a struct of floats is Comparable and sorts by them" {
+    mut r: Vec<Reading> = Vec.new()
+    r.push(Reading { value: 2.0 })
+    r.push(Reading { value: -1.0 })
+    r.push(Reading { value: -3.0 })
+    r.sort()
+    assert r[0].value == -3.0
+    assert r[1].value == -1.0
+    assert r[2].value == 2.0
+}
+
+test "a one-word struct sorts by sort, sort_by and sort_by_key" {
+    mut a: Vec<Wrap> = Vec.new()
+    a.push(Wrap { n: 2 })
+    a.push(Wrap { n: -1 })
+    a.push(Wrap { n: 0 })
+    a.sort()
+    assert a[0].n == -1
+    assert a[2].n == 2
+
+    mut b: Vec<Wrap> = Vec.new()
+    b.push(Wrap { n: 2 })
+    b.push(Wrap { n: -1 })
+    b.sort_by(|x, y| y.n.compare(x.n))
+    assert b[0].n == 2
+    assert b[1].n == -1
+
+    mut c: Vec<Wrap> = Vec.new()
+    c.push(Wrap { n: 2 })
+    c.push(Wrap { n: -1 })
+    c.sort_by_key(|x| Wrap { n: x.n * -1 })
+    assert c[0].n == 2
+    assert c[1].n == -1
+}

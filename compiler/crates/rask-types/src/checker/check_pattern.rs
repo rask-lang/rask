@@ -16,6 +16,10 @@ use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
 
+/// The name `guard_type_test_as_binding` binds. Never in scope: only the
+/// type it gets is read.
+const GUARD_BINDING: &str = "<guard>";
+
 /// Recursively resolve `UnresolvedNamed` and `UnresolvedGeneric` to `Named`
 /// and `Generic` where the type table knows the name. Matches `resolve_named`
 /// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Array`,
@@ -62,7 +66,7 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
             len: *len,
         },
         Type::Fn { params, ret } => Type::Fn {
-            params: params.iter().map(|p| normalize_type(p, types)).collect(),
+            params: params.iter().map(|p| p.map(|p| normalize_type(p, types))).collect(),
             ret: Box::new(normalize_type(ret, types)),
         },
         Type::Union(variants) => Type::Union(variants.iter().map(|v| normalize_type(v, types)).collect()),
@@ -97,6 +101,36 @@ fn resolve_type_name(ty: &TypeExpr, types: &TypeTable) -> Type {
 }
 
 impl TypeChecker {
+    /// Which of `branches` a written type names, compared as resolved types:
+    /// `usize` names a `u64` branch on a 64-bit target. A generic branch
+    /// written without its arguments (`CasFailed` for `CasFailed<i64>`) counts
+    /// when exactly one branch has that head. `None` when the name isn't a
+    /// known type, or names none of them.
+    pub(super) fn branch_named(&self, ty: &TypeExpr, branches: &[Type]) -> Option<usize> {
+        let named = resolve_type_name(ty, &self.types);
+        if let Type::UnresolvedNamed(n) = &named {
+            // A type parameter names no type in the table, but it does name
+            // a branch: inside `func f<T, E>(v: T or E)` the arm `T as x` is
+            // the `T` side. Without this a generic body couldn't match a
+            // `T or E` exhaustively at all (#1439).
+            let is_param = self.types.is_type_param_in_scope(n);
+            return if is_param { branches.iter().position(|b| *b == named) } else { None };
+        }
+        let named = normalize_type(&named, &self.types);
+        if let Some(i) = branches.iter().position(|b| *b == named) {
+            return Some(i);
+        }
+        let mut heads = branches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| self.same_type_head(b, &named))
+            .map(|(i, _)| i);
+        match (heads.next(), heads.next()) {
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    }
+
     // ------------------------------------------------------------------------
     // Pattern Checking
     // ------------------------------------------------------------------------
@@ -165,11 +199,111 @@ impl TypeChecker {
         format!("{}.{}", self.types.type_name(id), name)
     }
 
+    /// `name` as a variant of the enum the scrutinee already is, qualified,
+    /// with how many payload fields it carries. `None` when the scrutinee
+    /// isn't known to be that enum: a bare name is then a binding, and a
+    /// qualified one is checked as a constructor.
+    fn variant_of_scrutinee(&mut self, name: &str, scrutinee_ty: &Type) -> Option<(String, usize)> {
+        let resolved = normalize_type(&self.ctx.apply(scrutinee_ty), &self.types);
+        let id = match resolved {
+            Type::Named(id) => id,
+            Type::Generic { base, .. } => base,
+            _ => return None,
+        };
+        let qualified = self.qualify_variant_name(name, scrutinee_ty);
+        let (enum_id, _) = self.enum_id_from_pattern_name(&qualified)?;
+        if enum_id != id {
+            return None;
+        }
+        let variant = qualified.rsplit('.').next()?;
+        let TypeDef::Enum { variants, .. } = self.types.get(id)? else { return None };
+        let arity = variants.iter().find(|(v, _)| v == variant)?.1.len();
+        Some((qualified, arity))
+    }
+
+    /// The type a bare pattern name stands for, when it names one.
+    ///
+    /// A module's namespace struct (`struct time { }`, which `time.sleep`
+    /// hangs off) is not one: nothing has that type, and a binding a program
+    /// calls `time` would otherwise turn into a type test against it.
+    fn pattern_type_name(&self, name: &str) -> Option<Type> {
+        let ty = resolve_type_name(&TypeExpr::named(name), &self.types);
+        match &ty {
+            Type::UnresolvedNamed(_) => None,
+            Type::Named(_) if rask_stdlib::modules::is_module(name) => None,
+            _ => Some(ty),
+        }
+    }
+
+    /// A bare type test in a guard, `let p = x is Point else { … }`, as the
+    /// `as` form it means: `x is Point as <guard>`. `None` when the pattern
+    /// isn't a type test against a two-branch value, or already binds.
+    ///
+    /// The guard's value is the narrowed one either way. With nothing bound
+    /// it used to be the success payload whatever the pattern named, which on
+    /// a flat `T? or E` is the `T?` around the `Point`, and on an err-side
+    /// test is the wrong branch entirely (#1455).
+    pub(super) fn guard_type_test_as_binding(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<Pattern> {
+        if matches!(self.ctx.apply(scrutinee_ty), Type::Var(_)) {
+            self.solve_constraints();
+        }
+        if !matches!(self.ctx.apply(scrutinee_ty), Type::Result { .. }) {
+            return None;
+        }
+        let ty = match pattern {
+            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            Pattern::TypePat { binding: Some(_), .. } => return None,
+            _ => self.tested_type(pattern, scrutinee_ty)?,
+        };
+        Some(Pattern::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) })
+    }
+
+    /// The type an `is` pattern tests for, written with or without `as`:
+    /// `x is Point as p`, `x is Point`, `x is none`. `None` for a variant, a
+    /// destructure, or a name that isn't a type.
+    pub(super) fn tested_type(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<TypeExpr> {
+        match pattern {
+            Pattern::TypePat { ty, .. } => Some(ty.clone()),
+            Pattern::Ident(name) if !name.contains('.') => {
+                if self.variant_of_scrutinee(name, scrutinee_ty).is_some() {
+                    return None;
+                }
+                self.pattern_type_name(name)?;
+                Some(TypeExpr::named(name.as_str()))
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
+        // A pattern that may name a variant is read against the scrutinee's
+        // enum, and the scrutinee may only be open because a call's result
+        // hasn't been settled yet: `m.get(k)? as v` gives `v` the payload of a
+        // `get` that resolves with the statement's other constraints. Read
+        // against the open type, a bare `Arr(entries)` names no enum, so
+        // `entries` got a fresh variable nothing ever tied back, and native
+        // couldn't lower a `for` over it (#1427). Settle what's pending first.
+        if matches!(pattern, Pattern::Ident(_) | Pattern::Constructor { .. } | Pattern::Struct { .. })
+            && matches!(self.ctx.apply(scrutinee_ty), Type::Var(_))
+        {
+            self.solve_constraints();
+        }
         match pattern {
             Pattern::Wildcard => vec![],
 
             Pattern::Ident(name) => {
+                // A variant of the scrutinee's own enum, written bare or
+                // qualified, is a tag test whatever the variant carries:
+                // `c is Del`, `c is Cmd.Del`. It binds nothing; a payload is
+                // named by writing it, `c is Del(at)`. The qualified form was
+                // checked as a constructor with no arguments, so a variant
+                // with a payload failed "expected 1 argument, found 0", and
+                // the bare one bound a variable named after the variant
+                // (#1401).
+                if let Some((qualified, arity)) = self.variant_of_scrutinee(name, scrutinee_ty) {
+                    let fields = vec![Pattern::Wildcard; arity];
+                    return self.check_constructor_pattern(&qualified, &fields, scrutinee_ty, span);
+                }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind
                 if name.contains('.') {
                     return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
@@ -196,8 +330,8 @@ impl TypeChecker {
                 // backends disagreed about the answer.
                 let resolved = self.ctx.apply(scrutinee_ty);
                 if let Type::Result { .. } = &resolved {
-                    let candidate = resolve_type_name(&TypeExpr::named(name.as_str()), &self.types);
-                    if !matches!(candidate, Type::UnresolvedNamed(_)) {
+                    if let Some(candidate) = self.pattern_type_name(name) {
+                        self.type_test_patterns.insert((span, name.clone()));
                         let candidate = normalize_type(&candidate, &self.types);
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
@@ -220,6 +354,36 @@ impl TypeChecker {
                             found: resolved,
                             span,
                         });
+                        return vec![];
+                    }
+                }
+                // The same name against a plain value. A type test picks one
+                // of a value's branches (ER23), and a plain value has one, so
+                // `v is JsonValue` on a `JsonValue` is decided by the source —
+                // the `as` form already says so (E0398). As a binding it was
+                // true on the interpreter and false natively (#1352).
+                //
+                // A variant of the scrutinee's own enum is a variant test, even
+                // when a type shares its name.
+                if !matches!(resolved, Type::Error)
+                    && !self.qualify_variant_name(name, scrutinee_ty).contains('.')
+                {
+                    if let Some(candidate) = self.pattern_type_name(name) {
+                        self.type_test_patterns.insert((span, name.clone()));
+                        if matches!(resolved, Type::Var(_)) {
+                            self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                                scrutinee: scrutinee_ty.clone(),
+                                narrow_ty: normalize_type(&candidate, &self.types),
+                                ty_name: name.clone(),
+                                span,
+                            });
+                        } else {
+                            self.errors.push(TypeError::TypePatternNotResult {
+                                ty_name: name.clone(),
+                                found: resolved,
+                                span,
+                            });
+                        }
                         return vec![];
                     }
                 }
@@ -266,10 +430,27 @@ impl TypeChecker {
                 // (#1026). The scrutinee says which enum it is; ask it.
                 let name = &self.qualify_variant_name(name, scrutinee_ty);
                 if let Some(variant_fields) = self.types.struct_variant_fields(name) {
+                    // A generic enum's fields are written in its parameters;
+                    // `Slot.Pair { left, right }` on a `Slot<i64>` binds `i64`s,
+                    // not `T`s (#1473).
+                    let subst_args = self.enum_id_from_pattern_name(name).map(|(id, params)| {
+                        let args = self.pattern_enum_args(id, params.len(), scrutinee_ty);
+                        (params, args)
+                    });
                     let mut bindings = vec![];
                     for (field_name, field_pattern) in fields {
                         let field_ty = match variant_fields.iter().find(|(n, _)| n == field_name) {
-                            Some((_, ty)) => ty.clone(),
+                            Some((_, ty)) => match &subst_args {
+                                Some((params, args)) if !params.is_empty() => {
+                                    let subst: HashMap<&str, Type> = params
+                                        .iter()
+                                        .map(|p| p.as_str())
+                                        .zip(args.iter().cloned())
+                                        .collect();
+                                    Self::substitute_type_params(ty, &subst)
+                                }
+                                _ => ty.clone(),
+                            },
                             None => {
                                 self.errors.push(TypeError::NoSuchField {
                                     ty: scrutinee_ty.clone(),
@@ -376,6 +557,9 @@ impl TypeChecker {
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
             Pattern::TypePat { ty, binding } => {
+                if self.resolve_written(ty, span).is_none() {
+                    return binding.iter().map(|name| (name.clone(), Type::Error)).collect();
+                }
                 let narrow_ty = normalize_type(&resolve_type_name(ty, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 // ER23 at variant granularity. `match` already dispatches on one
@@ -535,6 +719,35 @@ impl TypeChecker {
             return None;
         }
         Some((id, type_params.clone()))
+    }
+
+    /// What enum `id`'s parameters are bound to in `scrutinee_ty`: its own
+    /// arguments, or those of the branch that is this enum when the scrutinee
+    /// is a `T or E`. A fresh variable per parameter when it says nothing.
+    fn pattern_enum_args(&mut self, id: crate::types::TypeId, arity: usize, scrutinee_ty: &Type) -> Vec<Type> {
+        let type_args = |args: &[GenericArg]| -> Vec<Type> {
+            args.iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let resolved = normalize_type(&self.ctx.apply(scrutinee_ty), &self.types);
+        let found = match &resolved {
+            Type::Generic { base, args } if *base == id => Some(type_args(args)),
+            Type::Result { .. } => two_branch_leaves(&mut self.ctx, &self.types, &resolved)
+                .iter()
+                .find_map(|leaf| match leaf {
+                    Type::Generic { base, args } if *base == id => Some(type_args(args)),
+                    _ => None,
+                }),
+            _ => None,
+        };
+        match found {
+            Some(args) if args.len() == arity => args,
+            _ => (0..arity).map(|_| self.ctx.fresh_var()).collect(),
+        }
     }
 
     pub(super) fn check_constructor_pattern(

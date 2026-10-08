@@ -37,6 +37,27 @@ pub(super) struct ConformanceSite {
     pub package: Option<String>,
 }
 
+/// Which interface a conformance is to.
+///
+/// A name isn't enough: a program's `interface Writer` and the stdlib's are two
+/// interfaces, and `Buffer implements Writer` is a claim about the stdlib's
+/// only (#1329). An interface the compiler provides without a declaration has
+/// nothing but its name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InterfaceIdent {
+    Declared(TypeId),
+    Builtin(String),
+}
+
+/// GT2/GT3: what a conformance is filed under — the interface, and how its
+/// parameters were applied (`Mul<f64>` and `Mul<Meters>` are two).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConformanceKey {
+    pub iface: InterfaceIdent,
+    /// Defaults filled in and `Self` replaced by the conforming type's name.
+    pub applied: TypeExpr,
+}
+
 /// XC1: who a type belongs to.
 ///
 /// The rule is "only the package that declares `T` may declare these six
@@ -74,22 +95,38 @@ pub struct TypeTable {
     /// where. `type_method_decls` already binds methods by TypeId for the same
     /// reason.
     pub(super) stdlib_type_names: HashMap<String, TypeId>,
+    /// A program type sharing a stdlib type's name, by its symbol: the name as
+    /// the program wrote it.
+    ///
+    /// The checker tells the two apart by `TypeId`, but everything after it
+    /// keys types, methods and layouts by name, so two types called
+    /// `ParseError` were one type there and one `ParseError_message` served
+    /// both (#1333). The program's gets a name of its own from the moment it is
+    /// registered (`ParseError#57` — `#` is in no identifier), and this is how
+    /// a message or a printed value still says what the program wrote.
+    pub(super) written_names: HashMap<String, String>,
     /// Whether registrations and lookups are on behalf of stdlib code.
     /// Mirrors the resolver's flag of the same name.
     pub(super) stdlib_mode: bool,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
-    /// Type alias name → target type string.
-    pub(super) type_aliases: HashMap<String, TypeExpr>,
-    /// Type parameter names in scope right now — the declaration or signature
-    /// being checked.
+    /// Type alias name → target, as program code reads them: the program's
+    /// own aliases and imports, then the stdlib's.
+    type_aliases: HashMap<String, TypeExpr>,
+    /// The stdlib's aliases alone, which is all stdlib code sees. A program's
+    /// `import time.Duration as Span` is not the prelude's `Span` (#1479).
+    stdlib_aliases: HashMap<String, TypeExpr>,
+    /// Type parameters in scope right now, outermost first: the enclosing
+    /// type's or `extend` block's, then the function's own.
     ///
-    /// A declared parameter has to win over a type of the same name, or
+    /// A parameter has to win over a type of the same name, or
     /// `struct Holder<Output>` silently means the stdlib's `os.Output` and
     /// every use of the field is a mismatch against a type nobody wrote (#915).
     /// Scoped rather than global: `Output` is a parameter inside that
-    /// declaration and the stdlib type everywhere else.
-    pub(super) type_param_scope: Vec<String>,
+    /// declaration and the stdlib type everywhere else. A stack, because a
+    /// method sees its owner's parameters as well as its own; replacing them
+    /// dropped `Output` out of `Holder`'s own methods (#1487).
+    pub(super) type_param_scope: Vec<ScopedTypeParam>,
     /// Module-level `const` names whose initializer is an integer literal,
     /// mapped to that value.
     ///
@@ -105,6 +142,8 @@ pub struct TypeTable {
     pub(super) result_type_id: Option<TypeId>,
     /// Builtin modules registry.
     pub(super) builtin_modules: BuiltinModules,
+    /// `import time as tm`: `tm` → `time`.
+    module_aliases: HashMap<String, String>,
     /// B1–G4: binary struct metadata indexed by TypeId
     pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
     /// Field names of a struct-shaped enum variant, keyed by
@@ -124,18 +163,22 @@ pub struct TypeTable {
     /// loser's methods too, and a mangled `Type_method` string can't tell them
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
-    /// G1: declared/derived interface conformances (nominal). TypeId → interface base
-    /// names the type conforms to, from `T implements Interface` and auto-derive.
-    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<TypeExpr>>,
+    /// V1, V2, V5: methods a caller may not see from everywhere, by the name
+    /// they're filed under. A public method, or one in a conformance block,
+    /// has no entry.
+    pub(super) method_access: HashMap<(TypeId, String), super::method_visibility::MethodAccess>,
+    /// G1: declared/derived interface conformances (nominal). TypeId → the interfaces
+    /// the type conforms to, from `T implements Interface` and auto-derive.
+    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<ConformanceKey>>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
-    pub(super) assoc_bindings: HashMap<(TypeId, TypeExpr), HashMap<String, Type>>,
+    pub(super) assoc_bindings: HashMap<(TypeId, ConformanceKey), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
     /// of them is reported once, on the later one.
-    pub(super) conformance_spans: HashMap<(TypeId, TypeExpr), Vec<ConformanceSite>>,
-    /// CC1/CC2: conditional-conformance conditions. (TypeId, interface base) → the
+    pub(super) conformance_spans: HashMap<(TypeId, ConformanceKey), Vec<ConformanceSite>>,
+    /// CC1/CC2: conditional-conformance conditions. (TypeId, interface) → the
     /// `where` bounds (type-param name → required interface names) that must hold
     /// for the conformance, checked per instantiation.
-    pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<TypeExpr>)>>,
+    pub(super) conformance_conditions: HashMap<(TypeId, InterfaceIdent), Vec<(String, Vec<TypeExpr>)>>,
     /// XC4/XC5: which package's `extend` block each method on a type came from,
     /// and which block that was. `(TypeId, method name) → [(package, impl decl)]`.
     ///
@@ -149,7 +192,7 @@ pub struct TypeTable {
     /// declaration. Empty in every program that doesn't have a collision, which
     /// is nearly all of them — the use-site check reads this first and does
     /// nothing when it's empty.
-    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, TypeExpr)>,
+    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, ConformanceKey)>,
     /// XC1: who declares each type. Anything unrecorded is a builtin, and
     /// builtins are the stdlib's.
     pub(super) declared_by: HashMap<TypeId, TypeOwner>,
@@ -157,13 +200,17 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
+    /// The bounds a generic struct or enum declares on its parameters, in
+    /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.
+    /// Every method of the type may assume them (#1364).
+    pub(super) declared_param_bounds: HashMap<TypeId, Vec<(String, Vec<rask_ast::ty::TypeExpr>)>>,
     /// OR1: the conformances, read the other way round — applied interface
     /// (`Mul<Duration>`) → the types that answer it.
     ///
     /// `3 * duration` asks "which type forms this pair with `Duration`", which
     /// the by-`Self` table can only answer by walking every entry. One insert
     /// here on the way in makes it a lookup.
-    pub(super) conformers_by_pair: HashMap<TypeExpr, Vec<TypeId>>,
+    pub(super) conformers_by_pair: HashMap<ConformanceKey, Vec<TypeId>>,
     /// OR12: conformance methods declared `@builtin` — the pair's types are
     /// written in the stdlib and the arithmetic is the compiler's, so there is
     /// no body to call. Keyed `(type, filed method name)`.
@@ -182,22 +229,27 @@ impl TypeTable {
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
+            written_names: HashMap::new(),
             stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
+            stdlib_aliases: HashMap::new(),
             type_param_scope: Vec::new(),
             const_lengths: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
+            module_aliases: HashMap::new(),
             binary_structs: HashMap::new(),
             variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
+            method_access: HashMap::new(),
             conformances: HashMap::new(),
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
+            declared_param_bounds: HashMap::new(),
             declared_by: HashMap::new(),
             ambiguous_conformances: std::collections::HashSet::new(),
             impl_method_packages: HashMap::new(),
@@ -349,21 +401,105 @@ impl TypeTable {
         }
 
         let id = TypeId(self.types.len() as u32);
-        self.types.push(def);
-
-        for n in [name.clone()] {
-            if self.stdlib_mode {
-                // Stdlib code always means this one.
-                self.stdlib_type_names.insert(n.clone(), id);
-                // Program code means it too, unless the program declares its
-                // own. Registering stdlib first and not overwriting later is
-                // what makes a program type shadow rather than collide.
-                self.type_names.entry(n).or_insert(id);
-            } else {
-                self.type_names.insert(n, id);
+        let mut def = def;
+        if self.stdlib_mode {
+            // Stdlib code always means this one.
+            self.stdlib_type_names.insert(name.clone(), id);
+            // Program code means it too, unless the program declares its
+            // own. Registering stdlib first and not overwriting later is
+            // what makes a program type shadow rather than collide.
+            self.type_names.entry(name).or_insert(id);
+        } else {
+            // Program code reaches it by what it wrote; anything minted from
+            // the table names it by its symbol.
+            self.type_names.insert(name.clone(), id);
+            if self.shadows_stdlib_type(&name, &def) {
+                let symbol = format!("{name}#{}", id.0);
+                *Self::def_name_mut(&mut def) = symbol.clone();
+                self.type_names.insert(symbol.clone(), id);
+                self.written_names.insert(symbol, name);
             }
         }
+        self.types.push(def);
         id
+    }
+
+    /// Does a program declaration of `name` share it with a stdlib type?
+    ///
+    /// An interface is left out: `interface_symbol` names those, and only
+    /// where a type is written as `any I`.
+    fn shadows_stdlib_type(&self, name: &str, def: &TypeDef) -> bool {
+        !matches!(def, TypeDef::Interface { .. } | TypeDef::Primitive { .. })
+            && self.stdlib_type_names.contains_key(name)
+    }
+
+    /// Hand each written name back to the stdlib once the program's own uses
+    /// say the symbol (`TypedProgram::attach_derived`), and return written →
+    /// symbol for that rewrite.
+    ///
+    /// From there on `ParseError` is the stdlib's to every pass, the same as
+    /// inside the stdlib's bodies, and the program's type is `ParseError#57`.
+    pub(super) fn release_written_names(&mut self) -> HashMap<String, String> {
+        let mut renamed = HashMap::new();
+        for (symbol, written) in &self.written_names {
+            if let Some(std) = self.stdlib_type_names.get(written) {
+                self.type_names.insert(written.clone(), *std);
+            }
+            renamed.insert(written.clone(), symbol.clone());
+        }
+        renamed
+    }
+
+    /// `time.Duration`: the type a stdlib module exports under `name`.
+    /// `module` is the spelling the program used, so `tm.Duration` under
+    /// `import time as tm` is the same type.
+    ///
+    /// The module says whose declaration is meant, so this never answers with
+    /// the program's type. Dropping the module and looking the bare name up
+    /// did, whenever the program declared a `Duration` of its own (#1470).
+    pub fn module_type_id(&self, module: &str, name: &str) -> Option<TypeId> {
+        let module = self.module_named(module)?;
+        if !rask_stdlib::modules::exports_type(module, name) {
+            return None;
+        }
+        self.stdlib_type_names.get(name).copied()
+    }
+
+    /// The stdlib module a spelling names: the module's own name, or what an
+    /// `import m as alias` bound.
+    pub fn module_named<'a>(&'a self, spelled: &'a str) -> Option<&'a str> {
+        if rask_stdlib::modules::is_module(spelled) {
+            return Some(spelled);
+        }
+        self.module_aliases.get(spelled).map(String::as_str)
+    }
+
+    /// Record `import m as alias`.
+    pub(super) fn register_module_alias(&mut self, alias: String, module: String) {
+        self.module_aliases.insert(alias, module);
+    }
+
+    /// The stdlib's type of this name, when the program declares its own.
+    fn shadowed_stdlib_type(&self, name: &str) -> Option<TypeId> {
+        let std = *self.stdlib_type_names.get(name)?;
+        (self.type_names.get(name) != Some(&std)).then_some(std)
+    }
+
+    /// A type name as the program wrote it, for a message or a printed value.
+    /// The name itself for every type that has no symbol of its own.
+    pub fn written_name<'a>(&'a self, name: &'a str) -> &'a str {
+        self.written_names.get(name).map_or(name, String::as_str)
+    }
+
+    fn def_name_mut(def: &mut TypeDef) -> &mut String {
+        match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Interface { name, .. }
+            | TypeDef::Union { name, .. }
+            | TypeDef::NominalAlias { name, .. }
+            | TypeDef::Primitive { name, .. } => name,
+        }
     }
 
     /// The name map to consult first, given who's asking.
@@ -374,6 +510,27 @@ impl TypeTable {
     /// The other one, for names the primary doesn't know.
     fn fallback_names(&self) -> &HashMap<String, TypeId> {
         if self.stdlib_mode { &self.type_names } else { &self.stdlib_type_names }
+    }
+
+    /// Was this type declared by the stdlib? A program type of the same name
+    /// shadows it in `type_names`, never in `stdlib_type_names`.
+    fn declared_in_stdlib(&self, id: TypeId) -> bool {
+        self.get(id)
+            .is_some_and(|def| self.stdlib_type_names.get(Self::def_name(def)) == Some(&id))
+    }
+
+    /// A name as the code that declared `owner` reads it.
+    ///
+    /// A stdlib interface's `: Writer` means the stdlib's `Writer` even while
+    /// a program one shadows it, and the program's checks reach stdlib
+    /// interfaces through their parents too (#1329).
+    pub fn resolve_name_as_declared_by(&self, owner: TypeId, name: &str) -> Option<TypeId> {
+        let (primary, fallback) = if self.declared_in_stdlib(owner) {
+            (&self.stdlib_type_names, &self.type_names)
+        } else {
+            (&self.type_names, &self.stdlib_type_names)
+        };
+        primary.get(name).or_else(|| fallback.get(name)).copied()
     }
 
     /// Resolve a type name from the current scope.
@@ -392,14 +549,47 @@ impl TypeTable {
         }
     }
 
+    /// Note who may call a method that isn't public.
+    pub(super) fn record_method_access(
+        &mut self,
+        id: TypeId,
+        method: &str,
+        access: super::method_visibility::MethodAccess,
+    ) {
+        self.method_access.insert((id, method.to_string()), access);
+    }
+
+    /// Who may call this method, when not everyone may.
+    pub(super) fn method_access(
+        &self,
+        id: TypeId,
+        method: &str,
+    ) -> Option<&super::method_visibility::MethodAccess> {
+        self.method_access.get(&(id, method.to_string()))
+    }
+
     /// Every type that declares methods, paired with the declarations carrying them.
     pub fn types_with_methods(&self) -> impl Iterator<Item = (TypeId, &[NodeId])> {
         self.type_method_decls.iter().map(|(id, decls)| (*id, decls.as_slice()))
     }
 
     /// Register a transparent type alias.
+    ///
+    /// Scoped like a declared type: a stdlib alias is the stdlib's and, unless
+    /// the program takes the name, the program's too; a program alias is the
+    /// program's only.
     pub fn register_alias(&mut self, name: String, target: TypeExpr) {
-        self.type_aliases.insert(name, target);
+        if self.stdlib_mode {
+            self.stdlib_aliases.insert(name.clone(), target.clone());
+            self.type_aliases.entry(name).or_insert(target);
+        } else {
+            self.type_aliases.insert(name, target);
+        }
+    }
+
+    /// The aliases the code being checked can see.
+    pub(super) fn aliases(&self) -> &HashMap<String, TypeExpr> {
+        if self.stdlib_mode { &self.stdlib_aliases } else { &self.type_aliases }
     }
 
     /// The type `name` is an alias for, following a chain of aliases that name
@@ -409,11 +599,12 @@ impl TypeTable {
     /// matched against the stub registry by its spelling, and an alias isn't in
     /// there under its own name.
     pub fn alias_target(&self, name: &str) -> Option<&TypeExpr> {
-        let mut target = self.type_aliases.get(name)?;
+        let aliases = self.aliases();
+        let mut target = aliases.get(name)?;
         let mut seen = vec![name];
         // A cycle was rejected at registration; `seen` only keeps a bad table
         // from looping.
-        while let Some(next) = target.bare_name().and_then(|n| self.type_aliases.get(n)) {
+        while let Some(next) = target.bare_name().and_then(|n| aliases.get(n)) {
             let n = target.bare_name().unwrap_or_default();
             if seen.contains(&n) {
                 return None;
@@ -422,6 +613,18 @@ impl TypeTable {
             target = next;
         }
         Some(target)
+    }
+
+    /// `ty` with every transparent alias in it replaced by what it stands for,
+    /// at any depth: `Names?` with `Names = Vec<string>` is `Vec<string>?`.
+    pub fn expand_aliases(&self, ty: &TypeExpr) -> TypeExpr {
+        if self.aliases().is_empty() {
+            return ty.clone();
+        }
+        // `alias_target` follows bare-name chains; a target that holds another
+        // alias deeper in (`Vec<Names>`) is expanded by the recursion. Cycles
+        // were refused at registration, so the recursion ends.
+        ty.substitute(&|name| self.alias_target(name).map(|t| self.expand_aliases(t)))
     }
 
     /// The name an alias stands for, when its target is a plain named type.
@@ -439,7 +642,7 @@ impl TypeTable {
             if current_name == name {
                 return Some(path);
             }
-            let next = self.type_aliases.get(current_name)?;
+            let next = self.aliases().get(current_name)?;
             path.push(next.to_string());
             current = next;
         }
@@ -481,9 +684,73 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The interface an interface reference names: `Mul<f64>` → `Mul`.
-    pub(crate) fn conformance_key(interface: &TypeExpr) -> String {
-        interface.name().unwrap_or_default()
+    /// The name of the interface a reference means, for keys and messages:
+    /// the declaration's own name, however the reference spelled it. `Mul<f64>`
+    /// is `Mul`, and `io.Writer` and `i.Writer` under `import io as i` are both
+    /// `Writer` (#1482). An interface the compiler provides by name only, or
+    /// one nothing declares, is its written name without the module.
+    pub fn interface_name(&self, written: &TypeExpr) -> String {
+        match self.interface_decl(written) {
+            Some(id) => self.type_name(id),
+            None => self.written_member_name(written),
+        }
+    }
+
+    /// `Writer` for `io.Writer` and for `i.Writer` under `import io as i`: the
+    /// reference without the module it was written through.
+    fn written_member_name(&self, written: &TypeExpr) -> String {
+        if let TypeExpr::Named { path, .. } = written {
+            if let [module, rest @ ..] = path.as_slice() {
+                if !rest.is_empty() && self.module_named(module).is_some() {
+                    return rest.join(".");
+                }
+            }
+        }
+        written.name().unwrap_or_default()
+    }
+
+    /// The interface declaration a written reference names. A module-qualified
+    /// one is the module's: `io.Writer` is the stdlib's `Writer` even where the
+    /// program declares its own, in a bound, a conformance header and `any`
+    /// alike (#1467). Dropping the module and looking the bare name up found
+    /// the program's. Anything else is the name as the code being checked
+    /// means it. `None` for an interface the compiler provides by name only.
+    pub fn interface_decl(&self, written: &TypeExpr) -> Option<TypeId> {
+        let is_interface = |id: &TypeId| matches!(self.get(*id), Some(TypeDef::Interface { .. }));
+        if let Some(id) = self.module_interface(written) {
+            return Some(id);
+        }
+        self.get_type_id(&self.written_member_name(written)).filter(is_interface)
+    }
+
+    /// `io.Writer`: the interface a stdlib module declares, when the reference
+    /// is written through one (an `import io as i` alias counts). Never the
+    /// program's interface of the same name, the way `module_type_id` never
+    /// answers with the program's type.
+    pub fn module_interface(&self, written: &TypeExpr) -> Option<TypeId> {
+        let TypeExpr::Named { path, .. } = written else { return None };
+        let [module, member] = path.as_slice() else { return None };
+        let module = self.module_named(module)?;
+        if !rask_stdlib::modules::exports_interface(module, member) {
+            return None;
+        }
+        self.stdlib_type_names
+            .get(member)
+            .copied()
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+    }
+
+    /// A parent `interface`'s declaration lists, as that declaration's own side
+    /// reads it: a stdlib interface's parents are the stdlib's.
+    pub fn parent_interface(&self, interface: TypeId, parent: &TypeExpr) -> Option<TypeId> {
+        self.module_interface(parent)
+            .or_else(|| self.resolve_name_as_declared_by(interface, &self.written_member_name(parent)))
+    }
+
+    /// `interface_decl`, or the compiler-provided interface of that name.
+    pub fn written_interface_ident(&self, written: &TypeExpr) -> InterfaceIdent {
+        self.interface_decl(written)
+            .map_or_else(|| InterfaceIdent::Builtin(self.written_member_name(written)), InterfaceIdent::Declared)
     }
 
     /// GT2/GT3: the key a conformance is filed under — the interface *with its
@@ -493,15 +760,34 @@ impl TypeTable {
     /// type's name, so `Meters implements Mul` and `Meters implements
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
     /// An interface with no parameters keys on its bare name.
-    pub fn applied_conformance_key(&self, interface: &TypeExpr, self_name: &str) -> TypeExpr {
-        let base = Self::conformance_key(interface);
-        let Some(TypeDef::Interface { type_params, .. }) =
-            self.get_type_id(&base).and_then(|id| self.get(id))
-        else {
-            return TypeExpr::named(base);
+    ///
+    /// The interface is the one the code being checked means by the name.
+    pub fn applied_conformance_key(&self, interface: &TypeExpr, self_name: &str) -> ConformanceKey {
+        let iface = self.written_interface_ident(interface);
+        self.applied_key_for(iface, interface, self_name)
+    }
+
+    /// `applied_conformance_key` for an interface already identified.
+    pub fn applied_key_for(
+        &self,
+        iface: InterfaceIdent,
+        interface: &TypeExpr,
+        self_name: &str,
+    ) -> ConformanceKey {
+        let base = match &iface {
+            InterfaceIdent::Declared(id) => self.type_name(*id),
+            InterfaceIdent::Builtin(name) => name.clone(),
+        };
+        let bare = |iface| ConformanceKey { iface, applied: TypeExpr::named(base.clone()) };
+        let type_params = match &iface {
+            InterfaceIdent::Declared(id) => match self.get(*id) {
+                Some(TypeDef::Interface { type_params, .. }) => type_params,
+                _ => return bare(iface),
+            },
+            InterfaceIdent::Builtin(_) => return bare(iface),
         };
         if type_params.is_empty() {
-            return TypeExpr::named(base);
+            return bare(iface);
         }
         let written = interface.args();
         let mut args = Vec::new();
@@ -511,16 +797,173 @@ impl TypeTable {
                 // GT4: no argument and no default. The arity error is
                 // reported at the header; key on what was written so the
                 // conformance still exists for everything else.
-                None => return TypeExpr::named(base),
+                None => return bare(iface),
             };
             args.push(if arg.is_name("Self") { TypeExpr::named(self_name) } else { arg.clone() });
         }
-        TypeExpr::generic(base, args)
+        ConformanceKey { iface, applied: TypeExpr::generic(base, args) }
+    }
+
+    /// `any name`, as the code being checked means it: the interface it
+    /// declares or imports under that name, or one the compiler provides.
+    pub fn interface_object(&self, name: &str) -> Type {
+        let decl = self
+            .get_type_id(name)
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
+        Type::InterfaceObject { interface_name: name.to_string(), decl }
+    }
+
+    /// `any I` for the interface reference as written. A module-qualified
+    /// spelling names the module's interface: `io.Writer` is the stdlib's
+    /// `Writer` even where the program declares one of its own, the same way
+    /// a stdlib signature's `any Writer` is (#1426). Otherwise the name is
+    /// looked up as the table holds it — `io$Writer` when a package folded the
+    /// module prefix into the key. Anything the table doesn't know keeps the
+    /// spelling it was written with, so "no interface named `io.Writer`" still
+    /// names what the author typed.
+    pub fn interface_object_written(&self, written: &TypeExpr) -> Type {
+        if let Some(id) = self.module_interface(written) {
+            return Type::InterfaceObject { interface_name: self.type_name(id), decl: Some(id) };
+        }
+        self.interface_object(&self.interface_name_written(written))
+    }
+
+    fn interface_name_written(&self, written: &TypeExpr) -> String {
+        let path: Vec<String> = match written {
+            TypeExpr::Named { path, .. } => path.clone(),
+            other => vec![other.to_string()],
+        };
+        let joined = path.join(".");
+        match path.as_slice() {
+            _ if self.get_type_id(&joined).is_some() => joined,
+            [head, rest @ ..] if !rest.is_empty() => {
+                let tail = rest.join(".");
+                let prefixed = format!("{head}${tail}");
+                if self.get_type_id(&tail).is_some() {
+                    tail
+                } else if self.get_type_id(&prefixed).is_some() {
+                    prefixed
+                } else {
+                    joined
+                }
+            }
+            _ => joined,
+        }
+    }
+
+    /// A stdlib signature's types as the stdlib reads them. Stub signatures are
+    /// read before any declaration is registered, so their `any I` carries no
+    /// declaration yet; it is the stdlib's `I`, even where a program declares
+    /// its own (#1426).
+    pub fn as_stdlib_reads(&self, ty: &Type) -> Type {
+        let each = |args: &[GenericArg]| -> Vec<GenericArg> {
+            args.iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(self.as_stdlib_reads(t))),
+                    other => other.clone(),
+                })
+                .collect()
+        };
+        match ty {
+            Type::InterfaceObject { interface_name, decl: None } => {
+                let decl = self
+                    .stdlib_type_names
+                    .get(interface_name)
+                    .copied()
+                    .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
+                Type::InterfaceObject { interface_name: interface_name.clone(), decl }
+            }
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.as_stdlib_reads(ok)),
+                err: Box::new(self.as_stdlib_reads(err)),
+            },
+            // A name the program has taken for a type of its own still means
+            // the stdlib's here: `parse` fails with the stdlib's `ParseError`
+            // whatever the program calls its enum (#1333).
+            Type::UnresolvedNamed(name) if self.shadowed_stdlib_type(name).is_some() => {
+                Type::Named(self.shadowed_stdlib_type(name).unwrap())
+            }
+            Type::Generic { base, args } => Type::Generic { base: *base, args: each(args) },
+            Type::UnresolvedGeneric { name, args } => match self.shadowed_stdlib_type(name) {
+                Some(base) => Type::Generic { base, args: each(args) },
+                None => Type::UnresolvedGeneric { name: name.clone(), args: each(args) },
+            },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.as_stdlib_reads(e)).collect()),
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| p.map(|p| self.as_stdlib_reads(p))).collect(),
+                ret: Box::new(self.as_stdlib_reads(ret)),
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// The name an interface goes by after checking, in the backends' tables
+    /// and in vtable symbols: one per declaration.
+    ///
+    /// The plain name, except for a program interface that shadows one the
+    /// stdlib declares. That one gets its `TypeId` attached, so `any Writer` in
+    /// the program and `any Writer` in `io.copy`'s signature reach different
+    /// method lists and different vtables (#1426).
+    pub fn interface_symbol(&self, name: &str, decl: Option<TypeId>) -> String {
+        match decl {
+            Some(id) if self.shadows_stdlib_interface(name, id) => format!("{name}#{}", id.0),
+            _ => name.to_string(),
+        }
+    }
+
+    /// Is `id` a declaration of `name` other than the stdlib's interface of
+    /// that name?
+    fn shadows_stdlib_interface(&self, name: &str, id: TypeId) -> bool {
+        self.stdlib_type_names
+            .get(name)
+            .is_some_and(|std| *std != id && matches!(self.get(*std), Some(TypeDef::Interface { .. })))
+    }
+
+    /// Every declared interface with its id.
+    pub fn interfaces(&self) -> impl Iterator<Item = (TypeId, &str)> {
+        self.types.iter().enumerate().filter_map(|(i, def)| match def {
+            TypeDef::Interface { name, .. } => Some((TypeId(i as u32), name.as_str())),
+            _ => None,
+        })
+    }
+
+    /// The interface a name means to the code being checked.
+    pub fn interface_ident(&self, name: &str) -> InterfaceIdent {
+        self.get_type_id(name)
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+            .map_or_else(|| InterfaceIdent::Builtin(name.to_string()), InterfaceIdent::Declared)
+    }
+
+    /// The stdlib's interface of this name, whatever the program declares.
+    ///
+    /// Operators resolve against `stdlib/ops.rk` (`type.operator-resolution`)
+    /// and auto-derive provides the stdlib's `Equal` and `Debug`; a program's
+    /// own `interface Sub` is neither (#1329).
+    ///
+    /// A check run without the stdlib loaded falls back to the program's.
+    pub fn stdlib_interface_ident(&self, name: &str) -> InterfaceIdent {
+        self.stdlib_type_names
+            .get(name)
+            .or_else(|| self.type_names.get(name))
+            .copied()
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+            .map_or_else(|| InterfaceIdent::Builtin(name.to_string()), InterfaceIdent::Declared)
     }
 
     /// G1: record that a type conforms to an interface (declared or auto-derived).
     pub fn record_conformance(&mut self, type_id: TypeId, interface: &TypeExpr) {
         let key = self.applied_conformance_key(interface, &self.type_name(type_id));
+        self.record_conformance_key(type_id, key);
+    }
+
+    /// G1: record an auto-derived conformance — always to the stdlib's interface.
+    pub fn record_derived_conformance(&mut self, type_id: TypeId, interface: &str) {
+        let iface = self.stdlib_interface_ident(interface);
+        let key = self.applied_key_for(iface, &TypeExpr::named(interface), &self.type_name(type_id));
+        self.record_conformance_key(type_id, key);
+    }
+
+    fn record_conformance_key(&mut self, type_id: TypeId, key: ConformanceKey) {
         let conformers = self.conformers_by_pair.entry(key.clone()).or_default();
         if !conformers.contains(&type_id) {
             conformers.push(type_id);
@@ -530,7 +973,7 @@ impl TypeTable {
 
     /// OR1: every type that conforms to this applied interface, in declaration
     /// order. `Mul<Duration>` answers with the `i64` the stdlib wrote.
-    pub fn conformers_of(&self, applied: &TypeExpr) -> &[TypeId] {
+    pub fn conformers_of(&self, applied: &ConformanceKey) -> &[TypeId] {
         self.conformers_by_pair.get(applied).map_or(&[], |v| v.as_slice())
     }
 
@@ -549,22 +992,78 @@ impl TypeTable {
             .insert(assoc.to_string(), ty);
     }
 
+    /// AT10: a binding read off a generic type's conformance names the type's
+    /// parameters in the declaration's spelling (`type Out = T` on `Cell1<T>`).
+    /// On the instance `Cell1<i32>` that's `i32`.
+    pub fn instantiate_assoc(&self, base: &Type, binding: &Type) -> Type {
+        let Type::Generic { base: id, args } = base else {
+            return binding.clone();
+        };
+        let params = match self.get(*id) {
+            Some(TypeDef::Struct { type_params, .. }) | Some(TypeDef::Enum { type_params, .. }) => type_params,
+            _ => return binding.clone(),
+        };
+        let map: HashMap<String, Type> = params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect();
+        crate::interfaces::substitute_type(binding, &map)
+    }
+
+    /// AT6/AT8: `base.assoc` projected through the applied interface `bound`:
+    /// the binding `base`'s conformance to exactly that interface gives, on
+    /// this instance. `None` when the conformance doesn't exist or says nothing.
+    pub fn project(&self, base: &Type, bound: &TypeExpr, assoc: &str) -> Option<Type> {
+        let id = self.conformance_target(base)?;
+        let binding = self.assoc_binding(id, bound, assoc)?;
+        Some(self.instantiate_assoc(base, binding))
+    }
+
+    /// Which of a parameter's bounds a projection `T.assoc` goes through: the
+    /// one bound whose interface declares `assoc`. `None` if no bound does, or
+    /// if two do — then the projection has no single meaning.
+    pub fn projection_bound<'a>(&self, bounds: &'a [TypeExpr], assoc: &str) -> Option<&'a TypeExpr> {
+        let mut through = bounds.iter().filter(|b| {
+            matches!(
+                self.interface_decl(b).and_then(|id| self.get(id)),
+                Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
+            )
+        });
+        let first = through.next()?;
+        through.next().is_none().then_some(first)
+    }
+
     /// AT6: read an associated type off a conformance. A lookup, never a search.
     pub fn assoc_binding(&self, type_id: TypeId, interface: &TypeExpr, assoc: &str) -> Option<&Type> {
-        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
+        let iface = self.written_interface_ident(interface);
+        self.assoc_binding_to(type_id, iface, interface, assoc)
+    }
+
+    /// `assoc_binding` for an interface already identified.
+    pub fn assoc_binding_to(
+        &self,
+        type_id: TypeId,
+        iface: InterfaceIdent,
+        interface: &TypeExpr,
+        assoc: &str,
+    ) -> Option<&Type> {
+        let key = self.applied_key_for(iface.clone(), interface, &self.type_name(type_id));
         if let Some(t) = self.assoc_bindings.get(&(type_id, key)).and_then(|m| m.get(assoc)) {
             return Some(t);
         }
         // A bare `Mul` asking about a type with exactly one `Mul<...>`
         // conformance still has one answer. Two of them is the caller's
         // problem to disambiguate, and it gets nothing here.
-        let base = Self::conformance_key(interface);
         if !interface.args().is_empty() {
             return None;
         }
         let mut found = None;
         for ((id, key), m) in &self.assoc_bindings {
-            if *id != type_id || Self::conformance_key(key) != base {
+            if *id != type_id || key.iface != iface {
                 continue;
             }
             if let Some(t) = m.get(assoc) {
@@ -665,7 +1164,7 @@ impl TypeTable {
     }
 
     /// XC3: the applied interface keys this type has more than one declaration of.
-    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<TypeExpr> {
+    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<ConformanceKey> {
         self.ambiguous_conformances
             .iter()
             .filter(|(id, _)| *id == type_id)
@@ -678,11 +1177,10 @@ impl TypeTable {
     pub(super) fn conformance_sites(
         &self,
         type_id: TypeId,
-        interface: &TypeExpr,
+        key: &ConformanceKey,
     ) -> &[ConformanceSite] {
-        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         self.conformance_spans
-            .get(&(type_id, key))
+            .get(&(type_id, key.clone()))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -692,6 +1190,19 @@ impl TypeTable {
     pub(super) fn record_declared_at(&mut self, type_id: TypeId, span: Span, owner: TypeOwner) {
         self.declared_at.entry(type_id).or_insert(span);
         self.declared_by.entry(type_id).or_insert(owner);
+    }
+
+    /// Remember the bounds a type's declaration puts on its parameters.
+    pub(super) fn record_param_bounds(&mut self, type_id: TypeId, params: &[rask_ast::decl::TypeParam]) {
+        if params.iter().any(|p| !p.bounds.is_empty()) {
+            let bounds = params.iter().map(|p| (p.name.clone(), p.bound_types())).collect();
+            self.declared_param_bounds.insert(type_id, bounds);
+        }
+    }
+
+    /// The bounds a type's declaration puts on its parameters, in order.
+    pub(super) fn param_bounds(&self, type_id: TypeId) -> &[(String, Vec<rask_ast::ty::TypeExpr>)] {
+        self.declared_param_bounds.get(&type_id).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// XC1: who declares this type. A type with no recorded declaration is a
@@ -719,8 +1230,11 @@ impl TypeTable {
     /// AT6: the associated type `assoc` on this type, when exactly one of its
     /// conformances declares one by that name.
     ///
-    /// Used where the bound that named the projection isn't at hand — resolving
-    /// `T.Out` at a call, once `T` is concrete. Two conformances answering to
+    /// Used only where no bound named the projection. A call to a generic
+    /// function or method reads `T.Out` through `T`'s bound instead
+    /// (`TypeTable::project`), which is what decides between two conformances
+    /// of one interface (#1330). What's left here is a projection on a type's
+    /// own parameter, reached through the receiver. Two conformances answering to
     /// one name have no single answer, and this gives none rather than picking:
     /// disambiguating is the caller's, and `type.operator-resolution/OR1` is
     /// what does it for the operator interfaces.
@@ -740,15 +1254,15 @@ impl TypeTable {
         found
     }
 
-    /// GT3: every applied form of `base` this type conforms to.
-    pub fn applied_conformances(&self, type_id: TypeId, base: &str) -> Vec<TypeExpr> {
+    /// GT3: every applied form of `iface` this type conforms to.
+    pub fn applied_conformances(&self, type_id: TypeId, iface: &InterfaceIdent) -> Vec<TypeExpr> {
         self.conformances
             .get(&type_id)
             .map(|set| {
                 let mut v: Vec<TypeExpr> = set
                     .iter()
-                    .filter(|k| Self::conformance_key(k) == base)
-                    .cloned()
+                    .filter(|k| k.iface == *iface)
+                    .map(|k| k.applied.clone())
                     .collect();
                 v.sort_by_key(|k| k.to_string());
                 v
@@ -764,7 +1278,33 @@ impl TypeTable {
     /// `horn as any Speak` refused for an interface the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, interface: &TypeExpr) -> bool {
-        let base = Self::conformance_key(interface);
+        let iface = self.written_interface_ident(interface);
+        self.declares_conformance_to(type_id, iface, interface)
+    }
+
+    /// Does the type conform to a *different* interface spelled `name`? A stdlib
+    /// `Buffer` implements the stdlib's `Writer`, and a program declaring its own
+    /// `Writer` hasn't changed that (#1329).
+    pub fn conforms_to_namesake(&self, type_id: TypeId, name: &str) -> bool {
+        let meant = self.interface_ident(name);
+        self.conformances.get(&type_id).is_some_and(|set| {
+            set.iter()
+                .any(|k| k.iface != meant && k.applied.name().as_deref() == Some(name))
+        })
+    }
+
+    /// `declares_conformance` to a declared interface named by its id.
+    pub fn declares_conformance_to_decl(&self, type_id: TypeId, interface: TypeId, name: &str) -> bool {
+        self.declares_conformance_to(type_id, InterfaceIdent::Declared(interface), &TypeExpr::named(name))
+    }
+
+    /// `declares_conformance` for an interface already identified.
+    pub fn declares_conformance_to(
+        &self,
+        type_id: TypeId,
+        iface: InterfaceIdent,
+        interface: &TypeExpr,
+    ) -> bool {
         let Some(set) = self.conformances.get(&type_id) else {
             return false;
         };
@@ -772,34 +1312,37 @@ impl TypeTable {
         // for that one. The canonical key fills in defaults and `Self`, so a
         // bare header and its written-out equivalent agree.
         if !interface.args().is_empty() {
-            let key = self.applied_conformance_key(interface, &self.type_name(type_id));
+            let key = self.applied_key_for(iface.clone(), interface, &self.type_name(type_id));
             if set.contains(&key) {
                 return true;
             }
-        } else if set.iter().any(|k| Self::conformance_key(k) == base) {
+        } else if set.iter().any(|k| k.iface == iface) {
             return true;
         }
-        set.iter().any(|declared| {
-            self.interface_extends(&Self::conformance_key(declared), &base, &mut Vec::new())
+        let InterfaceIdent::Declared(target) = iface else {
+            return false;
+        };
+        set.iter().any(|declared| match declared.iface {
+            InterfaceIdent::Declared(id) => self.interface_extends(id, target, &mut Vec::new()),
+            InterfaceIdent::Builtin(_) => false,
         })
     }
 
-    /// Is `target` somewhere in `interface_name`'s super-interface closure? `seen` keeps
+    /// Is `target` somewhere in `interface`'s super-interface closure? Parents
+    /// are named as the interface's own side reads them (#1329). `seen` keeps
     /// a cycle in the graph from recursing forever.
-    fn interface_extends(&self, interface_name: &str, target: &str, seen: &mut Vec<String>) -> bool {
-        if seen.iter().any(|s| s == interface_name) {
+    fn interface_extends(&self, interface: TypeId, target: TypeId, seen: &mut Vec<TypeId>) -> bool {
+        if seen.contains(&interface) {
             return false;
         }
-        seen.push(interface_name.to_string());
-        let Some(TypeDef::Interface { super_interfaces, .. }) =
-            self.get_type_id(interface_name).and_then(|id| self.get(id))
-        else {
+        seen.push(interface);
+        let Some(TypeDef::Interface { super_interfaces, .. }) = self.get(interface) else {
             return false;
         };
-        let parents: Vec<String> = super_interfaces.iter().map(Self::conformance_key).collect();
-        parents
-            .iter()
-            .any(|p| p == target || self.interface_extends(p, target, seen))
+        super_interfaces.iter().any(|p| {
+            self.parent_interface(interface, p)
+                .is_some_and(|pid| pid == target || self.interface_extends(pid, target, seen))
+        })
     }
 
     /// CC1/CC2: record the `where` condition for a conditional conformance.
@@ -809,8 +1352,8 @@ impl TypeTable {
         interface: &TypeExpr,
         bounds: Vec<(String, Vec<TypeExpr>)>,
     ) {
-        self.conformance_conditions
-            .insert((type_id, Self::conformance_key(interface)), bounds);
+        let iface = self.written_interface_ident(interface);
+        self.conformance_conditions.insert((type_id, iface), bounds);
     }
 
     /// CC1: the `where` condition for a conformance, if it's conditional.
@@ -819,14 +1362,14 @@ impl TypeTable {
         type_id: TypeId,
         interface: &TypeExpr,
     ) -> Option<&Vec<(String, Vec<TypeExpr>)>> {
-        self.conformance_conditions.get(&(type_id, Self::conformance_key(interface)))
+        self.conformance_conditions.get(&(type_id, self.written_interface_ident(interface)))
     }
 
     /// Check if a name is registered.
     pub fn contains(&self, name: &str) -> bool {
         self.builtins.contains_key(name)
             || self.type_names.contains_key(name)
-            || self.type_aliases.contains_key(name)
+            || self.aliases().contains_key(name)
     }
 
     /// Get TypeId for a name (user-defined types only).
@@ -945,10 +1488,12 @@ impl TypeTable {
         }
         match ty {
             Type::Named(id) => self.is_transitive_resource_by_id(*id),
-            Type::Generic { base, .. } => {
+            Type::Generic { base, args } => {
                 let full = self.type_name(*base);
                 let name = full.as_str();
-                !Self::is_nonlinear_wrapper(name) && self.is_transitive_resource_by_id(*base)
+                !Self::is_nonlinear_wrapper(name)
+                    && (self.is_transitive_resource_by_id(*base)
+                        || self.instance_slot_owes(*base, args))
             }
             Type::UnresolvedGeneric { name, .. } => {
                 let base = name;
@@ -974,6 +1519,37 @@ impl TypeTable {
             Type::Array { elem, .. } => self.slot_owes(elem),
             _ => false,
         }
+    }
+
+    /// Does a generic struct or enum, at these type arguments, hold a field or
+    /// payload that owes a consume? `Holder<Conn>` does when `Holder<T>` has
+    /// an `item: T`. The declaration alone can't say — `T` is linear only at
+    /// some instantiations — so `is_transitive_resource` was false and a
+    /// `Holder<Conn>` was dropped with no error (#1366).
+    fn instance_slot_owes(&self, base: TypeId, args: &[GenericArg]) -> bool {
+        let (params, slots): (&Vec<String>, Vec<&Type>) = match self.get(base) {
+            Some(TypeDef::Struct { type_params, fields, .. }) => {
+                (type_params, fields.iter().map(|(_, t)| t).collect())
+            }
+            Some(TypeDef::Enum { type_params, variants, .. }) => {
+                (type_params, variants.iter().flat_map(|(_, ts)| ts.iter()).collect())
+            }
+            _ => return false,
+        };
+        let subst: HashMap<String, Type> = params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect();
+        if !subst.values().any(|t| self.holds_linear_value(t)) {
+            return false;
+        }
+        slots
+            .into_iter()
+            .any(|t| self.slot_owes(&crate::interfaces::substitute_type(t, &subst)))
     }
 
     /// A slot inside an aggregate: does it leave the aggregate owing a consume?
@@ -1292,9 +1868,65 @@ impl TypeTable {
             }
             Type::Fn { params, ret } => params
                 .iter()
-                .find_map(|p| self.find_linear_container(p))
+                .find_map(|p| self.find_linear_container(&p.ty))
                 .or_else(|| self.find_linear_container(ret)),
             _ => None,
+        }
+    }
+
+    /// mem.racks/RK14: the node type of a `Rack<T>` inside `ty` whose `T` is
+    /// settled and isn't a struct.
+    ///
+    /// A type parameter or an open variable passes: the rule is checked where
+    /// the node type is concrete.
+    pub fn find_rack_of_non_struct(&self, ty: &Type) -> Option<Type> {
+        let in_args = |args: &[GenericArg]| {
+            args.iter().find_map(|a| match a {
+                GenericArg::Type(t) => self.find_rack_of_non_struct(t),
+                _ => None,
+            })
+        };
+        match ty {
+            Type::Generic { base, args } => {
+                if Some(*base) == self.stdlib_type_names.get("Rack").copied() {
+                    if let Some(GenericArg::Type(node)) = args.first() {
+                        if !self.can_be_rack_node(node) {
+                            return Some((**node).clone());
+                        }
+                    }
+                }
+                in_args(args)
+            }
+            Type::UnresolvedGeneric { args, .. } => in_args(args),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().find_map(|t| self.find_rack_of_non_struct(t))
+            }
+            Type::Array { elem, .. } | Type::RawPtr(elem) => self.find_rack_of_non_struct(elem),
+            Type::Result { ok, err } => {
+                self.find_rack_of_non_struct(ok).or_else(|| self.find_rack_of_non_struct(err))
+            }
+            Type::Fn { params, ret } => params
+                .iter()
+                .find_map(|p| self.find_rack_of_non_struct(&p.ty))
+                .or_else(|| self.find_rack_of_non_struct(ret)),
+            _ => None,
+        }
+    }
+
+    /// A struct, or a type not settled enough to say.
+    fn can_be_rack_node(&self, node: &Type) -> bool {
+        let declared = |id: &TypeId| match self.get(*id) {
+            Some(TypeDef::Struct { .. }) => true,
+            Some(_) => false,
+            None => true,
+        };
+        match node {
+            Type::Named(id) | Type::Generic { base: id, .. } => declared(id),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                self.get_type_id(name).is_none_or(|id| declared(&id))
+            }
+            Type::Var(_) | Type::Error | Type::Never => true,
+            _ => false,
         }
     }
 
@@ -1527,56 +2159,76 @@ impl TypeTable {
     }
 
     pub fn resolve_type_names(&self, ty: &Type) -> Type {
+        self.named(ty, false)
+    }
+
+    /// `resolve_type_names` with each type named as the program wrote it
+    /// (`written_name`): for a message, never for a name anything looks up.
+    pub fn display_type_names(&self, ty: &Type) -> Type {
+        self.named(ty, true)
+    }
+
+    fn name_of(&self, id: TypeId, written: bool) -> String {
+        let name = self.type_name(id);
+        if written { self.written_name(&name).to_string() } else { name }
+    }
+
+    fn named(&self, ty: &Type, written: bool) -> Type {
         match ty {
-            Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
+            Type::Named(id) => Type::UnresolvedNamed(self.name_of(*id, written)),
             Type::Result { ok, err } if **err == Type::None => {
-                Type::option(self.resolve_type_names(ok))
+                Type::option(self.named(ok, written))
             }
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.resolve_type_names(ok)),
-                err: Box::new(self.resolve_type_names(err)),
+                ok: Box::new(self.named(ok, written)),
+                err: Box::new(self.named(err, written)),
             },
             Type::Generic { base, args } => {
                 // Canonicalize Result<T, E> and Option<T> to their first-class variants
                 if Some(*base) == self.result_type_id && args.len() == 2 {
                     if let (GenericArg::Type(ok), GenericArg::Type(err)) = (&args[0], &args[1]) {
                         return Type::Result {
-                            ok: Box::new(self.resolve_type_names(ok)),
-                            err: Box::new(self.resolve_type_names(err)),
+                            ok: Box::new(self.named(ok, written)),
+                            err: Box::new(self.named(err, written)),
                         };
                     }
                 }
                 if Some(*base) == self.option_type_id && args.len() == 1 {
                     if let GenericArg::Type(inner) = &args[0] {
-                        return Type::option(self.resolve_type_names(inner));
+                        return Type::option(self.named(inner, written));
                     }
                 }
                 Type::UnresolvedGeneric {
-                    name: self.type_name(*base),
-                    args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
+                    name: self.name_of(*base, written),
+                    args: args.iter().map(|a| self.named_arg(a, written)).collect(),
                 }
             }
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| self.resolve_type_names(p)).collect(),
-                ret: Box::new(self.resolve_type_names(ret)),
+                params: params.iter().map(|p| p.map(|p| self.named(p, written))).collect(),
+                ret: Box::new(self.named(ret, written)),
             },
-            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.resolve_type_names(e)).collect()),
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.named(e, written)).collect()),
             Type::Array { elem, len } => Type::Array {
-                elem: Box::new(self.resolve_type_names(elem)),
+                elem: Box::new(self.named(elem, written)),
                 len: *len,
             },
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),
-                args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
+                args: args.iter().map(|a| self.named_arg(a, written)).collect(),
             },
-            Type::Union(types) => Type::Union(types.iter().map(|t| self.resolve_type_names(t)).collect()),
+            Type::Union(types) => Type::Union(types.iter().map(|t| self.named(t, written)).collect()),
+            // A message naming `Cell1<i32>.Out` printed `<type#134><i32>.Out`.
+            Type::Assoc { base, name } => Type::Assoc {
+                base: Box::new(self.named(base, written)),
+                name: name.clone(),
+            },
             other => other.clone(),
         }
     }
 
-    fn resolve_generic_arg(&self, arg: &GenericArg) -> GenericArg {
+    fn named_arg(&self, arg: &GenericArg, written: bool) -> GenericArg {
         match arg {
-            GenericArg::Type(ty) => GenericArg::Type(Box::new(self.resolve_type_names(ty))),
+            GenericArg::Type(ty) => GenericArg::Type(Box::new(self.named(ty, written))),
             GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
@@ -1591,31 +2243,87 @@ impl TypeTable {
     /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
     /// (#646).
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
-        error.map_types(&|ty| self.resolve_type_names(ty));
+        error.map_types(&|ty| self.display_type_names(ty));
         error
     }
 }
 
+/// One type parameter in scope.
+#[derive(Debug, Clone)]
+pub struct ScopedTypeParam {
+    name: String,
+    /// Written in a `<…>` list or an owner's header, rather than implied by
+    /// a single letter in a function's signature (PC1).
+    declared: bool,
+}
+
+/// Where the scope stood before a push; `pop_type_params` returns to it.
+#[must_use]
+#[derive(Debug, Clone, Copy)]
+pub struct TypeParamMark(usize);
+
 impl TypeTable {
-    /// Bring a declaration's type parameters into scope for name resolution.
-    /// Returns the previous scope, to be handed back to `pop_type_params`.
-    pub fn push_type_params(&mut self, names: Vec<String>) -> Vec<String> {
-        std::mem::replace(&mut self.type_param_scope, names)
+    /// Bring parameters a declaration writes out into scope, on top of the
+    /// ones already there.
+    pub fn push_type_params(&mut self, names: impl IntoIterator<Item = String>) -> TypeParamMark {
+        self.push_scoped(names, true)
     }
 
-    /// Restore the scope `push_type_params` replaced.
-    pub fn pop_type_params(&mut self, previous: Vec<String>) {
-        self.type_param_scope = previous;
+    /// Bring the single letters a function's signature uses without
+    /// declaring into scope (PC1).
+    pub fn push_implied_type_params(
+        &mut self,
+        names: impl IntoIterator<Item = String>,
+    ) -> TypeParamMark {
+        self.push_scoped(names, false)
+    }
+
+    fn push_scoped(&mut self, names: impl IntoIterator<Item = String>, declared: bool) -> TypeParamMark {
+        let mark = TypeParamMark(self.type_param_scope.len());
+        self.type_param_scope
+            .extend(names.into_iter().map(|name| ScopedTypeParam { name, declared }));
+        mark
+    }
+
+    /// Drop everything pushed since `mark`.
+    pub fn pop_type_params(&mut self, mark: TypeParamMark) {
+        self.type_param_scope.truncate(mark.0);
+    }
+
+    /// Empty the scope, for reading a declaration somewhere it doesn't
+    /// enclose: a callee's signature parsed at a call site sees the callee's
+    /// parameters, not the caller's. Hand the result to `restore_type_params`.
+    pub fn isolate_type_params(&mut self) -> Vec<ScopedTypeParam> {
+        std::mem::take(&mut self.type_param_scope)
+    }
+
+    /// Put back the scope `isolate_type_params` took.
+    pub fn restore_type_params(&mut self, saved: Vec<ScopedTypeParam>) {
+        self.type_param_scope = saved;
     }
 
     /// Is this name a type parameter of whatever is being checked?
     pub fn is_type_param_in_scope(&self, name: &str) -> bool {
-        self.type_param_scope.iter().any(|p| p == name)
+        self.type_param_scope.iter().any(|p| p.name == name)
     }
 
-    /// The names `is_type_param_in_scope` answers yes to.
-    pub fn type_param_scope(&self) -> &[String] {
-        &self.type_param_scope
+    /// Is this name a parameter something encloses by writing it out: the
+    /// owner's, or one in the function's `<…>` list? Implied letters don't
+    /// count.
+    pub fn is_declared_type_param(&self, name: &str) -> bool {
+        self.type_param_scope.iter().any(|p| p.declared && p.name == name)
+    }
+
+    /// The names `is_type_param_in_scope` answers yes to, outermost first,
+    /// each once.
+    pub fn type_param_scope(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in &self.type_param_scope {
+            if !out.contains(&p.name) {
+                out.push(p.name.clone());
+            }
+        }
+        out
     }
 
     /// Record a module-level const's integer value, for array lengths.

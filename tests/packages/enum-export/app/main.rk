@@ -3,7 +3,28 @@
 import libpkg
 import libpkg.Colour
 
+// #1474 — matching through the package name: fieldless, struct-like and
+// tuple-like variants.
+func name_of(s: libpkg.Shape) -> string {
+    match s {
+        libpkg.Shape.Circle { r } => return "circle {r}"
+        libpkg.Shape.Square { side } => return "square {side}"
+        libpkg.Shape.Dot(n) => return "dot {n}"
+    }
+}
+
+func shade(c: libpkg.Colour) -> string {
+    match c {
+        libpkg.Colour.Red => return "warm"
+        libpkg.Colour.Green => return "cool"
+    }
+}
+
 func main() {
     println("{libpkg.label(Colour.Green)}")
+    println("{libpkg.area(libpkg.Shape.Circle { r: 2 })}")
+    println(name_of(libpkg.Shape.Square { side: 3 }))
+    println(name_of(libpkg.Shape.Dot(7)))
+    println(shade(libpkg.Colour.Red))
     return
 }

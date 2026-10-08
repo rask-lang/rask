@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A guard that fails hands the value to the arms below it, in order: the first
+// one whose pattern takes it. Native dispatched once on the tag and, when a
+// guard failed, jumped to the next catch-all. So a later arm naming the same
+// variant was skipped, and with no catch-all below, the match ended with no
+// result at all: `name(Circle(2))` came back as an empty string.
+//
+// A `match` on a string and on a `T? or E` dropped guards entirely, so the
+// guarded arm took every value its pattern matched.
+
+enum Shape {
+    Circle(i64)
+    Square(i64)
+}
+
+func name(s: Shape) -> string {
+    return match s {
+        Circle(r) if r > 10 => "big circle"
+        Circle(r) => "circle"
+        Square(w) => "square"
+    }
+}
+
+func rank(n: i64) -> string {
+    return match n {
+        x if x < 0 => "negative"
+        0 => "zero"
+        x if x > 100 => "huge"
+        _ => "some"
+    }
+}
+
+func kind(s: string) -> string {
+    return match s {
+        "a" => "letter a"
+        x if x.len() > 3 => "long"
+        _ => "short"
+    }
+}
+
+struct Oops {
+    why: string
+}
+
+extend Oops {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+func find(n: i64) -> i64? or Oops {
+    if n < 0 {
+        return Oops { why: "negative" }
+    }
+    if n == 0 {
+        return none
+    }
+    return n
+}
+
+func show(n: i64) -> string {
+    return match find(n) {
+        i64 as v if v > 10 => "big"
+        i64 as v => "small"
+        none => "none"
+        Oops as e => e.message()
+    }
+}
+
+test "a failed guard reaches a later arm for the same variant" {
+    assert name(Shape.Circle(20)) == "big circle"
+    assert name(Shape.Circle(2)) == "circle"
+    assert name(Shape.Square(2)) == "square"
+}
+
+test "guards between literal arms keep their order" {
+    assert rank(-5) == "negative"
+    assert rank(0) == "zero"
+    assert rank(500) == "huge"
+    assert rank(7) == "some"
+}
+
+test "a guard on a string match is tested" {
+    assert kind("a") == "letter a"
+    assert kind("hello") == "long"
+    assert kind("hi") == "short"
+}
+
+test "a guard on a T? or E match is tested" {
+    assert show(20) == "big"
+    assert show(3) == "small"
+    assert show(0) == "none"
+    assert show(-1) == "negative"
+}

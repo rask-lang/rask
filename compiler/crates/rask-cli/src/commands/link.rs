@@ -73,7 +73,9 @@ pub struct LinkOptions {
     /// test` run it and delete it. Only the first kind is worth collecting
     /// debug symbols for — see the `dsymutil` call in `link_executable_with`.
     pub keeps_binary: bool,
-    /// Link the sim runtime (sim.md): `-DRASK_SIM`, and none of green.c.
+    /// Link the sim runtime (sim.md): `-DRASK_SIM`. green.c stays in: under
+    /// sim its workers are threads the seed schedules, so the run queues,
+    /// steals and preemption that ship are the ones a seed replays (#1381).
     pub sim: bool,
 }
 
@@ -141,8 +143,7 @@ impl TargetConfig {
                 // machine exercised that — which is how `spawn` came to fail
                 // at link on macOS for two releases (#1180). This is the seam
                 // that lets a Linux gate check it.
-                // Sim runs tasks on the one-thread-per-task path too.
-                if !no_green() && !sim {
+                if !no_green() {
                     sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
                 }
             }
@@ -274,6 +275,22 @@ fn clang_arch(arch: &str) -> &str {
 /// (#1185). One list, one answer.
 pub fn validate_target(target: &str) -> Result<(), String> {
     rask_codegen::targets::codegen_triple(target).map(|_| ())
+}
+
+/// What `cfg.*` answers for a build: the target's facts, or the host's when
+/// there is no `--target`. Built before the front end runs, since that is
+/// where `comptime if cfg.os` picks its branch.
+pub fn build_cfg(
+    target: Option<&str>,
+    profile: &str,
+    features: Vec<String>,
+) -> Result<rask_comptime::CfgConfig, String> {
+    let Some(t) = target else {
+        return Ok(rask_comptime::CfgConfig::from_host(profile, features));
+    };
+    let (arch, os) = rask_codegen::targets::arch_and_os(t)?;
+    let env = rask_codegen::targets::target_env(t)?;
+    Ok(rask_comptime::CfgConfig::for_target(&arch, &os, &env, profile, features))
 }
 
 // ─── Runtime object cache ────────────────────────────────────────────────

@@ -14,12 +14,13 @@ use rask_ast::Span;
 /// (see `MirType::Container`). So every local made here keeps the plain type
 /// and the full one side by side.
 ///
-/// Only for a container *inside* something. A bare container local is freed by
-/// the pass that tracks handles (`container_drop`); naming it here as well
-/// would have the aggregate walk free it a second time.
+/// A bare container is kept too: `container_drop` frees those, and an element
+/// taken out of a `Vec<Vec<T>>` is a bare `Ptr` that has to say it's a `Vec`
+/// for the right free to be found. The aggregate walk in `rc_insert` skips a
+/// bare one, or it would free it a second time.
 fn split_container(ty: MirType) -> (MirType, Option<MirType>) {
     let erased = ty.without_container_kinds();
-    let unerased = (erased != ty && !matches!(ty, MirType::Container(_))).then_some(ty);
+    let unerased = (erased != ty).then_some(ty);
     (erased, unerased)
 }
 
@@ -145,6 +146,11 @@ impl BlockBuilder {
         id
     }
 
+    /// Is this local one of the function's parameters?
+    pub fn is_param(&self, id: LocalId) -> bool {
+        self.function.params.iter().any(|p| p.id == id)
+    }
+
     /// Look up the MIR type of a local by its ID.
     pub fn local_type(&self, id: LocalId) -> Option<MirType> {
         self.function.locals.iter()
@@ -225,6 +231,31 @@ impl BlockBuilder {
             }
             _ => false,
         }
+    }
+
+    /// `set_call_args`, and call `callee` instead: a constructor whose
+    /// spelling depends on a type the adapters only settle later.
+    pub fn set_call(
+        &mut self,
+        block: BlockId,
+        index: usize,
+        name: &str,
+        callee: &str,
+        args: Vec<crate::MirOperand>,
+    ) -> bool {
+        if !self.set_call_args(block, index, name, args) {
+            return false;
+        }
+        if let Some(MirStmtKind::Call { func, .. }) = self
+            .function
+            .blocks
+            .get_mut(block.0 as usize)
+            .and_then(|b| b.statements.get_mut(index))
+            .map(|s| &mut s.kind)
+        {
+            func.name = callee.to_string();
+        }
+        true
     }
 
     /// Block and index the next pushed statement will land at.

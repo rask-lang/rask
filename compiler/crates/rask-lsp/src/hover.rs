@@ -98,6 +98,7 @@ fn kind_label(kind: &rask_resolve::SymbolKind) -> &'static str {
         rask_resolve::SymbolKind::EnumVariant { .. } => "Enum Variant",
         rask_resolve::SymbolKind::BuiltinType { .. } => "Built-in Type",
         rask_resolve::SymbolKind::BuiltinFunction { .. } => "Built-in Function",
+        rask_resolve::SymbolKind::ModuleFunction { .. } => "Function",
         rask_resolve::SymbolKind::BuiltinModule { .. } => "Built-in Module",
         rask_resolve::SymbolKind::ExternFunction { .. } => "Extern Function",
         rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",

@@ -4,11 +4,11 @@
 use rask_ast::coercion::CoercionSite;
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
+use rask_ast::ty::ParamMode;
 use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
-use super::parse_type::resolve_type_expr;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
@@ -39,7 +39,7 @@ impl TypeChecker {
     /// the same field to resolve: indexing a container and iterating it don't
     /// agree on a Map. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
     /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
-    fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
+    fn iter_elem_type(&mut self, iter_ty: &Type, node: rask_ast::NodeId, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
         if let ContainerElem::Known(elem) = self.container_elem_type(&resolved) {
             return elem;
@@ -52,9 +52,31 @@ impl TypeChecker {
         self.ctx.add_constraint(TypeConstraint::ElementOf {
             container: iter_ty.clone(),
             elem: elem.clone(),
+            node,
             span,
         });
         elem
+    }
+
+    /// SEQ45: `for mutate x in src` needs a source that lends its items for
+    /// writing. A `Sequence<T>` lends them read-only, so the loop compiled and
+    /// every write landed in a copy (#1512). A `Set` reaches the same place:
+    /// it's walked through its `as_sequence()` (SEQ48), and its values are its
+    /// keys besides.
+    pub(super) fn validate_for_mutate_sources(&mut self) {
+        for (node, ty, span) in std::mem::take(&mut self.pending_for_mutate) {
+            let resolved = self.resolve_named(&self.ctx.apply(&ty));
+            let through_as_sequence = self.sequence_coercions.contains_key(&node);
+            let read_only = through_as_sequence
+                || matches!(self.sequence_element(&resolved), Some((_, ParamMode::Borrow)));
+            if read_only {
+                self.errors.push(TypeError::ForMutateReadOnlySource {
+                    found: resolved,
+                    through_as_sequence,
+                    span,
+                });
+            }
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -82,9 +104,10 @@ impl TypeChecker {
                     // asking for a value nothing can produce, and the type
                     // error would blame the initializer for it.
                     self.reject_annotation_binding_type(ty_str, *name_span);
-                    if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
+                    if let Some(declared) = self.resolve_written(ty_str, *name_span) {
                         // ER3/ER4: validate `T or E` in let annotation.
                         self.validate_result_types_in(&declared, *name_span);
+                        self.note_type_bounds(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -97,10 +120,11 @@ impl TypeChecker {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens. Bare T into T or E (E ≠ none)
                     // is rejected so the error-branch coercion stays visible.
-                    self.coerce_into(
+                    self.coerce_into_node(
                         CoercionSite::AnnotatedBinding,
                         init_ty,
                         declared.clone(),
+                        Some(init.id),
                         stmt.span,
                     );
                     self.define_local(name.clone(), declared.clone());
@@ -131,9 +155,10 @@ impl TypeChecker {
                     // asking for a value nothing can produce, and the type
                     // error would blame the initializer for it.
                     self.reject_annotation_binding_type(ty_str, *name_span);
-                    if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
+                    if let Some(declared) = self.resolve_written(ty_str, *name_span) {
                         // ER3/ER4: validate `T or E` in const annotation.
                         self.validate_result_types_in(&declared, *name_span);
+                        self.note_type_bounds(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -145,10 +170,11 @@ impl TypeChecker {
                 let binding_ty = if let Some(declared) = declared_ty {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens — same rule as Mut above.
-                    self.coerce_into(
+                    self.coerce_into_node(
                         CoercionSite::AnnotatedBinding,
                         init_ty,
                         declared.clone(),
+                        Some(init.id),
                         stmt.span,
                     );
                     self.define_local_const(name.clone(), declared.clone());
@@ -271,7 +297,7 @@ impl TypeChecker {
                 // Assignment is a widening position (optionals/O-widen, SYNTAX L521):
                 // the optional shape `T` widens to `T?` at the lvalue, same as a
                 // binding. Bind keeps `T or E` (E ≠ none) strict.
-                self.coerce_into(CoercionSite::Assignment, value_ty, target_ty, stmt.span);
+                self.coerce_into_node(CoercionSite::Assignment, value_ty, target_ty, Some(value.id), stmt.span);
                 if let ExprKind::Ident(name) = &target.kind {
                     self.note_closure_binding(name, value);
                 }
@@ -329,7 +355,10 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, mutate, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
+                if *mutate {
+                    self.pending_for_mutate.push((iter.id, iter_ty.clone(), iter.span));
+                }
                 // std.iteration/I1: a plain `for` yields elements read-only;
                 // `for mutate x in xs` is the mode whose writes reach the
                 // collection. Nothing enforced this, so `for c in xs { c.n += 1 }`
@@ -466,7 +495,7 @@ impl TypeChecker {
                 // iterable. `f` was then typeless for good, and `f.name` had no
                 // type to dispatch a string method from or to infer a Vec's
                 // element from (#931).
-                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {
@@ -953,7 +982,7 @@ impl TypeChecker {
                 return;
             }
             // Own frame, own caller — `try` there is the callee's business.
-            EK::Closure { .. } => return,
+            EK::Closure { .. } | EK::Spawn { .. } => return,
 
             EK::Binary { left, right, .. } => {
                 kids.push(left);

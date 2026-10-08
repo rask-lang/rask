@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task's body is a block (conc.async/S1–S3, E0915). The closure forms are
+// gone: `spawn(|| …)`, `spawn_with(value, |take v: T| …)`, and their `Thread`
+// and `ThreadPool` spellings. Each says what to write instead.
+
+import thread.{Thread, ThreadPool}
+
+func work() -> i64 {
+    return 1
+}
+
+func main() {
+    using Multitasking {
+        // ERROR: `spawn` takes a block [E0915]
+        let a = spawn(|| { return work() })
+        println("{a.join()!}")
+
+        let n = 5
+        // ERROR: `spawn_with` is gone; the block captures `n` [E0915]
+        let b = spawn_with(n, |take n: i64| { return n + 1 })
+        println("{b.join()!}")
+    }
+
+    // ERROR: an OS thread starts with a block too [E0915]
+    let t = Thread.spawn(|| { return work() })
+    println("{t.join()!}")
+
+    using ThreadPool {
+        // ERROR: and a pool job [E0915]
+        let j = ThreadPool.spawn(|| { return work() })
+        println("{j.join()!}")
+    }
+
+    // Fine: the block forms.
+    using Multitasking {
+        let c = spawn { work() }
+        println("{c.join()!}")
+    }
+    let u = Thread.spawn { work() }
+    println("{u.join()!}")
+}

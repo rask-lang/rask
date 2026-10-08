@@ -203,15 +203,14 @@ func main() -> void or Error {
         let server = try http.listen("0.0.0.0:8080")
         ensure server.close()
 
-        let serve = spawn(|| {
+        let serve = spawn {
             while !cancelled() {
                 let (req, responder) = try server.accept()
-                spawn(|| {
-                    ensure responder.respond(Response.internal_error("error"))
+                spawn {
                     responder.respond(handle(req))
-                }).detach()
+                }.detach()
             }
-        })
+        }
 
         signals.receive()          // wait for Ctrl-C or SIGTERM
         let _ = serve.cancel()     // stop taking connections
@@ -324,11 +323,11 @@ if !output.success() {
 let signals = try os.signals([Signal.Interrupt, Signal.Terminate])
 
 // In a select or spawn, wait for signal
-spawn(|| {
+spawn {
     let sig = try signals.receive()
     println("Shutting down on {sig}...")
     shutdown_server()
-}).detach()
+}.detach()
 ```
 
 ### See Also

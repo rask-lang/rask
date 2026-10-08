@@ -17,6 +17,8 @@ Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow
 | **PM2b: Deleting** | Mutate + delete | `deleting param: T` | `f(deleting x)` — marker required (PM4) | Value still valid; links into it are not |
 | **PM3: Take** | Take | `take param: T` | `f(x)` — no marker | Value invalid |
 
+The mode is part of the function's type: `take` in `func stash(take p: Vec<i64>)` makes its value a `func(take Vec<i64>)`, and a call through that value moves `p`'s argument exactly as `stash(v)` does (`type.functions/FT1`).
+
 | Rule | Description |
 |------|-------------|
 | **PM4: Call-site mutate marker** | An argument passed to a `mutate` parameter is written `mutate arg` at the call site. Omitting it is a compile error with the one-token fix. Method receivers are exempt: `player.take_damage(10)` needs no marker — the receiver is understood to be the thing operated on |

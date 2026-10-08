@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task block written in a generic function. It captures `x: T`, so whether
+// the task may start depends on what `T` is: `keep<i64>`'s does, and
+// `keep<Link<Node>>`'s is refused, since the link would reach another task.
+import memory.{Rack, Link}
+import async.Handle
+
+struct Node {
+    id: i64
+}
+
+func keep<T>(x: T) -> Handle<i64> {
+    return spawn {
+        let y = x
+        1
+    }
+}
+
+func main() {
+    using Multitasking {
+        mut rack: Rack<Node> = Rack.new()
+        let a = rack.insert(Node { id: 1 })
+        let plain = keep(7)
+        println("{plain.join()!}")
+        println("before")
+        let linked = keep(a)
+        println("{linked.join()!}")
+    }
+}

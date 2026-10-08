@@ -391,10 +391,6 @@ Ships open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
-- [#1381](https://github.com/rask-lang/rask/issues/1381): sim picks the next
-  task itself rather than driving green.c's queues from the seed.
-- [#1379](https://github.com/rask-lang/rask/issues/1379): `cli_calculator`
-  leaks its expression tree.
 - macOS runs tasks on threads until it has a kqueue poller.
 
 ## v0.6 — The stdlib matches its own spec

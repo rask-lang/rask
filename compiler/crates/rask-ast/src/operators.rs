@@ -63,14 +63,18 @@ pub fn is_unary_operator_interface(interface_base: &str) -> bool {
 ///
 /// `target_ty` is the `extend` header's type, which is what `Rhs` defaults to
 /// (`type.generics/GT4`): `Point implements Add` is `Add<Point>`.
+///
+/// `interface_name` is the interface's own name as the checker identified it
+/// (`TypedProgram::conformance_interfaces`), never the header's text:
+/// `ops.Mul<f64>` and `o.Mul<f64>` under `import ops as o` are both `Mul`.
 pub fn conformance_method_name(
     target_ty: &TypeExpr,
-    interface: Option<&TypeExpr>,
+    interface: &TypeExpr,
+    interface_name: &str,
     method: &str,
 ) -> Option<String> {
-    let interface = interface?;
     let rhs = interface.args().first().and_then(TypeExpr::name);
-    filed_operator_method(&target_ty.name()?, &interface.name()?, rhs.as_deref(), method)
+    filed_operator_method(&target_ty.name()?, interface_name, rhs.as_deref(), method)
 }
 
 /// `conformance_method_name` on names: the receiver's, the interface's, and the
@@ -125,7 +129,7 @@ mod tests {
     fn the_applied_argument_goes_into_the_name() {
         let iface = TypeExpr::generic("Mul", vec![n("f64")]);
         assert_eq!(
-            conformance_method_name(&n("Meters"), Some(&iface), "mul").as_deref(),
+            conformance_method_name(&n("Meters"), &iface, "Mul", "mul").as_deref(),
             Some("mul$f64")
         );
     }
@@ -133,20 +137,29 @@ mod tests {
     #[test]
     fn a_bare_header_means_the_receiver() {
         assert_eq!(
-            conformance_method_name(&n("Point"), Some(&n("Add")), "add").as_deref(),
+            conformance_method_name(&n("Point"), &n("Add"), "Add", "add").as_deref(),
             Some("add$Point")
         );
     }
 
     #[test]
     fn a_unary_operator_keeps_its_name() {
-        assert_eq!(conformance_method_name(&n("Point"), Some(&n("Neg")), "neg"), None);
+        assert_eq!(conformance_method_name(&n("Point"), &n("Neg"), "Neg", "neg"), None);
     }
 
     #[test]
     fn a_method_the_interface_did_not_ask_for_keeps_its_name() {
         let iface = TypeExpr::generic("Mul", vec![n("f64")]);
-        assert_eq!(conformance_method_name(&n("Meters"), Some(&iface), "scaled"), None);
+        assert_eq!(conformance_method_name(&n("Meters"), &iface, "Mul", "scaled"), None);
+    }
+
+    #[test]
+    fn a_qualified_header_files_under_the_interface_it_names() {
+        let iface = TypeExpr::Named { path: vec!["o".into(), "Mul".into()], args: vec![n("f64")] };
+        assert_eq!(
+            conformance_method_name(&n("Meters"), &iface, "Mul", "mul").as_deref(),
+            Some("mul$f64")
+        );
     }
 
     #[test]

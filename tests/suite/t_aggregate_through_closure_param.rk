@@ -50,10 +50,12 @@ test "a word-sized struct through a closure parameter" {
     assert f(x).a == 42
 }
 
+// `Big` is past the 16-byte copy threshold, so the closure only borrows it
+// (mem.closures/CP1) and hands back a copy (#1458).
 test "a wider struct through a closure parameter" {
     let x = Big { a: 1, b: 2, c: 3 }
     let f = |p: Big| {
-        return p
+        return p.clone()
     }
     assert f(x).b == 2
 }

@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a non-Copy field read given a second owner (E0909)
+//
+// A field read is a view (mem.borrowing/S1), and the place it's assigned to
+// owns what it holds, so `out.items = src.items` is one Vec with two owners.
+// From a borrowed parameter this was reported as "cannot write to `src`
+// while it is being read", naming the variable nothing wrote. From a local
+// it compiled: the interpreter shared one Vec between both names and native
+// freed it twice (#1283).
+//
+// Every other way to hand the read to an owner is the same rule: a struct
+// literal, a tuple, a variant payload, a `Heap`, a `take` argument, a push,
+// and a `let` that names the view first. Those compiled after #1283, and
+// native freed the caller's Vec (#1459).
+
+import memory.Heap
+
+struct Bag {
+    public items: Vec<i64>
+    public count: i64
+}
+
+enum Holder {
+    One(Vec<i64>)
+    Zero
+}
+
+enum Chain {
+    Link(i64, Heap<Chain>)
+    End
+}
+
+struct Stack {
+    public chain: Chain
+}
+
+func eat(take v: Vec<i64>) -> u64 {
+    return v.len()
+}
+
+func from_borrowed(src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    // ERROR: `out.items` and `src.items` would be the same `Vec`
+    out.items = src.items
+    return out
+}
+
+func from_taken(take src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    // ERROR: a `take` parameter's field is still a view
+    out.items = src.items
+    return out
+}
+
+func from_local() -> u64 {
+    let a = Bag { items: [1, 2], count: 2 }
+    mut out = Bag { items: [], count: 0 }
+    // ERROR: a local's field is still a view
+    out.items = a.items
+    out.items.push(9)
+    return a.items.len()
+}
+
+func into_variable(src: Bag) -> u64 {
+    mut v: Vec<i64> = []
+    // ERROR: a variable is a place too
+    v = src.items
+    return v.len()
+}
+
+func into_literal(src: Bag) -> Bag {
+    // ERROR: the new `Bag` would share its `items` with `src.items`
+    return Bag { items: src.items, count: 0 }
+}
+
+func into_taken_literal(take src: Bag) -> Bag {
+    // ERROR: a `take` parameter's field is still a view
+    return Bag { items: src.items, count: 1 }
+}
+
+func into_tuple(src: Bag) -> (Vec<i64>, i64) {
+    // ERROR: a tuple element owns what it holds
+    return (src.items, 1)
+}
+
+func into_payload(src: Bag) -> Holder {
+    // ERROR: so does a variant's payload
+    return Holder.One(src.items)
+}
+
+func into_heap(src: Bag) -> u64 {
+    // ERROR: a box owns what it holds
+    let h = Heap(src.items)
+    ensure drop(h)
+    return 0
+}
+
+func into_take_arg(src: Bag) -> u64 {
+    // ERROR: a `take` parameter is an owner
+    return eat(src.items)
+}
+
+func into_push(src: Bag) -> Vec<Vec<i64>> {
+    mut out: Vec<Vec<i64>> = []
+    // ERROR: `push` takes its value
+    out.push(src.items)
+    return out
+}
+
+func via_let(src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    let tmp = src.items
+    // ERROR: `tmp` is the same view under its own name
+    out.items = tmp
+    return out
+}
+
+func via_let_into_literal() -> Bag {
+    let a = Bag { items: [1], count: 1 }
+    let tmp = a.items
+    // ERROR: a local's field, named, then stored
+    return Bag { items: tmp, count: a.count }
+}
+
+func via_let_returned(src: Bag) -> Vec<i64> {
+    let tmp = src.items
+    // ERROR: returning the view hands the caller its own Vec
+    return tmp
+}
+
+// Legal: a copy of its own, and a Copy field.
+func copies(src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    out.items = src.items.clone()
+    out.count = src.count
+    return out
+}
+
+// Legal: a view read where it is.
+func reads(src: Bag) -> u64 {
+    let tmp = src.items
+    return tmp.len() + eat(src.items.clone())
+}
+
+// Legal: the new value is built out of the place it replaces, so the old
+// one moves in rather than being shared.
+func push_front(mutate s: Stack, v: i64) {
+    s.chain = Chain.Link(v, Heap(s.chain))
+}
+
+func main() {}

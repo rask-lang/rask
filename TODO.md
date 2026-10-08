@@ -52,6 +52,8 @@ Percentages are rough coverage vs spec.
 - [ ] **No unsafe/atomics memory model** — no written memory model or UB catalog for the unsafe/atomics boundary (#527).
 - [ ] **`x?` narrowing contradicts the no-flow-typing spec** — `if x?` narrows `x` at runtime on both backends, but the spec says there's no flow typing and the checker agrees elsewhere. Needs a ruling (#773).
 
+- [ ] **Partial moves out of owned values** — `Bag { items: src.items }` from `take src` is E0909 today: a field read is always a view. A function that owns the root should be able to move one field out and free the rest. Strict for 0.5 (#1459); the checker work is #1501.
+
 - [ ] **Task-local storage syntax** — Deferred until M:N scheduler is real and explicit param passing proves inadequate.
 - [ ] **String C interop** — `as_c_str()`, `string.from_c()`.
 - [ ] **Small string optimization (SSO)** — Hybrid layout: inline ≤15 bytes (no heap, no refcount), refcounted heap for larger. Eliminates atomic overhead for the common case. See `comp.string-refcount-elision` for the heap path.

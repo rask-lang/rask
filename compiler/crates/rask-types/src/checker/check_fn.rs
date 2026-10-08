@@ -6,11 +6,9 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 
-use super::declarations::{for_each_unresolved_name, is_type_param_name, signature_type_param_names};
+use super::declarations::{for_each_unresolved_name, is_type_param_name};
 use super::errors::TypeError;
-use super::parse_type::resolve_type_expr;
 use rask_ast::ty::TypeExpr;
-use super::type_defs::TypeDef;
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -46,7 +44,8 @@ impl TypeChecker {
         return copy.then(|| t.to_string());
     }
 
-    /// Check a function with its own type parameters in scope.
+    /// Check a function with its own type parameters in scope, on top of its
+    /// owner's.
     ///
     /// A declared parameter has to win over a type of the same name for as long
     /// as this signature and body are being checked — `func first<Output>(xs:
@@ -55,8 +54,13 @@ impl TypeChecker {
     /// rather than pushing inline because the scope has to come back off on
     /// every path out.
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
-        let params = super::declarations::signature_type_param_names(f);
-        let outer = self.types.push_type_params(params);
+        let declared: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
+        let implied: Vec<String> = super::declarations::signature_type_param_names(f)
+            .into_iter()
+            .filter(|n| !declared.contains(n))
+            .collect();
+        let outer = self.types.push_type_params(declared);
+        let _ = self.types.push_implied_type_params(implied);
         self.check_fn_scoped(f);
         self.types.pop_type_params(outer);
     }
@@ -96,38 +100,25 @@ impl TypeChecker {
         let inferred = self.inferred_fn_types.get(&f.name).cloned();
 
         let ret_ty = if let Some(ok) = inferred_error_ok {
+            // Resolved here either way: the pre-registration doesn't report.
+            let ok_ty = self.resolve_written(ok, f.span).unwrap_or(Type::Error);
             // `or _` — reuse the pre-registered Result with fresh error var
             if let Some((_, ref ret_var)) = inferred {
                 ret_var.clone()
             } else {
                 // Fallback: the written ok type with a fresh error var
-                let ok_ty = resolve_type_expr(ok, &self.types).unwrap_or(Type::Error);
                 Type::Result {
                     ok: Box::new(ok_ty),
                     err: Box::new(self.ctx.fresh_var()),
                 }
             }
         } else if let Some(t) = &f.ret_ty {
-            resolve_type_expr(t, &self.types).unwrap_or(Type::Error)
+            self.resolve_written(t, f.span).unwrap_or(Type::Error)
         } else if let Some((_, ref ret_var)) = inferred {
             ret_var.clone()
         } else {
             Type::Unit
         };
-        // PC1/PC2: type params in scope for this signature — explicit <T>,
-        // implicit single letters, and the enclosing type's params (methods).
-        let mut sig_type_params = signature_type_param_names(f);
-        if let Some(Type::Named(id)) = &self.current_self_type {
-            if let Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) =
-                self.types.get(*id)
-            {
-                for tp in type_params {
-                    if !sig_type_params.contains(tp) {
-                        sig_type_params.push(tp.clone());
-                    }
-                }
-            }
-        }
         // #314: record interface bounds so the body can call interface methods on a
         // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
         // `where` bounds already folded into `type_params` by the parser.
@@ -141,18 +132,10 @@ impl TypeChecker {
                 self.current_type_param_bounds
                     .entry(tp.name.clone())
                     .or_default()
-                    .extend(tp.bounds.iter().cloned());
+                    .extend(tp.bound_types());
             }
         }
-        // The method's own parameters on top of the extend header's, which
-        // `check_decl` put there. Bounds don't matter here — the question is
-        // only whether the name stands for a caller-chosen type.
-        let saved_params_in_scope = self.type_params_in_scope.clone();
-        self.type_params_in_scope
-            .extend(f.type_params.iter().map(|tp| tp.name.clone()));
 
-        // PC2: unknown PascalCase names in the return type are errors.
-        self.validate_signature_names(&ret_ty, &sig_type_params, f.span);
         // ER3/ER4: validate every `T or E` that appears in the return type.
         self.validate_result_types_in(&ret_ty, f.span);
         self.current_return_type = Some(ret_ty);
@@ -222,9 +205,6 @@ impl TypeChecker {
             }
         }
 
-        // Reset multitasking depth for each function body
-        self.multitasking_depth = 0;
-
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
@@ -239,22 +219,21 @@ impl TypeChecker {
                 continue;
             }
             // GC1: Look up pre-created type var for inferred params
-            let resolved = param.ty.as_ref().map(|t| resolve_type_expr(t, &self.types));
-            let ty = if resolved.is_none() {
-                if let Some((ref pvars, _)) = inferred {
-                    pvars.iter()
-                        .find(|(name, _)| name == &param.name)
-                        .map(|(_, ty)| ty.clone())
-                        .unwrap_or_else(|| self.ctx.fresh_var())
-                } else {
-                    self.ctx.fresh_var()
+            let resolved = param.ty.as_ref().map(|t| self.resolve_written(t, param.name_span));
+            let ty = match resolved {
+                None => {
+                    if let Some((ref pvars, _)) = inferred {
+                        pvars.iter()
+                            .find(|(name, _)| name == &param.name)
+                            .map(|(_, ty)| ty.clone())
+                            .unwrap_or_else(|| self.ctx.fresh_var())
+                    } else {
+                        self.ctx.fresh_var()
+                    }
                 }
-            } else if let Some(Ok(ty)) = resolved {
-                // PC2: unknown PascalCase names in parameter types are errors.
-                self.validate_signature_names(&ty, &sig_type_params, param.name_span);
-                ty
-            } else {
-                continue;
+                Some(Some(ty)) => ty,
+                // Reported. Still bound, so its uses don't read as undefined.
+                Some(None) => Type::Error,
             };
             // ER3/ER4: validate nested `T or E` in parameter types.
             self.validate_result_types_in(&ty, param.name_span);
@@ -357,7 +336,6 @@ impl TypeChecker {
         self.current_return_type = None;
         self.allowed_warnings = old_allowed;
         self.current_type_param_bounds = saved_type_param_bounds;
-        self.type_params_in_scope = saved_params_in_scope;
         self.in_unsafe = was_unsafe;
 
         // ER20: Restore outer accumulation state
@@ -370,10 +348,11 @@ impl TypeChecker {
         }
     }
 
-    /// PC2: every PascalCase name in an explicit signature type must resolve
-    /// to a declared type, a stdlib type, or a type parameter. A typo'd type
-    /// name must error here, not silently become a generic parameter.
-    pub(super) fn validate_signature_names(&mut self, ty: &Type, type_params: &[String], span: Span) {
+    /// PC2: the names in a written type that name nothing. Every name has to
+    /// resolve to a declared type, a stdlib type, or a type parameter in
+    /// scope; a typo'd type name must error, not silently become a generic
+    /// parameter.
+    pub(super) fn unknown_type_names(&self, ty: &Type) -> Vec<String> {
         let mut unknown: Vec<String> = Vec::new();
         {
             let types = &self.types;
@@ -383,7 +362,7 @@ impl TypeChecker {
                 if is_type_param_name(name) {
                     return;
                 }
-                if type_params.iter().any(|p| p == name) {
+                if types.is_type_param_in_scope(name) {
                     return;
                 }
                 // Placeholders and specials that legitimately stay unresolved.
@@ -399,10 +378,13 @@ impl TypeChecker {
                 // there is nothing to call on one, `Heap(…)` makes it and `*`
                 // and `drop` are the whole vocabulary. It stayed off this list
                 // while the parser unwrapped `Heap<T>` to `T` and the name
-                // never reached here (#1256).
+                // never reached here (#1256). `Atomic<T>` is compiler-provided
+                // the same way: its methods live in the checker, not a stub.
+                // Only signatures were asked while nobody wrote one there; a
+                // `const` annotation is where it turned up (#1484).
                 if name == "Self"
                     || name.starts_with('_')
-                    || matches!(name, "Iterator" | "Error" | "Heap")
+                    || matches!(name, "Iterator" | "Error" | "Heap" | "Atomic")
                 {
                     return;
                 }
@@ -436,7 +418,7 @@ impl TypeChecker {
                 }
                 if types.get_type_id(name).is_some()
                     || types.builtins.contains_key(name)
-                    || types.type_aliases.contains_key(name)
+                    || types.aliases().contains_key(name)
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
                 {
                     return;
@@ -446,10 +428,13 @@ impl TypeChecker {
                 }
             });
         }
-        for name in unknown {
-            let suggestion = self.closest_type_name(&name);
-            self.errors.push(TypeError::UnknownTypeName { name, suggestion, span });
-        }
+        unknown
+    }
+
+    /// Report a name `unknown_type_names` found, with a "did you mean".
+    pub(super) fn report_unknown_type_name(&mut self, name: String, span: Span) {
+        let suggestion = self.closest_type_name(&name);
+        self.errors.push(TypeError::UnknownTypeName { name, suggestion, span });
     }
 
     /// Closest declared type name by edit distance, for "did you mean" hints.
@@ -459,7 +444,7 @@ impl TypeChecker {
             .type_names
             .keys()
             .chain(self.types.builtins.keys())
-            .chain(self.types.type_aliases.keys())
+            .chain(self.types.aliases().keys())
             .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
             // A module isn't a type, so it's never the fix for a type position.
             // `str` used to suggest `std`, and `st` still would.
@@ -615,7 +600,7 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind as EK;
         match &expr.kind {
             // Its own frame, its own return.
-            EK::Closure { .. } => false,
+            EK::Closure { .. } | EK::Spawn { .. } => false,
             EK::Block(body)
             | EK::Unsafe { body }
             | EK::Comptime { body }

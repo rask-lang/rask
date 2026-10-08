@@ -20,8 +20,10 @@ pub mod warnings;
 
 use std::collections::HashMap;
 
-use rask_ast::Span;
+use rask_ast::{NodeId, Span};
 use rask_ast::decl::Decl;
+use rask_ast::expr::Expr;
+use rask_ast::ty::TypeExpr;
 
 /// Effect mask per function (FX1, EF1).
 ///
@@ -70,7 +72,7 @@ impl Effects {
             (false, false, true) => "[mutation]",
             (true, false, true) => "[io, mutation]",
             (true, true, true) => "[io, async, mutation]",
-            // AS3: Async implies IO, so async without io shouldn't happen.
+            // A function that only spawns: concurrency, nothing waited on.
             (false, true, false) => "[async]",
             (false, true, true) => "[async, mutation]",
         }
@@ -101,14 +103,48 @@ pub struct EffectWarning {
     pub why: Option<String>,
 }
 
+/// The checker's answer for each method call it resolved, keyed by the
+/// call's node: `"Type.method"`, with the receiver's declared type
+/// (`Handle.join` for `t.join()` on a `Handle<i64>`).
+pub type MethodTargets = HashMap<NodeId, String>;
+
 /// Run effect inference on a set of declarations.
 ///
 /// Returns the per-function effect map and any warnings (CW1/CW2).
-/// Call after type checking — no AST modifications.
-pub fn infer_effects(decls: &[Decl]) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(decls);
-    let warnings = warnings::detect(decls, &effects, &runtime_only);
+/// Call after type checking, with what it resolved — no AST modifications.
+pub fn infer_effects(decls: &[Decl], targets: &MethodTargets) -> (EffectMap, Vec<EffectWarning>) {
+    let (effects, runtime_only) = infer::infer_with_reach(decls, targets);
+    let warnings = warnings::detect(decls, &effects, &runtime_only, targets);
     (effects, warnings)
+}
+
+/// The effect-map key for a method declared in `extend Target`.
+pub(crate) fn method_key(target: &TypeExpr, method: &str) -> String {
+    let ty = target.name().unwrap_or_else(|| target.to_string());
+    format!("{ty}.{method}")
+}
+
+/// The names a method call counts as calling.
+///
+/// The checker's `Type.method` when it resolved the call. A call it didn't
+/// resolve falls back to how it's spelled: `recv.method` plus the bare
+/// method name. Spelling alone classed `t.join()` by the variable `t`, so a
+/// call through any variable missed every `Type.method` source (#1418).
+pub(crate) fn method_callees(
+    call: NodeId,
+    object: &Expr,
+    method: &str,
+    targets: &MethodTargets,
+) -> Vec<String> {
+    if let Some(name) = targets.get(&call) {
+        return vec![name.clone()];
+    }
+    let mut names = Vec::new();
+    if let Some(recv) = object.name() {
+        names.push(format!("{recv}.{method}"));
+    }
+    names.push(method.to_string());
+    names
 }
 
 #[cfg(test)]

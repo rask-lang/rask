@@ -54,7 +54,7 @@ pub fn evaluate_comptime_globals(
     //
     // Only a top-level const can carry `@comptime_quota`: a `let … = comptime`
     // inside a body has nowhere to write an attribute.
-    let mut comptime_consts: Vec<(String, String, &rask_ast::expr::Expr, Option<usize>)> = Vec::new();
+    let mut comptime_consts: Vec<(String, String, &rask_ast::expr::Expr, Option<usize>, Option<&rask_ast::ty::TypeExpr>)> = Vec::new();
     for decl in decls {
         match &decl.kind {
             DeclKind::Const(c) => {
@@ -73,7 +73,7 @@ pub fn evaluate_comptime_globals(
                             ),
                         }
                     }
-                    comptime_consts.push((c.name.clone(), c.name.clone(), &c.init, quota));
+                    comptime_consts.push((c.name.clone(), c.name.clone(), &c.init, quota, c.ty.as_ref()));
                 }
             }
             // Keyed by the body it lives in. A bare local name isn't unique
@@ -86,6 +86,7 @@ pub fn evaluate_comptime_globals(
                         rask_mir::lower::comptime_local_key(&f.name, name),
                         name.clone(),
                         init,
+                        None,
                         None,
                     ));
                 }
@@ -102,6 +103,7 @@ pub fn evaluate_comptime_globals(
                         name.clone(),
                         init,
                         None,
+                        None,
                     ));
                 }
             }
@@ -111,10 +113,11 @@ pub fn evaluate_comptime_globals(
 
     let mut globals = HashMap::new();
 
-    for (key, name, init, quota) in comptime_consts {
+    for (key, name, init, quota, declared) in comptime_consts {
         // MIR/Miri fast path.
         let mut hard = None;
-        if let Some(meta) = try_eval_comptime_mir(&key, init, typed, mono, decls, quota, &mut hard) {
+        if let Some(mut meta) = try_eval_comptime_mir(&key, init, typed, mono, decls, quota, &mut hard) {
+            fit_to_declared(&mut meta, declared);
             globals.insert(key, meta);
             continue;
         }
@@ -129,7 +132,7 @@ pub fn evaluate_comptime_globals(
         match comptime_interp.eval_expr(init) {
             Ok(val) => match val.serialize() {
                 Some(ser) => {
-                    globals.insert(key, ComptimeGlobalMeta {
+                    let mut meta = ComptimeGlobalMeta {
                         bytes: ser.bytes,
                         string_relocs: ser.string_relocs,
                         elem_count: val.elem_count(),
@@ -138,7 +141,9 @@ pub fn evaluate_comptime_globals(
                         map_types: val
                             .map_types()
                             .map(|(k, v)| (k.to_string(), v.to_string())),
-                    });
+                    };
+                    fit_to_declared(&mut meta, declared);
+                    globals.insert(key, meta);
                 }
                 // Folded, but the value has no constant representation — a
                 // gap like any other, and the const runs at runtime.
@@ -154,6 +159,35 @@ pub fn evaluate_comptime_globals(
     check_comptime_field_names(decls, &mut comptime_interp, &mut diags);
 
     (globals, diags)
+}
+
+/// A folded integer at the width the const declares.
+///
+/// The evaluator gives a literal its own width (`i64`), and the global it
+/// records is read back at whatever width it says. `const C: u64 = comptime {
+/// 18446744073709551615 }` then read back as `-1` (#1399). The bytes are
+/// re-encoded little-endian, sign-extended from what the evaluator produced.
+fn fit_to_declared(meta: &mut ComptimeGlobalMeta, declared: Option<&rask_ast::ty::TypeExpr>) {
+    let width = |p: &str| match p {
+        "i8" | "u8" => Some(1),
+        "i16" | "u16" => Some(2),
+        "i32" | "u32" => Some(4),
+        "i64" | "u64" => Some(8),
+        "i128" | "u128" => Some(16),
+        _ => None,
+    };
+    let Some(want) = declared.and_then(|t| t.name()) else { return };
+    let (Some(have_w), Some(want_w)) = (width(&meta.type_prefix), width(&want)) else { return };
+    if meta.bytes.len() < have_w {
+        return;
+    }
+    let mut buf = [0u8; 16];
+    buf[..have_w].copy_from_slice(&meta.bytes[..have_w]);
+    if meta.type_prefix.starts_with('i') && buf[have_w - 1] & 0x80 != 0 {
+        buf[have_w..].fill(0xff);
+    }
+    meta.bytes = buf[..want_w].to_vec();
+    meta.type_prefix = want.to_string();
 }
 
 /// CT53: `value.(comptime { … })` names a field, so the block has to finish and

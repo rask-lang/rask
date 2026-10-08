@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate self` Vec method called on a fixed array changes the array.
+//
+// Natively an array receiver is copied into a temporary Vec so the shared Vec
+// lowering has a header to read. `sort`, `reverse`, `swap`, `set` and
+// `sort_by` changed that copy and nothing wrote it back, so
+// `mut a = [3, 1, 2]; a.sort()` stayed `3 1 2` (#1405). The copy also took
+// the array's strings over: two method calls on one `[string; 3]` released
+// every string twice.
+
+struct Entry {
+    rank: i64
+    name: string
+}
+
+test "sort and reverse reach the array" {
+    mut a = [3, 1, 2]
+    a.sort()
+    assert a[0] == 1
+    assert a[1] == 2
+    assert a[2] == 3
+    a.reverse()
+    assert a[0] == 3
+    assert a[2] == 1
+}
+
+test "narrow elements are written back at their own width" {
+    mut b: [u8; 3] = [9, 4, 7]
+    b.sort()
+    b.swap(0, 2)
+    assert b[0] == 9
+    assert b[1] == 7
+    assert b[2] == 4
+
+    mut c: [i32; 4] = [4, -3, 2, 1]
+    c.sort_by(|x, y| y.compare(x))
+    assert c[0] == 4
+    assert c[3] == -3
+
+    mut f = [2.5, -1.0, 0.5]
+    f.sort()
+    assert f[0] == -1.0
+    assert f[2] == 2.5
+}
+
+test "set replaces one element" {
+    mut q = [5, 6, 7]
+    q.set(1, 60)
+    assert q[0] == 5
+    assert q[1] == 60
+    assert q[2] == 7
+}
+
+func shuffled(n: i64) -> string {
+    mut s = ["second entry, long enough to live on the heap {n}", "third entry, long enough to live on the heap {n}", "first entry, long enough to live on the heap {n}"]
+    let before = s.join("|")
+    s.sort()
+    s.swap(1, 2)
+    if !s.contains("first entry, long enough to live on the heap {n}") {
+        return "missing"
+    }
+    return "{s[0].len() > 0} {before.len()} {s[2]}"
+}
+
+test "an array of strings keeps its strings through several calls" {
+    for i in 0..50 {
+        let got = shuffled(i % 3)
+        assert got.ends_with("second entry, long enough to live on the heap {i % 3}")
+    }
+}
+
+test "structs with owned fields sort in place" {
+    mut es = [Entry { rank: 2, name: "two, and long enough to be on the heap" }, Entry { rank: 1, name: "one, and long enough to be on the heap" }]
+    es.sort_by(|x, y| x.rank.compare(y.rank))
+    assert es[0].name == "one, and long enough to be on the heap"
+    assert es[1].rank == 2
+}

@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a tuple or a fixed array holds is released once, after its last read.
+// Two ways that went wrong natively (#1403); the leak gate runs this file,
+// which is where the leaks show.
+//
+//   - A `Vec` moved into a tuple built at a call, or into any fixed array,
+//     leaked. The type had lost which words were containers, so the release
+//     gave back only the strings.
+//   - An element read out of an array didn't keep the array alive, and wasn't
+//     a reference of its own. The array was released at its last direct use,
+//     so a string read out of it before then was freed under the reader.
+
+func weigh(p: (string, Vec<string>)) -> u64 {
+    return p.0.len() + p.1.len()
+}
+
+func weigh_nested(p: (i64, (Vec<i64>, string))) -> u64 {
+    return p.1.0.len() + p.1.1.len()
+}
+
+func weigh_all(rows: [Vec<i64>; 2]) -> u64 {
+    return rows[0].len() + rows[1].len()
+}
+
+test "a tuple argument frees the Vec moved into it" {
+    mut v: Vec<string> = Vec.new()
+    v.push("an element long enough to live on the heap".to_uppercase())
+    assert weigh(("abc".to_string(), v)) == 4
+}
+
+test "a tuple argument frees a Vec inside a nested tuple" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+    assert weigh_nested((7, (v, "label long enough for the heap".to_uppercase()))) == 32
+}
+
+test "an array argument frees the Vecs moved into it" {
+    mut a: Vec<i64> = Vec.new()
+    a.push(1)
+    mut b: Vec<i64> = Vec.new()
+    b.push(2)
+    b.push(3)
+    assert weigh_all([a, b]) == 3
+}
+
+test "an array local frees its Vecs after the last element read" {
+    mut a: Vec<i64> = Vec.new()
+    a.push(1)
+    mut b: Vec<i64> = Vec.new()
+    b.push(2)
+    b.push(3)
+    let rows = [a, b]
+    assert rows[0].len() + rows[1].len() == 3
+}
+
+test "a string read out of an array outlives the array's last use" {
+    let names = ["first name long enough for the heap".to_uppercase(), "second name long enough for the heap".to_uppercase()]
+    let n = names[1]
+    let filler = "allocated after, to reuse a freed buffer".to_uppercase()
+    assert filler.len() > 0
+    assert names[0] == "FIRST NAME LONG ENOUGH FOR THE HEAP"
+    assert n == "SECOND NAME LONG ENOUGH FOR THE HEAP"
+}

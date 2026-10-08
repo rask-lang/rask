@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct a closure captures is still released by the frame that owns it.
+//
+// Natively, a closure that stays in its frame counted as taking its captured
+// struct away, so `let f = || println(held.text)` left `held`'s string to
+// nobody (#1448). A stack closure only points at the variable. Fixing that
+// showed two more leaks the same struct had: the store that first fills a
+// captured `mut` variable was read as replacing something, so the value was
+// never made at all, and a closure writing a whole struct over its capture
+// dropped the one it replaced.
+
+struct Line { text: string }
+struct Bag { items: Vec<string> }
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func twice(f: func()) {
+    f()
+    f()
+}
+
+func maker() -> func() -> u64 {
+    mut l = Line { text: heap("carried") }
+    return || {
+        l = Line { text: heap("swapped") }
+        return l.text.len()
+    }
+}
+
+test "a captured struct is released after the closure" {
+    let held = Line { text: heap("captured") }
+    mut seen = 0
+    let f = || { seen = held.text.len() }
+    f()
+    assert seen == 41
+    assert held.text == "captured, long enough to live on the heap"
+}
+
+test "a captured mut struct whose field is replaced" {
+    mut held = Line { text: heap("captured") }
+    let f = || held.text.len()
+    assert f() == 41
+    held.text = heap("replaced")
+    assert held.text == "replaced, long enough to live on the heap"
+}
+
+test "a closure handed to a borrowing function" {
+    let bag = Bag { items: [heap("one"), heap("two")] }
+    mut n = 0
+    twice(|| { n += bag.items.len() })
+    assert n == 4
+    assert bag.items[0] == "one, long enough to live on the heap"
+}
+
+test "a closure writing a whole struct over its capture" {
+    mut count = Line { text: heap("start") }
+    let set = || { count = Line { text: heap("set") } }
+    set()
+    set()
+    assert count.text == "set, long enough to live on the heap"
+}
+
+test "a capture in a loop" {
+    mut total = 0
+    for i in 0..3 {
+        let l = Line { text: heap("loop {i}") }
+        let g = || l.text.len()
+        total += g()
+    }
+    assert total == 117
+}
+
+test "a carrying closure writing over what it carries" {
+    let f = maker()
+    assert f() == 40
+    assert f() == 40
+}

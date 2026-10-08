@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A generic enum's variant with named fields carries its type arguments, the
+// way `Slot.Full(x)` does (#1473). It was typed as the bare enum: the field
+// values were never checked, a match on it bound each field as `T`, and native
+// built it with the uninstantiated layout, a word per field. Two strings in a
+// `Slot<string>.Pair` overran their slots and printed garbage.
+//
+// compile_errors/struct_variant_field_types.rk covers the rejected forms.
+
+enum Slot<T> {
+    Empty
+    Full(T)
+    Pair { left: T, right: T }
+}
+
+func sum(s: Slot<i64>) -> i64 {
+    match s {
+        Slot.Pair { left, right } => return left + right
+        Slot.Full(v) => return v
+        Slot.Empty => return 0
+    }
+}
+
+func joined(s: Slot<string>) -> string {
+    match s {
+        Slot.Pair { left, right } => return "{left}{right}"
+        Slot.Full(v) => return v
+        Slot.Empty => return ""
+    }
+}
+
+test "fields are matched by name and bind the argument type" {
+    assert sum(Slot.Pair { right: 3, left: 4 }) == 7
+    assert sum(Slot.Full(9)) == 9
+}
+
+test "an aggregate argument gets its own layout" {
+    let q: Slot<string> = Slot.Pair { left: "x", right: "y" }
+    assert joined(q) == "xy"
+    assert joined(Slot.Pair { left: "long enough to allocate", right: "!" }) == "long enough to allocate!"
+}
+
+// The instantiation written at the variant (type.enums/E4a). The tuple form
+// `Slot<i64>.Full(1)` parsed; this one was a parse error (#1477).
+test "type arguments written at a struct-like variant" {
+    let p = Slot<string>.Pair { left: "p", right: "q" }
+    assert joined(p) == "pq"
+    assert sum(Slot<i64>.Pair { left: 20, right: 22 }) == 42
+}
+
+func main() {
+    println(joined(Slot.Pair { left: "a", right: "b" }))
+    println("{sum(Slot.Pair { left: 1, right: 2 })}")
+    return
+}

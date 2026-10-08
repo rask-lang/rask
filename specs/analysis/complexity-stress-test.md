@@ -163,17 +163,17 @@ No `frozen`, no context clause, no checked random access: the edge is a
 func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error {
     let frame = world.entities.snapshot()
 
-    let render = ThreadPool.spawn(own || {
+    let render = ThreadPool.spawn {
         for e in frame.nodes() {
             if e.mesh? as mesh {
                 draw_mesh(mesh.vertex_buffer, mesh.index_count, e.position)
             }
         }
-    })
+    }
 
-    let physics = ThreadPool.spawn(|| {
+    let physics = ThreadPool.spawn {
         world.physics.step(dt)
-    })
+    }
 
     try render.join()
     try physics.join()

@@ -182,24 +182,6 @@ impl Interpreter {
             "f32x8" => self.call_simd_type_method(method, args),
             "Random" => self.call_rng_type_method(method, args),
             "StringBuilder" => self.call_string_builder_type_method(method, args),
-            "Thread" => {
-                if method == "spawn" {
-                    self.spawn_os_thread(args)
-                } else {
-                    Err(RuntimeError::TypeError(format!(
-                        "Thread has no method '{}'", method
-                    )))
-                }
-            }
-            "ThreadPool" => {
-                if method == "spawn" {
-                    self.spawn_pool_task(args)
-                } else {
-                    Err(RuntimeError::TypeError(format!(
-                        "ThreadPool has no method '{}'", method
-                    )))
-                }
-            }
             // CE1: Cell.new(value) — heap-allocate a single value
             "Cell" => {
                 if method == "new" && args.len() == 1 {
@@ -213,20 +195,6 @@ impl Interpreter {
                 }
             }
             _ => {
-                // Auto-derived default() — construct struct with default-valued fields
-                if method == "default" {
-                    if let Some(struct_decl) = self.struct_decls.get(type_name).cloned() {
-                        let fields: indexmap::IndexMap<String, Value> = struct_decl.fields.iter()
-                            .map(|f| (f.name.clone(), Value::default_for_type(&f.ty)))
-                            .collect();
-                        return Ok(Value::new_struct(
-                            type_name.to_string(),
-                            fields,
-                            None,
-                        ));
-                    }
-                }
-
                 // User-defined static methods from extend blocks
                 if let Some(type_methods) = self.methods.get(type_name).cloned() {
                     if let Some(method_fn) = type_methods.get(method) {

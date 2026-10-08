@@ -121,6 +121,7 @@ fn classify(kind: &SymbolKind) -> (u32, u32) {
         SymbolKind::Field { .. } => (TYPE_PROPERTY, 0),
         SymbolKind::BuiltinType { .. } => (TYPE_TYPE, MOD_STDLIB),
         SymbolKind::BuiltinFunction { .. } => (TYPE_FUNCTION, MOD_STDLIB),
+        SymbolKind::ModuleFunction { .. } => (TYPE_FUNCTION, MOD_STDLIB),
         SymbolKind::BuiltinModule { .. } => (TYPE_NAMESPACE, MOD_STDLIB),
         SymbolKind::ExternalPackage { .. } => (TYPE_NAMESPACE, 0),
         SymbolKind::TypeAlias { .. } => (TYPE_TYPE, 0),

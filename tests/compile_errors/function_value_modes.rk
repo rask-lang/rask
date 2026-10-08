@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function value's type carries each parameter's mode (type.functions/FT1).
+// A function only fits a type with its own modes, and a call through the
+// value passes its arguments the way a direct call would (#1478).
+
+func stash(take p: Vec<i64>) -> Vec<i64> {
+    return p
+}
+
+func consume(take p: Vec<i64>) -> u64 {
+    return p.len()
+}
+
+func grow(mutate p: Vec<i64>) {
+    p.push(9)
+}
+
+func count(p: Vec<i64>) -> u64 {
+    return p.len()
+}
+
+func modes_differ() {
+    // ERROR: `stash` takes its parameter; the slot would let the caller keep it
+    let f: func(Vec<i64>) -> Vec<i64> = stash
+
+    // ERROR: `grow` writes its parameter; the slot lends it read-only
+    let g: func(Vec<i64>) = grow
+
+    // ERROR: `count` only borrows; a `take` slot would leak what it hands over
+    let h: func(take Vec<i64>) -> u64 = count
+
+    // ERROR: a closure can't declare `take`, so it can't fill a `take` slot
+    let c: func(take Vec<i64>) -> u64 = |p: Vec<i64>| p.len()
+
+    // ERROR: a borrowing closure in a `mutate` slot
+    let m: func(mutate Vec<i64>) -> u64 = |p: Vec<i64>| p.len()
+}
+
+func calls_through_values() {
+    let take_it: func(take Vec<i64>) -> u64 = consume
+    let v: Vec<i64> = [1, 2]
+    println("{take_it(v)}")
+    // ERROR: `v` went to a `take` parameter through the value
+    println("{v.len()}")
+
+    let grow_it = grow
+    mut w: Vec<i64> = [1]
+    // ERROR: the `mutate` marker is required through a value too
+    grow_it(w)
+
+    let fixed: Vec<i64> = [1]
+    // ERROR: a `let` can't be lent for writing, through a value or not
+    grow_it(mutate fixed)
+}
+
+func main() {}

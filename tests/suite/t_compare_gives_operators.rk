@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A hand-written `compare` gives a type `<`, `<=`, `>`, `>=` (ORD1, #1331).
+//
+// They used to be missing: `a < b` was "no method lt", and a
+// `Fixed implements Comparable { func compare … }` block was rejected for
+// lacking the four operators, so the only way to give a type an order that
+// isn't its fields' order was to write all five methods by hand.
+
+struct Ranked {
+    name: string
+    rank: i64
+}
+
+// No conformance header: the operators come from `compare` either way.
+extend Ranked {
+    func compare(self, other: Ranked) -> Ordering {
+        return self.rank.compare(other.rank)
+    }
+}
+
+// Descending on purpose, so a field-by-field order gives the wrong answer.
+struct Fixed {
+    raw: i64
+}
+
+Fixed implements Comparable {
+    func compare(self, other: Fixed) -> Ordering {
+        return other.raw.compare(self.raw)
+    }
+}
+
+func lowest<T: Comparable>(a: T, b: T) -> T {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+test "the operators follow the hand-written compare" {
+    let a = Ranked { name: "z", rank: 1 }
+    let b = Ranked { name: "a", rank: 2 }
+    assert a < b
+    assert a <= b
+    assert b > a
+    assert b >= a
+    assert !(a > b)
+    assert lowest(a, b).name == "z"
+}
+
+test "a Comparable block needs only compare" {
+    let x = Fixed { raw: 1 }
+    let y = Fixed { raw: 2 }
+    assert y < x
+    assert lowest(x, y).raw == 2
+    mut v: Vec<Fixed> = Vec.new()
+    v.push(x)
+    v.push(y)
+    v.sort()
+    assert v[0].raw == 2
+    assert v[1].raw == 1
+}

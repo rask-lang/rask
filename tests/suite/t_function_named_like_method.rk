@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program function named like a method's symbol is still only itself (#1307).
+//
+//     func Vec_len(v: Vec<i64>) -> u64 { return 99 }
+//     println("mine={Vec_len(v)} stdlib={v.len()}")
+//
+// printed `mine=99 stdlib=99` natively. A method `len` on `Vec` is the symbol
+// `Vec_len` to the backends, and a function is its own name, so the two were
+// one symbol and the program's body answered the method call too. The
+// interpreter, which never mangles, said `stdlib=3`. Such a function now gets
+// a symbol of its own once checking is done.
+
+struct Counter {
+    n: i64
+}
+
+extend Counter {
+    func bump(self) -> i64 {
+        return self.n + 1
+    }
+}
+
+func Vec_len(v: Vec<i64>) -> u64 {
+    return 99
+}
+
+func string_starts_with(s: string) -> string {
+    return "[{s}]"
+}
+
+// Same shape against a method of the program's own type.
+func Counter_bump(c: Counter) -> i64 {
+    return -1
+}
+
+test "the method call reaches the method" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert v.len() == 3
+    assert Vec_len(v) == 99
+}
+
+test "a different arity doesn't confuse the call either" {
+    assert string_starts_with("seed") == "[seed]"
+    assert "seed".starts_with("se")
+}
+
+test "a program type's method and a same-spelled function" {
+    let c = Counter { n: 1 }
+    assert c.bump() == 2
+    assert Counter_bump(c) == -1
+}
+
+test "the function can be passed around by name" {
+    let f = Counter_bump
+    assert f(Counter { n: 5 }) == -1
+}

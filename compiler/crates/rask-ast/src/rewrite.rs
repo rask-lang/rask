@@ -36,6 +36,9 @@ pub trait Rewrite {
     fn pattern(&mut self, _p: &mut Pattern) {}
     /// Every type as it was written — `Vec<Cat>`, `Cat?`, `i64 or Cat`.
     fn ty(&mut self, _t: &mut TypeExpr) {}
+    /// Every statement list, before its statements are walked — for a rewriter
+    /// that adds or removes statements.
+    fn body(&mut self, _b: &mut Vec<Stmt>) {}
 }
 
 /// Rewrite a whole program.
@@ -92,7 +95,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             r.ty(&mut i.target_ty);
             for b in &mut i.where_bounds {
                 for bound in &mut b.bounds {
-                    r.ty(bound);
+                    r.ty(&mut bound.ty);
                 }
             }
             for m in &mut i.methods {
@@ -141,7 +144,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
 fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
     for tp in &mut f.type_params {
         for bound in &mut tp.bounds {
-            r.ty(bound);
+            r.ty(&mut bound.ty);
         }
         if let Some(t) = &mut tp.comptime_type {
             r.ty(t);
@@ -162,7 +165,8 @@ fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
 }
 
 /// Every expression in a statement list.
-pub fn rewrite_body(body: &mut [Stmt], r: &mut impl Rewrite) {
+pub fn rewrite_body(body: &mut Vec<Stmt>, r: &mut impl Rewrite) {
+    r.body(body);
     for stmt in body {
         rewrite_stmt(stmt, r);
     }
@@ -284,7 +288,6 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         }
 
         ExprKind::Block(body)
-        | ExprKind::BlockCall { body, .. }
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => rewrite_body(body, r),
@@ -400,6 +403,12 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
             }
             if let Some(t) = ret_ty {
                 r.ty(t);
+            }
+            rewrite_expr(body, r);
+        }
+        ExprKind::Spawn { receiver, body, .. } => {
+            if let Some(recv) = receiver {
+                rewrite_expr(recv, r);
             }
             rewrite_expr(body, r);
         }

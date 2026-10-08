@@ -18,6 +18,7 @@ use rask_ast::ty::TypeExpr;
 
 use super::type_defs::{MethodSig, TypeDef};
 use super::TypeChecker;
+use super::type_table::InterfaceIdent;
 use crate::types::{Type, TypeId};
 
 /// OR2/OR9: `Equal` and `Comparable` are absent from the operator table on
@@ -89,7 +90,8 @@ impl TypeChecker {
         let Some(self_id) = self.types.conformance_target(recv) else {
             return PairOutcome::NotAnOperator;
         };
-        let declared = self.types.applied_conformances(self_id, interface_base);
+        let iface = self.operator_iface(self_id, interface_base);
+        let declared = self.types.applied_conformances(self_id, &iface);
         if declared.is_empty() {
             // OR1: an operator answers to a conformance. A primitive receiver
             // is the exception — `i64 + i64` is the language's own pair, and
@@ -147,7 +149,7 @@ impl TypeChecker {
                     })
                     .collect();
                 if let [only] = kind_match.as_slice() {
-                    return self.matched(self_id, only, method, args);
+                    return self.matched(self_id, &iface, only, method, args);
                 }
                 // Not a literal at all — a binding whose type hasn't landed
                 // yet. One conformance is the only pair the receiver takes
@@ -155,7 +157,7 @@ impl TypeChecker {
                 // argument.
                 return match declared.as_slice() {
                     [only] if kind_match.is_empty() && !self.is_literal_var(arg) => {
-                        self.matched(self_id, only, method, args)
+                        self.matched(self_id, &iface, only, method, args)
                     }
                     _ => PairOutcome::Defer,
                 };
@@ -166,7 +168,7 @@ impl TypeChecker {
             TypeExpr::generic(interface_base, vec![TypeExpr::named(spelling)])
         };
 
-        if !self.types.declares_conformance(self_id, &applied) {
+        if !self.types.declares_conformance_to(self_id, iface.clone(), &applied) {
             // Two primitives are the language's own pair, answered below — a
             // conformance someone wrote on `f64` doesn't take `f64 * f64` away
             // from it.
@@ -181,7 +183,7 @@ impl TypeChecker {
             // which names neither the operator nor the operand that missed.
             return PairOutcome::NoPair;
         }
-        self.matched(self_id, &applied, method, args)
+        self.matched(self_id, &iface, &applied, method, args)
     }
 
     /// OR8: the pair names no conformance, and the operator has nothing to be.
@@ -256,7 +258,17 @@ impl TypeChecker {
         let applied = TypeExpr::generic(interface_base, vec![TypeExpr::named(spelling)]);
 
         let mut found: Vec<Type> = Vec::new();
-        for id in self.types.conformers_of(&applied) {
+        // The program's own interface of this name first, then the stdlib's,
+        // the same order `operator_iface` takes.
+        let local = self.types.interface_ident(interface_base);
+        let stdlib = self.types.stdlib_interface_ident(interface_base);
+        let conformers: Vec<TypeId> = [local, stdlib]
+            .into_iter()
+            .map(|iface| super::type_table::ConformanceKey { iface, applied: applied.clone() })
+            .map(|key| self.types.conformers_of(&key).to_vec())
+            .find(|ids| !ids.is_empty())
+            .unwrap_or_default();
+        for id in &conformers {
             let name = self.types.type_name(*id);
             // Only a primitive: a literal is never anything else.
             if !rask_ast::primitives::is_scalar(&name) {
@@ -323,17 +335,33 @@ impl TypeChecker {
         }
     }
 
+    /// Which interface named `base` the receiver's operator conformances are to.
+    ///
+    /// The one the code here means by the name when the receiver conforms to
+    /// it, otherwise the stdlib's. A program declaring its own `Sub` still
+    /// gets `duration - duration` from the stdlib's, and its own conformances
+    /// to its `Mul` keep working: methods of an interface named like an
+    /// operator interface are filed by name in every backend (#1329).
+    fn operator_iface(&self, self_id: TypeId, base: &str) -> InterfaceIdent {
+        let local = self.types.interface_ident(base);
+        if !self.types.applied_conformances(self_id, &local).is_empty() {
+            return local;
+        }
+        self.types.stdlib_interface_ident(base)
+    }
+
     /// The conformance's method, once the applied interface is known.
     fn matched(
         &self,
         self_id: TypeId,
+        iface: &InterfaceIdent,
         applied: &TypeExpr,
         method: &str,
         args: &[Type],
     ) -> PairOutcome {
         // OR4: the conformance's method is filed under the applied argument.
         let self_name = self.types.type_name(self_id);
-        let applied_base = super::TypeTable::conformance_key(applied);
+        let applied_base = self.types.interface_name(applied);
         let written_rhs = applied.args().first().and_then(TypeExpr::name);
         let rhs = rask_ast::operators::filed_rhs(&self_name, &applied_base, written_rhs.as_deref());
         let filed = rhs
@@ -349,7 +377,7 @@ impl TypeChecker {
         // has an `Out`.
         let out = self
             .types
-            .assoc_binding(self_id, applied, "Out")
+            .assoc_binding_to(self_id, iface.clone(), applied, "Out")
             .cloned()
             .unwrap_or_else(|| sig.ret.clone());
         let builtin = self.types.is_builtin_method(self_id, &filed);
@@ -443,7 +471,7 @@ impl TypeChecker {
         let mut progress = false;
         for ((param, _), arg) in found.sig.params.iter().zip(args.iter()) {
             let param = Self::substitute_type_params(param, &subst);
-            if self.coerce_arg(&param, arg, span)? {
+            if self.coerce_arg(&param, arg, None, span)? {
                 progress = true;
             }
         }

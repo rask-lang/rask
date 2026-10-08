@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // The task-2b rename sweep (#302) makes the old stdlib names HARD errors, not
-// aliases. Each old name below must be rejected by `rask check` (E0313, no such
-// method). The new names' behavior is witnessed in tests/suite/t40_stdlib_renames.rk.
+// aliases. Each old name below must be rejected by `rask check` (E0313 for a
+// method, E0411 for a module function). The new names' behavior is witnessed in tests/suite/t40_stdlib_renames.rk.
 //
 // One function per old name so a single rejection doesn't mask the others.
 

@@ -1,1 +1,5 @@
 green
+12
+square 3
+dot 7
+warm

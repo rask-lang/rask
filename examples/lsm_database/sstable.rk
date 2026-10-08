@@ -3,6 +3,7 @@
 //
 // Format:
 //   [bloom filter line]
+//   [highest sequence number in the table]
 //   [index: key\toffset per block]
 //   ---
 //   [data blocks: sorted KV pairs separated by ===]
@@ -21,6 +22,7 @@ struct SstMeta {
     min_key: string
     max_key: string
     entry_count: i32
+    max_seq: i64
     bloom: BloomFilter
 }
 
@@ -40,43 +42,21 @@ func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> 
     let path = "{dir}/L{level}_{id}.sst"
 
     mut bloom = BloomFilter.new()
+    mut max_seq: i64 = 0
     for entry in entries {
         bloom.insert(entry.key)
+        if entry.seq > max_seq { max_seq = entry.seq }
     }
 
-    mut index = Vec.new()
-    mut blocks = Vec.new()
-    mut block_entries = Vec.new()
-    mut block_id = 0
-
-    for entry in entries {
-        if block_entries.len() >= BLOCK_SIZE {
-            index.push(BlockIndex {
-                first_key: block_entries[0].key,
-                offset: block_id,
-                count: block_entries.len().wrap<i32>(),
-            })
-            blocks.push(block_entries)
-            block_entries = Vec.new()
-            block_id += 1
-        }
-        block_entries.push(entry)
-    }
-
-    if !block_entries.is_empty() {
-        index.push(BlockIndex {
-            first_key: block_entries[0].key,
-            offset: block_id,
-            count: block_entries.len().wrap<i32>(),
-        })
-        blocks.push(block_entries)
-    }
+    // BLOCK_SIZE entries to a block, the last one short.
+    let blocks = entries.chunks(BLOCK_SIZE.wrap<usize>())
 
     mut out = StringBuilder.new()
     out.push("BLOOM:{encode_bloom(bloom)}\n")
+    out.push("SEQ:{max_seq}\n")
 
-    for idx_entry in index {
-        out.push("INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n")
+    for (block_id, block) in blocks.enumerate() {
+        out.push("INDEX:{block[0].key}\t{block_id}\t{block.len()}\n")
     }
 
     out.push("---\n")
@@ -102,6 +82,7 @@ func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> 
         min_key,
         max_key,
         entry_count: entries.len().wrap<i32>(),
+        max_seq,
         bloom,
     }
 }
@@ -184,20 +165,32 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
     return index
 }
 
-func read_sstable_bloom(path: string) -> BloomFilter or SstError {
+// Value of the `PREFIX:` line in the header, before the index separator.
+func read_header_field(path: string, prefix: string) -> string or SstError {
     let content = fs.read_text(path) catch e => {
-        return SstError.ReadFailure("cannot read bloom: {path}: {e}")
+        return SstError.ReadFailure("cannot read header: {path}: {e}")
     }
 
     for line in content.lines() {
         let trimmed = line.trim().to_string()
-        if trimmed.starts_with("BLOOM:") {
-            let data = trimmed[6..].to_string()
-            return decode_bloom(data)
+        if trimmed.starts_with(prefix) {
+            return trimmed[prefix.len()..].to_string()
         }
         if trimmed == "---" { break }
     }
-    return SstError.BloomFilterCorrupt("no bloom filter in {path}")
+    return SstError.IndexCorrupt("no {prefix} line in {path}")
+}
+
+func read_sstable_bloom(path: string) -> BloomFilter or SstError {
+    return decode_bloom(try read_header_field(path, "BLOOM:"))
+}
+
+func read_sstable_max_seq(path: string) -> i64 or SstError {
+    let data = try read_header_field(path, "SEQ:")
+    let seq = data.parse<i64>() is i64 as v else {
+        return SstError.IndexCorrupt("bad sequence number in {path}")
+    }
+    return seq
 }
 
 func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
@@ -273,6 +266,9 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         let bloom = read_sstable_bloom(path) is BloomFilter as b else {
             continue
         }
+        let max_seq = read_sstable_max_seq(path) is i64 as s else {
+            continue
+        }
         let index = read_sstable_index(path) is Vec<BlockIndex> as idx else {
             continue
         }
@@ -299,6 +295,7 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
             min_key,
             max_key,
             entry_count,
+            max_seq,
             bloom,
         })
     }

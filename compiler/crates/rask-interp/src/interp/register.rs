@@ -12,11 +12,9 @@ use crate::value::{BuiltinKind, ModuleKind, Value};
 use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkResult};
 
 /// Free functions from `stdlib/async.rk` that are callable unqualified.
-/// `spawn { … }` is its own expression form; `spawn(closure)` arrives here as an
-/// ordinary call, so the name has to resolve to something callable.
+/// (`spawn { … }` is an expression form of its own, not a function.)
 pub(super) fn prelude_builtin(name: &str) -> Option<BuiltinKind> {
     match name {
-        "spawn" => Some(BuiltinKind::AsyncSpawn),
         "cancelled" => Some(BuiltinKind::Cancelled),
         _ => None,
     }
@@ -34,15 +32,20 @@ impl Interpreter {
                 self.env.define(alias.to_string(), Value::Type("ThreadPool".to_string()));
             }
             // Async module members
-            (ModuleKind::Async, "spawn") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
-            }
             (ModuleKind::Async, "cancelled") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));
             }
             // Any exported type: `import http.Response`, `import time.Instant`.
             _ if module.exports_type(member) => {
                 self.env.define(alias.to_string(), Value::for_type_name(member));
+            }
+            // A function in the module's `extend m { }` block, the same set the
+            // resolver binds for `import time.sleep` (#1359).
+            _ if rask_stdlib::StubRegistry::load().has_method(module.name(), member) => {
+                self.env.define(
+                    alias.to_string(),
+                    Value::ModuleFunction { module, function: member.to_string() },
+                );
             }
             _ => {
                 // Unknown member - ignore
@@ -162,12 +165,16 @@ impl Interpreter {
                         // call their method `mul`, so file each under the
                         // applied argument — one entry between them would keep
                         // whichever block was registered last.
-                        let name = rask_ast::operators::conformance_method_name(
-                            &impl_decl.target_ty,
-                            impl_decl.interface.as_ref(),
-                            &method.name,
-                        )
-                        .unwrap_or_else(|| method.name.clone());
+                        let name = impl_decl
+                            .interface
+                            .as_ref()
+                            .zip(self.conformance_interfaces.get(&decl.id))
+                            .and_then(|(t, iface)| {
+                                rask_ast::operators::conformance_method_name(
+                                    &impl_decl.target_ty, t, iface, &method.name,
+                                )
+                            })
+                            .unwrap_or_else(|| method.name.clone());
                         // XC5 on top of that: two packages can put the same
                         // method on one type, and the applied argument doesn't
                         // tell those apart either.

@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `let x = r is Vec<T> as v else { … }` owns one vector, not two (#1494).
+//
+// The let reads the result's payload once for `v` and once for `x`, and
+// native freed each read: `free(): invalid pointer` at the end of the scope.
+
+struct ListError {
+    code: i64
+}
+
+extend ListError {
+    func message(self) -> string {
+        return "list failed with {self.code}"
+    }
+}
+
+func listing(n: i64) -> Vec<string> or ListError {
+    if n < 0 {
+        return ListError { code: n }
+    }
+    mut out: Vec<string> = Vec.new()
+    for i in 0..n {
+        out.push("file-{i}-with-a-name-long-enough-for-heap.sst")
+    }
+    return out
+}
+
+func count_sst(n: i64) -> i64 {
+    mut found = 0
+    let files = listing(n) is Vec<string> as f else {
+        return -1
+    }
+    for file in files {
+        if file.ends_with(".sst") {
+            found += 1
+        }
+    }
+    return found
+}
+
+test "both names of a narrowed let hold one vector" {
+    assert count_sst(3) == 3
+    assert count_sst(0) == 0
+    assert count_sst(-2) == -1
+}

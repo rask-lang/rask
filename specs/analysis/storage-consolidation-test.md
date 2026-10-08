@@ -97,7 +97,7 @@ move-capture keyword:
 <!-- test: skip -->
 ```rask
 Expr.Binary(left: own base, …)      // heap-allocate
-spawn(own || { … })                 // move-capture a closure
+spawn { … }                 // move-capture a closure
 mut opts = parse_args(own args)     // move an argument
 ```
 

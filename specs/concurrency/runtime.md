@@ -25,7 +25,7 @@ Rask's async runtime is an **M:N stackful-fiber scheduler** with transparent I/O
 - **No async/await split**: Same function works in async and sync contexts. No state-machine transform, no signature annotations, no ABI changes
 - **Must-use handles**: Must join or detach (runtime panic if dropped)
 
-**Current interpreter:** Uses OS threads for spawn(), not green tasks. No M:N scheduler or event loop. Full runtime planned for compiled version. See [§Implementation Notes for Interpreter](#implementation-notes-for-interpreter).
+**Current interpreter:** Uses OS threads for `spawn`, not green tasks. No M:N scheduler or event loop. Full runtime planned for compiled version. See [§Implementation Notes for Interpreter](#implementation-notes-for-interpreter).
 
 **Codegen choice:** Rask uses **stackful fibers, not stackless state machines.** Rationale at [§Design Rationale](#design-rationale). The user-facing language is unaffected either way — this is purely an implementation decision.
 
@@ -114,7 +114,7 @@ struct SavedContext {
 
 | From | To | Trigger | Who |
 |------|-----|---------|-----|
-| — | Ready | spawn() | Spawner thread |
+| — | Ready | `spawn` | Spawner thread |
 | Ready | Running | schedule() | Worker thread |
 | Running | Waiting | I/O call blocks | Current worker |
 | Waiting | Ready | Reactor wakes task | Reactor thread |
@@ -134,11 +134,11 @@ struct SavedContext {
 
 **Example:**
 ```rask
-spawn(|| {
+spawn {
     let file = try File.open("data.txt")
     let data = try file.read_bytes()
     process(data)
-})
+}
 ```
 
 **What actually runs:** the closure body executes as ordinary machine code on the fiber's mmap'd stack. Local variables (`file`, `data`) live on that stack exactly like in any sync function. When `File.open` parks (reactor registration, stack pointer saved in `SavedContext`), the worker thread context-switches to another ready fiber. When the reactor wakes this fiber, a worker switches back onto its stack and the function resumes right after the I/O call. From the closure's perspective, `File.open` simply returned — no yield machinery is visible in source or compiled code.
@@ -284,7 +284,7 @@ func spawn<T>(closure: || -> T) -> Handle<T> {
     // (CC3 fallback: most missing-scope cases are caught at compile time by
     // CC1/CC2, this panic covers the cases static analysis cannot prove).
     let runtime = RUNTIME_SLOT.read() else {
-        panic!("spawn() called with no active 'using Multitasking' scope")
+        panic!("spawn with no active 'using Multitasking' scope")
     }
 
     // Acquire a stack region (pooled; mmap a fresh 1 MiB if pool is empty).
@@ -356,7 +356,7 @@ Rask preempts fibers at safe points, like Go since 1.14. No CW1-style linter war
 | **P2.2: Safe points** | Every function entry and every loop back edge checks the flag. If it's set, the fiber yields to the scheduler via `fiber_switch` and goes to the back of its worker's queue, behind anything ready |
 | **P2.3: No yield from the signal handler** | The handler only marks. A loop with no call in it still yields, at its back edge, so parking a fiber at an arbitrary instruction buys nothing |
 | **P2.4: No unsafe preemption points** | A safe point doesn't yield while the fiber is unwinding, inside FFI, or holding a runtime-internal lock such as the print lock |
-| **P2.5: A waiting task holds no worker** | Where a task holds a worker slot rather than being a fiber (sim, a build without the green scheduler, the interpreter), it gives the slot back for any wait (join, a lock, a condition, a channel, a sleep, a socket) and queues for one after, as a fiber gives back its worker. Slots are handed out first come, first served, so a task that steps aside goes behind whoever was already waiting. A task preempted inside a lock is then harmless: whoever blocks on the lock gives its slot back |
+| **P2.5: A waiting task holds no worker** | Where a task holds a worker slot rather than being a fiber (a build without the green scheduler, the interpreter), it gives the slot back for any wait (join, a lock, a condition, a channel, a sleep, a socket) and queues for one after, as a fiber gives back its worker. Slots are handed out first come, first served, so a task that steps aside goes behind whoever was already waiting. A task preempted inside a lock is then harmless: whoever blocks on the lock gives its slot back |
 
 ### Safe-point instrumentation (P3)
 
@@ -370,7 +370,9 @@ Codegen inserts the check at function entry and before each jump back to an earl
 
 Cost per call or iteration: one cache-resident load, a test and a predicted-not-taken branch. The flag is process-wide, so the common case never touches the current task.
 
-The interpreter runs a task on an OS thread holding one of the `workers: n` slots. At the start of every statement block, which every loop iteration and function body passes through, a task that has held its slot past the same budget while another task waits gives the slot back and queues for one again (P2.5). Under sim the budget is a number of safe points drawn from the seed each time a task takes a slot, so different seeds step tasks aside at different places and a replay steps them aside at the same ones.
+The interpreter runs a task on an OS thread holding one of the `workers: n` slots. At the start of every statement block, which every loop iteration and function body passes through, a task that has held its slot past the same budget while another task waits gives the slot back and queues for one again (P2.5).
+
+Under sim the budget is a number of safe points drawn from the seed each time a task is switched in (`sim/S3a`), so different seeds cut tasks off at different places and a replay cuts them off at the same ones.
 
 ### Rationale
 
@@ -630,21 +632,10 @@ Unchanged from before: warn on I/O in tight loops, and on long-running CPU work 
 ```rust
 Handle<T> {
     task: Arc<Task<T>>,   // Shared reference to task
-    consumed: bool,       // Affine tracking
-}
-
-impl<T> Drop for Handle<T> {
-    fn drop(&mut self) {
-        if !self.consumed {
-            panic!("Handle dropped without join() or detach() (conc.async/H1)");
-        }
-    }
 }
 ```
 
-**Affine enforcement:** Drop panics if handle not consumed. This realizes H1 (must join or detach).
-
-**Why runtime check, not compile-time?** Current type system doesn't track linear resources statically. Compiler support planned for compiled version (similar to mem.resources/R1-R5). Runtime panic is sufficient for interpreter.
+**Linear, checked statically.** `Handle<T>` is linear (`mem.linear`), so a handle that is never joined or detached is a compile error, and L7 makes the statement after the spawn commit it, so no panic can land in between. Nothing checks it at runtime.
 
 ### Join Operation (H2 - realizes conc.async/H2, J1)
 
@@ -765,7 +756,7 @@ public func cancelled() -> bool {
 
 ```rask
 using Multitasking {
-    spawn(|| {
+    spawn {
         loop {
             if cancelled() {
                 return Err(Cancelled)
@@ -774,7 +765,7 @@ using Multitasking {
             // Do work
             process_chunk()
         }
-    })
+    }
 }
 ```
 
@@ -856,14 +847,14 @@ If a value of linear type enters a scope, it must be consumed before exiting tha
 
 **Simple case (easy):**
 ```rask
-let h = spawn(|| { work() })
+let h = spawn { work() }
 // ERROR: handle not consumed
 // help: call h.join(), h.detach(), or h.cancel()
 ```
 
 **Branching (requires flow analysis):**
 ```rask
-let h = spawn(|| { work() })
+let h = spawn { work() }
 if condition {
     h.join()  // Consumed here
 } else {
@@ -875,7 +866,7 @@ if condition {
 **Early return (error):**
 ```rask
 func process() {
-    let h = spawn(|| { work() })
+    let h = spawn { work() }
     if error {
         return  // ERROR: handle not consumed on this path
     }
@@ -886,13 +877,13 @@ func process() {
 **Loop (error):**
 ```rask
 for item in items {
-    let h = spawn(|| { process(item) })
+    let h = spawn { process(item) }
     // ERROR: handle goes out of scope without consuming
 }
 
 // Fix: consume in loop
 for item in items {
-    spawn(|| { process(item) }).detach()  // OK
+    spawn { process(item) }.detach()  // OK
 }
 ```
 
@@ -923,7 +914,7 @@ for item in items {
 error[E0509]: linear value `h` not consumed
   --> src/main.rk:15:11
    |
-15 |     let h = spawn(|| { work() })
+15 |     let h = spawn { work() }
    |           ^ handle must be consumed (join/detach/cancel)
 16 |     if error_occurred {
 17 |         return
@@ -1055,11 +1046,11 @@ public struct TimerReceiver {
 ```rask
 using Multitasking {
     // Sleep
-    spawn(|| {
+    spawn {
         print("Starting...\n")
         sleep(Duration.seconds(5))
         print("5 seconds later!\n")
-    }).detach()
+    }.detach()
 
     // Timeout
     let result = timeout(Duration.seconds(10), || {
@@ -1072,12 +1063,12 @@ using Multitasking {
 
     // Interval
     let ticker = Timer.interval(Duration.milliseconds(100))
-    spawn(|| {
+    spawn {
         loop {
             try ticker.receive()
             update_stats()
         }
-    }).detach()
+    }.detach()
 
     // Select integration
     let rx = channel.receiver
@@ -1437,7 +1428,7 @@ func ThreadPool::spawn<T>(closure: || -> T) -> Handle<T> {
     // Compile-time check (CC1/CC2 analog) catches most missing-scope cases;
     // this panic is the CC3 runtime fallback.
     let pool = THREADPOOL_SLOT.read() else {
-        panic!("ThreadPool.spawn() called with no active 'using ThreadPool' scope")
+        panic!("ThreadPool.spawn with no active 'using ThreadPool' scope")
     }
 
     // Package closure as Box<FnOnce>
@@ -1496,7 +1487,7 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 
 | Operation | Latency | Explanation |
 |-----------|---------|-------------|
-| `spawn()` | ~100ns | Allocate Task, push to queue |
+| `spawn { }` | ~100ns | Allocate Task, push to queue |
 | Task context switch | ~50ns | State machine poll, queue pop |
 | Work steal | ~200ns | Random victim, CAS on deque |
 | `join()` (task ready) | ~20ns | Atomic load + take result |
@@ -1729,21 +1720,21 @@ Rask's borrowing rules prevent references from outliving lexical scope. This mea
 ```rask
 // Illegal: can't capture reference in task
 let vec = Vec.new()
-spawn(|| {
+spawn {
     vec.push(1)  // Error: vec reference can't escape to task
-})
+}
 
 // Legal: capture value (move semantics)
 let vec = Vec.new()
-spawn(|| {  // captures move in — the task outlives this frame
+spawn {  // captures move in — the task outlives this frame
     vec.push(1)  // OK: task owns vec
-})
+}
 
 // Illegal: capture a link
 let e = world.insert(Entity { hp: 100 })
-spawn(|| {
+spawn {
     e.hp -= 10  // ERROR: a link is an address; it means nothing over there
-})
+}
 ```
 
 **Why this matters:** Green tasks can migrate between threads (work stealing). If tasks could hold references, those references might become invalid after migration. By forbidding reference capture, Rask ensures tasks are truly independent and safely migratable.
@@ -1755,14 +1746,14 @@ spawn(|| {
 Resource types (File, TcpConnection, etc.) use `ensure` blocks for cleanup. These must run even on task cancellation:
 
 ```rask
-spawn(|| {
+spawn {
     let file = try File.open("data.txt")
     ensure { file.close() }  // Registers cleanup hook
 
     // If task cancelled here, ensure still runs
     let data = try file.read_bytes()
     process(data)
-})
+}
 ```
 
 **Runtime protocol:**
@@ -1782,9 +1773,9 @@ so it names nothing in another task's address space. A graph crosses by copy:
 using Multitasking {
     let frame = world.snapshot()   // deep copy; internal edges re-pointed
 
-    spawn(|| {
+    spawn {
         for e in frame.nodes() { tally(e.hp) }
-    }).detach()
+    }.detach()
 }
 ```
 
@@ -1808,7 +1799,7 @@ cost nothing.
 
 ```rask
 let data = comptime {
-    spawn(|| { fetch() })  // Compile error: spawn not allowed at comptime
+    spawn { fetch() }  // Compile error: spawn not allowed at comptime
 }
 ```
 
@@ -1828,7 +1819,7 @@ let data = comptime {
 
 ```rask
 func main() {
-    spawn(|| { work() })  // Compile error (CC1): direct spawn outside a block
+    spawn { work() }  // Compile error (CC1): direct spawn outside a block
 }
 ```
 
@@ -1836,32 +1827,30 @@ func main() {
 
 **Fallback:** Runtime panic at CC3 for higher-order/dynamic cases that static analysis can't prove.
 
-**Runtime message:** `"spawn() called with no active 'using Multitasking' scope"`
+**Runtime message:** `"spawn with no active 'using Multitasking' scope"`
 
 ### Handle Dropped Without Consume (E2 - realizes conc.async/H1)
 
 ```rask
 func main() {
     using Multitasking {
-        spawn(|| { work() })  // Handle not consumed
-    }  // Panic on handle drop
+        spawn { work() }  // Handle not consumed
+    }
 }
 ```
 
-**Error:** Runtime panic in Handle.drop
-
-**Message:** `"Handle dropped without join() or detach() (conc.async/H1)"`
+**Error:** Compile error. `Handle` is linear, so one that is never joined or detached is caught statically; nothing checks at runtime.
 
 **Fix:** Always consume handles:
 ```rask
-spawn(|| { work() }).detach()  // Or .join()
+spawn { work() }.detach()  // Or .join()
 ```
 
 ### Detached Task Outlives Runtime (E3 - realizes conc.async/C4)
 
 ```rask
 using Multitasking {
-    spawn(|| { long_work() }).detach()
+    spawn { long_work() }.detach()
 }  // Block exits but runtime waits
 ```
 
@@ -1874,7 +1863,7 @@ using Multitasking {
 ### Cancel Already-Complete Task (E4)
 
 ```rask
-let h = spawn(|| { quick_work() })
+let h = spawn { quick_work() }
 h.join()  // Task completes
 h.cancel()  // Error: handle already consumed
 ```
@@ -1883,7 +1872,7 @@ h.cancel()  // Error: handle already consumed
 
 **Alternative:**
 ```rask
-let h = spawn(|| { quick_work() })
+let h = spawn { quick_work() }
 h.cancel()  // Sets flag, waits for completion
 ```
 
@@ -1893,10 +1882,10 @@ h.cancel()  // Sets flag, waits for completion
 
 ```rask
 using Multitasking {
-    spawn(|| {
-        spawn(|| { inner_work() }).detach()  // OK: nested spawn
+    spawn {
+        spawn { inner_work() }.detach()  // OK: nested spawn
         outer_work()
-    }).detach()
+    }.detach()
 }
 ```
 
@@ -1908,8 +1897,8 @@ using Multitasking {
 
 ```rask
 using Multitasking {
-    let h1 = spawn(|| { h2.join() })
-    let h2 = spawn(|| { h1.join() })
+    let h1 = spawn { h2.join() }
+    let h2 = spawn { h1.join() }
     h1.join()  // Deadlock: circular dependency
 }
 ```
@@ -2048,7 +2037,7 @@ using Multitasking {
 
 | Feature | Spec (ideal runtime) | Interpreter (current) |
 |---------|---------------------|----------------------|
-| spawn() | Green tasks (stackless) | OS threads (std::thread::spawn) |
+| `spawn { }` | Green tasks (stackless) | OS threads (std::thread::spawn) |
 | Scheduler | M:N work-stealing | 1:1 thread-per-task |
 | Event loop | Central reactor (epoll/kqueue) | None (blocking I/O) |
 | Channels | Async with parking | Sync (std::mpsc::SyncSender) |

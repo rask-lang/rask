@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Sim mode: one task at a time, in an order drawn from a seed (sim/S1–S5).
+// Sim mode: one thread at a time, in an order drawn from a seed (sim/S1–S5).
 //
-// Every task is a fiber on the one thread that runs the test, the same stackful
-// fibers green.c schedules (fiber.c). At a scheduling point the running task
-// draws the next one from the scheduler stream and switches straight to it.
-// Nothing else runs, so the program is single-threaded and the order comes
-// from the seed alone.
+// This file plays the operating system. What it schedules are the program's
+// threads: the test body, each ThreadPool worker, and each of the green
+// scheduler's workers. Every one is a fiber on the one OS thread that runs the
+// test (fiber.c). At a scheduling point the running thread draws the next one
+// from the scheduler stream and switches straight to it. Nothing else runs,
+// so the program is single-threaded and the order comes from the seed alone.
+//
+// Tasks are the green scheduler's (green.c), as in production: its workers
+// take them from the same run queues, steal from each other, preempt and park
+// them. What green.c would leave to the machine — which worker runs next,
+// which one a steal picks, when a running task is cut off — it draws from the
+// seed instead (#1381). A task's wait parks its fiber and leaves the worker to
+// green.c; only a thread with no task on it parks here.
 //
 // It used to be a baton over OS threads: each task on its own thread, all but
 // one asleep on a condition variable. Fibers make the deterministic tests run
@@ -64,7 +72,8 @@ typedef enum {
     SIM_DONE,
 } SimTaskState;
 
-#define SIM_POOL_WORKER (-1)   // task_id of a ThreadPool worker
+#define SIM_POOL_WORKER  (-1)  // task_id of a ThreadPool worker
+#define SIM_GREEN_WORKER (-2)  // task_id of a green scheduler worker
 
 typedef struct SimTask {
     int64_t          index;       // spawn order; 0 is the test body
@@ -77,6 +86,8 @@ typedef struct SimTask {
     uint64_t         random;      // the task's user-random stream (SD3)
     RaskFiber        fiber;       // the test's own stack for task 0
     void            *tls;         // its thread-local state while switched out
+    void            *green_tls;   // green.c's share of it (which worker, which task)
+    int64_t          worker;      // green worker number, for reports
     void           (*entry)(void *);
     void            *arg;
 } SimTask;
@@ -123,7 +134,8 @@ static SimTask *task_alloc(int64_t task_id) {
     t->random = stream_seed(g.seed, STREAM_TASK + ((uint64_t)t->index << 8));
     // Zeroed is a task that hasn't started (rask_task_tls_swap).
     t->tls = calloc(1, rask_task_tls_size());
-    if (!t->tls) {
+    t->green_tls = calloc(1, rask_green_thread_tls_size() + 1);
+    if (!t->tls || !t->green_tls) {
         fprintf(stderr, "sim: out of memory creating a task\n");
         _exit(1);
     }
@@ -136,6 +148,7 @@ static SimTask *task_alloc(int64_t task_id) {
 static const char *task_name(const SimTask *t, char *buf, size_t cap) {
     if (t->index == 0) snprintf(buf, cap, "task %lld (main)", (long long)t->task_id);
     else if (t->task_id == SIM_POOL_WORKER) snprintf(buf, cap, "pool worker");
+    else if (t->task_id == SIM_GREEN_WORKER) snprintf(buf, cap, "worker %lld", (long long)t->worker);
     else snprintf(buf, cap, "task %lld", (long long)t->task_id);
     return buf;
 }
@@ -158,6 +171,9 @@ _Noreturn static void stuck_locked(const char *headline, const char *tail) {
         task_name(t, who, sizeof(who));
         if (t->state == SIM_PARKED && t->joining) {
             APPEND("\n  %-18s waiting on join(task %lld)", who, (long long)t->joining->task_id);
+        } else if (t->state == SIM_PARKED && t->task_id == SIM_GREEN_WORKER) {
+            // An idle worker; the tasks it would run are listed below.
+            continue;
         } else if (t->state == SIM_PARKED) {
             APPEND("\n  %-18s waiting on %s", who, t->what ? t->what : "a wakeup");
         } else if (t->state == SIM_SLEEPING) {
@@ -166,6 +182,9 @@ _Noreturn static void stuck_locked(const char *headline, const char *tail) {
             APPEND("\n  %-18s running", who);
         }
     }
+    // The tasks, which park on green.c's side and so aren't in the table.
+    if (used < sizeof(msg)) used += rask_green_describe_waits(msg + used, sizeof(msg) - used);
+    if (used > sizeof(msg)) used = sizeof(msg);
     if (tail) APPEND("\n  %s", tail);
 #undef APPEND
 
@@ -199,6 +218,8 @@ static void reap_locked(void) {
     rask_fiber_destroy(&t->fiber);
     free(t->tls);
     t->tls = NULL;
+    free(t->green_tls);
+    t->green_tls = NULL;
 }
 
 // Hand the thread to `next`. Returns when something switches back to `self`,
@@ -208,6 +229,8 @@ static void switch_to_locked(SimTask *self, SimTask *next) {
     // out of the thread into `self`'s blob, and `next`'s back in.
     rask_task_tls_swap(self->tls);
     rask_task_tls_swap(next->tls);
+    rask_green_thread_tls_swap(self->green_tls);
+    rask_green_thread_tls_swap(next->green_tls);
     tl_self = next;
     // Held across the switch it would be held by whoever runs next, on the
     // same thread, and the first thing they do is take it.
@@ -313,6 +336,13 @@ static void park_locked(SimTask *self, const void *key, const char *what) {
 }
 
 void rask_sim_park(const void *key, const char *what) {
+    // A task parks its fiber and its worker moves on. No scheduling point
+    // first: the caller checked its condition, and a wake landing between
+    // that check and the park would be lost.
+    if (rask_fiber_active()) {
+        rask_fiber_park(key, what);
+        return;
+    }
     pthread_mutex_lock(&g.lock);
     park_locked(self_or_die("a wait"), key, what);
     pthread_mutex_unlock(&g.lock);
@@ -326,6 +356,7 @@ static void notify_locked(const void *key) {
 }
 
 void rask_sim_notify(const void *key) {
+    rask_fiber_notify(key, 1);
     if (!g.active) return;
     pthread_mutex_lock(&g.lock);
     notify_locked(key);
@@ -336,7 +367,10 @@ void rask_sim_notify(const void *key) {
 // Under sim the seed picks, so code that signals where it should broadcast —
 // two conditions sharing one variable, and the wrong waiter woken — fails on
 // some seed instead of passing every time.
+// A green task parked on the key may be woken as well: a wake can be spurious,
+// and every waiter loops on its own condition.
 void rask_sim_notify_one(const void *key) {
+    rask_fiber_notify(key, 0);
     if (!g.active) return;
     pthread_mutex_lock(&g.lock);
     int64_t waiting = 0;
@@ -358,6 +392,11 @@ void rask_sim_notify_one(const void *key) {
 }
 
 void rask_sim_sleep(int64_t ns) {
+    if (rask_fiber_active()) {
+        rask_sim_point();
+        rask_fiber_sleep_ns(ns);
+        return;
+    }
     pthread_mutex_lock(&g.lock);
     SimTask *self = self_or_die("sleep");
     if (ns > 0) {
@@ -486,6 +525,12 @@ uint64_t rask_sim_fault_draw(void) {
     return splitmix64(&g.fault);
 }
 
+// A choice the green scheduler would leave to timing — a steal's victim, how
+// many workers a default scope gets — from the schedule's stream.
+uint64_t rask_sim_draw(uint64_t n) {
+    return n ? splitmix64(&g.sched) % n : 0;
+}
+
 uint64_t rask_sim_random_seed(void) {
     SimTask *self = self_or_die("random");
     return splitmix64(&self->random);
@@ -532,6 +577,13 @@ void *rask_sim_task_spawn(int64_t task_id, void (*entry)(void *), void *arg) {
 // A pool worker runs many tasks' bodies, so it has no task id of its own.
 void *rask_sim_worker_spawn(void (*entry)(void *), void *arg) {
     return rask_sim_task_spawn(SIM_POOL_WORKER, entry, arg);
+}
+
+// One of green.c's workers. Neither has a task id: the tasks they run do.
+void *rask_sim_green_worker_spawn(int64_t worker, void (*entry)(void *), void *arg) {
+    SimTask *t = (SimTask *)rask_sim_task_spawn(SIM_GREEN_WORKER, entry, arg);
+    t->worker = worker;
+    return t;
 }
 
 void rask_sim_task_join(void *task) {

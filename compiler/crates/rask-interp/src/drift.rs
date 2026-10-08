@@ -179,6 +179,7 @@ fn all_registered_type_methods_implemented() {
     use rask_stdlib::registry::{is_codegen_only_type, codegen_only_methods};
 
     let mut interp = Interpreter::new();
+    let reg = rask_stdlib::StubRegistry::load();
     for &type_name in rask_stdlib::registry::REGISTERED_TYPES {
         // Skip types that only exist for native codegen
         if is_codegen_only_type(type_name) {
@@ -193,6 +194,15 @@ fn all_registered_type_methods_implemented() {
         }
         for &method in rask_stdlib::registry::type_method_names(type_name) {
             if skip.contains(&method) {
+                continue;
+            }
+            // A method with a Rask body in stdlib/*.rk runs that body, which
+            // this bare interpreter hasn't loaded. `File.read_bytes` is one.
+            let rask_bodied = reg
+                .get_type(type_name)
+                .and_then(|ty| ty.methods.iter().find(|m| m.name == method))
+                .is_some_and(|m| m.has_body);
+            if rask_bodied {
                 continue;
             }
             assert!(

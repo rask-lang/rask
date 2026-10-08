@@ -415,10 +415,21 @@ fn insert_for_function(
         &facts,
         crate::analysis::ownership::Placement::ScopeEnd,
     );
-    let drop_of = |interface_object: LocalId| MirStmt::dummy(MirStmtKind::InterfaceDrop { interface_object });
+    let owning = drops_that_own(func, &plan.releases, &made);
+    let drop_of = |interface_object: LocalId| {
+        MirStmt::dummy(MirStmtKind::InterfaceDrop {
+            interface_object,
+            owns: owning.contains(&interface_object),
+        })
+    };
+    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+        func,
+        plan.unwind,
+        &mut |_: &mut MirFunction, name: LocalId, _| vec![drop_of(name)],
+    );
     let mut at_end: Vec<(usize, LocalId)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
-    for r in plan {
+    for r in plan.releases {
         match r {
             crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
             crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
@@ -430,7 +441,140 @@ fn insert_for_function(
     for (block, name) in at_end {
         func.blocks[block].statements.push(drop_of(name));
     }
-    crate::analysis::ownership::insert_on_edges(func, on_edges);
+    crate::analysis::ownership::insert_on_edges(
+        func,
+        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+    );
+}
+
+/// The names whose drop releases the boxed value too, not only the block.
+///
+/// A box owns what was moved into it. Two kinds of box reach a drop here
+/// owning their value: one a callee handed back (it moved the value in and
+/// returned the box), and one boxed in this frame from a value built for the
+/// box and read by nothing else — `return HttpRegistry { url: path }` once
+/// `make` is inlined. Releasing those through the frame's own copy of the
+/// value can't work everywhere: with the box picked in a branch, the value is
+/// a different struct on each path, and no one name holds it after the join.
+/// The box does, so its drop releases what is in it (#1424).
+///
+/// A box built for a call from a value the frame goes on using borrows it, and
+/// its drop frees the block alone. A drop reached by both kinds can't do both,
+/// so it borrows, and so does every other drop those boxes reach: `rc_insert`
+/// hands a box's value over only when every drop it reaches owns.
+fn drops_that_own(
+    func: &MirFunction,
+    plan: &[crate::analysis::ownership::Release],
+    made: &HashSet<LocalId>,
+) -> HashSet<LocalId> {
+    use crate::analysis::ownership::Release;
+    let names: HashSet<LocalId> = plan
+        .iter()
+        .map(|r| match r {
+            Release::At { name, .. } | Release::OnEdge { name, .. } => *name,
+        })
+        .collect();
+    if names.is_empty() {
+        return HashSet::new();
+    }
+
+    // What each name was copied from.
+    let mut copied_from: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    let mut boxed_from: HashMap<LocalId, LocalId> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                copied_from.entry(*dst).or_default().push(*src);
+            }
+            MirStmtKind::Phi { dst, args } => {
+                for (_, op) in args {
+                    if let MirOperand::Local(src) = op {
+                        copied_from.entry(*dst).or_default().push(*src);
+                    }
+                }
+            }
+            MirStmtKind::InterfaceBox { dst, value, .. } => {
+                if let MirOperand::Local(src) = value {
+                    boxed_from.insert(*dst, *src);
+                }
+            }
+            _ => {}
+        }
+    }
+    let owns_its_value = |maker: LocalId| match boxed_from.get(&maker) {
+        Some(src) => built_for_the_box(func, *src),
+        // A box boxed from a constant, or one a callee handed back or that
+        // came out of a wrapper: the value is the box's.
+        None => true,
+    };
+
+    let makers_of = |name: LocalId| -> HashSet<LocalId> {
+        let mut seen: HashSet<LocalId> = HashSet::new();
+        let mut out: HashSet<LocalId> = HashSet::new();
+        let mut frontier = vec![name];
+        while let Some(n) = frontier.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            if made.contains(&n) {
+                out.insert(n);
+                continue;
+            }
+            if let Some(srcs) = copied_from.get(&n) {
+                frontier.extend(srcs.iter().copied());
+            }
+        }
+        out
+    };
+
+    let groups: Vec<(LocalId, HashSet<LocalId>)> = names.iter().map(|n| (*n, makers_of(*n))).collect();
+    let mut owning: HashSet<LocalId> = groups
+        .iter()
+        .filter(|(_, makers)| !makers.is_empty() && makers.iter().all(|m| owns_its_value(*m)))
+        .map(|(n, _)| *n)
+        .collect();
+    loop {
+        let lent: HashSet<LocalId> = groups
+            .iter()
+            .filter(|(n, _)| !owning.contains(n))
+            .flat_map(|(_, makers)| makers.iter().copied())
+            .collect();
+        let before = owning.len();
+        owning.retain(|n| groups.iter().any(|(g, makers)| g == n && makers.is_disjoint(&lent)));
+        if owning.len() == before {
+            return owning;
+        }
+    }
+}
+
+/// Is `value` a struct or enum built for one box and nothing else? Filled
+/// field by field, never a copy of another name, and read by exactly one
+/// statement: the `InterfaceBox`.
+fn built_for_the_box(func: &MirFunction, value: LocalId) -> bool {
+    use crate::analysis::uses;
+    if func.params.iter().any(|p| p.id == value) {
+        return false;
+    }
+    let ty_of = local_types(func);
+    if !matches!(ty_of.get(&value), Some(MirType::Struct(_)) | Some(MirType::Enum(_))) {
+        return false;
+    }
+    let mut boxes = 0;
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if uses::stmt_def(stmt) == Some(value) {
+            return false;
+        }
+        if !uses::stmt_reads(stmt, value) {
+            continue;
+        }
+        match &stmt.kind {
+            MirStmtKind::Store { addr, value: v, .. }
+                if *addr == value && uses::operand_local(v) != Some(value) => {}
+            MirStmtKind::InterfaceBox { value: MirOperand::Local(v), .. } if *v == value => boxes += 1,
+            _ => return false,
+        }
+    }
+    boxes == 1 && !func.blocks.iter().any(|b| uses::terminator_reads(&b.terminator, value))
 }
 
 /// What each statement does to the boxes this frame may hold.
@@ -456,6 +600,7 @@ fn box_facts(
         kills: Vec::new(),
         terminator_reads: Vec::new(),
         foreign: func.params.iter().map(|p| p.id).filter(|p| tracked.contains(p)).collect(),
+        owned: Vec::new(),
     };
     for block in &func.blocks {
         let (mut events, mut reads, mut kills) = (Vec::new(), Vec::new(), Vec::new());
@@ -618,12 +763,12 @@ mod tests {
     fn drops_of(stmts: &[MirStmt], names: &[LocalId]) -> usize {
         stmts
             .iter()
-            .filter(|s| matches!(&s.kind, MirStmtKind::InterfaceDrop { interface_object } if names.contains(interface_object)))
+            .filter(|s| matches!(&s.kind, MirStmtKind::InterfaceDrop { interface_object, .. } if names.contains(interface_object)))
             .count()
     }
 
     fn has_interface_drop(stmts: &[MirStmt], target: LocalId) -> bool {
-        stmts.iter().any(|s| matches!(&s.kind, MirStmtKind::InterfaceDrop { interface_object } if *interface_object == target))
+        stmts.iter().any(|s| matches!(&s.kind, MirStmtKind::InterfaceDrop { interface_object, .. } if *interface_object == target))
     }
 
     fn interface_box(dst: LocalId) -> MirStmt {

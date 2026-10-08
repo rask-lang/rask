@@ -323,6 +323,46 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     return v;
 }
 
+// A Vec over a copy of a fixed array's elements, for the methods an array
+// borrows from `Vec`. The array keeps ownership: the copy carries the element
+// map, so `clone` retains what it should, but `rask_vec_free_view` gives back
+// only the copy. Built with `rask_vec_from_static`, which takes the elements
+// over, two calls on one `[string; 3]` released every string twice (#1405).
+RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
+                       const int32_t *str_offs, int64_t n_str_offs) {
+    if (elem_size <= 0) elem_size = 8;
+    RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
+    *v = (RaskVec){
+        .len = count,
+        .cap = count,
+        .elem_size = elem_size,
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
+    int64_t total = rask_safe_mul(elem_size, count);
+    v->data = (char *)rask_alloc(total);
+    memcpy(v->data, data, total);
+    return v;
+}
+
+void rask_vec_free_view(RaskVec *v) {
+    if (!v) return;
+    vec_check_no_borrows(v, "free");
+    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
+}
+
+// Copy a view's elements back into the array it was made from, after a
+// `mutate self` method reordered or replaced them. `stride` is the array's:
+// a narrow scalar sits in the low bytes of the view's 8-byte slot. The methods
+// an array may call never change the length.
+void rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride) {
+    if (!v || !dst) return;
+    for (int64_t i = 0; i < v->len; i++) {
+        memcpy(dst + i * stride, v->data + i * v->elem_size, (size_t)stride);
+    }
+}
+
 // Releases every string the elements hold, then the vector itself.
 //
 // The map came from the constructor: `Vec<string>` is the one-entry case at
@@ -473,12 +513,29 @@ void *rask_vec_get_opt(const RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }
 
-void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
+static char *vec_slot(RaskVec *v, int64_t index) {
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
-    memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
+    return v->data + index * v->elem_size;
+}
+
+// `v[i] = x` and `v.set(i, x)`: the slot takes `elem` and gives up what it
+// held. The old element is released before the copy, so a slot set to a copy
+// of itself is retained by the caller first and comes out even.
+void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
+    char *slot = vec_slot(v, index);
+    rask_owned_release_all(slot, v->strs.offsets, v->strs.count);
+    memcpy(slot, elem, (size_t)v->elem_size);
+}
+
+// Put back an element `with`, `for mutate` or a field write took out of this
+// slot (`Vec_lend` in MIR). What the copy owns is what the slot owned, less
+// whatever the body released and plus whatever it stored, so nothing is
+// released here.
+void rask_vec_write_back(RaskVec *v, int64_t index, const void *elem) {
+    memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
 }
 
 // Pop returns NULL when empty (Option encoding via DerefOption codegen
@@ -512,9 +569,18 @@ int64_t rask_vec_remove(RaskVec *v, int64_t index) {
     return 0;
 }
 
+// The elements go, so what they own goes with them. Dropping only the length
+// leaked every string a cleared `Vec<string>` held, and `take_all` (a
+// retaining copy, then this) left each element one reference too many.
 void rask_vec_clear(RaskVec *v) {
     vec_check_no_borrows(v, "clear");
-    if (v) v->len = 0;
+    if (!v) return;
+    if (v->strs.offsets && v->strs.count > 0 && v->data) {
+        for (int64_t i = 0; i < v->len; i++) {
+            rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
+        }
+    }
+    v->len = 0;
 }
 
 int64_t rask_vec_reserve(RaskVec *v, int64_t additional) {
@@ -614,14 +680,40 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
     return dst;
 }
 
-// `v.take_all()` hands the elements over and leaves `v` empty (I3). The copy
-// is what makes the source safe to keep using — iteration reads the returned
-// vec, and nothing points into the original's buffer any more.
+// `v.take_all()` hands the elements over and leaves `v` empty (I3). A move,
+// not a copy: the bytes go to a fresh vector that owns them from here, and `v`
+// keeps its buffer with nothing in it. Copying with a retain and then clearing
+// cost a reference per element and, for nested containers, a deep clone.
 RaskVec *rask_vec_take_all(RaskVec *v) {
     vec_check_no_borrows(v, "take_all");
-    RaskVec *out = rask_vec_clone(v);
-    if (v) rask_vec_clear(v);
+    if (!v) return rask_vec_new(8, NULL, 0);
+    RaskVec *out = rask_vec_with_capacity(v->elem_size, v->len,
+                                          v->strs.offsets, v->strs.count);
+    if (v->len > 0) {
+        memcpy(out->data, v->data, (size_t)(v->len * v->elem_size));
+    }
+    out->len = v->len;
+    v->len = 0;
     return out;
+}
+
+// `let old = self.f` ahead of `self.f = …`: the field's bytes, for a binding
+// that owns them from here. The refill writes over the slot without releasing
+// it, so nothing is zeroed.
+int64_t rask_field_take(const void *field, int64_t size, void *out) {
+    if (out && field) memcpy(out, field, (size_t)size);
+    return 0;
+}
+
+// `for x in v.take_all()`: the loop binding takes element `index` over. The
+// slot is zeroed so the free at the end releases only what the loop never
+// reached (a `break`, or a filtered-out element) — every release treats an
+// all-zero element as owning nothing.
+int64_t rask_vec_move_out(RaskVec *v, int64_t index, void *out) {
+    char *slot = vec_slot(v, index);
+    if (out) memcpy(out, slot, (size_t)v->elem_size);
+    memset(slot, 0, (size_t)v->elem_size);
+    return 0;
 }
 
 // rask_string_append is the builder primitive: when the accumulator is the sole
@@ -951,13 +1043,11 @@ void rask_vec_sort_str(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_str_compare_elem);
 }
 
-// sort(vec) for Vec<f64> — the total order from type.operators/ORD3.
+// The float total order from type.operators/ORD3.
 //
-// The default sort compares elements as int64_t whatever they hold. For floats
-// that is wrong twice over: a negative float's bit pattern orders backwards
-// against another negative (-1.5 sorted before -2.5), and a NaN lands wherever
-// its sign bit puts it. Both were silent — positive floats happen to order
-// correctly as integers, so a Vec of positives sorted fine and hid it.
+// Compared as int64_t, floats are wrong twice over: a negative float's bit
+// pattern orders backwards against another negative (-1.5 sorted before -2.5),
+// and a NaN lands wherever its sign bit puts it.
 //
 // The transform is the standard IEEE totalOrder key: for a negative value flip
 // every bit, for a non-negative one set only the sign bit. Ascending unsigned
@@ -976,23 +1066,18 @@ static int rask_f64_compare(const void *a, const void *b) {
     return 0;
 }
 
-void rask_vec_sort_f64(RaskVec *v) {
-    vec_check_no_borrows(v, "sort");
-    if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
-}
-
-// sort a Vec of (key, value) pairs by the key, which sits at offset 0.
+// Sort by the scalar at offset 0 of each element, read as `key_kind` (one of
+// the `RASK_DEBUG_ELEM_*` codes) of `key_size` bytes.
 //
-// `{m:debug}` needs an order, and a map has none to give: iteration order is
-// unspecified and seeded per process (std.collections, determinism/D7), so
-// printing the table's order would print something different on every run.
-// Sorting by key is the order a reader expects, and it costs nothing outside a
-// debug render.
+// Two callers. `sort()` on a Vec of scalars, where that scalar is the element:
+// the width and signedness have to come from lowering, because the header only
+// carries a slot width — read as int64_t, a u64 above i64::MAX sorted ahead of
+// 3, and an i128 compared its low word only. And `{m:debug}`, which sorts a
+// map's (key, value) pairs by key: a map has no order of its own to print
+// (std.collections, determinism/D7).
 //
-// The kind codes are the `RASK_DEBUG_ELEM_*` ones, so lowering says what a key
-// is once and both the renderer and this agree. `qsort` takes no context
-// argument portably, hence the thread-locals; a sort is not reentrant here.
+// `qsort` takes no context argument portably, hence the thread-locals; a sort
+// is not reentrant here.
 static _Thread_local int64_t tl_pair_key_kind;
 static _Thread_local int64_t tl_pair_key_size;
 
@@ -1028,17 +1113,30 @@ static int rask_pair_key_compare(const void *a, const void *b) {
         case RASK_DEBUG_ELEM_U64:
         case RASK_DEBUG_ELEM_CHAR:
         case RASK_DEBUG_ELEM_BOOL: {
+            if (tl_pair_key_size == 16) {
+                RaskU128 va, vb;
+                memcpy(&va, a, sizeof va);
+                memcpy(&vb, b, sizeof vb);
+                return va < vb ? -1 : (va > vb ? 1 : 0);
+            }
             uint64_t va = pair_key_unsigned(a), vb = pair_key_unsigned(b);
             return va < vb ? -1 : (va > vb ? 1 : 0);
         }
         default: {
+            if (tl_pair_key_size == 16) {
+                RaskI128 va, vb;
+                memcpy(&va, a, sizeof va);
+                memcpy(&vb, b, sizeof vb);
+                return va < vb ? -1 : (va > vb ? 1 : 0);
+            }
             int64_t va = pair_key_signed(a), vb = pair_key_signed(b);
             return va < vb ? -1 : (va > vb ? 1 : 0);
         }
     }
 }
 
-void rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size) {
+void rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size) {
+    vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
     tl_pair_key_kind = key_kind;
     tl_pair_key_size = key_size;
@@ -1065,30 +1163,47 @@ int64_t rask_f64_compare_total(double a, double b) {
 // env as its first argument (see closures.rs). Calling the block address
 // directly jumped into the closure's own data.
 //
-// How the two elements are handed over follows codegen's own rule for
-// aggregates: anything wider than a word is a pointer to its storage, a word or
-// less is the value itself. That matches what the closure body compiles to —
+// `pass` says how the two elements are handed over, and lowering decides it
+// from the element type (RASK_SORT_PASS_*): an aggregate or a string is a
+// pointer to its slot, a 128-bit integer is the slot's two words, anything
+// else is the slot's word. That matches what the closure body compiles to —
 // `|a, b| a.rank.compare(b.rank)` reads fields through a pointer, while
-// `Vec<i64>` compares plain integers. Returns <0 / 0 / >0.
+// `Vec<i64>` compares plain integers. It used to be guessed here from the slot
+// width, and an eight-byte struct had its field passed where its address
+// belonged. An i128 got its low word as the whole argument, and the closure
+// read its high half from whatever register came next (#1408).
+// Returns <0 / 0 / >0.
 /* Ordering's tags, from rask-stdlib's ORDERING_VARIANTS: Less, Equal, Greater. */
 #define RASK_ORDERING_EQUAL 1
 
 typedef int64_t (*RaskCmpFn)(int64_t env, int64_t a, int64_t b);
+// A 128-bit value is one C argument; the ABI splits it over two registers the
+// same way Cranelift splits an `i128` parameter.
+typedef int64_t (*RaskCmpFn128)(int64_t env, __int128 a, __int128 b);
 
 static __thread int64_t rask_sort_comparator;
-static __thread int rask_sort_by_ptr;
+static __thread int64_t rask_sort_pass;
+
+// Call the comparator on the elements stored at `a` and `b`, the way
+// `rask_sort_pass` says it takes them; returns the Ordering tag.
+static int64_t rask_sort_call(const char *a, const char *b) {
+    int64_t env = CLOSURE_ENV(rask_sort_comparator);
+    void *code = (void *)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
+    switch (rask_sort_pass) {
+    case RASK_SORT_PASS_ADDRESS:
+        return ((RaskCmpFn)code)(env, (int64_t)(uintptr_t)a, (int64_t)(uintptr_t)b);
+    case RASK_SORT_PASS_WIDE: {
+        __int128 wa, wb;
+        memcpy(&wa, a, sizeof wa);
+        memcpy(&wb, b, sizeof wb);
+        return ((RaskCmpFn128)code)(env, wa, wb);
+    }
+    default:
+        return ((RaskCmpFn)code)(env, *(const int64_t *)a, *(const int64_t *)b);
+    }
+}
 
 static int rask_sort_by_adapter(const void *a, const void *b) {
-    RaskCmpFn fn = (RaskCmpFn)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
-    int64_t env = CLOSURE_ENV(rask_sort_comparator);
-    int64_t va, vb;
-    if (rask_sort_by_ptr) {
-        va = (int64_t)(uintptr_t)a;
-        vb = (int64_t)(uintptr_t)b;
-    } else {
-        va = *(const int64_t *)a;
-        vb = *(const int64_t *)b;
-    }
     /* The comparator is declared `-> Ordering`, and an Ordering crosses this
        boundary as its tag: Less 0, Equal 1, Greater 2. The sort wants a sign, so
        the mapping is tag - 1.
@@ -1098,14 +1213,14 @@ static int rask_sort_by_adapter(const void *a, const void *b) {
        Equal for every pair reversed the whole vector. Ascending sorts still
        came out ascending, because (0, +, +) is monotone in the true ordering,
        which is why it went unnoticed. */
-    return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
+    return (int)(rask_sort_call(a, b) - RASK_ORDERING_EQUAL);
 }
 
-void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
+void rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass) {
     vec_check_no_borrows(v, "sort_by");
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
-    rask_sort_by_ptr = v->elem_size > 8;
+    rask_sort_pass = pass;
     rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
@@ -1129,24 +1244,14 @@ static __thread const char *rask_key_data;
 static __thread int64_t     rask_key_size;
 
 static int rask_sort_keys_adapter(const void *pa, const void *pb) {
-    RaskCmpFn fn = (RaskCmpFn)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
-    int64_t env = CLOSURE_ENV(rask_sort_comparator);
     const char *ka = rask_key_data + *(const int64_t *)pa * rask_key_size;
     const char *kb = rask_key_data + *(const int64_t *)pb * rask_key_size;
-    int64_t va, vb;
-    if (rask_sort_by_ptr) {
-        va = (int64_t)(uintptr_t)ka;
-        vb = (int64_t)(uintptr_t)kb;
-    } else {
-        va = *(const int64_t *)ka;
-        vb = *(const int64_t *)kb;
-    }
     // Same Ordering-tag-to-sign conversion `sort_by` needs: Less 0, Equal 1,
     // Greater 2.
-    return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
+    return (int)(rask_sort_call(ka, kb) - RASK_ORDERING_EQUAL);
 }
 
-void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator) {
+void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t pass) {
     vec_check_no_borrows(v, "sort_by_key");
     if (!v || v->len <= 1 || !keys || !comparator) return;
     if (keys->len < v->len) {
@@ -1159,7 +1264,7 @@ void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator) {
     for (int64_t i = 0; i < n; i++) order[i] = i;
 
     rask_sort_comparator = comparator;
-    rask_sort_by_ptr = keys->elem_size > 8;
+    rask_sort_pass = pass;
     rask_key_data = keys->data;
     rask_key_size = keys->elem_size;
     rask_stable_sort(order, n, (int64_t)sizeof(int64_t), rask_sort_keys_adapter);

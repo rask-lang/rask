@@ -274,20 +274,20 @@ struct Pair<T, U> {
 let p: Pair<i32, string> = Pair { first: 1, second: "hello" }
 ```
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct SortedVec<T: Comparable> {
     private items: Vec<T>
 }
 
-extend SortedVec<T: Comparable> {
+extend SortedVec<T> {
     func insert(self, item: T) {
         // ... maintain sorted order
     }
 }
 ```
 
-Bounds checked at instantiation site. See `type.generics`.
+Bounds checked at instantiation site. The bound is written once, on the struct, and every method in its `extend` blocks may assume it: a `SortedVec<T>` can't exist unless `T: Comparable`. The header doesn't repeat it (`extend SortedVec<T: Comparable>` is a parse error); an extra condition goes in a `where` clause. See `type.generics/GF6`.
 
 ## Unit Structs
 

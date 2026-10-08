@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A payload matched out of a borrowed value, returned (E0872, #1425).
+//
+// `return self.items` on a borrowed `self` was already an error. Matching the
+// payload out first, `if self is Arr(a) { return a }`, handed the caller the
+// same vector under a new name and got through. That was
+// `JsonValue.as_array(self)` in the stdlib: natively the caller freed the
+// array, and the map it came out of freed it again.
+
+enum Val {
+    Num(f64)
+    Arr(Vec<i64>)
+}
+
+extend Val {
+    func as_arr(self) -> Vec<i64>? {
+        if self is Arr(a) {
+            // ERROR: E0872
+            return a
+        }
+        return none
+    }
+
+    // Fine: the value was given to us.
+    func into_arr(take self) -> Vec<i64>? {
+        if self is Arr(a) {
+            return a
+        }
+        return none
+    }
+
+    // Fine: a copy is the caller's.
+    func arr_copy(self) -> Vec<i64>? {
+        if self is Arr(a) {
+            return a.clone()
+        }
+        return none
+    }
+}
+
+func first_arr(v: Val) -> Vec<i64> {
+    match v {
+        Val.Arr(a) => {
+            // ERROR: E0872
+            return a
+        }
+        Val.Num(_) => {
+            return Vec.new()
+        }
+    }
+}
+
+func main() {
+    let v = Val.Arr([1, 2])
+    println("{v.arr_copy()!.len()}")
+    println("{v.into_arr()!.len()}")
+}

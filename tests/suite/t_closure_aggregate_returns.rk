@@ -10,6 +10,10 @@
 //
 // So the tests here use each result twice: once straight as an operand, once
 // through a local. The direct form is the one that was broken.
+//
+// A struct wider than sixteen bytes isn't Copy, and a closure that stays only
+// borrows it, so those return a `.clone()` (E0907, #1449). The result still
+// comes back through the closure call site.
 
 struct Small {
     public a: i64
@@ -109,7 +113,7 @@ test "a two-field word-sized struct survives" {
 
 test "a struct wider than a word survives" {
     let b = Big { a: 1, b: 2, c: 3 }
-    let f = || { return b }
+    let f = || { return b.clone() }
     assert f().a == 1
     assert f().c == 3
     let got = f()
@@ -118,7 +122,7 @@ test "a struct wider than a word survives" {
 
 test "a struct with a string field survives" {
     let m = Mixed { n: 7, s: "seven" }
-    let f = || { return m }
+    let f = || { return m.clone() }
     assert f().n == 7
     assert f().s == "seven"
     let got = f()
@@ -135,7 +139,7 @@ test "a fieldless enum survives" {
 
 test "an enum with a payload survives" {
     let s = Shape.Rect(3, 4)
-    let f = || { return s }
+    let f = || { return s.clone() }
     match f() {
         Shape.Dot => { assert 1 == 0 }
         Shape.Circle(r) => { assert r == 0 }
@@ -146,7 +150,7 @@ test "an enum with a payload survives" {
 // Calling through a `func()` parameter goes down the same path.
 test "a closure called through a parameter returns an aggregate" {
     let b = Big { a: 4, b: 5, c: 6 }
-    let f = || { return b }
+    let f = || { return b.clone() }
     assert sum_pair(f) == 15
 }
 

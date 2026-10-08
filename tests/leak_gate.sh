@@ -18,9 +18,11 @@
 # treats a known divergence.
 #
 # A line whose count reads "N allocations, deferred" is one this milestone is
-# not going to close — a task killed by a panic doesn't unwind its captures, and
-# that waits on the unwinder; `t_shared_freed.rk` is a box held on purpose
-# and will never be zero. They are still measured and still held to their count;
+# not going to close: `t_shared_freed.rk` waits on clone elision knowing which
+# box `s.clone()` handed back. A panic or a skip is no reason for one any more:
+# an unwind releases what the abandoned frames own (ctrl.panic/U6), and a test
+# that leaks through one is a leak like any other (#1422). Deferred lines are
+# still measured and still held to their count;
 # they just don't count toward the number a memory milestone is judged on, which
 # is the one the summary calls "this milestone".
 #

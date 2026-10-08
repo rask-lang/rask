@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1359: `import time.sleep` bound `sleep` as a variable with no type, so
+// `sleep(d)` type-checked against nothing and then neither backend could call
+// it. A module function imported by name is the same call as `time.sleep(d)`,
+// whether the module has a signature table (fs) or a namespace struct (time),
+// and under an alias too.
+
+import time
+import time.{Duration, sleep}
+import fs.{exists, write_text, read_text}
+import fs.exists as present
+
+test "a bare imported module function is called" {
+    let before = time.Instant.now()
+    try sleep(Duration.millis(2))
+    assert before.elapsed().as_millis() >= 2
+}
+
+test "a function from a module with a signature table" {
+    assert exists("/")
+    assert !exists("/no/such/path/for/rask/1359")
+}
+
+test "an aliased import calls the original" {
+    assert present("/")
+}
+
+test "a function with a Rask body round-trips" {
+    let path = "/tmp/rask_t_import_module_function.txt"
+    try write_text(path, "hello")
+    let back = try read_text(path)
+    assert back == "hello"
+}

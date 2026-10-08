@@ -97,10 +97,22 @@ pub enum Event {
     /// `dst` also reaches into whatever `base` holds, on top of what it
     /// reached already: a scratch slot filled field by field.
     ViewAlso { dst: LocalId, base: LocalId },
+    /// `dst` holds a new value, ours exactly when what every one of `srcs`
+    /// held was ours here, and each is handed over either way. A call that
+    /// gives back one of the containers it took, or one it built in their
+    /// place: the caller owns what comes back if it owned everything that
+    /// might. It may not be the same container as any of them, so it can't be
+    /// an `Alias`.
+    Remake { dst: LocalId, srcs: Vec<LocalId> },
     /// The name now holds something untracked.
     Other(LocalId),
     /// Whatever the name holds leaves the frame here, on this path.
     HandOver(LocalId),
+    /// A hand-over into a closure environment that releases what it is given.
+    /// The same as `HandOver` for this frame; `plan_carrying` also reports
+    /// where the environment really was handed the value, so the pass can
+    /// tell the environment to release exactly those.
+    Carry(LocalId),
     /// A whole-width store into the slot. The next field of the value already
     /// there, or a new value over one that lives on under another name; this
     /// analysis decides which.
@@ -118,9 +130,11 @@ impl Event {
             Event::Make(n)
             | Event::Other(n)
             | Event::HandOver(n)
+            | Event::Carry(n)
             | Event::Fill(n)
             | Event::WriteThrough(n) => *n,
             Event::Alias { dst, .. }
+            | Event::Remake { dst, .. }
             | Event::Part { dst, .. }
             | Event::View { dst, .. }
             | Event::ViewAlso { dst, .. } => *dst,
@@ -143,6 +157,8 @@ pub struct Facts {
     pub terminator_reads: Vec<Vec<LocalId>>,
     /// Names holding something that isn't ours on entry: the parameters.
     pub foreign: Vec<LocalId>,
+    /// Parameters that are ours on entry, because the caller gave them up.
+    pub owned: Vec<LocalId>,
 }
 
 /// A release to insert, under `name`. `made` is the name the value was made
@@ -398,18 +414,26 @@ fn apply(
                 let cur = st.bind.entry(*dst).or_default();
                 cur.extend(seen);
             }
+            Event::Remake { dst, srcs } => {
+                let ours = !srcs.is_empty()
+                    && srcs.iter().all(|src| {
+                        let held = st.binds(*src);
+                        !held.is_empty()
+                            && held.iter().all(|b| matches!(b, Bind::Own(v) | Bind::Part(v) if st.owned(*v)))
+                    });
+                for src in srcs {
+                    hand_over(st, *src);
+                }
+                if ours {
+                    make(st, *dst, bi, si);
+                } else {
+                    st.bind.insert(*dst, BTreeSet::from([Bind::Other]));
+                }
+            }
             Event::Other(n) => {
                 st.bind.insert(*n, BTreeSet::from([Bind::Other]));
             }
-            Event::HandOver(n) => {
-                for b in st.binds(*n) {
-                    if let Bind::Own(v) | Bind::Part(v) = b {
-                        if st.own.contains_key(&v) {
-                            st.own.insert(v, false);
-                        }
-                    }
-                }
-            }
+            Event::HandOver(n) | Event::Carry(n) => hand_over(st, *n),
             Event::Fill(n) => {
                 let held = st.binds(*n);
                 let only = (held.len() == 1).then(|| *held.iter().next().unwrap());
@@ -452,6 +476,16 @@ fn written_through(st: &mut State, n: LocalId) {
         for (m, set) in st.bind.iter_mut() {
             if *m != n && set.remove(&Bind::Own(v)) {
                 set.insert(Bind::View(v));
+            }
+        }
+    }
+}
+
+fn hand_over(st: &mut State, n: LocalId) {
+    for b in st.binds(n) {
+        if let Bind::Own(v) | Bind::Part(v) = b {
+            if st.own.contains_key(&v) {
+                st.own.insert(v, false);
             }
         }
     }
@@ -512,7 +546,14 @@ fn join(
             let mut takes = Vec::new();
             for (k, st) in seen.iter().enumerate() {
                 let one = (sets[k].len() == 1).then(|| *sets[k].iter().next().unwrap());
-                let Some(v) = one.and_then(Bind::value) else { break };
+                // A view never holds what it reaches into, so it can't take
+                // it over. `let r = if … { A{…} as any R } else { B{…} as any
+                // R }` joined two boxes that only view their structs into one
+                // value owned by `r`, and released the structs through the
+                // box — the box freed twice and its contents leaked.
+                let Some(v) = one.filter(|b| !matches!(b, Bind::View(_))).and_then(Bind::value) else {
+                    break;
+                };
                 if !st.owned(v) || absorbed.iter().any(|(p, w)| *p == k && *w == v) {
                     break;
                 }
@@ -608,6 +649,12 @@ fn entry_state(facts: &Facts) -> State {
     let mut st = State::default();
     for n in &facts.foreign {
         st.bind.insert(*n, BTreeSet::from([Bind::Other]));
+    }
+    // Made before the first statement. `u32::MAX` is a join's, so one short.
+    for n in &facts.owned {
+        let v = Value { block: 0, at: u32::MAX - 1, name: *n };
+        st.bind.insert(*n, BTreeSet::from([Bind::Own(v)]));
+        st.own.insert(v, true);
     }
     st
 }
@@ -721,10 +768,44 @@ pub enum Placement {
     ScopeEnd,
 }
 
+/// Where each value this frame owns is released and under which name, and
+/// where its unwind slot is armed and disarmed.
+pub struct Plan {
+    pub releases: Vec<Release>,
+    pub unwind: Vec<Mark>,
+}
+
 /// Where each value this frame owns is released, and under which name.
-pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Vec<Release> {
+pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
+    plan_carrying(func, facts, placement, &|_, _| false).0
+}
+
+/// A `Carry` that handed the environment a value it now owns outright:
+/// `(block, statement, name)`, by index.
+pub type Carried = BTreeSet<(usize, usize, LocalId)>;
+
+/// `plan`, plus the `Carry` events that handed the environment something it
+/// now owns outright: the name certainly held one value this frame owned, or
+/// a part of one, and nothing the frame reads afterwards holds the same bytes.
+/// Those are what the environment has to release.
+///
+/// `disjoint(carried, other)` is the pass's answer to "do these two names
+/// certainly hold different parts of the value". It is what lets
+/// `let (req, r) = accept()` carry `req` while `r` goes elsewhere. The value
+/// is handed over whole either way, so whatever else is in it is left to
+/// whoever it went to, which is a leak at worst.
+///
+/// Everything else a `Carry` names — a parameter, one value on some paths and
+/// another on others, a Copy value the frame keeps reading — the environment
+/// must leave alone, because something else may still free it or read it.
+pub fn plan_carrying(
+    func: &MirFunction,
+    facts: &Facts,
+    placement: Placement,
+    disjoint: &dyn Fn(LocalId, LocalId) -> bool,
+) -> (Plan, Carried) {
     if func.blocks.is_empty() {
-        return Vec::new();
+        return (Plan { releases: Vec::new(), unwind: Vec::new() }, Carried::new());
     }
     let sh = shape(func, &facts.names);
     let ids: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
@@ -800,6 +881,66 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Vec<Rele
         }
         eprintln!("fill updates {:?}", updates);
         eprintln!("releases {:?}", out);
+    }
+    let (entries, exits) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
+    let carried = if facts.events.iter().flatten().flatten().any(|e| matches!(e, Event::Carry(_))) {
+        carried_outright(func, facts, &live, &entries, &kills, disjoint)
+    } else {
+        Carried::new()
+    };
+    let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills);
+    (Plan { releases: out, unwind }, carried)
+}
+
+/// The `Carry` events that hand over an owned value, or part of one, that
+/// nothing else reads afterwards, against the settled state.
+fn carried_outright(
+    func: &MirFunction,
+    facts: &Facts,
+    live: &Live,
+    entries: &[Option<State>],
+    kills: &Kills,
+    disjoint: &dyn Fn(LocalId, LocalId) -> bool,
+) -> Carried {
+    let mut out = Carried::new();
+    for bi in 0..func.blocks.len() {
+        let Some(entry) = &entries[bi] else { continue };
+        let mut st = entry.clone();
+        for si in 0..func.blocks[bi].statements.len() {
+            if is_phi(func, bi, si) {
+                continue;
+            }
+            let events = &facts.events[bi][si];
+            for ev in events {
+                let Event::Carry(n) = ev else { continue };
+                let held = st.binds(*n);
+                let Some(Bind::Own(v) | Bind::Part(v)) =
+                    (held.len() == 1).then(|| *held.iter().next().unwrap())
+                else {
+                    continue;
+                };
+                if !st.owned(v) {
+                    continue;
+                }
+                // The names this statement defines aren't the frame's: the
+                // closure the value went into is the one being built here.
+                let defined: Vec<LocalId> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        Event::Other(d) | Event::Make(d) => Some(*d),
+                        _ => None,
+                    })
+                    .collect();
+                let read_later = live.at[bi][si + 1]
+                    .iter()
+                    .any(|m| !defined.contains(m) && st.mentions(*m, v) && !disjoint(*n, *m));
+                if !read_later {
+                    out.insert((bi, si, *n));
+                }
+            }
+            apply(&mut st, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            killed_at(&mut st, kills, bi, si);
+        }
     }
     out
 }
@@ -956,6 +1097,511 @@ fn pick(st: &State, v: Value, touched: &[LocalId]) -> Option<LocalId> {
         .filter(|n| touched.contains(n))
         .min()
         .or_else(|| holders.iter().copied().min())
+}
+
+// ─── Unwind marks (ctrl.panic/U6) ──────────────────────────
+//
+// A panic longjmps past every release the plan placed, so each value the frame
+// owns also sits in a slot of the frame's unwind record while it is ours. The
+// slot is armed where the value becomes ours under a name that certainly holds
+// it, and disarmed where it stops being ours: handed over, released, or no
+// longer held by that name. Read off the same settled state the releases were,
+// so the two never disagree about whose a value is.
+//
+// A value made by a `Fill` is a field store whose siblings may not be written
+// yet. Armed while code that can panic runs before the rest are stored, a
+// panic would release whatever the unwritten fields held. So it is armed at
+// once only when its stores run with nothing that can panic between them
+// (`stored_quietly`), and otherwise waits until something reads it, which
+// nothing does to a value still being built. A struct literal evaluates each
+// field between stores and isn't made that way: lowering starts it with a
+// `ZeroAggregate`, and it is armed from there.
+
+/// Where an unwind mark goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkAt {
+    /// Before statement `at` of block `block`, by index into the blocks as
+    /// planned. `late` marks belong to statement `at` itself (a hand-over in
+    /// it); the others to the statement before it (a value it made), and go
+    /// first.
+    In { block: usize, at: usize, late: bool },
+    /// On the edge between two blocks.
+    Edge { from: BlockId, to: BlockId },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    /// `slot` holds what `name` holds from here on. `made` is the name the
+    /// value was made under, as `Release` carries it.
+    Arm { slot: u32, name: LocalId, made: Option<LocalId> },
+    Disarm { slot: u32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    pub at: MarkAt,
+    pub kind: MarkKind,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn unwind_marks(
+    func: &MirFunction,
+    facts: &Facts,
+    sh: &Shape,
+    live: &Live,
+    entries: &[Option<State>],
+    exits: &[Option<State>],
+    kills: &Kills,
+) -> Vec<Mark> {
+    let n = func.blocks.len();
+    let ids: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
+    // Nothing is armed in an `ensure` body a cleanup return runs: the values
+    // reaching it were released at the cleanup return.
+    let cleanup_ids = cfg::cleanup_only_blocks(func);
+    let cleanup: Vec<bool> = ids.iter().map(|id| cleanup_ids.contains(id)).collect();
+    let mut slots: BTreeMap<(Value, LocalId), u32> = BTreeMap::new();
+    let mut slot = |v: Value, name: LocalId| -> u32 {
+        let next = slots.len() as u32;
+        *slots.entry((v, name)).or_insert(next)
+    };
+    let mut marks: Vec<Mark> = Vec::new();
+    let mut entry_arm: Vec<Option<BTreeMap<Value, LocalId>>> = vec![None; n];
+    let mut exit_arm: Vec<BTreeMap<Value, LocalId>> = vec![BTreeMap::new(); n];
+    let read_in = read_since_made(func, facts, sh, live, entries, kills);
+    let mut half_built: BTreeSet<Value> = BTreeSet::new();
+    for (bi, block) in facts.events.iter().enumerate() {
+        for (si, evs) in block.iter().enumerate() {
+            for e in evs {
+                if let Event::Fill(m) = e {
+                    let v = Value { block: bi as u32, at: si as u32, name: *m };
+                    if !stored_quietly(func, facts, sh, v) {
+                        half_built.insert(v);
+                    }
+                }
+            }
+        }
+    }
+
+    for &bi in &sh.rpo {
+        let Some(entry) = &entries[bi] else { continue };
+        if cleanup[bi] || exits[bi].is_none() {
+            entry_arm[bi] = Some(BTreeMap::new());
+            continue;
+        }
+        let mut read = read_in[bi].clone();
+        let armable = |v: Value, read: &BTreeSet<Value>| !half_built.contains(&v) || read.contains(&v);
+        // Keep the name the way in armed it under, when every way in seen so
+        // far agrees and it still holds the value; otherwise the usual pick.
+        let mut arm: BTreeMap<Value, LocalId> = BTreeMap::new();
+        for (v, owned) in &entry.own {
+            if !*owned || !armable(*v, &read) {
+                continue;
+            }
+            let holders = entry.holders(*v);
+            if holders.is_empty() {
+                continue;
+            }
+            let mut agreed: Option<Option<LocalId>> = None;
+            for &p in &sh.preds[bi] {
+                if entry_arm[p].is_none() {
+                    continue;
+                }
+                let m = exit_arm[p].get(v).copied();
+                agreed = match agreed {
+                    None => Some(m),
+                    Some(x) if x == m => Some(x),
+                    _ => Some(None),
+                };
+            }
+            let kept = agreed.flatten().filter(|m| holders.contains(m));
+            if let Some(name) = kept.or_else(|| pick(entry, *v, &[])) {
+                arm.insert(*v, name);
+            }
+        }
+        entry_arm[bi] = Some(arm.clone());
+
+        let mut st = entry.clone();
+        let len = func.blocks[bi].statements.len();
+        for si in 0..len {
+            if is_phi(func, bi, si) {
+                continue;
+            }
+            note_reads(&st, &mut read, &facts.reads[bi][si]);
+            let held_before: BTreeMap<Value, Vec<LocalId>> =
+                arm.keys().map(|v| (*v, st.holders(*v))).collect();
+            apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            forget_made(&mut read, &facts.events[bi][si], bi, si);
+            // Handed over, or no longer held by the name it was armed under:
+            // gone before the statement runs, because a callee that panics
+            // with it is the one that owns it. A value made again here (a
+            // loop's next turn) is a new one and is armed afresh below.
+            //
+            // Still ours but held by another name from here, one that already
+            // held it: re-armed under that one before the statement. A call
+            // given the address of a copy writes through the copy, so the copy
+            // is the value from the call on (`WriteThrough`), and leaving the
+            // slot empty for the call left a panic in the callee nothing to
+            // release.
+            for (v, name) in arm.clone() {
+                let made_here = v.block as usize == bi && v.at as usize == si;
+                if made_here || !st.owned(v) || !st.holders(v).contains(&name) {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si, late: true },
+                        kind: MarkKind::Disarm { slot: slot(v, name) },
+                    });
+                    arm.remove(&v);
+                    if made_here || !st.owned(v) {
+                        continue;
+                    }
+                    let now = st.holders(v);
+                    let Some(next) = held_before[&v].iter().copied().filter(|m| now.contains(m)).min() else {
+                        continue;
+                    };
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si, late: true },
+                        kind: MarkKind::Arm { slot: slot(v, next), name: next, made: v.made() },
+                    });
+                    arm.insert(v, next);
+                }
+            }
+            // Released right after it.
+            killed_at(&mut st, kills, bi, si);
+            for (v, name) in arm.clone() {
+                if !st.owned(v) {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si + 1, late: false },
+                        kind: MarkKind::Disarm { slot: slot(v, name) },
+                    });
+                    arm.remove(&v);
+                }
+            }
+            let owned: Vec<Value> = st.own.iter().filter(|(_, o)| **o).map(|(v, _)| *v).collect();
+            for v in owned {
+                if arm.contains_key(&v) || !armable(v, &read) {
+                    continue;
+                }
+                if let Some(name) = pick(&st, v, &[]) {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si + 1, late: false },
+                        kind: MarkKind::Arm { slot: slot(v, name), name, made: v.made() },
+                    });
+                    arm.insert(v, name);
+                }
+            }
+        }
+        // A cleanup return released everything still ours just before it; the
+        // `ensure` bodies it runs next can still panic.
+        apply(&mut st, &facts.terminator_events[bi], bi, len, &live.out[bi], &mut HashSet::new());
+        let cleanup_return =
+            matches!(func.blocks[bi].terminator.kind, MirTerminatorKind::CleanupReturn { .. });
+        for (v, name) in arm.clone() {
+            if cleanup_return || !st.owned(v) || !st.holders(v).contains(&name) {
+                marks.push(Mark {
+                    at: MarkAt::In { block: bi, at: len, late: true },
+                    kind: MarkKind::Disarm { slot: slot(v, name) },
+                });
+                arm.remove(&v);
+            }
+        }
+        exit_arm[bi] = arm;
+    }
+
+    // Each edge hands the successor what it armed. A slot the successor
+    // doesn't keep is disarmed on the edge; one it keeps under a name some way
+    // in didn't arm is armed on entry.
+    let mut need: Vec<BTreeSet<Value>> = vec![BTreeSet::new(); n];
+    for p in 0..n {
+        if entry_arm[p].is_none() || cleanup[p] {
+            continue;
+        }
+        for &b in &sh.succs[p] {
+            if cleanup[b] {
+                continue;
+            }
+            let Some(earm) = &entry_arm[b] else { continue };
+            for (v, name) in &exit_arm[p] {
+                if earm.get(v) != Some(name) {
+                    marks.push(Mark {
+                        at: MarkAt::Edge { from: ids[p], to: ids[b] },
+                        kind: MarkKind::Disarm { slot: slot(*v, *name) },
+                    });
+                }
+            }
+            for (v, name) in earm {
+                if exit_arm[p].get(v) != Some(name) {
+                    need[b].insert(*v);
+                }
+            }
+        }
+    }
+    for b in 0..n {
+        let Some(earm) = &entry_arm[b] else { continue };
+        let first = func.blocks[b]
+            .statements
+            .iter()
+            .take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. }))
+            .count();
+        for (v, name) in earm {
+            if b == 0 || need[b].contains(v) {
+                marks.push(Mark {
+                    at: MarkAt::In { block: b, at: first, late: false },
+                    kind: MarkKind::Arm { slot: slot(*v, *name), name: *name, made: v.made() },
+                });
+            }
+        }
+    }
+    marks
+}
+
+/// The `Fill`-made values something has read since they were made, on every
+/// path into each block. Read means finished: nothing reads a value still
+/// being built.
+fn read_since_made(
+    func: &MirFunction,
+    facts: &Facts,
+    sh: &Shape,
+    live: &Live,
+    entries: &[Option<State>],
+    kills: &Kills,
+) -> Vec<BTreeSet<Value>> {
+    let n = func.blocks.len();
+    if !facts.events.iter().flatten().flatten().any(|e| matches!(e, Event::Fill(_))) {
+        return vec![BTreeSet::new(); n];
+    }
+    // `None` until a way in is seen: the meet is an intersection.
+    let mut read_in: Vec<Option<BTreeSet<Value>>> = vec![None; n];
+    let mut read_out: Vec<Option<BTreeSet<Value>>> = vec![None; n];
+    if n > 0 {
+        read_in[sh.rpo[0]] = Some(BTreeSet::new());
+    }
+    let mut changed = true;
+    let mut rounds = 0;
+    while changed && rounds < 200 {
+        changed = false;
+        rounds += 1;
+        for &bi in &sh.rpo {
+            let Some(entry) = &entries[bi] else { continue };
+            let mut meet: Option<BTreeSet<Value>> = read_in[bi].clone().filter(|_| bi == sh.rpo[0]);
+            for &p in &sh.preds[bi] {
+                if let Some(out) = &read_out[p] {
+                    meet = Some(match meet {
+                        None => out.clone(),
+                        Some(m) => m.intersection(out).copied().collect(),
+                    });
+                }
+            }
+            let Some(start) = meet else { continue };
+            read_in[bi] = Some(start.clone());
+            let mut read = start;
+            let mut st = entry.clone();
+            let len = func.blocks[bi].statements.len();
+            for si in 0..len {
+                if is_phi(func, bi, si) {
+                    continue;
+                }
+                note_reads(&st, &mut read, &facts.reads[bi][si]);
+                apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+                forget_made(&mut read, &facts.events[bi][si], bi, si);
+                killed_at(&mut st, kills, bi, si);
+            }
+            note_reads(&st, &mut read, &facts.terminator_reads[bi]);
+            if read_out[bi].as_ref() != Some(&read) {
+                read_out[bi] = Some(read);
+                changed = true;
+            }
+        }
+    }
+    // Unsettled, the sets may still claim reads some path lacks: claim none.
+    if changed {
+        return vec![BTreeSet::new(); n];
+    }
+    read_in.into_iter().map(Option::unwrap_or_default).collect()
+}
+
+/// Whether the value a `Fill` made gets the rest of its fields stored with
+/// nothing that can panic in between: a wrapper's tag and payload, a tuple
+/// whose elements were evaluated first. Followed through straight-line
+/// blocks until something reads the value; a branch or a join first and the
+/// answer is no.
+fn stored_quietly(func: &MirFunction, facts: &Facts, sh: &Shape, v: Value) -> bool {
+    let name = v.name;
+    let (mut bi, mut from) = (v.block as usize, v.at as usize + 1);
+    let mut loud = false;
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    loop {
+        let block = &func.blocks[bi];
+        for si in from..block.statements.len() {
+            if facts.reads[bi][si].contains(&name) {
+                return true;
+            }
+            if facts.events[bi][si].iter().any(|e| matches!(e, Event::Fill(m) if *m == name)) {
+                if loud {
+                    return false;
+                }
+                continue;
+            }
+            loud |= !quiet(&block.statements[si]);
+        }
+        if facts.terminator_reads[bi].contains(&name) {
+            return true;
+        }
+        match block.terminator.kind {
+            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => return true,
+            MirTerminatorKind::Goto { .. }
+                if sh.succs[bi].len() == 1 && sh.preds[sh.succs[bi][0]].len() == 1 && seen.insert(bi) =>
+            {
+                bi = sh.succs[bi][0];
+                from = 0;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// A statement that can't panic.
+fn quiet(stmt: &MirStmt) -> bool {
+    use crate::MirRValue;
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue, .. } => matches!(
+            rvalue,
+            MirRValue::Use(_) | MirRValue::Ref(_) | MirRValue::Field { .. } | MirRValue::EnumTag { .. }
+        ),
+        MirStmtKind::Store { .. }
+        | MirStmtKind::RcInc { .. }
+        | MirStmtKind::RcIncContents { .. }
+        | MirStmtKind::Phi { .. }
+        | MirStmtKind::ZeroAggregate { .. }
+        | MirStmtKind::UnwindArm { .. }
+        | MirStmtKind::UnwindDisarm { .. } => true,
+        _ => false,
+    }
+}
+
+/// Every value the names a statement reads might hold.
+fn note_reads(st: &State, read: &mut BTreeSet<Value>, names: &[LocalId]) {
+    for name in names {
+        read.extend(st.binds(*name).into_iter().filter_map(Bind::value));
+    }
+}
+
+/// A value made again (a loop's next turn) starts over unread.
+fn forget_made(read: &mut BTreeSet<Value>, events: &[Event], bi: usize, si: usize) {
+    for e in events {
+        read.remove(&Value { block: bi as u32, at: si as u32, name: e.name() });
+    }
+}
+
+/// Where each statement a pass planned against now sits, once unwind marks
+/// went in ahead of it.
+pub struct Shifted {
+    at: Vec<Vec<usize>>,
+}
+
+impl Shifted {
+    /// The index that is "before statement `at`" in the planned blocks, after
+    /// any marks placed there.
+    pub fn at(&self, block: usize, at: usize) -> usize {
+        self.at[block].get(at).copied().unwrap_or(at)
+    }
+}
+
+/// The first unwind slot no statement in `func` uses yet.
+pub fn next_unwind_slot(func: &MirFunction) -> u32 {
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::UnwindArm { slot, .. } | MirStmtKind::UnwindDisarm { slot } => Some(*slot + 1),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// An edge and the statements that go on it.
+pub type EdgeStmts = Vec<(BlockId, BlockId, Vec<MirStmt>)>;
+
+/// Turn a plan's unwind marks into statements and put the in-block ones in.
+///
+/// `release(func, name, made)` is the pass's own release of what `name` holds,
+/// the statements it would place at a release under that name. Run against the
+/// blocks as planned, before the pass inserts anything of its own; the pass
+/// then places its in-block releases through the returned `Shifted`, and hands
+/// the returned edge marks to `insert_on_edges` together with its own edge
+/// releases, so one edge gets one block.
+pub fn place_unwind(
+    func: &mut MirFunction,
+    marks: Vec<Mark>,
+    release: &mut dyn FnMut(&mut MirFunction, LocalId, Option<LocalId>) -> Vec<MirStmt>,
+) -> (Shifted, EdgeStmts) {
+    let base = next_unwind_slot(func);
+    let mut templates: BTreeMap<u32, crate::UnwindRelease> = BTreeMap::new();
+    let mut in_block: Vec<Vec<(usize, bool, MirStmt)>> = vec![Vec::new(); func.blocks.len()];
+    let mut edges: EdgeStmts = Vec::new();
+    for m in marks {
+        let kind = match m.kind {
+            MarkKind::Arm { slot, name, made } => {
+                let slot = base + slot;
+                let release = match templates.get(&slot) {
+                    Some(t) => t.clone(),
+                    None => {
+                        let t = crate::UnwindRelease { placeholder: name, stmts: release(func, name, made) };
+                        templates.insert(slot, t.clone());
+                        t
+                    }
+                };
+                MirStmtKind::UnwindArm { slot, value: name, release }
+            }
+            MarkKind::Disarm { slot } => MirStmtKind::UnwindDisarm { slot: base + slot },
+        };
+        match m.at {
+            MarkAt::In { block, at, late } => in_block[block].push((at, late, MirStmt::dummy(kind))),
+            MarkAt::Edge { from, to } => match edges.iter_mut().find(|(f, t, _)| *f == from && *t == to) {
+                Some((_, _, all)) => all.push(MirStmt::dummy(kind)),
+                None => edges.push((from, to, vec![MirStmt::dummy(kind)])),
+            },
+        }
+    }
+    let mut shifted = Vec::with_capacity(func.blocks.len());
+    for (bi, mut here) in in_block.into_iter().enumerate() {
+        let block = &mut func.blocks[bi];
+        let len = block.statements.len();
+        if here.is_empty() {
+            shifted.push((0..=len).collect());
+            continue;
+        }
+        here.sort_by_key(|(at, late, _)| (*at, *late));
+        let mut here = here.into_iter().peekable();
+        let mut old = std::mem::take(&mut block.statements).into_iter();
+        let mut index = Vec::with_capacity(len + 1);
+        let mut out: Vec<MirStmt> = Vec::with_capacity(len);
+        for _ in 0..=len {
+            let i = index.len();
+            while let Some((_, _, st)) = here.next_if(|(at, _, _)| *at == i) {
+                out.push(st);
+            }
+            index.push(out.len());
+            if let Some(st) = old.next() {
+                out.push(st);
+            }
+        }
+        block.statements = out;
+        shifted.push(index);
+    }
+    (Shifted { at: shifted }, edges)
+}
+
+/// Merge two lists of edge statements, one entry per edge, `first`'s
+/// statements ahead.
+pub fn merge_edges(first: EdgeStmts, then: EdgeStmts) -> EdgeStmts {
+    let mut out = first;
+    for (from, to, stmts) in then {
+        match out.iter_mut().find(|(f, t, _)| *f == from && *t == to) {
+            Some((_, _, all)) => all.extend(stmts),
+            None => out.push((from, to, stmts)),
+        }
+    }
+    out
 }
 
 /// Put each edge's releases on its edge: at the top of the successor when this

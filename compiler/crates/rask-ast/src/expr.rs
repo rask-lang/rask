@@ -167,6 +167,10 @@ pub enum ExprKind {
     Unwrap {
         expr: Box<Expr>,
         message: Option<String>,
+        /// The `!` itself: where a panic from it is reported (ctrl.panic/S6).
+        /// The node's span starts at the operand, which on a multi-line call
+        /// is several lines up, and on `a()!.b()!` is the same for both.
+        bang: Span,
     },
     /// Null coalescing (a ?? b)
     NullCoalesce {
@@ -218,6 +222,20 @@ pub enum ExprKind {
         ret_ty: Option<crate::ty::TypeExpr>,
         body: Box<Expr>,
     },
+    /// Task block: `spawn { … }`, `Thread.spawn { … }`, `ThreadPool.spawn { … }`
+    /// (conc.async/S1–S3). Evaluates to the task's `Handle<T>`.
+    ///
+    /// The block runs once, so it may consume what it captures (S6). `body` is
+    /// a parameterless `Closure` the parser builds around the block, so capture
+    /// analysis and lowering are the closure machinery's; nothing in the
+    /// surface language can name or call it.
+    Spawn {
+        target: SpawnTarget,
+        /// `Thread` / `ThreadPool` as written, so the name resolves like any
+        /// other use of the type. `None` for a green task.
+        receiver: Option<Box<Expr>>,
+        body: Box<Expr>,
+    },
     /// Type cast (x as i32) — lossless widening only (type.primitives CV1).
     Cast {
         expr: Box<Expr>,
@@ -231,11 +249,6 @@ pub enum ExprKind {
         /// Target primitive type (e.g. `i8`, `u32`, `f64`).
         target: crate::ty::TypeExpr,
         kind: ConvertKind,
-    },
-    /// Block call expression (identifier { body }) like spawn_raw { ... }
-    BlockCall {
-        name: String,
-        body: Vec<super::stmt::Stmt>,
     },
     /// Unsafe block expression
     Unsafe {
@@ -265,6 +278,28 @@ pub enum ExprKind {
         condition: Box<Expr>,
         message: Option<Box<Expr>>,
     },
+}
+
+/// What runs a task block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnTarget {
+    /// `spawn { … }` — a green task on the `using Multitasking` scheduler.
+    Green,
+    /// `Thread.spawn { … }` — a raw OS thread.
+    Thread,
+    /// `ThreadPool.spawn { … }` — a job on the `using ThreadPool` pool.
+    Pool,
+}
+
+impl SpawnTarget {
+    /// How the construct is written, for messages and the formatter.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            SpawnTarget::Green => "spawn",
+            SpawnTarget::Thread => "Thread.spawn",
+            SpawnTarget::Pool => "ThreadPool.spawn",
+        }
+    }
 }
 
 /// A segment of an interpolated string.
@@ -335,6 +370,8 @@ pub struct WithBinding {
 #[derive(Debug, Clone)]
 pub struct ClosureParam {
     pub name: String,
+    /// Where the name is written, for diagnostics that point at the declaration.
+    pub name_span: Span,
     pub ty: Option<crate::ty::TypeExpr>,
     pub is_mutate: bool,
     pub is_take: bool,
@@ -655,9 +692,9 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::UsingBlock { .. } => "UsingBlock",
         ExprKind::WithAs { .. } => "WithAs",
         ExprKind::Closure { .. } => "Closure",
+        ExprKind::Spawn { .. } => "Spawn",
         ExprKind::Cast { .. } => "Cast",
         ExprKind::Convert { .. } => "Convert",
-        ExprKind::BlockCall { .. } => "BlockCall",
         ExprKind::Unsafe { .. } => "Unsafe",
         ExprKind::Comptime { .. } => "Comptime",
         ExprKind::Select { .. } => "Select",

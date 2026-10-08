@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type name that names nothing is reported wherever it's
+// written, not only in a signature (type.gradual/PC2).
+//
+// The check ran on parameters, return types, fields and payloads, one call
+// site each, so `5 as Nonexistent` and `|q: Nonexistent| q` type-checked
+// (#1484). It runs on every written type now, against the type parameters in
+// scope there, so a declared parameter still passes.
+
+struct Holder<Thing> {
+    v: Thing,
+
+    func get(self) -> Thing {
+        let kept: Thing = self.v.clone()
+        return kept
+    }
+}
+
+// ERROR: unknown type `Nowhere`
+extend Nowhere {
+    func a(self) -> i64 {
+        return 1
+    }
+}
+
+// ERROR: unknown type `Nope`
+type alias Many = Vec<Nope>
+
+union Raw {
+    // ERROR: unknown type `Nada`
+    a: Nada,
+}
+
+func main() {
+    // ERROR: unknown type `Nonexistent`
+    let n: i64 = 5 as Nonexistent
+    // ERROR: unknown type `Nonexistent`
+    let c = |q: Nonexistent| 1
+    // ERROR: unknown type `Missing`
+    let m: Missing = 5
+    // ERROR: unknown type `Elsewhere`
+    let v: Vec<Elsewhere> = Vec.new()
+    let h = Holder { v: 3 }
+    println(h.get())
+}

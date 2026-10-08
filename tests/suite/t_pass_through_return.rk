@@ -1,0 +1,408 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function that takes a container and returns it hands the caller back the
+// container it passed in. Natively nobody freed it: the caller gave it up at
+// the call, and the callee hadn't built what it returned, so neither side
+// owned the result (#1502).
+//
+// Same when only some paths hand the argument back and the rest build a new
+// container: the caller owns what comes back either way, and the callee frees
+// the argument on the paths that drop it (#1504).
+//
+// And when different paths hand back different arguments: the caller owns the
+// result when it gave up every one that might come back (#1505). The callees
+// below loop a little so the inliner leaves them as calls.
+
+func stash(take p: Vec<i64>) -> Vec<i64> {
+    mut q = p
+    for i in 0..3 {
+        q.push(i)
+    }
+    return q
+}
+
+func ident<T>(take x: T) -> T {
+    return x
+}
+
+func twice(take p: Vec<i64>) -> Vec<i64> {
+    let q = stash(p)
+    return stash(q)
+}
+
+func use_and_drop(take p: Vec<i64>) -> u64 {
+    let q = stash(p)
+    return q.len()
+}
+
+func fresh_through() -> Vec<i64> {
+    return stash(Vec.new())
+}
+
+func maybe_stash(take p: Vec<i64>, c: bool) -> Vec<i64> {
+    if c {
+        return stash(p)
+    }
+    return p
+}
+
+func names(take p: Vec<string>) -> Vec<string> {
+    mut q = p
+    q.push("c")
+    return q
+}
+
+// The work every callee below does before deciding, so none is small enough
+// to inline away.
+func spin(n: i64) -> i64 {
+    mut acc = n
+    for i in 0..4 {
+        acc = acc * 3 + i
+        if acc > 1000 {
+            acc = acc / 7
+        }
+    }
+    return acc
+}
+
+func pick(take p: Vec<i64>, fresh: bool) -> Vec<i64> {
+    let k = spin(p.len().clamp<i64>())
+    if fresh {
+        mut q: Vec<i64> = Vec.new()
+        q.push(k)
+        return q
+    }
+    for i in 0..2 {
+        p.push(i)
+    }
+    return p
+}
+
+func pick_names(take p: Vec<string>, fresh: bool) -> Vec<string> {
+    let k = spin(p.len().clamp<i64>())
+    if fresh {
+        mut q: Vec<string> = Vec.new()
+        q.push("new {k}")
+        return q
+    }
+    for i in 0..2 {
+        p.push("old {i}")
+    }
+    return p
+}
+
+func grow_or_reset<T>(take p: Vec<T>, reset: bool) -> Vec<T> {
+    let k = spin(p.len().clamp<i64>())
+    if reset && k > 0 {
+        return Vec.new()
+    }
+    return p
+}
+
+func maybe_keep(take p: Vec<i64>, keep: bool) -> Vec<i64>? {
+    let k = spin(p.len().clamp<i64>())
+    if keep && k > 0 {
+        return p
+    }
+    if k == -1 {
+        return none
+    }
+    mut q: Vec<i64> = Vec.new()
+    q.push(k)
+    return q
+}
+
+func keep_or_refuse(take p: Vec<i64>, keep: bool) -> Vec<i64> or Refused {
+    let k = spin(p.len().clamp<i64>())
+    if keep {
+        return p
+    }
+    return Refused { why: "no {k}" }
+}
+
+struct Refused {
+    why: string
+}
+
+extend Refused {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func pick_again(take p: Vec<i64>, fresh: bool) -> Vec<i64> {
+    let q = pick(p, fresh)
+    return pick(q, false)
+}
+
+test "direct call" {
+    let v: Vec<i64> = [1, 2]
+    let w = stash(v)
+    assert w.len() == 5
+    assert w[4] == 2
+}
+
+test "through a function value" {
+    let f: func(take Vec<i64>) -> Vec<i64> = stash
+    let v: Vec<i64> = [1]
+    let w = f(v)
+    assert w.len() == 4
+}
+
+test "generic" {
+    let v: Vec<i64> = [4, 5, 6]
+    let w = ident(v)
+    assert w.len() == 3
+    let s: Vec<string> = ["a", "b"]
+    let t = ident(s)
+    assert t[1] == "b"
+}
+
+test "chained and dropped in the callee" {
+    let v: Vec<i64> = []
+    assert twice(v).len() == 6
+    assert use_and_drop([9]) == 4
+    assert fresh_through().len() == 3
+}
+
+test "in a loop" {
+    for i in 0..3 {
+        let x: Vec<i64> = [i]
+        let y = maybe_stash(x, i == 1)
+        assert y[0] == i
+    }
+    mut acc: Vec<i64> = []
+    for _ in 0..3 {
+        acc = stash(acc)
+    }
+    assert acc.len() == 9
+}
+
+test "strings inside" {
+    let v: Vec<string> = ["a", "b"]
+    let w = names(v)
+    assert w.len() == 3
+    assert w[2] == "c"
+}
+
+test "some paths hand the argument back, others build one" {
+    let a: Vec<i64> = [1, 2]
+    let fresh = pick(a, true)
+    assert fresh.len() == 1
+    let b: Vec<i64> = [1, 2]
+    let same = pick(b, false)
+    assert same.len() == 4
+    assert same[3] == 1
+    let s: Vec<string> = ["a"]
+    let t = pick_names(s, true)
+    assert t[0] == "new {spin(1)}"
+    let u: Vec<string> = ["a"]
+    let w = pick_names(u, false)
+    assert w.len() == 3
+    assert w[2] == "old 1"
+    assert pick_again([5], true).len() == 3
+    assert pick_again([5], false).len() == 5
+}
+
+test "mixed paths in a loop" {
+    mut total = 0
+    for i in 0..4 {
+        let v: Vec<i64> = [i, i]
+        let w = pick(v, i % 2 == 0)
+        total = total + w.len().clamp<i64>()
+    }
+    assert total == 10
+    mut acc: Vec<i64> = []
+    for i in 0..4 {
+        acc = pick(acc, i == 2)
+    }
+    assert acc.len() == 3
+}
+
+test "mixed paths, generic" {
+    let a: Vec<i64> = [1]
+    assert grow_or_reset(a, true).len() == 0
+    let b: Vec<i64> = [1, 2]
+    assert grow_or_reset(b, false)[1] == 2
+    let s: Vec<string> = ["x"]
+    assert grow_or_reset(s, true).len() == 0
+    let t: Vec<string> = ["x", "y"]
+    assert grow_or_reset(t, false)[1] == "y"
+}
+
+test "mixed paths through a function value" {
+    let f: func(take Vec<i64>, bool) -> Vec<i64> = pick
+    let a: Vec<i64> = [7]
+    assert f(a, true).len() == 1
+    let b: Vec<i64> = [7]
+    let w = f(b, false)
+    assert w.len() == 3
+    assert w[0] == 7
+}
+
+test "the argument handed back inside a wrapper" {
+    let a: Vec<i64> = [1, 2, 3]
+    let o = maybe_keep(a, true)
+    mut n = 0
+    if o? as x {
+        n = x.len().clamp<i64>()
+    }
+    assert n == 3
+    let b: Vec<i64> = [1, 2, 3]
+    let p = maybe_keep(b, false)
+    if p? as x {
+        n = x[0]
+    }
+    assert n == spin(3)
+    let c: Vec<i64> = [4, 5]
+    let r = keep_or_refuse(c, true)
+    if r is Vec<i64> as items {
+        assert items[1] == 5
+    } else {
+        assert false
+    }
+    let d: Vec<i64> = [4, 5]
+    let r2 = keep_or_refuse(d, false)
+    if r2 is Refused as why {
+        assert why.why == "no {spin(2)}"
+    } else {
+        assert false
+    }
+}
+
+func either(take a: Vec<i64>, take b: Vec<i64>, first: bool) -> Vec<i64> {
+    let k = spin(a.len().clamp<i64>() + b.len().clamp<i64>())
+    if first {
+        a.push(k)
+        return a
+    }
+    return b
+}
+
+func either_of<T>(take a: Vec<T>, take b: Vec<T>, first: bool) -> Vec<T> {
+    let k = spin(a.len().clamp<i64>())
+    if first && k > 0 {
+        return a
+    }
+    return b
+}
+
+func one_of_three(take a: Vec<i64>, take b: Vec<i64>, take c: Vec<i64>, which: i64) -> Vec<i64> {
+    let k = spin(which)
+    if which == 0 {
+        return a
+    }
+    if which == 1 && k > 0 {
+        return b
+    }
+    return c
+}
+
+func either_or_new(take a: Vec<string>, take b: Vec<string>, which: i64) -> Vec<string> {
+    let k = spin(which)
+    if which == 0 {
+        return a
+    }
+    if which == 1 {
+        return b
+    }
+    mut q: Vec<string> = Vec.new()
+    q.push("new {k}")
+    return q
+}
+
+func merged(take a: Vec<i64>, take b: Vec<i64>, first: bool) -> Vec<i64> {
+    let k = spin(a.len().clamp<i64>())
+    let r = if first && k > 0 { a } else { b }
+    return r
+}
+
+func swapped(take a: Vec<i64>, take b: Vec<i64>, first: bool) -> Vec<i64> {
+    let r = either(b, a, first)
+    return stash(r)
+}
+
+func or_empty(take p: Vec<i64>, keep: bool) -> Vec<i64> {
+    let r = either(Vec.new(), p, !keep)
+    return stash(r)
+}
+
+test "two arguments, either one handed back" {
+    let x: Vec<i64> = [1]
+    let y: Vec<i64> = [2, 3]
+    let w = either(x, y, true)
+    assert w.len() == 2
+    let x2: Vec<i64> = [1]
+    let y2: Vec<i64> = [2, 3]
+    let w2 = either(x2, y2, false)
+    assert w2[1] == 3
+    let s: Vec<string> = ["a"]
+    let t: Vec<string> = ["b", "c"]
+    assert either_of(s, t, true)[0] == "a"
+    let s2: Vec<string> = ["a"]
+    let t2: Vec<string> = ["b", "c"]
+    assert either_of(s2, t2, false)[1] == "c"
+    let m: Vec<i64> = [1]
+    let n: Vec<i64> = [2, 3]
+    assert merged(m, n, true).len() == 1
+    let m2: Vec<i64> = [1]
+    let n2: Vec<i64> = [2, 3]
+    assert merged(m2, n2, false).len() == 2
+    let p: Vec<i64> = [1]
+    let q: Vec<i64> = [2, 3]
+    assert swapped(p, q, true).len() == 6
+}
+
+test "three arguments" {
+    for i in 0..3 {
+        let a: Vec<i64> = [0]
+        let b: Vec<i64> = [1, 1]
+        let c: Vec<i64> = [2, 2, 2]
+        let w = one_of_three(a, b, c, i)
+        assert w.len().clamp<i64>() == i + 1
+    }
+}
+
+test "two arguments or a fresh container" {
+    for i in 0..3 {
+        let a: Vec<string> = ["a"]
+        let b: Vec<string> = ["b", "b"]
+        let w = either_or_new(a, b, i)
+        if i == 2 {
+            assert w[0] == "new {spin(2)}"
+        } else {
+            assert w.len().clamp<i64>() == i + 1
+        }
+    }
+    let x: Vec<i64> = [1]
+    assert either(x, Vec.new(), false).len() == 0
+    let y: Vec<i64> = [1]
+    assert either(Vec.new(), y, true).len() == 1
+    let z: Vec<i64> = [1, 2]
+    assert or_empty(z, true).len() == 5
+    let z2: Vec<i64> = [1, 2]
+    assert or_empty(z2, false).len() == 4
+}
+
+test "two arguments through a function value" {
+    let f: func(take Vec<i64>, take Vec<i64>, bool) -> Vec<i64> = either
+    let a: Vec<i64> = [7]
+    let b: Vec<i64> = [8, 9]
+    let w = f(a, b, true)
+    assert w.len() == 2
+    assert w[0] == 7
+    let c: Vec<i64> = [7]
+    let d: Vec<i64> = [8, 9]
+    assert f(c, d, false)[1] == 9
+}
+
+test "two arguments in a loop" {
+    mut acc: Vec<i64> = []
+    for i in 0..4 {
+        let next: Vec<i64> = [i]
+        acc = either(acc, next, i % 2 == 0)
+    }
+    assert acc.len() == 1
+    assert acc[0] == 3
+}
+
+func main() {}

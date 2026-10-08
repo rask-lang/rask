@@ -26,6 +26,7 @@ t_month_panic_observed.rk :: O3 + LK1-LK3: the next acquirer gets the lock and t
 t_month_panic_observed.rk :: P2: the survivor keeps running and joins a healthy task after :: Thread.spawn (sim/B1)
 t_month_panic_observed.rk :: ST3 across a task boundary: a staged update commits nothing on panic :: Thread.spawn (sim/B1)
 t_spawn_payload_type.rk :: Thread.spawn binds its payload the same way :: Thread.spawn (sim/B1)
+t_task_block_consumes.rk :: an OS thread :: Thread.spawn (sim/B1)
 t_subprocess.rk :: a command runs and its output comes back :: subprocess, no simulated implementation (sim/B3)
 t_subprocess.rk :: a program that doesn't exist is an error, not a status :: subprocess, no simulated implementation (sim/B3)
 t_subprocess.rk :: a stream configured Null is not captured :: subprocess, no simulated implementation (sim/B3)

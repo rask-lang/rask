@@ -132,6 +132,13 @@ impl ResolveError {
         }
     }
 
+    pub fn shadows_module(name: String, module: String, imported_at: Span, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::ShadowsModule { name, module, imported_at },
+            span,
+        }
+    }
+
     pub fn shadows_builtin(name: String, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::ShadowsBuiltin { name },
@@ -213,6 +220,14 @@ pub enum ResolveErrorKind {
     #[error("return outside of function")]
     InvalidReturn,
 
+    /// `spawn(|| …)`, `spawn_with(v, |take x| …)` or their `Thread` /
+    /// `ThreadPool` forms: a task starts with a block now (conc.async/S1–S3).
+    /// `form` is how the start of the call was written — `spawn`,
+    /// `Thread.spawn_with` — `receiver` the `Thread`/`ThreadPool` prefix, and
+    /// `handed` the name a `spawn_with` passed in, when it was a name.
+    #[error("`{form}` takes a block, not a closure")]
+    SpawnTakesABlock { form: String, receiver: Option<String>, handed: Option<String> },
+
     #[error("unknown package: `{}`", if path.is_empty() { "<empty>".to_string() } else { path.join(".") })]
     UnknownPackage { path: Vec<String> },
 
@@ -230,6 +245,10 @@ pub enum ResolveErrorKind {
 
     #[error("cannot define `{name}` because it shadows a built-in; built-in types and functions cannot be redefined")]
     ShadowsBuiltin { name: String },
+
+    /// IM8: a declaration or local named like a module the program imported.
+    #[error("`{name}` already names the imported module `{module}`")]
+    ShadowsModule { name: String, module: String, imported_at: Span },
 
     #[error("C header not found: `{header}` ({detail})")]
     CHeaderNotFound { header: String, detail: String },

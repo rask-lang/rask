@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program type named like a stdlib type is its own type everywhere (#1333).
+//
+//     enum ParseError { @message("mine") Mine }
+//     println(ParseError.Mine.message())
+//
+// printed "no digits found" natively: the stdlib's `ParseError` mints the
+// same `ParseError_message` symbol, and its body answered for a tag it had
+// never seen. With a payload, lowering gave up instead. The checker always
+// knew the two apart; everything after it keyed types by name. Now the
+// program's type goes by a symbol of its own once checking is done, and the
+// stdlib's keeps the name.
+//
+// The other direction too: `"x".parse<i64>()` fails with the stdlib's
+// `ParseError`, and its `message()` has to be the stdlib's even while the
+// program's enum is called the same.
+
+struct Point { x: i64, y: i64 }
+
+enum ParseError {
+    @message("mine")
+    Mine
+    @message("payload {p.x},{p.y}")
+    Carried(p: Point)
+}
+
+func describe(e: ParseError) -> string {
+    match e {
+        ParseError.Mine => return "mine"
+        ParseError.Carried(p) => return "carried {p.x}"
+    }
+}
+
+struct Duration {
+    ticks: i64
+}
+
+extend Duration {
+    func doubled(self) -> Duration {
+        return Duration { ticks: self.ticks * 2 }
+    }
+}
+
+// A variant called like the type it wraps: the bare pattern is the variant.
+enum AppError {
+    ParseError(ParseError)
+    Other
+}
+
+func classify(e: AppError) -> string {
+    match e {
+        ParseError(inner) => return "wrapped {describe(inner)}"
+        Other => return "other"
+    }
+}
+
+func fails(s: string) -> i64 or ParseError {
+    if s == "" {
+        return ParseError.Mine
+    }
+    return 1
+}
+
+test "the program's method runs on the program's type" {
+    assert ParseError.Mine.message() == "mine"
+    assert ParseError.Carried(Point { x: 1, y: 2 }).message() == "payload 1,2"
+    assert describe(ParseError.Carried(Point { x: 7, y: 0 })) == "carried 7"
+}
+
+test "the stdlib's method runs on the stdlib's type" {
+    let r = "x".parse<i64>()
+    if r is i64 as v {
+        assert v == -1
+    } else as e {
+        assert e.message() == "non-numeric character"
+        assert "{e:debug}" == "ParseError.Invalid"
+    }
+}
+
+test "a printed value says the name the program wrote" {
+    assert "{ParseError.Mine:debug}" == "ParseError.Mine"
+    let d = Duration { ticks: 3 }
+    assert "{d:debug}" == "Duration {{ ticks: 3 }}"
+}
+
+test "a shadowing struct keeps its own methods" {
+    let d = Duration { ticks: 21 }.doubled()
+    assert d.ticks == 42
+}
+
+test "a type test and a same-named variant stay apart" {
+    assert classify(AppError.ParseError(ParseError.Mine)) == "wrapped mine"
+    assert classify(AppError.Other) == "other"
+    let r = fails("")
+    assert r is ParseError
+    assert !(fails("a") is ParseError)
+}

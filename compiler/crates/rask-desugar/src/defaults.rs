@@ -20,14 +20,14 @@ use rask_ast::NodeId;
 /// stdlib's.
 ///
 /// A default is filled from `outer` only where the program declares nothing of
-/// that name. The receiver's type isn't known here — this pass runs before
-/// resolution — so an instance call is matched by method name alone, and a
-/// program with its own `shrink(to: usize)` would otherwise have `Vec`'s
-/// default filled into a call to *its* method: "expected 1 argument" would
-/// become a call that type-checks and does something else. Withholding the
-/// stdlib's default on a name collision costs a diagnostic the author already
-/// gets today; filling the wrong one costs a wrong program. Filling it where
-/// the receiver's type is known is #1312.
+/// that name.
+///
+/// Method calls aren't filled here at all. Which method `x.shrink()` reaches
+/// depends on `x`'s type, and this pass runs before there are types, so it
+/// could only match by name: a program declaring any `shrink` took the default
+/// away from `Vec.shrink()` (#1312), and one declaring a defaulted `shrink`
+/// would have had its default filled into the `Vec` call. The checker fills
+/// them where it resolves the call (`TypeChecker::fill_default_args`).
 pub(crate) fn desugar_default_args(decls: &mut [Decl], id_base: u32, outer: &[Decl]) {
     let lookup = FunctionLookup::build(decls);
     let mut ctx = DefaultDesugarer {
@@ -83,34 +83,26 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
 
 // ---- Function Lookup Table ----
 
-/// Maps function names and (type, method) pairs to parameter lists.
+/// Maps function names to parameter lists.
 struct FunctionLookup {
     /// Free functions: name → params
     functions: HashMap<String, Vec<Param>>,
-    /// Methods: (type_name, method_name) → params (excluding self)
-    methods: HashMap<(String, String), Vec<Param>>,
-    /// Methods indexed by name only (for instance method fallback)
-    methods_by_name: HashMap<String, Vec<Vec<Param>>>,
     /// Struct field defaults (FD1): base type name -> [(field name, default expr)].
     /// Only structs with at least one defaulted field are recorded.
     struct_defaults: HashMap<String, Vec<(String, Expr)>>,
     /// Every name declared here, defaulted or not. The maps above hold only
     /// the defaulted ones, so they can't answer "does this program declare a
-    /// `shrink` of its own?" — and the stdlib fallback must not fill an
-    /// argument into a call to the program's own same-named method.
+    /// `parse` of its own?" — and the stdlib fallback must not fill an
+    /// argument into a call to the program's own same-named function.
     declared_fns: HashSet<String>,
-    declared_methods: HashSet<String>,
     declared_types: HashSet<String>,
 }
 
 impl FunctionLookup {
     fn build(decls: &[Decl]) -> Self {
         let mut functions = HashMap::new();
-        let mut methods: HashMap<(String, String), Vec<Param>> = HashMap::new();
-        let mut methods_by_name: HashMap<String, Vec<Vec<Param>>> = HashMap::new();
         let mut struct_defaults: HashMap<String, Vec<(String, Expr)>> = HashMap::new();
         let mut declared_fns: HashSet<String> = HashSet::new();
-        let mut declared_methods: HashSet<String> = HashSet::new();
         let mut declared_types: HashSet<String> = HashSet::new();
 
         for decl in decls {
@@ -123,35 +115,15 @@ impl FunctionLookup {
                 }
                 DeclKind::Struct(s) => {
                     declared_types.insert(s.name.clone());
-                    declared_methods.extend(s.methods.iter().map(|m| m.name.clone()));
                     let defaults: Vec<(String, Expr)> = s.fields.iter()
                         .filter_map(|f| f.default.as_ref().map(|d| (f.name.clone(), d.clone())))
                         .collect();
                     if !defaults.is_empty() {
                         struct_defaults.insert(s.name.clone(), defaults);
                     }
-                    for m in &s.methods {
-                        Self::register_method(
-                            &s.name, m, &mut methods, &mut methods_by_name,
-                        );
-                    }
                 }
                 DeclKind::Enum(e) => {
                     declared_types.insert(e.name.clone());
-                    declared_methods.extend(e.methods.iter().map(|m| m.name.clone()));
-                    for m in &e.methods {
-                        Self::register_method(
-                            &e.name, m, &mut methods, &mut methods_by_name,
-                        );
-                    }
-                }
-                DeclKind::Impl(i) => {
-                    declared_methods.extend(i.methods.iter().map(|m| m.name.clone()));
-                    for m in &i.methods {
-                        Self::register_method(
-                            &i.target_ty.to_string(), m, &mut methods, &mut methods_by_name,
-                        );
-                    }
                 }
                 _ => {}
             }
@@ -159,35 +131,9 @@ impl FunctionLookup {
 
         Self {
             functions,
-            methods,
-            methods_by_name,
             struct_defaults,
             declared_fns,
-            declared_methods,
             declared_types,
-        }
-    }
-
-    fn register_method(
-        type_name: &str,
-        method: &FnDecl,
-        methods: &mut HashMap<(String, String), Vec<Param>>,
-        methods_by_name: &mut HashMap<String, Vec<Vec<Param>>>,
-    ) {
-        // Only register methods that have default params
-        let non_self_params: Vec<Param> = method.params.iter()
-            .filter(|p| p.name != "self")
-            .cloned()
-            .collect();
-        if non_self_params.iter().any(|p| p.default.is_some()) {
-            methods.insert(
-                (type_name.to_string(), method.name.clone()),
-                non_self_params.clone(),
-            );
-            methods_by_name
-                .entry(method.name.clone())
-                .or_default()
-                .push(non_self_params);
         }
     }
 
@@ -196,30 +142,13 @@ impl FunctionLookup {
         self.functions.get(name).map(|v| v.as_slice())
     }
 
-    /// Look up params for a static method call (Type.method).
-    fn lookup_static_method(&self, type_name: &str, method: &str) -> Option<&[Param]> {
-        self.methods.get(&(type_name.to_string(), method.to_string()))
-            .map(|v| v.as_slice())
-    }
-
-    /// Look up params for an instance method by name only (fallback).
-    /// Returns Some only if there's exactly one signature for this method name.
-    fn lookup_instance_method(&self, method: &str) -> Option<&[Param]> {
-        self.methods_by_name.get(method).and_then(|sigs| {
-            if sigs.len() == 1 {
-                Some(sigs[0].as_slice())
-            } else {
-                None
-            }
-        })
-    }
 }
 
 // ---- Argument Resolution ----
 
 /// Resolve call arguments against function parameters, filling in defaults.
 ///
-/// Returns the rewritten args list with defaults inserted and names stripped,
+/// Returns the rewritten args list with defaults inserted,
 /// or None if resolution can't be done (error or no changes needed).
 fn resolve_call_args(
     params: &[Param],
@@ -262,9 +191,11 @@ fn resolve_call_args(
 
             if let Some(ref name) = arg.name {
                 if name == &param.name {
-                    // Named arg matches this param — use it
+                    // Named arg matches this param. The label stays: the type
+                    // checker matches it against the callee it actually
+                    // resolves, which this pass can only guess at by name.
                     result.push(CallArg {
-                        name: None,
+                        name: Some(name.clone()),
                         mode: arg.mode,
                         expr: arg.expr.clone(),
                     });
@@ -544,12 +475,13 @@ impl DefaultDesugarer {
                 self.desugar_expr(count);
             }
             ExprKind::Closure { body, .. } => self.desugar_expr(body),
+            ExprKind::Spawn { body, .. } => self.desugar_expr(body),
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.desugar_expr(&mut b.source); }
                 for s in body { self.desugar_stmt(s); }
             }
             ExprKind::Unsafe { body }
-            | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body }
+            | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 for s in body { self.desugar_stmt(s); }
             }
@@ -659,51 +591,6 @@ impl DefaultDesugarer {
                     }
                 }
             }
-            ExprKind::MethodCall { object, method, args, .. } => {
-                // `Type.method(...)` and `variable.method(...)` are the same
-                // shape here — both have an `Ident` for the object, and only a
-                // name table can tell a type from a variable. Taking the bare
-                // `Ident` as a type name and stopping there meant every
-                // ordinary method call on a local skipped default filling:
-                // `f.bump()` errored with "expected 1 argument, found 0" while
-                // `Foo { x: 10 }.bump()` worked, because a struct literal isn't
-                // an `Ident` and fell through to the instance path (#1028).
-                //
-                // So try the type reading first and fall back to the method
-                // name. The fallback only fires when no type of that name has
-                // such a method, and it already requires the name to be
-                // unambiguous across the program.
-                // The stdlib's signatures are consulted only when the program
-                // declares no method of that name at all — not merely no
-                // defaulted one. A program with its own `shrink(to: usize)`
-                // and no default would otherwise have `Vec`'s default filled
-                // into a call to *its* method, turning "expected 1 argument"
-                // into a call that type-checks and does the wrong thing.
-                let own = !self.lookup.declared_methods.contains(method.as_str());
-                let params = if let Some(type_name) = object.name() {
-                    self.lookup.lookup_static_method(type_name, method)
-                        .or_else(|| self.lookup.lookup_instance_method(method))
-                        .or_else(|| own.then(|| self.outer.lookup_static_method(type_name, method)).flatten())
-                        .or_else(|| own.then(|| self.outer.lookup_instance_method(method)).flatten())
-                        .map(|p| p.to_vec())
-                } else {
-                    self.lookup.lookup_instance_method(method)
-                        .or_else(|| own.then(|| self.outer.lookup_instance_method(method)).flatten())
-                        .map(|p| p.to_vec())
-                };
-
-                if let Some(params) = params {
-                    let next_id = &mut self.next_id;
-                    let mut id_gen = || {
-                        let id = NodeId(*next_id);
-                        *next_id += 1;
-                        id
-                    };
-                    if let Some(resolved) = resolve_call_args(&params, args, &mut id_gen) {
-                        *args = resolved;
-                    }
-                }
-            }
             _ => {}
         }
     }
@@ -808,6 +695,11 @@ mod tests {
         });
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
+        // Labels survive for the type checker to match against the callee;
+        // a filled default has none.
+        assert_eq!(resolved[0].name.as_deref(), Some("host"));
+        assert_eq!(resolved[1].name, None);
+        assert_eq!(resolved[2].name.as_deref(), Some("timeout"));
     }
 
     #[test]

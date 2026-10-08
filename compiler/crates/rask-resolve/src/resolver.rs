@@ -5,11 +5,11 @@ use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl, ImportDecl, ExportDecl, CImportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
+use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::{NodeId, Span};
 
 use crate::error::ResolveError;
-use crate::scope::{ScopeTree, ScopeKind};
+use crate::scope::{ScopeId, ScopeTree, ScopeKind};
 use crate::symbol::{BuiltinModuleKind, SymbolTable, SymbolId, SymbolKind};
 use crate::package::PackageId;
 use crate::ResolvedProgram;
@@ -103,9 +103,6 @@ pub struct Resolver {
     /// with no span, so declaring it was reported as shadowing a built-in
     /// type that doesn't exist (#1126).
     builtin_enums: HashSet<SymbolId>,
-    /// Compile-time cfg values for dead branch elimination in `comptime if`.
-    /// Maps field names (os, arch, env, profile) to their values.
-    cfg_values: HashMap<String, String>,
 }
 
 impl Resolver {
@@ -131,7 +128,6 @@ impl Resolver {
             stdlib_symbols: HashSet::new(),
             stub_functions: HashMap::new(),
             builtin_enums: HashSet::new(),
-            cfg_values: HashMap::new(),
         };
 
         resolver.register_builtins();
@@ -201,12 +197,11 @@ impl Resolver {
         // in the global scope — they require explicit `import` statements.
         // See resolve_import() for how they enter scope.
 
-        // Top-level stdlib stub functions (e.g. async.rk's `spawn`,
-        // `cancelled`) are auto-registered.
+        // Top-level stdlib stub functions (e.g. async.rk's `cancelled`) are
+        // auto-registered.
         // The pipeline sometimes runs the resolver without stdlib_decls
         // (single-file `rask check`), and these names are spec-required to
-        // be in scope under their context (`spawn` under `using Multitasking`,
-        // for instance — checked separately via context-clause analysis).
+        // be in scope.
         // Skip names already claimed by hardcoded builtins above so println,
         // print, format, etc. keep their BuiltinFunction symbol kind.
         let stub_reg = rask_stdlib::StubRegistry::load();
@@ -270,10 +265,10 @@ impl Resolver {
             self.stub_functions.insert(f.name.clone(), sym_id);
             self.decl_symbols.insert(f.decl_id, sym_id);
             // These come from the stubs, so a stdlib file importing one of them
-            // (`import async.spawn` in http.rk) is replacing its own symbol, not
+            // (`import async.cancelled`) is replacing its own symbol, not
             // shadowing a user import. Without this, `rask test` — the one entry
-            // point that resolves stdlib bodies — reported `spawn` shadowing an
-            // import that doesn't exist (#507).
+            // point that resolves stdlib bodies — reported such a name shadowing
+            // an import that doesn't exist (#507).
             self.stdlib_symbols.insert(sym_id);
         }
 
@@ -286,6 +281,14 @@ impl Resolver {
             true,
         );
         let _ = self.scopes.define("null".to_string(), null_sym, Span::new(0, 0));
+    }
+
+    /// The name `spawn_with(name, …)` handed its task, for E0915's fix.
+    fn handed_to_spawn_with(form: &str, args: &[rask_ast::expr::CallArg]) -> Option<String> {
+        if form != "spawn_with" {
+            return None;
+        }
+        args.first().and_then(|a| a.expr.name()).map(str::to_string)
     }
 
     fn register_builtin_enum(&mut self, name: &str, variants: &[&str]) {
@@ -332,11 +335,10 @@ impl Resolver {
     fn register_module_functions(&mut self, module: BuiltinModuleKind, span: Span) {
         use crate::symbol::BuiltinFunctionKind;
 
-        // `spawn` and `transmute` are always-available built-ins
-        // (struct.modules/BF1), so this only settles which symbol kind the name
-        // carries — it is not what makes them resolve.
+        // `transmute` is an always-available built-in (struct.modules/BF1), so
+        // this only settles which symbol kind the name carries — it is not what
+        // makes it resolve.
         let functions: &[(&str, BuiltinFunctionKind)] = match module {
-            BuiltinModuleKind::ASYNC => &[("spawn", BuiltinFunctionKind::Spawn)],
             BuiltinModuleKind::CORE => &[("transmute", BuiltinFunctionKind::Transmute)],
             _ => &[],
         };
@@ -353,6 +355,23 @@ impl Resolver {
                 false,
             );
             let _ = self.scopes.define(name.to_string(), sym_id, span);
+        }
+    }
+
+    /// The function `module.name` means when the module exports `name` as a
+    /// free function rather than as a member of its namespace —
+    /// `async.cancelled`.
+    ///
+    /// Looked up in the global scope, not the current one: a local
+    /// `cancelled` in the caller is not what `async.cancelled` names.
+    fn module_free_function(&self, module: &str, name: &str) -> Option<SymbolId> {
+        if !rask_stdlib::modules::exports(module).functions.iter().any(|f| f == name) {
+            return None;
+        }
+        let sym = *self.scopes.get(ScopeId(0))?.bindings.get(name)?;
+        match self.symbols.get(sym)?.kind {
+            SymbolKind::BuiltinFunction { .. } | SymbolKind::Function { .. } => Some(sym),
+            _ => None,
         }
     }
 
@@ -374,6 +393,7 @@ impl Resolver {
         let stub_fns: Vec<&str> = rask_stdlib::StubRegistry::load()
             .methods(module)
             .iter()
+            .filter(|m| m.is_pub && m.name != symbol)
             .map(|m| m.name.as_str())
             .collect();
         let exports = Self::stdlib_module_exports(module);
@@ -415,7 +435,6 @@ impl Resolver {
 
         // Builtin functions
         match (module, symbol) {
-            ("async", "spawn") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Spawn },
             ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute },
             _ => {}
         }
@@ -432,6 +451,16 @@ impl Resolver {
         // `.rk` file answers it.
         if rask_stdlib::modules::exports_type(module, symbol) {
             return SymbolKind::Struct { fields: vec![] };
+        }
+
+        // A function in the module's `extend m { }` block — `time.sleep`. Bound
+        // as a variable, the name had no type: `sleep(d)` type-checked against
+        // nothing at all, and neither backend could call it (#1359).
+        if rask_stdlib::StubRegistry::load().has_method(module, symbol) {
+            return SymbolKind::ModuleFunction {
+                module: module.to_string(),
+                function: symbol.to_string(),
+            };
         }
 
         // Fallback — treat as a variable binding
@@ -465,27 +494,39 @@ impl Resolver {
     /// now, and it's the accurate version: a program may declare `max`, which
     /// isn't in BF1, and may not declare `println`, which is — whether the
     /// declaration is a struct or a function.
-    fn is_reserved_name(&self, name: &str) -> bool {
+    fn reserved_name_error(&self, name: &str, span: Span) -> Option<ResolveError> {
+        if self.stdlib_mode {
+            return None;
+        }
         if crate::symbol::is_always_in_scope(name) {
-            return true;
+            return Some(ResolveError::shadows_builtin(name.to_string(), span));
         }
-        if let Some(sym_id) = self.scopes.lookup(name) {
-            // A module the *stdlib* imported for its own use isn't reserved for
-            // the program. `stdlib/http.rk` imports `net`, and that binding
-            // lands in the shared scope — so without this, `let net = …` was
-            // rejected while `let fs = …` was fine, for no reason a reader
-            // could see (#780). A name needs its own import here, which is
-            // IM1's rule and what E0210 reports.
-            if self.stdlib_symbols.contains(&sym_id) {
-                return false;
-            }
-            if let Some(sym) = self.symbols.get(sym_id) {
-                return matches!(sym.kind, SymbolKind::BuiltinModule { .. })
-                    || (matches!(sym.kind, SymbolKind::Enum { .. })
-                        && self.builtin_enums.contains(&sym_id));
-            }
+        let sym_id = self.scopes.lookup(name)?;
+        // A module the *stdlib* imported for its own use isn't reserved for
+        // the program. `stdlib/http.rk` imports `net`, and that binding
+        // lands in the shared scope — so without this, `let net = …` was
+        // rejected while `let fs = …` was fine, for no reason a reader
+        // could see (#780). A name needs its own import here, which is
+        // IM1's rule and what E0210 reports.
+        if self.stdlib_symbols.contains(&sym_id) {
+            return None;
         }
-        false
+        let sym = self.symbols.get(sym_id)?;
+        match &sym.kind {
+            // The program's own import: IM8, and the message names it. It
+            // used to say "`b` is a built-in type" for `import bits as b`
+            // followed by `let b = 5` (#1475).
+            SymbolKind::BuiltinModule { module } => Some(ResolveError::shadows_module(
+                name.to_string(),
+                module.name().to_string(),
+                sym.span,
+                span,
+            )),
+            SymbolKind::Enum { .. } if self.builtin_enums.contains(&sym_id) => {
+                Some(ResolveError::shadows_builtin(name.to_string(), span))
+            }
+            _ => None,
+        }
     }
 
     fn resolve_inner(decls: &[Decl], stdlib_mode: bool) -> Result<ResolvedProgram, Vec<ResolveError>> {
@@ -515,30 +556,6 @@ impl Resolver {
         Self::resolve_inner(decls, false)
     }
 
-    /// Resolve with cfg values for dead branch elimination in `comptime if`.
-    pub fn resolve_with_cfg(
-        decls: &[Decl],
-        cfg_values: HashMap<String, String>,
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        let mut resolver = Resolver::new();
-        resolver.cfg_values = cfg_values;
-        resolver.collect_declarations(decls);
-        resolver.check_annotations(decls);
-        resolver.resolve_bodies(decls);
-        if resolver.errors.is_empty() {
-            Ok(ResolvedProgram {
-                symbols: resolver.symbols,
-                resolutions: resolver.resolutions,
-                decl_symbols: resolver.decl_symbols,
-                external_decls: HashMap::new(),
-                file_packages: HashMap::new(),
-                package_deps: HashMap::new(),
-            })
-        } else {
-            Err(resolver.errors)
-        }
-    }
-
     /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
     pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
         Self::resolve_inner(decls, true)
@@ -546,7 +563,7 @@ impl Resolver {
 
     /// Resolve the program with stdlib bodies alongside it.
     ///
-    /// The single-file mirror of `resolve_package_with_stdlib_and_cfg`. Needed
+    /// The single-file mirror of `resolve_package_with_stdlib`. Needed
     /// because the stdlib's own bodies are compiled into every program, so they
     /// have to be resolved — and then type-checked — for anything downstream to
     /// know what a call inside them refers to.
@@ -554,27 +571,24 @@ impl Resolver {
     /// Stdlib decls go in under `stdlib_mode`: they *define* `Result`, `Option`
     /// and `spawn`, so the builtin-shadowing check (E0209) would reject the
     /// definitions of the very builtins it's protecting.
-    pub fn resolve_with_stdlib_and_cfg(
+    pub fn resolve_with_stdlib(
         decls: &[Decl],
         stdlib_decls: &[Decl],
-        cfg_values: HashMap<String, String>,
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_with_stdlib_cfg_and_dirs(decls, stdlib_decls, cfg_values, HashMap::new())
+        Self::resolve_with_stdlib_and_dirs(decls, stdlib_decls, HashMap::new())
     }
 
-    /// `resolve_with_stdlib_and_cfg`, told where each file lives.
+    /// `resolve_with_stdlib`, told where each file lives.
     ///
     /// Only `import c` needs it, to look for a header beside the file that
     /// imports it (#1096). A caller that doesn't know the paths passes an empty
     /// map and the header has to be on a system include path.
-    pub fn resolve_with_stdlib_cfg_and_dirs(
+    pub fn resolve_with_stdlib_and_dirs(
         decls: &[Decl],
         stdlib_decls: &[Decl],
-        cfg_values: HashMap<String, String>,
         source_dirs: HashMap<u16, std::path::PathBuf>,
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
-        resolver.cfg_values = cfg_values;
         resolver.source_dirs = source_dirs;
 
         if !stdlib_decls.is_empty() {
@@ -614,15 +628,6 @@ impl Resolver {
         Self::resolve_package_with_stdlib(decls, registry, current_package, &[])
     }
 
-    pub fn resolve_package_with_cfg(
-        decls: &[Decl],
-        registry: &crate::PackageRegistry,
-        current_package: crate::PackageId,
-        cfg_values: HashMap<String, String>,
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_package_with_stdlib_and_cfg(decls, registry, current_package, &[], cfg_values)
-    }
-
     /// Resolve a package with separate stdlib declarations processed in
     /// stdlib_mode (bypasses builtin-shadowing checks). Stdlib decls are
     /// collected and resolved first, then user decls on top.
@@ -632,20 +637,7 @@ impl Resolver {
         current_package: crate::PackageId,
         stdlib_decls: &[Decl],
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_package_with_stdlib_and_cfg(decls, registry, current_package, stdlib_decls, HashMap::new())
-    }
-
-    /// Resolve a package with stdlib declarations and cfg values for
-    /// dead branch elimination in `comptime if`.
-    pub fn resolve_package_with_stdlib_and_cfg(
-        decls: &[Decl],
-        registry: &crate::PackageRegistry,
-        current_package: crate::PackageId,
-        stdlib_decls: &[Decl],
-        cfg_values: HashMap<String, String>,
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
-        resolver.cfg_values = cfg_values;
         for (name, scope) in registry.unlinked_scopes() {
             resolver.unlinked_scopes.insert(name.clone(), scope.clone());
         }
@@ -1136,8 +1128,8 @@ impl Resolver {
                 return sym_id;
             }
         }
-        if !self.stdlib_mode && self.is_reserved_name(&base) {
-            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&base, span);
 
@@ -1159,8 +1151,8 @@ impl Resolver {
 
     fn declare_struct(&mut self, struct_decl: &StructDecl, span: Span) {
         let base = struct_decl.name.clone();
-        if !self.stdlib_mode && self.is_reserved_name(&base) {
-            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&base, span);
 
@@ -1202,8 +1194,8 @@ impl Resolver {
 
     fn declare_union(&mut self, union_decl: &UnionDecl, span: Span) {
         let union_base = union_decl.name.clone();
-        if !self.stdlib_mode && self.is_reserved_name(&union_base) {
-            self.errors.push(ResolveError::shadows_builtin(union_base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&union_base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&union_base, span);
 
@@ -1237,8 +1229,8 @@ impl Resolver {
 
     fn declare_enum(&mut self, enum_decl: &EnumDecl, span: Span) {
         let base = enum_decl.name.clone();
-        if !self.stdlib_mode && self.is_reserved_name(&base) {
-            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&base, span);
 
@@ -1283,8 +1275,8 @@ impl Resolver {
     }
 
     fn declare_interface(&mut self, interface_decl: &InterfaceDecl, span: Span) {
-        if !self.stdlib_mode && self.is_reserved_name(&interface_decl.name) {
-            self.errors.push(ResolveError::shadows_builtin(interface_decl.name.clone(), span));
+        if let Some(e) = self.reserved_name_error(&interface_decl.name, span) {
+            self.errors.push(e);
         }
         let interface_base = interface_decl.name.clone();
         self.check_shadows_import(&interface_base, span);
@@ -1474,8 +1466,13 @@ impl Resolver {
                 // from a hand-maintained list — `io.stdin` is declared in
                 // stdlib/io.rk but missing from the registry's IO_METHODS, and
                 // a check stricter than the actual API is worse than no check.
+                // A namespace member without `public` is the module's own, so
+                // `import json.parse` names nothing a program can have (#1410).
+                let private_member = rask_stdlib::StubRegistry::load()
+                    .lookup_method(pkg_name, symbol_name)
+                    .is_some_and(|m| !m.is_pub);
                 let known = Self::stdlib_module_exports(pkg_name).contains(&symbol_name.as_str())
-                    || rask_stdlib::mir_metadata::type_has_method(pkg_name, symbol_name)
+                    || (rask_stdlib::mir_metadata::type_has_method(pkg_name, symbol_name) && !private_member)
                     || Self::stdlib_enum_variants(pkg_name, symbol_name).is_some()
                     // `import std.reflect` names a submodule, not a symbol.
                     || rask_stdlib::mir_metadata::stdlib_module_names()
@@ -1888,22 +1885,29 @@ impl Resolver {
                 DeclKind::Fn(fn_decl) => {
                     self.resolve_function(fn_decl);
                 }
+                // A method sees its owner's type parameters as well as its
+                // own, so they go on the stack around every method.
                 DeclKind::Struct(struct_decl) => {
+                    self.push_type_params(Self::declared_type_params(&struct_decl.type_params));
                     for method in &struct_decl.methods {
                         self.resolve_method(method, &struct_decl.type_params);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Enum(enum_decl) => {
+                    self.push_type_params(Self::declared_type_params(&enum_decl.type_params));
                     for method in &enum_decl.methods {
                         self.resolve_method(method, &enum_decl.type_params);
                     }
+                    self.pop_type_params();
                 }
+                // A method with no default body still has a signature to check.
                 DeclKind::Interface(interface_decl) => {
+                    self.push_type_params(Self::declared_type_params(&interface_decl.type_params));
                     for method in &interface_decl.methods {
-                        if !method.body.is_empty() {
-                            self.resolve_method(method, &[]);
-                        }
+                        self.resolve_method(method, &[]);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Impl(impl_decl) => {
                     self.resolve_impl(impl_decl);
@@ -1969,14 +1973,19 @@ impl Resolver {
         };
         self.scopes.push(scope_kind);
 
-        // IM1 checks `let`/`mut` annotations as the body is resolved, so the
-        // function's type parameters have to be in scope for that — a local
+        // IM1 for the signature and for every `let`/`mut` annotation in the
+        // body, with the function's type parameters in scope — a local
         // `let x: Output = …` inside `func f<Output>()` is the parameter, not
-        // `os.Output`. Outer params come along for an `extend Ring<T>` method.
-        let mut fn_params =
-            Self::declared_type_params(&fn_decl.type_params);
-        fn_params.extend(outer_type_params.iter().map(|p| p.name.clone()));
-        self.push_type_params(fn_params);
+        // `os.Output`. The owner's are already on the stack (`resolve_bodies`).
+        // Every function and method passes through here wherever it's
+        // written, so no signature can miss the check.
+        self.push_type_params(Self::declared_type_params(&fn_decl.type_params));
+        for ty in fn_decl.params.iter().filter_map(|p| p.ty.as_ref()) {
+            self.check_type_annotation(ty, fn_decl.span);
+        }
+        if let Some(ret) = &fn_decl.ret_ty {
+            self.check_type_annotation(ret, fn_decl.span);
+        }
 
         // Register comptime type params from outer context (struct/enum extend)
         for tp in outer_type_params {
@@ -2049,9 +2058,11 @@ impl Resolver {
         // Look up type params from the target type's declaration
         let base = impl_decl.target_ty.name().unwrap_or_default();
         let outer_params = self.type_param_map.get(&base).cloned().unwrap_or_default();
+        self.push_type_params(self.impl_scope_params(impl_decl));
         for method in &impl_decl.methods {
             self.resolve_method(method, &outer_params);
         }
+        self.pop_type_params();
     }
 
     // =========================================================================
@@ -2065,8 +2076,8 @@ impl Resolver {
             }
             StmtKind::Mut { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && self.is_reserved_name(name) {
-                    self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
+                if let Some(e) = self.reserved_name_error(name, *name_span) {
+                    self.errors.push(e);
                 }
                 // IM1 on a local's annotation. `check_annotations` walks
                 // declarations, so it never looked inside a body — and
@@ -2088,8 +2099,8 @@ impl Resolver {
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && self.is_reserved_name(name) {
-                    self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
+                if let Some(e) = self.reserved_name_error(name, *name_span) {
+                    self.errors.push(e);
                 }
                 if let Some(ty) = ty {
                     self.check_type_annotation(ty, *name_span);
@@ -2287,14 +2298,8 @@ impl Resolver {
             }
             StmtKind::Comptime(body) => {
                 self.scopes.push(ScopeKind::Block);
-                if let Some(taken) = self.try_resolve_comptime_if(body) {
-                    for s in taken {
-                        self.resolve_stmt(s);
-                    }
-                } else {
-                    for s in body {
-                        self.resolve_stmt(s);
-                    }
+                for s in body {
+                    self.resolve_stmt(s);
                 }
                 self.scopes.pop();
             }
@@ -2326,115 +2331,6 @@ impl Resolver {
                 // Name is resolved during type checking — nothing to do here
             }
         }
-    }
-
-    /// Try to evaluate a `comptime if cfg.field == "value"` condition statically.
-    /// Returns the taken branch's statements if the pattern matches and
-    /// the condition can be evaluated, or None to fall through to normal resolution.
-    fn try_resolve_comptime_if<'b>(&self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
-        if self.cfg_values.is_empty() || stmts.len() != 1 {
-            return None;
-        }
-        let inner = match &stmts[0].kind {
-            StmtKind::Expr(e) => e,
-            _ => return None,
-        };
-        let (cond, then_branch, else_branch) = match &inner.kind {
-            ExprKind::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
-            _ => return None,
-        };
-
-        let taken = self.eval_cfg_condition(cond)?;
-        if taken {
-            if let ExprKind::Block(block_stmts) = &then_branch.kind {
-                Some(block_stmts)
-            } else {
-                None
-            }
-        } else if let Some(else_br) = else_branch {
-            if let ExprKind::Block(block_stmts) = &else_br.kind {
-                Some(block_stmts)
-            } else {
-                None
-            }
-        } else {
-            Some(&[])
-        }
-    }
-
-    /// Evaluate a cfg condition expression statically.
-    /// Handles both pre-desugar (`Binary { Eq, .. }`) and post-desugar
-    /// (`MethodCall { method: "eq", .. }`) forms, plus `!`, `&&`, `||`.
-    fn eval_cfg_condition(&self, expr: &Expr) -> Option<bool> {
-        match &expr.kind {
-            // Pre-desugar: cfg.field == "value"
-            ExprKind::Binary { op, left, right } => {
-                match op {
-                    BinOp::Eq | BinOp::Ne => {
-                        let (field, value) = self.extract_cfg_comparison(left, right)?;
-                        let cfg_val = self.cfg_values.get(field)?;
-                        let result = cfg_val == value;
-                        Some(if *op == BinOp::Eq { result } else { !result })
-                    }
-                    BinOp::And => {
-                        let l = self.eval_cfg_condition(left)?;
-                        let r = self.eval_cfg_condition(right)?;
-                        Some(l && r)
-                    }
-                    BinOp::Or => {
-                        let l = self.eval_cfg_condition(left)?;
-                        let r = self.eval_cfg_condition(right)?;
-                        Some(l || r)
-                    }
-                    _ => None,
-                }
-            }
-            // Post-desugar: cfg.field.eq("value") — `==` desugars to `.eq()` method call
-            ExprKind::MethodCall { object, method, args, .. } if method == "eq" => {
-                let field = self.extract_cfg_field(object)?;
-                let value = match args.first() {
-                    Some(arg) => match &arg.expr.kind {
-                        ExprKind::String(s) => s.as_str(),
-                        _ => return None,
-                    },
-                    None => return None,
-                };
-                let cfg_val = self.cfg_values.get(field)?;
-                Some(cfg_val == value)
-            }
-            // Post-desugar: !(cfg.field.eq("value")) — `!=` desugars to `!(.eq())`
-            ExprKind::Unary { op: UnaryOp::Not, operand } => {
-                Some(!self.eval_cfg_condition(operand)?)
-            }
-            _ => None,
-        }
-    }
-
-    /// Extract (field_name, string_value) from `cfg.field == "value"` (pre-desugar).
-    fn extract_cfg_comparison<'b>(&self, left: &'b Expr, right: &'b Expr) -> Option<(&'b str, &'b str)> {
-        if let Some(field) = self.extract_cfg_field(left) {
-            if let ExprKind::String(val) = &right.kind {
-                return Some((field, val));
-            }
-        }
-        if let Some(field) = self.extract_cfg_field(right) {
-            if let ExprKind::String(val) = &left.kind {
-                return Some((field, val));
-            }
-        }
-        None
-    }
-
-    /// Extract the field name from a `cfg.field` expression.
-    fn extract_cfg_field<'b>(&self, expr: &'b Expr) -> Option<&'b str> {
-        if let ExprKind::Field { object, field } = &expr.kind {
-            if let Some(name) = object.name() {
-                if name == "cfg" {
-                    return Some(field);
-                }
-            }
-        }
-        None
     }
 
     // =========================================================================
@@ -2525,6 +2421,20 @@ impl Resolver {
         out
     }
 
+    /// What an `extend` block puts in scope for its header and methods: the
+    /// header's names, which may rename the declaration's, or the
+    /// declaration's when the header leaves them off (`extend Wrapper`).
+    fn impl_scope_params(&self, i: &ImplDecl) -> HashSet<String> {
+        let mut out = Self::impl_type_params(i);
+        if i.target_ty.args().is_empty() {
+            let base = i.target_ty.name().unwrap_or_default();
+            if let Some(declared) = self.type_param_map.get(&base) {
+                out.extend(Self::declared_type_params(declared));
+            }
+        }
+        out
+    }
+
     fn push_type_params(&mut self, names: HashSet<String>) {
         self.type_param_scopes.push(names);
     }
@@ -2553,7 +2463,9 @@ impl Resolver {
         }
     }
 
-    /// IM1 over every type annotation in the program.
+    /// IM1 over the type annotations outside any function: fields, payloads,
+    /// consts, aliases, extend headers. Signatures and bodies get theirs in
+    /// `resolve_function_body`.
     ///
     /// A pass of its own, run once `collect_declarations` has seen all the
     /// imports. Checking a field where it's declared would make the answer depend
@@ -2582,20 +2494,12 @@ impl Resolver {
                     }
                     self.pop_type_params();
                 }
-                DeclKind::Fn(f) => self.check_fn_annotations(f, decl.span),
-                DeclKind::Interface(t) => {
-                    for m in &t.methods {
-                        self.check_fn_annotations(m, decl.span);
-                    }
-                }
+                // Function and method signatures are checked along with their
+                // bodies, in `resolve_function_body`.
                 DeclKind::Impl(i) => {
-                    // `extend Ring<T>` puts `T` in scope for the target and for
-                    // every method in the block.
-                    self.push_type_params(Self::impl_type_params(i));
+                    // `extend Ring<T>` puts `T` in scope for the target.
+                    self.push_type_params(self.impl_scope_params(i));
                     self.check_type_annotation(&i.target_ty, decl.span);
-                    for m in &i.methods {
-                        self.check_fn_annotations(m, decl.span);
-                    }
                     self.pop_type_params();
                 }
                 DeclKind::Const(c) => {
@@ -2607,19 +2511,6 @@ impl Resolver {
                 _ => {}
             }
         }
-    }
-
-    fn check_fn_annotations(&mut self, fn_decl: &FnDecl, span: Span) {
-        self.push_type_params(
-            Self::declared_type_params(&fn_decl.type_params),
-        );
-        for ty in fn_decl.params.iter().filter_map(|p| p.ty.as_ref()) {
-            self.check_type_annotation(ty, span);
-        }
-        if let Some(ret) = &fn_decl.ret_ty {
-            self.check_type_annotation(ret, span);
-        }
-        self.pop_type_params();
     }
 
     fn resolve_name(&mut self, expr: &Expr, name: &str) {
@@ -2657,7 +2548,41 @@ impl Resolver {
                 self.resolve_expr(operand);
             }
             ExprKind::Call { func, args } => {
-                self.resolve_expr(func);
+                // `spawn(|| …)` and `spawn_with(…)` were functions once. A task
+                // is a block now, and "undefined symbol" would send the reader
+                // looking for an import.
+                let old_spawn = matches!(&func.kind, ExprKind::Ident(n)
+                    if (n == "spawn" || n == "spawn_with") && self.scopes.lookup(n).is_none());
+                if let (true, ExprKind::Ident(n)) = (old_spawn, &func.kind) {
+                    self.errors.push(ResolveError {
+                        kind: crate::error::ResolveErrorKind::SpawnTakesABlock {
+                            form: n.clone(),
+                            receiver: None,
+                            handed: Self::handed_to_spawn_with(n, args),
+                        },
+                        span: expr.span,
+                    });
+                } else {
+                    self.resolve_expr(func);
+                }
+                for arg in args {
+                    self.resolve_expr(&arg.expr);
+                }
+            }
+            ExprKind::MethodCall { object, method, args, .. }
+                if (method == "spawn" || method == "spawn_with")
+                    && matches!(&object.kind, ExprKind::Ident(n) if n == "Thread" || n == "ThreadPool") =>
+            {
+                let receiver = object.name().map(str::to_string);
+                self.errors.push(ResolveError {
+                    kind: crate::error::ResolveErrorKind::SpawnTakesABlock {
+                        form: format!("{}.{}", receiver.as_deref().unwrap_or(""), method),
+                        receiver,
+                        handed: Self::handed_to_spawn_with(method, args),
+                    },
+                    span: expr.span,
+                });
+                self.resolve_expr(object);
                 for arg in args {
                     self.resolve_expr(&arg.expr);
                 }
@@ -2690,6 +2615,21 @@ impl Resolver {
                                     self.resolve_expr(&arg.expr);
                                 }
                                 return;
+                            }
+                            // `async.cancelled()` — a free function the module
+                            // exports, reached through it (IM1). It's the same
+                            // function bare `cancelled()` names, so the call node
+                            // points at that symbol and the checker turns the
+                            // call into the bare one (#1349).
+                            if let SymbolKind::BuiltinModule { module } = &sym.kind {
+                                if let Some(fn_sym) = self.module_free_function(module.name(), method) {
+                                    self.resolutions.insert(object.id, sym_id);
+                                    self.resolutions.insert(expr.id, fn_sym);
+                                    for arg in args {
+                                        self.resolve_expr(&arg.expr);
+                                    }
+                                    return;
+                                }
                             }
                         }
                     }
@@ -2869,7 +2809,7 @@ impl Resolver {
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
-            ExprKind::Unwrap { expr: inner, message: _ } => {
+            ExprKind::Unwrap { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
             ExprKind::GuardPattern { expr, pattern, else_branch } => {
@@ -2981,8 +2921,11 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::Closure { params, body, .. } => {
+            ExprKind::Closure { params, ret_ty, body } => {
                 self.scopes.push(ScopeKind::Closure);
+                for ty in params.iter().filter_map(|p| p.ty.as_ref()).chain(ret_ty) {
+                    self.check_type_annotation(ty, expr.span);
+                }
                 for param in params {
                     let sym_id = self.symbols.insert(
                         param.name.clone(),
@@ -3002,18 +2945,17 @@ impl Resolver {
                 self.resolve_expr(body);
                 self.scopes.pop();
             }
+            ExprKind::Spawn { receiver, body, .. } => {
+                if let Some(r) = receiver {
+                    self.resolve_expr(r);
+                }
+                self.resolve_expr(body);
+            }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
             ExprKind::Loop { label, body } => {
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
-                for stmt in body {
-                    self.resolve_stmt(stmt);
-                }
-                self.scopes.pop();
-            }
-            ExprKind::BlockCall { body, .. } => {
-                self.scopes.push(ScopeKind::Block);
                 for stmt in body {
                     self.resolve_stmt(stmt);
                 }
@@ -3028,14 +2970,8 @@ impl Resolver {
             }
             ExprKind::Comptime { body } => {
                 self.scopes.push(ScopeKind::Block);
-                if let Some(taken) = self.try_resolve_comptime_if(body) {
-                    for s in taken {
-                        self.resolve_stmt(s);
-                    }
-                } else {
-                    for stmt in body {
-                        self.resolve_stmt(stmt);
-                    }
+                for stmt in body {
+                    self.resolve_stmt(stmt);
                 }
                 self.scopes.pop();
             }

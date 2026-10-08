@@ -15,9 +15,9 @@ import thread.Thread
 
 func pair_of_tasks() -> i64 or JoinError {
     using Multitasking {
-        let a = spawn(|| { return 10i64 })
+        let a = spawn { return 10i64 }
         ensure a.detach()
-        let b = spawn(|| { return 32i64 })
+        let b = spawn { return 32i64 }
         // If `a.join()` fails the error leaves the function, and `b` is
         // never joined — a task handle is a resource, so committing the
         // cleanup here is what covers that path (E0881). The `join`
@@ -35,10 +35,10 @@ test "two tasks keep their own i64 results" {
 
 test "Thread.spawn binds its payload the same way" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    Thread.spawn(|| {
+    Thread.spawn {
         let _ = tx.send(7i64)
         return
-    }).join()
+    }.join()
     mut got = 0i64
     if rx.receive() is i64 as v {
         got = v

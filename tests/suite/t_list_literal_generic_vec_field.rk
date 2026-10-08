@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `[...]` literal filling a generic struct's `Vec<T>` field.
+//
+// `Bag { items: ["a", "b"] }` failed with "expected `Vec<_>`, found
+// `[string; 2]`", annotated binding or not. The literal only became a `Vec`
+// when the slot's element type was already known, and here `T` is still open
+// when the literal is checked (#1437). The slot now picks the collection and
+// the elements pick `T`.
+
+struct Bag<T> {
+    items: Vec<T>
+}
+
+struct Two<K, V> {
+    keys: Vec<K>
+    vals: Vec<V>
+}
+
+func first<T>(xs: Vec<T>) -> T {
+    return xs[0]
+}
+
+test "elements decide T" {
+    let b = Bag { items: ["a", "b"] }
+    assert b.items.len() == 2
+    assert b.items[1] == "b"
+}
+
+test "annotated binding" {
+    let b: Bag<string> = Bag { items: ["x"] }
+    assert b.items[0] == "x"
+}
+
+test "integer elements default like any literal" {
+    let b = Bag { items: [1, 2, 3] }
+    mut total = 0
+    for x in b.items {
+        total += x
+    }
+    assert total == 6
+}
+
+test "the element type comes from the annotation when the literal is empty" {
+    let b: Bag<i64> = Bag { items: [] }
+    assert b.items.len() == 0
+}
+
+test "two parameters" {
+    let t = Two { keys: ["k1", "k2"], vals: [10, 20] }
+    assert t.keys[1] == "k2"
+    assert t.vals[0] == 10
+}
+
+test "generic function parameter" {
+    assert first(["p", "q"]) == "p"
+}

@@ -101,7 +101,7 @@ Erlang's supervision trees are great—processes automatically restart when they
 // Explicit restart loop
 mut restart_count = 0
 loop {
-    let h = spawn(|| { worker_task() })
+    let h = spawn { worker_task() }
     match h.join() {
         void  => { break }
         Error as e => {
@@ -281,7 +281,7 @@ func main() {
 // Async mode - pauses task
 func main() {
     using Multitasking {
-        spawn(|| { fetch_user(42) }).detach()
+        spawn { fetch_user(42) }.detach()
     }
 }
 ```
@@ -352,12 +352,12 @@ Go lets you spawn and forget: `go handleRequest(conn)` and the task disappears. 
 Rask requires handles to be joined or detached:
 
 ```rask
-spawn(|| { work() }).detach()  // Explicit
+spawn { work() }.detach()  // Explicit
 
-let h = spawn(|| { compute() }
+let h = spawn { compute() }
 let result = try h.join()
 
-spawn(|| { work() }  // Compile error: unused Handle
+spawn { work() }  // Compile error: unused Handle
 ```
 
 Compiler catches forgotten tasks. Six extra characters (`.detach()`) to prevent real bugs.

@@ -57,6 +57,23 @@ pub enum MirStmtKind {
     /// cleanup block, so a normal scope exit removes the hook (the inline path
     /// runs the body) and only a panic reaches it through `rask_ensure_run_all`.
     EnsureHookPop,
+    /// From here on this frame owns what `value` holds: store it in slot
+    /// `slot` of the frame's unwind record, so a panic that abandons the frame
+    /// releases it (ctrl.panic/U6).
+    ///
+    /// `release` is how: the statements the normal path would run to release
+    /// it, written against `release.placeholder`. A label, not a read: the
+    /// record pass builds `<fn>__unwind` from it, and nothing else looks inside.
+    UnwindArm {
+        slot: u32,
+        value: LocalId,
+        release: UnwindRelease,
+    },
+    /// The value in `slot` stopped being this frame's: handed over, or about to
+    /// be released on the normal path.
+    UnwindDisarm {
+        slot: u32,
+    },
     /// Create a closure value: heap-allocated `[func_ptr | captures...]`.
     /// `captures` lists the locals whose values are stored into the environment.
     /// `heap` controls allocation strategy: true = heap (escaping), false = stack (local-only).
@@ -90,6 +107,18 @@ pub enum MirStmtKind {
         closure: LocalId,
         made: Option<LocalId>,
     },
+    /// Take one more reference to a heap closure this frame only borrows,
+    /// because it is about to hand the closure to something that keeps it
+    /// and will free it. The closure's owner still frees its own reference.
+    ///
+    /// `made` is the `ClosureCreate` that built it, when this frame owns it
+    /// and is sharing it with a keeper: then the frame's own `closure_drop`
+    /// isn't the block's last reference, so what the closure captured is the
+    /// environment's to free, not the frame's. A label, not a read.
+    ClosureRetain {
+        closure: LocalId,
+        made: Option<LocalId>,
+    },
     /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
     ArrayStore {
         base: LocalId,
@@ -119,9 +148,12 @@ pub enum MirStmtKind {
         vtable_offset: u32,
         args: Vec<MirOperand>,
     },
-    /// Drop an interface object: call vtable drop_fn, then free heap allocation.
+    /// Drop an interface object's box. With `owns`, the value inside is the
+    /// box's and is released through the vtable's `owned_release` first;
+    /// without, the box only borrowed it and the block alone is freed.
     InterfaceDrop {
         interface_object: LocalId,
+        owns: bool,
     },
     /// SSA phi node — selects a value based on which predecessor block was executed.
     /// Always appears at the start of a block; removed by de-SSA before codegen.
@@ -153,6 +185,22 @@ pub enum MirStmtKind {
     RcDecContents {
         local: LocalId,
     },
+    /// Take a reference to everything an aggregate holds, for a copy of it
+    /// that is about to be handed to a keeper.
+    ///
+    /// The counterpart of `RcDecContents`. A copy of a struct read out of
+    /// storage somebody else owns — an element of a vector, say — shares that
+    /// storage's strings. Handing the copy to `out.push(t)` gives `out` a second
+    /// owner of each, and both release them (#1414). `RcInc` can't do it for
+    /// the same reason `RcDec` can't release one: it takes a value, and where
+    /// the strings sit is the layout's business.
+    ///
+    /// Codegen walks the same element map a container's own retain uses, so
+    /// a copy of an aggregate is retained exactly the way a cloned vector
+    /// retains its elements.
+    RcIncContents {
+        local: LocalId,
+    },
     /// Release what a slot holds, just before something else is written over it.
     ///
     /// `h.list = fresh` replaces a container the struct owned, and the struct's
@@ -169,6 +217,22 @@ pub enum MirStmtKind {
         addr: LocalId,
         offset: u32,
         ty: MirType,
+    },
+    /// A new aggregate starts here in `local`'s storage, every byte zero; the
+    /// field stores that follow fill it in (ctrl.panic/U6).
+    ///
+    /// A struct literal stores each field right after evaluating it, so the
+    /// next field's expression runs while the value is half built. The value
+    /// is the frame's from here and armed from here, and a panic in that
+    /// expression releases it: the fields not stored yet read as empty
+    /// instead of whatever the stack held, or what the slot held on a loop's
+    /// last turn, already freed.
+    ///
+    /// Only the unwind glue reads the zeroes, so codegen leaves them out where
+    /// none can: a frame with no unwind record, or an aggregate that holds
+    /// nothing to release.
+    ZeroAggregate {
+        local: LocalId,
     },
 }
 
@@ -190,6 +254,17 @@ impl MirStmt {
     }
 }
 
+/// How an unwind releases what one record slot holds.
+///
+/// `stmts` read `placeholder` for the slot's value. Any other local they read
+/// has to be one they define first; a release that needs more of the frame than
+/// the one value isn't armed at all.
+#[derive(Debug, Clone)]
+pub struct UnwindRelease {
+    pub placeholder: LocalId,
+    pub stmts: Vec<MirStmt>,
+}
+
 /// A captured variable in a closure environment.
 #[derive(Debug, Clone)]
 pub struct ClosureCapture {
@@ -205,6 +280,11 @@ pub struct ClosureCapture {
     ///
     /// A by-ref slot is 8 bytes whatever the variable's type.
     pub by_ref: bool,
+    /// The checker says the captured value's type is Copy. Capturing one by
+    /// value copies it and the frame keeps its own (`mem.closures/CM2`), so a
+    /// heap environment's copy needs references of its own to the strings in
+    /// it, the way a captured string does (`rc_insert`).
+    pub copy: bool,
 }
 
 /// How a closure body reaches one of its captures.
@@ -213,9 +293,13 @@ pub struct ClosureCapture {
 /// in where a write inside the body lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureAccess {
-    /// The slot holds the value and the body only reads it. Spawn bodies run
-    /// once from a state machine that rebuilds the environment itself.
+    /// The slot holds the value and the body only reads it.
     Value,
+    /// A task block's capture (`spawn { … }`). The slot holds the value, as
+    /// for `Value`, and the block owns it: it runs once, so it may give the
+    /// value away, and the environment's drop glue frees only what it didn't
+    /// (`container_drop::task_captures_given_away`).
+    Taken,
     /// The slot holds a pointer into the frame that built the closure, so a
     /// write through it is a write to that frame's variable (mem.closures/MC1).
     Borrowed,

@@ -10,7 +10,7 @@
 //     block exited                    task done
 //     task done                       block exited
 //
-// It dropped the sender and joined the pool threads — and `spawn(|| …)` never
+// It dropped the sender and joined the pool threads — and `spawn { … }` never
 // used the pool. It starts a thread of its own and leaves the result to a
 // reaper, and the reapers were joined once, at process exit.
 //
@@ -36,7 +36,7 @@ func work(tag: string) -> i64 {
 
 test "block exit waits for a detached task" {
     using Multitasking {
-        let h = spawn(|| { return work("a") })
+        let h = spawn { return work("a") }
         h.detach()
     }
     println("block exited")
@@ -47,9 +47,9 @@ test "block exit waits for a detached task" {
 // two backends have to agree byte for byte and nothing orders these.
 test "block exit waits for several detached tasks" {
     using Multitasking {
-        let h1 = spawn(|| { return work("x") })
+        let h1 = spawn { return work("x") }
         ensure h1.detach()
-        let h2 = spawn(|| { return work("x") })
+        let h2 = spawn { return work("x") }
         ensure h2.detach()
         h1.detach()
         h2.detach()
@@ -62,7 +62,7 @@ test "block exit waits for several detached tasks" {
 test "a joined task still reports its own result" {
     mut got = 0
     using Multitasking {
-        let h = spawn(|| { return work("j") })
+        let h = spawn { return work("j") }
         if h.join() is i64 as v {
             got = v
         }

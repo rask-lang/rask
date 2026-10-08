@@ -17,10 +17,10 @@ func threads() -> string {
 
 test "tasks are fibers" {
     using Multitasking(workers: 4) {
-        assert spawn(|| { return threads() }).join()! == "Threads:\t1"
-        let nested = spawn(|| {
-            return spawn(|| { return threads() }).join()!
-        }).join()!
+        assert spawn { return threads() }.join()! == "Threads:\t1"
+        let nested = spawn {
+            return spawn { return threads() }.join()!
+        }.join()!
         assert nested == "Threads:\t1"
     }
 }

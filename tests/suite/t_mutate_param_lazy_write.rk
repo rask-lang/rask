@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` parameter is the caller's variable, so a write made after the
+// callee returned still lands there (#1324). A Sequence is the everyday way
+// that happens: building it runs nothing, and the writes come when a terminal
+// drives it. The interpreter used to bind a copy and write it back at the
+// return, so every later write went to the copy.
+
+import sequence.Sequence
+
+func counting_source(mutate calls: i32) -> Sequence<i32> {
+    return |yield| {
+        calls = calls + 1
+        if !yield(1) { return }
+        if !yield(2) { return }
+    }
+}
+
+struct Source {
+    base: i32,
+}
+
+extend Source {
+    func counted(self, mutate seen: i32) -> Sequence<i32> {
+        return |yield| {
+            seen = seen + 1
+            if !yield(self.base) { return }
+        }
+    }
+}
+
+test "a function's lazy result writes the caller's variable" {
+    mut calls = 0
+    let chain = counting_source(mutate calls).filter(|x| x > 0)
+    assert calls == 0
+    let total: i32 = chain.sum()
+    assert calls == 1
+    assert total == 3
+    let again: i32 = counting_source(mutate calls).sum()
+    assert calls == 2
+    assert again == 3
+}
+
+test "a method's lazy result writes the caller's variable" {
+    let s = Source { base: 7 }
+    mut seen = 0
+    let seq = s.counted(mutate seen)
+    assert seen == 0
+    let total: i32 = seq.sum()
+    assert seen == 1
+    assert total == 7
+}
+
+test "writes made inside the call still come back" {
+    mut calls = 5
+    for x in counting_source(mutate calls) {
+        assert x > 0
+    }
+    assert calls == 6
+}

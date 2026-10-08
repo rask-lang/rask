@@ -141,7 +141,11 @@ impl Hasher {
             }
             TypeExpr::Func { params, ret } => {
                 self.feed_tag(11);
-                self.feed_types(params);
+                self.feed_u32(params.len() as u32);
+                for p in params {
+                    self.feed_tag(p.mode as u8);
+                    self.feed_type(&p.ty);
+                }
                 self.feed_type(ret);
             }
             TypeExpr::RawPtr(inner) => {
@@ -413,7 +417,7 @@ impl Hasher {
             self.feed_type(ct);
         }
         for b in &tp.bounds {
-            self.feed_type(b);
+            self.feed_type(&b.ty);
         }
     }
 
@@ -791,7 +795,7 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
-            ExprKind::Unwrap { expr, message } => {
+            ExprKind::Unwrap { expr, message, .. } => {
                 self.feed_tag(61);
                 self.hash_expr(expr);
                 if let Some(m) = message {
@@ -884,6 +888,17 @@ impl Hasher {
                 }
                 self.hash_expr(body);
             }
+            ExprKind::Spawn { target, receiver, body } => {
+                self.feed_tag(104);
+                self.feed_u8(*target as u8);
+                if let Some(r) = receiver {
+                    self.feed_bool(true);
+                    self.hash_expr(r);
+                } else {
+                    self.feed_bool(false);
+                }
+                self.hash_expr(body);
+            }
             ExprKind::Cast { expr, ty } => {
                 self.feed_tag(71);
                 self.hash_expr(expr);
@@ -894,11 +909,6 @@ impl Hasher {
                 self.hash_expr(expr);
                 self.feed_type(target);
                 self.feed_tag(*kind as u8);
-            }
-            ExprKind::BlockCall { name, body } => {
-                self.feed_tag(73);
-                self.feed_str(name);
-                self.hash_stmts(body);
             }
             ExprKind::Unsafe { body } => {
                 self.feed_tag(74);

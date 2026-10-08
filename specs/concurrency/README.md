@@ -38,24 +38,23 @@ Concurrency model for Rask.
 ## Quick Reference
 
 ```rask
-import async.spawn
 import thread.{Thread, ThreadPool}
 
 // Async mode - green tasks for I/O
 func main() {
     using Multitasking {
-        spawn(|| { handle_connection(conn) }).detach()
+        spawn { handle_connection(conn) }.detach()
     }
 }
 
 // Async + CPU work
 func main() {
     using Multitasking, ThreadPool {
-        let h = spawn(|| {
+        let h = spawn {
             let data = try fetch(url)                                       // I/O - pauses
-            let result = try ThreadPool.spawn(|| { analyze(data) }).join()  // CPU on threads
+            let result = try ThreadPool.spawn { analyze(data) }.join()  // CPU on threads
             try save(result)                                                // I/O - pauses
-        })
+        }
         try h.join()
     }
 }
@@ -63,21 +62,21 @@ func main() {
 // Sync mode - CPU parallelism only
 func main() {
     using ThreadPool {
-        let handles = files.map({ |f| ThreadPool.spawn(|| { process(f) }) })
+        let handles = files.map({ |f| ThreadPool.spawn { process(f) } })
         for h in handles { try h.join() }
     }
 }
 
 // Spawn and wait for result
-let h = spawn(|| { compute() })
+let h = spawn { compute() }
 let result = try h.join()
 
 // Fire-and-forget (explicit)
-spawn(|| { background_work() }).detach()
+spawn { background_work() }.detach()
 
 // A fixed few: join each
-let h1 = spawn(|| { work1() })
-let h2 = spawn(|| { work2() })
+let h1 = spawn { work1() }
+let h2 = spawn { work2() }
 let a = try h1.join()
 let b = try h2.join()
 
@@ -85,12 +84,12 @@ let b = try h2.join()
 mut pages = Handles<Page>.new()
 ensure pages.detach()
 for url in urls {
-    pages.add(spawn(|| { return fetch(url) }))
+    pages.add(spawn { return fetch(url) })
 }
 let results = pages.join_all()    // Vec<Page or JoinError>, add order
 
 // Raw OS thread (works anywhere)
-let h = Thread.spawn(|| { needs_thread_affinity() })
+let h = Thread.spawn { needs_thread_affinity() }
 try h.join()
 ```
 
@@ -98,20 +97,20 @@ try h.join()
 
 | Function | Purpose | Requires | Pauses? |
 |----------|---------|----------|---------|
-| `spawn(|| {})` | Green task | `using Multitasking` | Yes (at I/O) |
-| `ThreadPool.spawn(|| {})` | Thread from pool | `using ThreadPool` | No |
-| `Thread.spawn(|| {})` | Raw OS thread | Nothing | No |
+| `spawn {}` | Green task | `using Multitasking` | Yes (at I/O) |
+| `ThreadPool.spawn {}` | Thread from pool | `using ThreadPool` | No |
+| `Thread.spawn {}` | Raw OS thread | Nothing | No |
 
 ## Key Patterns
 
 | Pattern | Syntax |
 |---------|--------|
-| Spawn and wait | `try spawn(|| {}).join()` |
-| Fire-and-forget | `spawn(|| {}).detach()` |
+| Spawn and wait | `try spawn {}.join()` |
+| Fire-and-forget | `spawn {}.detach()` |
 | Wait for a few | `try h1.join()`, `try h2.join()` |
 | Dynamic spawning | `Handles<T>`: `add` any spawn's handle, then `join_all` |
-| CPU parallelism | `ThreadPool.spawn(|| {})` |
-| Raw OS thread | `Thread.spawn(|| {})` |
+| CPU parallelism | `ThreadPool.spawn {}` |
+| Raw OS thread | `Thread.spawn {}` |
 | Unused handle | **Compile error** |
 
 ## Resource Combinations

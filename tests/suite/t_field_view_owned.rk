@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A field read handed to an owner (#1459).
+//
+// `Bag { items: src.items }` and `let tmp = src.items` followed by
+// `out.items = tmp` compiled, and natively the caller's Vec was freed by the
+// new owner while the caller still held it. Both are rejected now (E0909, see
+// tests/compile_errors/field_view_stored.rk). These are the forms that stay:
+// a copy of its own wherever the value gets an owner, a view read in place,
+// and a new value built out of the place it replaces.
+
+import memory.Heap
+
+struct Bag {
+    public items: Vec<i64>
+}
+
+enum Chain {
+    Link(i64, Heap<Chain>)
+    End
+}
+
+struct Stack {
+    public chain: Chain
+}
+
+func eat(take v: Vec<i64>) -> u64 {
+    return v.len()
+}
+
+func copied_into_literal(src: Bag) -> Bag {
+    return Bag { items: src.items.clone() }
+}
+
+func copied_after_let(src: Bag) -> Bag {
+    mut out = Bag { items: [] }
+    let tmp = src.items.clone()
+    out.items = tmp
+    return out
+}
+
+func copied_into_push(src: Bag) -> Vec<Vec<i64>> {
+    mut out: Vec<Vec<i64>> = []
+    out.push(src.items.clone())
+    return out
+}
+
+func view_read(src: Bag) -> u64 {
+    let tmp = src.items
+    return tmp.len() + eat(src.items.clone())
+}
+
+func push_front(mutate s: Stack, v: i64) {
+    s.chain = Chain.Link(v, Heap(s.chain))
+}
+
+func depth(c: Chain) -> i64 {
+    match c {
+        Chain.Link(_, rest) => return 1 + depth(rest)
+        Chain.End => return 0
+    }
+}
+
+test "a copy stored in a literal leaves the caller's Vec alone" {
+    let b = Bag { items: [1, 2, 3] }
+    mut r = copied_into_literal(b)
+    r.items.push(4)
+    assert r.items.len() == 4
+    assert b.items.len() == 3
+}
+
+test "a copy bound by let, then stored" {
+    let b = Bag { items: [1, 2, 3] }
+    let r = copied_after_let(b)
+    assert r.items.len() == 3
+    assert b.items.len() == 3
+}
+
+test "a copy pushed" {
+    let b = Bag { items: [7] }
+    let out = copied_into_push(b)
+    assert out[0][0] == 7
+    assert b.items[0] == 7
+}
+
+test "a view read in place" {
+    let b = Bag { items: [1, 2] }
+    assert view_read(b) == 4
+}
+
+test "a new value built out of the place it replaces" {
+    mut s = Stack { chain: Chain.End }
+    push_front(mutate s, 1)
+    push_front(mutate s, 2)
+    push_front(mutate s, 3)
+    assert depth(s.chain) == 3
+}

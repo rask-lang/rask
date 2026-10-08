@@ -19,18 +19,16 @@ impl Interpreter {
     /// `|u| { u.visit_count += 1 }` example did nothing at all (#843).
     ///
     /// The interpreter's closure values carry parameter *names* and nothing
-    /// else, with no `mutate` marker, so the write-back can't be keyed off the
-    /// declaration the way `mutate_writebacks` is for a named function. Reading
-    /// the binding back out before the scope is popped is the same snapshot,
-    /// taken from the other side. Whether the closure was *allowed* to write is
-    /// the checker's business, and it already enforces `mutate`.
+    /// else, with no `mutate` marker, so the binding is read back out before
+    /// the scope is popped. Whether the closure was *allowed* to write is the
+    /// checker's business, and it already enforces `mutate`.
     pub(crate) fn call_closure_keeping_arg(
         &mut self,
         func: Value,
         args: Vec<Value>,
     ) -> Result<(Value, Option<Value>), RuntimeError> {
-        if let Value::Closure { params, body, captured_env, generics, .. } = func {
-            self.enter_closure(&captured_env, &generics);
+        if let Value::Closure { params, body, captured_env, lent, generics, .. } = func {
+            self.enter_closure(&captured_env, &lent, &generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
@@ -45,15 +43,24 @@ impl Interpreter {
             };
             return Ok((value, final_arg));
         }
-        // A named function passed where a closure was expected keeps the
-        // ordinary path; its `mutate` snapshot is already recorded by index.
-        let value = self.call_value(func, args)?;
-        let written = self
-            .mutate_writebacks
-            .iter()
-            .find(|(i, _)| *i == 0)
-            .map(|(_, v)| v.clone());
-        Ok((value, written))
+        // A named function does declare `mutate`: lend it storage for the
+        // argument, and read that back.
+        let decl = match &func {
+            Value::Function { name, .. } => self.functions.get(name).cloned(),
+            _ => None,
+        };
+        let lent = decl.filter(|d| d.params.first().is_some_and(|p| p.is_mutate)).map(|d| {
+            let cell = crate::env::slot(args.first().cloned().unwrap_or(Value::Unit));
+            self.lent_args = Some(super::LentArgs {
+                depth: self.call_depth,
+                callee: d.name.clone(),
+                slots: vec![Some(cell.clone())],
+            });
+            cell
+        });
+        let value = self.call_value(func, args);
+        self.lent_args = None;
+        Ok((value?, lent.and_then(|cell| cell.get())))
     }
 
     /// Call a value, keeping where the failure happened.
@@ -88,6 +95,38 @@ impl Interpreter {
         self.call_value(func, args).map_err(|e| (e, None))
     }
 
+    /// Run a closure. `places` holds the caller's storage behind each `mutate`
+    /// argument, by position: the parameter binds to it, so the body's writes
+    /// land there (mem.closures/CP2). The checker matched the call's markers
+    /// against the closure's modes (type.functions/FT1), so a place is there
+    /// exactly where the parameter is `mutate`.
+    pub(crate) fn call_closure(
+        &mut self,
+        closure: Value,
+        args: Vec<Value>,
+        places: Vec<Option<crate::env::Slot>>,
+    ) -> Result<Value, RuntimeError> {
+        let Value::Closure { params, body, captured_env, lent, generics, .. } = closure else {
+            return self.call_value(closure, args);
+        };
+        self.enter_closure(&captured_env, &lent, &generics);
+        for (i, (param, arg)) in params.iter().zip(args.into_iter()).enumerate() {
+            match places.get(i).cloned().flatten() {
+                Some(cell) => self.env.define_lent(param.clone(), cell),
+                // Closure params are by-value bindings (VS1) — copy so the
+                // body can't alias the caller's value.
+                None => self.env.define(param.clone(), arg.copy_on_bind()),
+            }
+        }
+        let result = self.eval_expr(&body).map_err(|diag| diag.error);
+        self.leave_closure();
+        match result {
+            Ok(v) => Ok(v),
+            Err(RuntimeError::Return(v)) => Ok(v),
+            Err(e) => Err(e),
+        }
+    }
+
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name, generics } => {
@@ -102,13 +141,13 @@ impl Interpreter {
                 if kind == BuiltinKind::SequenceYield {
                     return Ok(self.run_yield_body(args));
                 }
-                if kind == BuiltinKind::AsyncSpawn {
-                    return self.spawn_async_task(args);
-                }
                 if kind == BuiltinKind::Cancelled {
                     return self.call_async_method("cancelled", args);
                 }
                 self.call_builtin(kind, args)
+            }
+            Value::ModuleFunction { module, function } => {
+                self.call_module_method(&module, &function, args)
             }
             Value::EnumConstructor {
                 enum_name,
@@ -130,27 +169,7 @@ impl Interpreter {
                     origin: None,
                 })
             }
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                generics,
-                ..
-            } => {
-                self.enter_closure(&captured_env, &generics);
-                for (param, arg) in params.iter().zip(args.into_iter()) {
-                    // Closure params are by-value bindings (VS1) — copy so the
-                    // body can't alias the caller's value.
-                    self.env.define(param.clone(), arg.copy_on_bind());
-                }
-                let result = self.eval_expr(&body).map_err(|diag| diag.error);
-                self.leave_closure();
-                match result {
-                    Ok(v) => Ok(v),
-                    Err(RuntimeError::Return(v)) => Ok(v),
-                    Err(e) => Err(e),
-                }
-            }
+            closure @ Value::Closure { .. } => self.call_closure(closure, args, Vec::new()),
             Value::NominalConstructor { type_name } => {
                 if args.len() != 1 {
                     return Err(RuntimeError::ArityMismatch {
@@ -213,8 +232,8 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
-            BuiltinKind::AsyncSpawn | BuiltinKind::Cancelled => {
-                // These should have been handled in call_value
+            BuiltinKind::Cancelled => {
+                // Handled in call_value
                 unreachable!("Async builtins should be handled in call_value")
             }
             BuiltinKind::SequenceYield => {
@@ -730,7 +749,17 @@ impl Interpreter {
         };
         let mut all = vec![receiver];
         all.extend(args);
-        self.call_function(&func, all, generics).map_err(|d| d.error)
+        self.call_method_body(&func, all, generics)
+    }
+
+    /// Run a Rask method body, receiver first.
+    pub(crate) fn call_method_body(
+        &mut self,
+        func: &rask_ast::decl::FnDecl,
+        args: Vec<Value>,
+        generics: GenericFrame,
+    ) -> Result<Value, RuntimeError> {
+        self.call_function(func, args, generics).map_err(|d| d.error)
     }
 
     /// Call a Rask `extend`-block function that takes no `self` —
@@ -856,13 +885,13 @@ impl Interpreter {
 
             // Run the closure body
             let result = match closure {
-                Value::Closure { params, body, captured_env, generics, .. } => {
+                Value::Closure { params, body, captured_env, lent, generics, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
                         ));
                     }
-                    self.enter_closure(&captured_env, &generics);
+                    self.enter_closure(&captured_env, &lent, &generics);
                     let result = self.eval_expr(&body);
                     self.leave_closure();
                     result
@@ -884,13 +913,13 @@ impl Interpreter {
         } else {
             // No cache dir configured — always run
             match closure {
-                Value::Closure { params, body, captured_env, generics, .. } => {
+                Value::Closure { params, body, captured_env, lent, generics, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
                         ));
                     }
-                    self.enter_closure(&captured_env, &generics);
+                    self.enter_closure(&captured_env, &lent, &generics);
                     let result = self.eval_expr(&body);
                     self.leave_closure();
                     result.map_err(|d| d.error)
@@ -958,7 +987,7 @@ impl Interpreter {
                 "encode" | "encode_pretty" | "to_value" | "decode"
             ),
             Path => false, // Path module has no module-level methods
-            Async => matches!(method, "spawn"),
+            Async => matches!(method, "cancelled"),
             Thread => matches!(method, "Thread" | "ThreadPool"),
             Http => false,
             Env => matches!(method, "var" | "vars"),

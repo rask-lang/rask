@@ -81,70 +81,129 @@ pub enum InterfaceError {
 // Interface Checker
 // ============================================================================
 
+/// A builtin collection, in either spelling, with its type arguments.
+///
+/// The one answer to which contract interfaces each collection has. The bound
+/// check, `check_satisfies` and the `<` rejection all read it (#1491, #1495).
+pub(crate) struct Collection {
+    pub kind: CollectionKind,
+    pub parts: Vec<Type>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollectionKind {
+    /// `Vec<T>` or `[T; N]`.
+    Sequence,
+    Map,
+    Set,
+}
+
+impl CollectionKind {
+    /// What a diagnostic calls one.
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            CollectionKind::Sequence => "a sequence",
+            CollectionKind::Map => "a map",
+            CollectionKind::Set => "a set",
+        }
+    }
+}
+
+impl Collection {
+    pub(crate) fn of(types: &TypeTable, ty: &Type) -> Option<Collection> {
+        let (name, args) = match ty {
+            Type::Array { elem, .. } => {
+                return Some(Collection { kind: CollectionKind::Sequence, parts: vec![(**elem).clone()] });
+            }
+            Type::Generic { base, args } => (types.type_name(*base), args),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            _ => return None,
+        };
+        let kind = match name.as_str() {
+            "Vec" => CollectionKind::Sequence,
+            "Map" => CollectionKind::Map,
+            "Set" => CollectionKind::Set,
+            _ => return None,
+        };
+        let parts: Vec<Type> = args
+            .iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            })
+            .collect();
+        let arity = if kind == CollectionKind::Map { 2 } else { 1 };
+        if parts.len() != arity {
+            return None;
+        }
+        Some(Collection { kind, parts })
+    }
+
+    /// `Some(true)`: the collection has `interface` when all its parts do.
+    /// `Some(false)`: never. `None`: not a contract interface.
+    ///
+    /// type.generics: `Vec` is Equal, Hashable and Cloneable through `T`
+    /// (EQ4, HA3b, CL1) and has no order (CO1). `Map` and `Set` are Equal and
+    /// Cloneable through their parts (EQ4a, CL1) and neither hash nor order.
+    pub(crate) fn contract(&self, interface: &str) -> Option<bool> {
+        match interface {
+            "Equal" | "Cloneable" => Some(true),
+            "Hashable" => Some(self.kind == CollectionKind::Sequence),
+            "Comparable" => Some(false),
+            _ => None,
+        }
+    }
+}
+
 /// Checks structural interface satisfaction.
 pub struct InterfaceChecker<'a> {
     /// The type table containing all type definitions.
     types: &'a TypeTable,
     /// Collected errors.
     errors: Vec<InterfaceError>,
-    /// Cache for interface method requirements (expanded with composed interfaces).
-    interface_methods: HashMap<String, Vec<MethodSig>>,
 }
 
 impl<'a> InterfaceChecker<'a> {
     pub fn new(types: &'a TypeTable) -> Self {
-        let mut checker = Self {
-            types,
-            errors: Vec::new(),
-            interface_methods: HashMap::new(),
-        };
-        checker.collect_interface_methods();
-        checker
+        Self { types, errors: Vec::new() }
     }
 
-    /// Collect all methods from interfaces (including composed interfaces).
-    fn collect_interface_methods(&mut self) {
-        // First pass: collect direct methods
-        let mut super_map: Vec<(String, Vec<String>)> = Vec::new();
-        for def in self.types.iter() {
-            if let TypeDef::Interface { name, super_interfaces, methods, .. } = def {
-                self.interface_methods.insert(name.clone(), methods.clone());
-                if !super_interfaces.is_empty() {
-                    super_map.push((
-                        name.clone(),
-                        super_interfaces.iter().map(TypeTable::conformance_key).collect(),
-                    ));
+    /// Every method a declared interface requires: its own, then its
+    /// declared parents' (TD3), the first declaration of a name winning.
+    ///
+    /// Walked by `TypeId`, each parent named as the interface's own side reads
+    /// it. Keyed by name, a program's `interface Writer` replaced the stdlib's
+    /// and every stdlib `Buffer implements Writer` was checked against the
+    /// program's methods (#1329). `seen` stops a cycle.
+    fn declared_interface_methods(&self, id: TypeId, seen: &mut Vec<TypeId>) -> Vec<MethodSig> {
+        if seen.contains(&id) {
+            return Vec::new();
+        }
+        seen.push(id);
+        let Some(TypeDef::Interface { super_interfaces, methods, .. }) = self.types.get(id) else {
+            return Vec::new();
+        };
+        let mut all = methods.clone();
+        for parent in super_interfaces {
+            let Some(pid) = self.types.parent_interface(id, parent) else {
+                continue;
+            };
+            for m in self.declared_interface_methods(pid, seen) {
+                if !all.iter().any(|existing| existing.name == m.name) {
+                    all.push(m);
                 }
             }
         }
-        // Second pass: add inherited methods from super-interfaces
-        for (interface_name, supers) in &super_map {
-            let mut inherited = Vec::new();
-            for parent in supers {
-                if let Some(parent_methods) = self.interface_methods.get(parent) {
-                    for m in parent_methods {
-                        // Don't duplicate methods already defined directly
-                        if !self.interface_methods.get(interface_name)
-                            .map_or(false, |ms| ms.iter().any(|existing| existing.name == m.name))
-                            && !inherited.iter().any(|im: &MethodSig| im.name == m.name)
-                        {
-                            inherited.push(m.clone());
-                        }
-                    }
-                }
-            }
-            if let Some(methods) = self.interface_methods.get_mut(interface_name) {
-                methods.extend(inherited);
-            }
-        }
+        all
     }
 
     /// G1: is this a nominal user-declared interface (registered, not `duck`)?
     /// Builtin/auto-derived interfaces (Equal, Comparable, …) are handled by
     /// eligibility and keep structural matching; only user-declared interfaces
     /// require an explicit `T implements Interface` conformance.
-    fn is_nominal_user_interface(&self, interface_name: &str) -> bool {
-        let base = interface_name;
+    fn is_nominal_user_interface(&self, interface: &TypeExpr) -> bool {
+        let base = self.types.interface_name(interface);
+        let base = base.as_str();
         // A compiler-provided interface is satisfied by shape, whether or not
         // `stdlib/` also writes the declaration down. `Displayable` means "has
         // `to_string`" — std.fmt/D5 says an error type gets it from `message()`
@@ -160,7 +219,7 @@ impl<'a> InterfaceChecker<'a> {
             return false;
         }
         matches!(
-            self.types.get_type_id(base).and_then(|id| self.types.get(id)),
+            self.types.interface_decl(interface).and_then(|id| self.types.get(id)),
             Some(TypeDef::Interface { is_duck: false, .. })
         )
     }
@@ -193,6 +252,19 @@ impl<'a> InterfaceChecker<'a> {
         }
     }
 
+    /// Does a bound or header name an interface at all: a declared one, or one
+    /// the compiler answers by name in `check_satisfies` (`Copy`, `Encode`,
+    /// the numeric sets, the builtin method lists)?
+    pub fn names_an_interface(&self, interface: &TypeExpr) -> bool {
+        if self.types.interface_decl(interface).is_some() {
+            return true;
+        }
+        let name = self.types.interface_name(interface);
+        matches!(name.as_str(), "Copy" | "Encode" | "Decode")
+            || numeric_interface_members(&name).is_some()
+            || builtin_interface_methods(&name).is_some()
+    }
+
     /// Check if a type satisfies an interface bound.
     pub fn check_satisfies(
         &mut self,
@@ -206,7 +278,7 @@ impl<'a> InterfaceChecker<'a> {
         // encode qualifies. These aren't registered as interfaces, so short-circuit
         // before the method-based logic (which would fail with UnknownInterface).
         let interface_name = interface.to_string();
-        let base = TypeTable::conformance_key(interface);
+        let base = self.types.interface_name(interface);
         let base_interface = base.as_str();
 
         // NT1–NT3: every primitive of the right kind satisfies `Numeric`,
@@ -279,20 +351,34 @@ impl<'a> InterfaceChecker<'a> {
         // ever get a conformance this way — and it had none, so `Map<(i64, i64),
         // V>` failed the moment the Map key bound became a real check (#812).
         //
-        // A fixed array is the same argument with one element type, and so is
-        // a `Vec`: equal when its elements are, hashed element by element.
+        // A builtin collection is the same argument over its type arguments,
+        // limited to the interfaces `Collection::contract` gives it.
+        if let Some(c) = Collection::of(self.types, ty) {
+            if let Some(through_parts) = c.contract(base_interface) {
+                let ok = through_parts
+                    && c.parts.iter().all(|e| {
+                        self.check_satisfies(e, &TypeExpr::named(base_interface), span).is_ok()
+                    });
+                if ok {
+                    return Ok(());
+                }
+                return Err(InterfaceError::NotSatisfied {
+                    ty: self.type_name(ty),
+                    interface_name: interface_name.clone(),
+                    span,
+                });
+            }
+        }
+
         if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
             let elems: Option<Vec<Type>> = match ty {
                 Type::Tuple(elems) => Some(elems.clone()),
-                Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
-                Type::Generic { base, args }
-                    if self.types.type_name(*base) == "Vec" =>
-                {
-                    match args.first() {
-                        Some(crate::types::GenericArg::Type(elem)) => Some(vec![(**elem).clone()]),
-                        _ => None,
-                    }
-                }
+                // `T?` and `T or E` have no methods (std.api/SD4), but `==`,
+                // hashing and cloning work over the whole slot when they work
+                // on its parts — the same answer the struct derive gives a
+                // field of this type. Order is not on this list.
+                Type::Result { ok, err } if **err == Type::None => Some(vec![(**ok).clone()]),
+                Type::Result { ok, err } => Some(vec![(**ok).clone(), (**err).clone()]),
                 _ => None,
             };
             if let Some(elems) = elems {
@@ -322,7 +408,7 @@ impl<'a> InterfaceChecker<'a> {
             self.named_type_id(ty).and_then(|id| self.types.get(id))
         {
             if with_interfaces.iter().any(|t| {
-                TypeTable::conformance_key(t) == base_interface
+                self.types.interface_name(t) == base_interface
             }) {
                 return Ok(());
             }
@@ -331,7 +417,7 @@ impl<'a> InterfaceChecker<'a> {
         // G1 nominal gate: a user struct/enum satisfies a user-declared interface
         // only through a declared `T implements Interface` (or auto-derive). A
         // matching shape without the declaration is rejected — the flip.
-        if self.is_nominal_user_interface(base_interface) {
+        if self.is_nominal_user_interface(interface) {
             if let Some(type_id) = self.user_type_id(ty) {
                 if !self.types.declares_conformance(type_id, interface) {
                     return Err(InterfaceError::NotSatisfied {
@@ -357,7 +443,7 @@ impl<'a> InterfaceChecker<'a> {
         // generic interface fail claiming a missing method (#1164).
         let subst = self.conformance_substitution(ty, interface);
         let required_methods: Vec<MethodSig> = self
-            .get_interface_methods(base_interface)?
+            .interface_methods(interface)?
             .into_iter()
             .map(|m| substitute_signature(&m, &subst))
             .collect();
@@ -786,6 +872,34 @@ impl<'a> InterfaceChecker<'a> {
         self.get_interface_methods(interface_name).unwrap_or_default()
     }
 
+    /// Every method the interface a written reference names declares, its
+    /// parents' included; empty for an unknown one.
+    pub fn interface_methods_written(&self, interface: &TypeExpr) -> Vec<MethodSig> {
+        self.interface_methods(interface).unwrap_or_default()
+    }
+
+    /// `io.Writer` is the module's interface, whatever the program declares
+    /// (`TypeTable::interface_decl`).
+    fn interface_methods(&self, interface: &TypeExpr) -> Result<Vec<MethodSig>, InterfaceError> {
+        match self.types.interface_decl(interface) {
+            Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
+            None => {
+                let name = self.types.interface_name(interface);
+                self.get_builtin_interface_methods(&name)
+                    .ok_or_else(|| InterfaceError::UnknownInterface(interface.name().unwrap_or_default()))
+            }
+        }
+    }
+
+    /// The methods an `any` of this interface offers: its declaration's, or a
+    /// compiler-provided interface's by name.
+    pub fn interface_object_methods(&self, interface_name: &str, decl: Option<TypeId>) -> Vec<MethodSig> {
+        match decl {
+            Some(id) => self.declared_interface_methods(id, &mut Vec::new()),
+            None => self.get_builtin_interface_methods(interface_name).unwrap_or_default(),
+        }
+    }
+
     /// GT2/AT6: what an interface's written signatures mean for one conformance.
     ///
     /// Maps `Rhs` to the argument the header gave it (or the declared default),
@@ -797,9 +911,8 @@ impl<'a> InterfaceChecker<'a> {
         interface_ref: &TypeExpr,
     ) -> HashMap<String, Type> {
         let mut map = HashMap::new();
-        let base = TypeTable::conformance_key(interface_ref);
         let Some(TypeDef::Interface { type_params, assoc_types, .. }) =
-            self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+            self.types.interface_decl(interface_ref).and_then(|id| self.types.get(id))
         else {
             return map;
         };
@@ -822,7 +935,7 @@ impl<'a> InterfaceChecker<'a> {
         for a in assoc_types {
             let bound = type_id
                 .and_then(|id| self.types.assoc_binding(id, interface_ref, &a.name))
-                .cloned()
+                .map(|b| self.types.instantiate_assoc(self_ty, b))
                 .or_else(|| match &a.default {
                     Some(d) if d.is_name("Self") => Some(self_ty.clone()),
                     Some(d) => crate::checker::resolve_type_expr(d, self.types).ok(),
@@ -843,8 +956,7 @@ impl<'a> InterfaceChecker<'a> {
     /// the interface's parameters and associated types already filled in.
     pub fn required_signatures(&self, self_ty: &Type, interface_ref: &TypeExpr) -> Vec<MethodSig> {
         let subst = self.conformance_substitution(self_ty, interface_ref);
-        self.get_interface_methods(&TypeTable::conformance_key(interface_ref))
-            .unwrap_or_default()
+        self.interface_methods_written(interface_ref)
             .into_iter()
             .map(|m| substitute_signature(&m, &subst))
             .collect()
@@ -852,8 +964,8 @@ impl<'a> InterfaceChecker<'a> {
 
     /// CD2: every method name the interface declares, its parents' included.
     /// `None` when the interface is unknown, which is its own error.
-    pub fn declared_method_names(&self, interface_ref: &str) -> Option<Vec<String>> {
-        self.get_interface_methods(interface_ref)
+    pub fn declared_method_names(&self, interface_ref: &TypeExpr) -> Option<Vec<String>> {
+        self.interface_methods(interface_ref)
             .ok()
             .map(|ms| ms.into_iter().map(|m| m.name).collect())
     }
@@ -863,14 +975,19 @@ impl<'a> InterfaceChecker<'a> {
         self.signatures_match(a, b)
     }
 
-    /// Get methods required by an interface, by its name.
+    /// Get methods required by an interface, by its name as the code being
+    /// checked reads it.
     fn get_interface_methods(&self, interface_name: &str) -> Result<Vec<MethodSig>, InterfaceError> {
-        let base_name = interface_name;
-        self.interface_methods
-            .get(interface_name)
-            .cloned()
-            .or_else(|| self.get_builtin_interface_methods(base_name))
-            .ok_or_else(|| InterfaceError::UnknownInterface(interface_name.to_string()))
+        let declared = self
+            .types
+            .get_type_id(interface_name)
+            .filter(|id| matches!(self.types.get(*id), Some(TypeDef::Interface { .. })));
+        match declared {
+            Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
+            None => self
+                .get_builtin_interface_methods(interface_name)
+                .ok_or_else(|| InterfaceError::UnknownInterface(interface_name.to_string())),
+        }
     }
 
     /// Get builtin interface methods for standard interfaces.
@@ -888,185 +1005,230 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
     {
         match interface_name {
             "Add" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "add".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)], // Self type
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)], // Self type
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Sub" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "sub".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Mul" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "mul".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Div" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "div".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Rem" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "rem".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Neg" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "neg".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Equal" | "Eq" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "eq".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                 ret: Type::Bool,
+                defaults: Vec::new(),
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "compare".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                     // Type variable 0 is `Self` throughout these signatures,
                     // so `compare` has to name Ordering outright — as a
                     // placeholder it read as "returns Self", and a nominal
                     // newtype inheriting Comparable got a `compare` that
                     // claimed to answer with itself (#551).
                     ret: Type::UnresolvedNamed("Ordering".to_string()),
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "lt".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "le".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "gt".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "ge".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
             ]),
             "Clone" | "Cloneable" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "clone".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
-            }]),
-            "Default" => Some(vec![MethodSig {
-                derived: false,
-                owner_patterns: Vec::new(),
-                type_params: Vec::new(),
-                name: "default".to_string(),
-                self_param: SelfParam::None, // Static method
-                params: vec![],
-                ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Hashable" => Some(vec![
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "hash".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: Type::U64,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "eq".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
             ]),
             "Displayable" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "to_string".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+                defaults: Vec::new(),
             }]),
             "Debug" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "debug".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+                defaults: Vec::new(),
             }]),
             // Iterator<Item> interface — single method `next(mutate self) -> Item?`
             "Iterator" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "next".to_string(),
                 self_param: SelfParam::Mutate,
                 params: vec![],
                 ret: Type::option(Type::Var(crate::types::TypeVarId(0))),
+                defaults: Vec::new(),
             }]),
             // NT1–NT3 / the standard-interface roster. `Numeric` is a nominal
             // interface with these eight; `Integer` and `Float` extend it with
@@ -1091,25 +1253,31 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 let mut sigs = numeric_method_sigs();
                 sigs.extend(ordered_method_sigs());
                 sigs.push(MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "is_nan".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 });
                 Some(sigs)
             }
             // ER4/ER32: the Error interface — `func message(self) -> string`
             "Error" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "message".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+                defaults: Vec::new(),
             }]),
             _ => None,
         }
@@ -1145,9 +1313,31 @@ impl<'a> InterfaceChecker<'a> {
             Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
             _ => None,
         };
+        // On an instance the receiver's parameters are its arguments, so the
+        // signatures compare against required ones read off the same instance
+        // (AT10): `get(self) -> U` in `Boxed<U> implements Unwrap` is
+        // `-> f64` on a `Boxed<f64>`, whatever the header called it.
+        let on_instance = |methods: &Vec<MethodSig>| -> Vec<MethodSig> {
+            let Type::Generic { args, .. } = ty else { return methods.clone() };
+            methods
+                .iter()
+                .map(|m| {
+                    let map: HashMap<String, Type> = m
+                        .owner_patterns
+                        .iter()
+                        .zip(args)
+                        .filter_map(|(p, a)| match (p.bare_name(), a) {
+                            (Some(n), crate::types::GenericArg::Type(t)) => Some((n.to_string(), (**t).clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    substitute_signature(m, &map)
+                })
+                .collect()
+        };
         match id.and_then(|id| self.types.get(id)) {
-            Some(TypeDef::Struct { methods, .. }) => methods.clone(),
-            Some(TypeDef::Enum { methods, .. }) => methods.clone(),
+            Some(TypeDef::Struct { methods, .. }) => on_instance(methods),
+            Some(TypeDef::Enum { methods, .. }) => on_instance(methods),
             Some(TypeDef::Interface { methods, .. }) => methods.clone(),
             // T13: an `extend` block on a nominal type puts its methods on the
             // nominal type, which is where `register_impl_methods` writes them.
@@ -1164,33 +1354,33 @@ impl<'a> InterfaceChecker<'a> {
     /// Check if a primitive type has a builtin method.
     fn has_builtin_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
-            // Integer types: eq, hash, clone, default, arithmetic, compare, to_string
+            // Integer types: eq, hash, clone, arithmetic, compare, to_string
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "hash" | "clone" | "default" | "to_string" | "debug"
+                    "hash" | "clone" | "to_string" | "debug"
                 )
             }
-            // Floats: eq, clone, default, but NOT hash (HA4)
+            // Floats: eq, clone, but NOT hash (HA4)
             Type::F32 | Type::F64 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "clone" | "default" | "to_string" | "debug"
+                    "clone" | "to_string" | "debug"
                 )
             }
-            // Bool: eq, hash, clone, default, compare, to_string
-            Type::Bool => matches!(method, "eq" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
-            // Char: eq, hash, clone, default, comparison, to_string
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
-            // String: eq, hash, clone, default, len, comparison, to_string
-            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "default" | "to_string" | "debug"),
-            // Unit: eq, hash, clone, default
-            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default" | "to_string" | "debug"),
+            // Bool: eq, hash, clone, compare, to_string
+            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
+            // Char: eq, hash, clone, comparison, to_string
+            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
+            // String: eq, hash, clone, len, comparison, to_string
+            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "to_string" | "debug"),
+            // Unit: eq, hash, clone
+            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "to_string" | "debug"),
             _ => false,
         }
     }
@@ -1308,7 +1498,7 @@ impl<'a> InterfaceChecker<'a> {
             match mode {
                 ParamMode::Take => format!("take {}", self.type_name(t)),
                 ParamMode::Mutate => format!("mutate {}", self.type_name(t)),
-                ParamMode::Default => self.type_name(t),
+                ParamMode::Borrow => self.type_name(t),
             }
         }).collect();
         let base = sig.name.as_str();
@@ -1432,13 +1622,16 @@ fn is_abstract_arg(ty: &Type) -> bool {
 /// saturate.
 fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        param_names: Vec::new(),
         derived: false,
         owner_patterns: Vec::new(),
+        owner_bounds: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param: SelfParam::Value,
-        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
         ret: Type::Var(crate::types::TypeVarId(0)),
+        defaults: Vec::new(),
     };
     vec![
         binary("wrapping_add"),
@@ -1467,22 +1660,28 @@ fn ordered_method_sigs() -> Vec<MethodSig> {
 
 fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        param_names: Vec::new(),
         derived: false,
         owner_patterns: Vec::new(),
+        owner_bounds: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param: SelfParam::Value,
-        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+        params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Borrow)],
         ret: Type::Var(crate::types::TypeVarId(0)),
+        defaults: Vec::new(),
     };
     let nullary = |name: &str, self_param| MethodSig {
+        param_names: Vec::new(),
         derived: false,
         owner_patterns: Vec::new(),
+        owner_bounds: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param,
         params: vec![],
         ret: Type::Var(crate::types::TypeVarId(0)),
+        defaults: Vec::new(),
     };
     vec![
         binary("add"),
@@ -1493,15 +1692,25 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         nullary("zero", SelfParam::None),
         nullary("one", SelfParam::None),
         MethodSig {
+            param_names: Vec::new(),
             derived: false,
             owner_patterns: Vec::new(),
+            owner_bounds: Vec::new(),
             type_params: Vec::new(),
             name: "from_int".to_string(),
             self_param: SelfParam::None,
-            params: vec![(Type::I64, ParamMode::Default)],
+            params: vec![(Type::I64, ParamMode::Borrow)],
             ret: Type::Var(crate::types::TypeVarId(0)),
+            defaults: Vec::new(),
         },
     ]
+}
+
+/// A type parameter with this bound is Copy whatever it is instantiated with:
+/// `Copy` says so, and every member of `Integer`, `Float` and `Numeric` is a
+/// primitive.
+pub fn bound_implies_copy(name: &str) -> bool {
+    name == "Copy" || numeric_interface_members(name).is_some()
 }
 
 /// Membership test for one of the numeric interfaces, or `None` if `name` isn't
@@ -1580,7 +1789,7 @@ fn object_compatible_methods_seen(
             // construction whatever the order is.
             if let TypeDef::Interface { super_interfaces, .. } = def {
                 for parent in super_interfaces {
-                    for m in object_compatible_methods_seen(types, &TypeTable::conformance_key(parent), seen) {
+                    for m in object_compatible_methods_seen(types, &types.interface_name(parent), seen) {
                         if !names.contains(&m) {
                             names.push(m);
                         }
@@ -1602,6 +1811,80 @@ fn object_compatible_methods_seen(
         .collect()
 }
 
+/// Does `ty` fill an `any` of this interface? `decl` is the declaration the
+/// interface object names, which decides when the name alone wouldn't: a
+/// stdlib `Buffer` implements the stdlib's `Writer`, and a program declaring
+/// its own `Writer` hasn't changed that (#1426).
+pub fn implements_interface_object(
+    types: &TypeTable,
+    ty: &Type,
+    interface_name: &str,
+    decl: Option<TypeId>,
+) -> bool {
+    // Where the name means this declaration anyway, the full check by name
+    // applies — it also holds a conformance header to the methods it promises.
+    if let Some(id) = decl.filter(|id| types.get_type_id(interface_name) != Some(*id)) {
+        let nominal = matches!(types.get(id), Some(TypeDef::Interface { is_duck: false, .. }));
+        let target = match ty {
+            Type::Named(t) | Type::Generic { base: t, .. } => Some(*t),
+            _ => None,
+        }
+        .filter(|t| matches!(types.get(*t), Some(TypeDef::Struct { .. } | TypeDef::Enum { .. })));
+        if let (true, Some(target)) = (nominal, target) {
+            return types.declares_conformance_to_decl(target, id, interface_name);
+        }
+    }
+    implements_interface(types, ty, interface_name)
+}
+
+/// The methods a vtable holds for each interface, keyed by the interface's
+/// symbol (`TypeTable::interface_symbol`), in slot order. Codegen lays the
+/// vtables out from this and MIR reads its dispatch offsets from it, so the
+/// two agree by construction.
+pub fn interface_vtable_methods(types: &TypeTable) -> std::collections::HashMap<String, Vec<String>> {
+    let mut methods: std::collections::HashMap<String, Vec<String>> = types
+        .interfaces()
+        .map(|(id, name)| (types.interface_symbol(name, Some(id)), object_compatible_methods_of(types, id)))
+        .collect();
+    // An interface the compiler provides has no declaration to read, so `any Error`
+    // got a box with no vtable behind it and dispatch fell through to the
+    // static path (#708). A declared one of the same name keeps its own.
+    for name in COMPILER_PROVIDED_TRAITS {
+        methods
+            .entry(name.to_string())
+            .or_insert_with(|| object_compatible_methods(types, name));
+    }
+    methods
+}
+
+/// `object_compatible_methods` for a declaration already identified. Parents
+/// are named as the interface's own side reads them (#1329).
+fn object_compatible_methods_of(types: &TypeTable, id: TypeId) -> Vec<String> {
+    object_compatible_methods_of_seen(types, id, &mut Vec::new())
+}
+
+fn object_compatible_methods_of_seen(types: &TypeTable, id: TypeId, seen: &mut Vec<TypeId>) -> Vec<String> {
+    if seen.contains(&id) {
+        return Vec::new();
+    }
+    seen.push(id);
+    let Some(def @ TypeDef::Interface { super_interfaces, .. }) = types.get(id) else {
+        return Vec::new();
+    };
+    let mut names = def.object_compatible_method_names();
+    for parent in super_interfaces {
+        let Some(pid) = types.parent_interface(id, parent) else {
+            continue;
+        };
+        for m in object_compatible_methods_of_seen(types, pid, seen) {
+            if !names.contains(&m) {
+                names.push(m);
+            }
+        }
+    }
+    names
+}
+
 pub fn implements_interface(
     types: &TypeTable,
     ty: &Type,
@@ -1618,7 +1901,7 @@ pub fn implemented_interfaces(types: &TypeTable, ty: &Type) -> Vec<String> {
     let known_interfaces = [
         "Add", "Sub", "Mul", "Div", "Rem", "Neg",
         "Equal", "Eq", "Comparable", "Ord",
-        "Clone", "Cloneable", "Default", "Hashable",
+        "Clone", "Cloneable", "Hashable",
         "Displayable", "Debug",
     ];
 
@@ -1656,13 +1939,16 @@ mod tests {
 
         let mut types = TypeTable::new();
         let show = || MethodSig {
+            param_names: Vec::new(),
             derived: false,
             owner_patterns: Vec::new(),
+            owner_bounds: Vec::new(),
             type_params: Vec::new(),
             name: "show".to_string(),
             self_param: SelfParam::Value,
             params: vec![],
             ret: Type::String,
+            defaults: Vec::new(),
         };
 
         types.register_type(TypeDef::Interface {
@@ -1747,8 +2033,10 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
         return m.clone();
     }
     MethodSig {
+        param_names: m.param_names.clone(),
         derived: m.derived,
         owner_patterns: m.owner_patterns.clone(),
+        owner_bounds: m.owner_bounds.clone(),
         type_params: m.type_params.clone(),
         name: m.name.clone(),
         self_param: m.self_param,
@@ -1758,6 +2046,7 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
             .map(|(t, mode)| (substitute_type(t, map), *mode))
             .collect(),
         ret: substitute_type(&m.ret, map),
+        defaults: m.defaults.clone(),
     }
 }
 
@@ -1813,7 +2102,7 @@ pub fn substitute_type(ty: &Type, map: &HashMap<String, Type>) -> Type {
         },
         Type::Union(parts) => Type::Union(parts.iter().map(|p| substitute_type(p, map)).collect()),
         Type::Fn { params, ret } => Type::Fn {
-            params: params.iter().map(|p| substitute_type(p, map)).collect(),
+            params: params.iter().map(|p| p.map(|p| substitute_type(p, map))).collect(),
             ret: Box::new(substitute_type(ret, map)),
         },
         _ => ty.clone(),

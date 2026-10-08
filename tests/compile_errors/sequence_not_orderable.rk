@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Putting two vectors, or two fixed arrays, in an order is rejected (E0414,
+// type.generics/CO1, #1491).
+//
+// `Vec<T>` is Equal and Hashable when `T` is (EQ4, HA3b) and never
+// Comparable: shorter-first and element-by-element are both reasonable, and
+// nothing makes one of them what `<` means. These used to type-check, then
+// the interpreter failed at run time while native compared handles or
+// failed to link `Vec_compare`.
+
+struct Row {
+    cells: Vec<i64>
+}
+
+func biggest<T: Comparable>(a: T, b: T) -> T {
+    if a < b {
+        return b
+    }
+    return a
+}
+
+func compare_vecs(a: Vec<i64>, b: Vec<i64>) {
+    let _lt = a < b               // ERROR: E0414 — a vector has no order
+    let _ge = a >= b              // ERROR: E0414
+    let _c = a.compare(b)         // ERROR: E0414 — same order, spelled out
+    let _same = a == b            // fine: element-wise equality (EQ4)
+    let _shorter = a.len() < b.len()  // fine: an order you named
+}
+
+func compare_arrays() {
+    let x = [1, 2]
+    let y = [1, 3]
+    let _lt = x < y               // ERROR: E0414 — arrays share Vec's answer
+}
+
+func as_a_bound(a: Vec<i64>, b: Vec<i64>) {
+    let _hi = biggest(a, b)       // ERROR: E0414 — T: Comparable takes no Vec
+}
+
+func sort_rows(mutate rows: Vec<Vec<i64>>) {
+    rows.sort()                   // ERROR: E0414 — sort needs an element order
+    rows.sort_by_key(|r| r[0])    // fine: the key is an element
+}
+
+func compare_structs(a: Row, b: Row) {
+    let _lt = a < b               // ERROR: a Vec field means no derived order
+}
+
+func main() {
+    println("does not compile")
+}

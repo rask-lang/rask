@@ -320,7 +320,7 @@ There is **no flow typing anywhere in the language**. An `is` test is a plain bo
 | Rule | Description |
 |------|-------------|
 | **ER23: Type pattern test and bind** | `if r is ErrType as e { … }` tests and binds `e` when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way. Without `as`, it's a bare bool. `r` itself is unchanged everywhere |
-| **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch |
+| **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch: `r` without the leaf the test named, as the type the leaves left over make. On a flat `T? or E`, testing `T` binds `e: E?`, testing `none` binds `e: T or E`, testing `E` binds `e: T?`. Testing one member of a union error leaves a result over the other members |
 | **ER21, ER24, ER25 deleted** | Scrutinee narrowing is gone: the else-narrow (ER21) and the early-exit fall-through narrow (ER24) let non-canonical error handling type-check — machinery maintained solely for forms the canon says not to write ([canonical-patterns.md](../canonical-patterns.md)). With them cut, `if r is E as e { return e }; use(r)` simply fails to type-check (`r` is still `T or E`), and the fix the compiler suggests is the guard: `let v = r catch e => return e`. No lint needed — the shape routes itself. ER25 (compounds don't narrow) is vacuously true now and retired |
 
 <!-- test: skip -->

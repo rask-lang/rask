@@ -56,7 +56,7 @@ Views into fixed sources (struct fields, arrays) persist until the block ends.
 |------|-------------|
 | **S1: Block duration** | View valid from creation until end of enclosing block |
 | **S2: Source outlives borrow** | Source must be valid for borrow's entire duration |
-| **S3: No escape** | Cannot store in struct, return, or send cross-task |
+| **S3: No escape** | Cannot store in struct, return, send cross-task, or hand to a `take` parameter — `m.get(k)!.as_array()` gives `as_array(take self)` a value `m` still holds |
 | **S4: Duration extension** | Borrowing a temporary extends its duration to match borrow |
 | **S5: Exclusive access** | Source cannot be mutated while borrowed; mutable borrow excludes all other access |
 
@@ -329,15 +329,15 @@ func update(mutate state: GameState, dt: f32) {
 func parallel_update(mutate state: GameState, dt: f32) {
     scoped {
         // Compiler sees: captures state.entities mutably
-        spawn(|| {
+        spawn {
             for e in state.entities.nodes() {
                 e.position.x += e.velocity.dx * dt
             }
-        })
+        }
         // Compiler sees: captures state.score mutably — disjoint, no conflict
-        spawn(|| {
+        spawn {
             state.score += 10
-        })
+        }
     }
 }
 ```

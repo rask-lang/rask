@@ -9,6 +9,7 @@ use crate::{
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::ty::TypeExpr;
 
 /// Walk a pattern to see if it contains a range pattern anywhere.
 fn contains_range_pattern(pattern: &rask_ast::expr::Pattern) -> bool {
@@ -18,6 +19,14 @@ fn contains_range_pattern(pattern: &rask_ast::expr::Pattern) -> bool {
         Pattern::Or(pats) => pats.iter().any(contains_range_pattern),
         _ => false,
     }
+}
+
+/// Switch cases with each tag kept once, for the first arm that named it.
+/// Two arms naming one variant (the first guarded) both list its tag, and
+/// arms are tried in order.
+fn first_per_tag(cases: impl Iterator<Item = (u64, BlockId)>) -> Vec<(u64, BlockId)> {
+    let mut seen = std::collections::HashSet::new();
+    cases.filter(|(t, _)| seen.insert(*t)).collect()
 }
 
 /// Flatten an Or pattern into its alternatives. Non-Or patterns return themselves.
@@ -31,9 +40,29 @@ fn flatten_pattern_alternatives(pattern: &rask_ast::expr::Pattern) -> Vec<&rask_
 
 impl<'a> MirLowerer<'a> {
 
+    /// Where a match goes when no arm took the value: a panic, as on the
+    /// interpreter (R0011). The checker proves most matches cover everything,
+    /// but a guarded arm can still fail with nothing after it. This used to be
+    /// the merge block, which read a result no arm had written, and an owned
+    /// result arriving there from one path and garbage from another left the
+    /// release pass unable to say who held it (text_editor's undo leaked).
+    fn no_arm_matched_block(&mut self) -> BlockId {
+        let here = self.builder.current_block();
+        let block = self.builder.create_block();
+        self.builder.switch_to_block(block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("panic".to_string()),
+            args: vec![MirOperand::Constant(MirConst::String("no matching arm in match".to_string()))],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.builder.switch_to_block(here);
+        block
+    }
+
     /// A value that can fail *and* be absent — `T? or E` — carries an error
     /// tag around an option tag. Nothing else in MIR nests two wrappers.
-    fn is_flat_two_layer(ty: &MirType) -> bool {
+    pub(super) fn is_flat_two_layer(ty: &MirType) -> bool {
         match ty {
             MirType::Result { ok, err } => {
                 !matches!(**err, MirType::Void)
@@ -43,49 +72,46 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// `match` on a flat `T? or E`. The three leaves (`T`, `none`, `E`) sit
-    /// behind two tags, so this computes one discriminant for them — 0 for the
-    /// payload, 1 for absent, 2 for the error — and switches on that. Reading a
-    /// single tag would collapse `none` and `T` into the same arm (OPT30).
-    fn lower_flat_match(
+    /// Which leaf of a flat `T? or E` a pattern name picks: 0 the payload,
+    /// 1 `none`, 2 the error. Same numbering `emit_flat_leaf` computes.
+    pub(super) fn flat_leaf_of(&self, name: &str, ty: &MirType) -> u64 {
+        if name == "none" {
+            1
+        } else if self.pattern_is_err_side(name, ty) {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Flatten a `T? or E` into the leaf it holds, as `flat_leaf_of` numbers
+    /// them. Also hands back the inner `T?`, which is where the payload reads
+    /// from: it sits inline in the result's payload slot, so what's wanted is
+    /// its address. Loading a word there would hand back the option's tag and
+    /// the next read would dereference it.
+    pub(super) fn emit_flat_leaf(
         &mut self,
-        scrutinee: &Expr,
-        scrutinee_op: MirOperand,
-        scrutinee_ty: MirType,
-        arms: &[rask_ast::expr::MatchArm],
-    ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
-
-        let (inner_opt_ty, err_ty) = match &scrutinee_ty {
-            MirType::Result { ok, err } => ((**ok).clone(), (**err).clone()),
-            _ => unreachable!("checked by is_flat_two_layer"),
-        };
-        let payload_ty = match &inner_opt_ty {
-            MirType::Option(inner) => (**inner).clone(),
-            _ => MirType::I64,
-        };
-
-        // The inner optional, lifted out of the result's payload slot. It's a
-        // tagged aggregate living inline, so what's wanted is its address —
-        // loading a word here would hand back the tag and the next read would
-        // dereference it.
+        value: &MirOperand,
+        inner_opt_ty: &MirType,
+    ) -> (crate::LocalId, crate::LocalId) {
         let inner_local = self.builder.alloc_temp(inner_opt_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: inner_local,
             rvalue: MirRValue::Field {
-                base: scrutinee_op.clone(),
+                base: value.clone(),
                 field_index: 0,
                 byte_offset: None,
                 access: FieldAccess::Word,
             },
         }));
 
-        // leaf = 2 on the error side, otherwise the inner option's own tag.
+        // The inner tag is only read on the success side. On the error side
+        // those bytes belong to the error.
         let leaf = self.builder.alloc_temp(MirType::U8);
-        let outer_tag = self.emit_option_tag(&scrutinee_op, None);
+        let outer_tag = self.emit_option_tag(value, None);
         let err_blk = self.builder.create_block();
         let ok_blk = self.builder.create_block();
-        let disc_blk = self.builder.create_block();
+        let done_blk = self.builder.create_block();
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(outer_tag),
             then_block: err_blk,
@@ -96,92 +122,80 @@ impl<'a> MirLowerer<'a> {
             dst: leaf,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(2))),
         }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: disc_blk }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_blk }));
         self.builder.switch_to_block(ok_blk);
         let inner_tag = self.emit_option_tag(&MirOperand::Local(inner_local), None);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: leaf,
             rvalue: MirRValue::Use(MirOperand::Local(inner_tag)),
         }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: disc_blk }));
-        self.builder.switch_to_block(disc_blk);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_blk }));
+        self.builder.switch_to_block(done_blk);
+        (inner_local, leaf)
+    }
 
-        let merge_block = self.builder.create_block();
-        let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-        let mut cases: Vec<(u64, BlockId)> = Vec::new();
-        let mut default_block = merge_block;
+    /// `match` on a flat `T? or E`: an ordered chain, one `is` test per arm.
+    ///
+    /// The leaves (`T`, `none`, `E`, and the error's own variants or union
+    /// members) sit behind two or three tags, and `value is <pattern>` already
+    /// knows how to read each of them and where its payload binds from. Going
+    /// through that same test means `match` and `is` can't disagree. A switch
+    /// on one flattened discriminant gave every error arm the same case, so
+    /// `MyErr.Bad(m) => …, MyErr.Worse => …` both landed in the first, and
+    /// `m` was never bound.
+    fn lower_flat_match(
+        &mut self,
+        scrutinee: &Expr,
+        scrutinee_op: MirOperand,
+        scrutinee_ty: MirType,
+        arms: &[rask_ast::expr::MatchArm],
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::Pattern;
 
-        // Which leaf each arm names. `none` is the absent one; anything the
-        // error side answers to is the error; the rest is the payload.
-        let leaf_of = |lowerer: &Self, name: &str| -> u64 {
-            if name == "none" {
-                1
-            } else if lowerer.pattern_is_err_side(name, &scrutinee_ty) {
-                2
-            } else {
-                0
-            }
+        let err_ty = match &scrutinee_ty {
+            MirType::Result { err, .. } => (**err).clone(),
+            _ => unreachable!("checked by is_flat_two_layer"),
         };
-
-        for (i, arm) in arms.iter().enumerate() {
-            let name = match &arm.pattern {
-                Pattern::Wildcard => {
-                    default_block = arm_blocks[i];
-                    continue;
-                }
-                Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
-                Pattern::Ident(n) => n.clone(),
-                Pattern::Constructor { name, .. } => name.clone(),
-                _ => {
-                    default_block = arm_blocks[i];
-                    continue;
-                }
-            };
-            cases.push((leaf_of(self, &name), arm_blocks[i]));
-        }
-
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-            value: MirOperand::Local(leaf),
-            cases,
-            default: default_block,
-        }));
-
+        let no_match = self.no_arm_matched_block();
+        let merge_block = self.builder.create_block();
         let mut result_ty = MirType::Void;
         let result_local = self.builder.alloc_temp(MirType::I64);
-        for (i, arm) in arms.iter().enumerate() {
-            self.builder.switch_to_block(arm_blocks[i]);
 
-            if let Pattern::TypePat { ty, binding: Some(binding) } = &arm.pattern {
-                let ty_name = &super::type_pat_name(ty);
-                // The payload comes from the layer the arm named: the inner
-                // option for `T`, the outer result for `E`.
-                // The payload comes from the layer the arm named. The error
-                // reads out of the result the way any `T or E` arm does; the
-                // success value reads out of the inner option, whose slot
-                // holds a word unless the payload is a real aggregate.
-                let (bind_ty, base, byte_offset) = if leaf_of(self, ty_name) == 2 {
-                    let off = self.payload_byte_offset(&err_ty);
-                    (err_ty.clone(), scrutinee_op.clone(), off)
-                } else {
-                    // `payload_byte_offset` is the one rule for this, and it
-                    // was spelled out again here minus `String` and `Union`.
-                    let off = self.payload_byte_offset(&payload_ty);
-                    (payload_ty.clone(), MirOperand::Local(inner_local), off)
-                };
-                let local = self.builder.alloc_local(binding.clone(), bind_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: local,
-                    rvalue: MirRValue::Field {
-                        base,
-                        field_index: 0,
-                        byte_offset,
-                        access: FieldAccess::Word,
-                    },
+        for (i, arm) in arms.iter().enumerate() {
+            let next = self.builder.create_block();
+            let arm_block = self.builder.create_block();
+            let test = if matches!(arm.pattern, Pattern::Wildcard) {
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: arm_block }));
+                None
+            } else {
+                let test = self.emit_is_test(&scrutinee_op, &scrutinee_ty, None, &arm.pattern);
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(test.matches),
+                    then_block: arm_block,
+                    else_block: next,
                 }));
-                if let Some(p) = self.mir_type_name(&bind_ty) {
-                    self.meta_mut(binding).type_prefix = Some(p);
-                }
-                self.locals.insert(binding.clone(), (local, bind_ty));
+                Some(test)
+            };
+
+            self.builder.switch_to_block(arm_block);
+            if let Some(test) = &test {
+                // Anything that isn't a payload leaf names the error side.
+                self.bind_tested_pattern(
+                    test, &arm.pattern, scrutinee, scrutinee_op.clone(),
+                    Some(err_ty.clone()), false, &scrutinee_ty,
+                );
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                // A failed guard carries on down the chain.
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let guard_pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: guard_val,
+                    then_block: guard_pass,
+                    else_block: next,
+                }));
+                self.builder.switch_to_block(guard_pass);
             }
 
             let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
@@ -197,17 +211,17 @@ impl<'a> MirLowerer<'a> {
                     target: merge_block,
                 }));
             }
+            self.builder.switch_to_block(next);
         }
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: no_match }));
 
-        let _ = scrutinee;
         self.builder.switch_to_block(merge_block);
         // The local was allocated before any arm was lowered, so its type
         // started as a placeholder word. Now that the arms have reported one,
         // give it the real one: assigning an f64 into an `i64` local converts
         // rather than reinterprets, so a `match` used as an expression handed
         // back its float arms truncated — `match n { 1 => 2.5, _ => 0.0 }` was
-        // 2 (#973). Nothing narrows it back, so `if/else` was right and `match`
-        // was not.
+        // 2 (#973).
         self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
     }
@@ -265,7 +279,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(scrutinee_ty, MirType::Struct(_))
             && arms.iter().any(|a| matches!(&a.pattern, Pattern::Struct { .. }))
         {
-            return self.lower_struct_match(scrutinee_op, scrutinee_ty, arms);
+            return self.lower_struct_match(scrutinee, scrutinee_op, scrutinee_ty, arms);
         }
 
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
@@ -371,9 +385,13 @@ impl<'a> MirLowerer<'a> {
 
         let merge_block = self.builder.create_block();
         let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let no_match = self.no_arm_matched_block();
 
         let mut cases: Vec<(u64, BlockId)> = Vec::new();
-        let mut default_block = merge_block;
+        // Arms that take any value, by index. A failed guard dispatches again
+        // over the arms below it, and these are its default.
+        let mut catch_all = vec![false; arms.len()];
+        let mut default_block = no_match;
         // Arms are tried in order, so the *first* catch-all owns the switch
         // default. Letting a later one overwrite it skipped every catch-all
         // before it — which is what happens the moment a guard is involved:
@@ -397,6 +415,7 @@ impl<'a> MirLowerer<'a> {
             }
             match &arm.pattern {
                 Pattern::Wildcard => {
+                    catch_all[i] = true;
                     if !default_claimed {
                         default_block = arm_blocks[i];
                         default_claimed = true;
@@ -417,10 +436,13 @@ impl<'a> MirLowerer<'a> {
                             .variant_tag_in_scrutinee(name, &scrutinee_ty)
                             .unwrap_or_else(|| self.variant_tag(name));
                         cases.push((tag as u64, arm_blocks[i]));
-                    } else if !default_claimed {
+                    } else {
                         // A plain binding pattern is a catch-all too.
-                        default_block = arm_blocks[i];
-                        default_claimed = true;
+                        catch_all[i] = true;
+                        if !default_claimed {
+                            default_block = arm_blocks[i];
+                            default_claimed = true;
+                        }
                     }
                 }
                 Pattern::Constructor { name, .. } => {
@@ -520,7 +542,7 @@ impl<'a> MirLowerer<'a> {
             }
             let err_dispatch = self.builder.create_block();
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-                value: switch_val,
+                value: switch_val.clone(),
                 cases: vec![(0, ok_target.unwrap_or(default_block)), (1, err_dispatch)],
                 default: default_block,
             }));
@@ -573,8 +595,8 @@ impl<'a> MirLowerer<'a> {
             }));
         } else {
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-                value: switch_val,
-                cases,
+                value: switch_val.clone(),
+                cases: first_per_tag(cases.iter().copied()),
                 default: default_block,
             }));
         }
@@ -860,46 +882,53 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
+            self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
+
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
-                // A failed guard falls through to the next arm that would take
-                // the value whatever it is — the next catch-all below this one —
-                // not to the next arm's body. If that one is guarded too, it
-                // tests its own guard and falls through again, so a run of
-                // guarded catch-alls is tried in order.
+                // A failed guard hands the value to the arms below this one,
+                // in order: the first of them whose pattern takes it. One
+                // switch can't say that, so the failure dispatches again over
+                // what's left.
                 //
-                // The switch dispatches once. Handing the failure to
-                // `arm_blocks[i + 1]` runs that arm's body whether its pattern
-                // matches or not, which is invisible while the guarded arms sit
-                // at the end (every arm below them is a catch-all anyway) and
-                // wrong the moment one doesn't:
-                //
-                //   match n {
-                //       x if x < 0 => "neg"
-                //       0 => "zero"
-                //       _ => "big"
+                //   match s {
+                //       Circle(r) if r > 10 => "big circle"
+                //       Circle(r) => "circle"
+                //       Square(w) => "square"
                 //   }
                 //
-                // 5 took the default to the guarded arm, failed the guard, and
-                // fell into the `0` arm: "zero" (#875).
+                // Handing it to the next arm's body ran that arm whether its
+                // pattern matched or not (#875). Handing it to the next
+                // catch-all skipped `Circle(r)`, and with none below, native
+                // left the match with no result at all.
                 //
-                // With no catch-all below, the match isn't exhaustive and there
-                // is nothing to fall through to — `merge_block`, which also
-                // keeps a last guarded catch-all from branching at itself.
-                let guard_fail_block = ((i + 1)..arms.len())
-                    .find(|&j| {
-                        let unconditional = match &arms[j].pattern {
-                            Pattern::Wildcard => true,
-                            Pattern::Ident(n) => {
-                                self.resolve_pattern_tag(n).is_none()
-                                    && !(has_tag && (is_result_or_option || is_variant_name(n)))
-                            }
-                            _ => false,
-                        };
-                        unconditional
-                    })
+                // A `T or E` match switches twice (error variants inside the
+                // Err branch), which a single re-dispatch can't repeat; there
+                // the next catch-all still takes it.
+                let below = (i + 1)..arms.len();
+                let next_catch_all = below
+                    .clone()
+                    .find(|&j| catch_all[j])
                     .map(|j| arm_blocks[j])
-                    .unwrap_or(merge_block);
+                    .unwrap_or(no_match);
+                let guard_fail_block = if two_level {
+                    next_catch_all
+                } else {
+                    let below_blocks: Vec<BlockId> = below.map(|j| arm_blocks[j]).collect();
+                    let rest = first_per_tag(
+                        cases.iter().copied().filter(|(_, b)| below_blocks.contains(b)),
+                    );
+                    let here = self.builder.current_block();
+                    let redispatch = self.builder.create_block();
+                    self.builder.switch_to_block(redispatch);
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                        value: switch_val.clone(),
+                        cases: rest,
+                        default: next_catch_all,
+                    }));
+                    self.builder.switch_to_block(here);
+                    redispatch
+                };
                 let guard_pass_block = self.builder.create_block();
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: guard_val,
@@ -946,68 +975,46 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::Pattern;
 
         let merge_block = self.builder.create_block();
-        let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let no_match = self.no_arm_matched_block();
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
 
-        let default_idx = arms.iter().position(|a| {
-            matches!(&a.pattern, Pattern::Wildcard)
-                || matches!(&a.pattern, Pattern::Ident(n) if !n.starts_with('"'))
-        });
-
-        let mut string_arms: Vec<(usize, Vec<String>)> = Vec::new();
+        // Arms are tried in order, each a test and then its guard; either
+        // failing moves on to the next arm. A guard used to be dropped here,
+        // so `x if x.len() > 3 => "long"` took every string.
         for (i, arm) in arms.iter().enumerate() {
-            match &arm.pattern {
-                Pattern::Literal(lit) => {
-                    if let ExprKind::String(s) = &lit.kind {
-                        string_arms.push((i, vec![s.clone()]));
-                    }
+            let next_arm = if i + 1 < arms.len() { self.builder.create_block() } else { no_match };
+            let catch_all = matches!(&arm.pattern, Pattern::Wildcard | Pattern::Ident(_));
+            if !catch_all {
+                let literals: Vec<String> = flatten_pattern_alternatives(&arm.pattern)
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Pattern::Literal(lit) => match &lit.kind {
+                            ExprKind::String(s) => Some(s.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                let body = self.builder.create_block();
+                for lit in literals {
+                    let eq_result = self.builder.alloc_temp(MirType::Bool);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(eq_result),
+                        func: FunctionRef::internal("string_eq".to_string()),
+                        args: vec![scrutinee_op.clone(), MirOperand::Constant(MirConst::String(lit))],
+                    }));
+                    let next_test = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(eq_result),
+                        then_block: body,
+                        else_block: next_test,
+                    }));
+                    self.builder.switch_to_block(next_test);
                 }
-                Pattern::Or(pats) => {
-                    let strs: Vec<String> = pats.iter().filter_map(|p| {
-                        if let Pattern::Literal(lit) = p {
-                            if let ExprKind::String(s) = &lit.kind {
-                                return Some(s.clone());
-                            }
-                        }
-                        None
-                    }).collect();
-                    if !strs.is_empty() {
-                        string_arms.push((i, strs));
-                    }
-                }
-                Pattern::Wildcard | Pattern::Ident(_) => {}
-                _ => {}
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: next_arm }));
+                self.builder.switch_to_block(body);
             }
-        }
-
-        let default_block = default_idx.map(|i| arm_blocks[i]).unwrap_or(merge_block);
-
-        for (arm_idx, literals) in &string_arms {
-            for (j, lit) in literals.iter().enumerate() {
-                let eq_result = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(eq_result),
-                    func: FunctionRef::internal("string_eq".to_string()),
-                    args: vec![
-                        scrutinee_op.clone(),
-                        MirOperand::Constant(MirConst::String(lit.clone())),
-                    ],
-                }));
-                let next_test = self.builder.create_block();
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: MirOperand::Local(eq_result),
-                    then_block: arm_blocks[*arm_idx],
-                    else_block: next_test,
-                }));
-                self.builder.switch_to_block(next_test);
-                let _ = j;
-            }
-        }
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: default_block }));
-
-        for (i, arm) in arms.iter().enumerate() {
-            self.builder.switch_to_block(arm_blocks[i]);
 
             if let Pattern::Ident(name) = &arm.pattern {
                 let bind_local = self.builder.alloc_local(name.clone(), MirType::String);
@@ -1016,6 +1023,17 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(scrutinee_op.clone()),
                 }));
                 self.locals.insert(name.clone(), (bind_local, MirType::String));
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let guard_pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: guard_val,
+                    then_block: guard_pass,
+                    else_block: next_arm,
+                }));
+                self.builder.switch_to_block(guard_pass);
             }
 
             let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
@@ -1028,6 +1046,9 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(body_val),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+            }
+            if next_arm != no_match {
+                self.builder.switch_to_block(next_arm);
             }
         }
 
@@ -1087,7 +1108,7 @@ impl<'a> MirLowerer<'a> {
         let mut result_ty = MirType::Void;
 
         let arm_test_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-        let fallthrough = merge_block;
+        let fallthrough = self.no_arm_matched_block();
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: arm_test_blocks[0] }));
 
@@ -1259,6 +1280,22 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
+            // A literal scrutinee is read element by element, so each element
+            // is its own source.
+            match (&scrutinee.kind, &arm.pattern) {
+                (ExprKind::Tuple(elem_exprs), Pattern::Tuple(pats)) => {
+                    for ((pat, elem_expr), (_, elem_ty)) in
+                        pats.iter().zip(elem_exprs.iter()).zip(tuple_elems.iter())
+                    {
+                        self.retain_pattern_copies(pat, elem_expr, elem_ty);
+                    }
+                }
+                _ => {
+                    let whole = MirType::Tuple(tuple_elems.iter().map(|(_, t)| t.clone()).collect());
+                    self.retain_pattern_copies(&arm.pattern, scrutinee, &whole);
+                }
+            }
+
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
                 let guard_pass = self.builder.create_block();
@@ -1308,6 +1345,7 @@ impl<'a> MirLowerer<'a> {
     /// the same, the condition is per-field instead of on the scrutinee (#307).
     pub(super) fn lower_struct_match(
         &mut self,
+        scrutinee: &Expr,
         scrutinee_op: MirOperand,
         scrutinee_ty: MirType,
         arms: &[rask_ast::expr::MatchArm],
@@ -1320,11 +1358,12 @@ impl<'a> MirLowerer<'a> {
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
 
+        let no_match = self.no_arm_matched_block();
         for (i, arm) in arms.iter().enumerate() {
             let next_arm = if i + 1 < arms.len() {
                 self.builder.create_block()
             } else {
-                merge_block
+                no_match
             };
 
             // Every field the pattern names is read once, whether it's tested or
@@ -1413,6 +1452,8 @@ impl<'a> MirLowerer<'a> {
                     .insert(name.clone(), (bind_local, scrutinee_ty.clone()));
             }
 
+            self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
+
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
                 let guard_pass = self.builder.create_block();
@@ -1439,7 +1480,7 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
 
-            if next_arm != merge_block {
+            if next_arm != no_match {
                 self.builder.switch_to_block(next_arm);
             }
         }
@@ -1487,11 +1528,12 @@ impl<'a> MirLowerer<'a> {
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
 
+        let no_match = self.no_arm_matched_block();
         for (i, arm) in arms.iter().enumerate() {
             let next_arm = if i + 1 < arms.len() {
                 self.builder.create_block()
             } else {
-                merge_block
+                no_match
             };
 
             // Catch-all patterns jump straight to the body.
@@ -1560,7 +1602,7 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
 
-            if next_arm != merge_block {
+            if next_arm != no_match {
                 self.builder.switch_to_block(next_arm);
             }
         }
@@ -1778,6 +1820,158 @@ impl<'a> MirLowerer<'a> {
             }
             None => None,
         }
+    }
+
+    /// Give each Copy value a pattern bound out of borrowed storage
+    /// references of its own. Called once the pattern's names are bound.
+    ///
+    /// `match v[0] { Slot.Full(l) => … }` copies `l` out of the slot, the same
+    /// as `let l = …` does, so it is retained the same way
+    /// (`retain_bound_copy`): otherwise `v[0] = Slot.Empty` in the arm freed
+    /// the strings `l` was reading.
+    pub(super) fn retain_pattern_copies(
+        &mut self,
+        pattern: &rask_ast::expr::Pattern,
+        scrutinee: &Expr,
+        scrutinee_ty: &MirType,
+    ) {
+        if !self.reads_borrowed_storage(scrutinee) {
+            return;
+        }
+        let Some(ty) = self.ctx.lookup_raw_type(scrutinee.id).cloned() else { return };
+        let mut bound = Vec::new();
+        self.pattern_binding_types(pattern, scrutinee_ty, &ty, &mut bound);
+        for (name, ty) in bound {
+            if let Some((local, _)) = self.locals.get(&name).cloned() {
+                self.retain_bound_copy(local, &ty);
+            }
+        }
+    }
+
+    /// The checker's type for each name `pattern` binds against a value of
+    /// type `ty` (`mir_ty` as lowered). A binding the walk can't place is
+    /// left out, which costs a retain and never adds one.
+    fn pattern_binding_types(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        mir_ty: &MirType,
+        ty: &rask_types::Type,
+        out: &mut Vec<(String, rask_types::Type)>,
+    ) {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Ident(name) => {
+                if self.resolve_pattern_tag(name).is_none() {
+                    out.push((name.clone(), ty.clone()));
+                }
+            }
+            Pattern::Constructor { name, fields } => {
+                let Some((_, payload)) = self.enum_variant_payload(ty, name) else { return };
+                for (pat, field_ty) in fields.iter().zip(payload.iter()) {
+                    let field_mir = self.ctx.type_to_mir(field_ty);
+                    self.pattern_binding_types(pat, &field_mir, field_ty, out);
+                }
+            }
+            Pattern::Struct { name, fields, .. } => {
+                let named: Vec<(String, rask_types::Type)> = match self.enum_variant_payload(ty, name) {
+                    Some((Some(names), payload)) => names.into_iter().zip(payload).collect(),
+                    Some((None, _)) => return,
+                    None => match self.struct_fields_of(ty) {
+                        Some(fields) => fields,
+                        None => return,
+                    },
+                };
+                for (field_name, pat) in fields {
+                    if let Some((_, field_ty)) = named.iter().find(|(n, _)| n == field_name) {
+                        let field_mir = self.ctx.type_to_mir(field_ty);
+                        self.pattern_binding_types(pat, &field_mir, field_ty, out);
+                    }
+                }
+            }
+            Pattern::Tuple(pats) => {
+                let rask_types::Type::Tuple(elems) = ty else { return };
+                let mir_elems = match mir_ty {
+                    MirType::Tuple(m) => m.clone(),
+                    _ => elems.iter().map(|e| self.ctx.type_to_mir(e)).collect(),
+                };
+                for ((pat, elem), elem_mir) in pats.iter().zip(elems.iter()).zip(mir_elems.iter()) {
+                    self.pattern_binding_types(pat, elem_mir, elem, out);
+                }
+            }
+            Pattern::TypePat { ty: written, binding: Some(name) } => {
+                let ty_name = super::type_pat_name(written);
+                // An error variant's or a union member's own payload is bound,
+                // not the side it sits in.
+                if self.err_variant_fields(mir_ty, &ty_name).is_some()
+                    || self.union_member_binding(mir_ty, &ty_name).is_some()
+                {
+                    return;
+                }
+                let rask_types::Type::Result { ok, err } = ty else { return };
+                let side = if self.pattern_is_err_side(&ty_name, mir_ty) { err } else { ok };
+                // On a flat `T? or E`, `T as v` binds the `T` inside the
+                // success side's option. Only a written `T?` takes the option.
+                let side = match side.as_option() {
+                    Some(inner) if !matches!(written, TypeExpr::Optional(_)) => inner,
+                    _ => side.as_ref(),
+                };
+                out.push((name.clone(), side.clone()));
+            }
+            Pattern::Or(alts) => {
+                if let Some(first) = alts.first() {
+                    self.pattern_binding_types(first, mir_ty, ty, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The payload types of variant `variant` of the enum `ty`, instantiated,
+    /// with the field names when the variant is struct-shaped.
+    fn enum_variant_payload(
+        &self,
+        ty: &rask_types::Type,
+        variant: &str,
+    ) -> Option<(Option<Vec<String>>, Vec<rask_types::Type>)> {
+        let (id, args) = match ty {
+            rask_types::Type::Named(id) => (*id, &[][..]),
+            rask_types::Type::Generic { base, args } => (*base, args.as_slice()),
+            _ => return None,
+        };
+        let table = self.ctx.type_defs;
+        let rask_types::TypeDef::Enum { type_params, variants, .. } = table.get(id)? else {
+            return None;
+        };
+        let bare = variant.rsplit('.').next().unwrap_or(variant);
+        let (_, data) = variants.iter().find(|(v, _)| v == bare)?;
+        let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+        let payload = data
+            .iter()
+            .map(|t| rask_types::TypeTable::substitute_generic_field(t, &subst))
+            .collect();
+        let names = table
+            .struct_variant_fields(&format!("{}.{}", table.type_name(id), bare))
+            .map(|fields| fields.into_iter().map(|(n, _)| n).collect());
+        Some((names, payload))
+    }
+
+    /// A struct type's fields, instantiated.
+    pub(super) fn struct_fields_of(&self, ty: &rask_types::Type) -> Option<Vec<(String, rask_types::Type)>> {
+        let (id, args) = match ty {
+            rask_types::Type::Named(id) => (*id, &[][..]),
+            rask_types::Type::Generic { base, args } => (*base, args.as_slice()),
+            _ => return None,
+        };
+        let rask_types::TypeDef::Struct { type_params, fields, .. } = self.ctx.type_defs.get(id)? else {
+            return None;
+        };
+        let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+        Some(
+            fields
+                .iter()
+                .map(|(n, t)| (n.clone(), rask_types::TypeTable::substitute_generic_field(t, &subst)))
+                .collect(),
+        )
     }
 }
 

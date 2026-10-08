@@ -25,6 +25,9 @@ import time
 // under an alias-only import is still a field access followed by a block.
 import http
 import http as h
+import bits
+import bits as bt
+import bits.BinaryParseError
 
 // A program enum whose name is the *middle* segment of nothing, to keep the
 // two-segment path honest: `Local.Second` is a variant, not a type reached
@@ -138,6 +141,23 @@ test "a dotted name in a condition still starts the body" {
         hit = 1
     }
     assert hit == 1
+}
+
+// A variant with named fields, reached through its module (#1461). The parser
+// only took `{` as a literal after a one- or two-segment path, so the third
+// segment ended the expression and the brace was a parse error. Once it
+// parsed, both backends split the name at its first dot and looked for an enum
+// called `bits`: the interpreter built a struct nobody declares, native a
+// pointer with no layout.
+test "a struct-like variant through its module" {
+    let e = bits.BinaryParseError.UnexpectedEnd { expected: 4, actual: 2 }
+    assert e.message() == "unexpected end: expected 4 bytes, got 2"
+    let f = bt.BinaryParseError.InvalidData { message: "bad tag" }
+    assert f.message() == "invalid data: bad tag"
+    match e {
+        BinaryParseError.UnexpectedEnd { expected, actual } => assert expected - actual == 2
+        _ => assert false
+    }
 }
 
 // A static method through a module still flattens the way it always did.

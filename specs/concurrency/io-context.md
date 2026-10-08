@@ -78,13 +78,13 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 
 | Module | Functions | Context needed? |
 |--------|-----------|----------------|
-| `fs` | `File.open`, `File.read`, `File.write`, `File.close` | Yes — file I/O blocks |
-| `fs` | `fs.read_text`, `fs.write_text`, `fs.exists` | Yes — convenience functions do I/O |
-| `net` | `TcpListener.accept`, `TcpConnection.read/write` | Yes — network I/O blocks |
-| `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes — stream I/O blocks |
+| `fs` | `fs.open`, `File.read_text/read_bytes`, `File.write/write_text/write_bytes/write_line`, `File.close` | Yes — file I/O blocks |
+| `fs` | `fs.read_text`, `fs.write_text`, `fs.exists`, and the rest of `fs` | Yes — convenience functions do I/O |
+| `net` | `net.tcp_listen`, `net.tcp_connect`, `TcpListener.accept`, `TcpConnection.read_text/read_bytes/write_text/write_bytes` | Yes — network I/O blocks |
+| `io` | `Stdin.read/read_text/read_line`, `Stdout.write`, `Stderr.write` | Yes — stream I/O blocks |
 | `io` | `Buffer.read`, `Buffer.write` | No — in-memory, never blocks |
-| `async` | `sleep`, `timeout` | Yes — needs timer/scheduler |
-| `async` | `spawn`, `Channel.send/receive` | Yes — needs scheduler/reactor |
+| `time` | `time.sleep` | Yes — needs timer/scheduler |
+| `async` | `spawn`, `Sender.send`, `Receiver.receive`, `Handle.join` | Yes — needs scheduler/reactor |
 | collections | `Vec`, `Map`, `Rack` | No — pure memory operations |
 | `json` | `json.encode`, `json.decode` | No — pure computation |
 | `fmt` | `format` | No — pure computation |
@@ -171,7 +171,7 @@ enum IoError {
 ```
 ERROR [conc.async/CC1]: spawn requires a Multitasking scope
    |
-5  |  spawn(|| { File.open("x.txt") })
+5  |  spawn { File.open("x.txt") }
    |  ^^^^^ no `using Multitasking { ... }` block encloses this call
    |
 FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main.
@@ -203,27 +203,27 @@ FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main.
 
 ### I/O in ThreadPool context
 
-`ThreadPool.spawn` closures don't get async I/O even in Phase B. Thread pool workers are OS threads that run jobs to completion — no parking, no reactor. I/O in a thread pool closure blocks the pool thread.
+`ThreadPool.spawn` blocks don't get async I/O even in Phase B. Thread pool workers are OS threads that run jobs to completion — no parking, no reactor. I/O in a thread pool job blocks the pool thread.
 
-This is by design: `ThreadPool` is for CPU-bound work. If you need I/O, use `spawn()` (green tasks) instead.
+This is by design: `ThreadPool` is for CPU-bound work. If you need I/O, use `spawn { }` (green tasks) instead.
 
 <!-- test: skip -->
 ```rask
 using Multitasking, ThreadPool {
     // Good: I/O in green task
-    spawn(|| {
+    spawn {
         let data = try File.read("big.csv")  // Parks task
-        let result = try ThreadPool.spawn(|| {
+        let result = try ThreadPool.spawn {
             parse_csv(data)  // CPU-bound, no I/O
-        }).join()
+        }.join()
         try File.write("output.json", result)   // Parks task
-    }).detach()
+    }.detach()
 
     // Bad: I/O in thread pool (blocks pool thread)
-    ThreadPool.spawn(|| {
+    ThreadPool.spawn {
         let data = try File.read("big.csv")  // Blocks pool thread!
         parse_csv(data)
-    }).detach()
+    }.detach()
 }
 ```
 

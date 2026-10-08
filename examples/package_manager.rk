@@ -481,21 +481,31 @@ func json_str_field(m: Map<string, JsonValue>, key: string) -> string? {
     return none
 }
 
-// Pull an array field out of a JSON object map. none if missing or not an array.
-func json_arr_field(m: Map<string, JsonValue>, key: string) -> Vec<JsonValue>? {
-    if m.get(key)? as v {
-        return v.as_array()
+// One `{"name": …, "constraint": …}` dependency entry. none if a field is
+// missing or the constraint doesn't parse.
+func parse_dep(entry: JsonValue) -> Dependency? {
+    if entry is Object(d) {
+        let dn = json_str_field(d, "name") ?? ""
+        let dc = json_str_field(d, "constraint") ?? ""
+        if dn.is_empty() || dc.is_empty() { return none }
+        let constraint = Constraint.parse(dc) is Constraint as c else {
+            return none
+        }
+        return Dependency { name: dn, constraint }
     }
     return none
 }
 
 // Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
-// Takes the parsed JSON object value, avoiding type duplication.
+// Reads the parsed value in place, so it stays the caller's.
 func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
-    let m = obj.as_object() ?? {
-        return RegistryError.IoError("expected object in {source}")
+    if obj is Object(m) {
+        return parse_meta_fields(m, source)
     }
+    return RegistryError.IoError("expected object in {source}")
+}
 
+func parse_meta_fields(m: Map<string, JsonValue>, source: string) -> PackageMeta or RegistryError {
     let name = json_str_field(m, "name") ?? {
         return RegistryError.IoError("missing 'name' in {source}")
     }
@@ -507,19 +517,15 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
         return RegistryError.IoError("bad version in {source}: {ver_str}")
     }
 
+    // The `deps` array. Entries that aren't a well-formed dependency are skipped.
     mut deps = Vec.new()
-    if json_arr_field(m, "deps")? as dep_arr {
-        for d_val in dep_arr {
-            let d_obj = d_val.as_object() ?? {
-                continue
+    if m.get("deps")? as deps_val {
+        if deps_val is Array(entries) {
+            for entry in entries {
+                if parse_dep(entry)? as dep {
+                    deps.push(dep)
+                }
             }
-            let dn = json_str_field(d_obj, "name") ?? ""
-            let dc = json_str_field(d_obj, "constraint") ?? ""
-            if dn.is_empty() || dc.is_empty() { continue }
-            let constraint = Constraint.parse(dc) is Constraint as c else {
-                continue
-            }
-            deps.push(Dependency { name: dn, constraint })
         }
     }
 
@@ -611,7 +617,7 @@ func resolve(manifest: Manifest, registry: any Registry, mutate graph: DepGraph)
     // Insert root package
     let root_meta = PackageMeta {
         name: manifest.name,
-        version: manifest.version,
+        version: manifest.version.clone(),
         checksum: "",
         deps: Vec.new(),
     }
@@ -657,9 +663,10 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
         return FetchError.Registry(e)
     }
 
-    // Filter to satisfying versions, pick newest via sort_by
+    // Filter to satisfying versions, pick newest via sort_by. `versions` still
+    // owns its metadata, so the candidates are clones of it.
     let want = constraint.clone()
-    mut candidates = versions.filter(|m| want.satisfies(m.version.clone())).to_vec()
+    mut candidates = versions.filter(|m| want.satisfies(m.version.clone())).map(|m| m.clone()).to_vec()
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
     let meta = candidates.first() ?? {
@@ -669,7 +676,7 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
     mut link = graph.packages.insert(ResolvedPkg {
         meta: PackageMeta {
             name: meta.name,
-            version: meta.version,
+            version: meta.version.clone(),
             checksum: meta.checksum,
             deps: Vec.new(),
         },
@@ -722,7 +729,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
 
         items.push(FetchItem {
             name,
-            version: pkg.meta.version,
+            version: pkg.meta.version.clone(),
             checksum: pkg.meta.checksum,
             cache_path,
         })
@@ -771,7 +778,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
         for item in items {
             let item_tx = tx.clone()
             let item_counter = counter.clone()
-            spawn(|| {
+            spawn {
                 if fetch_one(item, registry) is string as path {
                     with item_counter.write() as c {
                         c += 1
@@ -780,7 +787,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
                 } else as e {
                     let _ = item_tx.send(FetchResult.Failed(e))
                 }
-            }).detach()
+            }.detach()
         }
 
         // Collect results — first error is fatal

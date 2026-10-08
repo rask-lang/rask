@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `return` inside a `for` over a sequence answers for the enclosing
+// function, whatever shape that function's return type has.
+//
+// The loop body is the sequence's yield closure, and its `return` stores the
+// answer for the enclosing frame to hand back. Natively the error side was
+// stored bare, so `return Big.Found(x)` from a `void or Big` function reached
+// the caller as a success (#1490).
+
+import sequence.Sequence
+
+enum Big {
+    Found(i64)
+    Named(string)
+}
+
+extend Big {
+    func message(self) -> string {
+        return "big"
+    }
+}
+
+struct Small {
+    at: i64
+}
+
+extend Small {
+    func message(self) -> string {
+        return "small"
+    }
+}
+
+func first_big(items: Sequence<i64>) -> void or Big {
+    for x in items {
+        if x > 5 {
+            return Big.Found(x)
+        }
+    }
+}
+
+func named_big(items: Sequence<i64>) -> i64 or Big {
+    mut sum = 0
+    for x in items {
+        if x > 5 {
+            return Big.Named("over {x}".to_uppercase())
+        }
+        sum = sum + x
+    }
+    return sum
+}
+
+func either(items: Sequence<i64>) -> i64 or (Big | Small) {
+    for x in items {
+        if x < 0 {
+            return Small { at: x }
+        }
+        if x > 5 {
+            return Big.Found(x)
+        }
+    }
+    return 0
+}
+
+func first_even(items: Sequence<i64>) -> i64? {
+    for x in items {
+        if x % 2 == 0 {
+            return x
+        }
+    }
+    return none
+}
+
+func found(r: void or Big) -> i64 {
+    match r {
+        Big as b => {
+            match b {
+                Big.Found(n) => return n
+                Big.Named(_) => return -1
+            }
+        }
+        _ => return 0
+    }
+}
+
+test "the error side comes back as an error" {
+    let v: Vec<i64> = [1, 7, 3]
+    assert found(first_big(v.as_sequence())) == 7
+    let w: Vec<i64> = [1, 2]
+    assert found(first_big(w.as_sequence())) == 0
+}
+
+test "an error carrying a string" {
+    let v: Vec<i64> = [1, 9]
+    match named_big(v.as_sequence()) {
+        i64 as n => assert false
+        Big as b => {
+            match b {
+                Big.Named(s) => assert s == "OVER 9"
+                Big.Found(_) => assert false
+            }
+        }
+    }
+    let w: Vec<i64> = [1, 2, 3]
+    match named_big(w.as_sequence()) {
+        i64 as n => assert n == 6
+        Big as b => assert false
+    }
+}
+
+test "an error that is one member of a union" {
+    let v: Vec<i64> = [1, -4]
+    match either(v.as_sequence()) {
+        i64 as n => assert false
+        Small as s => assert s.at == -4
+        Big as b => assert false
+    }
+    let w: Vec<i64> = [8]
+    match either(w.as_sequence()) {
+        i64 as n => assert false
+        Small as s => assert false
+        Big as b => assert true
+    }
+}
+
+test "an optional answer" {
+    let v: Vec<i64> = [1, 3, 4, 6]
+    assert (first_even(v.as_sequence()) ?? -1) == 4
+    let w: Vec<i64> = [1, 3]
+    assert (first_even(w.as_sequence()) ?? -1) == -1
+}

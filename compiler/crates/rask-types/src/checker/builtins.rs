@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use super::type_defs::ModuleMethodSig;
 
-use crate::types::Type;
+use crate::types::{FnParam, Type};
 use rask_ast::ty::TypeExpr;
 
 /// Modules with type-checked signatures.
@@ -69,14 +69,19 @@ pub(super) fn stub_type(ty: &TypeExpr) -> Type {
     match ty {
         TypeExpr::Unit => Type::Unit,
         TypeExpr::NoneType => Type::None,
-        TypeExpr::Func { params, ret } => Type::Fn { params: all(params), ret: Box::new(stub_type(ret)) },
+        TypeExpr::Func { params, ret } => Type::Fn {
+            params: params.iter().map(|p| FnParam { mode: p.mode, ty: stub_type(&p.ty) }).collect(),
+            ret: Box::new(stub_type(ret)),
+        },
         TypeExpr::Result { ok, err } => Type::Result {
             ok: Box::new(stub_type(ok)),
             err: Box::new(stub_type(err)),
         },
         TypeExpr::Optional(inner) => Type::option(stub_type(inner)),
         TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(stub_type(inner))),
-        TypeExpr::Any(inner) => Type::InterfaceObject { interface_name: inner.to_string() },
+        // Which declaration it means is the stdlib's, settled where the
+        // signature is used (`TypeTable::as_stdlib_reads`): no table exists yet.
+        TypeExpr::Any(inner) => Type::InterfaceObject { interface_name: inner.to_string(), decl: None },
         TypeExpr::Tuple(elems) => Type::Tuple(all(elems)),
         TypeExpr::Named { path, args } if !args.is_empty() => {
             let name = path.join(".");

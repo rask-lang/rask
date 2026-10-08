@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Derived `eq`, `hash` and `compare` on a type that names itself, or whose
+// field type is declared below it.
+//
+// Both got no derived methods: the checker asked one type at a time, in
+// declaration order, so `Inner` had no `eq` yet when `Outer` was asked, and
+// `Tree` had none when its own `Vec<Tree>` payload was. `==` was a type error
+// (#1433).
+
+enum Tree {
+    Leaf(i64)
+    Node(Vec<Tree>)
+}
+
+struct Outer {
+    inner: Inner
+    tag: string
+}
+
+struct Inner {
+    n: i64
+}
+
+enum Expr {
+    Num(i64)
+    Neg(Wrapped)
+}
+
+struct Wrapped {
+    items: Vec<Expr>
+}
+
+struct Later {
+    key: Key
+}
+
+struct Key {
+    rank: i64
+    name: string
+}
+
+test "recursive enum compares by value" {
+    let a = Tree.Node([Tree.Leaf(1), Tree.Node([Tree.Leaf(2)])])
+    let b = Tree.Node([Tree.Leaf(1), Tree.Node([Tree.Leaf(2)])])
+    let c = Tree.Node([Tree.Leaf(1), Tree.Node([Tree.Leaf(3)])])
+    assert a == b
+    assert a != c
+    assert Tree.Leaf(1) != Tree.Node([])
+}
+
+test "field type declared below" {
+    let o = Outer { inner: Inner { n: 1 }, tag: "x" }
+    let p = Outer { inner: Inner { n: 1 }, tag: "x" }
+    let q = Outer { inner: Inner { n: 2 }, tag: "x" }
+    assert o == p
+    assert o != q
+}
+
+test "cycle through a struct declared below" {
+    let a = Expr.Neg(Wrapped { items: [Expr.Num(4)] })
+    let b = Expr.Neg(Wrapped { items: [Expr.Num(4)] })
+    let c = Expr.Neg(Wrapped { items: [Expr.Num(5)] })
+    assert a == b
+    assert a != c
+}
+
+test "hash of a recursive enum is a map key" {
+    mut m: Map<Tree, i64> = Map.new()
+    m.insert(Tree.Node([Tree.Leaf(1)]), 10)
+    m.insert(Tree.Leaf(7), 20)
+    assert m.get(Tree.Node([Tree.Leaf(1)])) == 10
+    assert m.get(Tree.Leaf(7)) == 20
+    assert m.get(Tree.Leaf(8)) is none
+}
+
+test "compare and hash through a field declared below" {
+    let a = Later { key: Key { rank: 1, name: "b" } }
+    let b = Later { key: Key { rank: 2, name: "a" } }
+    assert a < b
+    assert b > a
+    mut m: Map<Later, string> = Map.new()
+    m.insert(a, "first")
+    assert m.get(Later { key: Key { rank: 1, name: "b" } }) == "first"
+}

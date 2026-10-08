@@ -3,7 +3,7 @@
 // `ensure t.detach()` stands down once `t.join()` has run, for a `Thread`
 // handle the same as a task handle.
 //
-//     let t = Thread.spawn(|| { return 5 })
+//     let t = Thread.spawn { return 5 }
 //     ensure t.detach()
 //     let z = t.join() catch e => 0
 //
@@ -18,7 +18,7 @@
 import thread.Thread
 
 func joined_once() -> i64 {
-    let t = Thread.spawn(|| { return 5 })
+    let t = Thread.spawn { return 5 }
     ensure t.detach()
     let z = t.join() catch e => 0
     return z

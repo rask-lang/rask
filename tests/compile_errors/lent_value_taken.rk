@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a value a container lent, handed to a `take self` method or a `take` parameter
+//
+// Spec: mem.borrowing (S3), mem.parameters (PM1)
+//
+// `obj.get(k)` reads the value where the map keeps it. `as_array` takes its
+// receiver and hands the vector inside to the caller, so the map and the
+// caller would both own it (#1429). `get_clone` or `remove` are the ways out.
+//
+// One marker per rejection, on the line the compiler points at.
+
+import json
+import json.JsonValue
+
+func unwrapped(obj: Map<string, JsonValue>) -> u64 {
+    // ERROR: `obj.get(…)` lends what `obj` still holds, and `as_array` takes it [E0906]
+    let a = obj.get("k")!.as_array() ?? Vec.new()
+    return a.len()
+}
+
+func defaulted(obj: Map<string, JsonValue>) -> u64 {
+    // ERROR: `obj.get(…)` lends what `obj` still holds, and `as_array` takes it [E0906]
+    let a = (obj.get("k") ?? JsonValue.Null).as_array() ?? Vec.new()
+    return a.len()
+}
+
+func indexed(items: Vec<JsonValue>) -> u64 {
+    // ERROR: `items[…]` lends what `items` still holds, and `as_object` takes it [E0906]
+    let m = items[0].as_object() ?? Map.new()
+    return m.len()
+}
+
+func eat(take v: JsonValue) -> bool {
+    return v.is_null()
+}
+
+// --- an argument for a `take` parameter is the same hand-over ---
+func as_argument(obj: Map<string, JsonValue>) -> bool {
+    // ERROR: `obj.get(…)` lends what `obj` still holds, and `eat` takes it [E0906]
+    return eat(obj.get("k")!)
+}
+
+func main() {}

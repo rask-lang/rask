@@ -2,7 +2,6 @@
 // `workers: 1` means one body in flight at a time, under sim as anywhere.
 import sync.Atomic
 import sync.SeqCst
-import async.spawn
 
 const IN_FLIGHT: Atomic<i64> = Atomic<i64>.new(0)
 const PEAK: Atomic<i64> = Atomic<i64>.new(0)
@@ -17,11 +16,11 @@ func body() {
 
 test "one worker, one body" {
     using Multitasking(workers: 1) {
-        let a = spawn(|| { body() })
+        let a = spawn { body() }
         ensure a.detach()
-        let b = spawn(|| { body() })
+        let b = spawn { body() }
         ensure b.detach()
-        let c = spawn(|| { body() })
+        let c = spawn { body() }
         ensure c.detach()
         a.join()!
         b.join()!

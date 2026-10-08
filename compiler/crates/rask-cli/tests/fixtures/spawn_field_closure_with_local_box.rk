@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A closure that captured a `Local` box, stored in a struct field and spawned
-// from there (#1356). A `Local` box takes no lock, so two tasks can't share one.
+// A closure that captured a `Local` box, stored in a struct field, read back
+// out and called in a task block (#1356). A `Local` box takes no lock, so two tasks can't share one.
 import sync.{Shared, Local}
 
 struct Job {
@@ -16,7 +16,8 @@ func main() {
         let count = Shared.local(5)
         let job = make_job(count)
         println("before")
-        let h = spawn(job.run)
+        let run = job.run
+        let h = spawn { run() }
         println("{h.join()!}")
     }
 }

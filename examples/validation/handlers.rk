@@ -200,7 +200,7 @@ func build_filter(req: Request) -> ListFilter or ValidationError {
     return f
 }
 
-func build_patch(dto: UpdateTaskRequest) -> TaskPatch or ValidationError {
+func build_patch(take dto: UpdateTaskRequest) -> TaskPatch or ValidationError {
     mut p = TaskPatch {}
     if dto.status? as s { p.status = try Status.from_label(s) }
     if dto.priority? as pr { p.priority = try Priority.from_label(pr) }

@@ -335,7 +335,7 @@ const RE = comptime Regex.parse("[a-z]+@[a-z]+")   // bad pattern = compile erro
 const Q  = comptime sql.check(@embed_file("schema.sql"), "SELECT id FROM users WHERE ...")
 ```
 
-Parse/validate in an ordinary function, call it under `comptime`, freeze the result. A panic
+Parse/validate in an ordinary function, call it under `comptime`, embed the result. A panic
 becomes a compile error pointing at the literal (CT46). The only candidate addition is a
 lint, not a feature: "argument is a literal and the callee is comptime-evaluable — consider
 `comptime`" (Information Without Enforcement).

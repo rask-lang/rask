@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+import libpkg.Num
+import libpkg.digits
+
+func main() {
+    // Labels in declaration order, through the namespace and through an import.
+    println("{libpkg.digits(a: 1, b: 2)}")
+    println("{digits(1, b: 2)}")
+    let x = Num { n: 3 }
+    println("{x.pair(a: 1, b: 2)}")
+    return
+}

@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A fused `.to_map()` built its map with a bare `Map_new(ksize, vsize)`: no
+// description of what keys and values own, and not the string-keyed
+// constructor. So a string key was hashed by its header word instead of its
+// text, and `m.get(k)` with an equal string built elsewhere found nothing —
+// native answered `1 -1` where the interpreter answered `3 20` — and the map
+// freed none of its strings or vectors (#1416).
+
+func heap_key(x: i64) -> string {
+    return "key {x} long enough to live on the heap"
+}
+
+func mk(x: i64) -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    v.push(x)
+    return v
+}
+
+test "string keys hash by their text" {
+    let plain: Vec<i64> = [1, 2, 3]
+    let m = plain.map(|x| (heap_key(x), x * 10)).to_map()
+    let k = "key 2 long enough to live on the heap"
+    assert m.len() == 3
+    assert (m.get(k) ?? -1) == 20
+}
+
+test "a later key overwrites an earlier one" {
+    let plain: Vec<i64> = [1, 2, 1]
+    let m = plain.enumerate().map(|p| (heap_key(p.1), "{heap_key(p.1)} at {p.0}")).to_map()
+    assert m.len() == 2
+    assert m.get(heap_key(1))! == "{heap_key(1)} at 2"
+}
+
+test "vector values are the map's to free" {
+    let plain: Vec<i64> = [1, 2, 3]
+    let m = plain.map(|x| (x, mk(x * 100))).to_map()
+    assert m.len() == 3
+    assert m.get(2)!.len() == 1
+}
+
+test "string values and string keys from a lent chain of pairs" {
+    let pairs: Vec<(string, string)> = [(heap_key(1), heap_key(10)), (heap_key(2), heap_key(20))]
+    let m = pairs.filter(|p| p.0.len() > 0).to_map()
+    assert m.len() == 2
+    assert m.get(heap_key(2))! == heap_key(20)
+}

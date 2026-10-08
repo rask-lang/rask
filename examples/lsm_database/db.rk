@@ -37,7 +37,7 @@ struct Db {
 }
 
 extend Db {
-    func open(config: DbConfig) -> Db or DbError {
+    func open(take config: DbConfig) -> Db or DbError {
         fs.create_dir_all(config.dir) catch e => {
             return DbError.Io("cannot create directory: {config.dir}: {e.message()}")
         }
@@ -47,14 +47,16 @@ extend Db {
         }
         ensure wal.close()
 
-        // Recover memtable from WAL
+        // Recover memtable from WAL. Sequence numbers continue from the
+        // highest one in the WAL or on disk: a flush truncates the WAL, and
+        // a write numbered below what an SSTable holds would lose to it.
         mut memtable = Memtable.new()
         mut max_seq: i64 = 0
-        let recovered = recover_wal(config.wal_path) catch e => {
+        mut recovered = recover_wal(config.wal_path) catch e => {
             return DbError.Wal(e)
         }
 
-        for kv in recovered {
+        for kv in recovered.take_all() {
             if kv.seq > max_seq { max_seq = kv.seq }
             memtable.put(kv)
         }
@@ -66,9 +68,10 @@ extend Db {
         }
         mut next_sst_id = 0
 
-        let discovered = discover_sstables(config.dir)
-        for meta in discovered {
+        mut discovered = discover_sstables(config.dir)
+        for meta in discovered.take_all() {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
+            if meta.max_seq > max_seq { max_seq = meta.max_seq }
             if meta.level < MAX_LEVELS {
                 with levels[meta.level.wrap<usize>()] as level_ssts {
                     level_ssts.push(meta)
@@ -116,31 +119,33 @@ extend Db {
             return kv.value
         }
 
-        // Search levels from newest to oldest
-        mut level_idx: usize = 0
-        while level_idx < self.levels.len() {
-            let level = self.levels[level_idx].clone()
-            mut sst_idx = level.len()
-            while sst_idx > 0 {
-                sst_idx -= 1
-                let meta = level[sst_idx].clone()
-
+        // A merged file gets a fresh id, so neither level nor file order says
+        // which copy of a key is newest. The sequence number does, as in scan.
+        mut newest: KeyValue? = none
+        mut newest_seq: i64 = -1
+        for level in self.levels.clone() {
+            for meta in level {
                 if key < meta.min_key || key > meta.max_key { continue }
 
-                let result = self.lookup.lookup(meta, key, mutate self.cache) catch e => {
+                let result = self.lookup.lookup(meta.clone(), key, mutate self.cache) catch e => {
                     return DbError.Sst(e)
                 }
 
                 if result? as found {
-                    if found.deleted {
-                        return DbError.KeyNotFound(key)
+                    if found.seq > newest_seq {
+                        newest_seq = found.seq
+                        newest = found
                     }
-                    return found.value
                 }
             }
-            level_idx += 1
         }
 
+        if newest? as kv {
+            if kv.deleted {
+                return DbError.KeyNotFound(key)
+            }
+            return kv.value
+        }
         return DbError.KeyNotFound(key)
     }
 
@@ -172,12 +177,10 @@ extend Db {
             for meta in level {
                 if meta.max_key < start || meta.min_key > end { continue }
 
-                let entries = read_all_sstable_entries(meta.path) catch e => {
+                mut entries = read_all_sstable_entries(meta.path) catch e => {
                     return DbError.Sst(e)
                 }
-
-                let in_range = entries.filter(|kv| kv.key >= start && kv.key <= end)
-                for kv in in_range {
+                for kv in entries.take_all().filter(|kv| kv.key >= start && kv.key <= end) {
                     all_entries.push(kv)
                 }
             }
@@ -194,7 +197,7 @@ extend Db {
 
         mut deduped = Vec.new()
         mut last_key = ""
-        for entry in all_entries {
+        for entry in all_entries.take_all() {
             if entry.key == last_key { continue }
             last_key = entry.key
             if !entry.deleted {
@@ -295,14 +298,7 @@ extend Db {
     }
 
     func close(take self) -> void or DbError {
-        if !self.memtable.is_empty() {
-            let id = self.next_sst_id
-            let entries = self.memtable.take_sorted()
-            match write_sstable(id, 0, self.config.dir, entries) {
-                SstMeta => {}
-                SstError => {}
-            }
-        }
+        try self.flush()
         self.wal.close() catch e => {
             return DbError.Wal(e)
         }

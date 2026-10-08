@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A borrowed parameter returned whole (E0872, #1452).
+//
+// `return b.items` on a borrowed `b` was already an error. `return b` got
+// through: a return never went through the check that stops a borrowed value
+// being given away, so the caller got its own `Bag` back under a second name
+// and a push through one showed up in the other, on both backends.
+
+struct Bag {
+    items: Vec<string>
+}
+
+// ERROR: E0872
+func back(b: Bag) -> Bag {
+    return b
+}
+
+// ERROR: E0872 — the value a branch produces is the value returned
+func pick(c: bool, b: Bag) -> Bag {
+    return if c { b } else { Bag { items: [] } }
+}
+
+func pick_arm(n: i64, b: Bag) -> Bag {
+    return match n {
+        // ERROR: E0872
+        0 => b,
+        _ => Bag { items: [] },
+    }
+}
+
+// ERROR: E0872 — `mutate` is still the caller's, and nothing can be put back
+// after the return
+func back_mutated(mutate b: Bag) -> Bag {
+    return b
+}
+
+// The payload of a borrowed optional is the same loan.
+func unwrap_it(o: Bag?) -> Bag {
+    if o? as inner {
+        // ERROR: E0872
+        return inner
+    }
+    return Bag { items: [] }
+}
+
+// Fine: given to us.
+func give_back(take b: Bag) -> Bag {
+    return b
+}
+
+// Fine: a copy is the caller's.
+func copy_of(b: Bag) -> Bag {
+    return b.clone()
+}
+
+// Fine: a Copy value is copied on the way out.
+func same(n: i64) -> i64 {
+    return n
+}
+
+func main() {
+    mut b = Bag { items: ["x"] }
+    println("{back(b).items.len()} {pick(true, b).items.len()} {pick_arm(0, b).items.len()}")
+    println("{back_mutated(mutate b).items.len()} {copy_of(b).items.len()} {same(1)}")
+    println("{give_back(b).items.len()}")
+}

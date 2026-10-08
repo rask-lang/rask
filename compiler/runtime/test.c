@@ -33,8 +33,15 @@ static __thread const char *rask_test_skip_reason = NULL;
 static __thread int rask_test_expects_fail = 0;
 
 void rask_test_skip(const char *reason) {
+    // Kept past the unwind, which may free a reason the test built.
+    static __thread char reason_copy[RASK_PANIC_MSG_MAX];
+    snprintf(reason_copy, sizeof(reason_copy), "%s", reason ? reason : "skipped");
     rask_test_skipped = 1;
-    rask_test_skip_reason = reason;
+    rask_test_skip_reason = reason_copy;
+    reason = reason_copy;
+    // The reason is the program's own text. A location left by an earlier
+    // call in this frame would otherwise prefix it with `file:line:` (#1519).
+    rask_set_panic_location(NULL, 0, 0);
     extern void rask_panic(const char *msg);
     rask_panic(reason);
 }

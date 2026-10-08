@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A bare type test in a `let … else` guard (#1455).
+//
+// `let p = x is Point else { return }` on a flat `Point? or MyErr` was typed
+// `Point` by nothing in particular: the guard's value was the success payload
+// whatever the pattern named, which is the `Point?` around the `Point`. The
+// interpreter failed at runtime with "cannot access field on enum". An
+// err-side test, `r is Oops else …`, typed the value as the success branch
+// and was rejected outright. A bare test now yields what its `as` form binds.
+
+struct Point {
+    x: i64
+    label: string
+}
+
+struct Oops {
+    code: i64
+    why: string
+}
+
+extend Oops {
+    public func message(self) -> string {
+        return "oops {self.code}: {self.why}"
+    }
+}
+
+enum MyErr {
+    Bad
+}
+
+extend MyErr {
+    public func message(self) -> string {
+        return "bad"
+    }
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func flat(which: i64) -> Point? or MyErr {
+    if which == 0 {
+        return Point { x: 1, label: heap("p") }
+    }
+    if which == 1 {
+        return none
+    }
+    return MyErr.Bad
+}
+
+func plain(fail: bool) -> Point or Oops {
+    if fail {
+        return Oops { code: 7, why: heap("no") }
+    }
+    return Point { x: 3, label: heap("q") }
+}
+
+func flat_label(which: i64) -> string {
+    let r = flat(which)
+    let p = r is Point else { return "missed" }
+    return p.label
+}
+
+func flat_label_as(which: i64) -> string {
+    let r = flat(which)
+    let p = r is Point as q else { return "missed" }
+    assert q.x == p.x
+    return p.label
+}
+
+func oops_code(fail: bool) -> i64 {
+    let r = plain(fail)
+    let e = r is Oops else { return -1 }
+    assert e.why == heap("no")
+    return e.code
+}
+
+func point_x(fail: bool) -> i64 {
+    let r = plain(fail)
+    let p = r is Point else { return -1 }
+    return p.x
+}
+
+test "a bare guard on a flat T? or E binds the T" {
+    assert flat_label(0) == heap("p")
+    assert flat_label(1) == "missed"
+    assert flat_label(2) == "missed"
+}
+
+test "the `as` form gives the same value" {
+    assert flat_label_as(0) == heap("p")
+    assert flat_label_as(1) == "missed"
+}
+
+test "an err-side bare guard binds the error" {
+    assert oops_code(true) == 7
+    assert oops_code(false) == -1
+}
+
+test "an ok-side bare guard on a plain T or E still binds the T" {
+    assert point_x(false) == 3
+    assert point_x(true) == -1
+}

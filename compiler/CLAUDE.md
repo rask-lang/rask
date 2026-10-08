@@ -41,7 +41,7 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 
 ### rask-desugar — Pre-typecheck transforms
 - `src/lib.rs` — operator desugaring (`a + b` → `a.add(b)`)
-- `src/defaults.rs` — default argument filling, named→positional argument resolution
+- `src/defaults.rs` — default argument filling; named arguments keep their labels for the checker
 
 ### rask-resolve — Name resolution + package management
 - `src/resolver.rs` — main resolution pass
@@ -59,6 +59,7 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/checker/generics.rs` — generic instantiation and bounds checking
 - `src/checker/resolve.rs` — type name resolution (interfaces, methods)
 - `src/checker/borrow.rs` — borrow scope tracking during type check
+- `src/checker/arg_labels.rs` — named-argument labels checked against the resolved callee
 - `src/checker/errors.rs` — TypeError definitions
 - `src/checker/type_defs.rs` — TypeDef, MethodSig, TypedProgram
 - `src/checker/builtins.rs` — built-in type registrations
@@ -128,7 +129,8 @@ the four divergences fixed in #687/#688/#677/#698 lived exactly there.
 - `src/registry.rs` — type registry for stdlib lookups
 - `src/mir_metadata.rs` — MIR-level metadata for stdlib functions (used by codegen)
 - New stdlib function: the declaration goes in `stdlib/*.rk`, and it must say
-  where its body lives — a Rask body, `comptime func`, `@native("symbol")`, or
+  where its body lives — a Rask body, `comptime func`, `@native("symbol")`,
+  `@builtin` (the compiler lowers the call itself, e.g. `Shared.read`), or
   `@unimplemented`. A hollow declaration with no marker fails
   `every_stdlib_function_says_where_its_body_lives`.
 
