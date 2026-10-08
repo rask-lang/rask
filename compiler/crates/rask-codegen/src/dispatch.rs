@@ -446,8 +446,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // closure-callback path, which currently segfaults natively (#441) —
         // see docs/working/native-wide.md — so they run under the interpreter only.
         StdlibEntry::simple("Vec_wide", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Wide_to_vec", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Wide_sum", "rask_wide_sum", &[types::I64], Some(types::I64), false),
 
         // ── String operations ──────────────────────────────────
         StdlibEntry::simple("string_free", "rask_string_free", &[types::I64], None, false),
@@ -1969,11 +1967,6 @@ mod tests {
     ("Vec.sort_by_key",           Ok_("t_native_reach_vec")),
     ("Vec.sum",                   Ok_("t_native_reach_vec")),
     ("Vec.zip",                   Ok_("t_native_reach_vec")),
-    ("Wide.map",                  Gap("#1287")),
-    ("Wide.max",                  Gap("#1287")),
-    ("Wide.min",                  Gap("#1287")),
-    ("Wide.reduce",               Gap("#1287")),
-    ("Wide.zip_with",             Gap("#1287")),
     ("json.decode",               Ok_("t_json_decode_qualified_value")),
     ("json.encode_pretty",        Ok_("t_native_reach_map_math_json")),
     ("math.acos",                 Ok_("t_native_reach_map_math_json")),

@@ -342,7 +342,7 @@ pub const REGISTERED_MODULES: &[&str] = &[
 /// interpreter never closed a connection, native dropped response headers
 /// (#1378).
 pub const RASK_IMPLEMENTED_TYPES: &[&str] = &[
-    "Path", "Handles",
+    "Path", "Handles", "Wide",
     "Request", "Response", "Headers", "Method", "HttpServer", "Responder", "HttpClient",
 ];
 

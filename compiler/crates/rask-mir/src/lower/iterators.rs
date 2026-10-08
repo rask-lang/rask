@@ -345,7 +345,7 @@ impl<'a> MirLowerer<'a> {
             }
             "sum" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_sum(&chain)?;
+                    let result = self.lower_iter_sum(&chain, _full_expr)?;
                     return Ok(Some(result));
                 }
             }
@@ -1625,11 +1625,22 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_iter_sum(
         &mut self,
         chain: &super::IterChain<'_>,
+        call: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        let acc = self.builder.alloc_temp(MirType::I64);
+        // The sum's type is the checker's, not a guess: the accumulator used
+        // to be an `i64` starting at integer zero whatever the elements were,
+        // so `[0.5, 1.25, 2.0].sum()` added up the floats' bits and came out 3
+        // (#1287).
+        let Some(sum_ty) = self.lookup_expr_type(call) else {
+            return Err(LoweringError::InvalidConstruct(
+                "the checker recorded no type for this `sum()`".to_string(),
+            ));
+        };
+        let zero = if sum_ty.is_float() { MirConst::Float(0.0) } else { MirConst::Int(0) };
+        let acc = self.builder.alloc_temp(sum_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: acc,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+            rvalue: MirRValue::Use(MirOperand::Constant(zero)),
         }));
 
         let setup = self.setup_iter_chain_loop(chain)?;
@@ -1638,7 +1649,7 @@ impl<'a> MirLowerer<'a> {
             &setup,
         )?;
 
-        let sum = self.builder.alloc_temp(MirType::I64);
+        let sum = self.builder.alloc_temp(sum_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: sum,
             rvalue: MirRValue::BinaryOp {
@@ -1655,7 +1666,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(acc), MirType::I64))
+        Ok((MirOperand::Local(acc), sum_ty))
     }
 
     /// `.min()` / `.max()` — fused loop keeping the running extreme, `none` for

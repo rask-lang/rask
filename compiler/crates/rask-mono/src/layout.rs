@@ -313,7 +313,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // type alias target like `type Counts = Map`) arrive here as a bare
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
-                        "Vec" | "Wide" | "Map"
+                        "Vec" | "Map"
                         | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
@@ -547,7 +547,7 @@ pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&st
 pub(crate) fn generic_is_one_word(name: &str) -> bool {
     matches!(
         name,
-        "Link" | "Rack" | "Vec" | "Wide" | "Map" | "Random" | "Channel"
+        "Link" | "Rack" | "Vec" | "Map" | "Random" | "Channel"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
             | "Sender" | "Receiver" | "Handle"
     )
@@ -560,7 +560,7 @@ pub(crate) fn generic_is_one_word(name: &str) -> bool {
 fn is_opaque_container_name(name: &str) -> bool {
     matches!(
         name,
-        "Vec" | "Wide" | "Map" | "Set" | "Rack" | "Link"
+        "Vec" | "Map" | "Set" | "Rack" | "Link"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
             | "Sender" | "Receiver"
     )

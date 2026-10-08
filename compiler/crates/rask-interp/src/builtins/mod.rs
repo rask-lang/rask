@@ -10,7 +10,6 @@ mod enums;
 mod threading;
 mod shared;
 mod iterators;
-mod wide;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -221,7 +220,6 @@ impl Interpreter {
             Value::Char(c) => return self.call_char_method(*c, method, &args),
             Value::String(s) => return self.call_string_method(s, method, args),
             Value::Vec(v) => return self.call_vec_method(v, method, args),
-            Value::Wide(w) => return self.call_wide_method(w, method, args),
             Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Rack(s) => return self.call_rack_method(s, method, args),
             Value::Link { rack_id, node } => {
