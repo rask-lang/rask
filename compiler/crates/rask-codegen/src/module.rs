@@ -732,6 +732,17 @@ impl CodeGenerator {
             self.func_ids.insert("panic_overflow_neg_i128".to_string(), id);
         }
 
+        // rask_string_message(s: *RaskStr) -> *const char
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_string_message", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("string_message".to_string(), id);
+        }
+
         // set_panic_location(file: ptr, line: i32, col: i32) -> void
         // Codegen calls this before any runtime function that can panic.
         {

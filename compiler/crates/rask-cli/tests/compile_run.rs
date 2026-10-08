@@ -8917,3 +8917,65 @@ fn macho_debug_sections_use_the_macho_spelling() {
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&obj);
 }
+
+const BUILT_MESSAGE_SRC: &str = r#"
+func label(n: i64) -> string {
+    return "label number {n} of many"
+}
+
+func skip_at(depth: i64) -> i64 {
+    let w: Vec<i64> = [depth]
+    if depth > 2 {
+        skip("deep enough")
+    }
+    return skip_at(depth + 1) + w.len().to<i64>()!
+}
+
+test "deep skip" {
+    let k = skip_at(0)
+}
+
+test "built skip" {
+    let s = label(4)
+    skip("built {s}")
+}
+
+test "built assert" {
+    let s = label(7)
+    assert s.len() == 0, "msg {s}"
+}
+
+test "built check" {
+    let s = label(8)
+    check s.len() == 0, "chk {s}"
+}
+
+test "built panic" {
+    let s = label(3)
+    panic("deep {s}")
+}
+
+func main() {}
+"#;
+
+// A message the program builds at run time is a Rask string, not a C string.
+// Native handed it to the C side as `char *`, so a built panic, assert or
+// check message printed the string's header bytes, and a built skip reason
+// was dropped for "skipped" (#1517). A skip deep in a call also picked up a
+// `file:line:` left over from an earlier call (#1519).
+#[test]
+fn built_failure_messages_print_on_both_backends() {
+    for interp in [true, false] {
+        let mode = if interp { "interp" } else { "native" };
+        let out = run_rask_test_source(BUILT_MESSAGE_SRC, interp);
+        for want in [
+            "SKIP deep skip (deep enough)",
+            "SKIP built skip (built label number 4 of many)",
+            "msg label number 7 of many",
+            "chk label number 8 of many",
+            "deep label number 3 of many",
+        ] {
+            assert!(out.contains(want), "{mode}: missing {want:?} in:\n{out}");
+        }
+    }
+}

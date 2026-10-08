@@ -2649,12 +2649,8 @@ impl<'a> MirLowerer<'a> {
 
             // skip("reason") — set skip flag then unwind via rask_test_skip
             if func_name == "skip" {
-                let msg = if let Some(MirOperand::Constant(MirConst::String(s))) = arg_operands.first() {
-                    s.clone()
-                } else {
-                    "skipped".to_string()
-                };
-                let msg_op = MirOperand::Constant(MirConst::String(msg));
+                let msg_op = arg_operands.first().cloned()
+                    .unwrap_or_else(|| MirOperand::Constant(MirConst::String("skipped".to_string())));
                 let result_local = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),

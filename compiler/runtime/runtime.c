@@ -248,6 +248,15 @@ static void panic_str_text(char *buf, size_t cap, const RaskStr *msg) {
     snprintf(buf, cap, "%.*s", (int)(len > 0 ? len : 0), text ? text : "");
 }
 
+// A Rask string as a C string, for the failure paths whose C side takes one:
+// assert and check messages, skip reasons, panics. Per thread, and good until
+// the next call — each caller prints or copies it straight away.
+const char *rask_string_message(const RaskStr *s) {
+    static __thread char buf[RASK_PANIC_MSG_MAX];
+    panic_str_text(buf, sizeof(buf), s);
+    return buf;
+}
+
 void rask_panic_str(const RaskStr *msg) {
     char buf[512];
     panic_str_text(buf, sizeof(buf), msg);

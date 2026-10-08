@@ -4971,10 +4971,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
         } else if func.name == "assert_fail_cmp_str" || func.name == "check_fail_cmp_str" {
-            // Comparison assert/check failure with string values: args = [left, right, op_str]
+            // Comparison assert/check failure with string values: args = [left, right, op_str].
+            // The two sides go over as Rask strings; only the operator is a C one.
             if args.len() >= 3 {
-                let left_val = Self::lower_operand_as_cstr(builder, &args[0], ctx)?;
-                let right_val = Self::lower_operand_as_cstr(builder, &args[1], ctx)?;
+                let left_val = Self::lower_operand(builder, &args[0], ctx)?;
+                let right_val = Self::lower_operand(builder, &args[1], ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
                 if let Some(file_str) = ctx.source_file {
                     if let (Some(func_ref), Some(gv)) = (
@@ -5064,42 +5065,6 @@ impl<'a> FunctionBuilder<'a> {
                 if let Some(var) = ctx.var_map.get(dst_id) {
                     let zero = builder.ins().iconst(types::I64, 0);
                     builder.def_var(*var, zero);
-                }
-            }
-        } else if func.name.starts_with("assert_eq_fail") {
-            // assert_eq failure: args = [got, expected] (empty for aggregates).
-            // MIR already emitted the comparison and branched here.
-            let value_args: Vec<Value> = match func.name.as_str() {
-                "assert_eq_fail_str" => vec![
-                    Self::lower_operand_as_cstr(builder, &args[0], ctx)?,
-                    Self::lower_operand_as_cstr(builder, &args[1], ctx)?,
-                ],
-                "assert_eq_fail_f64" => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::F64), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::F64), ctx)?,
-                ],
-                // f32 stays f32: see assert_fail_cmp_f32.
-                "assert_eq_fail_f32" => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::F32), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::F32), ctx)?,
-                ],
-                "assert_eq_fail" => Vec::new(),
-                _ => vec![
-                    Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?,
-                    Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?,
-                ],
-            };
-            if let Some(file_str) = ctx.source_file {
-                if let (Some(func_ref), Some(gv)) = (
-                    ctx.func_refs.get(func.name.as_str()),
-                    ctx.string_globals.get(file_str),
-                ) {
-                    let file_ptr = builder.ins().global_value(types::I64, *gv);
-                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                    let mut call_args = value_args;
-                    call_args.extend_from_slice(&[file_ptr, line_val, col_val]);
-                    builder.ins().call(*func_ref, &call_args);
                 }
             }
         } else if func.name == "panic_str" {
@@ -8921,7 +8886,15 @@ impl<'a> FunctionBuilder<'a> {
                 return Ok(builder.ins().global_value(types::I64, *gv));
             }
         }
-        // Fallback: treat as i64 (pointer)
+        // A string built at run time is a Rask string, not a C one. Passed as
+        // is, the runtime printed its header's bytes (#1517).
+        if Self::operand_mir_type(op, ctx.locals) == Some(MirType::String) {
+            let s = Self::lower_operand(builder, op, ctx)?;
+            let f = ctx.func_refs.get("string_message")
+                .ok_or_else(|| CodegenError::FunctionNotFound("string_message".into()))?;
+            let call = builder.ins().call(*f, &[s]);
+            return Ok(builder.inst_results(call)[0]);
+        }
         Self::lower_operand_typed(builder, op, Some(types::I64), ctx)
     }
 

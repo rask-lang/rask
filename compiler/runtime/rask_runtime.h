@@ -368,6 +368,7 @@ void        rask_leak_check(void);
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
 const char *rask_string_ptr(const RaskStr *s);
+const char *rask_string_message(const RaskStr *s);
 int64_t     rask_string_is_empty(const RaskStr *s);
 int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_hash(const RaskStr *s);
