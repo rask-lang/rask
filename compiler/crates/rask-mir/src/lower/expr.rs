@@ -2424,27 +2424,14 @@ impl<'a> MirLowerer<'a> {
                     let want = self.float_pointee(operand).expect("just checked");
                     return Ok(self.emit_float_load(operand_op, want));
                 }
-                // `*p` on a raw pointer reads exactly the pointee's width.
-                // Plain MIR Deref always took a full word, so `*p` on a
-                // `*u8` handed back four bytes of whatever followed —
-                // "hello" read as 1869376613 instead of the byte 101 —
-                // while `p.read()` next to it was right, because only the
-                // method path passed the pointee size (#696). Both go
-                // through the same call now.
-                UnaryOp::Deref if self.integral_pointee_size(operand).is_some() => {
-                    let elem_size = self.integral_pointee_size(operand).unwrap();
-                    let result_local = self.builder.alloc_temp(MirType::I64);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(result_local),
-                        func: FunctionRef::internal(
-                            rask_stdlib::ptr_methods::mir_name("read"),
-                        ),
-                        args: vec![
-                            operand_op,
-                            MirOperand::Constant(crate::operand::MirConst::Int(elem_size)),
-                        ],
-                    }));
-                    return Ok((MirOperand::Local(result_local), MirType::I64));
+                // `*p` on a raw pointer reads exactly the pointee: its width
+                // and its sign. A full-word load read "hello" through a
+                // `*u8` as 1869376613 instead of 101 (#696), and a zeroed
+                // word made an `*i16` holding -2 read as 65534. `p.read()`
+                // goes through the same load.
+                UnaryOp::Deref if self.integral_pointee(operand).is_some() => {
+                    let want = self.integral_pointee(operand).expect("just checked");
+                    return Ok(self.emit_int_load(operand_op, want));
                 }
                 // `*b` on a `Heap<T>` reads the block. An aggregate lives
                 // at an address anyway, so the block's address *is* the
@@ -7638,20 +7625,39 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Like `pointee_size`, but only for pointees that come back as a plain
-    /// integer — `RawPtr_read` returns an i64, so a float or a struct behind
-    /// the pointer would arrive as its bit pattern.
-    fn integral_pointee_size(&self, expr: &Expr) -> Option<i64> {
+    /// The pointee's own type, for a pointer to an integer or a bool.
+    fn integral_pointee(&self, expr: &Expr) -> Option<MirType> {
+        use rask_types::Type as T;
         match self.ctx.lookup_raw_type(expr.id)? {
-            rask_types::Type::RawPtr(inner) if matches!(
-                inner.as_ref(),
-                rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool
-                    | rask_types::Type::U16 | rask_types::Type::I16
-                    | rask_types::Type::U32 | rask_types::Type::I32
-                    | rask_types::Type::U64 | rask_types::Type::I64
-            ) => self.pointee_size(expr),
+            T::RawPtr(inner) => Some(match inner.as_ref() {
+                T::Bool => MirType::Bool,
+                T::U8 => MirType::U8,
+                T::I8 => MirType::I8,
+                T::U16 => MirType::U16,
+                T::I16 => MirType::I16,
+                T::U32 => MirType::U32,
+                T::I32 => MirType::I32,
+                T::U64 => MirType::U64,
+                T::I64 => MirType::I64,
+                _ => return None,
+            }),
             _ => None,
         }
+    }
+
+    /// Load an integer through a raw pointer at its own width and signedness.
+    ///
+    /// This went through `rask_ptr_read`, which copies the bytes into a zeroed
+    /// word, and the result was labelled `i64` whatever the pointee. So every
+    /// signed narrow read came back zero-extended: `*p` on an `*i16` holding -2
+    /// was 65534, and so was anything computed from it.
+    fn emit_int_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+        let value = self.builder.alloc_temp(want.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Deref(ptr),
+        }));
+        (MirOperand::Local(value), want)
     }
 
     /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
@@ -7762,6 +7768,11 @@ impl<'a> MirLowerer<'a> {
             // `p.read()` / `p.write(v)` on a float go through the same typed
             // load and store `*p` does — the C helpers move an `int64_t`, which
             // is the wrong register class for a float (#1091).
+            if method == "read" && args.is_empty() {
+                if let Some(want) = self.integral_pointee(object) {
+                    return Ok(Some(self.emit_int_load(obj_op.clone(), want)));
+                }
+            }
             if let Some(want) = self.float_pointee(object) {
                 if method == "read" && args.is_empty() {
                     return Ok(Some(self.emit_float_load(obj_op.clone(), want)));

@@ -1432,6 +1432,25 @@ impl Interpreter {
                     }
                 }
 
+                // `p.cast<U>()` — natively the next read through it takes
+                // `U`'s width. The target is the checker's type for the call,
+                // which covers `let q: *u8 = p.cast()` as well (#1012).
+                if method == "cast" && arg_vals.is_empty() {
+                    if let Value::RawPtr(p) = &receiver {
+                        let pointee = |id: rask_ast::NodeId| match self.node_types.get(&id) {
+                            Some(rask_types::Type::RawPtr(inner)) => {
+                                Some(crate::value::IntKind::from_type(inner))
+                                    .filter(|k| *k != crate::value::IntKind::Untyped)
+                            }
+                            _ => None,
+                        };
+                        return p
+                            .cast_to(pointee(object.id), pointee(expr.id))
+                            .map(Value::RawPtr)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                }
+
                 // `let a: u8 = "300".parse()` names its target through
                 // inference rather than a turbofish, and without the name here
                 // `parse` fell back to the 64-bit parse and kept 300 in a u8
