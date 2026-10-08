@@ -490,7 +490,7 @@ void        rask_check_fail_cmp_u128(RaskU128 left, RaskU128 right,
 void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper);
 void        rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper);
 void        rask_f64_to_precision(RaskStr *out, double val, int64_t precision);
-void        rask_f64_to_exp(RaskStr *out, double val);
+void        rask_f64_to_exp(RaskStr *out, double val, int64_t precision);
 void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
 void        rask_panic_forced_error(const RaskStr *msg);

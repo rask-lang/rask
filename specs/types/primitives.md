@@ -295,6 +295,8 @@ For full case mapping (e.g., 'ß' → "SS"), use string methods.
 | **F2: NaN equality** | `NaN == NaN` → `false` (IEEE semantics) |
 | **F3: NaN propagation** | `NaN` propagates through arithmetic |
 | **F4: NaN checking** | Use `.is_nan()` to check, `.total_cmp()` for sorting |
+| **F5: Text form** | `{}` and `to_string()` print the shortest decimal that reads back as the same value, always positional: `0.1 + 0.2` is `0.30000000000000004`, `1e21` is `1000000000000000000000`, `1e-7` is `0.0000001`. A whole number has no fraction: `1.0` is `1`. `-0.0` is `-0`; the specials are `inf`, `-inf` and `NaN`. An `f32` rounds at its own width, so an `f32` holding 0.1 prints `0.1`, not the double's `0.10000000149011612` |
+| **F6: Scientific form** | `{:e}` is the same shortest digits as a mantissa with a bare integer exponent: `1.5e0`, `1.23456789e5`, `-1.2e-4`, `0e0`. A precision fixes the mantissa's decimals instead: `{:.2e}` of 1.5 is `1.50e0`. An integer under `{:e}` converts first, so `1500` is `1.5e3` (`std.fmt/S3`) |
 
 **Methods:** `.is_nan()`, `.is_finite()`, `.abs()`, `.ceil()`, `.floor()`, `.round()`, `.sqrt()`, `.total_cmp()`
 

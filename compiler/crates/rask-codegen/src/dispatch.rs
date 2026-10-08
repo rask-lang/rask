@@ -795,7 +795,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "f64_to_exp", c_name: "rask_f64_to_exp",
-            params: &[types::I64, types::F64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::F64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {

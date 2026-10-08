@@ -1371,9 +1371,31 @@ void rask_f64_to_precision(RaskStr *out, double val, int64_t precision) {
     rask_string_from(out, buf);
 }
 
-void rask_f64_to_exp(RaskStr *out, double val) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%e", val);
+// `{:e}`: the shortest mantissa that round-trips, then the exponent as a plain
+// integer — `1.5e0`, `1.23456789e5`, `-1.2e-4` — which is what the interpreter
+// prints. `%e` on its own gives `1.500000e+00`: six fixed decimals and a padded
+// signed exponent, neither of which the plain rendering has. A precision fixes
+// the mantissa's decimals instead of letting the round-trip pick: `{:.2e}` of
+// 1.5 is `1.50e0`. Negative means none was given.
+void rask_f64_to_exp(RaskStr *out, double val, int64_t precision) {
+    if (isnan(val)) { rask_string_from(out, "NaN"); return; }
+    if (isinf(val)) { rask_string_from(out, val < 0 ? "-inf" : "inf"); return; }
+    char buf[RASK_F64_BUF_SIZE];
+    if (precision < 0) {
+        for (int prec = 0; prec < 17; prec++) {
+            snprintf(buf, sizeof(buf), "%.*e", prec, val);
+            if (strtod(buf, NULL) == val) break;
+        }
+    } else {
+        if (precision > 300) precision = 300;
+        snprintf(buf, sizeof(buf), "%.*e", (int)precision, val);
+    }
+    // `e+05` → `e5`, `e-04` → `e-4`.
+    char *e = strchr(buf, 'e');
+    if (e) {
+        int exp10 = atoi(e + 1);
+        snprintf(e, sizeof(buf) - (size_t)(e - buf), "e%d", exp10);
+    }
     rask_string_from(out, buf);
 }
 

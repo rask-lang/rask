@@ -10082,7 +10082,22 @@ impl<'a> MirLowerer<'a> {
                 let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
                 call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
             }
-            SpecType::Exp if is_float => call(self, "f64_to_exp", vec![obj_op.clone()]),
+            // An integer prints in scientific form too — `{n:e}` of 1500 is
+            // `1.5e3` — so it goes through the float renderer as a float.
+            SpecType::Exp if numeric => {
+                let prec = spec.precision.map(|p| p as i64).unwrap_or(-1);
+                let value = if is_int {
+                    let widened = self.builder.alloc_temp(MirType::F64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: widened,
+                        rvalue: MirRValue::Cast { value: obj_op.clone(), target_ty: MirType::F64 },
+                    }));
+                    MirOperand::Local(widened)
+                } else {
+                    obj_op.clone()
+                };
+                call(self, "f64_to_exp", vec![value, int_const(prec)])
+            }
             // std.fmt/G2: every type derives Debug. A struct or enum has no
             // `to_string` unless it opted into Displayable, and falling through
             // to one it doesn't have is what made the spec's own example fail —
