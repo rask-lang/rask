@@ -1094,9 +1094,15 @@ fn param_escapes_from(
     heap_captures_only: bool,
     known: &HashMap<String, Vec<bool>>,
 ) -> bool {
+    // A task block takes a reference of its own to a closure parameter it
+    // captures (`retain_borrowed_closures_handed_on`), so for who frees what
+    // the caller's reference stays the caller's. It still has to be on the
+    // heap, which is the other question this map answers.
+    let tasks = if heap_captures_only { task_closures(func) } else { HashSet::new() };
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
+                MirStmtKind::ClosureCreate { dst, .. } if tasks.contains(dst) => {}
                 // A parameter captured by a closure leaves with it. This was
                 // missing, and it is how a caller came to free a closure the
                 // callee had handed on: every adapter captures the sequence it
