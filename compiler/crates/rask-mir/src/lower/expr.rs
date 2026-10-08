@@ -10068,20 +10068,27 @@ impl<'a> MirLowerer<'a> {
         };
         let int_const = |n: i64| MirOperand::Constant(MirConst::Int(n));
 
+        // A radix spec shows the bit pattern at the value's own width, so a
+        // signed one says how wide it is: the call receives it sign-extended
+        // to a word. An unsigned value is zero-extended and needs no mask.
+        let radix = |this: &mut Self, base: i64, upper: bool| {
+            if is_unsigned {
+                call(this, "u64_to_base", vec![obj_op.clone(), int_const(base), int_const(upper as i64)])
+            } else {
+                let bits = obj_ty.size() as i64 * 8;
+                call(
+                    this,
+                    "i64_to_base",
+                    vec![obj_op.clone(), int_const(base), int_const(upper as i64), int_const(bits)],
+                )
+            }
+        };
+
         use rask_ast::fmt_spec::SpecType;
         let base: MirOperand = match spec.ty {
-            SpecType::Hex { upper } if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(16), int_const(upper as i64)])
-            }
-            SpecType::Binary if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(2), int_const(0)])
-            }
-            SpecType::Octal if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
-            }
+            SpecType::Hex { upper } if is_int => radix(self, 16, upper),
+            SpecType::Binary if is_int => radix(self, 2, false),
+            SpecType::Octal if is_int => radix(self, 8, false),
             // An integer prints in scientific form too — `{n:e}` of 1500 is
             // `1.5e3` — so it goes through the float renderer as a float.
             SpecType::Exp if numeric => {

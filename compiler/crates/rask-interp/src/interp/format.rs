@@ -125,8 +125,13 @@ impl Interpreter {
     /// `to_string()` gives — passed in so a user `Displayable` impl can be
     /// consulted by the caller that has the interpreter mutably.
     pub(crate) fn render_spec(&self, value: &Value, spec: FormatSpec, display: String) -> String {
+        // A radix spec shows the bit pattern at the value's own width: an
+        // `i8` of -1 is `ff`, not the 64-bit word it is carried in (std.fmt/S3).
         let as_int = |v: &Value| match v {
-            Value::Int(n, _) => Some(*n),
+            Value::Int(n, kind) => Some(match kind.bits() {
+                Some(bits) if bits < 64 => *n & ((1i64 << bits) - 1),
+                _ => *n,
+            }),
             Value::Char(c) => Some(*c as i64),
             Value::Bool(b) => Some(*b as i64),
             _ => None,

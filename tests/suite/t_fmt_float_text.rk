@@ -104,3 +104,22 @@ test "S2 — a float pads like any other number" {
     assert "{pi:>10.2}|" == "      3.14|"
     assert "{pi:08.2}" == "00003.14"
 }
+
+test "S3 — hex, binary and octal show the bits at the value's own width" {
+    let a: i8 = -1
+    assert "{a:x}" == "ff"
+    assert "{a:X}" == "FF"
+    assert "{a:b}" == "11111111"
+    assert "{a:o}" == "377"
+    let b: i16 = -2
+    assert "{b:x}" == "fffe"
+    let c: i32 = -255
+    assert "{c:x}" == "ffffff01"
+    assert format("{:x}", c) == "ffffff01"
+    let d: i64 = -1
+    assert "{d:x}" == "ffffffffffffffff"
+    let e: u8 = 200
+    assert "{e:x}" == "c8"
+    let f: i8 = 5
+    assert "{f:08b}" == "00000101"
+}

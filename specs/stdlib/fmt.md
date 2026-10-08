@@ -21,7 +21,7 @@
 |------|-------------|
 | **S1: Grammar** | `{[arg_id][:[[fill]align][0][width][.precision][type]]}` |
 | **S2: Align** | `<` left, `>` right, `^` center. Fill defaults to space; a lone `0` before the width fills with zeros and right-aligns. With no align given, numbers go right, text goes left |
-| **S3: Types** | `debug`, `x`/`X` hex, `b` binary, `o` octal, `e` scientific |
+| **S3: Types** | `debug`, `x`/`X` hex, `b` binary, `o` octal, `e` scientific. Hex, binary and octal show the bit pattern at the value's own width: an `i8` of -1 is `ff`, an `i32` of -255 is `ffffff01` |
 | **S4: Width is columns** | Width counts **display columns**, not bytes and not scalars — `s.width()` (`std.strings/U2`). A CJK character is two columns, a combining mark is zero. This is what makes a padded table align |
 | **S5: Precision truncates text** | On text, `.n` cuts to at most `n` display columns without splitting a grapheme — `s.truncate(n)`. On floats it's decimal places, as before; under `e` it's the mantissa's (`type.primitives/F6`) |
 | **S6: Width and precision can be runtime** | Both slots take either a decimal literal or an identifier captured from scope: `{:<w}` pads to the value of `w`. Same capture rule as `{name}` (I1) — digits are a literal, a name is a variable |

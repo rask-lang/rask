@@ -1338,12 +1338,15 @@ void rask_char_to_string(RaskStr *out, int32_t codepoint) {
 // align / fill triple pads the result — the same two stages the interpreter
 // runs, so the two backends render a spec identically.
 
-// Base 2, 8 or 16. Negative values render their two's-complement bit pattern,
-// which is what a hex or binary spec is asking to see.
-void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper) {
+// Base 2, 8 or 16. Negative values render their two's-complement bit pattern
+// at the value's own width, which is what a hex or binary spec is asking to
+// see: an `i8` of -1 is `ff`. The value arrives widened to 64 bits, so `bits`
+// says how much of it is the value (std.fmt/S3).
+void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper, int64_t bits) {
     char buf[72];
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     uint64_t v = (uint64_t)val;
+    if (bits > 0 && bits < 64) v &= ((uint64_t)1 << bits) - 1;
     if (base < 2 || base > 16) base = 10;
 
     int i = (int)sizeof(buf) - 1;
@@ -1360,7 +1363,7 @@ void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper) {
 }
 
 void rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper) {
-    rask_i64_to_base(out, (int64_t)val, base, upper);
+    rask_i64_to_base(out, (int64_t)val, base, upper, 64);
 }
 
 void rask_f64_to_precision(RaskStr *out, double val, int64_t precision) {

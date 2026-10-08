@@ -780,7 +780,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // of it: a base conversion first, then `string_pad` for width/align.
         StdlibEntry {
             mir_name: "i64_to_base", c_name: "rask_i64_to_base",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
