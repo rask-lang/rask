@@ -2313,7 +2313,7 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         (8, MirType::I64)
                     };
-                    let vec_local = self.builder.alloc_temp(MirType::I64);
+                    let vec_local = self.builder.alloc_temp(MirType::Ptr);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(vec_local),
                         func: FunctionRef::internal("rask_vec_from_static".to_string()),
@@ -2325,7 +2325,7 @@ impl<'a> MirLowerer<'a> {
                         ],
                     }));
                     self.meta_mut(&name).type_prefix = Some("Vec".to_string());
-                    Ok((MirOperand::Local(vec_local), MirType::I64))
+                    Ok((MirOperand::Local(vec_local), MirType::Ptr))
                 } else if meta.type_prefix == "Map" {
                     // An empty map has no first entry to read the key and
                     // value types off, and holds nothing that could tell
@@ -5685,7 +5685,7 @@ impl<'a> MirLowerer<'a> {
                         if method == "variants" && args.is_empty() {
                             if let Some((_idx, layout)) = self.ctx.find_enum(name) {
                                 // Create a new Vec
-                                let vec_local = self.builder.alloc_temp(MirType::I64);
+                                let vec_local = self.builder.alloc_temp(MirType::Ptr);
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(vec_local),
                                     func: FunctionRef::internal("Vec_new".to_string()),
@@ -5702,7 +5702,7 @@ impl<'a> MirLowerer<'a> {
                                         ],
                                     }));
                                 }
-                                return Ok(Some((MirOperand::Local(vec_local), MirType::I64)));
+                                return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
                             }
                         }
 

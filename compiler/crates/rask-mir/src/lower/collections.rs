@@ -98,7 +98,10 @@ impl<'a> MirLowerer<'a> {
             })
             .unwrap_or_else(|| elem_ty.clone());
 
-        let vec_local = self.builder.alloc_temp(MirType::I64);
+        // The handle is an address, and the binding that takes it over says
+        // so. Typed `i64` here, an unannotated `let v = Vec.from([1, 2])` was
+        // an integer local and `{v:debug}` printed the buffer's address.
+        let vec_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
             func: FunctionRef::internal("rask_vec_from_static".to_string()),
@@ -109,7 +112,7 @@ impl<'a> MirLowerer<'a> {
                 crate::elem_strs::elem(elem_desc),
             ],
         }));
-        Ok((MirOperand::Local(vec_local), MirType::I64))
+        Ok((MirOperand::Local(vec_local), MirType::Ptr))
     }
 
     /// Map.from([(k, v), ...]) → Map.new() + Map.insert() per pair.
@@ -174,7 +177,7 @@ impl<'a> MirLowerer<'a> {
         };
         args.push(crate::elem_strs::elem(desc(0, &key_ty)));
         args.push(crate::elem_strs::elem(desc(1, &val_ty)));
-        let map_local = self.builder.alloc_temp(MirType::I64);
+        let map_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
             func: FunctionRef::internal(ctor.to_string()),
@@ -202,7 +205,7 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
-        Ok((MirOperand::Local(map_local), MirType::I64))
+        Ok((MirOperand::Local(map_local), MirType::Ptr))
     }
 
     /// Expand `json.encode(struct_val)` into a sequence of json_buf_* calls.
