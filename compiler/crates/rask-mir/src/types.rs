@@ -135,7 +135,8 @@ pub enum MirType {
     /// Tuple type — struct-like layout with positional fields.
     /// Stored as (field types, total byte size).
     Tuple(Vec<MirType>),
-    /// Option<T> — tagged union: u8 tag (0=None, 1=Some) + payload.
+    /// Option<T> — tagged union: u8 tag (0=Some, 1=None, the same side as
+    /// a Result's Ok/Err — `T?` is `T or none`) + payload.
     /// Size = 8 (tag aligned) + payload size, rounded to 8-byte alignment.
     Option(Box<MirType>),
     /// Result<T, E> — tagged union: u8 tag (0=Ok, 1=Err) + max(T, E) payload.

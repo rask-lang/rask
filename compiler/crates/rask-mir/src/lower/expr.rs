@@ -9155,6 +9155,18 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             },
+            // A wrapper costs no depth: only a nominal type can contain itself,
+            // so the count is taken where a struct or enum is entered.
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.debug_render_wrapper(op, ty, decl, depth)
+            }
+            // A link is the node's address (mem.racks/RK2), so it renders as
+            // the node — what the interpreter prints. A cycle through `next`
+            // stops at the depth cap like a box that contains itself.
+            MirType::Link(sid) if depth + 1 < MAX_DEPTH => Ok(self
+                .lower_derived_debug(op, &MirType::Struct(*sid), depth + 1)?
+                .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string())))),
+            MirType::Link(_) => Ok(elided(self)),
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
                 Ok(call(self, "i64_to_string", vec![op.clone()]))
             }
@@ -9171,6 +9183,186 @@ impl<'a> MirLowerer<'a> {
             // of its own; printing the word was the bug, so say nothing instead.
             _ => Ok(elided(self)),
         }
+    }
+
+    /// `Option.Some(2.5)`, `Option.None`, `Result.Ok(3)`, `Result.Err(Fault.Bad)`
+    /// — the interpreter's spelling for a wrapper. The tag picks a block and
+    /// each block renders its payload through `debug_render_value`, so a
+    /// struct, a Vec or another wrapper inside reads as it does anywhere else.
+    /// A union err side is the same shape one level down: the member index
+    /// picks the block.
+    ///
+    /// A niche option (`Link<T>?`) is one word with no tag: the null address
+    /// is `none`, and the link itself has no rendering.
+    fn debug_render_wrapper(
+        &mut self,
+        op: &MirOperand,
+        ty: &MirType,
+        decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        let lit = |text: &str| MirOperand::Constant(MirConst::String(text.to_string()));
+
+        if let MirType::Option(inner) = ty {
+            if let Some(none_word) = inner.niche_none() {
+                let is_none = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: is_none,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: op.clone(),
+                        right: MirOperand::Constant(MirConst::Int(none_word)),
+                    },
+                }));
+                let result = self.builder.alloc_temp(MirType::String);
+                let none_block = self.builder.create_block();
+                let some_block = self.builder.create_block();
+                let merge = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(is_none),
+                    then_block: none_block,
+                    else_block: some_block,
+                }));
+                self.builder.switch_to_block(none_block);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(lit("Option.None")),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+                self.builder.switch_to_block(some_block);
+                // Under the link's own type: codegen places a `Field` on an
+                // Option base relative to the payload, and this word has none.
+                let link = self.builder.alloc_temp((**inner).clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: link,
+                    rvalue: MirRValue::Use(op.clone()),
+                }));
+                let node = self.debug_render_value(&MirOperand::Local(link), inner, None, depth)?;
+                let text = self.concat_all(vec![lit("Option.Some("), node, lit(")")]);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(text),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+                self.builder.switch_to_block(merge);
+                return Ok(MirOperand::Local(result));
+            }
+        }
+
+        // The checked payload types, when the checker's type for the wrapper
+        // is in hand: `T?` and `T or E` are both `Type::Result`.
+        let (decl_ok, decl_err) = match decl {
+            Some(rask_types::Type::Result { ok, err }) => (Some(ok.as_ref()), Some(err.as_ref())),
+            _ => (None, None),
+        };
+        let decl_member = |i: usize| match decl {
+            Some(rask_types::Type::Union(members)) => members.get(i),
+            _ => None,
+        };
+
+        // One arm per tag value: its opening text, and what sits in the
+        // payload slot when it does carry one.
+        type Arm<'t> = (u64, String, Option<(MirType, Option<&'t rask_types::Type>)>);
+        let (tag_offset, payload_offset, arms): (u32, u32, Vec<Arm>) = match ty {
+            MirType::Option(inner) => (
+                0,
+                8,
+                vec![
+                    (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
+                    (1, "Option.None".to_string(), None),
+                ],
+            ),
+            MirType::Result { ok, err } => (
+                crate::types::RESULT_TAG_OFFSET,
+                crate::types::RESULT_PAYLOAD_OFFSET,
+                vec![
+                    (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
+                    (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
+                ],
+            ),
+            MirType::Union(members) => (
+                crate::types::UNION_MEMBER_OFFSET,
+                crate::types::UNION_PAYLOAD_OFFSET,
+                members
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (i as u64, String::new(), Some((m.clone(), decl_member(i)))))
+                    .collect(),
+            ),
+            _ => unreachable!("debug_render_wrapper on a non-wrapper {ty:?}"),
+        };
+
+        // Codegen places a `Field` on an Option base relative to the payload,
+        // whatever offset is passed, so the tag goes through `EnumTag` the way
+        // a match reads it. A union has no tag: its member index is a word at
+        // the front, read as a plain field.
+        let tag = if matches!(ty, MirType::Union(_)) {
+            let member = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: op.clone(),
+                    field_index: 0,
+                    byte_offset: Some(tag_offset),
+                    access: FieldAccess::Sized(8),
+                },
+            }));
+            member
+        } else {
+            let tag = self.builder.alloc_temp(MirType::U16);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: tag,
+                rvalue: MirRValue::EnumTag { value: op.clone() },
+            }));
+            tag
+        };
+        let result = self.builder.alloc_temp(MirType::String);
+        let merge = self.builder.create_block();
+        let blocks: Vec<crate::BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let cases: Vec<(u64, crate::BlockId)> =
+            arms.iter().zip(&blocks).map(|((t, _, _), b)| (*t, *b)).collect();
+        let default = blocks.first().copied().unwrap_or(merge);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(tag),
+            cases,
+            default,
+        }));
+
+        for ((_, open, payload), block) in arms.into_iter().zip(blocks) {
+            self.builder.switch_to_block(block);
+            let text = match payload {
+                None => lit(&open),
+                Some((payload_ty, payload_decl)) => {
+                    // Index 0: an Option's or Result's fields are counted from
+                    // the payload, and the offset says where that is.
+                    let slot = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: slot,
+                        rvalue: MirRValue::Field {
+                            base: op.clone(),
+                            field_index: 0,
+                            byte_offset: Some(payload_offset),
+                            access: FieldAccess::for_field(&payload_ty, payload_ty.size()),
+                        },
+                    }));
+                    let inner = self.debug_render_value(
+                        &MirOperand::Local(slot), &payload_ty, payload_decl, depth,
+                    )?;
+                    if open.is_empty() {
+                        inner
+                    } else {
+                        self.concat_all(vec![lit(&open), inner, lit(")")])
+                    }
+                }
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::Use(text),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+        }
+        self.builder.switch_to_block(merge);
+        Ok(MirOperand::Local(result))
     }
 
     /// The checked element type of a `Vec<T>`, for handing down to the

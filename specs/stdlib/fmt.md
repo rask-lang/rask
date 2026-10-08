@@ -134,6 +134,7 @@ extend AppError {
 | **G3: Override** | Auto-derived `Debug` can be overridden via `Type implements Debug` |
 | **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
+| **G6: Wrappers** | A `T?` renders as `Option.Some(v)` or `Option.None`, a `T or E` as `Result.Ok(v)` or `Result.Err(e)`, with the payload in its own debug form; a union error renders as the member it holds. A `Link<T>` renders as the node it names |
 
 The verb matches the interface and the specifier — `Debug`, `{:debug}`, `debug()`.
 
