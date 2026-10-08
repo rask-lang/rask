@@ -2285,7 +2285,7 @@ impl<'a> MirLowerer<'a> {
         });
         self.synthesized_functions.push(wb.finish());
 
-        let block = self.builder.alloc_temp(MirType::Ptr);
+        let block = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: block,
             func_name: wrapper_name,

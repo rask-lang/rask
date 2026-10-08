@@ -32,10 +32,19 @@
 //! function, passed by name to another, captured by the adapter that function
 //! returns, and called from inside it. That is every sequence adapter in
 //! `stdlib/sequence.rk`.
+//!
+//! And one more: a closure kept in a struct field, `Wide { run: || … }` read
+//! back as `self.run` (#1526). Which struct and which field is not followed:
+//! a write through `mutate o` to `o.inner.run` is a store at `Outer`'s offset,
+//! while the read is `Inner`'s field, and telling those apart takes layouts
+//! this walk doesn't have. So a struct field holding a closure may hold any
+//! closure the program ever wrote to memory. Every such write is a `Store` or
+//! an `ArrayStore` of a closure-typed local — MIR has no other way to put one
+//! there — which is what makes the pool whole.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind};
+use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind, MirType};
 
 /// What a value might be, as far as this walk can tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +112,9 @@ impl ClosureTargets {
         let mut locals: HashMap<(String, LocalId), Flow> = HashMap::new();
         let mut params: HashMap<(String, usize), Flow> = HashMap::new();
         let mut captures: HashMap<(String, u32), Flow> = HashMap::new();
+        // Every closure written to memory, which is every closure a struct
+        // field can hand back.
+        let mut stored = Flow::Known(HashSet::new());
 
         for func in fns {
             if is_closure_body.contains(func.name.as_str()) {
@@ -117,7 +129,7 @@ impl ClosureTargets {
                 let Some(dst) = crate::analysis::uses::stmt_def(stmt) else { continue };
                 let followed_return = follow_returns
                     && matches!(&stmt.kind, MirStmtKind::Call { func: f, .. } if with_body.contains(f.name.as_str()));
-                if !modelled_def(stmt) && !followed_return {
+                if !modelled_def(func, stmt) && !followed_return {
                     locals.insert((func.name.clone(), dst), Flow::Unknown);
                 }
             }
@@ -154,6 +166,17 @@ impl ClosureTargets {
                         MirStmtKind::LoadCapture { dst, offset, .. } => {
                             if let Some(flow) = captures.get(&(name.clone(), *offset)).cloned() {
                                 grew |= merge_into(&mut locals, (name.clone(), *dst), &flow);
+                            }
+                        }
+                        MirStmtKind::Assign { dst, rvalue } if reads_struct_closure(func, *dst, rvalue) => {
+                            grew |= merge_into(&mut locals, (name.clone(), *dst), &stored);
+                        }
+                        MirStmtKind::Store { value: MirOperand::Local(v), .. }
+                        | MirStmtKind::ArrayStore { value: MirOperand::Local(v), .. }
+                            if is_closure(func, *v) =>
+                        {
+                            if let Some(flow) = locals.get(&(name.clone(), *v)) {
+                                grew |= stored.merge(flow);
                             }
                         }
                         MirStmtKind::Assign { dst, rvalue } => {
@@ -260,11 +283,24 @@ fn copied_from(rvalue: &MirRValue) -> Option<LocalId> {
 /// from being *partly* right — a local written on one path by a
 /// `ClosureCreate` and on another by something unmodelled would otherwise look
 /// like it could only be the one closure.
-fn modelled_def(stmt: &crate::MirStmt) -> bool {
+fn modelled_def(func: &MirFunction, stmt: &crate::MirStmt) -> bool {
     match &stmt.kind {
         MirStmtKind::ClosureCreate { .. } | MirStmtKind::LoadCapture { .. } => true,
-        MirStmtKind::Assign { rvalue, .. } => copied_from(rvalue).is_some(),
+        MirStmtKind::Assign { dst, rvalue } => {
+            copied_from(rvalue).is_some() || reads_struct_closure(func, *dst, rvalue)
+        }
         MirStmtKind::Phi { .. } => true,
         _ => false,
     }
 }
+
+fn is_closure(func: &MirFunction, local: LocalId) -> bool {
+    matches!(func.local_ty(local), Some(MirType::FuncPtr(_)))
+}
+
+/// `dst = s.f`, where `s` is a struct and `f` holds a closure.
+fn reads_struct_closure(func: &MirFunction, dst: LocalId, rvalue: &MirRValue) -> bool {
+    let MirRValue::Field { base: MirOperand::Local(base), .. } = rvalue else { return false };
+    is_closure(func, dst) && matches!(func.local_ty(*base), Some(MirType::Struct(_)))
+}
+

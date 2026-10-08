@@ -83,7 +83,7 @@ impl<'a> MirLowerer<'a> {
             self.synthesized_functions.push(wb.finish());
         }
 
-        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
             func_name: wrapper_name,
@@ -158,7 +158,7 @@ impl<'a> MirLowerer<'a> {
             self.synthesized_functions.push(wb.finish());
         }
 
-        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
             func_name: wrapper_name,
@@ -533,7 +533,7 @@ impl<'a> MirLowerer<'a> {
         // 5. In the parent function, emit ClosureCreate.
         // Own closures may escape — start heap-allocated so escape analysis can
         // decide whether to downgrade. Scope-limited closures never escape; stack only.
-        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
             func_name: entry_name,
@@ -816,7 +816,7 @@ impl<'a> MirLowerer<'a> {
         self.synthesized_functions.push(yb.finish());
 
         // Build the closure and hand it to the sequence.
-        let closure_local = self.builder.alloc_temp(MirType::Ptr);
+        let closure_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: closure_local,
             func_name: closure_name,
