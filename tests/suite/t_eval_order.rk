@@ -95,3 +95,18 @@ test "EO3 — && and || stop at the first operand that decides" {
     assert c
     assert log.join(",") == "and-l,or-l,and-l2,and-r"
 }
+
+test "EO4 — a compound assignment runs its index once, then the value" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    mut m = Vec.from([0, 0])
+    m[tick("lhs", 1)] += tick("rhs", 5)
+    mut g = Vec.from([Vec.from([0, 0]), Vec.from([0, 0])])
+    g[tick("row", 1)][tick("col", 0)] += tick("val", 7)
+    assert m[1] == 5
+    assert g[1][0] == 7
+    assert log.join(",") == "lhs,rhs,row,col,val"
+}

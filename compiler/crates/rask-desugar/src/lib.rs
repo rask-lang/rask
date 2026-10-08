@@ -496,6 +496,7 @@ impl Desugarer {
         if self.renumber {
             stmt.id = self.fresh_id();
         }
+        self.bind_compound_place_once(stmt);
         match &mut stmt.kind {
             StmtKind::Expr(e) => self.desugar_expr(e),
             StmtKind::Mut { init, .. } => self.desugar_expr(init),
@@ -556,6 +557,84 @@ impl Desugarer {
                 }
             }
             StmtKind::Discard { .. } => {}
+        }
+    }
+
+    /// `v[i()] += x()` runs `i()` once (type.operators/EO4).
+    ///
+    /// The parser spells a compound assignment as `t = t op rhs` with `t`
+    /// cloned, so every call inside an index ran twice — once to read, once to
+    /// write — on both backends (#1524). Each index that could do something is
+    /// bound to a temporary first, left to right, and both copies of the place
+    /// read the temporary:
+    ///
+    /// ```text
+    /// v[i()] += x()   →   { let __place_N = i(); v[__place_N] = v[__place_N] + x() }
+    /// ```
+    ///
+    /// Only indices move. The container itself stays a place: binding it would
+    /// write to a copy.
+    fn bind_compound_place_once(&mut self, stmt: &mut Stmt) {
+        let StmtKind::Assign { target, value, op: Some(_) } = &mut stmt.kind else {
+            return;
+        };
+        let mut lets = Vec::new();
+        self.bind_indices(target, &mut lets);
+        if lets.is_empty() {
+            return;
+        }
+        // `value` is `t op rhs`, and its `t` is the parser's copy of the target.
+        if let ExprKind::Binary { left, .. } = &mut value.kind {
+            **left = target.clone();
+        }
+        let span = stmt.span;
+        let assign = Stmt {
+            id: self.fresh_id(),
+            kind: std::mem::replace(&mut stmt.kind, StmtKind::Continue(None)),
+            span,
+        };
+        lets.push(assign);
+        stmt.kind = StmtKind::Expr(Expr {
+            id: self.fresh_id(),
+            kind: ExprKind::Block(lets),
+            span,
+        });
+    }
+
+    fn bind_indices(&mut self, place: &mut Expr, lets: &mut Vec<Stmt>) {
+        match &mut place.kind {
+            ExprKind::Index { object, index } => {
+                self.bind_indices(object, lets);
+                if !Self::reads_without_effect(index) {
+                    let id = self.fresh_id();
+                    let name = format!("__place_{}", id.0);
+                    let span = index.span;
+                    let ident = Expr { id: self.fresh_id(), kind: ExprKind::Ident(name.clone()), span };
+                    let init = std::mem::replace(index.as_mut(), ident);
+                    lets.push(Stmt {
+                        id,
+                        kind: StmtKind::Let { name, name_span: span, ty: None, init },
+                        span,
+                    });
+                }
+            }
+            ExprKind::Field { object, .. } => self.bind_indices(object, lets),
+            _ => {}
+        }
+    }
+
+    /// A name, a literal, or a field of one: reading it twice reads the same
+    /// thing and runs nothing.
+    fn reads_without_effect(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(_)
+            | ExprKind::Int(..)
+            | ExprKind::Float(..)
+            | ExprKind::String(_)
+            | ExprKind::Char(_)
+            | ExprKind::Bool(_) => true,
+            ExprKind::Field { object, .. } => Self::reads_without_effect(object),
+            _ => false,
         }
     }
 
