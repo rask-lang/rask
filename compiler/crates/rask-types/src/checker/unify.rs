@@ -38,15 +38,6 @@ fn literal_fits(kind: super::inference::LiteralKind, ty: &Type) -> bool {
     }
 }
 
-/// The type to name in a mismatch when the value is still an unpinned literal.
-fn literal_kind_type(kind: super::inference::LiteralKind) -> Type {
-    use super::inference::LiteralKind;
-    match kind {
-        LiteralKind::Integer => Type::I64,
-        LiteralKind::Float => Type::F64,
-    }
-}
-
 impl TypeChecker {
     pub(super) fn solve_constraints(&mut self) {
         let mut changed = true;
@@ -1405,11 +1396,7 @@ impl TypeChecker {
                     // never satisfy the union type. Default the literal var
                     // immediately so unify reports a precise type mismatch
                     // instead of silently dropping a deferred constraint.
-                    use super::inference::LiteralKind;
-                    let default = match self.ctx.literal_vars[id] {
-                        LiteralKind::Integer => Type::I32,
-                        LiteralKind::Float => Type::F64,
-                    };
+                    let default = self.ctx.literal_default(*id, self.ctx.literal_vars[id]);
                     let id = *id;
                     self.ctx.substitutions.insert(id, default);
                     let resolved_ret = self.ctx.apply(&ret_ty);
@@ -1678,7 +1665,7 @@ impl TypeChecker {
                     if !literal_fits(kind, other) {
                         return Err(TypeError::Mismatch {
                             expected: other.clone(),
-                            found: literal_kind_type(kind),
+                            found: self.ctx.literal_default(*id, kind),
                             span,
                         });
                     }
@@ -1710,7 +1697,7 @@ impl TypeChecker {
                     if !literal_fits(kind, other) {
                         return Err(TypeError::Mismatch {
                             expected: other.clone(),
-                            found: literal_kind_type(kind),
+                            found: self.ctx.literal_default(*id, kind),
                             span,
                         });
                     }
@@ -2263,6 +2250,25 @@ impl TypeChecker {
             return Ok(());
         }
 
+        // An error side never narrows (type.errors/ER11, ER31): a `Fault | Other`
+        // value in a `Fault` slot would hold an `Other` the slot can't say it
+        // has. Plain `unify` checks a single type against
+        // a union in whichever order it gets them, so it said yes both ways —
+        // and then the interpreter kept the `Other` while native read its
+        // member index as a `Fault` tag (#1520).
+        if let (Type::Result { err: from_err, .. }, Type::Result { err: to_err, .. }) =
+            (&source, &target)
+        {
+            if let Some(extra) = self.error_member_missing_from(from_err, to_err) {
+                return Err(TypeError::ErrorUnionNarrowing {
+                    from: source.clone(),
+                    to: target.clone(),
+                    extra,
+                    span,
+                });
+            }
+        }
+
         if Self::int_shape(&source).is_none() || Self::int_shape(&target).is_none() {
             return Ok(());
         }
@@ -2270,6 +2276,25 @@ impl TypeChecker {
             return Ok(());
         }
         Err(TypeError::NarrowingNeedsPolicy { from: source, to: target, span })
+    }
+
+    /// The first error type `from` can hold that `to` can't, when both are
+    /// settled nominal errors or unions of them. `None` when every member fits,
+    /// and when either side is still open, absent (`T?`) or an interface —
+    /// those are decided elsewhere.
+    fn error_member_missing_from(&self, from: &Type, to: &Type) -> Option<Type> {
+        let members = |t: &Type| -> Option<Vec<Type>> {
+            let t = self.resolve_named(&self.ctx.apply(t));
+            let list = match t {
+                Type::Union(ms) => ms.iter().map(|m| self.resolve_named(&self.ctx.apply(m))).collect(),
+                single => vec![single],
+            };
+            list.iter()
+                .all(|m| matches!(m, Type::Named(_) | Type::Generic { .. }))
+                .then_some(list)
+        };
+        let (from, to) = (members(from)?, members(to)?);
+        from.into_iter().find(|m| !to.contains(m))
     }
 
     /// Check if `from` can widen to `to` (same signedness, strictly narrower).

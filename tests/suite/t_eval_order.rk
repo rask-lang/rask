@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Evaluation order (type.operators/EO1–EO3), pinned on both backends.
+//
+// The interpreter walks the tree and native lowers it to MIR; nothing shared
+// decides which operand runs first. Each test logs through a closure that
+// writes into the test's own Vec, so the order is a value that can be asserted
+// rather than something read off printed output.
+
+struct Pair {
+    x: i64
+    y: i64
+}
+
+extend Pair {
+    func sum(self, k: i64) -> i64 {
+        return self.x + self.y + k
+    }
+}
+
+func add3(a: i64, b: i64, c: i64) -> i64 {
+    return a + b + c
+}
+
+test "EO1 — call arguments run left to right" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    let r = add3(tick("a", 1), tick("b", 2), tick("c", 3))
+    assert r == 6
+    assert log.join(",") == "a,b,c"
+}
+
+test "EO1 — the left operand runs before the right, whatever binds tighter" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    let s = tick("l", 1) + tick("r", 2) * tick("m", 3)
+    assert s == 7
+    let c = tick("lt-l", 1) < tick("lt-r", 2)
+    assert c
+    assert log.join(",") == "l,r,m,lt-l,lt-r"
+}
+
+test "EO1 — array and tuple elements run in written order" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    let v = [tick("v0", 1), tick("v1", 2)]
+    assert v[1] == 2
+    let t = (tick("t0", 3), tick("t1", 4))
+    assert t.1 == 4
+    assert log.join(",") == "v0,v1,t0,t1"
+}
+
+test "EO1 — struct literal fields run in written order, not declaration order" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    let p = Pair { y: tick("y", 2), x: tick("x", 1) }
+    assert p.x == 1
+    assert p.y == 2
+    assert log.join(",") == "y,x"
+}
+
+test "EO2 — the receiver runs before the arguments" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    let q = Pair { x: tick("recv", 1), y: 2 }.sum(tick("arg", 3))
+    assert q == 6
+    assert log.join(",") == "recv,arg"
+}
+
+test "EO3 — && and || stop at the first operand that decides" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    let a = tick("and-l", 0) == 1 && tick("never", 0) == 0
+    assert !a
+    let b = tick("or-l", 1) == 1 || tick("never", 0) == 0
+    assert b
+    let c = tick("and-l2", 1) == 1 && tick("and-r", 0) == 0
+    assert c
+    assert log.join(",") == "and-l,or-l,and-l2,and-r"
+}
+
+test "EO4 — a compound assignment runs its index once, then the value" {
+    mut log: Vec<string> = Vec.new()
+    let tick = |label: string, v: i64| -> i64 {
+        log.push(label)
+        return v
+    }
+    mut m = Vec.from([0, 0])
+    m[tick("lhs", 1)] += tick("rhs", 5)
+    mut g = Vec.from([Vec.from([0, 0]), Vec.from([0, 0])])
+    g[tick("row", 1)][tick("col", 0)] += tick("val", 7)
+    assert m[1] == 5
+    assert g[1][0] == 7
+    assert log.join(",") == "lhs,rhs,row,col,val"
+}

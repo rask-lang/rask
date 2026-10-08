@@ -1338,12 +1338,15 @@ void rask_char_to_string(RaskStr *out, int32_t codepoint) {
 // align / fill triple pads the result — the same two stages the interpreter
 // runs, so the two backends render a spec identically.
 
-// Base 2, 8 or 16. Negative values render their two's-complement bit pattern,
-// which is what a hex or binary spec is asking to see.
-void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper) {
+// Base 2, 8 or 16. Negative values render their two's-complement bit pattern
+// at the value's own width, which is what a hex or binary spec is asking to
+// see: an `i8` of -1 is `ff`. The value arrives widened to 64 bits, so `bits`
+// says how much of it is the value (std.fmt/S3).
+void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper, int64_t bits) {
     char buf[72];
     const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     uint64_t v = (uint64_t)val;
+    if (bits > 0 && bits < 64) v &= ((uint64_t)1 << bits) - 1;
     if (base < 2 || base > 16) base = 10;
 
     int i = (int)sizeof(buf) - 1;
@@ -1360,7 +1363,7 @@ void rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper) {
 }
 
 void rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper) {
-    rask_i64_to_base(out, (int64_t)val, base, upper);
+    rask_i64_to_base(out, (int64_t)val, base, upper, 64);
 }
 
 void rask_f64_to_precision(RaskStr *out, double val, int64_t precision) {
@@ -1371,9 +1374,31 @@ void rask_f64_to_precision(RaskStr *out, double val, int64_t precision) {
     rask_string_from(out, buf);
 }
 
-void rask_f64_to_exp(RaskStr *out, double val) {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%e", val);
+// `{:e}`: the shortest mantissa that round-trips, then the exponent as a plain
+// integer — `1.5e0`, `1.23456789e5`, `-1.2e-4` — which is what the interpreter
+// prints. `%e` on its own gives `1.500000e+00`: six fixed decimals and a padded
+// signed exponent, neither of which the plain rendering has. A precision fixes
+// the mantissa's decimals instead of letting the round-trip pick: `{:.2e}` of
+// 1.5 is `1.50e0`. Negative means none was given.
+void rask_f64_to_exp(RaskStr *out, double val, int64_t precision) {
+    if (isnan(val)) { rask_string_from(out, "NaN"); return; }
+    if (isinf(val)) { rask_string_from(out, val < 0 ? "-inf" : "inf"); return; }
+    char buf[RASK_F64_BUF_SIZE];
+    if (precision < 0) {
+        for (int prec = 0; prec < 17; prec++) {
+            snprintf(buf, sizeof(buf), "%.*e", prec, val);
+            if (strtod(buf, NULL) == val) break;
+        }
+    } else {
+        if (precision > 300) precision = 300;
+        snprintf(buf, sizeof(buf), "%.*e", (int)precision, val);
+    }
+    // `e+05` → `e5`, `e-04` → `e-4`.
+    char *e = strchr(buf, 'e');
+    if (e) {
+        int exp10 = atoi(e + 1);
+        snprintf(e, sizeof(buf) - (size_t)(e - buf), "e%d", exp10);
+    }
     rask_string_from(out, buf);
 }
 

@@ -302,7 +302,6 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(const void *field, int64_t size, void *out);
-int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
 // key of a (key, value) pair. `key_kind` is one of the RASK_DEBUG_ELEM_* codes
@@ -487,10 +486,10 @@ void        rask_check_fail_cmp_u128(RaskU128 left, RaskU128 right,
 
 // Format specs (std.fmt/S1). The spec is parsed at compile time; each piece
 // arrives here separately — a base conversion, then padding.
-void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper);
+void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper, int64_t bits);
 void        rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper);
 void        rask_f64_to_precision(RaskStr *out, double val, int64_t precision);
-void        rask_f64_to_exp(RaskStr *out, double val);
+void        rask_f64_to_exp(RaskStr *out, double val, int64_t precision);
 void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
 void        rask_panic_forced_error(const RaskStr *msg);
@@ -1370,6 +1369,11 @@ void     rask_process_read_stdout(RaskStr *out, int64_t handle);
 void     rask_process_captured_stdout(RaskStr *out, int64_t handle);
 void     rask_process_captured_stderr(RaskStr *out, int64_t handle);
 void     rask_process_release(int64_t handle);
+
+// os.signals (std.os/SG2): register a sender for each `Signal` in the list.
+int64_t  rask_os_signal_forward(int64_t tx, const RaskVec *list);
+// Drop the senders the signal reader holds, before the leak check at exit.
+void     rask_signals_release(void);
 
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.

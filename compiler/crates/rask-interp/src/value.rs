@@ -1189,10 +1189,6 @@ pub enum Value {
     StringBuilder(Arc<Mutex<String>>),
     /// Lazy iterator (wraps a source and optional adapters)
     Iterator(Arc<Mutex<IteratorState>>),
-    /// Wide<T> — a staged data-parallel plan (conc.data-parallel). Lazy: it
-    /// records ops and runs nothing until a terminal (`read`/`sum`). The plan
-    /// tree is immutable, so it's shared by Arc.
-    Wide(Arc<WidePlan>),
     /// Raw pointer (`*T`). Holds the buffer it points into and an element
     /// index rather than an address — see `ptr.rs`.
     RawPtr(crate::ptr::RawPtr),
@@ -1346,20 +1342,6 @@ impl fmt::Debug for IteratorState {
     }
 }
 
-/// A staged `Wide<T>` plan. Built by `.wide()` + adapters, executed by a
-/// terminal. Element-wise nodes (`Source`, `Map`, `ZipWith`) produce a lane
-/// vector; the CPU executor walks this tree (rask-interp `wide.rs`). Immutable
-/// once built — laziness with no hidden execution (conc.data-parallel C1).
-#[derive(Debug, Clone)]
-pub enum WidePlan {
-    /// Lanes materialized from a Vec (`data.wide()`).
-    Source(Arc<Mutex<VecData>>),
-    /// Apply a closure to each lane.
-    Map { source: Arc<WidePlan>, mapper: Value },
-    /// Combine two plans lane-by-lane with a closure. Lengths must match.
-    ZipWith { a: Arc<WidePlan>, b: Arc<WidePlan>, combiner: Value },
-}
-
 impl Value {
     /// An unbounded vector holding `items`.
     pub fn vec(items: Vec<Value>) -> Value {
@@ -1429,7 +1411,6 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Vec(_) => "Vec",
             Value::Tuple(_) => "tuple",
-            Value::Wide(_) => "Wide",
             Value::TypeConstructor(_) => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
@@ -1699,7 +1680,6 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
-            Value::Wide(_) => write!(f, "<Wide plan>"),
             Value::TypeConstructor(kind) => {
                 let base_name = match kind {
                     TypeConstructorKind::Vec => "Vec",

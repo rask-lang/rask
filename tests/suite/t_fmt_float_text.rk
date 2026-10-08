@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a number looks like as text (type.primitives/F5–F6, std.fmt/S3, S5).
+//
+// Two renderers that share nothing: the interpreter formats through Rust, the
+// native runtime through its own C. `{:e}` was one style on each — `1.5e0`
+// against `1.500000e+00` — and neither honoured a precision, so this file pins
+// every form a float can take.
+
+test "F5 — the shortest digits that read back as the same value" {
+    let a = 0.1 + 0.2
+    assert "{a}" == "0.30000000000000004"
+    let third = 1.0 / 3.0
+    assert "{third}" == "0.3333333333333333"
+    let f = 123456789.125
+    assert "{f}" == "123456789.125"
+    let pi = 3.141592653589793
+    assert "{pi}" == "3.141592653589793"
+}
+
+test "F5 — whole numbers drop the fraction, and there is never an exponent" {
+    let one = 1.0
+    assert "{one}" == "1"
+    let hundred = 100.0
+    assert "{hundred}" == "100"
+    let big = 1e21
+    assert "{big}" == "1000000000000000000000"
+    let tiny = 1e-7
+    assert "{tiny}" == "0.0000001"
+    let eps = f64.EPSILON
+    assert "{eps}" == "0.0000000000000002220446049250313"
+}
+
+test "F5 — signs and the specials" {
+    let neg = -2.5
+    assert "{neg}" == "-2.5"
+    let negzero = -0.0
+    assert "{negzero}" == "-0"
+    let inf = f64.INFINITY
+    assert "{inf}" == "inf"
+    let ninf = -f64.INFINITY
+    assert "{ninf}" == "-inf"
+    let nan = f64.NAN
+    assert "{nan}" == "NaN"
+}
+
+test "F5 — an f32 rounds at its own width" {
+    let g: f32 = 0.1
+    assert "{g}" == "0.1"
+    let h: f32 = 1.0 / 3.0
+    assert "{h}" == "0.33333334"
+    let i: f32 = 16777217.0
+    assert "{i}" == "16777216"
+}
+
+test "F6 — {:e} is the same digits as a mantissa, with a bare exponent" {
+    let x = 1.5
+    assert "{x:e}" == "1.5e0"
+    let big = 123456.789
+    assert "{big:e}" == "1.23456789e5"
+    let huge = 1e21
+    assert "{huge:e}" == "1e21"
+    let neg = -0.00012
+    assert "{neg:e}" == "-1.2e-4"
+    let zero = 0.0
+    assert "{zero:e}" == "0e0"
+    let inf = f64.INFINITY
+    assert "{inf:e}" == "inf"
+    assert format("{:e}", 2.5) == "2.5e0"
+}
+
+test "F6 — a precision under {:e} fixes the mantissa's decimals" {
+    let x = 1.5
+    assert "{x:.2e}" == "1.50e0"
+    let big = 123456.789
+    assert "{big:.3e}" == "1.235e5"
+    assert "{big:.0e}" == "1e5"
+}
+
+test "F6 — an integer under {:e} converts first" {
+    let n = 1500
+    assert "{n:e}" == "1.5e3"
+    let z = 0
+    assert "{z:e}" == "0e0"
+    let m: u8 = 200
+    assert "{m:e}" == "2e2"
+}
+
+test "S5 — a precision under {} is decimal places, rounded" {
+    let pi = 3.141592653589793
+    assert "{pi:.3}" == "3.142"
+    assert "{pi:.0}" == "3"
+    let half = 0.5
+    assert "{half:.0}" == "0"
+    let twofive = 2.5
+    assert "{twofive:.0}" == "2"
+    let a = 0.1 + 0.2
+    assert "{a:.20}" == "0.30000000000000004441"
+}
+
+test "S2 — a float pads like any other number" {
+    let neg = -2.5
+    assert "{neg:>8}|" == "    -2.5|"
+    let pi = 3.141592653589793
+    assert "{pi:>10.2}|" == "      3.14|"
+    assert "{pi:08.2}" == "00003.14"
+}
+
+test "S3 — hex, binary and octal show the bits at the value's own width" {
+    let a: i8 = -1
+    assert "{a:x}" == "ff"
+    assert "{a:X}" == "FF"
+    assert "{a:b}" == "11111111"
+    assert "{a:o}" == "377"
+    let b: i16 = -2
+    assert "{b:x}" == "fffe"
+    let c: i32 = -255
+    assert "{c:x}" == "ffffff01"
+    assert format("{:x}", c) == "ffffff01"
+    let d: i64 = -1
+    assert "{d:x}" == "ffffffffffffffff"
+    let e: u8 = 200
+    assert "{e:x}" == "c8"
+    let f: i8 = 5
+    assert "{f:08b}" == "00000101"
+}

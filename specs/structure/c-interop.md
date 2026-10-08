@@ -163,8 +163,8 @@ Not C-compatible: `string`, `Vec`, `Pool`, handles, closures, interface objects.
 | Rule | Description |
 |------|-------------|
 | **XC1: Target-aware types** | All `c_*` types resolve to target platform sizes |
-| **XC2: Re-parse per target** | `import c "header.h"` re-parses per target (struct layouts, `#ifdef` guards differ) |
-| **XC3: CC resolution** | `compile_c()` uses: `CC` env var → `zig cc` → system compiler |
+| **XC2: Re-parse per target** | `import c "header.h"` re-parses per target (struct layouts, `#ifdef` guards differ), reading the target compiler's system headers (XC3). A cross build with no compiler for the target reads none of the host's |
+| **XC3: CC resolution** | `compile_c()`, the runtime build and `import c` all use one compiler: `CC` env var → `zig cc` → system compiler |
 
 ## Error Messages
 
@@ -180,6 +180,7 @@ ERROR [struct.c-interop/CI3]: C call requires unsafe context
 | Case | Rule | Handling |
 |------|------|----------|
 | Header not found | CI1 | Compile error with search paths shown |
+| Cross build, no target compiler | XC2 | System headers not searched; the error says why. Vendored headers beside the file still work |
 | C++ header | CI1 | Error: "C++ not supported; use explicit bindings" |
 | Variadic C function | CI3 | Callable from unsafe; Rask cannot export variadic |
 | Opaque struct | CI2 | Only pointer operations allowed |
@@ -196,6 +197,8 @@ ERROR [struct.c-interop/CI3]: C call requires unsafe context
 **CI1 + CI2 (dual approach):** I chose two approaches because neither is sufficient alone. Auto-parsing handles 90% of C headers; explicit bindings cover the rest. The real power is combining them — auto-parse the bulk, override the parts that fail.
 
 **CI3 (unsafe required):** C cannot provide Rask's safety guarantees. Making every C call unsafe forces explicit acknowledgment.
+
+**XC2 (no host fallback):** A header found in `/usr/include` for an `aarch64-macos` build is the wrong header, and a by-value C call reads its field offsets from that layout. A missing header is an error you can act on; a wrong one isn't visible at all.
 
 **XC3 (zig cc support):** Zig bundles cross-compilation toolchains for 90+ targets in a single binary. Rask delegates to whatever C toolchain is available — no bundled toolchains.
 

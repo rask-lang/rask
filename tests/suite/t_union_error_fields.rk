@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `T or A | B` stored somewhere other than a local (#1521).
+//
+// The layout pass had no case for a written error union, so a struct field of
+// that type was sized as a one-word name and lowering refused the store. The
+// union also needs the word in front that says which member it holds (#776),
+// so these check a field placed after it too: a slot sized eight bytes short
+// would put that field on top of the union's payload.
+
+enum Fault {
+    Bad
+    Worse(i64)
+}
+
+extend Fault {
+    func message(self) -> string {
+        return "fault"
+    }
+}
+
+enum Other {
+    Odd(string)
+}
+
+extend Other {
+    func message(self) -> string {
+        return "other"
+    }
+}
+
+struct Holder {
+    res: i64 or Fault | Other
+    after: i64
+}
+
+func pick(which: i64) -> i64 or Fault | Other {
+    if which == 0 {
+        return 10
+    }
+    if which == 1 {
+        return Fault.Worse(2)
+    }
+    return Other.Odd("x")
+}
+
+test "a struct field holds each side of the union" {
+    let ok = Holder { res: pick(0), after: 7 }
+    let fault = Holder { res: pick(1), after: 8 }
+    let other = Holder { res: pick(2), after: 9 }
+    assert ok.res is i64
+    assert fault.res is Fault
+    assert other.res is Other
+    assert ok.after == 7
+    assert fault.after == 8
+    assert other.after == 9
+}
+
+test "the payload reads back through the field" {
+    let fault = Holder { res: pick(1), after: 8 }
+    if fault.res is Fault as f {
+        assert f.message() == "fault"
+    } else {
+        assert false
+    }
+    let other = Holder { res: pick(2), after: 9 }
+    assert "{other.res:debug}" == "Result.Err(Other.Odd(\"x\"))"
+    let ok = Holder { res: pick(0), after: 7 }
+    let n = ok.res catch _ => -1
+    assert n == 10
+}
+
+test "the struct survives a Vec" {
+    mut hs: Vec<Holder> = Vec.new()
+    hs.push(Holder { res: pick(0), after: 1 })
+    hs.push(Holder { res: pick(2), after: 2 })
+    assert hs[0].res is i64
+    assert hs[1].res is Other
+    assert hs[1].after == 2
+    assert "{hs:debug}" == "[Holder {{ res: Result.Ok(10), after: 1 }}, Holder {{ res: Result.Err(Other.Odd(\"x\")), after: 2 }}]"
+}

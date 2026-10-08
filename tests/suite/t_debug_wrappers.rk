@@ -1,0 +1,186 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `{x:debug}` on the wrappers (std.fmt/G6): `T?`, `T or E`, a union error,
+// a link, and a container whose type was inferred rather than written.
+//
+// Native built these in MIR with no arm for an Option or a Result, so every
+// one rendered as `…` while the interpreter printed the value. A Vec or Map
+// built by `Vec.from` / `Map.from` into an unannotated `let` was worse: the
+// handle was typed as an integer and `{v:debug}` printed its address.
+
+import memory.Rack
+import memory.Link
+
+enum Fault {
+    Bad
+    Worse(i64)
+}
+
+extend Fault {
+    func message(self) -> string {
+        return "fault"
+    }
+}
+
+enum Other {
+    Odd(string)
+}
+
+extend Other {
+    func message(self) -> string {
+        return "other"
+    }
+}
+
+struct Pt {
+    x: i64
+    y: f64
+}
+
+struct Holder {
+    tag: string
+    maybe: i64?
+    res: i64 or Fault
+}
+
+struct Node {
+    v: i64
+    next: Link<Node>?
+}
+
+func ok_int(v: i64) -> i64 or Fault {
+    return v
+}
+
+func err_int(code: i64) -> i64 or Fault {
+    return Fault.Worse(code)
+}
+
+func ok_pt() -> Pt or Fault {
+    return Pt { x: 1, y: 2.5 }
+}
+
+func err_pt() -> Pt or Fault {
+    return Fault.Bad
+}
+
+func ok_str() -> string or Fault {
+    return "yes"
+}
+
+func maybe_fail(ok: bool) -> i64? or Fault {
+    if ok {
+        return 5
+    }
+    return Fault.Bad
+}
+
+func pick(which: i64) -> i64 or Fault | Other {
+    if which == 0 {
+        return 1
+    }
+    if which == 1 {
+        return Fault.Worse(2)
+    }
+    return Other.Odd("x")
+}
+
+test "G6 — an optional" {
+    let o: f64? = 2.5
+    assert "{o:debug}" == "Option.Some(2.5)"
+    let n: f64? = none
+    assert "{n:debug}" == "Option.None"
+    let s: string? = "hi"
+    assert "{s:debug}" == "Option.Some(\"hi\")"
+    let i: i32? = 5
+    assert "{i:debug}" == "Option.Some(5)"
+    let b: bool? = false
+    assert "{b:debug}" == "Option.Some(false)"
+    let p: Pt? = Pt { x: 1, y: 2.5 }
+    assert "{p:debug}" == "Option.Some(Pt {{ x: 1, y: 2.5 }})"
+    let pn: Pt? = none
+    assert "{pn:debug}" == "Option.None"
+}
+
+test "G6 — a result" {
+    let a = ok_int(3)
+    assert "{a:debug}" == "Result.Ok(3)"
+    let b = err_int(7)
+    assert "{b:debug}" == "Result.Err(Fault.Worse(7))"
+    let c = ok_pt()
+    assert "{c:debug}" == "Result.Ok(Pt {{ x: 1, y: 2.5 }})"
+    let d = err_pt()
+    assert "{d:debug}" == "Result.Err(Fault.Bad)"
+    let e = ok_str()
+    assert "{e:debug}" == "Result.Ok(\"yes\")"
+}
+
+test "G6 — a union error renders as the member it holds" {
+    let a = pick(0)
+    assert "{a:debug}" == "Result.Ok(1)"
+    let b = pick(1)
+    assert "{b:debug}" == "Result.Err(Fault.Worse(2))"
+    let c = pick(2)
+    assert "{c:debug}" == "Result.Err(Other.Odd(\"x\"))"
+}
+
+test "G6 — wrappers nest" {
+    let oo: i64?? = 5
+    assert "{oo:debug}" == "Option.Some(Option.Some(5))"
+    let n = maybe_fail(true)
+    assert "{n:debug}" == "Result.Ok(Option.Some(5))"
+    let m = maybe_fail(false)
+    assert "{m:debug}" == "Result.Err(Fault.Bad)"
+}
+
+test "G6 — a wrapper inside a struct, a tuple, a Vec" {
+    let h = Holder { tag: "t", maybe: 3, res: ok_int(4) }
+    assert "{h:debug}" == "Holder {{ tag: \"t\", maybe: Option.Some(3), res: Result.Ok(4) }}"
+    let h2 = Holder { tag: "u", maybe: none, res: err_int(1) }
+    assert "{h2:debug}" == "Holder {{ tag: \"u\", maybe: Option.None, res: Result.Err(Fault.Worse(1)) }}"
+    let o: f64? = 2.5
+    let t = (1, o)
+    assert "{t:debug}" == "(1, Option.Some(2.5))"
+    let t2: (i64?, string) = (none, "z")
+    assert "{t2:debug}" == "(Option.None, \"z\")"
+    mut vo: Vec<i64?> = Vec.new()
+    vo.push(1)
+    vo.push(none)
+    assert "{vo:debug}" == "[Option.Some(1), Option.None]"
+    mut vs: Vec<string?> = Vec.new()
+    vs.push("a")
+    vs.push(none)
+    assert "{vs:debug}" == "[Option.Some(\"a\"), Option.None]"
+    mut vr: Vec<i64 or Fault> = Vec.new()
+    vr.push(ok_int(1))
+    vr.push(err_int(2))
+    assert "{vr:debug}" == "[Result.Ok(1), Result.Err(Fault.Worse(2))]"
+}
+
+test "G6 — a link renders as its node" {
+    mut r = Rack<Node>.new()
+    let first = r.insert(Node { v: 1, next: none })
+    let second = r.insert(Node { v: 2, next: first })
+    assert "{first:debug}" == "Node {{ v: 1, next: Option.None }}"
+    assert "{second:debug}" == "Node {{ v: 2, next: Option.Some(Node {{ v: 1, next: Option.None }}) }}"
+    assert "{first.next:debug}" == "Option.None"
+    assert "{second.next:debug}" == "Option.Some(Node {{ v: 1, next: Option.None }})"
+}
+
+test "a container whose type was inferred from its literal" {
+    let vi = Vec.from([1, 2])
+    assert "{vi:debug}" == "[1, 2]"
+    let vf = Vec.from([1.0, 2.5])
+    assert "{vf:debug}" == "[1, 2.5]"
+    let vs = Vec.from(["a", "b"])
+    assert "{vs:debug}" == "[\"a\", \"b\"]"
+    let vb = Vec.from([true, false])
+    assert "{vb:debug}" == "[true, false]"
+    let vc = Vec.from(['a', 'b'])
+    assert "{vc:debug}" == "['a', 'b']"
+    let vv = Vec.from([Vec.from([1.0]), Vec.from([2.0])])
+    assert "{vv:debug}" == "[[1], [2]]"
+    let vp = Vec.from([Pt { x: 1, y: 2.5 }])
+    assert "{vp:debug}" == "[Pt {{ x: 1, y: 2.5 }}]"
+    let m = Map.from([("k", 1.5)])
+    assert "{m:debug}" == "Map {{ \"k\": 1.5 }}"
+}

@@ -2313,7 +2313,7 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         (8, MirType::I64)
                     };
-                    let vec_local = self.builder.alloc_temp(MirType::I64);
+                    let vec_local = self.builder.alloc_temp(MirType::Ptr);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(vec_local),
                         func: FunctionRef::internal("rask_vec_from_static".to_string()),
@@ -2325,7 +2325,7 @@ impl<'a> MirLowerer<'a> {
                         ],
                     }));
                     self.meta_mut(&name).type_prefix = Some("Vec".to_string());
-                    Ok((MirOperand::Local(vec_local), MirType::I64))
+                    Ok((MirOperand::Local(vec_local), MirType::Ptr))
                 } else if meta.type_prefix == "Map" {
                     // An empty map has no first entry to read the key and
                     // value types off, and holds nothing that could tell
@@ -2424,27 +2424,14 @@ impl<'a> MirLowerer<'a> {
                     let want = self.float_pointee(operand).expect("just checked");
                     return Ok(self.emit_float_load(operand_op, want));
                 }
-                // `*p` on a raw pointer reads exactly the pointee's width.
-                // Plain MIR Deref always took a full word, so `*p` on a
-                // `*u8` handed back four bytes of whatever followed —
-                // "hello" read as 1869376613 instead of the byte 101 —
-                // while `p.read()` next to it was right, because only the
-                // method path passed the pointee size (#696). Both go
-                // through the same call now.
-                UnaryOp::Deref if self.integral_pointee_size(operand).is_some() => {
-                    let elem_size = self.integral_pointee_size(operand).unwrap();
-                    let result_local = self.builder.alloc_temp(MirType::I64);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(result_local),
-                        func: FunctionRef::internal(
-                            rask_stdlib::ptr_methods::mir_name("read"),
-                        ),
-                        args: vec![
-                            operand_op,
-                            MirOperand::Constant(crate::operand::MirConst::Int(elem_size)),
-                        ],
-                    }));
-                    return Ok((MirOperand::Local(result_local), MirType::I64));
+                // `*p` on a raw pointer reads exactly the pointee: its width
+                // and its sign. A full-word load read "hello" through a
+                // `*u8` as 1869376613 instead of 101 (#696), and a zeroed
+                // word made an `*i16` holding -2 read as 65534. `p.read()`
+                // goes through the same load.
+                UnaryOp::Deref if self.integral_pointee(operand).is_some() => {
+                    let want = self.integral_pointee(operand).expect("just checked");
+                    return Ok(self.emit_int_load(operand_op, want));
                 }
                 // `*b` on a `Heap<T>` reads the block. An aggregate lives
                 // at an address anyway, so the block's address *is* the
@@ -5685,7 +5672,7 @@ impl<'a> MirLowerer<'a> {
                         if method == "variants" && args.is_empty() {
                             if let Some((_idx, layout)) = self.ctx.find_enum(name) {
                                 // Create a new Vec
-                                let vec_local = self.builder.alloc_temp(MirType::I64);
+                                let vec_local = self.builder.alloc_temp(MirType::Ptr);
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(vec_local),
                                     func: FunctionRef::internal("Vec_new".to_string()),
@@ -5702,7 +5689,7 @@ impl<'a> MirLowerer<'a> {
                                         ],
                                     }));
                                 }
-                                return Ok(Some((MirOperand::Local(vec_local), MirType::I64)));
+                                return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
                             }
                         }
 
@@ -7638,20 +7625,39 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Like `pointee_size`, but only for pointees that come back as a plain
-    /// integer — `RawPtr_read` returns an i64, so a float or a struct behind
-    /// the pointer would arrive as its bit pattern.
-    fn integral_pointee_size(&self, expr: &Expr) -> Option<i64> {
+    /// The pointee's own type, for a pointer to an integer or a bool.
+    fn integral_pointee(&self, expr: &Expr) -> Option<MirType> {
+        use rask_types::Type as T;
         match self.ctx.lookup_raw_type(expr.id)? {
-            rask_types::Type::RawPtr(inner) if matches!(
-                inner.as_ref(),
-                rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool
-                    | rask_types::Type::U16 | rask_types::Type::I16
-                    | rask_types::Type::U32 | rask_types::Type::I32
-                    | rask_types::Type::U64 | rask_types::Type::I64
-            ) => self.pointee_size(expr),
+            T::RawPtr(inner) => Some(match inner.as_ref() {
+                T::Bool => MirType::Bool,
+                T::U8 => MirType::U8,
+                T::I8 => MirType::I8,
+                T::U16 => MirType::U16,
+                T::I16 => MirType::I16,
+                T::U32 => MirType::U32,
+                T::I32 => MirType::I32,
+                T::U64 => MirType::U64,
+                T::I64 => MirType::I64,
+                _ => return None,
+            }),
             _ => None,
         }
+    }
+
+    /// Load an integer through a raw pointer at its own width and signedness.
+    ///
+    /// This went through `rask_ptr_read`, which copies the bytes into a zeroed
+    /// word, and the result was labelled `i64` whatever the pointee. So every
+    /// signed narrow read came back zero-extended: `*p` on an `*i16` holding -2
+    /// was 65534, and so was anything computed from it.
+    fn emit_int_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+        let value = self.builder.alloc_temp(want.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Deref(ptr),
+        }));
+        (MirOperand::Local(value), want)
     }
 
     /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
@@ -7762,6 +7768,11 @@ impl<'a> MirLowerer<'a> {
             // `p.read()` / `p.write(v)` on a float go through the same typed
             // load and store `*p` does — the C helpers move an `int64_t`, which
             // is the wrong register class for a float (#1091).
+            if method == "read" && args.is_empty() {
+                if let Some(want) = self.integral_pointee(object) {
+                    return Ok(Some(self.emit_int_load(obj_op.clone(), want)));
+                }
+            }
             if let Some(want) = self.float_pointee(object) {
                 if method == "read" && args.is_empty() {
                     return Ok(Some(self.emit_float_load(obj_op.clone(), want)));
@@ -9155,6 +9166,18 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             },
+            // A wrapper costs no depth: only a nominal type can contain itself,
+            // so the count is taken where a struct or enum is entered.
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.debug_render_wrapper(op, ty, decl, depth)
+            }
+            // A link is the node's address (mem.racks/RK2), so it renders as
+            // the node — what the interpreter prints. A cycle through `next`
+            // stops at the depth cap like a box that contains itself.
+            MirType::Link(sid) if depth + 1 < MAX_DEPTH => Ok(self
+                .lower_derived_debug(op, &MirType::Struct(*sid), depth + 1)?
+                .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string())))),
+            MirType::Link(_) => Ok(elided(self)),
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
                 Ok(call(self, "i64_to_string", vec![op.clone()]))
             }
@@ -9171,6 +9194,186 @@ impl<'a> MirLowerer<'a> {
             // of its own; printing the word was the bug, so say nothing instead.
             _ => Ok(elided(self)),
         }
+    }
+
+    /// `Option.Some(2.5)`, `Option.None`, `Result.Ok(3)`, `Result.Err(Fault.Bad)`
+    /// — the interpreter's spelling for a wrapper. The tag picks a block and
+    /// each block renders its payload through `debug_render_value`, so a
+    /// struct, a Vec or another wrapper inside reads as it does anywhere else.
+    /// A union err side is the same shape one level down: the member index
+    /// picks the block.
+    ///
+    /// A niche option (`Link<T>?`) is one word with no tag: the null address
+    /// is `none`, and the link itself has no rendering.
+    fn debug_render_wrapper(
+        &mut self,
+        op: &MirOperand,
+        ty: &MirType,
+        decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        let lit = |text: &str| MirOperand::Constant(MirConst::String(text.to_string()));
+
+        if let MirType::Option(inner) = ty {
+            if let Some(none_word) = inner.niche_none() {
+                let is_none = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: is_none,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: op.clone(),
+                        right: MirOperand::Constant(MirConst::Int(none_word)),
+                    },
+                }));
+                let result = self.builder.alloc_temp(MirType::String);
+                let none_block = self.builder.create_block();
+                let some_block = self.builder.create_block();
+                let merge = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(is_none),
+                    then_block: none_block,
+                    else_block: some_block,
+                }));
+                self.builder.switch_to_block(none_block);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(lit("Option.None")),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+                self.builder.switch_to_block(some_block);
+                // Under the link's own type: codegen places a `Field` on an
+                // Option base relative to the payload, and this word has none.
+                let link = self.builder.alloc_temp((**inner).clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: link,
+                    rvalue: MirRValue::Use(op.clone()),
+                }));
+                let node = self.debug_render_value(&MirOperand::Local(link), inner, None, depth)?;
+                let text = self.concat_all(vec![lit("Option.Some("), node, lit(")")]);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(text),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+                self.builder.switch_to_block(merge);
+                return Ok(MirOperand::Local(result));
+            }
+        }
+
+        // The checked payload types, when the checker's type for the wrapper
+        // is in hand: `T?` and `T or E` are both `Type::Result`.
+        let (decl_ok, decl_err) = match decl {
+            Some(rask_types::Type::Result { ok, err }) => (Some(ok.as_ref()), Some(err.as_ref())),
+            _ => (None, None),
+        };
+        let decl_member = |i: usize| match decl {
+            Some(rask_types::Type::Union(members)) => members.get(i),
+            _ => None,
+        };
+
+        // One arm per tag value: its opening text, and what sits in the
+        // payload slot when it does carry one.
+        type Arm<'t> = (u64, String, Option<(MirType, Option<&'t rask_types::Type>)>);
+        let (tag_offset, payload_offset, arms): (u32, u32, Vec<Arm>) = match ty {
+            MirType::Option(inner) => (
+                0,
+                8,
+                vec![
+                    (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
+                    (1, "Option.None".to_string(), None),
+                ],
+            ),
+            MirType::Result { ok, err } => (
+                crate::types::RESULT_TAG_OFFSET,
+                crate::types::RESULT_PAYLOAD_OFFSET,
+                vec![
+                    (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
+                    (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
+                ],
+            ),
+            MirType::Union(members) => (
+                crate::types::UNION_MEMBER_OFFSET,
+                crate::types::UNION_PAYLOAD_OFFSET,
+                members
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (i as u64, String::new(), Some((m.clone(), decl_member(i)))))
+                    .collect(),
+            ),
+            _ => unreachable!("debug_render_wrapper on a non-wrapper {ty:?}"),
+        };
+
+        // Codegen places a `Field` on an Option base relative to the payload,
+        // whatever offset is passed, so the tag goes through `EnumTag` the way
+        // a match reads it. A union has no tag: its member index is a word at
+        // the front, read as a plain field.
+        let tag = if matches!(ty, MirType::Union(_)) {
+            let member = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: op.clone(),
+                    field_index: 0,
+                    byte_offset: Some(tag_offset),
+                    access: FieldAccess::Sized(8),
+                },
+            }));
+            member
+        } else {
+            let tag = self.builder.alloc_temp(MirType::U16);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: tag,
+                rvalue: MirRValue::EnumTag { value: op.clone() },
+            }));
+            tag
+        };
+        let result = self.builder.alloc_temp(MirType::String);
+        let merge = self.builder.create_block();
+        let blocks: Vec<crate::BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let cases: Vec<(u64, crate::BlockId)> =
+            arms.iter().zip(&blocks).map(|((t, _, _), b)| (*t, *b)).collect();
+        let default = blocks.first().copied().unwrap_or(merge);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(tag),
+            cases,
+            default,
+        }));
+
+        for ((_, open, payload), block) in arms.into_iter().zip(blocks) {
+            self.builder.switch_to_block(block);
+            let text = match payload {
+                None => lit(&open),
+                Some((payload_ty, payload_decl)) => {
+                    // Index 0: an Option's or Result's fields are counted from
+                    // the payload, and the offset says where that is.
+                    let slot = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: slot,
+                        rvalue: MirRValue::Field {
+                            base: op.clone(),
+                            field_index: 0,
+                            byte_offset: Some(payload_offset),
+                            access: FieldAccess::for_field(&payload_ty, payload_ty.size()),
+                        },
+                    }));
+                    let inner = self.debug_render_value(
+                        &MirOperand::Local(slot), &payload_ty, payload_decl, depth,
+                    )?;
+                    if open.is_empty() {
+                        inner
+                    } else {
+                        self.concat_all(vec![lit(&open), inner, lit(")")])
+                    }
+                }
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::Use(text),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+        }
+        self.builder.switch_to_block(merge);
+        Ok(MirOperand::Local(result))
     }
 
     /// The checked element type of a `Vec<T>`, for handing down to the
@@ -9876,21 +10079,43 @@ impl<'a> MirLowerer<'a> {
         };
         let int_const = |n: i64| MirOperand::Constant(MirConst::Int(n));
 
+        // A radix spec shows the bit pattern at the value's own width, so a
+        // signed one says how wide it is: the call receives it sign-extended
+        // to a word. An unsigned value is zero-extended and needs no mask.
+        let radix = |this: &mut Self, base: i64, upper: bool| {
+            if is_unsigned {
+                call(this, "u64_to_base", vec![obj_op.clone(), int_const(base), int_const(upper as i64)])
+            } else {
+                let bits = obj_ty.size() as i64 * 8;
+                call(
+                    this,
+                    "i64_to_base",
+                    vec![obj_op.clone(), int_const(base), int_const(upper as i64), int_const(bits)],
+                )
+            }
+        };
+
         use rask_ast::fmt_spec::SpecType;
         let base: MirOperand = match spec.ty {
-            SpecType::Hex { upper } if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(16), int_const(upper as i64)])
+            SpecType::Hex { upper } if is_int => radix(self, 16, upper),
+            SpecType::Binary if is_int => radix(self, 2, false),
+            SpecType::Octal if is_int => radix(self, 8, false),
+            // An integer prints in scientific form too — `{n:e}` of 1500 is
+            // `1.5e3` — so it goes through the float renderer as a float.
+            SpecType::Exp if numeric => {
+                let prec = spec.precision.map(|p| p as i64).unwrap_or(-1);
+                let value = if is_int {
+                    let widened = self.builder.alloc_temp(MirType::F64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: widened,
+                        rvalue: MirRValue::Cast { value: obj_op.clone(), target_ty: MirType::F64 },
+                    }));
+                    MirOperand::Local(widened)
+                } else {
+                    obj_op.clone()
+                };
+                call(self, "f64_to_exp", vec![value, int_const(prec)])
             }
-            SpecType::Binary if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(2), int_const(0)])
-            }
-            SpecType::Octal if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
-            }
-            SpecType::Exp if is_float => call(self, "f64_to_exp", vec![obj_op.clone()]),
             // std.fmt/G2: every type derives Debug. A struct or enum has no
             // `to_string` unless it opted into Displayable, and falling through
             // to one it doesn't have is what made the spec's own example fail —

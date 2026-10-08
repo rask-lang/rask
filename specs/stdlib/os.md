@@ -267,7 +267,9 @@ FIX: Remove unreachable code or move os.exit() to end of block.
 
 **SG2 (channel-based signals):** Callbacks in signal context are tricky — limited to async-signal-safe functions, reentrancy issues, can't allocate. Channels avoid all of this. The signal handler writes to a pipe, the channel reads it in normal context. Integrates with `select` for multiplexing.
 
-**SG3 (default restored on drop):** Channels are non-linear (`conc.async/CH1`), so the receiver can go out of scope. When it does, the signal handler is de-registered and the default OS behavior resumes (terminate for SIGINT/SIGTERM). This prevents stale handlers.
+**SG3 (default restored on drop):** Channels are non-linear (`conc.async/CH1`), so the receiver can go out of scope. When it does, the signal handler is de-registered and the default OS behavior resumes (terminate for SIGINT/SIGTERM). This prevents stale handlers. The runtime notices at the next signal rather than at the drop: the send finds no receiver, so it restores the default and raises the signal again. Nothing between the drop and that signal can tell the difference.
+
+A full channel drops the signal instead of blocking the reader. `os.signals` buffers 16.
 
 ### Patterns & Guidance
 

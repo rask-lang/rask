@@ -1028,15 +1028,20 @@ impl TypeChecker {
                     });
                 }
 
-                // Check pattern and extract bindings
-                // Note: Bindings are NOT added to scope here - they're added by the stmt handler
-                // We just return them via the expression type mechanism
-                //
                 // A bare type test is checked as the `as` form it means, so
                 // its binding carries the narrowed type.
                 let as_bound = self.guard_type_test_as_binding(pattern, &value_ty);
                 let bindings =
                     self.check_pattern(as_bound.as_ref().unwrap_or(pattern), &value_ty, expr.span);
+                // The pattern's own names live past the guard, like the `let`'s:
+                // `let p = r is Point as q else { … }` binds both. Only the
+                // `let`'s name was ever given a type — the statement handler
+                // defines that one — so `q` reached the rest of the function as
+                // a name the resolver knew and the checker had nothing for, and
+                // `q.x` was an open type all the way to MIR (#1026).
+                for (name, ty) in &bindings {
+                    self.define_local_bound(name.clone(), ty.clone(), super::BoundFrom::Payload);
+                }
 
                 // For a guard pattern like `const v = opt is Some else { return }`,
                 // the expression itself evaluates to the inner type
@@ -6609,30 +6614,26 @@ impl TypeChecker {
             // Still open, a generic parameter, or already errored — the body
             // pins these, and an error here would land on working code.
             Type::Var(_) | Type::Error | Type::Never => ContainerElem::Deferred,
-            // An adapted range (`(0..5).rev()`) still resolves to a bare `Range`,
-            // which carries no element type, so the body's arithmetic pins the
-            // width there.
+            // A name with no arguments carries no element type; the body pins it.
             Type::UnresolvedNamed(_) => ContainerElem::Deferred,
             Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                // Each of these yields its first argument, and each arrives in
+                // either spelling: written (`UnresolvedGeneric`) or resolved to
+                // the stdlib declaration's id (`Generic`). Matching the written
+                // one only is how `for i in (0..n).step(2)` left `i` open — a
+                // range literal is spelled out, but what `step` and `rev`
+                // return, or a range held in a variable, is the declared
+                // `Range<T>` (#1026).
+                //
                 // `Iterator<T>` is what every `.iter().map(…)` chain resolves
-                // to, so this is the common case, not an edge one.
-                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Iterator") {
-                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
-                }
-                // ctrl.ranges: a range's bounds share the loop variable's type.
-                // The old bare `Range` carried none, so `for i in 1..6` left `i`
-                // free — and `mut v = Vec.new()` filled by `v.push(i)` then had
-                // no element type either, all the way down to `v[0]` (#620).
-                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Range") {
-                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
-                }
-                // A `Sequence<T>` yields `T`. MIR has known this since #1046 —
-                // the checker never did, so `for w in v.as_sequence()` left `w`
-                // with a free variable and `w.len()` died in lowering with no
-                // receiver type. Nominal, so match on either spelling.
+                // to. A range's bounds share the loop variable's type
+                // (ctrl.ranges), and without it `mut v = Vec.new()` filled by
+                // `v.push(i)` had no element type all the way down to `v[0]`
+                // (#620). A `Sequence<T>` yields `T`, which MIR has known since
+                // #1046.
                 if matches!(
                     self.generic_name_of(ty).as_deref(),
-                    Some("Sequence") | Some("SequenceMut")
+                    Some("Iterator") | Some("Range") | Some("Sequence") | Some("SequenceMut")
                 ) {
                     return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
                 }

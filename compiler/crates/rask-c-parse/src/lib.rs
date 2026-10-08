@@ -8,6 +8,7 @@
 
 mod lexer;
 mod parser;
+pub mod toolchain;
 pub mod translate;
 
 pub use lexer::{CLexer, CToken, CTokenKind};

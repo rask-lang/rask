@@ -380,10 +380,6 @@ impl Interpreter {
                 }
                 Ok(Value::vec(mapped))
             }
-            "wide" => {
-                // Stage this Vec as a data-parallel plan (conc.data-parallel).
-                Ok(Value::Wide(Arc::new(crate::value::WidePlan::Source(Arc::clone(v)))))
-            }
             "flat_map" => {
                 let closure = args.into_iter().next().unwrap_or(Value::Unit);
                 let vec = v.lock().unwrap();

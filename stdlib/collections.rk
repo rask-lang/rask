@@ -248,10 +248,6 @@ extend Vec<T> {
     @native("rask_vec_dedup")
     public func remove_adjacent_duplicates(mutate self) {}
 
-    /// Stage this data as a Wide plan for data-parallel execution.
-    @native("rask_vec_clone")
-    public func wide(self) -> Wide<T> {}
-
     /// Map then flatten results. Lazy (type.sequence/SEQ41).
     ///
     /// Written out rather than forwarded. `Sequence.flat_map` wants
@@ -354,6 +350,13 @@ extend Vec<T> {
 //
 // Its own block because a `where` clause covers the whole one (type.generics/CC3).
 extend Vec<T> where T: Cloneable {
+    /// Stage this data as a `Wide` plan (conc.data-parallel). The lanes are
+    /// copied here, so a later change to the Vec doesn't reach the plan.
+    public func wide(self) -> Wide<T> {
+        let lanes = self.clone()
+        return Wide { run: || { return lanes.clone() } }
+    }
+
     /// A clone of the element at `index`, or `none` when there isn't one.
     public func get_clone(self, index: i64) -> Option<T> {
         if index < 0 {
@@ -631,9 +634,18 @@ extend Map<K, V> where V: Cloneable {
 
 /// A staged data-parallel plan over lanes of `T` (conc.data-parallel).
 ///
-/// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `to_vec`/`sum`
-/// run the plan on the current backend (the CPU baseline for now).
-public struct Wide<T> { }
+/// Built from `some_vec.wide()`. Staging is lazy (C1): `map` and `zip_with`
+/// return a new plan and run nothing. A terminal — `to_vec`, `sum`, `reduce`,
+/// `min`, `max` — runs the plan on the CPU, the baseline every plan has (W2),
+/// and runs all of it again if it is asked again.
+///
+/// Written in Rask, so both backends run this one copy. The interpreter used to
+/// have a plan tree of its own in Rust and native had `sum` alone, adding up
+/// every lane's bits as an `i64` whatever the lanes were (#1287).
+public struct Wide<T> {
+    /// The staged work: calling it builds the lanes.
+    run: func() -> Vec<T>
+}
 
 // The receiver has to say its element is itself a Vec, which the block header
 // is the only place to write.
@@ -661,33 +673,74 @@ extend Vec<Vec<T>> {
 }
 
 extend Wide<T> {
-    /// Transform each lane. Lazy — records the op, runs nothing.
-    @native
-    public func map(self, f: func(T) -> U) -> Wide<U> {}
+    /// Transform each lane. Lazy — records `f`, runs nothing.
+    public func map(self, f: func(T) -> U) -> Wide<U> {
+        let src = self.run
+        return Wide {
+            run: || {
+                mut out: Vec<U> = Vec.new()
+                for x in src() {
+                    out.push(f(x))
+                }
+                return out
+            },
+        }
+    }
 
-    /// Combine two plans lane-by-lane. Lazy. Lengths must match at run time.
-    @native
-    public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {}
+    /// Combine two plans lane by lane. Lazy. The lane counts have to match
+    /// when the plan runs.
+    public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {
+        let a = self.run
+        let b = other.run
+        return Wide {
+            run: || {
+                let xs = a()
+                let ys = b()
+                if xs.len() != ys.len() {
+                    panic("zip_with: lane counts differ ({xs.len()} vs {ys.len()})")
+                }
+                mut out: Vec<V> = Vec.new()
+                mut i = 0
+                while i < xs.len() {
+                    out.push(f(xs[i], ys[i]))
+                    i = i + 1
+                }
+                return out
+            },
+        }
+    }
 
-    /// Run the plan and materialize the lanes back to a Vec.
-    @native("rask_vec_clone")
-    public func to_vec(self) -> Vec<T> {}
+    /// Run the plan and hand back its lanes.
+    public func to_vec(self) -> Vec<T> {
+        let run = self.run
+        return run()
+    }
 
-    /// Run the plan, reducing the lanes with `+`.
-    @native("rask_wide_sum")
-    public func sum(self) -> T {}
+    /// Run the plan, adding the lanes up.
+    public func sum(self) -> T {
+        return self.to_vec().sum()
+    }
 
-    /// Run the plan, folding the lanes from an initial accumulator.
-    @native
-    public func reduce(self, init: U, f: func(U, T) -> U) -> U {}
+    /// Run the plan, folding the lanes from `init`.
+    public func reduce(self, take init: U, f: func(U, T) -> U) -> U {
+        mut acc = init
+        for x in self.to_vec() {
+            acc = f(acc, x)
+        }
+        return acc
+    }
+}
 
-    /// Run the plan, returning the smallest lane.
-    @native
-    public func min(self) -> T {}
+extend Wide<T> where T: Comparable {
+    /// Run the plan, returning the smallest lane. Panics on an empty plan.
+    public func min(self) -> T {
+        return self.to_vec().min()!
+    }
 
-    /// Run the plan, returning the largest lane.
-    @native
-    public func max(self) -> T {}
+    /// Run the plan, returning the largest lane. Panics on an empty plan.
+    public func max(self) -> T {
+        return self.to_vec().max()!
+    }
 }
 
 /// A set of unique values.

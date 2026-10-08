@@ -1050,6 +1050,16 @@ fn error_try_in_a_function_that_returns_nothing() {
 }
 
 #[test]
+fn error_union_narrowing_is_rejected() {
+    // #1520: `T or A | B` went where `T or A` was wanted, at a `let`, a push
+    // and an argument, and the backends then disagreed about the stored error.
+    let (failed, out) = compile_error_output("error_union_narrowing.rk");
+    assert!(failed, "a wider error union into a narrower slot must be rejected: {}", out);
+    assert_eq!(out.matches("E0415").count(), 3, "one error per narrowing site: {}", out);
+    assert!(out.contains("can fail with `Other`"), "should name the error that doesn't fit: {}", out);
+}
+
+#[test]
 fn try_without_an_error_branch_is_rejected() {
     // #1251: the same rule one step wider. The check asked "does this return
     // void?" when the question is "does this return type have a branch to
@@ -8145,6 +8155,49 @@ fn a_c_header_is_found_through_cpath() {
     let _ = std::fs::remove_dir_all(&src_dir);
 }
 
+/// A cross build reads the target's system headers or none, never the host's
+/// (#1102). A struct laid out from the host's `/usr/include` and passed by value
+/// to code built for another machine is wrong in a way nothing else catches.
+///
+/// `CC` pointing nowhere makes "no compiler answered" deterministic: the host
+/// build still falls back to the usual places, the cross build refuses.
+#[test]
+fn a_cross_build_never_reads_the_hosts_system_headers() {
+    let src_dir = std::env::temp_dir().join("rask_cross_header_src");
+    let _ = std::fs::create_dir_all(&src_dir);
+    let src = src_dir.join("uses_stdint.rk");
+    std::fs::write(&src, "import c \"stdint.h\" as cstd\n\nfunc main() {\n    return\n}\n")
+        .expect("write source");
+
+    let run = |target: Option<&str>| {
+        let mut cmd = Command::new(rask_binary());
+        cmd.arg("compile").arg(&src).arg("-o").arg(src_dir.join("out"));
+        if let Some(t) = target {
+            cmd.arg("--target").arg(t);
+        }
+        cmd.env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("CC", "/nonexistent/cc")
+            .env_remove("CPATH")
+            .env_remove("C_INCLUDE_PATH");
+        let out = cmd.output().expect("failed to run rask compile");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+
+    let host = run(None);
+    assert!(
+        !host.contains("C header not found"),
+        "the host build should still find <stdint.h>:\n{host}"
+    );
+
+    let cross = run(Some("aarch64-macos"));
+    assert!(
+        cross.contains("C header not found") && cross.contains("cross-compiling to aarch64-macos"),
+        "the cross build should refuse the host's headers and say why:\n{cross}"
+    );
+
+    let _ = std::fs::remove_dir_all(&src_dir);
+}
+
 #[test]
 fn a_name_a_c_header_never_declared_is_not_a_type() {
     let (text, ok) = check_in_fixtures("c_struct_unknown.rk");
@@ -8602,7 +8655,9 @@ fn assert_says_which_side_wanted_a_bool() {
     let cases = [
         ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
         ("func main() { assert \"nonempty\" }", "found `string`"),
-        ("func main() { assert 1 }", "found `i64`"),
+        // An unsuffixed `1` is an `i32` (type.primitives/L1); the message
+        // used to say `i64` while the literal became an `i32` (#1523).
+        ("func main() { assert 1 }", "found `i32`"),
         ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
     ];
     for (src, found) in cases {
@@ -8617,7 +8672,7 @@ fn assert_says_which_side_wanted_a_bool() {
     // The message argument had the same inversion.
     let out = check_output("func main() { assert 1 == 1, 42 }");
     assert!(
-        out.contains("expected `string`") && out.contains("found `i64`"),
+        out.contains("expected `string`") && out.contains("found `i32`"),
         "the message has to be a string, and 42 isn't one:\n{out}"
     );
 }

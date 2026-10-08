@@ -46,9 +46,23 @@ extend os {
     @native
     public func arch() -> string {}
 
-    /// Register a signal handler. Returns a channel receiver for signals.
-    @native
-    public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError {}
+    /// Deliver each signal in `list` to the returned receiver instead of
+    /// taking its default action (SG2). Dropping the receiver puts the default
+    /// back (SG3).
+    public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError {
+        // Signals that arrive faster than they are read past this are dropped,
+        // not queued without bound.
+        let (tx, rx) = Channel.buffered<Signal>(16)
+        if os.signal_forward(tx, list) != 0 {
+            return IoError.Other("could not start the signal reader")
+        }
+        return rx
+    }
+
+    /// Hand `tx` to the runtime's signal reader for every signal in `list`.
+    /// 0, or a negative errno if the reader couldn't start.
+    @native("rask_os_signal_forward")
+    func signal_forward(take tx: Sender<Signal>, list: Vec<Signal>) -> i64 {}
 
     /// Fork, exec, drain the pipes, wait. The child's exit status, or -1 if it
     /// couldn't be started at all. Not public: `Command.run` is the surface,

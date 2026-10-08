@@ -1413,6 +1413,19 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a pointer's element type is part of it: nothing converts the bytes, so the other side would read a different number of them at a different stride [mem.unsafe, struct.c-interop/TM2]")
             }
 
+            ErrorUnionNarrowing { from, to, extra, span } => {
+                Diagnostic::error(format!(
+                    "`{}` doesn't fit in `{}` — it can fail with `{}`, and this can't",
+                    from, to, extra
+                ))
+                    .with_code("E0415")
+                    .with_primary(*span, format!("this can fail with `{}`", extra))
+                    .with_fix(format!(
+                        "handle `{extra}` here with `catch e => …` or `if r is {extra} as e`, or widen the slot's error type to include it"
+                    ))
+                    .with_why("an error union never narrows: a narrower slot would hold an error its own type says it can't, and the two backends read those bytes differently [type.errors/ER11, ER31]")
+            }
+
             NarrowingNeedsPolicy { from, to, span } => {
                 Diagnostic::error(format!(
                     "`{}` doesn't fit in `{}` — some values would be lost",

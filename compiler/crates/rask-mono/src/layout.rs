@@ -313,7 +313,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // type alias target like `type Counts = Map`) arrive here as a bare
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
-                        "Vec" | "Wide" | "Map"
+                        "Vec" | "Map"
                         | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
@@ -328,19 +328,22 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 }
             }
         }
+        // [member:8][member bytes] — the members are nominally distinct types
+        // with nothing in their bytes to tell them apart, so the index is
+        // stored (#776), the same layout `MirType::Union` sizes. Counting only
+        // the widest member here gave the slot eight bytes too few.
         Type::Union(variants) => {
             let mut max_size = 0u32;
-            let mut max_align = 1u32;
+            let mut max_align = 8u32;
             for v in variants {
                 let (s, a) = type_size_align(v, cache);
                 max_size = max_size.max(s);
                 max_align = max_align.max(a);
             }
-            if max_size == 0 {
-                (8, 8)
-            } else {
-                (max_size, max_align)
-            }
+            (
+                align_up(crate::abi::UNION_PAYLOAD_OFFSET + max_size, max_align),
+                max_align,
+            )
         }
         Type::SimdVector { elem, lanes } => {
             let (elem_size, _) = type_size_align(elem, cache);
@@ -395,6 +398,10 @@ pub fn field_type(ty: &TypeExpr) -> Type {
             Err(_) => Type::UnresolvedNamed(ty.to_string()),
         },
         TypeExpr::Tuple(elems) => Type::Tuple(elems.iter().map(field_type).collect()),
+        // An error union, `T or A | B`. It fell to the catch-all below and was
+        // sized as a name spelled `A#133|B`, one word, so a struct holding one
+        // got a slot too small for the value MIR stored in it (#1521).
+        TypeExpr::Union(members) => Type::Union(members.iter().map(field_type).collect()),
         TypeExpr::Func { params, ret } => Type::Fn {
             params: params
                 .iter()
@@ -540,7 +547,7 @@ pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&st
 pub(crate) fn generic_is_one_word(name: &str) -> bool {
     matches!(
         name,
-        "Link" | "Rack" | "Vec" | "Wide" | "Map" | "Random" | "Channel"
+        "Link" | "Rack" | "Vec" | "Map" | "Random" | "Channel"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
             | "Sender" | "Receiver" | "Handle"
     )
@@ -553,7 +560,7 @@ pub(crate) fn generic_is_one_word(name: &str) -> bool {
 fn is_opaque_container_name(name: &str) -> bool {
     matches!(
         name,
-        "Vec" | "Wide" | "Map" | "Set" | "Rack" | "Link"
+        "Vec" | "Map" | "Set" | "Rack" | "Link"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
             | "Sender" | "Receiver"
     )
