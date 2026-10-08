@@ -1766,4 +1766,33 @@ mod tests {
             _ => panic!("expected annotation declaration"),
         }
     }
+
+    /// Every name inside a `{hole}` carries its own place in the file, however
+    /// deep it sits and whatever escapes or delimiter came before it. Only the
+    /// top few node kinds used to be moved there, so an error about a closure
+    /// body inside a string pointed near the top of the file (#1515).
+    #[test]
+    fn interpolation_spans_are_file_positions() {
+        let src = concat!(
+            "func main() {\n",
+            "    println(\"a\\tb {f(|| { return zz })}\")\n",
+            "    println(\"\\\"q\\\" {g(\\\"k\\\", yy)}\")\n",
+            "    println(r\"raw {xx}\")\n",
+            "    println(\"\"\"tri {ww}\"\"\")\n",
+            "}\n",
+        );
+        let result = parse(src);
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let mut seen = Vec::new();
+        rask_ast::visit::walk_decls(&result.decls, &mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                seen.push((name.clone(), &src[e.span.start..e.span.end]));
+            }
+        });
+        for name in ["f", "zz", "g", "yy", "xx", "ww"] {
+            let found = seen.iter().find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("`{}` not found in {:?}", name, seen));
+            assert_eq!(found.1, name, "span of `{}` covers the wrong text", name);
+        }
+    }
 }

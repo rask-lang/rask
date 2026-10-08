@@ -2,7 +2,7 @@
 //! The lexer implementation using logos.
 
 use logos::Logos;
-use rask_ast::token::{FloatSuffix, IntSuffix, Token, TokenKind};
+use rask_ast::token::{FloatSuffix, IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::Span;
 
 /// Raw token type for logos - we parse values in a second pass.
@@ -824,17 +824,17 @@ impl<'a> Lexer<'a> {
             RawToken::String if slice.starts_with(r#"""""#) => {
                 // Triple-quoted: raw, no escape processing
                 let inner = &slice[3..slice.len() - 3];
-                TokenKind::String(inner.to_string())
+                TokenKind::String(inner.to_string(), StrPositions::new(3))
             }
             RawToken::String => {
                 let inner = &slice[1..slice.len() - 1]; // Remove quotes
-                let s = parse_string(inner, start)?;
-                TokenKind::String(s)
+                let (s, positions) = parse_string(inner, start)?;
+                TokenKind::String(s, positions)
             }
             RawToken::RawString => {
                 // r"content" — strip r" prefix and " suffix, no escape processing
                 let inner = &slice[2..slice.len() - 1];
-                TokenKind::String(inner.to_string())
+                TokenKind::String(inner.to_string(), StrPositions::new(2))
             }
             RawToken::RawHashString => {
                 // r#"content"# or r##"content"## etc.
@@ -843,7 +843,7 @@ impl<'a> Lexer<'a> {
                 let content_start = 1 + hash_count + 1; // r + #*n + "
                 let content_end = slice.len() - 1 - hash_count; // " + #*n
                 let inner = &slice[content_start..content_end];
-                TokenKind::String(inner.to_string())
+                TokenKind::String(inner.to_string(), StrPositions::new(content_start))
             }
             RawToken::Ident => TokenKind::Ident(slice.to_string()),
 
@@ -916,19 +916,22 @@ fn parse_char(s: &str, pos: usize) -> Result<char, LexError> {
 }
 
 /// Parse a string literal (handling escape sequences).
-fn parse_string(s: &str, pos: usize) -> Result<String, LexError> {
+fn parse_string(s: &str, pos: usize) -> Result<(String, StrPositions), LexError> {
     let mut result = String::new();
-    let mut chars = s.chars().peekable();
+    let mut positions = StrPositions::new(1);
+    let mut chars = s.chars();
 
     while let Some(c) = chars.next() {
         if c == '\\' {
             result.push(parse_escape(&mut chars, pos)?);
+            // +1 for the opening quote.
+            positions.anchor(result.len(), 1 + s.len() - chars.as_str().len());
         } else {
             result.push(c);
         }
     }
 
-    Ok(result)
+    Ok((result, positions))
 }
 
 /// Parse an escape sequence.

@@ -4,7 +4,7 @@
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::token::{IntSuffix, Token, TokenKind};
+use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
@@ -314,7 +314,7 @@ impl Parser {
 
     fn expect_string(&mut self) -> Result<String, ParseError> {
         match self.current_kind().clone() {
-            TokenKind::String(s) => {
+            TokenKind::String(s, _) => {
                 self.advance();
                 Ok(s)
             }
@@ -838,7 +838,7 @@ impl Parser {
                 if depth > 0 {
                     // Preserve original token text for strings, idents, etc.
                     match self.current_kind() {
-                        TokenKind::String(s) => {
+                        TokenKind::String(s, _) => {
                             attr.push('"');
                             attr.push_str(s);
                             attr.push('"');
@@ -2782,7 +2782,7 @@ impl Parser {
         if self.match_token(&TokenKind::LBrace) {
             self.skip_newlines();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                if exclusive && matches!(self.current_kind(), TokenKind::String(_)) {
+                if exclusive && matches!(self.current_kind(), TokenKind::String(..)) {
                     // String-named option block: "tokio" { dep ... }
                     let opt_name = self.expect_string()?;
                     let mut opt_deps = Vec::new();
@@ -2850,7 +2850,7 @@ impl Parser {
         let name = self.expect_string()?;
 
         // Optional version string
-        let version = if matches!(self.current_kind(), TokenKind::String(_)) {
+        let version = if matches!(self.current_kind(), TokenKind::String(..)) {
             Some(self.expect_string()?)
         } else {
             None
@@ -2921,7 +2921,7 @@ impl Parser {
                     }
                     other => {
                         // Could be an exclusive feature selection: runtime: "tokio"
-                        if matches!(self.current_kind(), TokenKind::String(_)) {
+                        if matches!(self.current_kind(), TokenKind::String(..)) {
                             let selection = self.expect_string()?;
                             exclusive_selections.push((other.to_string(), selection));
                         } else if self.check(&TokenKind::LBrace) {
@@ -3457,7 +3457,7 @@ impl Parser {
     fn is_expr_start(&self) -> bool {
         matches!(
             self.current_kind(),
-            TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(_) | TokenKind::Bool(_)
+            TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(..) | TokenKind::Bool(_)
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
                 | TokenKind::If | TokenKind::Match | TokenKind::With
                 | TokenKind::Select | TokenKind::SelectPriority
@@ -3983,13 +3983,13 @@ impl Parser {
                 self.advance();
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Float(n, suffix.clone()), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
-            TokenKind::String(s) => {
+            TokenKind::String(s, positions) => {
                 self.advance();
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
                 // `}` alone matters too: `"}}"` is an escaped brace with no
                 // `{` anywhere in it (fmt/F4).
                 if s.contains('{') || s.contains('}') {
-                    match self.parse_string_interpolation(&s, str_span) {
+                    match self.parse_string_interpolation(&s, &positions, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
                     }
@@ -4738,7 +4738,7 @@ impl Parser {
                 // it here read `{0}` as the integer zero and turned `{{x}}`
                 // back into a placeholder.
                 let raw_template = matches!(&lhs.kind, ExprKind::Ident(n) if n == "format")
-                    && matches!(self.current_kind(), TokenKind::String(_));
+                    && matches!(self.current_kind(), TokenKind::String(..));
                 let args = self.parse_args_with(raw_template)?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
@@ -4939,10 +4939,10 @@ impl Parser {
                 let mut end = bang.end;
 
                 // Check for optional custom message: x! "message"
-                let message = if matches!(self.peek(0), TokenKind::String(_)) {
+                let message = if matches!(self.peek(0), TokenKind::String(..)) {
                     let msg_token = self.advance();
                     end = msg_token.span.end;
-                    if let TokenKind::String(s) = &msg_token.kind {
+                    if let TokenKind::String(s, _) = &msg_token.kind {
                         Some(s.clone())
                     } else {
                         None
@@ -5003,7 +5003,7 @@ impl Parser {
     ) -> Result<(), ParseError> {
         loop {
             if raw_first_string && args.is_empty() {
-                if let TokenKind::String(s) = self.current_kind().clone() {
+                if let TokenKind::String(s, _) = self.current_kind().clone() {
                     let start = self.current().span.start;
                     self.advance();
                     let span = self.span(start, self.tokens[self.pos - 1].span.end);
@@ -5570,7 +5570,7 @@ impl Parser {
 
     /// Parse string interpolation segments from a string like "hello {name}, age {age}".
     /// Returns None if the string has no valid interpolation (e.g., escaped braces only).
-    fn parse_string_interpolation(&mut self, s: &str, str_span: Span) -> Option<Vec<StringSegment>> {
+    fn parse_string_interpolation(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> Option<Vec<StringSegment>> {
         let mut segments = Vec::new();
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
@@ -5622,11 +5622,8 @@ impl Parser {
                 let expr_str: String = chars[expr_start..i].iter().collect();
                 i += 1; // skip '}'
 
-                // Calculate byte offset of this expression within the string content
-                let abs_offset = str_span.start + 1 + s.char_indices()
-                    .nth(expr_start)
-                    .map(|(pos, _)| pos)
-                    .unwrap_or(0);
+                let hole_start = s.char_indices().nth(expr_start).map(|(pos, _)| pos).unwrap_or(0);
+                let to_file = |text_byte: usize| str_span.start + positions.source_offset(hole_start + text_byte);
                 // `{}` and `{:spec}` are placeholders the runtime formatter
                 // fills in — nothing to parse here.
                 if expr_str.is_empty() || expr_str.starts_with(':') {
@@ -5657,7 +5654,7 @@ impl Parser {
 
                 let bad_expr = |parser: &mut Self, detail: &str| {
                     parser.errors.push(ParseError {
-                        span: parser.span(abs_offset, abs_offset + expr_str.len()),
+                        span: parser.span(to_file(0), to_file(expr_str.len())),
                         message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
                         hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
                         why: None,
@@ -5675,8 +5672,15 @@ impl Parser {
                     bad_expr(self, "the text inside doesn't lex");
                     return None;
                 }
-                // Reuse this parser's file_id and get sequential NodeIds
-                let saved_tokens = std::mem::replace(&mut self.tokens, lex.tokens);
+                // Place the tokens where the text sits in the file, so every
+                // node built from them carries a file position.
+                let mut tokens = lex.tokens;
+                for tok in &mut tokens {
+                    tok.span.start = to_file(tok.span.start);
+                    tok.span.end = to_file(tok.span.end);
+                    tok.span.file_id = str_span.file_id;
+                }
+                let saved_tokens = std::mem::replace(&mut self.tokens, tokens);
                 let saved_pos = std::mem::replace(&mut self.pos, 0);
 
                 let result = self.parse_expr();
@@ -5687,7 +5691,7 @@ impl Parser {
                 self.tokens = saved_tokens;
                 self.pos = saved_pos;
 
-                let mut parsed = match result {
+                let parsed = match result {
                     Ok(expr) => expr,
                     Err(e) => {
                         bad_expr(self, &e.message);
@@ -5707,10 +5711,6 @@ impl Parser {
                     bad_expr(self, "a string literal on its own isn't something to interpolate");
                     return None;
                 }
-
-                // Remap spans from 0-based (within expr_str) to absolute file position.
-                // str_span.start is the opening quote, +1 for content start, +byte_offset for position.
-                Self::offset_spans(&mut parsed, abs_offset);
 
                 segments.push(StringSegment::Expr(Box::new(parsed), parsed_spec));
             } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
@@ -5734,55 +5734,6 @@ impl Parser {
             Some(segments)
         } else {
             None
-        }
-    }
-
-    /// Offset all spans in an expression tree by a byte amount.
-    fn offset_spans(expr: &mut Expr, offset: usize) {
-        expr.span.start += offset;
-        expr.span.end += offset;
-        match &mut expr.kind {
-            ExprKind::Binary { left, right, .. } => {
-                Self::offset_spans(left, offset);
-                Self::offset_spans(right, offset);
-            }
-            ExprKind::Unary { operand, .. } => Self::offset_spans(operand, offset),
-            ExprKind::Call { func, args } => {
-                Self::offset_spans(func, offset);
-                for arg in args { Self::offset_spans(&mut arg.expr, offset); }
-            }
-            ExprKind::MethodCall { object, args, .. } => {
-                Self::offset_spans(object, offset);
-                for arg in args { Self::offset_spans(&mut arg.expr, offset); }
-            }
-            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-                Self::offset_spans(object, offset);
-            }
-            ExprKind::Index { object, index } => {
-                Self::offset_spans(object, offset);
-                Self::offset_spans(index, offset);
-            }
-            ExprKind::Try { expr } => Self::offset_spans(expr, offset),
-            ExprKind::Take { place } => Self::offset_spans(place, offset),
-            ExprKind::Catch { value, clause } => {
-                Self::offset_spans(value, offset);
-                Self::offset_spans(&mut clause.body, offset);
-            }
-            ExprKind::Unwrap { expr, bang, .. } => {
-                bang.start += offset;
-                bang.end += offset;
-                Self::offset_spans(expr, offset);
-            }
-            ExprKind::Cast { expr, .. } => Self::offset_spans(expr, offset),
-            ExprKind::Convert { expr, .. } => Self::offset_spans(expr, offset),
-            ExprKind::NullCoalesce { value, default } => {
-                Self::offset_spans(value, offset);
-                Self::offset_spans(default, offset);
-            }
-            ExprKind::Array(exprs) | ExprKind::Tuple(exprs) => {
-                for e in exprs { Self::offset_spans(e, offset); }
-            }
-            _ => {}
         }
     }
 
@@ -5938,7 +5889,7 @@ impl Parser {
                 }
                 Ok(Pattern::Literal(start))
             }
-            TokenKind::String(s) => {
+            TokenKind::String(s, _) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
                 Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
