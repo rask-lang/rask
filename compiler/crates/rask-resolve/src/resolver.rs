@@ -3030,16 +3030,21 @@ impl Resolver {
                 // shadowed the type for the rest of the scope, so a later
                 // `Fault.Mine` resolved to a variable nobody had typed and
                 // failed with "couldn't work out the type" (#1026).
+                //
+                // Except a stdlib module's name. Each module is declared as a
+                // field-less struct named after itself (`struct time {}`), so
+                // it looks like a type here, and it is never one a pattern
+                // tests for. `EngineStart(time) => …` binds `time`.
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     if let Some(sym) = self.symbols.get(sym_id) {
-                        if matches!(
+                        let names_a_type = matches!(
                             sym.kind,
-                            SymbolKind::EnumVariant { .. }
-                                | SymbolKind::Struct { .. }
+                            SymbolKind::Struct { .. }
                                 | SymbolKind::Enum { .. }
                                 | SymbolKind::Interface { .. }
                                 | SymbolKind::BuiltinType { .. }
-                        ) {
+                        ) && !rask_stdlib::modules::is_module(name);
+                        if matches!(sym.kind, SymbolKind::EnumVariant { .. }) || names_a_type {
                             return;
                         }
                     }
