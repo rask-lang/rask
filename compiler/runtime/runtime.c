@@ -1809,6 +1809,7 @@ int main(int argc, char **argv) {
     // After the tasks, not before: a detached task can still be reading a
     // module-level const while main is returning.
     rask_const_free();
+    rask_signals_release();
     rask_leak_check();
     return 0;
 }

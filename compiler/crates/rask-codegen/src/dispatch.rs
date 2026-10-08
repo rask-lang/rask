@@ -1169,6 +1169,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        StdlibEntry::simple("os_signal_forward", "rask_os_signal_forward", &[types::I64, types::I64], Some(types::I64), false),
         // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
         // ensures. Declared `@native` in stdlib/os.rk with no entry here, so
         // `os.exit(1)` reached codegen as "Function not found: os_exit" while
@@ -1983,7 +1984,6 @@ mod tests {
     ("math.tan",                  Ok_("t_native_reach_map_math_json")),
     ("math.to_degrees",           Ok_("t_native_reach_map_math_json")),
     ("math.to_radians",           Ok_("t_native_reach_map_math_json")),
-    ("os.signals",                Gap("#1289")),
     // `size_of`, `align_of` and `is_copy` refuse on BOTH backends with the
     // same message — the compiler has two size models that disagree (#791) —
     // so there is no probe. Agreeing to refuse is not a divergence, and the

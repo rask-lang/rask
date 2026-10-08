@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `os.signals` on both backends (std.os/SG1–SG3).
+//
+// Native had no entry point at all, "Function not found: os_signals" at
+// codegen, and the interpreter's first version handed back a receiver nothing
+// fed (#1289). The signal comes from `kill` run as a child, which is the
+// one way a test can send its own process one.
+
+import os
+import os.Command
+import os.Signal
+
+func send_self(flag: string) {
+    let out = Command.new("kill").args([flag, "{os.pid()}"]).run()!
+    assert out.status == 0
+}
+
+func name_of(s: Signal) -> string {
+    return match s {
+        Signal.Interrupt => "interrupt",
+        Signal.Terminate => "terminate",
+        Signal.Hangup => "hangup",
+        Signal.User1 => "user1",
+        Signal.User2 => "user2",
+    }
+}
+
+test "a signal sent to the process arrives on the receiver" {
+    let signals = os.signals([Signal.User1, Signal.User2])!
+    send_self("-USR2")
+    assert name_of(signals.receive()!) == "user2"
+    send_self("-USR1")
+    assert name_of(signals.receive()!) == "user1"
+}
+
+test "the last registration for a signal wins" {
+    let first = os.signals([Signal.Hangup])!
+    let second = os.signals([Signal.Hangup])!
+    send_self("-HUP")
+    assert name_of(second.receive()!) == "hangup"
+    // Its only signal went elsewhere, so nothing feeds it any more.
+    assert first.receive() is ReceiveError
+}
