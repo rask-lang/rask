@@ -6,6 +6,15 @@ use crate::{BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirType};
 
 pub use rask_ast::Span;
 
+/// One field of one struct layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FieldSlot {
+    /// Index into the program's struct layouts.
+    pub layout: u32,
+    /// Index into that layout's fields.
+    pub field: u32,
+}
+
 /// MIR statement kind — no control flow
 #[derive(Debug, Clone)]
 pub enum MirStmtKind {
@@ -20,6 +29,11 @@ pub enum MirStmtKind {
         /// Byte size of the store (e.g. 4 for f32, 1 for bool).
         /// When None, codegen uses the natural size of the value.
         store_size: Option<u32>,
+        /// The struct field this writes, when lowering wrote one: a struct
+        /// literal's field, or the last step of `a.b.c = v`. The offset alone
+        /// can't say — `o.inner.run = f` is a store at `Outer`'s byte 16, and
+        /// the field is `Inner.run`.
+        field: Option<FieldSlot>,
     },
     Call {
         dst: Option<LocalId>,

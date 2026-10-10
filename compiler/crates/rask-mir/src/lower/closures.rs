@@ -963,6 +963,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Local(value),
             store_size: Some(ret.size()),
+            field: None,
         }));
         b.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
             value: Some(MirOperand::Local(boxed)),

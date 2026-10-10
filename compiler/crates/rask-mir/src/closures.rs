@@ -1771,6 +1771,7 @@ mod tests {
                         offset: 0,
                         value: MirOperand::Local(LocalId(0)),
                         store_size: None,
+                        field: None,
                     }),
                 ], ret(None)),
             ],

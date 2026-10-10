@@ -112,6 +112,7 @@ impl<'a> MirLowerer<'a> {
                     offset: 0,
                     value: MirOperand::Constant(MirConst::Int(0)),
                     store_size: Some(8),
+                    field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: wrap_local,
@@ -123,6 +124,7 @@ impl<'a> MirLowerer<'a> {
                     // stale bytes inside every `i32?` built this way, and `==`
                     // reads the payload as a word (#920).
                     store_size: Some(val_ty.size().max(8)),
+                    field: None,
                 }));
                 return (MirOperand::Local(wrap_local), place_ty.clone());
             }
@@ -325,6 +327,27 @@ impl<'a> MirLowerer<'a> {
             return Some((off, ety, fsize));
         }
         None
+    }
+
+    /// Which struct field `field` names within `oty`, for a store to record.
+    fn field_slot_of(&self, oty: &MirType, field: &str) -> Option<crate::FieldSlot> {
+        let sid = match oty {
+            MirType::Struct(sid) | MirType::Link(sid) => sid,
+            _ => return None,
+        };
+        let layout = self.ctx.struct_layouts.get(sid.id as usize)?;
+        let index = layout.fields.iter().position(|f| f.name == field)?;
+        Some(crate::FieldSlot { layout: sid.id, field: index as u32 })
+    }
+
+    /// The field at the end of `path` within `base_ty`.
+    fn field_path_slot(&self, base_ty: &MirType, path: &[&str]) -> Option<crate::FieldSlot> {
+        let (last, owner) = path.split_last()?;
+        let mut ty = base_ty.clone();
+        for field in owner {
+            ty = self.field_offset_ty_size(&ty, field)?.1;
+        }
+        self.field_slot_of(&ty, last)
     }
 
     /// Record the edges a struct's own fields carry, against the storage it
@@ -710,6 +733,7 @@ impl<'a> MirLowerer<'a> {
                                 offset: 0,
                                 value: val_op,
                                 store_size,
+                                field: None,
                             }));
                         } else {
                             // A closure writing a whole struct over a capture
@@ -770,6 +794,7 @@ impl<'a> MirLowerer<'a> {
                                     offset,
                                     value: val_op,
                                     store_size: fsize,
+                                    field: self.field_slot_of(&guard_ty, field),
                                 }));
                                 if let Some(release) = release {
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -831,11 +856,15 @@ impl<'a> MirLowerer<'a> {
                             // 8-byte pointer instead, so `s.text = "lit"` left
                             // the address of the constant in a 16-byte string
                             // field and the field read back as garbage.
+                            let slot = self
+                                .lower_place_chain(object)
+                                .and_then(|(_, _, oty, _)| self.field_slot_of(&oty, field));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: base,
                                 offset,
                                 value: val_op,
                                 store_size: fsize,
+                                field: slot,
                             }));
                             return Ok(());
                         }
@@ -876,6 +905,7 @@ impl<'a> MirLowerer<'a> {
                                     .or_else(|| self.collection_elem_of_expr(coll));
                                 if let Some(elem_ty) = elem_ty {
                                     if let Some((offset, fsize, fty)) = self.field_path_offset_ty(&elem_ty, &path) {
+                                        let slot = self.field_path_slot(&elem_ty, &path);
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
                                         let tmp = self.builder.alloc_temp(elem_ty);
@@ -901,6 +931,7 @@ impl<'a> MirLowerer<'a> {
                                             offset,
                                             value: val_op,
                                             store_size: Some(fsize),
+                                            field: slot,
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: None,
@@ -913,6 +944,7 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
+                        let slot = self.field_slot_of(&obj_ty, field);
                         let offset = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                             if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                                 layout.fields.iter()
@@ -945,6 +977,7 @@ impl<'a> MirLowerer<'a> {
                             offset,
                             value: val_op,
                             store_size: None,
+                            field: slot,
                         }));
                     }
                     // Index assignment: a[i] = val
@@ -1024,6 +1057,7 @@ impl<'a> MirLowerer<'a> {
                             offset: 0,
                             value: val_op,
                             store_size,
+                            field: None,
                         }));
                     }
                     // CT49 is a read — `value.("x")` resolves to a field access
@@ -1746,6 +1780,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: init_op,
                 store_size: Some(var_ty.size()),
+                field: None,
             }));
             return Ok(());
         }

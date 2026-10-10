@@ -998,7 +998,7 @@ impl<'a> FunctionBuilder<'a> {
         match &stmt.kind {
             MirStmtKind::Assign { dst, rvalue } => Self::lower_assign(builder, dst, rvalue, ctx)?,
 
-            MirStmtKind::Store { addr, offset, value, store_size } => Self::lower_store(builder, addr, offset, value, store_size, ctx)?,
+            MirStmtKind::Store { addr, offset, value, store_size, .. } => Self::lower_store(builder, addr, offset, value, store_size, ctx)?,
 
             // Array element store: base_ptr[index * elem_size] = value
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {

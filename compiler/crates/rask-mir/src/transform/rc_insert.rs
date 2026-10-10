@@ -1859,6 +1859,7 @@ mod tests {
                     offset: 0,
                     value: MirOperand::Local(local(1)),
                     store_size: Some(16),
+                    field: None,
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
@@ -2083,6 +2084,7 @@ mod tests {
                             offset: 0,
                             value: MirOperand::Constant(MirConst::Int(1)),
                             store_size: None,
+                            field: None,
                         }),
                     ],
                     terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -2096,6 +2098,7 @@ mod tests {
                         offset: 24,
                         value: MirOperand::Local(local(1)),
                         store_size: None,
+                        field: None,
                     })],
                     terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Local(local(0))),

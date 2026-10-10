@@ -79,6 +79,7 @@ impl<'a> MirLowerer<'a> {
                 offset: i as u32 * elem_size,
                 value: op,
                 store_size,
+                field: None,
             }));
         }
 
@@ -1127,6 +1128,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: MirOperand::Local(word),
                 store_size: None,
+                field: None,
             }));
         }
 
@@ -1224,6 +1226,7 @@ impl<'a> MirLowerer<'a> {
                             offset: abs_offset,
                             value: MirOperand::Local(cloned),
                             store_size: None,
+                            field: None,
                         }));
                     }
                 }

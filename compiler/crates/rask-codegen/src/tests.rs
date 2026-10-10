@@ -647,8 +647,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None, field: None }),
                     assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, access: FieldAccess::Word }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -970,8 +970,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None, field: None }),
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
@@ -1006,8 +1006,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None, field: None }),
                     assign(1, MirRValue::EnumTag { value: local_op(0) }),
                 ], ret(Some(local_op(1)))),
             ],

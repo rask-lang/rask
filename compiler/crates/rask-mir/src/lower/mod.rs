@@ -1977,6 +1977,7 @@ impl<'a> MirLowerer<'a> {
                     offset: off,
                     value: MirOperand::Local(word),
                     store_size: Some(8),
+                    field: None,
                 }));
                 off += 8;
             }
@@ -1990,6 +1991,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: stored,
             store_size: None,
+            field: None,
         }));
     }
 
@@ -2023,6 +2025,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: MirOperand::Constant(MirConst::Int(word)),
                 store_size: Some(8),
+                field: None,
             }));
         }
         let (payload, size) = if err_ty.passed_by_address() {
@@ -2035,6 +2038,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_PAYLOAD_OFFSET,
             value: payload,
             store_size: Some(size),
+            field: None,
         }));
         Some(MirOperand::Local(slot))
     }
@@ -2400,6 +2404,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: val,
             store_size: Some(width),
+            field: None,
         }));
         MirOperand::Local(heap)
     }
@@ -2815,6 +2820,7 @@ impl<'a> MirLowerer<'a> {
                 offset: tag_offset,
                 value: MirOperand::Constant(MirConst::Int(0)),
                 store_size: Some(8),
+                field: None,
             }));
             if is_result {
                 // ER15 origin stays zero on the success side.
@@ -2827,6 +2833,7 @@ impl<'a> MirLowerer<'a> {
                         offset: off,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                 }
             }
@@ -2846,6 +2853,7 @@ impl<'a> MirLowerer<'a> {
                 offset: payload_offset,
                 value: payload_op,
                 store_size: Some(store_size),
+                field: None,
             }));
             cur_op = MirOperand::Local(slot);
             cur_ty = layer_ty;
@@ -4307,6 +4315,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     // Zero the origin-file and origin-line fields so they
                     // don't carry stale bytes when the caller copies the
@@ -4316,12 +4325,14 @@ impl<'a> MirLowerer<'a> {
                         offset: 8,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: wrap_local,
                         offset: 16,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     Some(MirOperand::Local(wrap_local))
                 } else {
@@ -4837,12 +4848,14 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::UNION_MEMBER_OFFSET,
             value: MirOperand::Constant(MirConst::Int(index as i64)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
             offset: crate::types::UNION_PAYLOAD_OFFSET,
             value: val.clone(),
             store_size: Some(member_size.max(8)),
+            field: None,
         }));
         Some(MirOperand::Local(slot))
     }
@@ -5337,6 +5350,7 @@ impl<'a> MirLowerer<'a> {
                                     offset: tuple_offset,
                                     value: MirOperand::Local(read),
                                     store_size: Some(field_ty.size()),
+                                    field: None,
                                 }));
                                 tuple_offset += field_ty.size();
                             }

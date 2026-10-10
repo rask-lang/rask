@@ -858,6 +858,7 @@ mod tests {
                         offset: 0,
                         value: MirOperand::Local(local(0)),
                         store_size: None,
+                        field: None,
                     }),
                 ],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),

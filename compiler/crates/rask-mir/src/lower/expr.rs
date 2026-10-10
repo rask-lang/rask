@@ -602,6 +602,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)), // tag = None
             store_size: None,
+            field: None,
         }));
         Ok((MirOperand::Local(result_local), option_ty))
     }
@@ -923,6 +924,7 @@ impl<'a> MirLowerer<'a> {
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(tag)),
             store_size: None,
+            field: None,
         }));
         Some((MirOperand::Local(result_local), enum_ty))
     }
@@ -2053,6 +2055,7 @@ impl<'a> MirLowerer<'a> {
                         offset: i * elem_size,
                         value: val.clone(),
                         store_size: None,
+                        field: None,
                     }));
                 }
                 return Ok((MirOperand::Local(result_local), array_ty));
@@ -2381,6 +2384,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(tag)),
                         store_size: None,
+                        field: None,
                     }));
                     Ok((MirOperand::Local(result_local), ty))
                 } else {
@@ -2769,6 +2773,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(tag)),
                         store_size: None,
+                        field: None,
                     }));
                     if let Some(payload) = arg_operands.first() {
                         let payload_offset = if matches!(result_ty, MirType::Result { .. }) {
@@ -2783,12 +2788,14 @@ impl<'a> MirLowerer<'a> {
                                 offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
                                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
                                 store_size: None,
+                                field: None,
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: result_local,
                                 offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
                                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
                                 store_size: None,
+                                field: None,
                             }));
                         }
                         // Set store_size for aggregate payloads (strings are 16 bytes)
@@ -2802,6 +2809,7 @@ impl<'a> MirLowerer<'a> {
                             offset: payload_offset,
                             value: payload.clone(),
                             store_size: payload_store_size,
+                            field: None,
                         }));
                     }
                     return Ok((MirOperand::Local(result_local), result_ty));
@@ -2932,6 +2940,7 @@ impl<'a> MirLowerer<'a> {
                             offset: layout.tag_offset,
                             value: MirOperand::Constant(MirConst::Int(0)),
                             store_size: None,
+                            field: None,
                         }));
                         return Ok((MirOperand::Local(result_local), enum_ty));
                     }
@@ -3411,6 +3420,7 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         None
                     },
+                    field: None,
                 }));
             }
             Ok((MirOperand::Local(result_local), array_ty))
@@ -3506,6 +3516,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: elem_op,
                     store_size: Some(elem_size),
+                    field: None,
                 }));
                 offset += elem_size;
             }
@@ -3586,6 +3597,7 @@ impl<'a> MirLowerer<'a> {
                     offset: tag_offset,
                     value: MirOperand::Constant(MirConst::Int(tag as i64)),
                     store_size: None,
+                    field: None,
                 }));
                 // Store fields at their offsets within the payload
                 for field in fields.iter() {
@@ -3600,6 +3612,7 @@ impl<'a> MirLowerer<'a> {
                         offset,
                         value: val_op,
                         store_size,
+                        field: None,
                     }));
                 }
             } else {
@@ -3709,6 +3722,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: val_op,
                     store_size,
+                    field: field_slot(&result_ty, layout, &field.name),
                 }));
 
                 // Propagate Vec element types from source var to struct field.
@@ -3757,6 +3771,10 @@ impl<'a> MirLowerer<'a> {
                             offset,
                             value: MirOperand::Local(tmp),
                             store_size: Some(size),
+                            field: match &result_ty {
+                                MirType::Struct(sid) => Some(crate::FieldSlot { layout: sid.id, field: idx as u32 }),
+                                _ => None,
+                            },
                         }));
                     }
                 }
@@ -3942,6 +3960,7 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::OPTION_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.assign_and_goto(dst, MirOperand::Local(none), done_blk);
 
@@ -4093,6 +4112,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: MirOperand::Local(word),
                     store_size: Some(8),
+                    field: None,
                 }));
             }
         }
@@ -4167,6 +4187,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: None,
+                field: None,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: merge_block,
@@ -4345,6 +4366,7 @@ impl<'a> MirLowerer<'a> {
                     offset: *offset,
                     value,
                     store_size: Some(*size),
+                    field: None,
                 }));
             }
             Ok((MirOperand::Local(result_local), layout_ty))
@@ -4457,6 +4479,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     let value_size = field_size.unwrap_or(8);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -4464,6 +4487,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 8,
                         value: MirOperand::Local(field_local),
                         store_size: Some(value_size),
+                        field: None,
                     }));
                 }
             } else if is_niche {
@@ -4472,12 +4496,14 @@ impl<'a> MirLowerer<'a> {
                     offset: 0,
                     value: MirOperand::Constant(MirConst::Int(0)),
                     store_size: Some(8),
+                    field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: result_local,
                     offset: 8,
                     value: obj.clone(),
                     store_size: Some(field_ty.size()),
+                    field: None,
                 }));
             } else {
                 // Payload with no struct layout to find the field in. The
@@ -4511,12 +4537,14 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset: 8,
                         value: MirOperand::Local(payload_local),
                         store_size: Some(payload_ty.size().max(1)),
+                        field: None,
                     }));
                 }
             }
@@ -4529,6 +4557,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: Some(8),
+                field: None,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -5515,6 +5544,7 @@ impl<'a> MirLowerer<'a> {
                 offset: i * 8,
                 value: MirOperand::Local(slot),
                 store_size: None,
+                field: None,
             }));
         }
         (MirOperand::Local(wide), 8)
@@ -5629,6 +5659,7 @@ impl<'a> MirLowerer<'a> {
                                 offset: tag_offset,
                                 value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
                                 store_size: None,
+                                field: None,
                             }));
 
                             // Store payload fields
@@ -5662,6 +5693,7 @@ impl<'a> MirLowerer<'a> {
                                     offset,
                                     value: val,
                                     store_size,
+                                    field: None,
                                 }));
                             }
 
@@ -6787,6 +6819,7 @@ impl<'a> MirLowerer<'a> {
                             offset: field.offset,
                             value: store_val,
                             store_size: if wide { Some(field.size) } else { None },
+                            field: None,
                         }));
                     }
                     return Ok((MirOperand::Local(result_local), obj_ty));
@@ -7075,24 +7108,28 @@ impl<'a> MirLowerer<'a> {
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(full_tag as i64)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: err_local,
             offset: payload_offset,
             value: value.clone(),
             store_size: if value_size > 8 { Some(value_size) } else { None },
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset: crate::types::RESULT_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset: crate::types::RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(err_local),
             store_size: if err_size > 8 { Some(err_size) } else { None },
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -7111,6 +7148,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -7212,12 +7250,14 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::OPTION_TAG_OFFSET,
             value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
             offset: rask_mono::abi::OPTION_PAYLOAD_OFFSET,
             value: n_op,
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: done_block,
@@ -7229,6 +7269,7 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::OPTION_TAG_OFFSET,
             value: MirOperand::Constant(crate::operand::MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: done_block,
@@ -7795,6 +7836,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: val,
                         store_size: None,
+                        field: None,
                     }));
                     return Ok(Some((MirOperand::Constant(MirConst::Int(0)), MirType::Void)));
                 }
@@ -8169,12 +8211,14 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Local(wrapped),
                 store_size: Some(value_size),
+                field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: pair,
                 offset: value_size,
                 value: MirOperand::Local(flag),
                 store_size: Some(MirType::Bool.size()),
+                field: None,
             }));
             return Ok(Some((MirOperand::Local(pair), pair_ty)));
         }
@@ -8206,12 +8250,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: MirOperand::Local(value),
             store_size: Some(obj_ty.size()),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -8223,6 +8269,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -8391,6 +8438,7 @@ impl<'a> MirLowerer<'a> {
             // asserts in a row passed in `main` and the third failed in a
             // `test` block, purely on what the stack happened to hold.
             store_size: None,
+            field: None,
         }));
         (MirOperand::Local(slot), ty)
     }
@@ -10429,6 +10477,7 @@ impl<'a> MirLowerer<'a> {
                     // address; a bool is one byte and a wider store would run
                     // over the field beside it.
                     store_size: Some(ty.size()),
+                    field: None,
                 }));
             }
         }
@@ -10561,6 +10610,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: MirOperand::Local(w),
                     store_size: None,
+                    field: None,
                 }));
             }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result }));
@@ -10582,6 +10632,7 @@ impl<'a> MirLowerer<'a> {
                 offset: i * elem_size,
                 value: MirOperand::Local(slot),
                 store_size: Some(elem_size),
+                field: None,
             }));
         }
         (MirOperand::Local(result), kept_ty)
@@ -11063,3 +11114,14 @@ impl<'a> MirLowerer<'a> {
         Ok((last_val, last_ty))
     }
 } // end impl MirLowerer
+
+/// The field a struct literal's store writes, named by its layout and position.
+fn field_slot(
+    result_ty: &MirType,
+    layout: Option<&rask_mono::StructLayout>,
+    name: &str,
+) -> Option<crate::FieldSlot> {
+    let MirType::Struct(sid) = result_ty else { return None };
+    let index = layout?.fields.iter().position(|f| f.name == name)?;
+    Some(crate::FieldSlot { layout: sid.id, field: index as u32 })
+}

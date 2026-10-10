@@ -679,11 +679,13 @@ fn remap_stmt(
             offset,
             value,
             store_size,
+            field,
         } => MirStmtKind::Store {
             addr: local_map.get(addr).copied().unwrap_or(*addr),
             offset: *offset,
             value: remap_operand(value, local_map),
             store_size: *store_size,
+            field: *field,
         },
         MirStmtKind::Call { dst, func, args } => MirStmtKind::Call {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
@@ -963,6 +965,7 @@ fn fixup_return_values(
                     offset,
                     value: MirOperand::Constant(MirConst::Int(value)),
                     store_size: None,
+                    field: None,
                 },
                 span,
             ));
