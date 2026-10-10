@@ -291,9 +291,13 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
+        // A closure in a field is the aggregate's, released with it (#1253),
+        // so writing a new one over it gives the old one back the same way.
+        // Left out, `p.run = || …` leaked the closure it replaced.
         matches!(
             fty,
             MirType::String | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
     }
