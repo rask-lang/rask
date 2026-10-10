@@ -786,7 +786,7 @@ fn value_to_json(
         Value::Enum { name, variant, fields, .. } => {
             let enum_decl = enums.get(name);
             let variant_decl = enum_decl.and_then(|d| d.variants.iter().find(|v| &v.name == variant));
-            let variant_attrs: &[String] = variant_decl.map(|v| v.attrs.as_slice()).unwrap_or(&[]);
+            let variant_attrs: &[rask_ast::attr::Attr] = variant_decl.map(|v| v.attrs.as_slice()).unwrap_or(&[]);
             let serial_name = field_attrs::serial_name(variant_attrs, variant);
             let tag_field = enum_decl.and_then(|d| field_attrs::tag_field(&d.attrs));
 

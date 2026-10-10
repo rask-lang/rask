@@ -87,7 +87,7 @@ pub fn detect(
 /// like `http.serve` spawn per connection and leave the block to whoever calls
 /// it.
 fn is_root_fn(f: &FnDecl) -> bool {
-    f.name == "main" || f.attrs.iter().any(|a| a == "test")
+    f.name == "main" || f.attrs.iter().any(|a| a.is("test"))
 }
 
 struct WarnContext<'a> {

@@ -5023,9 +5023,7 @@ impl<'a> MirLowerer<'a> {
             .rev()
             .find(|(name, _)| name == object_name)?
             .1;
-        let has = fc.attrs.iter().any(|attr| {
-            rask_ast::decl::field_attrs::attachment_name(attr) == annotation
-        });
+        let has = fc.attrs.iter().any(|attr| attr.is(annotation));
         Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
     }
 
@@ -5045,8 +5043,6 @@ impl<'a> MirLowerer<'a> {
         object: &Expr,
         field: &str,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        use rask_ast::decl::field_attrs;
-
         let ExprKind::MethodCall { object: recv, method, type_args, .. } = &object.kind else {
             return Ok(None);
         };
@@ -5062,20 +5058,13 @@ impl<'a> MirLowerer<'a> {
             return Ok(None);
         };
 
-        let Some(attr) = fc
-            .attrs
-            .iter()
-            .find(|a| field_attrs::attachment_name(a) == annotation)
-        else {
+        let Some(attr) = fc.attrs.iter().find(|a| a.is(annotation)) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
                 fc.name, annotation, field, binding, annotation
             )));
         };
-        let Some((_, value)) = field_attrs::attachment_args(attr)
-            .into_iter()
-            .find(|(name, _)| *name == field)
-        else {
+        let Some(value) = attr.arg(field) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "`@{}` on `{}` has no field `{}`",
                 annotation, fc.name, field

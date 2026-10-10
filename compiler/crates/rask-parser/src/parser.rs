@@ -601,7 +601,7 @@ impl Parser {
         // (before any statements run), which is surprising when consts
         // read from sync primitives modified by earlier statements.
         let has_main = decls.iter().any(|d| matches!(&d.kind,
-            DeclKind::Fn(f) if f.name == "main" || f.attrs.contains(&"entry".to_string())));
+            DeclKind::Fn(f) if f.name == "main" || rask_ast::attr::has(&f.attrs, "entry")));
 
         if !has_main && !top_level_stmts.is_empty() {
             // Move const decls into the statement list
@@ -653,7 +653,7 @@ impl Parser {
                         is_comptime: false,
                         is_unsafe: false,
                         abi: None,
-                        attrs: vec!["entry".to_string()],
+                        attrs: vec![rask_ast::attr::Attr::synthetic("entry", None)],
                         doc: None,
                         span,
                         decl_start: span.start,
@@ -821,56 +821,111 @@ impl Parser {
         Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) })
     }
 
-    fn parse_attribute(&mut self) -> Result<String, ParseError> {
+    /// `@name`, `@a.b`, `@name(args)`. Each argument is split here into its
+    /// label, if it has one, and the text of its value, so nothing after the
+    /// parser re-splits attribute text.
+    fn parse_attribute(&mut self) -> Result<rask_ast::attr::Attr, ParseError> {
+        let start = self.current().span.start;
         self.expect(&TokenKind::At)?;
         // Use expect_ident_or_keyword so @test, @benchmark etc. work
-        let mut attr = self.expect_ident_or_keyword()?;
-
-        if self.match_token(&TokenKind::LParen) {
-            attr.push('(');
-            let mut depth = 1;
-            while depth > 0 && !self.at_end() {
-                match self.current_kind() {
-                    TokenKind::LParen => depth += 1,
-                    TokenKind::RParen => depth -= 1,
-                    _ => {}
-                }
-                if depth > 0 {
-                    // Preserve original token text for strings, idents, etc.
-                    match self.current_kind() {
-                        TokenKind::String(s, _) => {
-                            attr.push('"');
-                            attr.push_str(s);
-                            attr.push('"');
-                        }
-                        TokenKind::Ident(s) => attr.push_str(s),
-                        TokenKind::Int(n, _) => attr.push_str(&n.to_string()),
-                        TokenKind::Float(f, _) => attr.push_str(&format!("{:?}", f)),
-                        TokenKind::Bool(b) => attr.push_str(if *b { "true" } else { "false" }),
-                        TokenKind::Char(c) => attr.push_str(&format!("'{}'", c)),
-                        TokenKind::Comma => attr.push_str(", "),
-                        // Keywords, operators, and delimiters keep their source
-                        // text. Debug output here would mangle anything with
-                        // punctuation — a lint rule id like
-                        // `@allow(idiom/duck-interface)` came out as
-                        // `allow(idiomSlashduck-Interface)` and matched nothing,
-                        // breaking per-rule suppression (tool.lint/SU1).
-                        //
-                        // Literals must be listed above, not left to this arm:
-                        // `display_name` is prose for diagnostics, so `@default(1.5)`
-                        // was stored as `default(a number)` and `@default(true)` as
-                        // `default(true' or 'false)` — the value simply gone (#965).
-                        // A token kind added later lands here and gets prose too;
-                        // #965 tracks giving TokenKind a real source_text().
-                        k => attr.push_str(k.display_name().trim_matches('\'')),
-                    }
-                }
-                self.advance();
-            }
-            attr.push(')');
+        let mut path = vec![self.expect_ident_or_keyword()?];
+        // `@liba.validate`: a user annotation named through its package
+        // (type.annotations/AN5).
+        while self.check(&TokenKind::Dot) && matches!(self.peek(1), TokenKind::Ident(_))
+        {
+            self.advance();
+            path.push(self.expect_ident()?);
         }
 
-        Ok(attr)
+        let mut args = None;
+        if self.match_token(&TokenKind::LParen) {
+            let mut list = Vec::new();
+            loop {
+                self.skip_attribute_newlines();
+                if self.check(&TokenKind::RParen) || self.at_end() {
+                    break;
+                }
+                let label = match (self.current_kind(), self.peek(1)) {
+                    (TokenKind::Ident(name), TokenKind::Colon) => {
+                        let name = name.clone();
+                        self.advance();
+                        self.advance();
+                        Some(name)
+                    }
+                    _ => None,
+                };
+                let value = self.attribute_value_text();
+                list.push(rask_ast::attr::AttrArg { label, value });
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.skip_attribute_newlines();
+            self.expect(&TokenKind::RParen)?;
+            args = Some(list);
+        }
+
+        let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
+        Ok(rask_ast::attr::Attr { path, args, span: self.span(start, end) })
+    }
+
+    /// An argument list may run over several lines.
+    fn skip_attribute_newlines(&mut self) {
+        while self.check(&TokenKind::Newline) {
+            self.advance();
+        }
+    }
+
+    /// One attribute argument's value, as source text, up to the comma or
+    /// closing parenthesis that ends it. Brackets nest, so `[1, 2]` is one
+    /// value.
+    fn attribute_value_text(&mut self) -> String {
+        let mut text = String::new();
+        let mut depth = 0usize;
+        while !self.at_end() {
+            match self.current_kind() {
+                TokenKind::Comma | TokenKind::RParen if depth == 0 => break,
+                TokenKind::Newline => {
+                    self.advance();
+                    continue;
+                }
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth = depth.saturating_sub(1)
+                }
+                _ => {}
+            }
+            // Preserve original token text for strings, idents, etc.
+            match self.current_kind() {
+                TokenKind::String(s, _) => {
+                    text.push('"');
+                    text.push_str(s);
+                    text.push('"');
+                }
+                TokenKind::Ident(s) => text.push_str(s),
+                TokenKind::Int(n, _) => text.push_str(&n.to_string()),
+                TokenKind::Float(f, _) => text.push_str(&format!("{:?}", f)),
+                TokenKind::Bool(b) => text.push_str(if *b { "true" } else { "false" }),
+                TokenKind::Char(c) => text.push_str(&format!("'{}'", c)),
+                TokenKind::Comma => text.push_str(", "),
+                // Keywords, operators, and delimiters keep their source
+                // text. Debug output here would mangle anything with
+                // punctuation — a lint rule id like
+                // `@allow(idiom/duck-interface)` came out as
+                // `allow(idiomSlashduck-Interface)` and matched nothing,
+                // breaking per-rule suppression (tool.lint/SU1).
+                //
+                // Literals must be listed above, not left to this arm:
+                // `display_name` is prose for diagnostics, so `@default(1.5)`
+                // was stored as `default(a number)` and `@default(true)` as
+                // `default(true' or 'false)` — the value simply gone (#965).
+                // A token kind added later lands here and gets prose too;
+                // #965 tracks giving TokenKind a real source_text().
+                k => text.push_str(k.display_name().trim_matches('\'')),
+            }
+            self.advance();
+        }
+        text
     }
 
     // =========================================================================
@@ -940,7 +995,7 @@ impl Parser {
         .with_why(why))
     }
 
-    fn parse_fn_decl(&mut self, is_pub: bool, is_private: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_fn_decl(&mut self, is_pub: bool, is_private: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
         // Allow keywords as function names (e.g., `or` for Option.or)
@@ -1607,7 +1662,7 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Struct)?;
         let name = self.expect_ident()?;
 
@@ -1798,7 +1853,7 @@ impl Parser {
         }))
     }
 
-    fn parse_enum_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_enum_decl(&mut self, is_pub: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Enum)?;
         let name = self.expect_ident()?;
 
@@ -1936,7 +1991,7 @@ impl Parser {
         }))
     }
 
-    fn parse_interface_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_interface_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Interface)?;
         let name = self.expect_ident()?;
 
@@ -2463,7 +2518,7 @@ impl Parser {
     }
 
     /// Parse a top-level const declaration.
-    fn parse_const_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_const_decl(&mut self, is_pub: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Const)?;
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) {
@@ -2524,7 +2579,7 @@ impl Parser {
     }
 
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`
-    fn parse_test_decl(&mut self, is_comptime: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
+    fn parse_test_decl(&mut self, is_comptime: bool, attrs: Vec<rask_ast::attr::Attr>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Test)?;
         let name = self.expect_string()?;
         self.skip_newlines();
@@ -2533,7 +2588,7 @@ impl Parser {
     }
 
     /// Parse a benchmark block: `benchmark "name" { body }`
-    fn parse_benchmark_decl(&mut self, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
+    fn parse_benchmark_decl(&mut self, attrs: Vec<rask_ast::attr::Attr>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Benchmark)?;
         let name = self.expect_string()?;
         self.skip_newlines();

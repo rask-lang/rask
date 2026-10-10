@@ -77,14 +77,14 @@ pub fn desugar(decls: &mut [Decl]) -> DesugarOutput {
 /// parsed and then unusable (#1276). This crate can't read the registry
 /// itself: `rask-stdlib` already depends on it.
 pub fn desugar_with_stdlib(decls: &mut [Decl], stdlib: &[Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, &[], stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar the stdlib's own declarations, in their own NodeId bands.
 ///
 /// See [`STDLIB_DESUGAR_ID_BASE`].
 pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, &[], &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
+    desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar a package whose dependencies are known.
@@ -94,10 +94,9 @@ pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
 /// up later — they have to be handed in (type.annotations/AN3).
 pub fn desugar_package(
     decls: &mut [Decl],
-    dep_annotations: &[(String, Decl)],
     stdlib: &[Decl],
 ) -> DesugarOutput {
-    desugar_inner_from(decls, dep_annotations, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// ER26 coverage error from @message desugaring.
@@ -124,16 +123,15 @@ pub struct DesugarOutput {
 
 /// Desugar phase, returning any ER26 coverage errors.
 pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> DesugarOutput {
-    desugar_inner(decls, &[])
+    desugar_inner(decls)
 }
 
-fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> DesugarOutput {
-    desugar_inner_from(decls, dep_annotations, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+fn desugar_inner(decls: &mut [Decl]) -> DesugarOutput {
+    desugar_inner_from(decls, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 fn desugar_inner_from(
     decls: &mut [Decl],
-    dep_annotations: &[(String, Decl)],
     stdlib: &[Decl],
     id_base: u32,
     default_args_id_base: u32,
@@ -168,7 +166,7 @@ fn desugar_inner_from(
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.
-    annotation_defaults::fill_annotation_defaults(decls, dep_annotations);
+    annotation_defaults::fill_annotation_defaults(decls);
 
     output
 }
@@ -1489,15 +1487,13 @@ fn translate_positional_refs(tmpl: &str) -> String {
     out
 }
 
-/// Extract the template from a `message("template")` attribute string.
-fn extract_message_attr_template(attr: &str) -> Option<String> {
-    let stripped = attr.strip_prefix("message(")?;
-    let stripped = stripped.strip_suffix(')')?;
-    // Remove surrounding quotes
-    let stripped = stripped.trim();
-    let stripped = stripped.strip_prefix('"')?;
-    let stripped = stripped.strip_suffix('"')?;
-    Some(stripped.to_string())
+/// The template of a `@message("template")` attribute.
+fn extract_message_attr_template(attr: &rask_ast::attr::Attr) -> Option<String> {
+    if !attr.is("message") {
+        return None;
+    }
+    let text = attr.positional()?.trim();
+    Some(text.strip_prefix('"')?.strip_suffix('"')?.to_string())
 }
 
 /// Map binary operators to method names (if they should be desugared).

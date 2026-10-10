@@ -1668,7 +1668,7 @@ mod tests {
         }
     }
 
-    // E18-E20: field annotations parse into Field.attrs, verbatim.
+    // E18-E20: field annotations parse into Field.attrs: a name and arguments.
     #[test]
     fn struct_field_annotations() {
         let result = parse(
@@ -1677,12 +1677,37 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Struct(ref s) => {
-                assert_eq!(s.fields[0].attrs, vec!["rename(\"user_name\")".to_string()]);
-                assert_eq!(s.fields[1].attrs, vec!["skip".to_string()]);
-                assert_eq!(s.fields[2].attrs, vec!["default(0)".to_string()]);
+                let shown: Vec<Vec<String>> = s
+                    .fields
+                    .iter()
+                    .map(|f| f.attrs.iter().map(|a| a.to_string()).collect())
+                    .collect();
+                assert_eq!(shown, vec![
+                    vec!["rename(\"user_name\")".to_string()],
+                    vec!["skip".to_string()],
+                    vec!["default(0)".to_string()],
+                ]);
+                assert_eq!(s.fields[0].attrs[0].positional(), Some("\"user_name\""));
+                assert_eq!(s.fields[1].attrs[0].args, None);
             }
             _ => panic!("expected struct"),
         }
+    }
+
+    // AN5: a user annotation named through its package, with labelled
+    // arguments. Brackets and strings keep their commas.
+    #[test]
+    fn a_package_qualified_attachment() {
+        let result = parse(
+            "struct Form {\n@liba.validate(max: 3, names: [\"a, b\", \"c\"])\ncode: i64 }",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
+        let attr = &s.fields[0].attrs[0];
+        assert_eq!(attr.path, vec!["liba".to_string(), "validate".to_string()]);
+        assert_eq!(attr.arg("max"), Some("3"));
+        assert_eq!(attr.arg("names"), Some("[\"a, b\", \"c\"]"));
+        assert!(!attr.is("validate"));
     }
 
     // CC2: `Ring<T> implements Show where T: Show` captures the condition.

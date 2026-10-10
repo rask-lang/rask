@@ -155,7 +155,10 @@ impl TypeChecker {
                     fields,
                     methods: Vec::new(),
                     is_pub: true,
-                    attrs: vec!["layout(C)".to_string()],
+                    attrs: vec![rask_ast::attr::Attr::synthetic(
+                        "layout",
+                        Some(vec![rask_ast::attr::AttrArg { label: None, value: "C".to_string() }]),
+                    )],
                     doc: None,
                 }),
                 span,
@@ -438,11 +441,9 @@ impl TypeChecker {
                     span: field.name_span,
                 });
             }
-            for attr in &field.attrs {
-                let attr = attr.trim();
-                let Some(arg) = attr.strip_prefix("rename") else { continue };
-                let inner = arg.trim_start().strip_prefix('(').and_then(|a| a.strip_suffix(')'));
-                let names_a_key = inner
+            for attr in field.attrs.iter().filter(|a| a.is("rename")) {
+                let names_a_key = attr
+                    .positional()
                     .map(str::trim)
                     .is_some_and(|a| a.starts_with('"') && a.ends_with('"') && a.len() >= 2);
                 if !names_a_key {
@@ -1229,7 +1230,7 @@ impl TypeChecker {
         // subtraction on two nanosecond counts. The backends have to know
         // there's no body before they look for one.
         for (m, sig) in i.methods.iter().zip(new_methods.iter()) {
-            if m.attrs.iter().any(|a| a == "builtin") {
+            if m.attrs.iter().any(|a| a.is("builtin")) {
                 self.types.record_builtin_method(type_id, &sig.name);
             }
         }
@@ -1393,13 +1394,13 @@ impl TypeChecker {
             .map(|m| self.method_signature(m, &struct_params, &Self::named_all(&struct_params)))
             .collect();
 
-        let is_resource = s.attrs.iter().any(|a| a == "resource");
-        let is_unique = s.attrs.iter().any(|a| a == "unique");
-        let is_binary = s.attrs.iter().any(|a| a == "binary");
+        let is_resource = s.attrs.iter().any(|a| a.is("resource"));
+        let is_unique = s.attrs.iter().any(|a| a.is("unique"));
+        let is_binary = s.attrs.iter().any(|a| a.is("binary"));
         // E16: the owner's refusal, recorded on the type. The field-level
         // `@no_serialize` narrows the wire form; this says there isn't one.
-        let no_encode = s.attrs.iter().any(|a| a == "no_encode");
-        let no_decode = s.attrs.iter().any(|a| a == "no_decode");
+        let no_encode = s.attrs.iter().any(|a| a.is("no_encode"));
+        let no_decode = s.attrs.iter().any(|a| a.is("no_decode"));
 
         // For @binary structs, convert binary field specifiers to runtime types
         let (fields, binary_info) = if is_binary {
@@ -1594,8 +1595,8 @@ impl TypeChecker {
             // declarations are visible.
             is_transitive_resource: false,
             // E16, as on a struct.
-            no_encode: e.attrs.iter().any(|a| a == "no_encode"),
-            no_decode: e.attrs.iter().any(|a| a == "no_decode"),
+            no_encode: e.attrs.iter().any(|a| a.is("no_encode")),
+            no_decode: e.attrs.iter().any(|a| a.is("no_decode")),
         });
         for (variant, field_names) in variant_names {
             self.types
@@ -2465,7 +2466,7 @@ impl TypeChecker {
                 // and turns them into the runtime types. Judging the raw
                 // spelling here as well rejected every `@binary` struct there
                 // is, with a message telling you to declare `u16be`.
-                if !s.attrs.iter().any(|a| a == "binary") {
+                if !s.attrs.iter().any(|a| a.is("binary")) {
                     let owner = self.types.get_type_id(&s.name);
                     let fields: Vec<_> = s
                         .fields
@@ -3107,10 +3108,10 @@ pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
 }
 
 /// The warning names an `@allow(...)` list suppresses.
-pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
+pub(super) fn allowed_from(attrs: &[rask_ast::attr::Attr]) -> Vec<String> {
     attrs
         .iter()
-        .filter_map(|a| a.strip_prefix("allow(").and_then(|r| r.strip_suffix(')')))
+        .filter_map(rask_ast::allow_names::allowed_name)
         .map(str::to_string)
         .collect()
 }

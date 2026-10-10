@@ -1779,7 +1779,7 @@ pub(crate) struct ReflectFieldConst {
     pub(crate) has_default: bool,
     /// Raw attribute strings (`indexed(weight:3)`) — what `field.has<A>()`
     /// answers from (type.annotations/AN6).
-    pub(crate) attrs: Vec<String>,
+    pub(crate) attrs: Vec<rask_ast::attr::Attr>,
 }
 
 /// Where a `try` inside a `try { … } catch e => …` block sends its error.
@@ -4118,7 +4118,7 @@ impl<'a> MirLowerer<'a> {
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
             catch_frames: Vec::new(),
-            in_test_body: fn_decl.attrs.iter().any(|a| a == "test_body"),
+            in_test_body: fn_decl.attrs.iter().any(|a| a.is("test_body")),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),

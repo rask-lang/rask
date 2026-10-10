@@ -36,7 +36,7 @@ pub struct FieldLayout {
     pub align: u32,
     /// Field annotations, verbatim (`rename("user_name")`, `no_serialize`, …).
     /// Serialization reads these — see `rask_ast::decl::field_attrs`.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<rask_ast::attr::Attr>,
     /// Whether the field has a declared default value (`x: T = v`). Separate
     /// from `@default(...)` in `attrs`, which is a decode-only override
     /// (`type.structs/FD6`) — `reflect.fields<T>()`'s `has_default` is true
@@ -89,7 +89,7 @@ pub struct EnumLayout {
     /// Enum-level annotations, verbatim (`tag("type")`, …). JSON encoding
     /// reads these for internal tagging (std.encoding/E24) — see
     /// `rask_ast::decl::field_attrs`.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<rask_ast::attr::Attr>,
 }
 
 /// Variant layout within enum
@@ -102,7 +102,7 @@ pub struct VariantLayout {
     pub fields: Vec<FieldLayout>,
     /// Variant-level annotations, verbatim (`rename("...")`, …). JSON
     /// encoding reads these for variant rename (std.encoding/E25).
-    pub attrs: Vec<String>,
+    pub attrs: Vec<rask_ast::attr::Attr>,
 }
 
 /// The size and alignment of a scalar, by its type. Panics on anything else.
@@ -583,8 +583,8 @@ pub fn arg_owns_storage(name: &str) -> bool {
 }
 
 /// Check whether a struct has `@layout(C)` attribute.
-fn has_c_layout(attrs: &[String]) -> bool {
-    attrs.iter().any(|a| a == "layout(C)")
+fn has_c_layout(attrs: &[rask_ast::attr::Attr]) -> bool {
+    attrs.iter().any(|a| a.is("layout") && a.positional() == Some("C"))
 }
 
 /// A declared default's literal text, for the decoder.
@@ -670,10 +670,10 @@ fn struct_layout(
     // The in-memory layout is the runtime type each one stands for; reading the
     // specifier as a type name gave every field a pointer-sized slot and a
     // warning per compile.
-    let is_binary = struct_decl.attrs.iter().any(|a| a == "binary");
+    let is_binary = struct_decl.attrs.iter().any(|a| a.is("binary"));
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, Option<String>, bool, bool, u32)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, Option<String>, bool, bool, u32)> = struct_decl.fields.iter()
         .enumerate()
         .map(|(decl_index, field)| {
             let (field_ty, from_param) = if is_binary {
@@ -743,7 +743,7 @@ fn struct_layout(
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_resource: struct_decl.attrs.iter().any(|a| a == "resource"),
+        is_resource: struct_decl.attrs.iter().any(|a| a.is("resource")),
     }
 }
 
@@ -1352,7 +1352,7 @@ mod tests {
 
     // ── Field reordering (S1/L4) ──────────────────────────────────
 
-    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<&str>) -> Decl {
+    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<rask_ast::attr::Attr>) -> Decl {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Struct(StructDecl {
@@ -1372,7 +1372,7 @@ mod tests {
                     .collect(),
                 methods: vec![],
                 is_pub: false,
-                attrs: attrs.into_iter().map(|a| a.to_string()).collect(),
+                attrs,
                 doc: None,
             }),
             span: dummy_span(),
@@ -1446,7 +1446,10 @@ mod tests {
         let decl = make_struct_with_attrs(
             "CStruct",
             vec![("s", "Small"), ("b", "Big")],
-            vec!["layout(C)"],
+            vec![rask_ast::attr::Attr::synthetic(
+                "layout",
+                Some(vec![rask_ast::attr::AttrArg { label: None, value: "C".to_string() }]),
+            )],
         );
         let layout = compute_struct_layout(&decl, &[], &cache);
 

@@ -1509,10 +1509,8 @@ impl Interpreter {
                             .and_then(|ta| ta.first())
                             .and_then(|t| self.resolve_type_param(t).bare_name().map(str::to_string))
                         {
-                            let attrs = field_info_attrs(s);
-                            let found = attrs.iter().find(|a| {
-                                rask_ast::decl::field_attrs::attachment_name(a) == annotation
-                            });
+                            let attrs = self.field_info_attrs(s);
+                            let found = attrs.iter().find(|a| a.is(&annotation));
                             if method == "has" {
                                 return Ok(Value::Bool(found.is_some()));
                             }
@@ -1529,7 +1527,7 @@ impl Interpreter {
                                     expr.span,
                                 ));
                             };
-                            return Ok(self.annotation_record(&annotation, attr));
+                            return Ok(self.annotation_record(&annotation, &attr.clone()));
                         }
                     }
                 }
@@ -3301,23 +3299,24 @@ impl Interpreter {
 }
 
 
-/// The raw attachment strings a reflect FieldInfo carries in its hidden
-/// `__attrs` (type.annotations/AN6). Mirrors the native lowering's
-/// `ReflectFieldConst.attrs`.
-pub(super) fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
-    let guard = s.lock().unwrap();
-    match guard.fields.get("__attrs") {
-        Some(Value::Vec(v)) => v
-            .lock()
-            .unwrap()
-            .items
-            .iter()
-            .filter_map(|a| match a {
-                Value::String(text) => Some(text.lock().unwrap().clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
+impl Interpreter {
+    /// The attachments on the field a reflect FieldInfo describes
+    /// (type.annotations/AN6), read off its declaration.
+    pub(super) fn field_info_attrs(&self, s: &Arc<Mutex<StructData>>) -> Vec<rask_ast::attr::Attr> {
+        let guard = s.lock().unwrap();
+        let owner = match guard.fields.get("__owner") {
+            Some(Value::String(text)) => text.lock().unwrap().clone(),
+            _ => return Vec::new(),
+        };
+        let index = match guard.fields.get("__index") {
+            Some(Value::Int(i, _)) => *i as usize,
+            _ => return Vec::new(),
+        };
+        self.struct_decls
+            .get(&owner)
+            .and_then(|d| d.fields.get(index))
+            .map(|f| f.attrs.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -3344,7 +3343,7 @@ pub(super) fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
 pub(super) fn unguarded_annotation_read(
     body: &[rask_ast::stmt::Stmt],
     binding: &str,
-    attrs: &[String],
+    attrs: &[rask_ast::attr::Attr],
 ) -> Option<(String, Option<String>, rask_ast::Span)> {
     use rask_ast::comptime_if;
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -3353,7 +3352,7 @@ pub(super) fn unguarded_annotation_read(
 
     struct Reads<'b> {
         binding: &'b str,
-        attrs: &'b [String],
+        attrs: &'b [rask_ast::attr::Attr],
         found: Option<(String, Option<String>, Span)>,
     }
 
@@ -3368,10 +3367,8 @@ pub(super) fn unguarded_annotation_read(
         type_args.as_ref()?.first()?.bare_name()
     }
 
-    fn carries(attrs: &[String], annotation: &str) -> bool {
-        attrs
-            .iter()
-            .any(|a| rask_ast::decl::field_attrs::attachment_name(a) == annotation)
+    fn carries(attrs: &[rask_ast::attr::Attr], annotation: &str) -> bool {
+        attrs.iter().any(|a| a.is(annotation))
     }
 
     impl<'a> Visit<'a> for Reads<'_> {
@@ -3430,9 +3427,7 @@ impl Interpreter {
     /// what a default was. The declaration is consulted only for field types:
     /// `3` is an integer for `weight: i64` and a float for `scale: f64`, and
     /// the text alone can't say which.
-    fn annotation_record(&self, annotation: &str, attr: &str) -> Value {
-        use rask_ast::decl::field_attrs;
-
+    fn annotation_record(&self, annotation: &str, attr: &rask_ast::attr::Attr) -> Value {
         let declared: Vec<(String, String)> = self
             .struct_decls
             .get(annotation)
@@ -3445,7 +3440,7 @@ impl Interpreter {
             .unwrap_or_default();
 
         let mut fields = IndexMap::new();
-        for (name, value) in field_attrs::attachment_args(attr) {
+        for (name, value) in attr.labelled() {
             let ty = declared
                 .iter()
                 .find(|(n, _)| n == name)

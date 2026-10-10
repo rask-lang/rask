@@ -172,7 +172,7 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
     let attrs = if s.attrs.is_empty() {
         None
     } else {
-        Some(s.attrs.clone())
+        Some(s.attrs.iter().map(|a| a.to_string()).collect())
     };
 
     StructDesc {
@@ -282,7 +282,7 @@ fn extract_function(f: &FnDecl) -> FunctionDesc {
     let attrs = if f.attrs.is_empty() {
         None
     } else {
-        Some(f.attrs.clone())
+        Some(f.attrs.iter().map(|a| a.to_string()).collect())
     };
 
     let r#unsafe = if f.is_unsafe { Some(true) } else { None };

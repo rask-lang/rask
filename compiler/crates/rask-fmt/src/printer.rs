@@ -692,7 +692,7 @@ impl<'a> Printer<'a> {
                 }
                 for attr in &field.attrs {
                     self.emit("@");
-                    self.emit(attr);
+                    self.emit(&attr.to_string());
                     self.emit(" ");
                 }
                 match field.visibility {
@@ -731,7 +731,7 @@ impl<'a> Printer<'a> {
                 for attr in &field.attrs {
                     self.emit_indent();
                     self.emit("@");
-                    self.emit(attr);
+                    self.emit(&attr.to_string());
                     self.emit_newline();
                 }
                 self.emit_indent();

@@ -73,7 +73,7 @@ struct AllowScope {
 /// results means a name that's accepted is a name that works.
 fn allow_scopes(decls: &[Decl], source: &str) -> Vec<AllowScope> {
     let mut scopes = Vec::new();
-    let mut add = |span: Span, attrs: &[String]| {
+    let mut add = |span: Span, attrs: &[rask_ast::attr::Attr]| {
         let allowed: Vec<String> = attrs
             .iter()
             .filter_map(|a| rask_ast::allow_names::allowed_name(a).map(str::to_string))

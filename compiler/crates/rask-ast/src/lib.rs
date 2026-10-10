@@ -9,6 +9,7 @@ pub mod token;
 pub mod expr;
 pub mod stmt;
 pub mod decl;
+pub mod attr;
 pub mod coercion;
 pub mod interfaces;
 pub mod operators;

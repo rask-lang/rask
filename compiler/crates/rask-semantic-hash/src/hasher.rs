@@ -338,7 +338,7 @@ impl Hasher {
 
         // Attributes
         for attr in &f.attrs {
-            self.feed_str(attr);
+            self.feed_str(&attr.to_string());
         }
 
         // ABI
@@ -361,7 +361,7 @@ impl Hasher {
         }
         self.hash_fields(&s.fields);
         for attr in &s.attrs {
-            self.feed_str(attr);
+            self.feed_str(&attr.to_string());
         }
         for m in &s.methods {
             self.hash_fn_decl(m);

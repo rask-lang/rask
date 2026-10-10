@@ -11,22 +11,29 @@
 //! interpreter answering the same question. None of them has to look the
 //! declaration back up, so none of them can disagree about what a default was.
 //!
-//! The price of being this early is that name resolution hasn't run, so a
-//! dependency's declarations have to be handed in and matched against the
-//! file's own `import` lines by hand.
+//! Package scoping runs first. A dependency's annotation is declared in the
+//! merged program under its qualified name, and its attachments — in the
+//! dependency, and `@liba.validate` in the program — have been rewritten to
+//! that name too. So the table is just the declarations in `decls`, keyed by
+//! the name the attachments use.
 
-use rask_ast::decl::{field_attrs, AnnotationDecl, Decl, DeclKind, FnDecl};
+use rask_ast::attr::{Attr, AttrArg};
+use rask_ast::decl::{AnnotationDecl, Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, UnaryOp};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Rewrite every attachment of a user-declared annotation to name all its
 /// fields. Attachments of compiler-known annotations (`@rename`, `@test`, …)
 /// are left alone — they are not declared here and have no default table.
-///
-/// `dep_annotations` is `(package name, declaration)` for every public
-/// annotation in this package's dependencies.
-pub fn fill_annotation_defaults(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) {
-    let declared = default_table(decls, dep_annotations);
+pub fn fill_annotation_defaults(decls: &mut [Decl]) {
+    let declared: HashMap<String, Vec<(String, String)>> = decls
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Annotation(ann) => Some((ann.name.clone(), defaults_of(ann))),
+            _ => None,
+        })
+        .filter(|(_, defaults)| !defaults.is_empty())
+        .collect();
     if declared.is_empty() {
         return;
     }
@@ -38,6 +45,9 @@ pub fn fill_annotation_defaults(decls: &mut [Decl], dep_annotations: &[(String, 
                 for field in &mut s.fields {
                     fill(&mut field.attrs, &declared);
                 }
+                for m in &mut s.methods {
+                    fill_fn(m, &declared);
+                }
             }
             DeclKind::Enum(e) => {
                 fill(&mut e.attrs, &declared);
@@ -46,6 +56,9 @@ pub fn fill_annotation_defaults(decls: &mut [Decl], dep_annotations: &[(String, 
                     for field in &mut variant.fields {
                         fill(&mut field.attrs, &declared);
                     }
+                }
+                for m in &mut e.methods {
+                    fill_fn(m, &declared);
                 }
             }
             DeclKind::Fn(f) => fill_fn(f, &declared),
@@ -57,92 +70,6 @@ pub fn fill_annotation_defaults(decls: &mut [Decl], dep_annotations: &[(String, 
             _ => {}
         }
     }
-}
-
-/// Annotation name → the fields that have defaults, as `(name, value text)`.
-///
-/// A declaration in this package wins over an imported one. Two *imported*
-/// packages declaring the same name is left unfilled rather than resolved: the
-/// name alone can't say which was meant, and filling from whichever came last
-/// is a wrong value with no error attached to it — an app importing both `liba`
-/// and `libb` got `libb`'s default for `liba`'s annotation. The read then fails,
-/// which is worse than a diagnostic but better than a silent lie (#967).
-fn default_table(
-    decls: &[Decl],
-    dep_annotations: &[(String, Decl)],
-) -> HashMap<String, Vec<(String, String)>> {
-    let imported = imported_packages(decls);
-    let mut table: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    let mut ambiguous: HashSet<String> = HashSet::new();
-    let mut source_package: HashMap<String, String> = HashMap::new();
-
-    for (pkg, decl) in dep_annotations {
-        let DeclKind::Annotation(ann) = &decl.kind else { continue };
-        if !imported.names(pkg, &ann.name) {
-            continue;
-        }
-        match source_package.get(&ann.name) {
-            Some(other) if other != pkg => {
-                ambiguous.insert(ann.name.clone());
-            }
-            _ => {
-                source_package.insert(ann.name.clone(), pkg.clone());
-                insert_defaults(&mut table, ann);
-            }
-        }
-    }
-    for name in &ambiguous {
-        table.remove(name);
-    }
-
-    // This package's own declarations last, so they win.
-    for decl in decls {
-        if let DeclKind::Annotation(ann) = &decl.kind {
-            insert_defaults(&mut table, ann);
-        }
-    }
-    table
-}
-
-fn insert_defaults(table: &mut HashMap<String, Vec<(String, String)>>, ann: &AnnotationDecl) {
-    let defaults = defaults_of(ann);
-    if defaults.is_empty() {
-        table.remove(&ann.name);
-    } else {
-        table.insert(ann.name.clone(), defaults);
-    }
-}
-
-/// What this file imported, in the two shapes that matter: `import pkg` brings
-/// the package's whole public surface, `import pkg.Member` brings one name.
-struct Imports {
-    whole: HashSet<String>,
-    members: HashSet<(String, String)>,
-}
-
-impl Imports {
-    /// Whether `pkg`'s annotation `name` is in scope here.
-    fn names(&self, pkg: &str, name: &str) -> bool {
-        self.whole.contains(pkg) || self.members.contains(&(pkg.to_string(), name.to_string()))
-    }
-}
-
-fn imported_packages(decls: &[Decl]) -> Imports {
-    let mut whole = HashSet::new();
-    let mut members = HashSet::new();
-    for decl in decls {
-        let DeclKind::Import(imp) = &decl.kind else { continue };
-        match imp.path.len() {
-            1 => {
-                whole.insert(imp.path[0].clone());
-            }
-            2 => {
-                members.insert((imp.path[0].clone(), imp.path[1].clone()));
-            }
-            _ => {}
-        }
-    }
-    Imports { whole, members }
 }
 
 fn fill_fn(f: &mut FnDecl, declared: &HashMap<String, Vec<(String, String)>>) {
@@ -188,154 +115,82 @@ fn render_const(expr: &Expr) -> Option<String> {
     }
 }
 
-fn fill(attrs: &mut [String], declared: &HashMap<String, Vec<(String, String)>>) {
+fn fill(attrs: &mut [Attr], declared: &HashMap<String, Vec<(String, String)>>) {
     for attr in attrs.iter_mut() {
-        let name = field_attrs::attachment_name(attr).to_string();
-        let Some(defaults) = declared.get(&name) else { continue };
-
-        let given: Vec<String> = field_attrs::attachment_args(attr)
-            .into_iter()
-            .map(|(n, _)| n.to_string())
-            .collect();
-        let missing: Vec<&(String, String)> =
-            defaults.iter().filter(|(n, _)| !given.contains(n)).collect();
-        if missing.is_empty() {
+        if attr.path.len() != 1 {
             continue;
         }
-
-        let mut args: Vec<String> = field_attrs::attachment_args(attr)
-            .into_iter()
-            .map(|(n, v)| format!("{}: {}", n, v))
-            .collect();
-        for (n, v) in missing {
-            args.push(format!("{}: {}", n, v));
+        let Some(defaults) = declared.get(&attr.path[0]) else { continue };
+        let given: Vec<String> = attr.labelled().map(|(l, _)| l.to_string()).collect();
+        let args = attr.args.get_or_insert_with(Vec::new);
+        for (label, value) in defaults {
+            if !given.contains(label) {
+                args.push(AttrArg { label: Some(label.clone()), value: value.clone() });
+            }
         }
-        *attr = format!("{}({})", name, args.join(", "));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rask_ast::decl::{AnnotationDecl, Field, FieldVisibility, ImportDecl, StructDecl};
-    use rask_ast::{NodeId, Span};
 
-    fn annotation(name: &str, default: i128) -> Decl {
-        Decl {
-            id: NodeId(1),
-            span: Span::new(0, 0),
-            kind: DeclKind::Annotation(AnnotationDecl {
-                name: name.to_string(),
-                name_span: Span::new(0, 0),
-                fields: vec![Field {
-                    name: "max".to_string(),
-                    name_span: Span::new(0, 0),
-                    ty: rask_ast::ty::TypeExpr::named("i64"),
-                    visibility: FieldVisibility::Public,
-                    attrs: vec![],
-                    default: Some(Expr {
-                        id: NodeId(2),
-                        span: Span::new(0, 0),
-                        kind: ExprKind::Int(default, None),
-                    }),
-                    doc: None,
-                }],
-                is_pub: true,
-                doc: None,
-            }),
-        }
+    fn decls(src: &str) -> Vec<Decl> {
+        let lexed = rask_lexer::Lexer::new(src).tokenize();
+        let parsed = rask_parser::Parser::new(lexed.tokens).parse();
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        parsed.decls
     }
 
-    fn import(path: &[&str]) -> Decl {
-        Decl {
-            id: NodeId(3),
-            span: Span::new(0, 0),
-            kind: DeclKind::Import(ImportDecl {
-                path: path.iter().map(|s| s.to_string()).collect(),
-                alias: None,
-                is_glob: false,
-                is_lazy: false,
-            }),
-        }
-    }
-
-    /// One field carrying a bare `@validate` attachment, for `fill` to rewrite.
-    fn attached() -> Decl {
-        Decl {
-            id: NodeId(4),
-            span: Span::new(0, 0),
-            kind: DeclKind::Struct(StructDecl {
-                name: "Local".to_string(),
-                type_params: vec![],
-                fields: vec![Field {
-                    name: "x".to_string(),
-                    name_span: Span::new(0, 0),
-                    ty: rask_ast::ty::TypeExpr::named("i64"),
-                    visibility: FieldVisibility::Public,
-                    attrs: vec!["validate".to_string()],
-                    default: None,
-                    doc: None,
-                }],
-                methods: vec![],
-                is_pub: false,
-                attrs: vec![],
-                doc: None,
-            }),
-        }
-    }
-
-    fn attachment_of(decls: &[Decl]) -> String {
-        let DeclKind::Struct(s) = &decls[decls.len() - 1].kind else { panic!("want struct") };
-        s.fields[0].attrs[0].clone()
+    fn field_attrs(decls: &[Decl]) -> Vec<String> {
+        decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Struct(s) => Some(s),
+                _ => None,
+            })
+            .flat_map(|s| s.fields.iter().flat_map(|f| f.attrs.iter().map(|a| a.to_string())))
+            .collect()
     }
 
     #[test]
-    fn fills_from_the_imported_package() {
-        let mut decls = vec![import(&["liba", "validate"]), attached()];
-        let deps = vec![
-            ("liba".to_string(), annotation("validate", 10)),
-            ("libb".to_string(), annotation("validate", 99)),
-        ];
-        fill_annotation_defaults(&mut decls, &deps);
-        // Not libb's 99: only liba is imported. Taking whichever dependency
-        // came last is a wrong value with no error attached to it.
-        assert_eq!(attachment_of(&decls), "validate(max: 10)");
+    fn fills_the_missing_defaults() {
+        let mut d = decls(
+            "annotation @indexed { weight: i64 = 1, label: string = \"none\" }\n\
+             struct Doc {\n@indexed(weight: 3)\ntitle: string\n@indexed()\nbody: string }",
+        );
+        fill_annotation_defaults(&mut d);
+        assert_eq!(
+            field_attrs(&d),
+            vec![
+                "indexed(weight: 3, label: \"none\")".to_string(),
+                "indexed(weight: 1, label: \"none\")".to_string(),
+            ]
+        );
+    }
+
+    // After package scoping a dependency's annotation and its attachments
+    // share the qualified name, so they match like any other.
+    #[test]
+    fn a_qualified_name_matches_its_declaration() {
+        let mut d = decls(
+            "annotation @validate_liba { max: i64 = 10 }\n\
+             struct Form {\n@validate_liba()\ncode: i64\n@validate(max: 2)\nother: i64 }",
+        );
+        fill_annotation_defaults(&mut d);
+        assert_eq!(
+            field_attrs(&d),
+            vec!["validate_liba(max: 10)".to_string(), "validate(max: 2)".to_string()]
+        );
     }
 
     #[test]
-    fn leaves_an_ambiguous_name_unfilled() {
-        let mut decls = vec![
-            import(&["liba", "validate"]),
-            import(&["libb", "validate"]),
-            attached(),
-        ];
-        let deps = vec![
-            ("liba".to_string(), annotation("validate", 10)),
-            ("libb".to_string(), annotation("validate", 99)),
-        ];
-        fill_annotation_defaults(&mut decls, &deps);
-        // Untouched — the checker reports the ambiguous import (AN5), and
-        // guessing here would put one of the two values behind that error.
-        assert_eq!(attachment_of(&decls), "validate");
-    }
-
-    #[test]
-    fn a_local_declaration_wins() {
-        let mut decls = vec![
-            import(&["liba", "validate"]),
-            annotation("validate", 3),
-            attached(),
-        ];
-        let deps = vec![("liba".to_string(), annotation("validate", 10))];
-        fill_annotation_defaults(&mut decls, &deps);
-        assert_eq!(attachment_of(&decls), "validate(max: 3)");
-    }
-
-    #[test]
-    fn an_uninvolved_dependency_is_ignored() {
-        let mut decls = vec![import(&["libb"]), attached()];
-        let deps = vec![("liba".to_string(), annotation("validate", 10))];
-        fill_annotation_defaults(&mut decls, &deps);
-        assert_eq!(attachment_of(&decls), "validate");
+    fn compiler_known_attributes_are_left_alone() {
+        let mut d = decls(
+            "annotation @indexed { weight: i64 = 1 }\n\
+             struct Doc {\n@rename(\"t\")\ntitle: string }",
+        );
+        fill_annotation_defaults(&mut d);
+        assert_eq!(field_attrs(&d), vec!["rename(\"t\")".to_string()]);
     }
 }

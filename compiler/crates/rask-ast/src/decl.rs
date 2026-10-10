@@ -85,7 +85,7 @@ pub struct ConstDecl {
     pub init: crate::expr::Expr,
     pub is_pub: bool,
     /// Attributes (`@comptime_quota(50000)`), stored verbatim.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }
@@ -97,10 +97,7 @@ impl ConstDecl {
     /// instead of ignoring it — an attribute that silently does nothing is worse
     /// than one that doesn't exist.
     pub fn comptime_quota_arg(&self) -> Option<&str> {
-        self.attrs.iter().find_map(|a| {
-            let rest = a.trim().strip_prefix("comptime_quota")?.trim_start();
-            rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
-        })
+        crate::attr::find(&self.attrs, "comptime_quota")?.positional()
     }
 }
 
@@ -112,7 +109,7 @@ pub struct TestDecl {
     pub is_comptime: bool,
     /// `@allow(name)` and friends, same as `FnDecl::attrs`. A test body is
     /// where a warning most often fires on purpose.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
 }
 
 /// A benchmark block declaration.
@@ -120,7 +117,7 @@ pub struct TestDecl {
 pub struct BenchmarkDecl {
     pub name: String,
     pub body: Vec<Stmt>,
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
 }
 
 /// An external function declaration.
@@ -163,7 +160,7 @@ pub struct FnDecl {
     /// ABI for exported functions (e.g. `extern "C" func`)
     pub abi: Option<String>,
     /// Attributes like `@entry`, `@inline`, etc.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
     /// Span covering `func` keyword through closing `}`
@@ -179,9 +176,7 @@ impl FnDecl {
     /// `@builtin`) or nothing does yet (`@unimplemented`). An empty `{}`
     /// without one of those is a real body that does nothing.
     pub fn body_lives_elsewhere(&self) -> bool {
-        self.attrs.iter().any(|a| {
-            a == "native" || a.starts_with("native(") || a == "builtin" || a == "unimplemented"
-        })
+        self.attrs.iter().any(|a| a.is("native") || a.is("builtin") || a.is("unimplemented"))
     }
 
 }
@@ -264,7 +259,7 @@ pub struct StructDecl {
     pub fields: Vec<Field>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }
@@ -295,7 +290,7 @@ pub struct Field {
     pub visibility: FieldVisibility,
     /// Field annotations: `@rename("...")`, `@no_serialize`, `@default(expr)`.
     /// Stored verbatim (e.g. `rename("user_name")`), same shape as decl attrs.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Declared default (`port: i32 = 8080`). Compile-time constant only (FD1).
     /// Filled in at construction when the field is omitted.
     pub default: Option<Expr>,
@@ -305,127 +300,43 @@ pub struct Field {
 
 /// Serialization annotations on a struct field (std.encoding/E18–E20).
 ///
-/// Attributes arrive as raw text — `rename("user_name")`, `skip`,
-/// `default("user")` — so reading them means a little parsing. Every format
-/// (JSON today, TOML and MessagePack later) asks the same three questions, so
-/// they're answered once here rather than in each encoder.
+/// Every format (JSON today, TOML and MessagePack later) asks the same
+/// questions of a field's attributes, so they're answered once here rather
+/// than in each encoder.
 pub mod field_attrs {
+    use crate::attr::{self, Attr};
+
     /// The key this field serializes under: `@rename("…")` when present,
     /// otherwise the field's own name (E18).
-    pub fn serial_name(attrs: &[String], field_name: &str) -> String {
-        for attr in attrs {
-            if let Some(arg) = call_arg(attr, "rename") {
-                if let Some(text) = string_literal(arg) {
-                    return text;
-                }
-            }
-        }
-        field_name.to_string()
+    pub fn serial_name(attrs: &[Attr], field_name: &str) -> String {
+        attr::find(attrs, "rename")
+            .and_then(|a| a.positional())
+            .and_then(string_literal)
+            .unwrap_or_else(|| field_name.to_string())
     }
 
     /// `@no_serialize` — left out of the serialized form entirely, in both
     /// directions (E19).
-    pub fn is_skipped(attrs: &[String]) -> bool {
-        attrs.iter().any(|a| a.trim() == "no_serialize")
+    pub fn is_skipped(attrs: &[Attr]) -> bool {
+        attr::has(attrs, "no_serialize")
     }
 
     /// The old spelling. `@skip` failed the guess test — skip from what? — and
     /// became `@no_serialize` (E19). Still recognized so the error can say so
     /// rather than silently serializing the field.
-    pub fn uses_old_skip(attrs: &[String]) -> bool {
-        attrs.iter().any(|a| a.trim() == "skip")
+    pub fn uses_old_skip(attrs: &[Attr]) -> bool {
+        attr::has(attrs, "skip")
     }
 
     /// The `@default(…)` literal, verbatim, when the field has one (E20).
-    pub fn default_literal(attrs: &[String]) -> Option<&str> {
-        attrs.iter().find_map(|a| call_arg(a, "default"))
+    pub fn default_literal(attrs: &[Attr]) -> Option<&str> {
+        attr::find(attrs, "default")?.positional()
     }
 
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
-    pub fn tag_field(attrs: &[String]) -> Option<String> {
-        attrs.iter().find_map(|a| call_arg(a, "tag").and_then(string_literal))
-    }
-
-    /// The argument text of `name(...)`, if this attribute is that call.
-    fn call_arg<'a>(attr: &'a str, name: &str) -> Option<&'a str> {
-        let rest = attr.trim().strip_prefix(name)?.trim_start();
-        rest.strip_prefix('(')?.strip_suffix(')').map(str::trim)
-    }
-
-    /// The attachment's name — `validate(max:100)` → `validate`. The one
-    /// definition all three consumers share (checker validation, native
-    /// lowering of `has<A>()`, interp's FieldInfo.has), so what counts as
-    /// "the annotation's name" can't drift between them (type.annotations).
-    pub fn attachment_name(attr: &str) -> &str {
-        let attr = attr.trim();
-        attr.find('(').map(|i| &attr[..i]).unwrap_or(attr)
-    }
-
-    /// The attachment's named arguments, in written order: `validate(min: 1,
-    /// max: 100)` → `[("min", "1"), ("max", "100")]`. Values stay verbatim
-    /// text; a caller that needs one as a value runs it through
-    /// `annotation_value`.
-    ///
-    /// Attachments are stored as source text, so every consumer that wants the
-    /// arguments has to split them the same way — the checker validating them,
-    /// desugar filling defaults, and both backends answering
-    /// `get<A>()` (type.annotations/AN3, AN6). One definition, here.
-    pub fn attachment_args(attr: &str) -> Vec<(&str, &str)> {
-        let attr = attr.trim();
-        let name = attachment_name(attr);
-        if name.len() >= attr.len() || !attr.ends_with(')') {
-            return Vec::new();
-        }
-        split_top_level(&attr[name.len() + 1..attr.len() - 1], ',')
-            .into_iter()
-            .filter_map(|arg| split_top_level_once(arg, ':'))
-            .collect()
-    }
-
-    /// Split on a separator that isn't inside a string or a bracket — commas
-    /// and colons inside `["a,b"]` or `"x: y"` belong to the value.
-    pub fn split_top_level(text: &str, sep: char) -> Vec<&str> {
-        let mut out = Vec::new();
-        let mut start = 0;
-        for (i, c) in scan_top_level(text) {
-            if c == sep {
-                out.push(&text[start..i]);
-                start = i + 1;
-            }
-        }
-        if !text[start..].trim().is_empty() {
-            out.push(&text[start..]);
-        }
-        out
-    }
-
-    /// First top-level `sep`, splitting into the two trimmed halves.
-    pub fn split_top_level_once(text: &str, sep: char) -> Option<(&str, &str)> {
-        scan_top_level(text)
-            .find(|(_, c)| *c == sep)
-            .map(|(i, _)| (text[..i].trim(), text[i + 1..].trim()))
-    }
-
-    /// Byte offsets of characters at nesting depth zero, outside strings.
-    fn scan_top_level(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
-        let mut depth = 0usize;
-        let mut in_str = false;
-        text.char_indices().filter(move |(_, c)| match c {
-            '"' => {
-                in_str = !in_str;
-                false
-            }
-            '[' | '(' if !in_str => {
-                depth += 1;
-                false
-            }
-            ']' | ')' if !in_str => {
-                depth = depth.saturating_sub(1);
-                false
-            }
-            _ => !in_str && depth == 0,
-        })
+    pub fn tag_field(attrs: &[Attr]) -> Option<String> {
+        attr::find(attrs, "tag")?.positional().and_then(string_literal)
     }
 
     /// The contents of a `"…"` literal, with the usual escapes expanded.
@@ -459,7 +370,7 @@ pub struct EnumDecl {
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
     /// Attributes like `@message`, `@derive(...)`, etc.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
     /// E14: Optional backing integer type (e.g., "u8", "i32")
@@ -475,7 +386,7 @@ pub struct Variant {
     pub name_span: Span,
     pub fields: Vec<Field>,
     /// Attributes like `@message("template string")`.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// E15: Optional explicit discriminant value
     pub discriminant: Option<i128>,
 }
@@ -508,7 +419,7 @@ pub struct InterfaceDecl {
     /// `duck interface` — shape-matched (structural) instead of nominal (G1).
     pub is_duck: bool,
     /// Attributes (`@allow(...)`, …)
-    pub attrs: Vec<String>,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }

@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import std.reflect
+import liba
+import libb as lb
+
+// Two dependencies declare `@validate`, and this program uses both, on the
+// same field. Each is named the way any other name from a package is:
+// `liba.validate`, and `lb.validate` through the alias (type.annotations/AN5).
+//
+// The answers settle which is which. `max` exists only on `liba`'s and `min`
+// and `note` only on `libb`'s, and the defaults differ, so reading the wrong
+// declaration either fails to compile or prints the wrong number.
+struct Signup {
+    @liba.validate(max: 3)
+    @lb.validate(note: "name")
+    name: string
+    @liba.validate()
+    age: i64
+    plain: i64
+}
+
+func report() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<Signup>() {
+        out = "{out}{f.name}:"
+        comptime if f.has<liba.validate>() {
+            out = "{out} max={f.get<liba.validate>().max}"
+        }
+        comptime if f.has<lb.validate>() {
+            out = "{out} min={f.get<lb.validate>().min} note={f.get<lb.validate>().note}"
+        }
+        out = "{out};"
+    }
+    return out
+}
+
+func main() {
+    println(report())
+    println(liba.limits())
+    println(lb.limits())
+    return
+}

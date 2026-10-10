@@ -1107,7 +1107,7 @@ impl<'a> Monomorphizer<'a> {
             // Walk the concrete body to discover more calls (M4: transitive)
             if let DeclKind::Fn(fn_decl) = &concrete.kind {
                 self.mark_erased_error_methods(fn_decl);
-                self.in_test_body = fn_decl.attrs.iter().any(|a| a == "test_body");
+                self.in_test_body = fn_decl.attrs.iter().any(|a| a.is("test_body"));
                 for stmt in &fn_decl.body {
                     self.visit_stmt(stmt);
                 }

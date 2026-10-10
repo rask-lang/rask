@@ -120,13 +120,13 @@ impl Interpreter {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
-                    if f.attrs.iter().any(|a| a == "entry") {
+                    if f.attrs.iter().any(|a| a.is("entry")) {
                         if entry_fn.is_some() {
                             return Err(RuntimeError::MultipleEntryPoints);
                         }
                         entry_fn = Some(f.clone());
                     }
-                    if f.attrs.iter().any(|a| a == "test") {
+                    if f.attrs.iter().any(|a| a.is("test")) {
                         test_fns.push(f.clone());
                     }
                     let fn_name = f.name.clone();
@@ -234,7 +234,7 @@ impl Interpreter {
                 DeclKind::Struct(s) => {
                     let base_name = s.name.clone();
                     // Register @binary struct metadata
-                    if s.attrs.iter().any(|a| a == "binary") {
+                    if s.attrs.iter().any(|a| a.is("binary")) {
                         if let Some(meta) = super::binary::BinaryStructMeta::from_decl(&s.name, &s.fields) {
                             self.binary_structs.insert(base_name.clone(), meta);
                         }

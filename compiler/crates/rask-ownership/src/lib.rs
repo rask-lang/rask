@@ -639,7 +639,7 @@ impl<'a> OwnershipChecker<'a> {
     fn check_size_fences(&mut self, decls: &[Decl]) {
         for decl in decls {
             let DeclKind::Struct(s) = &decl.kind else { continue };
-            if !s.attrs.iter().any(|a| a == "small") {
+            if !s.attrs.iter().any(|a| a.is("small")) {
                 continue;
             }
             let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
@@ -701,7 +701,7 @@ impl<'a> OwnershipChecker<'a> {
         let mut fenced: HashMap<String, Span> = HashMap::new();
         for decl in decls {
             let DeclKind::Struct(s) = &decl.kind else { continue };
-            if s.type_params.is_empty() || !s.attrs.iter().any(|a| a == "small") {
+            if s.type_params.is_empty() || !s.attrs.iter().any(|a| a.is("small")) {
                 continue;
             }
             fenced.insert(s.name.clone(), decl.span);

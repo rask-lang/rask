@@ -22,6 +22,7 @@
 //! replaces a whole subtree can do it and let the walk descend into what it
 //! put there.
 
+use crate::attr::Attr;
 use crate::decl::{Decl, DeclKind, FnDecl};
 use crate::expr::{Expr, ExprKind, Pattern, SelectArmKind, StringSegment};
 use crate::stmt::{Stmt, StmtKind};
@@ -39,6 +40,15 @@ pub trait Rewrite {
     /// Every statement list, before its statements are walked — for a rewriter
     /// that adds or removes statements.
     fn body(&mut self, _b: &mut Vec<Stmt>) {}
+    /// Every attribute: on a declaration, a field, a variant, a method. A user
+    /// annotation's name is a reference like any other (type.annotations/AN5).
+    fn attr(&mut self, _a: &mut Attr) {}
+}
+
+fn rewrite_attrs(attrs: &mut [Attr], r: &mut impl Rewrite) {
+    for a in attrs {
+        r.attr(a);
+    }
 }
 
 /// Rewrite a whole program.
@@ -57,7 +67,9 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
     match &mut decl.kind {
         DeclKind::Fn(f) => rewrite_fn(f, r),
         DeclKind::Struct(s) => {
+            rewrite_attrs(&mut s.attrs, r);
             for field in &mut s.fields {
+                rewrite_attrs(&mut field.attrs, r);
                 r.ty(&mut field.ty);
                 if let Some(d) = &mut field.default {
                     rewrite_expr(d, r);
@@ -68,8 +80,11 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             }
         }
         DeclKind::Enum(e) => {
+            rewrite_attrs(&mut e.attrs, r);
             for v in &mut e.variants {
+                rewrite_attrs(&mut v.attrs, r);
                 for field in &mut v.fields {
+                    rewrite_attrs(&mut field.attrs, r);
                     r.ty(&mut field.ty);
                     if let Some(d) = &mut field.default {
                         rewrite_expr(d, r);
@@ -81,6 +96,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             }
         }
         DeclKind::Interface(t) => {
+            rewrite_attrs(&mut t.attrs, r);
             for s in &mut t.super_interfaces {
                 r.ty(s);
             }
@@ -103,15 +119,23 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             }
         }
         DeclKind::Const(c) => {
+            rewrite_attrs(&mut c.attrs, r);
             if let Some(t) = &mut c.ty {
                 r.ty(t);
             }
             rewrite_expr(&mut c.init, r);
         }
-        DeclKind::Test(t) => rewrite_body(&mut t.body, r),
-        DeclKind::Benchmark(b) => rewrite_body(&mut b.body, r),
+        DeclKind::Test(t) => {
+            rewrite_attrs(&mut t.attrs, r);
+            rewrite_body(&mut t.body, r)
+        }
+        DeclKind::Benchmark(b) => {
+            rewrite_attrs(&mut b.attrs, r);
+            rewrite_body(&mut b.body, r)
+        }
         DeclKind::Union(u) => {
             for field in &mut u.fields {
+                rewrite_attrs(&mut field.attrs, r);
                 r.ty(&mut field.ty);
             }
         }
@@ -142,6 +166,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
 }
 
 fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
+    rewrite_attrs(&mut f.attrs, r);
     for tp in &mut f.type_params {
         for bound in &mut tp.bounds {
             r.ty(&mut bound.ty);

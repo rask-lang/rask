@@ -775,19 +775,16 @@ fn fn_to_method_stub(
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),
         span,
-        unimplemented: f.attrs.iter().any(|a| a == "unimplemented"),
-        builtin: f.attrs.iter().any(|a| a == "builtin"),
+        unimplemented: f.attrs.iter().any(|a| a.is("unimplemented")),
+        builtin: f.attrs.iter().any(|a| a.is("builtin")),
         has_body: !f.body.is_empty(),
         is_comptime: f.is_comptime,
-        native: f.attrs.iter().find_map(|a| {
-            if a == "native" {
-                return Some(std::string::String::new());
-            }
-            // `@native("rask_char_is_ascii")` reaches here as the attribute
-            // text with its parens, which the parser preserved.
-            a.strip_prefix("native(\"")
-                .and_then(|rest| rest.strip_suffix("\")"))
-                .map(|sym| sym.to_string())
+        // `@native` alone is the empty symbol; `@native("sym")` names one.
+        native: rask_ast::attr::find(&f.attrs, "native").map(|a| {
+            a.positional()
+                .and_then(|text| text.strip_prefix('"')?.strip_suffix('"'))
+                .unwrap_or_default()
+                .to_string()
         }),
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))

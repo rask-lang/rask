@@ -1,0 +1,3 @@
+name: max=3 min=0 note=name;age: max=10;plain:;
+a: code<=3 count<=10
+b: score>=5 (b)

@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import annpkg
+
+// `import annpkg` binds `annpkg`, not the names in it (structure.modules/IM1),
+// so `@validate` here names nothing. It used to be accepted and attach
+// nothing: an unknown attachment is data nobody reads. The way to write it is
+// `@annpkg.validate`, or `import annpkg.validate`.
+struct Form {
+    @validate(max: 3)
+    code: i64
+}
+
+func main() {
+    let f = Form { code: 1 }
+    println("{f.code}")
+    return
+}

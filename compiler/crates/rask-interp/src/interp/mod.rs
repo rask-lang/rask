@@ -1076,7 +1076,7 @@ impl Interpreter {
         }
         self.struct_decls
             .get(name)
-            .map(|s| s.attrs.iter().any(|a| a == "resource"))
+            .map(|s| s.attrs.iter().any(|a| a.is("resource")))
             .unwrap_or(false)
     }
 
