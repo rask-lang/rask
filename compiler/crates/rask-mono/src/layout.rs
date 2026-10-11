@@ -42,12 +42,11 @@ pub struct FieldLayout {
     /// (`type.structs/FD6`) — `reflect.fields<T>()`'s `has_default` is true
     /// for either.
     pub has_declared_default: bool,
-    /// The declared default's literal text, when it is one (`port: i32 = 8080`
-    /// → `"8080"`). Same shape as the `@default(…)` argument in `attrs`, so the
-    /// decoder can treat the two the same: a field the input leaves out takes
-    /// its declared default (`type.structs/FD6`). `None` for a default that
-    /// isn't a plain literal, which stays construction-only.
-    pub declared_default: Option<String>,
+    /// The declared default, when it is a literal (`port: i32 = 8080`). A
+    /// field the input leaves out takes it on decode, the same as a
+    /// `@default(…)` in `attrs` (`type.structs/FD6`). `None` for a default
+    /// that isn't a plain literal, which stays construction-only.
+    pub declared_default: Option<rask_ast::attr::Literal>,
     /// V5 visibility. Carried because `reflect.fields<T>()` reports it: without
     /// it the native side had nothing to read and answered `true` for every
     /// field, so a `private` one looked public there and not on the
@@ -584,29 +583,7 @@ pub fn arg_owns_storage(name: &str) -> bool {
 
 /// Check whether a struct has `@layout(C)` attribute.
 fn has_c_layout(attrs: &[rask_ast::attr::Attr]) -> bool {
-    attrs.iter().any(|a| a.is("layout") && a.positional() == Some("C"))
-}
-
-/// A declared default's literal text, for the decoder.
-///
-/// `type.structs/FD1` limits a declared default to a compile-time constant, and
-/// the decoder needs it in the same shape `@default(…)` already arrives in:
-/// verbatim source text. Anything that isn't a plain literal answers `None` and
-/// stays construction-only rather than being guessed at.
-fn literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
-    use rask_ast::expr::{ExprKind, UnaryOp};
-    match &e.kind {
-        ExprKind::Int(n, _) => Some(n.to_string()),
-        ExprKind::Float(f, _) => Some(f.to_string()),
-        ExprKind::Bool(b) => Some(b.to_string()),
-        ExprKind::String(s) => Some(format!("{:?}", s)),
-        ExprKind::Char(c) => Some(format!("'{}'", c)),
-        // `-1` is a negation over a literal by the time it gets here.
-        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
-            literal_text(operand).map(|t| format!("-{t}"))
-        }
-        _ => None,
-    }
+    attrs.iter().any(|a| a.is("layout") && a.positional().and_then(|v| v.ident()) == Some("C"))
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
@@ -673,7 +650,7 @@ fn struct_layout(
     let is_binary = struct_decl.attrs.iter().any(|a| a.is("binary"));
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, Option<String>, bool, bool, u32)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, Option<rask_ast::attr::Literal>, bool, bool, u32)> = struct_decl.fields.iter()
         .enumerate()
         .map(|(decl_index, field)| {
             let (field_ty, from_param) = if is_binary {
@@ -694,7 +671,7 @@ fn struct_layout(
                 field_align,
                 field.attrs.clone(),
                 field.default.is_some(),
-                field.default.as_ref().and_then(literal_text),
+                field.default.as_ref().and_then(rask_ast::attr::literal),
                 field.visibility.is_pub(),
                 from_param,
                 decl_index as u32,
@@ -776,7 +753,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             align: field_align,
             attrs: field.attrs.clone(),
             has_declared_default: field.default.is_some(),
-            declared_default: field.default.as_ref().and_then(literal_text),
+            declared_default: field.default.as_ref().and_then(rask_ast::attr::literal),
             is_public: field.visibility.is_pub(),
             decl_index: decl_index as u32,
             is_type_param: false,
@@ -918,7 +895,7 @@ fn enum_layout(
                     align,
                     attrs: Vec::new(),
                     has_declared_default: field.default.is_some(),
-                    declared_default: field.default.as_ref().and_then(literal_text),
+                    declared_default: field.default.as_ref().and_then(rask_ast::attr::literal),
                     // A variant's payload has no visibility of its own.
                     is_public: true,
                     decl_index: decl_index as u32,
@@ -1448,7 +1425,10 @@ mod tests {
             vec![("s", "Small"), ("b", "Big")],
             vec![rask_ast::attr::Attr::synthetic(
                 "layout",
-                Some(vec![rask_ast::attr::AttrArg { label: None, value: "C".to_string() }]),
+                Some(vec![rask_ast::attr::AttrArg {
+                    label: None,
+                    value: rask_ast::attr::AttrValue::synthetic_name("C"),
+                }]),
             )],
         );
         let layout = compute_struct_layout(&decl, &[], &cache);

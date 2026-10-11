@@ -22,7 +22,7 @@
 //! replaces a whole subtree can do it and let the walk descend into what it
 //! put there.
 
-use crate::attr::Attr;
+use crate::attr::{Attr, AttrValue};
 use crate::decl::{Decl, DeclKind, FnDecl};
 use crate::expr::{Expr, ExprKind, Pattern, SelectArmKind, StringSegment};
 use crate::stmt::{Stmt, StmtKind};
@@ -45,9 +45,17 @@ pub trait Rewrite {
     fn attr(&mut self, _a: &mut Attr) {}
 }
 
+/// The attribute, then the expressions among its values: `@default(Color.Red)`
+/// names `Color` like any other reference does.
 fn rewrite_attrs(attrs: &mut [Attr], r: &mut impl Rewrite) {
     for a in attrs {
         r.attr(a);
+        for arg in a.args.iter_mut().flatten() {
+            match &mut arg.value {
+                AttrValue::Expr(e) => rewrite_expr(e, r),
+                AttrValue::RuleName(_) => {}
+            }
+        }
     }
 }
 

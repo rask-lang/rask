@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
+use rask_ast::attr::Literal;
 use rask_ast::decl::{field_attrs, StructDecl};
 use rask_ast::ty::TypeExpr;
 
@@ -1133,27 +1134,12 @@ fn json_to_typed(
 ///
 /// `@default` wins because it exists precisely to differ from the declared one
 /// on decode (type.structs/FD6). Mirrors `decode_default` in the MIR decoder,
-/// down to the literal's text form, so the two backends fill the same value.
-fn decode_default(field: &rask_ast::decl::Field) -> Option<String> {
-    field_attrs::default_literal(&field.attrs)
-        .map(str::to_string)
-        .or_else(|| field.default.as_ref().and_then(declared_literal_text))
-}
-
-/// A declared default's literal text. `None` for anything that isn't a plain
-/// literal, which stays construction-only rather than being guessed at.
-fn declared_literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
-    use rask_ast::expr::{ExprKind, UnaryOp};
-    match &e.kind {
-        ExprKind::Int(n, _) => Some(n.to_string()),
-        ExprKind::Float(f, _) => Some(f.to_string()),
-        ExprKind::Bool(b) => Some(b.to_string()),
-        ExprKind::String(s) => Some(format!("{:?}", s)),
-        ExprKind::Char(c) => Some(format!("'{}'", c)),
-        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
-            declared_literal_text(operand).map(|t| format!("-{t}"))
-        }
-        _ => None,
+/// so the two backends fill the same value. A declared default that isn't a
+/// plain literal stays construction-only rather than being guessed at.
+fn decode_default(field: &rask_ast::decl::Field) -> Option<Literal> {
+    match field_attrs::default_value(&field.attrs) {
+        Some(value) => value.literal(),
+        None => field.default.as_ref().and_then(rask_ast::attr::literal),
     }
 }
 
@@ -1164,26 +1150,29 @@ fn default_value(
     struct_decls: &HashMap<String, StructDecl>,
 ) -> Value {
     if let Some(literal) = decode_default(field) {
-        if let Some(v) = literal_value(literal.trim(), &field.ty) {
+        if let Some(v) = literal_value(literal, &field.ty) {
             return v;
         }
     }
     empty_value(&field.ty, struct_decls)
 }
 
-fn literal_value(literal: &str, ty: &TypeExpr) -> Option<Value> {
+fn literal_value(literal: Literal, ty: &TypeExpr) -> Option<Value> {
     let ty = ty.bare_name()?;
-    match ty {
-        "string" => field_attrs::string_literal(literal)
-            .map(|s| Value::String(Arc::new(Mutex::new(s)))),
-        "bool" => match literal {
-            "true" => Some(Value::Bool(true)),
-            "false" => Some(Value::Bool(false)),
-            _ => None,
-        },
-        "f32" | "f64" | "float" => literal.parse::<f64>().ok().map(|f| { let k = FloatKind::from_name(ty).unwrap_or(FloatKind::F64); Value::Float(k.round(f), k) }),
-        _ => literal.parse::<i64>().ok().map(|n| Value::Int(n, int_kind(ty))),
+    match (literal, ty) {
+        (Literal::Str(s), "string") => Some(Value::String(Arc::new(Mutex::new(s)))),
+        (Literal::Bool(b), "bool") => Some(Value::Bool(b)),
+        (Literal::Float(f), "f32" | "f64" | "float") => Some(float_value(f, ty)),
+        (Literal::Int(n), "f32" | "f64" | "float") => Some(float_value(n as f64, ty)),
+        (_, "string" | "bool" | "f32" | "f64" | "float") => None,
+        (Literal::Int(n), _) => i64::try_from(n).ok().map(|n| Value::Int(n, int_kind(ty))),
+        _ => None,
     }
+}
+
+fn float_value(f: f64, ty: &str) -> Value {
+    let k = FloatKind::from_name(ty).unwrap_or(FloatKind::F64);
+    Value::Float(k.round(f), k)
 }
 
 fn empty_value(ty: &TypeExpr, struct_decls: &HashMap<String, StructDecl>) -> Value {

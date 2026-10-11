@@ -39,6 +39,7 @@ mod tests {
         bs.iter().map(|b| b.ty.to_string()).collect()
     }
 
+    use rask_ast::attr::Literal;
     use rask_ast::decl::DeclKind;
     use rask_ast::expr::{BinOp, ExprKind, UnaryOp};
     use rask_ast::stmt::StmtKind;
@@ -1687,8 +1688,9 @@ mod tests {
                     vec!["skip".to_string()],
                     vec!["default(0)".to_string()],
                 ]);
-                assert_eq!(s.fields[0].attrs[0].positional(), Some("\"user_name\""));
-                assert_eq!(s.fields[1].attrs[0].args, None);
+                let rename = s.fields[0].attrs[0].positional().and_then(|v| v.string());
+                assert_eq!(rename, Some("user_name"));
+                assert!(s.fields[1].attrs[0].args.is_none());
             }
             _ => panic!("expected struct"),
         }
@@ -1705,9 +1707,27 @@ mod tests {
         let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
         let attr = &s.fields[0].attrs[0];
         assert_eq!(attr.path, vec!["liba".to_string(), "validate".to_string()]);
-        assert_eq!(attr.arg("max"), Some("3"));
-        assert_eq!(attr.arg("names"), Some("[\"a, b\", \"c\"]"));
+        assert_eq!(attr.arg("max").and_then(|v| v.literal()), Some(Literal::Int(3)));
+        assert_eq!(attr.arg("names").map(|v| v.to_string()).as_deref(), Some("[\"a, b\", \"c\"]"));
         assert!(!attr.is("validate"));
+    }
+
+    // A value is an expression; only `@allow` and friends take rule names,
+    // whose `/` and `-` are part of the name. A string's braces are a
+    // template's, not an interpolation.
+    #[test]
+    fn attribute_values_are_expressions() {
+        let result = parse(
+            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {0}\")\nc: i64 }",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
+        assert_eq!(s.attrs[0].positional().and_then(|v| v.rule_name()), Some("idiom/duck-interface"));
+        let a = s.fields[0].attrs[0].positional().unwrap();
+        assert_eq!(a.literal(), Some(Literal::Float(-1.5)));
+        let b = s.fields[1].attrs[0].positional().unwrap();
+        assert!(matches!(b.expr().map(|e| &e.kind), Some(rask_ast::expr::ExprKind::Field { .. })));
+        assert_eq!(s.fields[2].attrs[0].positional().and_then(|v| v.string()), Some("nf {0}"));
     }
 
     // CC2: `Ring<T> implements Show where T: Show` captures the condition.

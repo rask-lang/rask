@@ -17,16 +17,16 @@
 //! that name too. So the table is just the declarations in `decls`, keyed by
 //! the name the attachments use.
 
-use rask_ast::attr::{Attr, AttrArg};
+use rask_ast::attr::{Attr, AttrArg, AttrValue};
 use rask_ast::decl::{AnnotationDecl, Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind, UnaryOp};
+use rask_ast::expr::Expr;
 use std::collections::HashMap;
 
 /// Rewrite every attachment of a user-declared annotation to name all its
 /// fields. Attachments of compiler-known annotations (`@rename`, `@test`, …)
 /// are left alone — they are not declared here and have no default table.
 pub fn fill_annotation_defaults(decls: &mut [Decl]) {
-    let declared: HashMap<String, Vec<(String, String)>> = decls
+    let declared: HashMap<String, Vec<(String, Expr)>> = decls
         .iter()
         .filter_map(|d| match &d.kind {
             DeclKind::Annotation(ann) => Some((ann.name.clone(), defaults_of(ann))),
@@ -72,50 +72,21 @@ pub fn fill_annotation_defaults(decls: &mut [Decl]) {
     }
 }
 
-fn fill_fn(f: &mut FnDecl, declared: &HashMap<String, Vec<(String, String)>>) {
+fn fill_fn(f: &mut FnDecl, declared: &HashMap<String, Vec<(String, Expr)>>) {
     fill(&mut f.attrs, declared);
 }
 
-/// Fields with a declared default, as `(name, value text)`. Values are
-/// rendered back to source text so the filled attachment reads exactly like a
-/// hand-written one, and one reader handles both.
-fn defaults_of(ann: &AnnotationDecl) -> Vec<(String, String)> {
+/// Fields with a declared default, as `(name, value)`. The value is the
+/// declared expression itself, so a filled attachment is exactly what writing
+/// it out by hand would have parsed to, and the checker judges both alike.
+fn defaults_of(ann: &AnnotationDecl) -> Vec<(String, Expr)> {
     ann.fields
         .iter()
-        .filter_map(|f| {
-            let text = render_const(f.default.as_ref()?)?;
-            Some((f.name.clone(), text))
-        })
+        .filter_map(|f| Some((f.name.clone(), f.default.clone()?)))
         .collect()
 }
 
-/// A defaulted annotation field is a comptime constant (AN1), so this only
-/// has to render literals. Anything else is left unfilled and the checker's
-/// missing-field error names it — better than inventing a value.
-fn render_const(expr: &Expr) -> Option<String> {
-    match &expr.kind {
-        ExprKind::Int(v, _) => Some(v.to_string()),
-        ExprKind::Float(v, _) => Some(format!("{:?}", v)),
-        ExprKind::Bool(v) => Some(v.to_string()),
-        ExprKind::String(v) => Some(format!("{:?}", v)),
-        // `-1` arrives as a unary negation over a literal.
-        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
-            Some(format!("-{}", render_const(operand)?))
-        }
-        // `Color.Red` — an enum variant, kept as the path text.
-        ExprKind::Field { object, field } => match &object.kind {
-            ExprKind::Ident(name) => Some(format!("{}.{}", name, field)),
-            _ => None,
-        },
-        ExprKind::Array(elements) => {
-            let parts: Option<Vec<String>> = elements.iter().map(render_const).collect();
-            Some(format!("[{}]", parts?.join(", ")))
-        }
-        _ => None,
-    }
-}
-
-fn fill(attrs: &mut [Attr], declared: &HashMap<String, Vec<(String, String)>>) {
+fn fill(attrs: &mut [Attr], declared: &HashMap<String, Vec<(String, Expr)>>) {
     for attr in attrs.iter_mut() {
         if attr.path.len() != 1 {
             continue;
@@ -125,7 +96,7 @@ fn fill(attrs: &mut [Attr], declared: &HashMap<String, Vec<(String, String)>>) {
         let args = attr.args.get_or_insert_with(Vec::new);
         for (label, value) in defaults {
             if !given.contains(label) {
-                args.push(AttrArg { label: Some(label.clone()), value: value.clone() });
+                args.push(AttrArg { label: Some(label.clone()), value: AttrValue::Expr(value.clone()) });
             }
         }
     }

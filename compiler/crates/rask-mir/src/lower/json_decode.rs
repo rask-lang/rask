@@ -12,6 +12,7 @@
 //! the checker gave the expression: 0 → Ok(value), anything else → Err with the
 //! matching variant and the runtime's message.
 
+use rask_ast::attr::Literal;
 use rask_ast::decl::field_attrs;
 use rask_mono::StructLayout;
 use rask_types::{GenericArg, Type};
@@ -406,10 +407,11 @@ impl<'a> MirLowerer<'a> {
     ///
     /// `@default` wins because it exists precisely to differ from the declared
     /// one on decode (type.structs/FD6).
-    fn decode_default(field: &rask_mono::FieldLayout) -> Option<String> {
-        field_attrs::default_literal(&field.attrs)
-            .map(str::to_string)
-            .or_else(|| field.declared_default.clone())
+    fn decode_default(field: &rask_mono::FieldLayout) -> Option<Literal> {
+        match field_attrs::default_value(&field.attrs) {
+            Some(value) => value.literal(),
+            None => field.declared_default.clone(),
+        }
     }
 
     /// Write the values the decoder won't: `@default` literals, and a usable
@@ -445,28 +447,25 @@ impl<'a> MirLowerer<'a> {
         dst: crate::LocalId,
         offset: u32,
         ty: &Type,
-        literal: &str,
+        literal: &Literal,
     ) -> bool {
-        let literal = literal.trim();
-        let (value, size) = match prim_shape_kind(ty) {
-            Some(JSHAPE_STRING) => match field_attrs::string_literal(literal) {
-                Some(text) => (MirConst::String(text), 16u32),
-                None => return false,
-            },
-            Some(JSHAPE_BOOL) => match literal {
-                "true" => (MirConst::Int(1), 1),
-                "false" => (MirConst::Int(0), 1),
-                _ => return false,
-            },
-            Some(JSHAPE_F32) | Some(JSHAPE_F64) => match literal.parse::<f64>() {
-                Ok(f) => (MirConst::Float(f), self.ctx.type_to_mir(ty).size()),
-                Err(_) => return false,
-            },
-            Some(_) => match literal.parse::<i64>() {
+        let (value, size) = match (prim_shape_kind(ty), literal) {
+            (Some(JSHAPE_STRING), Literal::Str(text)) => (MirConst::String(text.clone()), 16u32),
+            (Some(JSHAPE_BOOL), Literal::Bool(b)) => (MirConst::Int(*b as i64), 1),
+            (Some(JSHAPE_F32) | Some(JSHAPE_F64), Literal::Float(f)) => {
+                (MirConst::Float(*f), self.ctx.type_to_mir(ty).size())
+            }
+            (Some(JSHAPE_F32) | Some(JSHAPE_F64), Literal::Int(n)) => {
+                (MirConst::Float(*n as f64), self.ctx.type_to_mir(ty).size())
+            }
+            (Some(JSHAPE_STRING | JSHAPE_BOOL | JSHAPE_F32 | JSHAPE_F64), _) | (None, _) => {
+                return false
+            }
+            (Some(_), Literal::Int(n)) => match i64::try_from(*n) {
                 Ok(n) => (MirConst::Int(n), self.ctx.type_to_mir(ty).size()),
                 Err(_) => return false,
             },
-            None => return false,
+            (Some(_), _) => return false,
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: dst,

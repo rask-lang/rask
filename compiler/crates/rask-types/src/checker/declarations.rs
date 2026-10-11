@@ -157,7 +157,10 @@ impl TypeChecker {
                     is_pub: true,
                     attrs: vec![rask_ast::attr::Attr::synthetic(
                         "layout",
-                        Some(vec![rask_ast::attr::AttrArg { label: None, value: "C".to_string() }]),
+                        Some(vec![rask_ast::attr::AttrArg {
+                            label: None,
+                            value: rask_ast::attr::AttrValue::synthetic_name("C"),
+                        }]),
                     )],
                     doc: None,
                 }),
@@ -442,10 +445,7 @@ impl TypeChecker {
                 });
             }
             for attr in field.attrs.iter().filter(|a| a.is("rename")) {
-                let names_a_key = attr
-                    .positional()
-                    .map(str::trim)
-                    .is_some_and(|a| a.starts_with('"') && a.ends_with('"') && a.len() >= 2);
+                let names_a_key = attr.positional().is_some_and(|v| v.string().is_some());
                 if !names_a_key {
                     self.errors.push(TypeError::BadFieldAnnotation {
                         attr: "rename".to_string(),
@@ -1382,7 +1382,7 @@ impl TypeChecker {
             })
             .filter(|f| {
                 f.default.is_none()
-                    && rask_ast::decl::field_attrs::default_literal(&f.attrs).is_none()
+                    && rask_ast::decl::field_attrs::default_value(&f.attrs).is_none()
             })
             .map(|f| f.name.clone())
             .collect();

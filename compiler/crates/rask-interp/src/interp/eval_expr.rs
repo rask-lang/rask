@@ -3422,11 +3422,11 @@ impl Interpreter {
     /// (type.annotations/AN6).
     ///
     /// Desugar already filled the declared defaults into the attachment text,
-    /// so what's written here is the whole record — the same text native
+    /// so what's written here is the whole record — the same values native
     /// lowering splices from, which is what keeps the two backends agreeing on
     /// what a default was. The declaration is consulted only for field types:
     /// `3` is an integer for `weight: i64` and a float for `scale: f64`, and
-    /// the text alone can't say which.
+    /// the literal alone can't say which.
     fn annotation_record(&self, annotation: &str, attr: &rask_ast::attr::Attr) -> Value {
         let declared: Vec<(String, String)> = self
             .struct_decls
@@ -3456,28 +3456,25 @@ impl Interpreter {
     }
 }
 
-/// One attachment argument's text as a value, read against its declared type.
+/// One attachment argument as a value, read against its declared type.
 /// The native side does the same in `rask-mir`'s `annotation_const`; both are
 /// driven off the declared type so `weight: f64 = 1` isn't an integer on one
 /// backend and a float on the other.
-fn annotation_value(text: &str, ty: &str) -> Value {
-    use rask_ast::decl::field_attrs;
-    let text = text.trim();
-    match ty {
-        "bool" => Value::Bool(text == "true"),
-        "f32" | "f64" => text
-            .parse::<f64>()
-            .map(|f| Value::Float(f, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 }))
-            .unwrap_or(Value::Unit),
-        "str" | "string" => Value::String(Arc::new(Mutex::new(
-            field_attrs::string_literal(text).unwrap_or_else(|| text.to_string()),
-        ))),
-        _ => match text.parse::<i64>() {
-            Ok(n) => Value::int(n),
-            // An enum variant (`Color.Red`) or an array — kept as text until
-            // annotation fields of those types are read back.
-            Err(_) => Value::String(Arc::new(Mutex::new(text.to_string()))),
-        },
+fn annotation_value(value: &rask_ast::attr::AttrValue, ty: &str) -> Value {
+    use rask_ast::attr::Literal;
+    match (value.literal(), ty) {
+        (Some(Literal::Bool(b)), "bool") => Value::Bool(b),
+        (Some(Literal::Float(f)), "f32" | "f64") => {
+            Value::Float(f, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 })
+        }
+        (Some(Literal::Int(n)), "f32" | "f64") => {
+            Value::Float(n as f64, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 })
+        }
+        (Some(Literal::Str(s)), "str" | "string") => Value::String(Arc::new(Mutex::new(s))),
+        (Some(Literal::Int(n)), _) if i64::try_from(n).is_ok() => Value::int(n as i64),
+        // An enum variant (`Color.Red`) or an array — kept as its written form
+        // until annotation fields of those types are read back.
+        _ => Value::String(Arc::new(Mutex::new(value.to_string()))),
     }
 }
 

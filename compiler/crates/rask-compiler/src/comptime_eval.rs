@@ -61,8 +61,10 @@ pub fn evaluate_comptime_globals(
                 if is_comptime_init(&c.init, decls) {
                     let mut quota = None;
                     if let Some(arg) = c.comptime_quota_arg() {
-                        match arg.replace('_', "").parse::<usize>() {
-                            Ok(n) if n > 0 => quota = Some(n),
+                        match arg.literal() {
+                            Some(rask_ast::attr::Literal::Int(n)) if n > 0 => {
+                                quota = Some(usize::try_from(n).unwrap_or(usize::MAX))
+                            }
                             _ => diags.push(
                                 Diagnostic::error(format!(
                                     "`@comptime_quota` wants a positive number of branches, found `{arg}`"

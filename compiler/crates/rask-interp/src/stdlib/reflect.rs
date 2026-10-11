@@ -206,6 +206,5 @@ fn has_attr(attrs: &[rask_ast::attr::Attr], name: &str) -> bool {
 
 /// The key `@rename("...")` gives the field, if it has one.
 fn rename_of(attrs: &[rask_ast::attr::Attr]) -> Option<String> {
-    let text = rask_ast::attr::find(attrs, "rename")?.positional()?;
-    rask_ast::decl::field_attrs::string_literal(text)
+    rask_ast::attr::find(attrs, "rename")?.positional()?.string().map(str::to_string)
 }

@@ -53,6 +53,10 @@ pub struct Parser {
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
+    /// Set while parsing an attribute's values. They are constants with no
+    /// scope to interpolate from, so a string's braces are left for whoever
+    /// reads it: `@message("nf {0}")` is a template, not `"nf " + 0`.
+    in_attribute: bool,
 }
 
 impl Parser {
@@ -70,7 +74,7 @@ impl Parser {
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
         let declared_structs = Self::scan_declared_structs(&tokens);
         let import_namespaces = Self::scan_import_namespaces(&tokens);
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, import_namespaces, loop_labels: Vec::new() }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, import_namespaces, loop_labels: Vec::new(), in_attribute: false }
     }
 
     /// Names following the `struct` keyword. One pass, before anything is
@@ -540,7 +544,9 @@ impl Parser {
                         TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
                         TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
-                        TokenKind::Public | TokenKind::Private
+                        TokenKind::Public | TokenKind::Private |
+                        // Attributes go on declarations only.
+                        TokenKind::At
                     ) {
                         if !self.record_error(decl_err) { break; }
                         self.synchronize();
@@ -837,6 +843,9 @@ impl Parser {
             path.push(self.expect_ident()?);
         }
 
+        // `@allow(idiom/duck-interface)`: lint and warning names, not
+        // expressions.
+        let rule_names = path.len() == 1 && matches!(path[0].as_str(), "allow" | "warn" | "deny");
         let mut args = None;
         if self.match_token(&TokenKind::LParen) {
             let mut list = Vec::new();
@@ -854,7 +863,25 @@ impl Parser {
                     }
                     _ => None,
                 };
-                let value = self.attribute_value_text();
+                let value = if rule_names {
+                    rask_ast::attr::AttrValue::RuleName(self.rule_name_text())
+                } else {
+                    self.in_attribute = true;
+                    let value = self.parse_expr();
+                    self.in_attribute = false;
+                    rask_ast::attr::AttrValue::Expr(value?)
+                };
+                self.skip_attribute_newlines();
+                if label.is_none() && self.check(&TokenKind::Eq) {
+                    if let Some(name) = value.ident() {
+                        return Err(ParseError {
+                            span: self.current().span,
+                            message: format!("attribute argument `{name}` is labelled with `=`"),
+                            hint: Some(format!("write `{name}: value`")),
+                            why: Some("attribute arguments read like struct literal fields: `label: value`".to_string()),
+                        });
+                    }
+                }
                 list.push(rask_ast::attr::AttrArg { label, value });
                 if !self.match_token(&TokenKind::Comma) {
                     break;
@@ -876,51 +903,17 @@ impl Parser {
         }
     }
 
-    /// One attribute argument's value, as source text, up to the comma or
-    /// closing parenthesis that ends it. Brackets nest, so `[1, 2]` is one
-    /// value.
-    fn attribute_value_text(&mut self) -> String {
+    /// A rule name inside `@allow(…)`, as source text, up to the comma or
+    /// closing parenthesis that ends it: `idiom/duck-interface` is five
+    /// tokens and one name.
+    fn rule_name_text(&mut self) -> String {
         let mut text = String::new();
-        let mut depth = 0usize;
         while !self.at_end() {
             match self.current_kind() {
-                TokenKind::Comma | TokenKind::RParen if depth == 0 => break,
-                TokenKind::Newline => {
-                    self.advance();
-                    continue;
-                }
-                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
-                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
-                    depth = depth.saturating_sub(1)
-                }
-                _ => {}
-            }
-            // Preserve original token text for strings, idents, etc.
-            match self.current_kind() {
-                TokenKind::String(s, _) => {
-                    text.push('"');
-                    text.push_str(s);
-                    text.push('"');
-                }
+                TokenKind::Comma | TokenKind::RParen | TokenKind::Newline => break,
                 TokenKind::Ident(s) => text.push_str(s),
-                TokenKind::Int(n, _) => text.push_str(&n.to_string()),
-                TokenKind::Float(f, _) => text.push_str(&format!("{:?}", f)),
-                TokenKind::Bool(b) => text.push_str(if *b { "true" } else { "false" }),
-                TokenKind::Char(c) => text.push_str(&format!("'{}'", c)),
-                TokenKind::Comma => text.push_str(", "),
-                // Keywords, operators, and delimiters keep their source
-                // text. Debug output here would mangle anything with
-                // punctuation — a lint rule id like
-                // `@allow(idiom/duck-interface)` came out as
-                // `allow(idiomSlashduck-Interface)` and matched nothing,
-                // breaking per-rule suppression (tool.lint/SU1).
-                //
-                // Literals must be listed above, not left to this arm:
-                // `display_name` is prose for diagnostics, so `@default(1.5)`
-                // was stored as `default(a number)` and `@default(true)` as
-                // `default(true' or 'false)` — the value simply gone (#965).
-                // A token kind added later lands here and gets prose too;
-                // #965 tracks giving TokenKind a real source_text().
+                // `display_name` is how a diagnostic quotes the token, so a
+                // keyword or operator comes back quoted: `'as'`, `'/'`.
                 k => text.push_str(k.display_name().trim_matches('\'')),
             }
             self.advance();
@@ -4043,7 +4036,7 @@ impl Parser {
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
                 // `}` alone matters too: `"}}"` is an escaped brace with no
                 // `{` anywhere in it (fmt/F4).
-                if s.contains('{') || s.contains('}') {
+                if !self.in_attribute && (s.contains('{') || s.contains('}')) {
                     match self.parse_string_interpolation(&s, &positions, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),

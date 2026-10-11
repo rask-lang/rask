@@ -781,10 +781,7 @@ fn fn_to_method_stub(
         is_comptime: f.is_comptime,
         // `@native` alone is the empty symbol; `@native("sym")` names one.
         native: rask_ast::attr::find(&f.attrs, "native").map(|a| {
-            a.positional()
-                .and_then(|text| text.strip_prefix('"')?.strip_suffix('"'))
-                .unwrap_or_default()
-                .to_string()
+            a.positional().and_then(|v| v.string()).unwrap_or_default().to_string()
         }),
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))

@@ -514,7 +514,7 @@ impl<'a> Printer<'a> {
             if i > 0 {
                 self.emit_indent();
             }
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
         }
 
@@ -655,7 +655,7 @@ impl<'a> Printer<'a> {
         self.emit_indent();
 
         for attr in &s.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -691,8 +691,7 @@ impl<'a> Printer<'a> {
                     self.emit(", ");
                 }
                 for attr in &field.attrs {
-                    self.emit("@");
-                    self.emit(&attr.to_string());
+                    self.emit_attr(attr);
                     self.emit(" ");
                 }
                 match field.visibility {
@@ -730,8 +729,7 @@ impl<'a> Printer<'a> {
                 self.emit_standalone_comments_before(field.name_span.start);
                 for attr in &field.attrs {
                     self.emit_indent();
-                    self.emit("@");
-                    self.emit(&attr.to_string());
+                    self.emit_attr(attr);
                     self.emit_newline();
                 }
                 self.emit_indent();
@@ -869,7 +867,7 @@ impl<'a> Printer<'a> {
         // `@message` disappeared and the derived `message()` went with it — the
         // formatted file then failed to check on a call the source made (#805).
         for attr in &e.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -925,7 +923,7 @@ impl<'a> Printer<'a> {
                 // A per-variant `@message("…")` is what the derived message
                 // actually reads.
                 for attr in &variant.attrs {
-                    self.emit(&format!("@{attr}"));
+                    self.emit_attr(attr);
                     self.emit_newline();
                     self.emit_indent();
                 }
@@ -995,7 +993,7 @@ impl<'a> Printer<'a> {
         // shape and a plain one has to be declared, so the conformance the
         // source relied on stopped existing (#805).
         for attr in &t.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1208,7 +1206,7 @@ impl<'a> Printer<'a> {
     fn format_const_decl(&mut self, c: &ConstDecl) {
         self.emit_indent();
         for attr in &c.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1228,7 +1226,7 @@ impl<'a> Printer<'a> {
     fn format_test_decl(&mut self, t: &TestDecl) {
         self.emit_indent();
         for attr in &t.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1250,7 +1248,7 @@ impl<'a> Printer<'a> {
     fn format_benchmark_decl(&mut self, b: &BenchmarkDecl) {
         self.emit_indent();
         for attr in &b.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1913,6 +1911,28 @@ impl<'a> Printer<'a> {
             ArgMode::Default => {}
         }
         self.format_expr(&arg.expr);
+    }
+
+    /// `@name(label: value, …)`, values printed like any other expression.
+    fn emit_attr(&mut self, attr: &rask_ast::attr::Attr) {
+        self.emit("@");
+        self.emit(&attr.name());
+        let Some(args) = &attr.args else { return };
+        self.emit("(");
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                self.emit(", ");
+            }
+            if let Some(label) = &arg.label {
+                self.emit(label);
+                self.emit(": ");
+            }
+            match &arg.value {
+                rask_ast::attr::AttrValue::Expr(e) => self.format_expr(e),
+                rask_ast::attr::AttrValue::RuleName(n) => self.emit(n),
+            }
+        }
+        self.emit(")");
     }
 
     fn format_expr(&mut self, expr: &Expr) {

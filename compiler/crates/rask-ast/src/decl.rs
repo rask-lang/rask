@@ -96,7 +96,7 @@ impl ConstDecl {
     /// Returned unparsed so the fold site can complain about `@comptime_quota(lots)`
     /// instead of ignoring it — an attribute that silently does nothing is worse
     /// than one that doesn't exist.
-    pub fn comptime_quota_arg(&self) -> Option<&str> {
+    pub fn comptime_quota_arg(&self) -> Option<&crate::attr::AttrValue> {
         crate::attr::find(&self.attrs, "comptime_quota")?.positional()
     }
 }
@@ -311,7 +311,8 @@ pub mod field_attrs {
     pub fn serial_name(attrs: &[Attr], field_name: &str) -> String {
         attr::find(attrs, "rename")
             .and_then(|a| a.positional())
-            .and_then(string_literal)
+            .and_then(|v| v.string())
+            .map(str::to_string)
             .unwrap_or_else(|| field_name.to_string())
     }
 
@@ -328,36 +329,15 @@ pub mod field_attrs {
         attr::has(attrs, "skip")
     }
 
-    /// The `@default(…)` literal, verbatim, when the field has one (E20).
-    pub fn default_literal(attrs: &[Attr]) -> Option<&str> {
+    /// The `@default(…)` value, when the field has one (E20).
+    pub fn default_value(attrs: &[Attr]) -> Option<&crate::attr::AttrValue> {
         attr::find(attrs, "default")?.positional()
     }
 
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {
-        attr::find(attrs, "tag")?.positional().and_then(string_literal)
-    }
-
-    /// The contents of a `"…"` literal, with the usual escapes expanded.
-    pub fn string_literal(text: &str) -> Option<String> {
-        let inner = text.trim().strip_prefix('"')?.strip_suffix('"')?;
-        let mut out = String::with_capacity(inner.len());
-        let mut chars = inner.chars();
-        while let Some(c) = chars.next() {
-            if c != '\\' {
-                out.push(c);
-                continue;
-            }
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some(other) => out.push(other),
-                None => break,
-            }
-        }
-        Some(out)
+        attr::find(attrs, "tag")?.positional()?.string().map(str::to_string)
     }
 }
 

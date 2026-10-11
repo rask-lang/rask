@@ -1508,7 +1508,7 @@ impl<'a> MirLowerer<'a> {
                     serial_name: field_attrs::serial_name(&fl.attrs, &fl.name),
                     is_skipped: field_attrs::is_skipped(&fl.attrs),
                     has_default: fl.has_declared_default
-                        || field_attrs::default_literal(&fl.attrs).is_some(),
+                        || field_attrs::default_value(&fl.attrs).is_some(),
                     attrs: fl.attrs.clone(),
                 }
             })

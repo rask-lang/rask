@@ -82,7 +82,7 @@ pub fn allowed_name(attr: &crate::attr::Attr) -> Option<&str> {
     if !attr.is("allow") {
         return None;
     }
-    attr.positional()
+    attr.positional()?.rule_name()
 }
 
 #[cfg(test)]
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn only_allow_names_a_rule() {
         use crate::attr::{Attr, AttrArg};
-        let arg = AttrArg { label: None, value: "naming/as".to_string() };
+        let arg = AttrArg { label: None, value: crate::attr::AttrValue::RuleName("naming/as".to_string()) };
         assert_eq!(allowed_name(&Attr::synthetic("allow", Some(vec![arg.clone()]))), Some("naming/as"));
         assert_eq!(allowed_name(&Attr::synthetic("resource", None)), None);
         assert_eq!(allowed_name(&Attr::synthetic("deny", Some(vec![arg]))), None);

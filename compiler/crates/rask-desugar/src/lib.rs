@@ -1492,8 +1492,7 @@ fn extract_message_attr_template(attr: &rask_ast::attr::Attr) -> Option<String> 
     if !attr.is("message") {
         return None;
     }
-    let text = attr.positional()?.trim();
-    Some(text.strip_prefix('"')?.strip_suffix('"')?.to_string())
+    attr.positional()?.string().map(str::to_string)
 }
 
 /// Map binary operators to method names (if they should be desugared).

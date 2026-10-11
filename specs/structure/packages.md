@@ -176,7 +176,7 @@ dep "mylib" "^1.0" { path: "../mylib" }  // Path for dev, version for publishing
 ### Deprecation
 
 ```rask
-@deprecated(since = "2.1.0", note = "Use new_function instead")
+@deprecated(since: "2.1.0", note: "Use new_function instead")
 public func old_function() { ... }
 ```
 

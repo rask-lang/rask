@@ -239,22 +239,18 @@ fn vec_slot_type(ty: MirType) -> MirType {
     }
 }
 
-/// An annotation attachment's value text as a MIR constant
-/// (type.annotations/AN1, AN6). The declared type decides how the text reads —
+/// An annotation attachment's value as a MIR constant
+/// (type.annotations/AN1, AN6). The declared type decides how the value reads —
 /// `3` is an integer for `weight: i64` and a float for `scale: f64` — so this
-/// takes the checker's answer rather than guessing from the digits.
-fn annotation_const(value: &str, ty: &MirType) -> Option<MirConst> {
-    use rask_ast::decl::field_attrs;
-    let value = value.trim();
-    match ty {
-        MirType::Bool => match value {
-            "true" => Some(MirConst::Bool(true)),
-            "false" => Some(MirConst::Bool(false)),
-            _ => None,
-        },
-        MirType::F32 | MirType::F64 => value.parse::<f64>().ok().map(MirConst::Float),
-        MirType::String => field_attrs::string_literal(value).map(MirConst::String),
-        _ if ty.is_int_like() => value.parse::<i64>().ok().map(MirConst::Int),
+/// takes the declaration's answer rather than guessing from the literal.
+fn annotation_const(value: &rask_ast::attr::AttrValue, ty: &MirType) -> Option<MirConst> {
+    use rask_ast::attr::Literal;
+    match (value.literal()?, ty) {
+        (Literal::Bool(b), MirType::Bool) => Some(MirConst::Bool(b)),
+        (Literal::Float(f), MirType::F32 | MirType::F64) => Some(MirConst::Float(f)),
+        (Literal::Int(n), MirType::F32 | MirType::F64) => Some(MirConst::Float(n as f64)),
+        (Literal::Str(s), MirType::String) => Some(MirConst::String(s)),
+        (Literal::Int(n), _) if ty.is_int_like() => i64::try_from(n).ok().map(MirConst::Int),
         _ => None,
     }
 }
@@ -5032,7 +5028,7 @@ impl<'a> MirLowerer<'a> {
     /// constant (type.annotations/AN6). Nothing of the annotation reaches
     /// MIR: there is no annotation value to build (AN8), only this projection.
     ///
-    /// Attachment text arrived complete — desugar filled the declared defaults
+    /// The attachment arrived complete — desugar filled the declared defaults
     /// (`annotation_defaults`) — so this reads what's written and never looks
     /// the declaration up. `Ok(None)` means "not this form", so the caller
     /// falls through to ordinary field-access lowering; `Err` means it *was*
@@ -5070,7 +5066,7 @@ impl<'a> MirLowerer<'a> {
                 annotation, fc.name, field
             )));
         };
-        // The attachment text says `3`, not whether that's an i64, a u8 or an
+        // The attachment says `3`, not whether that's an i64, a u8 or an
         // f64 — the declaration does. Not the checker's type for this node:
         // inference has nothing to pin `get<A>()`'s result to when the read
         // feeds an interpolation, and it stayed an open type variable there.

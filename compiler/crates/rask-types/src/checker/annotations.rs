@@ -2,12 +2,14 @@
 //! User annotation validation (type.annotations/AN3-AN5).
 //!
 //! An attachment arrives as an `Attr`: a name and labelled arguments, each
-//! value still the literal as written. A dependency's annotation, and every
+//! value a parsed expression. A dependency's annotation, and every
 //! attachment naming it (`@validate` inside it, `@liba.validate` outside),
 //! carry the name package scoping gave the declaration, so attachments are
 //! matched to declarations by name alone.
 
+use rask_ast::attr::{AttrValue, Literal};
 use rask_ast::decl::{AnnotationDecl, Decl, DeclKind};
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
@@ -65,7 +67,7 @@ fn int_type(ty: &str) -> bool {
     matches!(ty, "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize")
 }
 
-/// What kind of literal an argument value is, from its reconstructed text.
+/// What kind of constant an argument value is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lit {
     Int,
@@ -79,34 +81,31 @@ enum Lit {
     Other,
 }
 
-fn classify(value: &str) -> Lit {
-    let v = value.trim();
-    if v.is_empty() {
-        return Lit::Other;
+fn classify(value: &AttrValue) -> Lit {
+    let Some(expr) = value.expr() else { return Lit::Other };
+    if let Some(lit) = rask_ast::attr::literal(expr) {
+        return match lit {
+            Literal::Int(_) => Lit::Int,
+            Literal::Float(_) => Lit::Float,
+            Literal::Str(_) => Lit::Str,
+            Literal::Bool(_) => Lit::Bool,
+            Literal::Char(_) => Lit::Other,
+        };
     }
-    if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
-        return Lit::Str;
+    match &expr.kind {
+        ExprKind::Array(_) => Lit::Array,
+        _ if is_path(expr) => Lit::Path,
+        _ => Lit::Other,
     }
-    if v == "true" || v == "false" {
-        return Lit::Bool;
+}
+
+/// `Color` or `Color.Red`.
+fn is_path(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Field { object, .. } => is_path(object),
+        _ => false,
     }
-    if v.starts_with('[') && v.ends_with(']') {
-        return Lit::Array;
-    }
-    let num = v.strip_prefix('-').unwrap_or(v);
-    if !num.is_empty() && num.chars().next().unwrap().is_ascii_digit() {
-        if num.chars().all(|c| c.is_ascii_digit() || c == '_') {
-            return Lit::Int;
-        }
-        if num.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.') {
-            return Lit::Float;
-        }
-        return Lit::Other;
-    }
-    if v.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
-        return Lit::Path;
-    }
-    Lit::Other
 }
 
 fn lit_matches(lit: Lit, written: &TypeExpr) -> bool {
@@ -396,7 +395,7 @@ impl TypeChecker {
     fn check_attachment_args(&mut self, ann: &AnnotationDecl, attr: &rask_ast::attr::Attr, span: Span) {
         let mut given: Vec<&str> = Vec::new();
         for arg in attr.args.iter().flatten() {
-            let value = arg.value.as_str();
+            let value = &arg.value;
             let Some(arg_name) = arg.label.as_deref() else {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
@@ -436,7 +435,7 @@ impl TypeChecker {
             if !lit_matches(lit, &field.ty) {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
-                    problem: format!("`{}` is not a `{}` for field `{}`", value.trim(), field.ty, arg_name),
+                    problem: format!("`{}` is not a `{}` for field `{}`", value, field.ty, arg_name),
                     fix: "annotation values are comptime constants matching the declared field type".to_string(),
                     why: CONST_WHY,
                     span,
