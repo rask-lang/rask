@@ -53,10 +53,6 @@ pub struct Parser {
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
-    /// Set while parsing an attribute's values. They are constants with no
-    /// scope to interpolate from, so a string's braces are left for whoever
-    /// reads it: `@message("nf {0}")` is a template, not `"nf " + 0`.
-    in_attribute: bool,
 }
 
 impl Parser {
@@ -74,7 +70,7 @@ impl Parser {
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
         let declared_structs = Self::scan_declared_structs(&tokens);
         let import_namespaces = Self::scan_import_namespaces(&tokens);
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, import_namespaces, loop_labels: Vec::new(), in_attribute: false }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, import_namespaces, loop_labels: Vec::new() }
     }
 
     /// Names following the `struct` keyword. One pass, before anything is
@@ -845,7 +841,8 @@ impl Parser {
 
         // `@allow(idiom/duck-interface)`: lint and warning names, not
         // expressions.
-        let rule_names = path.len() == 1 && matches!(path[0].as_str(), "allow" | "warn" | "deny");
+        let rule_names = path.len() == 1
+            && rask_ast::attr::compiler_attr(&path[0]) == Some(rask_ast::attr::ArgForm::RuleNames);
         let mut args = None;
         if self.match_token(&TokenKind::LParen) {
             let mut list = Vec::new();
@@ -866,10 +863,7 @@ impl Parser {
                 let value = if rule_names {
                     rask_ast::attr::AttrValue::RuleName(self.rule_name_text())
                 } else {
-                    self.in_attribute = true;
-                    let value = self.parse_expr();
-                    self.in_attribute = false;
-                    rask_ast::attr::AttrValue::Expr(value?)
+                    rask_ast::attr::AttrValue::Expr(self.parse_expr()?)
                 };
                 self.skip_attribute_newlines();
                 if label.is_none() && self.check(&TokenKind::Eq) {
@@ -4036,7 +4030,7 @@ impl Parser {
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
                 // `}` alone matters too: `"}}"` is an escaped brace with no
                 // `{` anywhere in it (fmt/F4).
-                if !self.in_attribute && (s.contains('{') || s.contains('}')) {
+                if s.contains('{') || s.contains('}') {
                     match self.parse_string_interpolation(&s, &positions, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),

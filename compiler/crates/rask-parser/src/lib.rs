@@ -1689,6 +1689,7 @@ mod tests {
                     vec!["default(0)".to_string()],
                 ]);
                 let rename = s.fields[0].attrs[0].positional().and_then(|v| v.string());
+                let rename = rename.as_deref();
                 assert_eq!(rename, Some("user_name"));
                 assert!(s.fields[1].attrs[0].args.is_none());
             }
@@ -1713,12 +1714,12 @@ mod tests {
     }
 
     // A value is an expression; only `@allow` and friends take rule names,
-    // whose `/` and `-` are part of the name. A string's braces are a
-    // template's, not an interpolation.
+    // whose `/` and `-` are part of the name. A string reads the way it does
+    // anywhere: `{0}` is an interpolation, `{{` an escaped brace.
     #[test]
     fn attribute_values_are_expressions() {
         let result = parse(
-            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {0}\")\nc: i64 }",
+            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {0}\")\nc: i64\n@rename(\"{{x}}\")\nd: i64 }",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
@@ -1727,7 +1728,10 @@ mod tests {
         assert_eq!(a.literal(), Some(Literal::Float(-1.5)));
         let b = s.fields[1].attrs[0].positional().unwrap();
         assert!(matches!(b.expr().map(|e| &e.kind), Some(rask_ast::expr::ExprKind::Field { .. })));
-        assert_eq!(s.fields[2].attrs[0].positional().and_then(|v| v.string()), Some("nf {0}"));
+        let c = s.fields[2].attrs[0].positional().unwrap();
+        assert!(matches!(c.expr().map(|e| &e.kind), Some(rask_ast::expr::ExprKind::StringInterp(_))));
+        let d = s.fields[3].attrs[0].positional().and_then(|v| v.string());
+        assert_eq!(d.as_deref(), Some("{x}"));
     }
 
     // CC2: `Ring<T> implements Show where T: Show` captures the condition.

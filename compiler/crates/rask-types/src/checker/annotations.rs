@@ -7,7 +7,7 @@
 //! carry the name package scoping gave the declaration, so attachments are
 //! matched to declarations by name alone.
 
-use rask_ast::attr::{AttrValue, Literal};
+use rask_ast::attr::{Literal, ShowConst};
 use rask_ast::decl::{AnnotationDecl, Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::Span;
@@ -34,16 +34,6 @@ const TYPE_POSITION_WHY: &str =
     "an annotation value cannot be constructed, so a slot typed as one could never be filled — annotations are read at comptime, never held [type.annotations/AN8]";
 
 use super::TypeChecker;
-
-/// Names the compiler consumes itself (AN5). A user annotation with one of
-/// these names would either be shadowed or silently change compiler behavior.
-const RESERVED: &[&str] = &[
-    "rename", "no_serialize", "skip", "default", "tag",
-    "resource", "unique", "binary", "message",
-    "entry", "no_alloc", "inline", "native", "unimplemented",
-    "allow", "test", "benchmark", "derive",
-    "call_text", "call_location", "comptime_quota", "embed_file", "comptime_print", "comptime_assert",
-];
 
 /// Field types an annotation may declare (AN1) — the const-representable set
 /// (ctrl.comptime/CT58): primitives, `string`, fixed arrays, and (assumed) enums.
@@ -81,8 +71,7 @@ enum Lit {
     Other,
 }
 
-fn classify(value: &AttrValue) -> Lit {
-    let Some(expr) = value.expr() else { return Lit::Other };
+fn classify(expr: &Expr) -> Lit {
     if let Some(lit) = rask_ast::attr::literal(expr) {
         return match lit {
             Literal::Int(_) => Lit::Int,
@@ -159,7 +148,7 @@ impl TypeChecker {
         let mut declared: HashMap<&str, &AnnotationDecl> = HashMap::new();
         for decl in decls {
             let DeclKind::Annotation(ann) = &decl.kind else { continue };
-            if RESERVED.contains(&ann.name.as_str()) {
+            if rask_ast::attr::compiler_attr(&ann.name).is_some() {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
                     problem: "this name is reserved for a compiler-known annotation".to_string(),
@@ -170,6 +159,23 @@ impl TypeChecker {
                 continue;
             }
             for field in &ann.fields {
+                // A default is checked here, once. Desugar copies it into
+                // every attachment that leaves the field out, and those copies
+                // are skipped at the attachment (`check_attachment_args`).
+                if let Some(default) = &field.default {
+                    if const_representable(&field.ty) && !lit_matches(classify(default), &field.ty) {
+                        self.errors.push(TypeError::BadAnnotation {
+                            name: ann.name.clone(),
+                            problem: format!(
+                                "default `{}` is not a `{}` for field `{}`",
+                                ShowConst(default), field.ty, field.name
+                            ),
+                            fix: "annotation values are comptime constants matching the declared field type".to_string(),
+                            why: CONST_WHY,
+                            span: default.span,
+                        });
+                    }
+                }
                 if !const_representable(&field.ty) {
                     let fix = "annotation fields are limited to primitives, string, enums, and fixed arrays of these".to_string();
                     self.errors.push(TypeError::BadAnnotation {
@@ -431,8 +437,13 @@ impl TypeChecker {
             }
             given.push(&field.name);
 
-            let lit = classify(value);
-            if !lit_matches(lit, &field.ty) {
+            let Some(expr) = value.expr() else { continue };
+            // The declared default, copied in by desugar: already judged at
+            // the declaration.
+            if field.default.as_ref().is_some_and(|d| d.id == expr.id) {
+                continue;
+            }
+            if !lit_matches(classify(expr), &field.ty) {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
                     problem: format!("`{}` is not a `{}` for field `{}`", value, field.ty, arg_name),

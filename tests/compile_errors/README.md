@@ -189,6 +189,7 @@ go down.
 | [enum_payload_mismatch.rk](enum_payload_mismatch.rk) | A variant payload that genuinely doesn't match, reported with the declared type as the expectation (E0308, #922) — it used to be named as "found" |
 | [wide_scalar_copy_threshold.rk](wide_scalar_copy_threshold.rk) | An `i128` field counting its real 16 bytes, so a 24-byte struct moves instead of copying (E0800, #936) — and reports once, not twice (#1092) |
 | [unknown_allow_name.rk](unknown_allow_name.rk) | `@allow(name)` where nothing answers to `name` (E0855, #1085) — the warning fired as if the annotation weren't there, which is exactly what a correctly-suppressed one looks like |
+| [annotation_default_checked_once.rk](annotation_default_checked_once.rk) | A user annotation's field default that doesn't fit the field's type is reported once, at the declaration (E0854). Each attachment leaving the field out used to report it again, and with no attachment it went unreported |
 | [container_turbofish.rk](container_turbofish.rk) | `Vec.new<string>()` followed by a push of the wrong type (#1084) — the written type argument used to be dropped, so the binding stayed open and widened instead |
 | [context_on_entry_point.rk](context_on_entry_point.rk) | A `using` clause on the entry point (CC11, E0831) — nothing can supply the hidden param, so it used to run on garbage (#732) |
 

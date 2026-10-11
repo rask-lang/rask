@@ -377,7 +377,7 @@ impl Desugarer {
             };
 
             let body_expr = match template {
-                MessageTemplate::Format(tmpl) => self.template_expr(tmpl, sp),
+                MessageTemplate::Format(expr) => expr,
                 MessageTemplate::Delegate(binding) => {
                     // e.message() — delegate to inner error
                     Expr {
@@ -453,12 +453,17 @@ impl Desugarer {
     ///   2. single payload implementing `Error` → delegate to `inner.message()`,
     ///   3. ER6 fallback: humanized variant name, with payloads interpolated.
     /// Every variant resolves — there is no uncovered case.
-    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
+    fn extract_message_template(&mut self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
         // ER36: explicit @message("template") on the variant wins.
-        for attr in &variant.attrs {
-            if let Some(tmpl) = extract_message_attr_template(attr) {
-                return MessageTemplate::Format(translate_positional_refs(&tmpl));
-            }
+        if let Some(written) = rask_ast::attr::find(&variant.attrs, "message")
+            .and_then(|a| a.positional())
+            .and_then(|v| v.expr())
+        {
+            let mut expr = written.clone();
+            positional_refs(&mut expr);
+            // A copy, so it gets ids of its own: the attribute keeps its expression.
+            rask_ast::rewrite::rewrite_expr(&mut expr, &mut FreshIds(&mut self.next_id));
+            return MessageTemplate::Format(expr);
         }
         // ER37: single payload that implements Error delegates to it. The
         // `ends_with("Error")` check keeps cross-module error types working when
@@ -472,7 +477,7 @@ impl Desugarer {
             }
         }
         // ER6: humanized variant name, interpolating any payload fields.
-        MessageTemplate::Format(humanize_variant(&variant.name, &variant.fields))
+        MessageTemplate::Format(self.humanize_variant(&variant.name, &variant.fields))
     }
 
     fn desugar_interface(&mut self, t: &mut InterfaceDecl) {
@@ -1329,54 +1334,36 @@ impl Desugarer {
     /// A piece that doesn't parse stays literal text: `@message` templates come
     /// from an attribute the author wrote, and an error pointing into a method
     /// nobody can see is worse than the braces surviving into the message.
-    fn template_expr(&mut self, tmpl: String, span: rask_ast::Span) -> Expr {
-        let Some(pieces) = parse_interpolation_segments(&tmpl) else {
-            return Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span };
-        };
-        let mut segments = Vec::new();
-        for piece in &pieces {
-            match piece {
-                InterpSegment::Literal(text) => {
-                    segments.push(rask_ast::expr::StringSegment::Literal(text.clone()));
-                }
-                InterpSegment::Expr(text) => {
-                    // `{p}` or `{p:debug}`, split the same way the parser does.
-                    // Dropping the spec here is what made a derived `message()`
-                    // demand `Displayable` of a struct payload: the generator
-                    // wrote `{p:debug}`, the expression read `p` and stopped,
-                    // and the `:debug` went nowhere.
-                    let (expr_text, spec) = match rask_ast::fmt_spec::split_spec(text) {
-                        Some(pos) => (
-                            &text[..pos],
-                            rask_ast::fmt_spec::parse_spec(&text[pos + 1..]),
-                        ),
-                        None => (text.as_str(), None),
-                    };
-                    match self.parse_fragment(expr_text, span) {
-                        Some(parsed) => {
-                            segments.push(rask_ast::expr::StringSegment::Expr(Box::new(parsed), spec))
-                        }
-                        None => {
-                            return Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span }
-                        }
-                    }
-                }
+    /// ER6: `NotFound(id)` says `"not found: {id}"`. Built as segments
+    /// directly; there's no template text to parse.
+    fn humanize_variant(&mut self, name: &str, fields: &[rask_ast::decl::Field]) -> Expr {
+        let span = Span::new(0, 0);
+        let mut base = String::new();
+        for (i, c) in name.char_indices() {
+            if c.is_ascii_uppercase() && i > 0 {
+                base.push(' ');
             }
+            base.push(c.to_ascii_lowercase());
+        }
+        if fields.is_empty() {
+            return Expr { id: self.fresh_id(), kind: ExprKind::String(base), span };
+        }
+        let mut segments = vec![rask_ast::expr::StringSegment::Literal(format!("{}: ", base))];
+        for (i, f) in fields.iter().enumerate() {
+            if i > 0 {
+                segments.push(rask_ast::expr::StringSegment::Literal(", ".to_string()));
+            }
+            // Anything without `to_string` goes through `:debug`, which every
+            // type has (std.fmt/G2).
+            let spec = if f.ty.bare_name().is_some_and(renders_as_display) {
+                None
+            } else {
+                rask_ast::fmt_spec::parse_spec("debug")
+            };
+            let payload = Expr { id: self.fresh_id(), kind: ExprKind::Ident(f.name.clone()), span };
+            segments.push(rask_ast::expr::StringSegment::Expr(Box::new(payload), spec));
         }
         Expr { id: self.fresh_id(), kind: ExprKind::StringInterp(segments), span }
-    }
-
-    /// Parse a snippet of expression text that isn't in any source file.
-    fn parse_fragment(&self, text: &str, span: rask_ast::Span) -> Option<Expr> {
-        let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
-        if !lex.errors.is_empty() {
-            return None;
-        }
-        let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
-        let mut parsed = parser.parse_expr().ok()?;
-        // The fragment's spans start at 0; point them at the template instead.
-        offset_expr_spans(&mut parsed, span.start);
-        Some(parsed)
     }
 
     fn desugar_match_arm(&mut self, arm: &mut MatchArm) {
@@ -1389,8 +1376,8 @@ impl Desugarer {
 
 /// What a variant's @message resolves to.
 enum MessageTemplate {
-    /// Format string with interpolation: `"error: {name}"`
-    Format(String),
+    /// The string the message is, interpolation and all: `"error: {name}"`
+    Format(Expr),
     /// Delegate to inner value: `inner.message()`
     Delegate(String),
 }
@@ -1404,30 +1391,6 @@ fn is_error_type_name(ty: &str) -> bool {
 /// ER6 fallback message: humanize the variant name (`NotFound` → "not found")
 /// and interpolate any payload fields. `UnexpectedEnd(ctx)` → "unexpected end: {ctx}";
 /// a positional payload interpolates as `{_0}`.
-fn humanize_variant(name: &str, fields: &[rask_ast::decl::Field]) -> String {
-    let mut base = String::new();
-    for (i, c) in name.char_indices() {
-        if c.is_ascii_uppercase() && i > 0 {
-            base.push(' ');
-        }
-        base.push(c.to_ascii_lowercase());
-    }
-    if fields.is_empty() {
-        return base;
-    }
-    let parts: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            if f.ty.bare_name().is_some_and(renders_as_display) {
-                format!("{{{}}}", f.name)
-            } else {
-                format!("{{{}:debug}}", f.name)
-            }
-        })
-        .collect();
-    format!("{}: {}", base, parts.join(", "))
-}
-
 /// Can a payload of this declared type go straight into `{…}`?
 ///
 /// Only if it has `to_string`, and desugaring runs before there is a type table
@@ -1453,46 +1416,29 @@ fn renders_as_display(ty: &str) -> bool {
     )
 }
 
-/// ER36: positional payload refs `{0}`/`{1}` name the auto-generated tuple
-/// fields, which the parser binds as `_0`/`_1`. Rewrite `{N}` → `{_N}` so the
-/// string-interpolation pass resolves them to those bindings instead of the
-/// integer literal `N`. Named refs (`{ctx}`) and escaped braces pass through.
-fn translate_positional_refs(tmpl: &str) -> String {
-    let mut out = String::with_capacity(tmpl.len());
-    let mut chars = tmpl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            // Collect the run of digits directly inside the braces.
-            let mut digits = String::new();
-            while let Some(&d) = chars.peek() {
-                if d.is_ascii_digit() {
-                    digits.push(d);
-                    chars.next();
-                } else {
-                    break;
-                }
+/// ER36: positional payload refs `{0}`/`{1}` in a `@message` name the
+/// auto-generated tuple fields, which the parser binds as `_0`/`_1`. Inside
+/// the string they parsed as the integers `0`/`1`; point them at the fields.
+/// Named refs (`{ctx}`) are already the binding.
+fn positional_refs(expr: &mut Expr) {
+    let ExprKind::StringInterp(segments) = &mut expr.kind else { return };
+    for seg in segments {
+        if let rask_ast::expr::StringSegment::Expr(e, _) = seg {
+            if let ExprKind::Int(n, None) = e.kind {
+                e.kind = ExprKind::Ident(format!("_{}", n));
             }
-            if !digits.is_empty() && chars.peek() == Some(&'}') {
-                out.push('{');
-                out.push('_');
-                out.push_str(&digits);
-            } else {
-                out.push('{');
-                out.push_str(&digits);
-            }
-        } else {
-            out.push(c);
         }
     }
-    out
 }
 
-/// The template of a `@message("template")` attribute.
-fn extract_message_attr_template(attr: &rask_ast::attr::Attr) -> Option<String> {
-    if !attr.is("message") {
-        return None;
+/// Gives every expression it walks a fresh id.
+struct FreshIds<'a>(&'a mut u32);
+
+impl rask_ast::rewrite::Rewrite for FreshIds<'_> {
+    fn expr(&mut self, e: &mut Expr) {
+        e.id = NodeId(*self.0);
+        *self.0 += 1;
     }
-    attr.positional()?.string().map(str::to_string)
 }
 
 /// Map binary operators to method names (if they should be desugared).
@@ -1550,82 +1496,6 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
         }
         // Leaf nodes and complex variants unlikely in interpolation — no nested Exprs to fix
         _ => {}
-    }
-}
-
-/// Segment of an interpolated string.
-enum InterpSegment {
-    Literal(String),
-    /// The text between the braces, spec and all.
-    Expr(String),
-}
-
-/// Parse a string containing `{expr}` interpolation into segments.
-///
-/// Returns `None` if no interpolation is found.
-fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
-    let mut segments = Vec::new();
-    let mut literal = String::new();
-    let mut chars = s.chars().peekable();
-    let mut has_interp = false;
-
-    while let Some(c) = chars.next() {
-        // fmt/F4: `{{` and `}}` are literal braces, not an interpolation.
-        if (c == '{' || c == '}') && chars.peek() == Some(&c) {
-            chars.next();
-            literal.push(c);
-            has_interp = true;
-            continue;
-        }
-        if c == '{' {
-            has_interp = true;
-            if !literal.is_empty() {
-                segments.push(InterpSegment::Literal(std::mem::take(&mut literal)));
-            }
-            let mut expr_str = String::new();
-            let mut depth = 1;
-            for ch in chars.by_ref() {
-                if ch == '{' {
-                    depth += 1;
-                } else if ch == '}' {
-                    depth -= 1;
-                    if depth == 0 { break; }
-                }
-                expr_str.push(ch);
-            }
-            segments.push(InterpSegment::Expr(expr_str));
-        } else {
-            literal.push(c);
-        }
-    }
-    if !literal.is_empty() {
-        segments.push(InterpSegment::Literal(literal));
-    }
-
-    if has_interp { Some(segments) } else { None }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_interpolation_segments() {
-        let segs = parse_interpolation_segments("hello {name}").unwrap();
-        assert_eq!(segs.len(), 2);
-        assert!(matches!(&segs[0], InterpSegment::Literal(s) if s == "hello "));
-        assert!(matches!(&segs[1], InterpSegment::Expr(s) if s == "name"));
-    }
-
-    #[test]
-    fn test_no_interpolation() {
-        assert!(parse_interpolation_segments("hello world").is_none());
-    }
-
-    #[test]
-    fn test_multiple_segments() {
-        let segs = parse_interpolation_segments("a {x} b {y} c").unwrap();
-        assert_eq!(segs.len(), 5);
     }
 }
 

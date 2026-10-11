@@ -312,7 +312,6 @@ pub mod field_attrs {
         attr::find(attrs, "rename")
             .and_then(|a| a.positional())
             .and_then(|v| v.string())
-            .map(str::to_string)
             .unwrap_or_else(|| field_name.to_string())
     }
 
@@ -337,7 +336,7 @@ pub mod field_attrs {
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {
-        attr::find(attrs, "tag")?.positional()?.string().map(str::to_string)
+        attr::find(attrs, "tag")?.positional()?.string()
     }
 }
 

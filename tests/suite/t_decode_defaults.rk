@@ -37,14 +37,14 @@ struct Wide {
 
 // `@default` values are parsed expressions now, not text, so each literal
 // kind has to come through the parser and both decoders intact. A string's
-// braces are its own: an attribute has no scope to interpolate from.
+// braces read as they do anywhere, so a literal brace is written `{{`.
 struct Overrides {
     public name: string
     @default(-1.5)
     public f: f64 = 0.0
     @default(false)
     public b: bool = true
-    @default("{x}")
+    @default("{{x}}")
     public s: string = ""
     @default(3)
     public whole: f64 = 0.0

@@ -16,14 +16,74 @@
 //! matches its declaration and whatever `has<A>()` names it with.
 //!
 //! An argument's value is an expression, parsed like any other: `100`,
-//! `"user_name"`, `Color.Red`, `[1, 2]`, `Instant.epoch()`. What it means
-//! depends on who reads it — a string to `@rename`, a typed constant to
-//! `get<A>()` — and most readers want it as a [`Literal`]. The one exception is
-//! `@allow(…)`, whose arguments are lint rule names (`idiom/duck-interface`,
-//! `naming/as`) and not expressions at all.
+//! `"user_name"`, `Color.Red`, `[1, 2]`, `"nf {0}"`. What it means depends on
+//! who reads it — a string to `@rename`, a typed constant to `get<A>()` — and
+//! most readers want it as a [`Literal`]. The exception is `@allow(…)` and its
+//! kin, whose arguments are lint rule names (`idiom/duck-interface`) and not
+//! expressions at all; [`COMPILER_ATTRS`] says which those are.
 
-use crate::expr::{Expr, ExprKind, UnaryOp};
+use crate::expr::{Expr, ExprKind, StringSegment, UnaryOp};
 use crate::Span;
+
+/// How a compiler-known attribute's arguments are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgForm {
+    /// Expressions: `@rename("id")`, `@layout(C)`, `@comptime_quota(10_000)`.
+    Exprs,
+    /// Lint or warning names: `@allow(idiom/duck-interface)`.
+    RuleNames,
+}
+
+/// Every attribute name the compiler owns, and how its arguments are written.
+/// The one list: the parser asks it which arguments are rule names, and the
+/// checker refuses these names to user annotations (type.annotations/AN5).
+/// Some are spec'd and not built yet; their names are taken all the same.
+pub const COMPILER_ATTRS: &[(&str, ArgForm)] = &[
+    // Serialization (std.encoding)
+    ("rename", ArgForm::Exprs),
+    ("no_serialize", ArgForm::Exprs),
+    ("skip", ArgForm::Exprs),
+    ("default", ArgForm::Exprs),
+    ("tag", ArgForm::Exprs),
+    ("no_encode", ArgForm::Exprs),
+    ("no_decode", ArgForm::Exprs),
+    ("binary", ArgForm::Exprs),
+    // Types and memory
+    ("resource", ArgForm::Exprs),
+    ("unique", ArgForm::Exprs),
+    ("small", ArgForm::Exprs),
+    ("layout", ArgForm::Exprs),
+    ("message", ArgForm::Exprs),
+    ("derive", ArgForm::Exprs),
+    // Functions
+    ("entry", ArgForm::Exprs),
+    ("no_alloc", ArgForm::Exprs),
+    ("no_io", ArgForm::Exprs),
+    ("inline", ArgForm::Exprs),
+    ("native", ArgForm::Exprs),
+    ("builtin", ArgForm::Exprs),
+    ("unimplemented", ArgForm::Exprs),
+    ("test", ArgForm::Exprs),
+    ("test_body", ArgForm::Exprs),
+    ("benchmark", ArgForm::Exprs),
+    ("call_text", ArgForm::Exprs),
+    ("call_location", ArgForm::Exprs),
+    // Comptime
+    ("comptime_quota", ArgForm::Exprs),
+    ("embed_file", ArgForm::Exprs),
+    ("comptime_print", ArgForm::Exprs),
+    ("comptime_assert", ArgForm::Exprs),
+    // Lints and warnings (tool.lint, tool.warnings)
+    ("allow", ArgForm::RuleNames),
+    ("warn", ArgForm::RuleNames),
+    ("deny", ArgForm::RuleNames),
+];
+
+/// How the compiler-known attribute `name` takes its arguments, or `None` for
+/// a name the compiler doesn't own (a user annotation).
+pub fn compiler_attr(name: &str) -> Option<ArgForm> {
+    COMPILER_ATTRS.iter().find(|(n, _)| *n == name).map(|(_, form)| *form)
+}
 
 /// One `@name` or `@name(args)` attached to a declaration, field or variant.
 #[derive(Debug, Clone)]
@@ -76,9 +136,9 @@ impl AttrValue {
     }
 
     /// The contents of a string literal: `"user_name"` → `user_name`.
-    pub fn string(&self) -> Option<&str> {
-        match &self.expr()?.kind {
-            ExprKind::String(s) => Some(s),
+    pub fn string(&self) -> Option<String> {
+        match self.literal()? {
+            Literal::Str(s) => Some(s),
             _ => None,
         }
     }
@@ -117,6 +177,17 @@ pub fn literal(expr: &Expr) -> Option<Literal> {
         ExprKind::Float(f, _) => Literal::Float(*f),
         ExprKind::Bool(b) => Literal::Bool(*b),
         ExprKind::String(s) => Literal::Str(s.clone()),
+        // `"{{x}}"` arrives as segments, all of them text.
+        ExprKind::StringInterp(segments) => {
+            let mut text = String::new();
+            for seg in segments {
+                match seg {
+                    StringSegment::Literal(t) => text.push_str(t),
+                    StringSegment::Expr(..) => return None,
+                }
+            }
+            Literal::Str(text)
+        }
         ExprKind::Char(c) => Literal::Char(*c),
         ExprKind::Unary { op: UnaryOp::Neg, operand } => match literal(operand)? {
             Literal::Int(n) => Literal::Int(-n),
@@ -193,6 +264,15 @@ impl std::fmt::Display for AttrValue {
             AttrValue::RuleName(n) => write!(f, "{}", n),
             AttrValue::Expr(e) => write_const(f, e),
         }
+    }
+}
+
+/// A constant expression as a diagnostic quotes it: `-1.5`, `Color.Red`.
+pub struct ShowConst<'a>(pub &'a Expr);
+
+impl std::fmt::Display for ShowConst<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write_const(f, self.0)
     }
 }
 
