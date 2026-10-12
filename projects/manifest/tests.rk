@@ -1,0 +1,310 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import fs
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+// "" when the file loads, else the error text.
+func load_error(text: string, s: Schema) -> string {
+    match load(text, s) {
+        Vec<Entry> => return "",
+        LoadError as e => return e.message(),
+    }
+}
+
+func migrate_error(text: string, s: Schema, to: i64) -> string {
+    match migrate(text, s, to) {
+        string => return "",
+        LoadError as e => return e.message(),
+    }
+}
+
+func migrated(text: string, s: Schema, to: i64) -> string {
+    match migrate(text, s, to) {
+        string as out => return out,
+        LoadError as e => {
+            println(e.message())
+            return ""
+        }
+    }
+}
+
+func schema_error(s: Schema) -> string {
+    check_history(s) catch e => return e.message()
+    return ""
+}
+
+func key(k: string) -> Step {
+    return Step.Key(k)
+}
+
+const HEAD = "schema = \"rask-package@1\"\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+// A made-up release 2 of rask-package: `with` on a dependency becomes
+// `features`, sandboxing goes on by default, and `edition` arrives.
+// The shape is replayed from the log here; the real schema writes it out
+// and lets `check_history` compare the two.
+func schema_v2() -> Schema {
+    mut changes = Vec<Change>.new()
+    mut sites = dep_sites()
+    for site in sites.take_all() {
+        changes.push(Change.Rename { at: site, from: "with", to: "features" })
+    }
+    changes.push(Change.Default { at: Vec<Step>.from([key("package")]), name: "sandbox", from: Value.Bool(false), to: Value.Bool(true) })
+    changes.push(Change.Add { at: Vec<Step>.from([key("package")]), field: defaulted("edition", Ty.Str, Value.Str("2026")) })
+    mut history = package_history()
+    history.push(Release { version: 2, changes })
+    let shape = replay_shape(history) catch e => panic(e.message())
+    return Schema { name: "rask-package", shape, history }
+}
+
+// ─── Release 1 ──────────────────────────────────────────────────
+
+test "the shipped schema's history replays to its shape" {
+    assert schema_error(package_schema()) == ""
+}
+
+test "a minimal manifest loads" {
+    assert load_error(HEAD, package_schema()) == ""
+}
+
+test "a typo is an error that names the fix" {
+    let e = load_error("{HEAD}descripton = \"x\"\n", package_schema())
+    assert e.contains("package: unknown key `descripton`; did you mean `description`?")
+}
+
+test "a typo in a dependency is caught too" {
+    let e = load_error("{HEAD}[dependencies]\ntls = {{ git = \"u\", revv = \"a1\" }}\n", package_schema())
+    assert e.contains("dependencies.tls: unknown key `revv`; did you mean `rev`?")
+}
+
+test "a missing required key is named with its type" {
+    let e = load_error("schema = \"rask-package@1\"\n[package]\nname = \"app\"\n", package_schema())
+    assert e.contains("package: missing required key `version` (version)")
+}
+
+test "a dependency picks exactly one source" {
+    let none_ = load_error("{HEAD}[dependencies]\nhttp = {{ target = \"linux\" }}\n", package_schema())
+    assert none_.contains("needs one of `registry`, `path`, `git`")
+    let two = load_error("{HEAD}[dependencies]\nhttp = {{ registry = \"^2\", path = \"../h\" }}\n", package_schema())
+    assert two.contains("pick exactly one of")
+}
+
+test "a case's companion keys belong to that case" {
+    let e = load_error("{HEAD}[dependencies]\nhttp = {{ registry = \"^2.0\", rev = \"a1\" }}\n", package_schema())
+    assert e.contains("unknown key `rev`")
+    assert load_error("{HEAD}[dependencies]\ntls = {{ git = \"u\", rev = \"a1\" }}\n", package_schema()) == ""
+}
+
+test "strings are checked by field type" {
+    let e = load_error("{HEAD}[dependencies]\nhttp = {{ registry = \"two\" }}\n", package_schema())
+    assert e.contains("\"two\" is not a version range")
+    let cap = load_error("{HEAD}[dependencies]\nhttp = {{ registry = \"^2\", allow = [\"network\"] }}\n", package_schema())
+    assert cap.contains("\"network\" is not allowed here")
+}
+
+test "every error is reported, not just the first" {
+    let e = load_error("{HEAD}licence = \"MIT\"\nsandbox = \"yes\"\n", package_schema())
+    assert e.contains("`licence`")
+    assert e.contains("sandbox: expected `true` or `false`")
+}
+
+test "a file newer than the toolchain is rejected outright" {
+    let e = load_error("schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n", package_schema())
+    assert e.contains("only knows up to @1")
+}
+
+test "the schema line is required and must name this schema" {
+    assert load_error("[package]\nname = \"a\"\nversion = \"0.1.0\"\n", package_schema()).contains("missing `schema")
+    assert load_error("schema = \"cargo@1\"\n", package_schema()).contains("a `cargo` file")
+    assert load_error("schema = \"rask-package\"\n", package_schema()).contains("has no version")
+}
+
+// ─── Well-formedness ────────────────────────────────────────────
+
+test "duplicate keys are an error" {
+    let e = load_error("{HEAD}name = \"again\"\n", package_schema())
+    assert e.contains("duplicate key `package.name`")
+    let t = load_error("{HEAD}[package]\n", package_schema())
+    assert t.contains("defined twice")
+}
+
+test "raw bidi controls are rejected" {
+    let e = load_error("{HEAD}description = \"a\u{202E}b\"\n", package_schema())
+    assert e.contains("bidirectional")
+}
+
+test "quoted keys must be NFC" {
+    // "e" + combining acute: NFD, renders like "é".
+    let e = load_error("{HEAD}[dependencies]\n\"cafe\u{301}\" = {{ path = \"x\" }}\n", package_schema())
+    assert e.contains("not in NFC form")
+}
+
+test "unsupported TOML says so" {
+    assert load_error("{HEAD}[[bin]]\n", package_schema()).contains("array of tables")
+    assert load_error("{HEAD}x = 1.5\n", package_schema()).contains("floats and dates")
+}
+
+// ─── Release 2: replaying forward ───────────────────────────────
+
+test "release 2's history replays" {
+    assert schema_error(schema_v2()) == ""
+}
+
+test "a release 1 file loads under release 2" {
+    let text = "{HEAD}[dependencies]\ntokio = {{ registry = \"^1.0\", with = [\"net\"] }}\n"
+    let tree = load(text, schema_v2()) catch e => panic(e.message())
+    let pkg = table_at(tree, "package")
+    // It left sandbox out, and in release 1 that meant false.
+    assert bool_at(pkg, "sandbox") == false
+    let deps = table_at(tree, "dependencies")
+    let tokio = table_at(deps, "tokio")
+    assert strs_at(tokio, "features").len() == 1
+    assert find_entry(tokio, "with") is none
+}
+
+test "the old spelling is an error in a release 2 file" {
+    let text = "schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nt = {{ registry = \"^1\", with = [\"net\"] }}\n"
+    assert load_error(text, schema_v2()).contains("unknown key `with`")
+}
+
+test "old and new spelling together is an error" {
+    let text = "{HEAD}[dependencies]\nt = {{ registry = \"^1\", with = [\"a\"], features = [\"b\"] }}\n"
+    assert load_error(text, schema_v2()).contains("both `with` and `features` are set")
+}
+
+test "migrating forward writes out what the old default meant" {
+    let out = migrated(HEAD, schema_v2(), 2)
+    assert out.contains("schema = \"rask-package@2\"")
+    assert out.contains("sandbox = false")
+}
+
+// ─── Release 2: running backward ────────────────────────────────
+
+test "a lossless downgrade" {
+    let text = "schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2026\"\n[dependencies]\nt = {{ registry = \"^1\", features = [\"net\"] }}\n"
+    let out = migrated(text, schema_v2(), 1)
+    assert out.contains("schema = \"rask-package@1\"")
+    assert out.contains("with = [\"net\"]")
+    // Release 2 leaves sandbox on by default; release 1 has to be told.
+    assert out.contains("sandbox = true")
+    // At its default, `edition` drops without changing what the file means.
+    assert !out.contains("edition")
+    // And the result loads as a release 1 file.
+    assert load_error(out, package_schema()) == ""
+}
+
+test "a downgrade that would lose information is refused" {
+    let text = "schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2027\"\n"
+    let e = migrate_error(text, schema_v2(), 1)
+    assert e.contains("`edition = \"2027\"` doesn't exist in the older version")
+}
+
+test "round trip: 1 to 2 and back gives a file that means the same" {
+    let text = "{HEAD}sandbox = true\n[dependencies]\nt = {{ path = \"../t\", with = [\"x\"] }}\n"
+    let up = migrated(text, schema_v2(), 2)
+    let down = migrated(up, schema_v2(), 1)
+    let a = load(text, package_schema()) catch e => panic(e.message())
+    let b = load(down, package_schema()) catch e => panic(e.message())
+    assert render_document(a) == render_document(b)
+}
+
+// ─── Catching an edited past ────────────────────────────────────
+
+test "a shape changed without a change in the log fails check" {
+    mut s = package_schema()
+    if s.shape is Record(fields) {
+        mut grown = fields.clone()
+        grown.push(optional("homepage", Ty.Str))
+        s.shape = Ty.Record(grown)
+    }
+    let e = schema_error(s)
+    assert e.contains("does not give the current shape")
+}
+
+test "a rewritten past release fails check" {
+    mut s = schema_v2()
+    // Quietly drop release 1's last Add, as if it had never shipped.
+    mut first = s.history[0].clone()
+    first.changes.pop()
+    s.history.set(0, first)
+    assert schema_error(s).contains("does not give the current shape")
+}
+
+test "a change the old shape can't take is refused" {
+    mut s = package_schema()
+    s.history.push(Release {
+        version: 2,
+        changes: Vec<Change>.from([Change.Add { at: Vec<Step>.from([key("package")]), field: required("edition", Ty.Str) }]),
+    })
+    assert schema_error(s).contains("every older file would stop loading")
+}
+
+// ─── A schema with a retype and a duration ──────────────────────
+
+// release 1: timeout is an integer of seconds
+// release 2: timeout is a duration string
+func timeout_schema() -> Schema {
+    let r1 = Release {
+        version: 1,
+        changes: Vec<Change>.from([Change.Add { at: root(), field: defaulted("timeout", Ty.Int, Value.Int(30)) }]),
+    }
+    let r2 = Release {
+        version: 2,
+        changes: Vec<Change>.from([Change.Retype {
+            at: root(),
+            name: "timeout",
+            from: Ty.Int,
+            to: Ty.Duration,
+            mapping: Vec<ValuePair>.from([
+                ValuePair { before: Value.Int(30), after: Value.Str("30s") },
+                ValuePair { before: Value.Int(60), after: Value.Str("1m") },
+            ]),
+        }]),
+    }
+    let history = Vec<Release>.from([r1, r2])
+    let shape = replay_shape(history) catch e => panic(e.message())
+    return Schema { name: "svc", shape, history }
+}
+
+test "a retype maps old values through the table" {
+    let tree = load("schema = \"svc@1\"\ntimeout = 60\n", timeout_schema()) catch e => panic(e.message())
+    assert str_at(tree, "timeout") == "1m"
+}
+
+test "a value with no mapping is an error, not a guess" {
+    assert load_error("schema = \"svc@1\"\ntimeout = 45\n", timeout_schema()).contains("no equivalent in the newer version")
+}
+
+test "a duration is checked" {
+    assert load_error("schema = \"svc@2\"\ntimeout = \"30 seconds\"\n", timeout_schema()).contains("is not a duration")
+    assert load_error("schema = \"svc@2\"\ntimeout = \"250ms\"\n", timeout_schema()) == ""
+}
+
+test "a retype runs backward through the same table" {
+    let out = migrated("schema = \"svc@2\"\ntimeout = \"1m\"\n", timeout_schema(), 1)
+    assert out.contains("timeout = 60")
+    assert migrate_error("schema = \"svc@2\"\ntimeout = \"5m\"\n", timeout_schema(), 1).contains("no equivalent in the older version")
+}
+
+// ─── The sample manifests ───────────────────────────────────────
+
+test "both sample manifests load" {
+    for p in ["projects/manifest/examples/app/rask.toml", "projects/manifest/examples/my-api/rask.toml"] {
+        let text = fs.read_text(p) catch e => panic("{p}: {e.message()}")
+        assert load_error(text, package_schema()) == ""
+    }
+}
+
+test "the git dependency comes out as a git source" {
+    let text = fs.read_text("projects/manifest/examples/my-api/rask.toml") catch e => panic(e.message())
+    let pkg = load_package(text) catch e => panic(e.message())
+    mut found = false
+    for d in pkg.dependencies {
+        if d.name == "tls" {
+            assert d.source.describe() == "git https://github.com/example/tls rev a1b2c3"
+            found = true
+        }
+    }
+    assert found
+}

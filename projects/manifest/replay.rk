@@ -1,0 +1,284 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Loading and migrating: the change log run over a file's tree.
+//
+// Load, in a fixed order:
+//   1. parse the TOML, no schema involved
+//   2. read the declared version; one newer than the schema is rejected
+//   3. replay the log forward from that version
+//   4. check against the current shape
+// Mapping onto Rask types is the caller's step (see package.rk).
+//
+// Migrate runs the same log in either direction, and refuses a downgrade
+// that would throw information away.
+
+public struct LoadError {
+    public what: string
+}
+
+extend LoadError {
+    public func message(self) -> string {
+        return self.what
+    }
+}
+
+enum Direction {
+    Forward
+    Backward
+}
+
+public struct Declared {
+    public name: string
+    public version: i64
+}
+
+// `schema = "rask-package@3"` names the schema and the version the file
+// was written against.
+public func read_declared(doc: Vec<Entry>) -> Declared or LoadError {
+    let i = find_entry(doc, "schema") ?? return LoadError { what: "missing `schema = \"<name>@<version>\"` at the top of the file" }
+    let raw = match doc[i].value.clone() {
+        Value.Str(s) => s,
+        _ => return LoadError { what: "`schema` must be a string like \"rask-package@1\"" },
+    }
+    let at = raw.last_index_of("@") ?? return LoadError { what: "`schema = \"{raw}\"` has no version; write it as \"{raw}@1\"" }
+    let name = raw[..at].to_string()
+    let digits = raw[at + 1..].to_string()
+    if digits.is_empty() || digits_then(digits, 0) != digits.len() || digits.len() > 9 {
+        return LoadError { what: "`schema = \"{raw}\"`: the version after `@` must be a whole number" }
+    }
+    mut version: i64 = 0
+    for c in digits.bytes() {
+        version = version * 10 + (c - 48).wrap<i64>()
+    }
+    return Declared { name, version }
+}
+
+func without_schema_key(doc: Vec<Entry>) -> Vec<Entry> {
+    mut out = Vec<Entry>.new()
+    for e in doc {
+        if e.key != "schema" {
+            out.push(e.clone())
+        }
+    }
+    return out
+}
+
+func check_declared(d: Declared, s: Schema) -> void or LoadError {
+    if d.name != s.name {
+        return LoadError { what: "this file is a `{d.name}` file; expected `{s.name}`" }
+    }
+    if d.version > s.version() {
+        return LoadError { what: "this file was written for {s.name}@{d.version}, and this toolchain only knows up to @{s.version()}; update the toolchain" }
+    }
+    if d.version < 1 {
+        return LoadError { what: "{s.name}@{d.version} doesn't exist; versions start at 1" }
+    }
+    return
+}
+
+public func load(text: string, s: Schema) -> Vec<Entry> or LoadError {
+    let doc = parse_toml(text) catch e => return LoadError { what: e.message() }
+    let d = try read_declared(doc)
+    try check_declared(d, s)
+    let tree = try replay(without_schema_key(doc), s.history, d.version, s.version())
+    try check_against(tree, s.shape)
+    return tree
+}
+
+func check_against(tree: Vec<Entry>, shape: Ty) -> void or LoadError {
+    mut errors = Vec<string>.new()
+    check_value(Value.Table(tree.clone()), shape, "", mutate errors)
+    if !errors.is_empty() {
+        return LoadError { what: errors.join("\n") }
+    }
+    return
+}
+
+// Bring a tree written at `from` to `to`, either direction.
+public func replay(tree: Vec<Entry>, history: Vec<Release>, from: i64, to: i64) -> Vec<Entry> or LoadError {
+    mut v = Value.Table(tree.clone())
+    if to >= from {
+        for r in history {
+            if r.version > from && r.version <= to {
+                for c in r.changes {
+                    v = try edit_data_at(v, change_path(c), 0, c, Direction.Forward, "")
+                }
+            }
+        }
+    } else {
+        mut k = history.len()
+        while k > 0 {
+            k = k - 1
+            let r = history[k.wrap<i64>()].clone()
+            if r.version > to && r.version <= from {
+                mut j = r.changes.len()
+                while j > 0 {
+                    j = j - 1
+                    let c = r.changes[j.wrap<i64>()].clone()
+                    v = try edit_data_at(v, change_path(c), 0, c, Direction.Backward, "")
+                }
+            }
+        }
+    }
+    if v is Table(entries) {
+        return entries
+    }
+    unreachable()
+}
+
+// `migrate --to N`: rewrite the file for version N. The result is checked
+// against the shape as it stood at N, so a migration that produces a file
+// the old tool can't read fails here instead of there.
+public func migrate(text: string, s: Schema, to: i64) -> string or LoadError {
+    if to < 1 || to > s.version() {
+        return LoadError { what: "{s.name} has versions 1 to {s.version()}; there is no @{to}" }
+    }
+    let doc = parse_toml(text) catch e => return LoadError { what: e.message() }
+    let d = try read_declared(doc)
+    try check_declared(d, s)
+    let tree = without_schema_key(doc)
+    try check_against(try replay(tree, s.history, d.version, s.version()), s.shape)
+
+    let moved = try replay(tree, s.history, d.version, to)
+    let old_shape = replay_shape(history_up_to(s.history, to)) catch e => return LoadError { what: e.message() }
+    try check_against(moved, old_shape)
+
+    mut out = Vec<Entry>.new()
+    out.push(Entry { key: "schema", value: Value.Str("{s.name}@{to}") })
+    for e in moved {
+        out.push(e.clone())
+    }
+    return render_document(out)
+}
+
+public func history_up_to(history: Vec<Release>, version: i64) -> Vec<Release> {
+    mut out = Vec<Release>.new()
+    for r in history {
+        if r.version <= version {
+            out.push(r.clone())
+        }
+    }
+    return out
+}
+
+// ─── Walking the tree ────────────────────────────────────────────
+
+// A Default change creates missing tables on its way down: an older file
+// that left a whole optional table out still meant the old default for
+// every field in it.
+func edit_data_at(v: Value, at: Vec<Step>, depth: usize, c: Change, dir: Direction, where_: string) -> Value or LoadError {
+    let entries = match v {
+        Value.Table(es) => es,
+        Value.Array(items) => {
+            if depth < at.len() && at[depth] is Each {
+                mut out = Vec<Value>.new()
+                mut i = 0
+                for item in items {
+                    out.push(try edit_data_at(item, at, depth + 1, c, dir, "{where_}[{i}]"))
+                    i = i + 1
+                }
+                return Value.Array(out)
+            }
+            return v.clone()
+        }
+        // Wrong kind of value: leave it for the shape check to report.
+        _ => return v.clone(),
+    }
+    if depth == at.len() {
+        let edited = try edit_entries(entries, c, dir, where_)
+        return Value.Table(edited)
+    }
+    match at[depth].clone() {
+        Step.Key(k) => {
+            mut out = entries.clone()
+            if find_entry(entries, k)? as i {
+                let inner = try edit_data_at(entries[i].value.clone(), at, depth + 1, c, dir, join_path(where_, k))
+                out.set(i.wrap<i64>(), Entry { key: k, value: inner })
+            } else if c is Default {
+                let inner = try edit_data_at(Value.Table(Vec.new()), at, depth + 1, c, dir, join_path(where_, k))
+                out.push(Entry { key: k, value: inner })
+            }
+            return Value.Table(out)
+        }
+        Step.Each => {
+            mut out = Vec<Entry>.new()
+            for e in entries {
+                let inner = try edit_data_at(e.value, at, depth + 1, c, dir, join_path(where_, e.key))
+                out.push(Entry { key: e.key, value: inner })
+            }
+            return Value.Table(out)
+        }
+        Step.Case(name) => {
+            if find_entry(entries, name)? {
+                return edit_data_at(Value.Table(entries), at, depth + 1, c, dir, where_)
+            }
+            return Value.Table(entries)
+        }
+    }
+}
+
+func edit_entries(entries: Vec<Entry>, c: Change, dir: Direction, where_: string) -> Vec<Entry> or LoadError {
+    let place = if where_.is_empty(): "top level" else: where_
+    mut out = entries.clone()
+    match c {
+        Change.Add { field, .. } => {
+            if dir is Forward {
+                return out
+            }
+            let i = find_entry(entries, field.name) ?? return out
+            let value = entries[i].value.clone()
+            let at_default = if field.default? as d: d.eq(value) else: false
+            if at_default || field.ignorable {
+                out.remove(i.wrap<i64>())
+                return out
+            }
+            return LoadError { what: "{place}: `{field.name} = {render_value(value)}` doesn't exist in the older version, and dropping it would change what the file means. Remove it first, or stay on this version" }
+        }
+        Change.Remove { field, .. } => {
+            if dir is Forward {
+                if find_entry(entries, field.name)? as i {
+                    out.remove(i.wrap<i64>())
+                }
+                return out
+            }
+            if field.required && field.default is none {
+                return LoadError { what: "{place}: the older version requires `{field.name}`, and nothing in this file says what it should be" }
+            }
+            return out
+        }
+        Change.Rename { from, to, .. } => {
+            let (old, new_) = if dir is Forward: (from, to) else: (to, from)
+            let i = find_entry(entries, old) ?? return out
+            if find_entry(entries, new_)? {
+                return LoadError { what: "{place}: both `{old}` and `{new_}` are set; `{old}` was renamed to `{new_}`, so keep one" }
+            }
+            out.set(i.wrap<i64>(), Entry { key: new_, value: entries[i].value.clone() })
+            return out
+        }
+        Change.Retype { name, mapping, .. } => {
+            let i = find_entry(entries, name) ?? return out
+            let value = entries[i].value.clone()
+            for pair in mapping {
+                let (src, dst) = if dir is Forward: (pair.before, pair.after) else: (pair.after, pair.before)
+                if src.eq(value) {
+                    out.set(i.wrap<i64>(), Entry { key: name, value: dst })
+                    return out
+                }
+            }
+            if dir is Forward {
+                return LoadError { what: "{place}: `{name} = {render_value(value)}` has no equivalent in the newer version" }
+            }
+            return LoadError { what: "{place}: `{name} = {render_value(value)}` has no equivalent in the older version" }
+        }
+        Change.Default { name, from, to, .. } => {
+            if from.eq(to) || find_entry(entries, name)? {
+                return out
+            }
+            // An absent field meant the default of its own version; write
+            // that out so it keeps meaning the same thing.
+            let meant = if dir is Forward: from else: to
+            out.push(Entry { key: name, value: meant })
+            return out
+        }
+    }
+}

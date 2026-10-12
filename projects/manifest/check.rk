@@ -1,0 +1,272 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Check a tree against the current shape. Every problem is collected, so one
+// run shows them all; each names its dotted path and what to write instead.
+
+public func check_value(v: Value, t: Ty, at: string, mutate errors: Vec<string>) {
+    match t {
+        Ty.Str => expect_str(v, at, mutate errors),
+        Ty.Int => {
+            if !(v is Int(_)) {
+                errors.push("{at}: expected an integer, found {v.kind()}")
+            }
+        }
+        Ty.Bool => {
+            if !(v is Bool(_)) {
+                errors.push("{at}: expected `true` or `false`, found {v.kind()}")
+            }
+        }
+        Ty.Duration => {
+            if v is Str(s) {
+                if !is_duration(s) {
+                    errors.push("{at}: \"{s}\" is not a duration; write a whole number and a unit, like \"30s\", \"250ms\", \"5m\" or \"2h\"")
+                }
+            } else {
+                errors.push("{at}: expected a duration string like \"30s\", found {v.kind()}")
+            }
+        }
+        Ty.Version => {
+            if v is Str(s) {
+                if !is_version(s) {
+                    errors.push("{at}: \"{s}\" is not a version; write three numbers, like \"1.0.0\"")
+                }
+            } else {
+                errors.push("{at}: expected a version string like \"1.0.0\", found {v.kind()}")
+            }
+        }
+        Ty.VersionReq => {
+            if v is Str(s) {
+                if !is_version_req(s) {
+                    errors.push("{at}: \"{s}\" is not a version range; write one like \"^2.0\", \">=1.5\" or \"=1.0.0\"")
+                }
+            } else {
+                errors.push("{at}: expected a version range like \"^2.0\", found {v.kind()}")
+            }
+        }
+        Ty.OneOf(options) => {
+            if v is Str(s) {
+                if !options.contains(s) {
+                    errors.push("{at}: \"{s}\" is not allowed here; pick one of {quoted_list(options)}")
+                }
+            } else {
+                errors.push("{at}: expected one of {quoted_list(options)}, found {v.kind()}")
+            }
+        }
+        Ty.List(item) => {
+            if v is Array(items) {
+                mut i = 0
+                for x in items {
+                    check_value(x, item[0].clone(), "{at}[{i}]", mutate errors)
+                    i = i + 1
+                }
+            } else {
+                errors.push("{at}: expected an array, found {v.kind()}")
+            }
+        }
+        Ty.MapOf(value) => {
+            if v is Table(entries) {
+                for e in entries {
+                    check_value(e.value, value[0].clone(), join_path(at, e.key), mutate errors)
+                }
+            } else {
+                errors.push("{at}: expected a table, found {v.kind()}")
+            }
+        }
+        Ty.Record(fields) => {
+            if v is Table(entries) {
+                check_fields(entries, fields, Vec<string>.new(), at, mutate errors)
+            } else {
+                errors.push("{at}: expected a table, found {v.kind()}")
+            }
+        }
+        Ty.Variant { cases, shared } => check_variant(v, cases, shared, at, mutate errors),
+    }
+}
+
+func expect_str(v: Value, at: string, mutate errors: Vec<string>) {
+    if !(v is Str(_)) {
+        errors.push("{at}: expected a string, found {v.kind()}")
+    }
+}
+
+// `skip` holds keys another rule already accounted for (a variant's tag).
+func check_fields(entries: Vec<Entry>, fields: Vec<Field>, skip: Vec<string>, at: string, mutate errors: Vec<string>) {
+    for e in entries {
+        if skip.contains(e.key) {
+            continue
+        }
+        if position_of(fields, e.key)? as i {
+            check_value(e.value, fields[i].ty.clone(), join_path(at, e.key), mutate errors)
+        } else {
+            errors.push(unknown_key(e.key, field_names(fields), at))
+        }
+    }
+    for f in fields {
+        if f.required && find_entry(entries, f.name) is none {
+            errors.push("{at}: missing required key `{f.name}` ({describe(f.ty)})")
+        }
+    }
+}
+
+func check_variant(v: Value, cases: Vec<Case>, shared: Vec<Field>, at: string, mutate errors: Vec<string>) {
+    mut names = Vec<string>.new()
+    for c in cases {
+        names.push(c.name)
+    }
+    let entries = match v {
+        Value.Table(es) => es,
+        _ => {
+            errors.push("{at}: expected a table holding one of {quoted_list(names)}, found {v.kind()}")
+            return
+        }
+    }
+    mut tags = Vec<string>.new()
+    for e in entries {
+        if names.contains(e.key) {
+            tags.push(e.key)
+        }
+    }
+    if tags.is_empty() {
+        errors.push("{at}: needs one of {quoted_list(names)}")
+        return
+    }
+    if tags.len() > 1 {
+        errors.push("{at}: holds {quoted_list(tags)}; pick exactly one of {quoted_list(names)}")
+        return
+    }
+    let tag = tags[0].clone()
+    for c in cases {
+        if c.name != tag {
+            continue
+        }
+        let i = find_entry(entries, tag)!
+        check_value(entries[i].value.clone(), c.payload, join_path(at, tag), mutate errors)
+        mut allowed = c.fields.clone()
+        for f in shared {
+            allowed.push(f.clone())
+        }
+        check_fields(entries, allowed, tags, at, mutate errors)
+    }
+}
+
+func field_names(fields: Vec<Field>) -> Vec<string> {
+    mut names = Vec<string>.new()
+    for f in fields {
+        names.push(f.name)
+    }
+    return names
+}
+
+public func join_path(at: string, key: string) -> string {
+    if at.is_empty() {
+        return key
+    }
+    return "{at}.{key}"
+}
+
+// Silently ignored typos are the bug class this whole layer exists for.
+func unknown_key(key: string, valid: Vec<string>, at: string) -> string {
+    let place = if at.is_empty(): "top level" else: at
+    mut best = ""
+    mut best_d: usize = 1000
+    for name in valid {
+        let d = edit_distance(key, name)
+        if d < best_d {
+            best_d = d
+            best = name
+        }
+    }
+    let limit: usize = if key.len() < 4: 1 else: 2
+    if best_d <= limit {
+        return "{place}: unknown key `{key}`; did you mean `{best}`?"
+    }
+    if valid.is_empty() {
+        return "{place}: unknown key `{key}`; nothing else belongs here"
+    }
+    return "{place}: unknown key `{key}`; expected one of {quoted_list(valid)}"
+}
+
+public func edit_distance(a: string, b: string) -> usize {
+    let n = b.len()
+    mut prev = Vec<usize>.new()
+    mut j: usize = 0
+    while j <= n {
+        prev.push(j)
+        j = j + 1
+    }
+    mut i: usize = 1
+    while i <= a.len() {
+        mut cur = Vec<usize>.new()
+        cur.push(i)
+        j = 1
+        while j <= n {
+            let cost: usize = if a.byte_at(i - 1) == b.byte_at(j - 1): 0 else: 1
+            let del = prev[j.wrap<i64>()] + 1
+            let ins = cur[(j - 1).wrap<i64>()] + 1
+            let sub = prev[(j - 1).wrap<i64>()] + cost
+            mut m = del
+            if ins < m {
+                m = ins
+            }
+            if sub < m {
+                m = sub
+            }
+            cur.push(m)
+            j = j + 1
+        }
+        prev = cur
+        i = i + 1
+    }
+    return prev[n.wrap<i64>()]
+}
+
+// ─── Scalar formats ─────────────────────────────────────────────
+
+func digits_then(s: string, start: usize) -> usize {
+    mut i = start
+    while i < s.len() && is_digit(s.byte_at(i) ?? 0) {
+        i = i + 1
+    }
+    return i
+}
+
+func is_duration(s: string) -> bool {
+    let end = digits_then(s, 0)
+    if end == 0 {
+        return false
+    }
+    let unit = s[end..].to_string()
+    return unit == "ms" || unit == "s" || unit == "m" || unit == "h"
+}
+
+func is_version(s: string) -> bool {
+    mut parts = 0
+    for p in s.split(".") {
+        if p.is_empty() || digits_then(p, 0) != p.len() {
+            return false
+        }
+        parts = parts + 1
+    }
+    return parts == 3
+}
+
+func is_version_req(s: string) -> bool {
+    mut rest = s
+    for op in [">=", "<=", "^", "~", "=", ">", "<"] {
+        if rest.starts_with(op) {
+            rest = rest[op.len()..].to_string()
+            break
+        }
+    }
+    if rest.is_empty() {
+        return false
+    }
+    mut parts = 0
+    for p in rest.split(".") {
+        if p.is_empty() || digits_then(p, 0) != p.len() {
+            return false
+        }
+        parts = parts + 1
+    }
+    return parts >= 1 && parts <= 3
+}

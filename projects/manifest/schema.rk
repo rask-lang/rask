@@ -1,0 +1,425 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A schema is the current shape of a file plus the history that built it.
+// Every release appends changes; nothing in an earlier release is edited.
+// `check_history` replays the whole log from nothing and requires it to land
+// on the current shape, so a shape edited without its change fails.
+
+public enum Ty {
+    Str
+    Int
+    Bool
+    // "30s", "250ms", "5m", "2h". TOML has no unit literals; the field type
+    // restores the check.
+    Duration
+    // "1.2.3"
+    Version
+    // "^2.0", ">=1.5", "=1.0.0"
+    VersionReq
+    // A string from a fixed set.
+    OneOf(Vec<string>)
+    // One element: the item type.
+    List(Vec<Ty>)
+    // One element: the value type. Keys are names the file picks
+    // (dependency names, profile names).
+    MapOf(Vec<Ty>)
+    Record(Vec<Field>)
+    // A table naming its case by which tag key it holds: exactly one of the
+    // case names appears. The case may own companion keys (a git dep's
+    // `rev`), and `shared` keys are allowed whatever the case.
+    Variant { cases: Vec<Case>, shared: Vec<Field> }
+}
+
+public struct Field {
+    public name: string
+    public ty: Ty
+    public required: bool
+    public default: Value?
+    // Downgrading may drop this field even when it holds a non-default
+    // value; nothing an older tool does depends on it.
+    public ignorable: bool
+}
+
+public struct Case {
+    public name: string
+    // Type of the value under the tag key itself.
+    public payload: Ty
+    public fields: Vec<Field>
+}
+
+// One step of a path into a shape, and the same path into a file.
+public enum Step {
+    // Into a record field (or a variant's shared field).
+    Key(string)
+    // Into every value of a map, or every element of a list.
+    Each
+    // Into a variant case's companion fields; data that picked another
+    // case is left alone.
+    Case(string)
+}
+
+public struct ValuePair {
+    public before: Value
+    public after: Value
+}
+
+public enum Change {
+    Add { at: Vec<Step>, field: Field }
+    // Carries the removed definition, so the log can run backwards.
+    Remove { at: Vec<Step>, field: Field }
+    Rename { at: Vec<Step>, from: string, to: string }
+    // Every value the old type allowed that a file might hold needs a pair;
+    // an unmapped value is a load error, not a guess.
+    Retype { at: Vec<Step>, name: string, from: Ty, to: Ty, mapping: Vec<ValuePair> }
+    Default { at: Vec<Step>, name: string, from: Value, to: Value }
+}
+
+public struct Release {
+    public version: i64
+    public changes: Vec<Change>
+}
+
+public struct Schema {
+    public name: string
+    public shape: Ty
+    public history: Vec<Release>
+}
+
+public struct SchemaError {
+    public what: string
+}
+
+extend SchemaError {
+    public func message(self) -> string {
+        return self.what
+    }
+}
+
+extend Schema {
+    public func version(self) -> i64 {
+        if self.history.last()? as r {
+            return r.version
+        }
+        return 0
+    }
+}
+
+// ─── Constructors ───────────────────────────────────────────────
+// Schemas are written in Rask for now; these keep them readable.
+
+public func required(name: string, take ty: Ty) -> Field {
+    return Field { name, ty, required: true, default: none, ignorable: false }
+}
+
+public func optional(name: string, take ty: Ty) -> Field {
+    return Field { name, ty, required: false, default: none, ignorable: false }
+}
+
+public func defaulted(name: string, take ty: Ty, take default: Value) -> Field {
+    return Field { name, ty, required: false, default, ignorable: false }
+}
+
+public func list_of(take t: Ty) -> Ty {
+    mut v = Vec<Ty>.new()
+    v.push(t)
+    return Ty.List(v)
+}
+
+public func map_of(take t: Ty) -> Ty {
+    mut v = Vec<Ty>.new()
+    v.push(t)
+    return Ty.MapOf(v)
+}
+
+public func path(take steps: Vec<Step>) -> Vec<Step> {
+    return steps
+}
+
+public func root() -> Vec<Step> {
+    return Vec<Step>.new()
+}
+
+// ─── Describing ─────────────────────────────────────────────────
+// One canonical spelling per shape. Two shapes are equal when they
+// describe the same, field order included.
+
+public func describe(t: Ty) -> string {
+    match t {
+        Ty.Str => return "string",
+        Ty.Int => return "integer",
+        Ty.Bool => return "boolean",
+        Ty.Duration => return "duration",
+        Ty.Version => return "version",
+        Ty.VersionReq => return "version range",
+        Ty.OneOf(options) => return "one of {quoted_list(options)}",
+        Ty.List(item) => return "list of {describe(item[0].clone())}",
+        Ty.MapOf(value) => return "map of {describe(value[0].clone())}",
+        Ty.Record(fields) => return "record {{ {describe_fields(fields)} }}",
+        Ty.Variant { cases, shared } => {
+            mut parts = Vec<string>.new()
+            for c in cases {
+                parts.push("{c.name}: {describe(c.payload)} {{ {describe_fields(c.fields)} }}")
+            }
+            return "variant {{ {parts.join(" | ")} ; {describe_fields(shared)} }}"
+        }
+    }
+}
+
+func describe_fields(fields: Vec<Field>) -> string {
+    mut parts = Vec<string>.new()
+    for f in fields {
+        mut s = "{f.name}: {describe(f.ty)}"
+        if f.required {
+            s = "{s} required"
+        }
+        if f.default? as d {
+            s = "{s} = {render_value(d)}"
+        }
+        if f.ignorable {
+            s = "{s} ignorable"
+        }
+        parts.push(s)
+    }
+    return parts.join(", ")
+}
+
+public func quoted_list(items: Vec<string>) -> string {
+    mut parts = Vec<string>.new()
+    for s in items {
+        parts.push("`{s}`")
+    }
+    return parts.join(", ")
+}
+
+public func describe_path(at: Vec<Step>) -> string {
+    if at.is_empty() {
+        return "(top level)"
+    }
+    mut parts = Vec<string>.new()
+    for s in at {
+        match s {
+            Step.Key(k) => parts.push(k),
+            Step.Each => parts.push("*"),
+            Step.Case(c) => parts.push("<{c}>"),
+        }
+    }
+    return parts.join(".")
+}
+
+// ─── Replaying the log on shapes ─────────────────────────────────
+
+// The shape after every release, starting from an empty record.
+public func replay_shape(history: Vec<Release>) -> Ty or SchemaError {
+    mut shape = Ty.Record(Vec.new())
+    mut expected: i64 = 1
+    for r in history {
+        if r.version != expected {
+            return SchemaError { what: "release {r.version} follows release {expected - 1}; versions count up by one" }
+        }
+        for c in r.changes {
+            shape = try apply_to_shape(shape, c, r.version == 1)
+        }
+        expected = expected + 1
+    }
+    return shape
+}
+
+public func check_history(s: Schema) -> void or SchemaError {
+    if s.history.is_empty() {
+        return SchemaError { what: "schema `{s.name}` has no releases" }
+    }
+    let replayed = try replay_shape(s.history)
+    let got = describe(replayed)
+    let want = describe(s.shape)
+    if got != want {
+        return SchemaError { what: "schema `{s.name}`: replaying the history does not give the current shape\n  history gives: {got}\n  shape says:    {want}\nEither a change is missing from the latest release, or an earlier release was edited." }
+    }
+    return
+}
+
+// Release 1 builds the shape from nothing, so it alone may add required
+// fields: there are no older files to break.
+public func apply_to_shape(shape: Ty, c: Change, first: bool) -> Ty or SchemaError {
+    let at = change_path(c)
+    return edit_fields_at(shape, at, 0, c, first)
+}
+
+public func change_path(c: Change) -> Vec<Step> {
+    return match c {
+        Change.Add { at, .. } => at,
+        Change.Remove { at, .. } => at,
+        Change.Rename { at, .. } => at,
+        Change.Retype { at, .. } => at,
+        Change.Default { at, .. } => at,
+    }
+}
+
+// Walk to the field list the path names, and rebuild the shape around the
+// edited list on the way back out.
+func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) -> Ty or SchemaError {
+    if depth == at.len() {
+        match t {
+            Ty.Record(fields) => {
+                let edited = try edit_fields(fields, c, first)
+                return Ty.Record(edited)
+            }
+            Ty.Variant { cases, shared } => {
+                let edited = try edit_fields(shared, c, first)
+                return Ty.Variant { cases: cases.clone(), shared: edited }
+            }
+            _ => return SchemaError { what: "{describe_path(at)} is {describe(t)}, which has no fields to change" },
+        }
+    }
+    let step = at[depth].clone()
+    match step {
+        Step.Key(k) => {
+            match t {
+                Ty.Record(fields) => {
+                    let edited = try edit_field_type(fields, k, at, depth, c, first)
+                    return Ty.Record(edited)
+                }
+                Ty.Variant { cases, shared } => {
+                    let edited = try edit_field_type(shared, k, at, depth, c, first)
+                    return Ty.Variant { cases: cases.clone(), shared: edited }
+                }
+                _ => return SchemaError { what: "{describe_path(at)}: `{k}` is not a field of {describe(t)}" },
+            }
+        }
+        Step.Each => {
+            match t {
+                Ty.List(item) => {
+                    let inner = try edit_fields_at(item[0].clone(), at, depth + 1, c, first)
+                    return list_of(inner)
+                }
+                Ty.MapOf(value) => {
+                    let inner = try edit_fields_at(value[0].clone(), at, depth + 1, c, first)
+                    return map_of(inner)
+                }
+                _ => return SchemaError { what: "{describe_path(at)}: `*` needs a list or a map, found {describe(t)}" },
+            }
+        }
+        Step.Case(name) => {
+            match t {
+                Ty.Variant { cases, shared } => {
+                    mut out = Vec<Case>.new()
+                    mut found = false
+                    for cs in cases {
+                        if cs.name == name {
+                            found = true
+                            if depth + 1 == at.len() {
+                                let edited = try edit_fields(cs.fields, c, first)
+                                out.push(Case { name: cs.name, payload: cs.payload.clone(), fields: edited })
+                            } else {
+                                let edited = try edit_fields_at(Ty.Record(cs.fields.clone()), at, depth + 1, c, first)
+                                if edited is Record(fs) {
+                                    out.push(Case { name: cs.name, payload: cs.payload.clone(), fields: fs })
+                                }
+                            }
+                        } else {
+                            out.push(cs.clone())
+                        }
+                    }
+                    if !found {
+                        return SchemaError { what: "{describe_path(at)}: no case `{name}`" }
+                    }
+                    return Ty.Variant { cases: out, shared: shared.clone() }
+                }
+                _ => return SchemaError { what: "{describe_path(at)}: `<{name}>` needs a variant, found {describe(t)}" },
+            }
+        }
+    }
+}
+
+func edit_field_type(fields: Vec<Field>, name: string, at: Vec<Step>, depth: usize, c: Change, first: bool) -> Vec<Field> or SchemaError {
+    mut out = Vec<Field>.new()
+    mut found = false
+    for f in fields {
+        if f.name == name {
+            found = true
+            let inner = try edit_fields_at(f.ty, at, depth + 1, c, first)
+            out.push(Field { ty: inner, ..f })
+        } else {
+            out.push(f.clone())
+        }
+    }
+    if !found {
+        return SchemaError { what: "{describe_path(at)}: no field `{name}`" }
+    }
+    return out
+}
+
+func position_of(fields: Vec<Field>, name: string) -> usize? {
+    mut i: usize = 0
+    while i < fields.len() {
+        if fields[i].name == name {
+            return i
+        }
+        i = i + 1
+    }
+    return none
+}
+
+// The change itself, on the list it targets. Each case also checks the
+// change is one an older file can survive.
+func edit_fields(fields: Vec<Field>, c: Change, first: bool) -> Vec<Field> or SchemaError {
+    let where_ = describe_path(change_path(c))
+    match c {
+        Change.Add { field, .. } => {
+            if position_of(fields, field.name)? {
+                return SchemaError { what: "{where_}: Add `{field.name}`, which already exists" }
+            }
+            if field.required && !first {
+                return SchemaError { what: "{where_}: Add `{field.name}` as required; every older file would stop loading. Give it a default instead" }
+            }
+            mut out = fields.clone()
+            out.push(field.clone())
+            return out
+        }
+        Change.Remove { field, .. } => {
+            let i = position_of(fields, field.name) ?? return SchemaError { what: "{where_}: Remove `{field.name}`, which doesn't exist" }
+            if describe_fields(vec_one(fields[i].clone())) != describe_fields(vec_one(field.clone())) {
+                return SchemaError { what: "{where_}: Remove `{field.name}` records a definition that doesn't match the current one" }
+            }
+            mut out = fields.clone()
+            out.remove(i.wrap<i64>())
+            return out
+        }
+        Change.Rename { from, to, .. } => {
+            let i = position_of(fields, from) ?? return SchemaError { what: "{where_}: Rename `{from}`, which doesn't exist" }
+            if position_of(fields, to)? {
+                return SchemaError { what: "{where_}: Rename `{from}` to `{to}`, which already exists" }
+            }
+            mut out = fields.clone()
+            let old = out[i.wrap<i64>()].clone()
+            out.set(i.wrap<i64>(), Field { name: to, ..old })
+            return out
+        }
+        Change.Retype { name, from, to, .. } => {
+            let i = position_of(fields, name) ?? return SchemaError { what: "{where_}: Retype `{name}`, which doesn't exist" }
+            if describe(fields[i].ty.clone()) != describe(from) {
+                return SchemaError { what: "{where_}: Retype `{name}` from {describe(from)}, but it is {describe(fields[i].ty.clone())}" }
+            }
+            mut out = fields.clone()
+            let old = out[i.wrap<i64>()].clone()
+            out.set(i.wrap<i64>(), Field { ty: to.clone(), ..old })
+            return out
+        }
+        Change.Default { name, from, to, .. } => {
+            let i = position_of(fields, name) ?? return SchemaError { what: "{where_}: Default `{name}`, which doesn't exist" }
+            let old = fields[i].clone()
+            let current = old.default ?? return SchemaError { what: "{where_}: Default `{name}`, which has no default to change" }
+            if !current.eq(from) {
+                return SchemaError { what: "{where_}: Default `{name}` from {render_value(from)}, but it is {render_value(current)}" }
+            }
+            mut out = fields.clone()
+            out.set(i.wrap<i64>(), Field { default: to.clone(), ..old })
+            return out
+        }
+    }
+}
+
+func vec_one(take f: Field) -> Vec<Field> {
+    mut v = Vec<Field>.new()
+    v.push(f)
+    return v
+}

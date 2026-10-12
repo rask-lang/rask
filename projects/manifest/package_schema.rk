@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// rask-package: the schema for rask.toml.
+//
+// Release 1 is what the `package` block in build.rk holds today, moved to
+// TOML. Its history is one Add per top-level table, so the shape and the log
+// share their subtrees rather than spelling them twice.
+
+public func package_schema() -> Schema {
+    return Schema {
+        name: "rask-package",
+        shape: Ty.Record(top_fields()),
+        history: package_history(),
+    }
+}
+
+public func package_history() -> Vec<Release> {
+    mut adds = Vec<Change>.new()
+    mut fields = top_fields()
+    for f in fields.take_all() {
+        adds.push(Change.Add { at: root(), field: f })
+    }
+    mut h = Vec<Release>.new()
+    h.push(Release { version: 1, changes: adds })
+    return h
+}
+
+func top_fields() -> Vec<Field> {
+    return Vec<Field>.from([
+        required("package", package_ty()),
+        optional("dependencies", map_of(dep_ty())),
+        optional("dev_dependencies", map_of(dep_ty())),
+        optional("build_dependencies", map_of(dep_ty())),
+        optional("features", map_of(feature_ty())),
+        optional("exclusive_features", map_of(exclusive_ty())),
+        optional("profiles", map_of(profile_ty())),
+    ])
+}
+
+func package_ty() -> Ty {
+    return Ty.Record(Vec<Field>.from([
+        required("name", Ty.Str),
+        required("version", Ty.Version),
+        optional("description", Ty.Str),
+        optional("license", Ty.Str),
+        optional("repository", Ty.Str),
+        optional("members", list_of(Ty.Str)),
+        defaulted("sandbox", Ty.Bool, Value.Bool(false)),
+        optional("vendor_dir", Ty.Str),
+    ]))
+}
+
+// Where a dependency comes from is the variant; everything else is shared.
+//   http   = { registry = "^2.0" }
+//   shared = { path = "../shared" }
+//   tls    = { git = "https://github.com/x/tls", rev = "a1b2c3" }
+public func dep_ty() -> Ty {
+    return Ty.Variant {
+        cases: Vec<Case>.from([
+            Case { name: "registry", payload: Ty.VersionReq, fields: Vec.new() },
+            Case { name: "path", payload: Ty.Str, fields: Vec.new() },
+            Case {
+                name: "git",
+                payload: Ty.Str,
+                fields: Vec<Field>.from([
+                    optional("rev", Ty.Str),
+                    optional("branch", Ty.Str),
+                ]),
+            },
+        ]),
+        shared: Vec<Field>.from([
+            optional("target", Ty.Str),
+            optional("with", list_of(Ty.Str)),
+            optional("allow", list_of(Ty.OneOf(capabilities()))),
+            optional("select", map_of(Ty.Str)),
+            optional("feature", Ty.Str),
+        ]),
+    }
+}
+
+func capabilities() -> Vec<string> {
+    return Vec<string>.from(["net", "read", "write", "exec", "ffi", "build_exec"])
+}
+
+// Nesting replaces build.rk's `scope` tag inside a feature: a feature's dev
+// deps sit under its own dev_dependencies table.
+func feature_ty() -> Ty {
+    return Ty.Record(Vec<Field>.from([
+        defaulted("default", Ty.Bool, Value.Bool(false)),
+        optional("enables", list_of(Ty.Str)),
+        optional("dependencies", map_of(dep_ty())),
+        optional("dev_dependencies", map_of(dep_ty())),
+        optional("build_dependencies", map_of(dep_ty())),
+    ]))
+}
+
+// [exclusive_features.runtime]
+// default = "tokio"
+// options.tokio = { tokio = { registry = "^1.0" } }
+func exclusive_ty() -> Ty {
+    return Ty.Record(Vec<Field>.from([
+        required("default", Ty.Str),
+        required("options", map_of(map_of(dep_ty()))),
+    ]))
+}
+
+func profile_ty() -> Ty {
+    return Ty.Record(Vec<Field>.from([
+        optional("inherits", Ty.Str),
+        optional("opt_level", Ty.OneOf(Vec<string>.from(["0", "1", "2", "3", "s", "z"]))),
+        optional("debug_info", Ty.Bool),
+        optional("overflow_checks", Ty.Bool),
+        optional("lto", Ty.OneOf(Vec<string>.from(["off", "thin", "fat"]))),
+        optional("codegen_units", Ty.Int),
+        optional("strip", Ty.Bool),
+        optional("panic", Ty.OneOf(Vec<string>.from(["unwind", "abort"]))),
+    ]))
+}
+
+// Every place a dependency table appears. A change to the dep shape is one
+// change per site: shapes are inline, so the log has no name for "Dep".
+public func dep_sites() -> Vec<Vec<Step>> {
+    mut sites = Vec<Vec<Step>>.new()
+    for t in ["dependencies", "dev_dependencies", "build_dependencies"] {
+        sites.push(Vec<Step>.from([Step.Key(t), Step.Each]))
+        sites.push(Vec<Step>.from([Step.Key("features"), Step.Each, Step.Key(t), Step.Each]))
+    }
+    sites.push(Vec<Step>.from([Step.Key("exclusive_features"), Step.Each, Step.Key("options"), Step.Each, Step.Each]))
+    return sites
+}
