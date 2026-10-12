@@ -34,33 +34,45 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 577 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 579 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
+| Suite programs agreeing on both backends | 702 green, 5 registered red | `tests/differential.sh` |
+| Programs that leak | 1, holding 0 allocations this milestone and 2 deferred; 4 not measured (the registered-red files don't compile) | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 0 of 703, 4 not measured | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 87 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
-| Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
-| Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 64 of 106 open issues | issue search |
-| Open design questions | 20 | issue search |
+| Concurrency files clean under sim | 87 of 87 at 20 seeds (CI runs 100), 44 tests exempt | `tests/sim_gate.sh` |
+| Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
+| Runtime builds under the other compiler | clean, 3 warnings | `tests/clang_gate.sh` |
+| Rust unit and integration tests | 1374 pass | `cd compiler && cargo test --release` |
+| Open bugs, open design questions | not measured this pass | issue search |
 
-Nine more gates cover prototypes, packages, projects, tutorials, the book, the
-agent benchmark, internal spellings, formatter round-trips and the HTTP server.
-All green.
+Also run and green: prototypes (9 agree), projects (21 ok), formatter
+round-trips, the HTTP server harness, the agent benchmark. Not run this pass:
+packages, tutorials, book, internal spellings.
 
-This table was a month stale when it was last checked — it claimed 31 leaking
-programs holding 86 allocations while the gate printed 0, and 500 of 505 while
-the suite had grown to 525. That is the failure the preamble above says this
-file exists to prevent, so: re-measure before quoting it, and if you quoted it,
-you have re-measured it.
+Open bug and design-question counts are gone from this table on purpose. The
+last ones (64 of 106, and 20) couldn't be re-measured without an issue counter,
+and a number nobody re-runs is how this table went stale before.
+
+The table was a month stale once — it claimed 31 leaking programs when the gate
+printed 0. That is the failure this file exists to prevent: re-measure before
+quoting it.
+
+## What came off this list
+
+- **Matrix red cells.** The two `T or E` function-type cells went green when
+  [#1244](https://github.com/rask-lang/rask/issues/1244) closed for real
+  (#1390). The matrix is 293 of 293 with nothing registered.
+- **Panic unwinding of containers.** A panic now releases what a struct, enum,
+  tuple, `T?` or `T or E` holds (#1518), and what the frames it leaves own (#1422).
+  [#299](https://github.com/rask-lang/rask/issues/299) is closed, 11 of 11.
+- **The "no stdlib gate" worry is not gone.** It still doesn't exist; see v0.6.
 
 ## v0.3 — Memory is settled — **shipped 2026-09-18**
 
 **Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
 
-The gate's condition is met — 521 suite files clean. That is the measure, not
+The gate's condition is met — 702 suite files clean. That is the measure, not
 the claim that nothing leaks, and what "settled" should mean beyond a green gate
 is the open question now.
 
@@ -152,14 +164,14 @@ cells were each caught by the fix for an uncrossed one, so the grid is
 pass doesn't have to be combinatorial.
 
 The issue stays open for one cell the audit couldn't reach: a resource crossing
-a *task* boundary when the task panics. That waits on
-[#299](https://github.com/rask-lang/rask/issues/299) — captures aren't unwound
-at all yet — which is v0.5's theme, not this one.
+a *task* boundary when the task panics. It waited on
+[#299](https://github.com/rask-lang/rask/issues/299), which is closed now. Whether
+that cell was then covered I haven't checked; the issue is the place to look.
 
 ## v0.4 — A value works in every position — **shipped 2026-09-22**
 
-**Done when `tests/matrix/run.sh` is green. It is: 281 of 283 cells clean, 2
-registered red, 0 new, and 5 pairs skipped as pairs the design rules out.**
+**Done when `tests/matrix/run.sh` is green. It is: 293 of 293 cells clean, 0
+registered red, and 13 pairs skipped as pairs the design rules out.**
 
 Read the cell count against the old one with care — it was 284 of 286 while
 `Vec<Heap<T>>` still compiled. Fixing [#1245](https://github.com/rask-lang/rask/issues/1245)
@@ -173,7 +185,7 @@ enumerated value-kind × position, so the holes were found one report at a time.
 The deliverable is the matrix — every payload kind in every carrier, one small
 program per cell, run on both backends — and then the bugs it lights up.
 
-The matrix exists: `tests/matrix/gen.py` writes 283 cells over 18 payloads and
+The matrix exists: `tests/matrix/gen.py` writes its cells over 18 payloads and
 16 carriers, `tests/matrix/run.sh` runs them, and `tests/matrix/known_red.txt`
 holds each red cell to what it claims — which backend fails it and how far that
 backend gets. A registered cell that starts passing is reported so the line gets
@@ -230,9 +242,8 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   `-> func(i64) -> i64 or Oops` parses as `func(i64) -> (i64 or Oops)`, which is
   a defensible reading; what is missing is a way to write the other one, and
   there is no parenthesised type form. `specs/types/error-types.md` and
-  `specs/SYNTAX.md` don't cover it. Its two cells stay registered in
-  `known_red.txt` — the gate keeps watching them — and they are not what this
-  milestone closes on.
+  `specs/SYNTAX.md` don't cover it. Its two cells were registered red while it
+  was open and are green now.
 - **#1245** — `Vec<Heap<i64>>` compiles, where `std.collections/C4` says it
   shouldn't. A missing *rejection* is not a value failing in a position, and its
   cells could never go green: the program isn't supposed to compile at all.
@@ -242,11 +253,9 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
 - **#1248** — a generic function whose name ends in `_free` leaks the `Vec` it
   returns. A name collision in the ownership metadata, not a position.
 
-Three of those four are fixed anyway, off the backlog rather than off this
-milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
-still open, and it was briefly closed by that same batch without anything in it
-answering the question; the repro still fails and it has been reopened. Its two
-cells are the 2 red in the number above.
+All four are fixed now, off the backlog rather than off this milestone —
+#1245, #1233 and #1248 came in with #1298. #1244 was closed by that batch
+without answering the question, was reopened, and closed for real in #1390.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they
@@ -276,7 +285,7 @@ matrix work, rather than left to stall it:
 disagreement, not a value kind failing in a position — a narrow theme is the
 only kind that closes.
 
-## v0.5 — Concurrency you can trust — **shipped 2026-09-30**
+## v0.5 — Concurrency you can trust — **shipped 2026-10-08**
 
 **Done when two numbers hold in CI:**
 
@@ -395,6 +404,11 @@ Ships open:
 
 ## v0.6 — The stdlib matches its own spec
 
+**Next, and the order holds.** v0.3 to v0.5 are shipped, and nothing else is
+scheduled. Checked this pass: no stdlib coverage gate exists in `tests/` or CI,
+and the nightly release build described under Cadence isn't a workflow yet.
+The gate leads because it turns TODO.md's hand-typed percentages into numbers.
+
 **Done when the stdlib coverage gate reads 100% for every module.**
 
 That gate doesn't exist yet, and building it is the first deliverable. It
@@ -455,8 +469,8 @@ scheduled — only earned. What has to be true first:
   consecutive releases, measured with `git log specs/` rather than by feel. This
   is the real gate and the others are downstream of it: a language is 1.0 when
   it has stopped changing, not when it is popular.
-- Every design question closed rather than deferred. Twenty are open, and each
-  one is a spec that hasn't stopped moving yet.
+- Every design question closed rather than deferred. Each open one is a spec
+  that hasn't stopped moving yet.
 - The stdlib at 100% of its own spec, measured.
 - No untracked bugs, and nothing registered red without an issue and a decision.
 
@@ -478,7 +492,7 @@ Don't plan past the next two versions. v0.9's contents are fiction today.
 
 ## Not in any version
 
-**Design questions** — twenty open issues. They're upstream of features, they
+**Design questions** — the open issues. They're upstream of features, they
 have no gate, and putting them in a version is how a version stops closing. Work
 them between releases, or when one blocks a scheduled feature, and say which.
 
