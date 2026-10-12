@@ -110,3 +110,17 @@ test "EO4 — a compound assignment runs its index once, then the value" {
     assert g[1][0] == 7
     assert log.join(",") == "lhs,rhs,row,col,val"
 }
+
+func bump(mutate n: i64) -> i64 {
+    n = n + 1
+    return n
+}
+
+func digits2(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
+
+test "EO1 — an argument that changes a place runs before a later one reads it" {
+    mut x = 1
+    assert digits2(bump(mutate x), x) == 22
+}

@@ -844,6 +844,20 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
             }
 
+            ArgumentChangedLater { callee, place, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is lent to `{}` and then changed by a later argument",
+                    place, callee
+                ))
+                .with_code("E0869")
+                .with_primary(*span, format!("changes `{}` while the call holds it", place))
+                .with_fix(format!(
+                    "work out the changing argument first: `let v = …` before the call, then pass `v` and `{}`",
+                    place
+                ))
+                .with_why("arguments are lent to a call in the order they're written, so the earlier argument still holds this place when the later one changes it [mem.aliasing]")
+            }
+
             StructPatternByPosition { name, fields, span } => {
                 let example = fields.iter().map(|f| format!("{f}: …")).collect::<Vec<_>>().join(", ");
                 Diagnostic::error(format!("`{}(…)` matches its fields by name", name))

@@ -68,6 +68,14 @@ pub enum TypeError {
         params: Option<Vec<String>>,
         span: Span,
     },
+    /// `pair(x, bump(mutate x))`: a later argument changes what an earlier one
+    /// already lent to the call.
+    #[error("`{place}` is lent to `{callee}` and changed by a later argument")]
+    ArgumentChangedLater {
+        callee: String,
+        place: String,
+        span: Span,
+    },
     /// `Pair(0, y)` on a struct: a struct's pattern names its fields.
     #[error("`{name}(…)` matches its fields by name")]
     StructPatternByPosition {
@@ -1651,6 +1659,7 @@ impl TypeError {
             | ArityMismatch { .. }
             | ArgPlacement { .. }
             | StructPatternByPosition { .. }
+            | ArgumentChangedLater { .. }
             | UnimplementedStdlibMethod { .. }
             | NoSuchModuleFunction { .. }
             | PrivateModuleFunction { .. }

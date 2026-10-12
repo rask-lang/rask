@@ -72,6 +72,7 @@ go down.
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [named_args_misfit.rk](named_args_misfit.rk) | Named arguments that don't place on the callee's parameters (E0903): a name it doesn't have, two arguments for one parameter, an unnamed argument after a named one, a label on a tuple variant or a closure value. Labels go in any order; tests/suite/t_named_args_any_order.rk has the calls that work |
 | [struct_pattern_shared_name.rk](struct_pattern_shared_name.rk) | A struct pattern by position (E0416) where an enum's variant shares the struct's name. The bare pattern is settled by the matched value's type, so the checker reports it rather than the desugarer |
+| [argument_changed_later.rk](argument_changed_later.rk) | A later argument changing a place an earlier argument already lent to the call (E0869, #1534). Arguments are lent in the order written, so the two backends used to disagree about which value the earlier argument saw |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
 | [try_shape_rule.rk](try_shape_rule.rk) | Bare `try` whose other branch doesn't fit the return (ER47, E0399/E0400) — an absence in a `T or E` function, an error in a `T?` function (#598) |
 | [error_interface_variants.rk](error_interface_variants.rk) | Picking a variant off `Error` (E0863, #1095) — it's the interface every error implements, not an enum, so `Error.NotFound` names nothing. Both a plausible spelling and an invented one, since neither used to be caught |

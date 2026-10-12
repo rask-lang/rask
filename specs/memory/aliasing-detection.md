@@ -18,7 +18,7 @@ Compile-time analysis that prevents structural mutations on collections with act
 |-------|--------|
 | Method call `x.method(args)` | Push borrow of `x` with mode from method signature |
 | Index expression `x[i]` | Push borrow of `x` (read for read context, mut for assignment) |
-| Argument evaluation | Push borrows as arguments are evaluated left-to-right |
+| Argument evaluation | Push borrows as arguments are evaluated left-to-right. A later argument can't change a place an earlier one holds: `pair(x, bump(mutate x))` is rejected, `pair(bump(mutate x), x)` is fine |
 | Expression completion | Pop all borrows from that expression |
 
 ## Closure Body Scan
