@@ -9014,3 +9014,37 @@ fn run_interp_on_a_package_directory_uses_the_interpreter() {
     assert_eq!(stdout.trim(), "args 3");
     assert!(!built, "`--interp` compiled the package natively");
 }
+
+// `rask check <dir>` checked the package's first file, `build.rk`, on its own
+// and printed OK over errors in every other file. And a file that didn't
+// parse made the package look like no package at all.
+#[test]
+fn check_on_a_package_directory_checks_every_file() {
+    let dir = std::env::temp_dir().join(format!("rask_check_pkg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("build.rk"), "package \"check-pkg\" \"0.1.0\" {\n}\n").unwrap();
+    std::fs::write(dir.join("main.rk"), "func main() {\n    println(\"hi\")\n}\n").unwrap();
+    let check = |dir: &std::path::Path| {
+        let out = Command::new(rask_binary())
+            .arg("check")
+            .arg(dir)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask check");
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).to_string())
+    };
+
+    std::fs::write(dir.join("other.rk"), "func broken() {\n    let x: i32 = \"nope\"\n}\n").unwrap();
+    let (ok_type, err_type) = check(&dir);
+
+    std::fs::write(dir.join("other.rk"), "func broken() {\n    let x = (\n}\n").unwrap();
+    let (ok_parse, err_parse) = check(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(!ok_type, "a type error in other.rk passed the check");
+    assert!(err_type.contains("E0308"), "stderr: {err_type}");
+    assert!(!ok_parse, "a parse error in other.rk passed the check");
+    assert!(err_parse.contains("other.rk"), "the parse error should name its file: {err_parse}");
+    assert!(!err_parse.contains("Is a directory"), "stderr: {err_parse}");
+}
