@@ -1,13 +1,15 @@
 <!-- id: struct.manifest -->
-<!-- status: decided -->
+<!-- status: proposed -->
 <!-- summary: rask.toml manifest, checked against a versioned schema with an append-only change history -->
 <!-- depends: structure/build.md, structure/packages.md -->
 
 # Manifest
 
-A package's metadata and dependencies live in `rask.toml`: plain TOML, checked against a versioned schema. The schema carries its own change history, so a file written against any past version still loads.
+**Proposed, not decided.** The decided design is the `package` block in `build.rk` (`struct.build`). This spec describes the alternative: moving that data to `rask.toml`.
 
-I picked TOML over a Rask block because every language already parses it. A registry indexer, Renovate or an editor plugin reads the manifest without knowing Rask, and `rask add` edits it with an ordinary comment-preserving TOML editor. What TOML lacks, the schema puts back: unknown keys are errors, strings are checked by field type, and the history keeps old files loading.
+Under this proposal, a package's metadata and dependencies live in `rask.toml`: plain TOML, checked against a versioned schema. The schema carries its own change history, so a file written against any past version still loads.
+
+The case for TOML is that every language already parses it: a registry indexer, Renovate or an editor plugin reads the manifest without knowing Rask, and `rask add` edits it with an ordinary comment-preserving TOML editor. The case for the `build.rk` block is one language and one file, with metadata checked by the compiler that already reads it. The schema layer below (versions, history, migration) operates on the data, not the syntax, so it applies to either.
 
 The registry is why the history matters. It holds manifests written against every version of the schema there has ever been, and a resolver today still has to read all of them.
 
@@ -117,7 +119,7 @@ Includes, variables, interpolation, conditionals and computed values. Each turns
 | Feature | Status |
 |---------|--------|
 | TOML reader, schema, history check, load, migrate, JSON Schema export | Prototype in Rask: [projects/manifest/](../../projects/manifest/) |
-| Toolchain reads `rask.toml` | Not implemented (#1535); the compiler still reads the `package` block in `build.rk` |
+| Toolchain reads `rask.toml` | Not implemented; pending the decision (#1535) |
 | `rask migrate`, `rask check` for manifests | Not implemented |
 | Format-preserving `rask add` on `rask.toml` | Not implemented |
 
