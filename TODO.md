@@ -12,7 +12,9 @@ Open work, grouped by theme. Bugs are tracked as [GitHub issues](https://github.
 - [ ] **Linear resource commitment (L1–L3)** — Ownership checker tracks it, codegen doesn't enforce.
 - [ ] **Panic unwinding (ctrl.panic)** — Panic path runs no ensures and aborts the process; `staged()` and the ensure-cancellation definiteness analysis unimplemented. Tracking issue with all sub-issues: #299.
 - [ ] **Origin tracking opt-in (ER33/ER34)** — Compiler currently tracks origin on every error (always-on). Spec revised to opt-in via `@traced` + `any Error`. Codegen and runtime need to gate origin capture on the annotation, drop the 16-byte field from non-traced types.
-- [ ] **MIR re-derives types the checker already worked out** — 41 fallback sites re-guess types instead of MIR carrying them forward from the checker (#725).
+- [ ] **Drops happen at function end, not scope end** — and native's inliner moves a callee's drops to the caller's end (#1527).
+- [ ] **`v[i()] += x()` evaluates the index twice** on both backends (#1524).
+- [ ] **Native: struct field of type `T or A | B` gets a pointer-sized slot** (#1521). Related: the checker accepts `T or A | B` where `T or A` is expected (#1520).
 
 ## Build
 
@@ -42,7 +44,6 @@ Percentages are rough coverage vs spec.
 
 - [ ] **Grow the agent benchmark** — `agentbench/` exists and scores 19 tasks (7 day, 7 week, 5 month) with `tests/agentbench_gate.sh` keeping the references honest. What it still needs: a wider task set (nothing yet exercises concurrency, `with` blocks, Rack+Link, or the encoding path), a stored baseline so a run can be compared against the last one instead of read in isolation, and a second axis measuring the model with the compiler's docs available rather than only the language card. See `agentbench/README.md`.
 
-- [ ] **Nothing forces the two backends to agree** — ~39% of open bugs are native/interpreter divergences, but only ~5% of tests compare backends against each other (#724).
 
 - [ ] **`rask annotate` (tool.annotate)** — materialize ghost text for diffs/review; spec proposed, nothing implemented. Cheapest first slice: effect labels — `Effects::label()` in rask-effects already renders the ghost strings and has zero callers. Command shape precedent: `rask unsafe --json`.
 
