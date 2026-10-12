@@ -34,7 +34,7 @@ mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, ArgHoist, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -529,6 +529,9 @@ pub struct TypeChecker {
     /// Calls whose labels or defaults moved their arguments: call → where each
     /// parameter's argument comes from (`arg_labels`).
     pub(super) arg_places: HashMap<NodeId, Vec<arg_labels::Placement>>,
+    /// Placed calls whose arguments are bound to temporaries first
+    /// (`arg_labels::plan_hoist`).
+    pub(super) arg_hoists: HashMap<NodeId, arg_labels::ArgHoist>,
     /// ER3/ER4: `T or E` sites in type declarations (struct/enum/union/alias),
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
@@ -704,6 +707,7 @@ impl TypeChecker {
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: HashMap::new(),
+            arg_hoists: HashMap::new(),
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
         }
@@ -920,6 +924,7 @@ impl TypeChecker {
         //
         // `RASK_TRACE_OPEN_NODES=1` counts and shapes them, which is how you
         // find the inference gaps behind them rather than assuming.
+        self.type_hoisted_args();
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
@@ -1133,6 +1138,14 @@ impl TypeChecker {
             channel_send_sites: self.channel_send_sites,
             type_test_patterns: self.type_test_patterns,
             struct_shorthand_patterns: self.struct_shorthand_patterns,
+            arg_hoists: self
+                .arg_hoists
+                .into_iter()
+                .map(|(call, h)| {
+                    let binds = h.binds.into_iter().map(|b| (b.arg, b.let_id, b.ident)).collect();
+                    (call, type_defs::ArgHoist { block: h.block, binds })
+                })
+                .collect(),
             arg_places: self
                 .arg_places
                 .into_iter()

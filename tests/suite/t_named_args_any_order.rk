@@ -63,9 +63,21 @@ test "arguments run in the order written" {
     mut log: Vec<string> = Vec.new()
     let r = digits(b: record(mutate log, "b", 2), a: record(mutate log, "a", 1))
     assert r == 12
-    assert log.len() == 2
+    let x = Num(n: 100)
+    assert x.pair(b: record(mutate log, "pb", 2), a: record(mutate log, "pa", 1)) == 112
+    mut v: Vec<i64> = [5]
+    v.insert(value: record(mutate log, "value", 9), index: record(mutate log, "index", 0))
+    assert v[0] == 9
+    assert digits(a: record(mutate log, "a2", 1), b: record(mutate log, "b2", 2)) == 12
+    assert log.len() == 8
     assert log[0] == "b"
     assert log[1] == "a"
+    assert log[2] == "pb"
+    assert log[3] == "pa"
+    assert log[4] == "value"
+    assert log[5] == "index"
+    assert log[6] == "a2"
+    assert log[7] == "b2"
 }
 
 func main() {}

@@ -7,9 +7,10 @@
 //! checked, and a method call where its method resolves. `attach_derived`
 //! then writes each placement into the call, so every pass after the checker
 //! sees arguments in parameter order. Arguments still run in written order:
-//! the desugarer bound the ones that run code (`bind_labeled_args_in_order`).
+//! where placing moves one that runs code ahead of another, they're bound to
+//! temporaries first (`plan_hoist`).
 
-use rask_ast::call::{is_identity, place_args, ArgSlot, ParamSpec, PlaceError};
+use rask_ast::call::{is_identity, place_args, runs_code, ArgSlot, ParamSpec, PlaceError};
 use rask_ast::expr::{CallArg, Expr};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
@@ -32,10 +33,35 @@ pub(super) struct LabeledCall {
     pub labels: Vec<Option<String>>,
     /// Each written argument's span.
     pub arg_spans: Vec<Span>,
+    /// Each written argument's expression id.
+    pub arg_ids: Vec<NodeId>,
+    /// Whether each written argument runs code (`rask_ast::call::runs_code`).
+    pub runs_code: Vec<bool>,
     /// Parameter names, when the call's own path knew them directly — a
     /// variant's fields, a module function's stub. Everything else is read off
     /// the resolved target.
     pub names: Option<Vec<String>>,
+}
+
+/// Arguments of one placed call bound to temporaries, so they still run in
+/// the order written.
+#[derive(Clone)]
+pub(super) struct ArgHoist {
+    /// The block that replaces the call.
+    pub block: NodeId,
+    /// One per argument that runs code, in written order.
+    pub binds: Vec<HoistBind>,
+}
+
+#[derive(Clone)]
+pub(super) struct HoistBind {
+    /// The written argument's index.
+    pub arg: usize,
+    pub let_id: NodeId,
+    /// The temporary's use, in the call.
+    pub ident: NodeId,
+    /// The argument's own expression, whose type the temporary has.
+    pub source: NodeId,
 }
 
 /// Where one parameter's argument comes from, in parameter order.
@@ -60,6 +86,11 @@ impl TypeChecker {
             span,
             labels: args.iter().map(|a| a.name.clone()).collect(),
             arg_spans: args.iter().map(|a| a.expr.span).collect(),
+            arg_ids: args.iter().map(|a| a.expr.id).collect(),
+            runs_code: args
+                .iter()
+                .map(|a| a.mode == rask_ast::expr::ArgMode::Default && runs_code(&a.expr))
+                .collect(),
             names: None,
         });
     }
@@ -107,7 +138,10 @@ impl TypeChecker {
                 Placement::Default(..) => unreachable!(),
             })
             .collect();
-        self.arg_places.entry(call).or_insert(placed);
+        if !self.arg_places.contains_key(&call) {
+            self.plan_hoist(call, &placed);
+            self.arg_places.insert(call, placed);
+        }
         Some(out)
     }
 
@@ -160,8 +194,62 @@ impl TypeChecker {
             });
         }
         let out = Self::apply_placement(&placed, args);
+        self.plan_hoist(call, &placed);
         self.arg_places.insert(call, placed);
         out
+    }
+
+    /// Arguments run in the order written. Placing puts them in parameter
+    /// order, and when that moves one that runs code ahead of another that
+    /// does, each of those is bound to a temporary first, in written order:
+    /// `f(b: g(), a: h())` becomes
+    /// `{ let __arg_1 = g(); let __arg_2 = h(); f(__arg_2, __arg_1) }`.
+    /// A call whose working arguments keep their order is left alone.
+    fn plan_hoist(&mut self, call: NodeId, placed: &[Placement]) {
+        let Some(labeled) = self.labeled_calls.iter().find(|c| c.call == call) else { return };
+        let working: Vec<usize> = placed
+            .iter()
+            .filter_map(|p| match p {
+                Placement::Written(i) if labeled.runs_code.get(*i) == Some(&true) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        if working.windows(2).all(|w| w[0] < w[1]) {
+            return;
+        }
+        let sources: Vec<(usize, NodeId)> = labeled
+            .runs_code
+            .iter()
+            .enumerate()
+            .filter(|(_, runs)| **runs)
+            .map(|(i, _)| (i, labeled.arg_ids[i]))
+            .collect();
+        let mut fresh = || {
+            let id = NodeId(self.next_derived_id);
+            self.next_derived_id += 1;
+            id
+        };
+        let block = fresh();
+        let binds = sources
+            .into_iter()
+            .map(|(arg, source)| HoistBind { arg, let_id: fresh(), ident: fresh(), source })
+            .collect();
+        self.arg_hoists.insert(call, ArgHoist { block, binds });
+    }
+
+    /// The temporaries' and their block's types: each temporary is the
+    /// argument it holds, and the block is the call.
+    pub(super) fn type_hoisted_args(&mut self) {
+        for (call, hoist) in &self.arg_hoists {
+            if let Some(ty) = self.node_types.get(call).cloned() {
+                self.node_types.insert(hoist.block, ty);
+            }
+            for bind in &hoist.binds {
+                if let Some(ty) = self.node_types.get(&bind.source).cloned() {
+                    self.node_types.insert(bind.ident, ty);
+                }
+            }
+        }
     }
 
     fn apply_placement(placed: &[Placement], args: Vec<Type>) -> Vec<Type> {

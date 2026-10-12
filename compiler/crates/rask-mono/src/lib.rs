@@ -1308,6 +1308,7 @@ mod tests {
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: std::collections::HashMap::new(),
+            arg_hoists: std::collections::HashMap::new(),
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
             derived_decls: Vec::new(),

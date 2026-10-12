@@ -517,17 +517,38 @@ impl TypedProgram {
         }
 
         // Calls the checker placed: each argument moves to its parameter, and
-        // a parameter left out gets its default.
-        struct Places<'a>(&'a HashMap<NodeId, Vec<PlacedArg>>);
+        // a parameter left out gets its default. Where that would change
+        // which argument's code runs first, those arguments are bound to
+        // temporaries beforehand, in written order, and the call reads them.
+        struct Places<'a> {
+            placed: &'a HashMap<NodeId, Vec<PlacedArg>>,
+            hoists: &'a HashMap<NodeId, ArgHoist>,
+            done: std::collections::HashSet<NodeId>,
+        }
         impl rask_ast::rewrite::Rewrite for Places<'_> {
             fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-                use rask_ast::expr::{ArgMode, CallArg, ExprKind};
-                let Some(placed) = self.0.get(&e.id) else { return };
+                use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
+                use rask_ast::stmt::{Stmt, StmtKind};
+                let Some(placed) = self.placed.get(&e.id) else { return };
+                // The call is still inside the block that replaces it.
+                if !self.done.insert(e.id) {
+                    return;
+                }
                 let (ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. }) = &mut e.kind else { return };
                 if placed.iter().any(|p| matches!(p, PlacedArg::Written(i) if *i >= args.len())) {
                     return;
                 }
-                let written = std::mem::take(args);
+                let mut written = std::mem::take(args);
+                let mut lets = Vec::new();
+                if let Some(hoist) = self.hoists.get(&e.id) {
+                    for (arg, let_id, ident) in &hoist.binds {
+                        let name = format!("__arg_{}", let_id.0);
+                        let span = written[*arg].expr.span;
+                        let read = Expr { id: *ident, kind: ExprKind::Ident(name.clone()), span };
+                        let init = std::mem::replace(&mut written[*arg].expr, read);
+                        lets.push(Stmt { id: *let_id, kind: StmtKind::Let { name, name_span: span, ty: None, init }, span });
+                    }
+                }
                 *args = placed
                     .iter()
                     .map(|p| match p {
@@ -535,10 +556,20 @@ impl TypedProgram {
                         PlacedArg::Default(expr) => CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() },
                     })
                     .collect();
+                if let Some(hoist) = self.hoists.get(&e.id) {
+                    let span = e.span;
+                    let call = Expr { id: e.id, kind: std::mem::replace(&mut e.kind, ExprKind::Bool(false)), span };
+                    lets.push(Stmt { id: hoist.block, kind: StmtKind::Expr(call), span });
+                    e.id = hoist.block;
+                    e.kind = ExprKind::Block(lets);
+                }
             }
         }
         if !self.arg_places.is_empty() {
-            rask_ast::rewrite::rewrite_decls(decls, &mut Places(&self.arg_places));
+            rask_ast::rewrite::rewrite_decls(
+                decls,
+                &mut Places { placed: &self.arg_places, hoists: &self.arg_hoists, done: Default::default() },
+            );
         }
 
         if !self.struct_shorthand_patterns.is_empty() {
@@ -626,6 +657,17 @@ impl TypedProgram {
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut AnySymbols(&self.types));
     }
+}
+
+/// Arguments of a placed call bound to temporaries so they run in the order
+/// written (`arg_labels::plan_hoist`).
+#[derive(Debug, Clone)]
+pub struct ArgHoist {
+    /// The block that replaces the call.
+    pub block: NodeId,
+    /// `(written argument, its let's id, the temporary's use's id)`, in
+    /// written order.
+    pub binds: Vec<(usize, NodeId, NodeId)>,
 }
 
 /// Where one parameter's argument comes from in a placed call.
@@ -762,6 +804,8 @@ pub struct TypedProgram {
     /// parameter's argument comes from. The checker placed them where it knew
     /// the callee; `attach_derived` writes them into the call.
     pub arg_places: HashMap<NodeId, Vec<PlacedArg>>,
+    /// Placed calls whose arguments are bound first, by call.
+    pub arg_hoists: HashMap<NodeId, ArgHoist>,
     /// Function name → inferred return type, for functions that don't declare one
     /// (`func f() { return 41 }`). An absent annotation is not the same as
     /// returning nothing, and the declaration string is the only thing lowering

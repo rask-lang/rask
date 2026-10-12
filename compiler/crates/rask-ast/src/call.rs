@@ -8,6 +8,10 @@
 //!
 //! The desugarer places calls to free functions and the checker places calls
 //! it resolves through a receiver; both go through `place_args`.
+//!
+//! Arguments run in the order written (type.operators/EO1). When placing
+//! moves one argument that runs code ahead of another, the checker binds
+//! those arguments first, in written order (`arg_labels::plan_hoist`).
 
 /// How the call fills one parameter, in parameter order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +76,28 @@ pub fn place_args(params: &[ParamSpec], labels: &[Option<&str>]) -> Result<Vec<A
             None => Err(PlaceError::Missing { param }),
         })
         .collect()
+}
+
+/// Whether evaluating `e` can do anything another argument could see: call
+/// something, assign, branch. A name, a literal, a field read and a closure
+/// (made, not called) can't.
+pub fn runs_code(e: &crate::expr::Expr) -> bool {
+    use crate::expr::ExprKind;
+    match &e.kind {
+        ExprKind::Ident(_)
+        | ExprKind::GenericName { .. }
+        | ExprKind::Int(..)
+        | ExprKind::Float(..)
+        | ExprKind::String(_)
+        | ExprKind::Char(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Null
+        | ExprKind::None
+        | ExprKind::Closure { .. } => false,
+        ExprKind::Field { object, .. } => runs_code(object),
+        ExprKind::Array(items) | ExprKind::Tuple(items) => items.iter().any(runs_code),
+        _ => true,
+    }
 }
 
 /// Whether placing changed nothing: every argument written, in order.

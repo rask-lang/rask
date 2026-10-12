@@ -10,7 +10,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
-use rask_ast::call::{is_identity, place_args, ArgSlot, ParamSpec};
+use rask_ast::call::{place_args, ArgSlot, ParamSpec};
 
 /// Desugar default arguments and named arguments across all declarations.
 ///
@@ -144,11 +144,11 @@ impl FunctionLookup {
 
 // ---- Argument Resolution ----
 
-/// Place a call's arguments on `params` by label and fill what's left from
-/// the defaults (`rask_ast::call`). The result is in parameter order and
-/// keeps each label, so the checker can confirm it against the callee it
-/// resolves. `None` when nothing moves, or when the call doesn't fit: the
-/// checker reports that.
+/// Fill the parameters a call leaves out from their defaults. Each default is
+/// appended, labeled with its parameter, so the call reads the same with it
+/// as without: the arguments stay in written order, and the checker places
+/// them all on their parameters (`rask_ast::call`). `None` when nothing is
+/// left out, or when the call doesn't fit: the checker reports that.
 fn resolve_call_args(
     params: &[Param],
     args: &[CallArg],
@@ -160,28 +160,23 @@ fn resolve_call_args(
         .collect();
     let labels: Vec<Option<&str>> = args.iter().map(|a| a.name.as_deref()).collect();
     let slots = place_args(&specs, &labels).ok()?;
-    if is_identity(&slots) {
+    let defaults: Vec<CallArg> = slots
+        .iter()
+        .zip(params)
+        .filter(|(slot, _)| **slot == ArgSlot::Default)
+        .map(|(_, param)| CallArg {
+            name: Some(param.name.clone()),
+            mode: ArgMode::Default,
+            expr: clone_expr_with_fresh_ids(
+                param.default.as_ref().expect("a defaulted slot has a default"),
+                fresh_id,
+            ),
+        })
+        .collect();
+    if defaults.is_empty() {
         return None;
     }
-    Some(
-        slots
-            .iter()
-            .zip(params)
-            .map(|(slot, param)| match slot {
-                ArgSlot::Written(i) => args[*i].clone(),
-                // Labeled with its parameter, like every argument after it
-                // is: an unlabeled one there would read as positional.
-                ArgSlot::Default => CallArg {
-                    name: Some(param.name.clone()),
-                    mode: ArgMode::Default,
-                    expr: clone_expr_with_fresh_ids(
-                        param.default.as_ref().expect("a defaulted slot has a default"),
-                        fresh_id,
-                    ),
-                },
-            })
-            .collect(),
-    )
+    Some(args.iter().cloned().chain(defaults).collect())
 }
 
 /// Clone an expression, assigning fresh NodeIds to avoid collisions.
@@ -603,15 +598,15 @@ mod tests {
         });
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
-        // Second arg should be the default 8080
+        // The written arguments stay put; the default goes after them.
         match &resolved[1].expr.kind {
-            ExprKind::Int(v, _) => assert_eq!(*v, 8080),
-            _ => panic!("expected default int 8080"),
-        }
-        // Third arg should be the provided 60
-        match &resolved[2].expr.kind {
             ExprKind::Int(v, _) => assert_eq!(*v, 60),
             _ => panic!("expected provided int 60"),
+        }
+        assert_eq!(resolved[2].name.as_deref(), Some("port"));
+        match &resolved[2].expr.kind {
+            ExprKind::Int(v, _) => assert_eq!(*v, 8080),
+            _ => panic!("expected default int 8080"),
         }
     }
 
@@ -634,21 +629,20 @@ mod tests {
         });
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
-        // Labels survive for the type checker to match against the callee;
-        // a filled default is labeled with its parameter.
-        assert_eq!(resolved[0].name.as_deref(), Some("host"));
-        assert_eq!(resolved[1].name.as_deref(), Some("port"));
-        assert_eq!(resolved[2].name.as_deref(), Some("timeout"));
+        // Labels survive for the checker to place; a filled default is
+        // labeled with its parameter.
+        let names: Vec<_> = resolved.iter().map(|a| a.name.as_deref()).collect();
+        assert_eq!(names, [Some("host"), Some("timeout"), Some("port")]);
     }
 
     #[test]
-    fn labels_in_any_order_land_on_their_parameters() {
+    fn labels_in_any_order_stay_as_written() {
         let params = vec![
             make_param("host", "string", None),
             make_param("port", "i32", Some(int_expr(8080))),
             make_param("timeout", "i32", None),
         ];
-        // connect(timeout: 60, host: "localhost")
+        // connect(timeout: 60, host: "localhost"): the checker places them.
         let args = vec![
             make_named_arg("timeout", int_expr(60)),
             make_named_arg("host", str_expr("localhost")),
@@ -660,7 +654,7 @@ mod tests {
         })
         .expect("should resolve");
         let names: Vec<_> = resolved.iter().map(|a| a.name.as_deref()).collect();
-        assert_eq!(names, [Some("host"), Some("port"), Some("timeout")]);
+        assert_eq!(names, [Some("timeout"), Some("host"), Some("port")]);
     }
 
     #[test]
