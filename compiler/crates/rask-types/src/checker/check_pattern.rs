@@ -199,6 +199,54 @@ impl TypeChecker {
         format!("{}.{}", self.types.type_name(id), name)
     }
 
+    /// `Pair(a, b)` on a `Pair` value, where some enum also has a `Pair`
+    /// variant: the struct's fields, by shorthand. The desugarer couldn't
+    /// tell which `Pair` the pattern means and left it for the matched type
+    /// to say. `None` when the value isn't that struct.
+    fn check_struct_shorthand(
+        &mut self,
+        name: &str,
+        fields: &[Pattern],
+        scrutinee_ty: &Type,
+        span: Span,
+    ) -> Option<Vec<(String, Type)>> {
+        if name.contains('.') {
+            return None;
+        }
+        let id = match normalize_type(&self.ctx.apply(scrutinee_ty), &self.types) {
+            Type::Named(id) => id,
+            _ => return None,
+        };
+        let Some(TypeDef::Struct { name: struct_name, fields: declared, .. }) = self.types.get(id) else {
+            return None;
+        };
+        if struct_name != name {
+            return None;
+        }
+        let declared = declared.clone();
+        let mut bindings = Vec::new();
+        for field in fields {
+            let Pattern::Ident(n) = field else {
+                self.errors.push(TypeError::StructPatternByPosition {
+                    name: name.to_string(),
+                    fields: declared.iter().map(|(f, _)| f.clone()).collect(),
+                    span,
+                });
+                return Some(bindings);
+            };
+            match declared.iter().find(|(f, _)| f == n) {
+                Some((_, ty)) => bindings.push((n.clone(), ty.clone())),
+                None => self.errors.push(TypeError::NoSuchField {
+                    ty: Type::Named(id),
+                    field: n.clone(),
+                    span,
+                }),
+            }
+        }
+        self.struct_shorthand_patterns.insert((span, name.to_string()));
+        Some(bindings)
+    }
+
     /// `name` as a variant of the enum the scrutinee already is, qualified,
     /// with how many payload fields it carries. `None` when the scrutinee
     /// isn't known to be that enum: a bare name is then a binding, and a
@@ -414,6 +462,9 @@ impl TypeChecker {
                         });
                         return vec![];
                     }
+                }
+                if let Some(bindings) = self.check_struct_shorthand(name, fields, scrutinee_ty, span) {
+                    return bindings;
                 }
                 self.check_constructor_pattern(name, fields, scrutinee_ty, span)
             }

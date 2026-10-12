@@ -354,6 +354,10 @@ impl TypeChecker {
                                 }
                             })
                         }
+                        TypeDef::NominalAlias { type_params, underlying, .. } if field == "value" => {
+                            let subst = Self::build_type_param_subst(type_params, args);
+                            Some(Self::substitute_type_params(underlying, &subst))
+                        }
                         _ => None,
                     }
                 });
@@ -1053,7 +1057,7 @@ impl TypeChecker {
                 };
 
                 if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
-                    let args = self.fill_default_args(call_node, method_sig, args.clone());
+                    let args = self.place_method_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1354,10 +1358,9 @@ impl TypeChecker {
             }
             Type::Generic { base, args: generic_args } => {
                 let (methods, type_params) = match self.types.get(*base) {
-                    Some(TypeDef::Struct { methods, type_params, .. }) => {
-                        (methods.clone(), type_params.clone())
-                    }
-                    Some(TypeDef::Enum { methods, type_params, .. }) => {
+                    Some(TypeDef::Struct { methods, type_params, .. })
+                    | Some(TypeDef::Enum { methods, type_params, .. })
+                    | Some(TypeDef::NominalAlias { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
                     _ => {
@@ -1392,7 +1395,7 @@ impl TypeChecker {
                 }
 
                 if let Some(method_sig) = found {
-                    let args = self.fill_default_args(call_node, method_sig, args.clone());
+                    let args = self.place_method_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1537,7 +1540,7 @@ impl TypeChecker {
 
                     // The interface's own default: the call dispatches through
                     // the vtable, so the declaration is all there is to go by.
-                    let args = self.fill_default_args(call_node, method_sig, args.clone());
+                    let args = self.place_method_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1797,7 +1800,7 @@ impl TypeChecker {
         // The bound's default: which type `T` turns out to be isn't known in
         // this body, and the bound's declaration is what the call was written
         // against.
-        let args = self.fill_default_args(call_node, &sig, args);
+        let args = self.place_method_args(call_node, &sig, args);
         if sig.params.len() != args.len() {
             return Err(TypeError::ArityMismatch {
                 expected: sig.params.len(),

@@ -1233,13 +1233,16 @@ impl TypeChecker {
         )
     }
 
-    /// Argument `i`'s expression in the method call `call`.
+    /// The expression filling parameter `i` of the method call `call`. `None`
+    /// when a default fills it.
     pub(super) fn method_arg_node(
         &self,
         call: Option<rask_ast::NodeId>,
         i: usize,
     ) -> Option<rask_ast::NodeId> {
-        self.method_call_args.get(&call?)?.get(i).copied()
+        let call = call?;
+        let written = self.written_arg_for(call, i)?;
+        self.method_call_args.get(&call)?.get(written).copied()
     }
 
     /// A collection filling a `Sequence<E>` slot stands for its own chain head

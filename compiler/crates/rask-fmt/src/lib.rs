@@ -70,6 +70,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keeps_a_newtype_parameters_bounds() {
+        let input = "public type Wrapping<T: Integer> = T\n";
+        assert_eq!(format_source(input), input);
+    }
+
+    #[test]
     fn formats_messy_spacing() {
         let input = "func    main(   ) {\nlet x=42\n}";
         let output = format_source(input);

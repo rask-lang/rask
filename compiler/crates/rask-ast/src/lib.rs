@@ -5,6 +5,7 @@
 //! type checker, and interpreter.
 
 pub mod span;
+pub mod call;
 pub mod token;
 pub mod expr;
 pub mod stmt;

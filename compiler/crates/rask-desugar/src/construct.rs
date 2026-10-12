@@ -9,10 +9,11 @@
 //! call that names a struct or a named variant into the struct literal the
 //! later passes already understand, and does the same for patterns.
 //!
-//! A name both a struct and a variant use is settled by where it's written.
-//! In an expression the struct wins — a variant is reached through its enum,
-//! `FetchError.Manifest(e)`. In a pattern the variant wins, since matching an
-//! enum is what bare patterns are for.
+//! A name a struct and a variant share is no question in an expression: a
+//! variant is built through its enum, `Shape.Pair(…)`, so bare `Pair(…)` is
+//! the struct. In a pattern the enum can be left off, so bare `Pair(a, b)`
+//! is whichever the matched value is. That takes its type, so this pass
+//! leaves the pattern for the checker (`struct_shorthand_patterns`).
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit, Pattern};
@@ -38,13 +39,6 @@ struct Shapes {
     named_variants: HashMap<String, Vec<String>>,
     /// Variant names with positional fields, in any enum.
     positional_variants: HashSet<String>,
-    /// Function names. One sharing a struct's name takes positional calls:
-    /// `Wrapping(5381u32)` calls the function `num` declares to build a
-    /// `Wrapping<T>`. WORKAROUND: `Wrapping` is a newtype in all but name, and
-    /// can't be one until a generic newtype infers its argument (#1533).
-    functions: HashSet<String>,
-    /// Newtypes (`type Id = u64`), built from their one value: `Id(7)`.
-    newtypes: HashSet<String>,
     /// `import c "…" as ns` namespaces. Their structs come from the header,
     /// read after this pass.
     c_namespaces: HashSet<String>,
@@ -82,12 +76,6 @@ impl Shapes {
                     }
                     shapes.enums.insert(last_segment(&e.name).to_string(), variants);
                 }
-                DeclKind::Fn(f) => {
-                    shapes.functions.insert(last_segment(&f.name).to_string());
-                }
-                DeclKind::TypeAlias(a) => {
-                    shapes.newtypes.insert(last_segment(&a.name).to_string());
-                }
                 DeclKind::CImport(c) => {
                     shapes.c_namespaces.insert(c.alias.clone());
                 }
@@ -109,10 +97,6 @@ impl Shapes {
             return None;
         }
         if let Some(fields) = self.structs.get(last.as_str()) {
-            // A function of the same name takes positional calls (#1533).
-            if self.functions.contains(last.as_str()) && !labelled {
-                return None;
-            }
             return Some(fields.clone());
         }
         if self.named_variants.contains_key(last.as_str()) || self.positional_variants.contains(last.as_str()) {
@@ -138,6 +122,13 @@ impl Shapes {
             return self.bare_named_variant(last, false);
         }
         self.structs.get(last.as_str()).cloned()
+    }
+
+    /// A bare name both a struct with fields and some variant go by.
+    fn struct_or_variant(&self, name: &str) -> bool {
+        !name.contains('.')
+            && self.structs.get(name).is_some_and(|f| !f.is_empty())
+            && (self.named_variants.contains_key(name) || self.positional_variants.contains(name))
     }
 
     /// `Enum.Variant`: that variant's fields, if `path` names one.
@@ -378,6 +369,9 @@ impl Construct<'_> {
 
     fn convert(&mut self, p: &mut Pattern, at: Span) {
         let Pattern::Constructor { name, fields } = p else { return };
+        if self.shapes.struct_or_variant(name) {
+            return;
+        }
         let path: Vec<String> = name.split('.').map(str::to_string).collect();
         let Some(declared) = self.shapes.matched_fields(&path) else { return };
         let mut named = Vec::new();

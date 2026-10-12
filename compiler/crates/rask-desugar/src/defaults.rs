@@ -10,6 +10,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
+use rask_ast::call::{is_identity, place_args, ArgSlot, ParamSpec};
 
 /// Desugar default arguments and named arguments across all declarations.
 ///
@@ -85,15 +86,14 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
 
 /// Maps function names to parameter lists.
 struct FunctionLookup {
-    /// Free functions: name → params
+    /// Free functions: name → params. Every one, since labels place
+    /// arguments whether or not a function has defaults.
     functions: HashMap<String, Vec<Param>>,
     /// Struct field defaults (FD1): base type name -> [(field name, default expr)].
     /// Only structs with at least one defaulted field are recorded.
     struct_defaults: HashMap<String, Vec<(String, Expr)>>,
-    /// Every name declared here, defaulted or not. The maps above hold only
-    /// the defaulted ones, so they can't answer "does this program declare a
-    /// `parse` of its own?" — and the stdlib fallback must not fill an
-    /// argument into a call to the program's own same-named function.
+    /// Every function name declared here. The stdlib fallback must not place
+    /// a call to the program's own same-named function.
     declared_fns: HashSet<String>,
     declared_types: HashSet<String>,
 }
@@ -109,9 +109,7 @@ impl FunctionLookup {
             match &decl.kind {
                 DeclKind::Fn(f) => {
                     declared_fns.insert(f.name.clone());
-                    if f.params.iter().any(|p| p.default.is_some()) {
-                        functions.insert(f.name.clone(), f.params.clone());
-                    }
+                    functions.insert(f.name.clone(), f.params.clone());
                 }
                 DeclKind::Struct(s) => {
                     declared_types.insert(s.name.clone());
@@ -146,103 +144,44 @@ impl FunctionLookup {
 
 // ---- Argument Resolution ----
 
-/// Resolve call arguments against function parameters, filling in defaults.
-///
-/// Returns the rewritten args list with defaults inserted,
-/// or None if resolution can't be done (error or no changes needed).
+/// Place a call's arguments on `params` by label and fill what's left from
+/// the defaults (`rask_ast::call`). The result is in parameter order and
+/// keeps each label, so the checker can confirm it against the callee it
+/// resolves. `None` when nothing moves, or when the call doesn't fit: the
+/// checker reports that.
 fn resolve_call_args(
     params: &[Param],
     args: &[CallArg],
     fresh_id: &mut impl FnMut() -> NodeId,
 ) -> Option<Vec<CallArg>> {
-    // Quick check: if all args are positional and count matches, nothing to do
-    let has_named = args.iter().any(|a| a.name.is_some());
-    let has_defaults = params.iter().any(|p| p.default.is_some());
-
-    if !has_named && args.len() == params.len() {
-        return None; // Already fully resolved
-    }
-    if !has_named && !has_defaults {
-        return None; // No defaults to fill, will error elsewhere
-    }
-    if args.len() > params.len() {
-        return None; // Too many args, let type checker report
-    }
-
-    let mut result = Vec::with_capacity(params.len());
-    let mut arg_idx = 0;
-
-    for param in params {
-        if param.name == "self" {
-            // self is never filled by default
-            if arg_idx < args.len() {
-                result.push(CallArg {
-                    name: None,
-                    mode: args[arg_idx].mode,
-                    expr: args[arg_idx].expr.clone(),
-                });
-                arg_idx += 1;
-            }
-            continue;
-        }
-
-        if arg_idx < args.len() {
-            let arg = &args[arg_idx];
-
-            if let Some(ref name) = arg.name {
-                if name == &param.name {
-                    // Named arg matches this param. The label stays: the type
-                    // checker matches it against the callee it actually
-                    // resolves, which this pass can only guess at by name.
-                    result.push(CallArg {
-                        name: Some(name.clone()),
-                        mode: arg.mode,
-                        expr: arg.expr.clone(),
-                    });
-                    arg_idx += 1;
-                    continue;
-                }
-                // Named arg doesn't match — this param must have a default
-                if let Some(ref default_expr) = param.default {
-                    result.push(CallArg {
-                        name: None,
-                        mode: ArgMode::Default,
-                        expr: clone_expr_with_fresh_ids(default_expr, fresh_id),
-                    });
-                    continue;
-                }
-                // Required param skipped — bail out, let type checker report
-                return None;
-            }
-
-            // Positional arg — use it directly
-            result.push(CallArg {
-                name: None,
-                mode: arg.mode,
-                expr: arg.expr.clone(),
-            });
-            arg_idx += 1;
-        } else {
-            // No more provided args — fill with default
-            if let Some(ref default_expr) = param.default {
-                result.push(CallArg {
-                    name: None,
-                    mode: ArgMode::Default,
-                    expr: clone_expr_with_fresh_ids(default_expr, fresh_id),
-                });
-            } else {
-                // Required param missing — bail
-                return None;
-            }
-        }
-    }
-
-    // If there are leftover args, bail
-    if arg_idx < args.len() {
+    let specs: Vec<ParamSpec> = params
+        .iter()
+        .map(|p| ParamSpec { name: &p.name, has_default: p.default.is_some() })
+        .collect();
+    let labels: Vec<Option<&str>> = args.iter().map(|a| a.name.as_deref()).collect();
+    let slots = place_args(&specs, &labels).ok()?;
+    if is_identity(&slots) {
         return None;
     }
-
-    Some(result)
+    Some(
+        slots
+            .iter()
+            .zip(params)
+            .map(|(slot, param)| match slot {
+                ArgSlot::Written(i) => args[*i].clone(),
+                // Labeled with its parameter, like every argument after it
+                // is: an unlabeled one there would read as positional.
+                ArgSlot::Default => CallArg {
+                    name: Some(param.name.clone()),
+                    mode: ArgMode::Default,
+                    expr: clone_expr_with_fresh_ids(
+                        param.default.as_ref().expect("a defaulted slot has a default"),
+                        fresh_id,
+                    ),
+                },
+            })
+            .collect(),
+    )
 }
 
 /// Clone an expression, assigning fresh NodeIds to avoid collisions.
@@ -696,10 +635,32 @@ mod tests {
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
         // Labels survive for the type checker to match against the callee;
-        // a filled default has none.
+        // a filled default is labeled with its parameter.
         assert_eq!(resolved[0].name.as_deref(), Some("host"));
-        assert_eq!(resolved[1].name, None);
+        assert_eq!(resolved[1].name.as_deref(), Some("port"));
         assert_eq!(resolved[2].name.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn labels_in_any_order_land_on_their_parameters() {
+        let params = vec![
+            make_param("host", "string", None),
+            make_param("port", "i32", Some(int_expr(8080))),
+            make_param("timeout", "i32", None),
+        ];
+        // connect(timeout: 60, host: "localhost")
+        let args = vec![
+            make_named_arg("timeout", int_expr(60)),
+            make_named_arg("host", str_expr("localhost")),
+        ];
+        let mut next = 100;
+        let resolved = resolve_call_args(&params, &args, &mut || {
+            next += 1;
+            NodeId(next)
+        })
+        .expect("should resolve");
+        let names: Vec<_> = resolved.iter().map(|a| a.name.as_deref()).collect();
+        assert_eq!(names, [Some("host"), Some("port"), Some("timeout")]);
     }
 
     #[test]

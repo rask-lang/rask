@@ -950,6 +950,59 @@ impl Desugarer {
                 None => ExprKind::String(String::new()),
             };
         }
+
+        self.bind_labeled_args_in_order(expr);
+    }
+
+    /// Labels place arguments by name, so a call can be reordered on its way
+    /// to its parameters. Arguments still run in the order written
+    /// (type.operators/EO1): when two or more of them run code, each is bound
+    /// first, in that order, and the call reads the bindings.
+    /// `f(b: g(), a: h())` becomes
+    /// `{ let __arg_1 = g(); let __arg_2 = h(); f(b: __arg_1, a: __arg_2) }`.
+    fn bind_labeled_args_in_order(&mut self, expr: &mut Expr) {
+        let (ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. }) = &mut expr.kind else {
+            return;
+        };
+        let runs = |a: &CallArg| a.mode == ArgMode::Default && Self::runs_code(&a.expr);
+        if !args.iter().any(|a| a.name.is_some()) || args.iter().filter(|a| runs(a)).count() < 2 {
+            return;
+        }
+        let mut lets = Vec::new();
+        for arg in args.iter_mut().filter(|a| runs(a)) {
+            let id = self.fresh_id();
+            let name = format!("__arg_{}", id.0);
+            let span = arg.expr.span;
+            let ident = Expr { id: self.fresh_id(), kind: ExprKind::Ident(name.clone()), span };
+            let init = std::mem::replace(&mut arg.expr, ident);
+            lets.push(Stmt { id, kind: StmtKind::Let { name, name_span: span, ty: None, init }, span });
+        }
+        // The call keeps its id: everything the checker records about a call
+        // is keyed by it.
+        let span = expr.span;
+        let call = Expr { id: expr.id, kind: std::mem::replace(&mut expr.kind, ExprKind::Bool(false)), span };
+        lets.push(Stmt { id: self.fresh_id(), kind: StmtKind::Expr(call), span });
+        expr.id = self.fresh_id();
+        expr.kind = ExprKind::Block(lets);
+    }
+
+    /// Whether evaluating `e` can do anything another argument could see.
+    fn runs_code(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(_)
+            | ExprKind::GenericName { .. }
+            | ExprKind::Int(..)
+            | ExprKind::Float(..)
+            | ExprKind::String(_)
+            | ExprKind::Char(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::None
+            | ExprKind::Closure { .. } => false,
+            ExprKind::Field { object, .. } => Self::runs_code(object),
+            ExprKind::Array(items) | ExprKind::Tuple(items) => items.iter().any(Self::runs_code),
+            _ => true,
+        }
     }
 
     /// `format(template, args…)` → the string-building code the template

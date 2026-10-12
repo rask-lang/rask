@@ -2735,6 +2735,22 @@ impl TypeChecker {
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         let written = func.name().unwrap_or("this function").to_string();
         self.note_arg_labels(call_id, written, args, span);
+        // A declared function the desugarer couldn't place (one from the
+        // stdlib or another package): its arguments in parameter order.
+        let placed;
+        let args = match self
+            .resolved
+            .resolutions
+            .get(&func.id)
+            .and_then(|sym| self.function_param_names(*sym))
+            .and_then(|names| self.place_free_call(call_id, &names, args))
+        {
+            Some(v) => {
+                placed = v;
+                &placed[..]
+            }
+            None => args,
+        };
         if let Some((module, function)) = self.imported_module_function(func) {
             return self.check_imported_module_function(
                 call_id, &module, &function, func.written_type_args(), args, span,
@@ -2802,8 +2818,8 @@ impl TypeChecker {
 
             // Nominal type constructor: UserId(42)
             if let Some(type_id) = self.types.get_type_id(name) {
-                if let Some(TypeDef::NominalAlias { underlying, .. }) = self.types.get(type_id) {
-                    let underlying = underlying.clone();
+                if let Some(TypeDef::NominalAlias { underlying, type_params, .. }) = self.types.get(type_id) {
+                    let (underlying, type_params) = (underlying.clone(), type_params.clone());
                     if args.len() != 1 {
                         self.errors.push(TypeError::ArityMismatch {
                             expected: 1,
@@ -2813,13 +2829,26 @@ impl TypeChecker {
                         for arg in args { self.infer_expr(&arg.expr); }
                         return Type::Error;
                     }
+                    // A generic one gets a fresh variable per parameter, which
+                    // the value then settles: `Wrapping(255u8)` is a
+                    // `Wrapping<u8>`.
+                    let fresh: Vec<Type> = type_params.iter().map(|_| self.ctx.fresh_var()).collect();
+                    let subst: std::collections::HashMap<&str, Type> =
+                        type_params.iter().map(String::as_str).zip(fresh.iter().cloned()).collect();
+                    let underlying = Self::substitute_type_params(&underlying, &subst);
                     let arg_ty = self.infer_expr_expecting(&args[0].expr, &underlying);
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         underlying,
                         arg_ty,
                         span,
                     ));
-                    return Type::Named(type_id);
+                    if fresh.is_empty() {
+                        return Type::Named(type_id);
+                    }
+                    return Type::Generic {
+                        base: type_id,
+                        args: fresh.into_iter().map(|t| crate::types::GenericArg::Type(Box::new(t))).collect(),
+                    };
                 }
             }
         }

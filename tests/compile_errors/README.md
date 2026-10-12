@@ -70,7 +70,8 @@ go down.
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
-| [named_args_out_of_order.rk](named_args_out_of_order.rk) | A named argument whose label isn't the parameter in its position (E0903, #1347) — swapped on a free function, a method, a static method, a stdlib method and a defaulted call; a label naming no parameter; a label on a tuple variant or a closure value, which have no names. Labels were never read, so a swapped call bound by position |
+| [named_args_misfit.rk](named_args_misfit.rk) | Named arguments that don't place on the callee's parameters (E0903): a name it doesn't have, two arguments for one parameter, an unnamed argument after a named one, a label on a tuple variant or a closure value. Labels go in any order; tests/suite/t_named_args_any_order.rk has the calls that work |
+| [struct_pattern_shared_name.rk](struct_pattern_shared_name.rk) | A struct pattern by position (E0416) where an enum's variant shares the struct's name. The bare pattern is settled by the matched value's type, so the checker reports it rather than the desugarer |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |
 | [try_shape_rule.rk](try_shape_rule.rk) | Bare `try` whose other branch doesn't fit the return (ER47, E0399/E0400) — an absence in a `T or E` function, an error in a `T?` function (#598) |
 | [error_interface_variants.rk](error_interface_variants.rk) | Picking a variant off `Error` (E0863, #1095) — it's the interface every error implements, not an enum, so `Error.NotFound` names nothing. Both a plausible spelling and an invented one, since neither used to be caught |

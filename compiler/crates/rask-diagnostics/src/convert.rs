@@ -786,51 +786,44 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("function calls must provide exactly the number of arguments the function declares")
             }
 
-            ArgLabelMismatch { callee, label, position, params, span } => {
-                let why = "named arguments label a call, they don't reorder it: each label is checked against the parameter in its position. Matched by name instead, `f(b: 2, a: 1)` and `f(2, 1)` would mean different things";
-                match params {
-                    Some(names) if names.contains(label) => {
-                        let declared = names.iter().position(|n| n == label).unwrap_or(0);
-                        let in_order = names
-                            .iter()
-                            .map(|n| format!("{n}: …"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        Diagnostic::error(format!("named argument `{}` is out of order", label))
-                            .with_code("E0903")
-                            .with_primary(*span, format!(
-                                "`{}` is parameter {} of `{}`, but this is argument {}",
-                                label, declared + 1, callee, position + 1
-                            ))
-                            .with_help("named arguments keep the declaration order")
-                            .with_fix(format!("write them in order: `{}({})`", callee, in_order))
-                            .with_why(why)
-                    }
-                    Some(names) => {
-                        let listed = if names.is_empty() {
-                            format!("`{}` takes no parameters", callee)
-                        } else {
-                            format!(
-                                "`{}`'s parameters are {}",
-                                callee,
-                                names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
-                            )
-                        };
-                        let (primary, fix) = match names.get(*position) {
-                            Some(here) => (
-                                format!("this position is `{}`", here),
-                                format!("rename the label to `{}:`, or drop it", here),
-                            ),
-                            None => ("no parameter has this name".to_string(), format!("drop the label ({})", listed)),
+            ArgPlacement { callee, problem, params, span } => {
+                use rask_types::ArgProblem;
+                let listed = match params {
+                    Some(names) if names.is_empty() => format!("`{}` takes no parameters", callee),
+                    Some(names) => format!(
+                        "`{}`'s parameters are {}",
+                        callee,
+                        names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+                    ),
+                    None => String::new(),
+                };
+                match problem {
+                    ArgProblem::UnknownLabel(label) => {
+                        let names = params.as_deref().unwrap_or(&[]);
+                        let fix = match crate::suggestions::did_you_mean(label, names.iter().map(String::as_str)) {
+                            Some(close) => close,
+                            None => "use one of the parameter names, or drop the label".to_string(),
                         };
                         Diagnostic::error(format!("`{}` has no parameter named `{}`", callee, label))
                             .with_code("E0903")
-                            .with_primary(*span, primary)
+                            .with_primary(*span, "no parameter has this name")
                             .with_help(listed)
                             .with_fix(fix)
-                            .with_why(why)
+                            .with_why("a label puts its argument on the parameter it names, so it has to be one the callee declares")
                     }
-                    None => Diagnostic::error(format!(
+                    ArgProblem::Repeated(label) => Diagnostic::error(format!("parameter `{}` gets two arguments", label))
+                        .with_code("E0903")
+                        .with_primary(*span, format!("`{}` already has an argument", label))
+                        .with_help("an unnamed argument fills the next parameter in order, and a label fills the one it names; here both land on the same one")
+                        .with_fix("drop one, or label the other with the parameter it was meant for")
+                        .with_why("each parameter takes exactly one argument"),
+                    ArgProblem::PositionalAfterLabel => Diagnostic::error("an unnamed argument after a named one")
+                        .with_code("E0903")
+                        .with_primary(*span, "which parameter is this?")
+                        .with_help(listed)
+                        .with_fix("name it, or move it before the named arguments")
+                        .with_why("named arguments can come in any order, so an unnamed one after them has no position left to say which parameter it fills"),
+                    ArgProblem::NoNames(label) => Diagnostic::error(format!(
                         "`{}` has no parameter names for `{}:` to match",
                         callee, label
                     ))
@@ -838,8 +831,27 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_primary(*span, "labeled argument")
                         .with_help("a closure value, an extern function, a tuple variant and a compiler-generated method take their arguments by position only")
                         .with_fix("drop the label and pass the argument by position")
-                        .with_why("a label is checked against the parameter's declared name. With no name to check it against, the label would be ignored, and an ignored label claims something the call doesn't do"),
+                        .with_why("a label puts its argument on the parameter it names. With no names, there's nothing for it to find"),
+                    ArgProblem::NotReordered => Diagnostic::error(format!(
+                        "the compiler can't yet reorder named arguments in this call to `{}`",
+                        callee
+                    ))
+                        .with_code("E0903")
+                        .with_primary(*span, "written out of parameter order")
+                        .with_help(listed)
+                        .with_fix("write the arguments in parameter order")
+                        .with_why("this kind of call is checked by position, so moving the arguments would check each against the wrong parameter. This is a compiler gap, not a language rule"),
                 }
+            }
+
+            StructPatternByPosition { name, fields, span } => {
+                let example = fields.iter().map(|f| format!("{f}: …")).collect::<Vec<_>>().join(", ");
+                Diagnostic::error(format!("`{}(…)` matches its fields by name", name))
+                    .with_code("E0416")
+                    .with_primary(*span, "in this pattern")
+                    .with_help("a bare name binds the field it names; anything else needs the field's name in front")
+                    .with_fix(format!("write `{}({})`", name, example))
+                    .with_why("a struct is built and matched by field name, so a position says nothing about which field it means")
             }
 
             NotCallable { ty, span } => {

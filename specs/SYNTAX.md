@@ -348,17 +348,22 @@ update(mutate data)                  // mutate: marked at the call site too
 consume(data)                        // take: bare (data optional for emphasis)
 ```
 
-**Named arguments (optional, order-fixed):**
+**Named arguments (optional, any order):**
 ```rask
 func create_user(name: string, email: string, admin: bool)
 
 // Positional (IDE shows names as ghost text)
 create_user("Alice", "alice@x.com", false)
 
-// Named (must match declaration order)
-create_user(name: "Alice", email: "alice@x.com", admin: false)
+// Named, in any order
+create_user(admin: false, name: "Alice", email: "alice@x.com")
+
+// Positional first, then named
+create_user("Alice", admin: false, email: "alice@x.com")
 ```
-Named arguments improve readability but don't allow reordering. A label has to be the name of the parameter in its position; anything else is a compile error (E0903), including a label on a callee with no parameter names, like a closure value or a tuple variant. IDE shows parameter names as ghost annotations even for positional calls.
+A label puts its argument on the parameter it names. Unnamed arguments fill the parameters in order from the first; once a call names one argument, the rest are named too, since an unnamed one after them has no position left to mean. A struct's fields work the same way. Arguments run in the order they're written, wherever they land (`type.operators/EO1`).
+
+A name the callee doesn't have, two arguments for one parameter, an unnamed argument after a named one, and a label on a callee whose parameters have no names (a closure value, a tuple variant) are compile errors (E0903). IDE shows parameter names as ghost annotations even for positional calls.
 
 **Default arguments:**
 ```rask
@@ -1325,7 +1330,7 @@ println("{sum}")
 | Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |
 | Generics | Implicit single letters (`T`, `U`); explicit `<Name>` otherwise | `where` for constraints |
 | Closures | `\|x\| expr`, `\|take x: T\| expr` | Rust-style pipes; parameters take modes like a function's |
-| Named args | `name: value` | Order-fixed, optional (IDE ghosts) |
+| Named args | `name: value` | Any order, optional (IDE ghosts) |
 | Default args | `param = value` | Constants only, after required |
 | Interpolation | `"{x}"` | In all strings |
 | Comments | `//` and `/* */` | Standard |

@@ -58,17 +58,21 @@ pub enum TypeError {
         found: usize,
         span: Span,
     },
-    /// A named argument whose label isn't the parameter in its position.
-    /// Labels never reorder a call, so this is either a reordering, a name the
-    /// callee doesn't have, or a callee with no names at all.
-    #[error("named argument `{label}` doesn't match the parameter in its position")]
-    ArgLabelMismatch {
+    /// A call's labels don't place its arguments on the callee's parameters
+    /// (SYNTAX.md, named arguments).
+    #[error("named arguments don't fit `{callee}`")]
+    ArgPlacement {
         callee: String,
-        label: String,
-        /// Zero-based position of the labeled argument.
-        position: usize,
+        problem: ArgProblem,
         /// The callee's parameter names in order; `None` when it has none.
         params: Option<Vec<String>>,
+        span: Span,
+    },
+    /// `Pair(0, y)` on a struct: a struct's pattern names its fields.
+    #[error("`{name}(…)` matches its fields by name")]
+    StructPatternByPosition {
+        name: String,
+        fields: Vec<String>,
         span: Span,
     },
     #[error("type {ty} is not callable")]
@@ -1645,7 +1649,8 @@ impl TypeError {
             | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
-            | ArgLabelMismatch { .. }
+            | ArgPlacement { .. }
+            | StructPatternByPosition { .. }
             | UnimplementedStdlibMethod { .. }
             | NoSuchModuleFunction { .. }
             | PrivateModuleFunction { .. }
@@ -1751,4 +1756,20 @@ impl TypeError {
             | InvalidConvert { .. } => {}
         }
     }
+}
+
+/// What's wrong with a call's labels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArgProblem {
+    /// A label no parameter has.
+    UnknownLabel(String),
+    /// A label for a parameter another argument already fills.
+    Repeated(String),
+    /// An unlabeled argument after a labeled one.
+    PositionalAfterLabel,
+    /// A label on a callee whose parameters have no names.
+    NoNames(String),
+    /// Labels that place fine, on a kind of call the checker matches by
+    /// position only. A compiler gap, reported rather than miscompiled.
+    NotReordered,
 }

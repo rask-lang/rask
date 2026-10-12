@@ -1187,7 +1187,9 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
-                self.emit(&tp.name);
+                // The bounds too: `type Wrapping<T: Integer>` came out as
+                // `type Wrapping<T>`.
+                self.format_type_param(tp);
             }
             self.emit(">");
         }

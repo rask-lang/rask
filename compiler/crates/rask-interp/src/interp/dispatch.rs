@@ -388,6 +388,11 @@ impl Interpreter {
             // "no method `foo` on type `closure`".
             Value::Closure { .. } | Value::Function { .. } => "Sequence".to_string(),
             Value::Enum { name, .. } => name.clone(),
+            // A newtype's own methods, its conformances included, are filed
+            // under its name. Without this arm `w8 + w8` on a `type W8 = u8`
+            // with its own `add` found nothing here and fell through to the
+            // `u8` underneath, which overflowed where the program wrapped.
+            Value::Nominal { type_name, .. } => type_name.clone(),
             // The collections, so a method written in Rask on one of them is
             // reachable. Nothing was until `Vec.as_sequence` — the chain head a
             // collection stands for (SEQ48) — so the fallback below had never

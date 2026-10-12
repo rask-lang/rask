@@ -926,6 +926,11 @@ impl<'a> MirContext<'a> {
                 // name: `first$Big(o: One<Big>)` was given the shared 8-byte
                 // layout while its caller passed 24 bytes (#781).
                 let arg_tys: Vec<Type> = args.iter().map(rask_mono::field_type).collect();
+                if self.nominal_underlying.contains_key(head) {
+                    let generic: Vec<rask_types::GenericArg> =
+                        arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
+                    return self.resolve_unresolved_generic(head, &generic);
+                }
                 if let Some(name) = rask_mono::generic_instance_name(head, &arg_tys, self.type_names) {
                     if let Some((idx, sl)) = self.find_struct(&name) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
@@ -939,9 +944,32 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// A generic newtype at these arguments is what it wraps at them.
+    /// `None` when `def` isn't a newtype.
+    fn newtype_at(&self, def: Option<&rask_types::TypeDef>, args: &[rask_types::GenericArg]) -> Option<MirType> {
+        let Some(rask_types::TypeDef::NominalAlias { type_params, underlying, .. }) = def else {
+            return None;
+        };
+        let map: HashMap<String, Type> = type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().filter_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                rask_types::GenericArg::ConstUsize(_) => None,
+            }))
+            .collect();
+        Some(self.type_to_mir(&rask_types::substitute_type(underlying, &map)))
+    }
+
     /// A generic the checker left as a name with arguments: `One<Big>` in an
     /// instantiated copy, `Channel<i64>` before its name resolved.
     fn resolve_unresolved_generic(&self, name: &str, args: &[rask_types::GenericArg]) -> MirType {
+        if self.nominal_underlying.contains_key(name) {
+            let def = self.type_defs.get_type_id(name).and_then(|id| self.type_defs.get(id));
+            if let Some(wrapped) = self.newtype_at(def, args) {
+                return wrapped;
+            }
+        }
         match name {
             "Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared" => MirType::Ptr,
             _ => {
@@ -1276,6 +1304,12 @@ impl<'a> MirContext<'a> {
                 }
             }
             Type::Generic { base, args } => {
+                // A generic newtype is whatever it wraps at these arguments:
+                // `Saturating<u8>` is a `u8`. Read by name, it was the bare
+                // `T`, a pointer, and the arithmetic ran a word wide.
+                if let Some(wrapped) = self.newtype_at(self.type_defs.get(*base), args) {
+                    return wrapped;
+                }
                 if let Some(instance) = self.generic_instance_mir_type(base, args) {
                     return instance;
                 }

@@ -999,9 +999,8 @@ impl TypeTable {
         let Type::Generic { base: id, args } = base else {
             return binding.clone();
         };
-        let params = match self.get(*id) {
-            Some(TypeDef::Struct { type_params, .. }) | Some(TypeDef::Enum { type_params, .. }) => type_params,
-            _ => return binding.clone(),
+        let Some(params) = self.get(*id).map(TypeDef::type_params) else {
+            return binding.clone();
         };
         let map: HashMap<String, Type> = params
             .iter()

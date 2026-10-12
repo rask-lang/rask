@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Named-argument labels. A label documents the call and never reorders it
-//! (SYNTAX.md, named arguments), so each one has to name the parameter in its
-//! own position. Checked once inference has settled every callee.
+//! Named arguments. A label places its argument on the parameter it names,
+//! wherever it's written (SYNTAX.md, named arguments; `rask_ast::call`).
+//!
+//! Calls to free functions arrive placed: the desugarer did it by name. A
+//! call the desugarer couldn't place is placed here before its arguments are
+//! checked, and a method call where its method resolves. `attach_derived`
+//! then writes each placement into the call, so every pass after the checker
+//! sees arguments in parameter order. Arguments still run in written order:
+//! the desugarer bound the ones that run code (`bind_labeled_args_in_order`).
 
-use rask_ast::expr::CallArg;
+use rask_ast::call::{is_identity, place_args, ArgSlot, ParamSpec, PlaceError};
+use rask_ast::expr::{CallArg, Expr};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
-use super::errors::TypeError;
+use super::errors::{ArgProblem, TypeError};
 use super::type_defs::{Callee, MethodSig, TypeDef};
 use super::TypeChecker;
 
@@ -21,27 +28,40 @@ pub(super) struct LabeledCall {
     pub written: String,
     /// The whole call.
     pub span: Span,
-    /// `(position, label, argument span)` for each labeled argument.
-    pub labels: Vec<(usize, String, Span)>,
+    /// Each written argument's label, in written order.
+    pub labels: Vec<Option<String>>,
+    /// Each written argument's span.
+    pub arg_spans: Vec<Span>,
     /// Parameter names, when the call's own path knew them directly — a
     /// variant's fields, a module function's stub. Everything else is read off
     /// the resolved target.
     pub names: Option<Vec<String>>,
 }
 
+/// Where one parameter's argument comes from, in parameter order.
+#[derive(Clone)]
+pub(super) enum Placement {
+    /// The argument written at this index.
+    Written(usize),
+    /// The parameter's default, copied for this call, and its type.
+    Default(Expr, Type),
+}
+
 impl TypeChecker {
-    /// Remember a call's labels for `validate_arg_labels`. A body can be
-    /// inferred more than once; the first record stands.
+    /// Remember a call's labels. A body can be inferred more than once; the
+    /// first record stands.
     pub(super) fn note_arg_labels(&mut self, call: NodeId, written: String, args: &[CallArg], span: Span) {
-        let labels: Vec<(usize, String, Span)> = args
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| a.name.as_ref().map(|n| (i, n.clone(), a.expr.span)))
-            .collect();
-        if labels.is_empty() || self.labeled_calls.iter().any(|c| c.call == call) {
+        if !args.iter().any(|a| a.name.is_some()) || self.labeled_calls.iter().any(|c| c.call == call) {
             return;
         }
-        self.labeled_calls.push(LabeledCall { call, written, span, labels, names: None });
+        self.labeled_calls.push(LabeledCall {
+            call,
+            written,
+            span,
+            labels: args.iter().map(|a| a.name.clone()).collect(),
+            arg_spans: args.iter().map(|a| a.expr.span).collect(),
+            names: None,
+        });
     }
 
     /// The call's own path knows its parameter names: record them.
@@ -51,6 +71,126 @@ impl TypeChecker {
         }
     }
 
+    fn written_labels(&self, call: NodeId, count: usize) -> Vec<Option<String>> {
+        self.labeled_calls
+            .iter()
+            .find(|c| c.call == call && c.labels.len() == count)
+            .map(|c| c.labels.clone())
+            .unwrap_or_else(|| vec![None; count])
+    }
+
+    /// A free call the desugarer couldn't place — one reaching a package's
+    /// function, say. `names` are the callee's parameters. The arguments in
+    /// parameter order when the labels move any; `None` otherwise, including
+    /// when they don't fit, which `validate_arg_labels` reports.
+    pub(super) fn place_free_call(&mut self, call: NodeId, names: &[String], args: &[CallArg]) -> Option<Vec<CallArg>> {
+        if !args.iter().any(|a| a.name.is_some()) {
+            return None;
+        }
+        let specs: Vec<ParamSpec> = names.iter().map(|n| ParamSpec { name: n, has_default: false }).collect();
+        let labels: Vec<Option<&str>> = args.iter().map(|a| a.name.as_deref()).collect();
+        let slots = place_args(&specs, &labels).ok()?;
+        if is_identity(&slots) {
+            return None;
+        }
+        let placed: Vec<Placement> = slots
+            .iter()
+            .map(|s| match s {
+                ArgSlot::Written(i) => Placement::Written(*i),
+                ArgSlot::Default => unreachable!("no parameter here has a default"),
+            })
+            .collect();
+        let out = placed
+            .iter()
+            .map(|p| match p {
+                Placement::Written(i) => args[*i].clone(),
+                Placement::Default(..) => unreachable!(),
+            })
+            .collect();
+        self.arg_places.entry(call).or_insert(placed);
+        Some(out)
+    }
+
+    /// A method call's argument types in parameter order, with defaults in
+    /// place for the parameters it leaves out.
+    ///
+    /// Done here, where `sig` is the method the receiver's type actually
+    /// declares. Desugaring used to fill defaults before there were types, so
+    /// it matched a call to its method by name: a program declaring any
+    /// `shrink` took the default away from `Vec.shrink()` (#1312).
+    ///
+    /// Anything that doesn't fit is left as written, for the arity and label
+    /// checks to report.
+    pub(super) fn place_method_args(&mut self, call_node: Option<NodeId>, sig: &MethodSig, args: Vec<Type>) -> Vec<Type> {
+        let Some(call) = call_node else { return args };
+        // A call can be resolved more than once; the first placement stands.
+        if let Some(placed) = self.arg_places.get(&call) {
+            return Self::apply_placement(placed, args);
+        }
+        let labels = self.written_labels(call, args.len());
+        let labeled = labels.iter().any(Option::is_some);
+        let defaults = sig.defaults.iter().any(Option::is_some);
+        if !labeled && (args.len() >= sig.params.len() || !defaults) {
+            return args;
+        }
+        if sig.param_names.len() != sig.params.len() {
+            return args;
+        }
+        let specs: Vec<ParamSpec> = sig
+            .param_names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ParamSpec { name: n, has_default: sig.defaults.get(i).is_some_and(Option::is_some) })
+            .collect();
+        let label_refs: Vec<Option<&str>> = labels.iter().map(|l| l.as_deref()).collect();
+        let Ok(slots) = place_args(&specs, &label_refs) else { return args };
+        if is_identity(&slots) {
+            return args;
+        }
+        let mut placed = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.iter().enumerate() {
+            placed.push(match slot {
+                ArgSlot::Written(a) => Placement::Written(*a),
+                ArgSlot::Default => {
+                    let mut expr = sig.defaults[i].clone().expect("a defaulted slot has a default");
+                    self.renumber(&mut expr);
+                    let ty = self.infer_expr(&expr);
+                    Placement::Default(expr, ty)
+                }
+            });
+        }
+        let out = Self::apply_placement(&placed, args);
+        self.arg_places.insert(call, placed);
+        out
+    }
+
+    fn apply_placement(placed: &[Placement], args: Vec<Type>) -> Vec<Type> {
+        if placed.iter().any(|p| matches!(p, Placement::Written(i) if *i >= args.len())) {
+            return args;
+        }
+        placed
+            .iter()
+            .map(|p| match p {
+                Placement::Written(i) => args[*i].clone(),
+                Placement::Default(_, ty) => ty.clone(),
+            })
+            .collect()
+    }
+
+    /// The written argument filling parameter `param` of a placed call.
+    /// `None` when a default fills it.
+    pub(super) fn written_arg_for(&self, call: NodeId, param: usize) -> Option<usize> {
+        match self.arg_places.get(&call) {
+            Some(placed) => match placed.get(param)? {
+                Placement::Written(i) => Some(*i),
+                Placement::Default(..) => None,
+            },
+            None => Some(param),
+        }
+    }
+
+    /// Report the calls whose labels don't fit their callee, once inference
+    /// has settled every callee.
     pub(super) fn validate_arg_labels(&mut self) {
         let calls = std::mem::take(&mut self.labeled_calls);
         for call in &calls {
@@ -58,28 +198,36 @@ impl TypeChecker {
                 Some(names) => (call.written.clone(), Some(names.clone())),
                 None => self.callee_param_names(call),
             };
-            // One error per call: a swap mislabels two arguments, and the
-            // second report says nothing the first didn't.
-            let wrong = call.labels.iter().find(|(i, label, _)| {
-                names.as_ref().and_then(|n| n.get(*i)) != Some(label)
-            });
-            if let Some((position, label, span)) = wrong {
-                // An out-of-order call with defaults is one the desugarer
-                // couldn't fill, so it also arrives a few arguments short.
-                // The label is the cause; "add the missing argument" would
-                // send the reader the wrong way.
-                self.errors.retain(|e| {
-                    !matches!(e, TypeError::ArityMismatch { span, .. } if *span == call.span)
-                });
-                self.errors.push(TypeError::ArgLabelMismatch {
-                    callee,
-                    label: label.clone(),
-                    position: *position,
-                    params: names,
-                    span: *span,
-                });
-            }
+            let Some(names) = names else {
+                let (at, label) = call
+                    .labels
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, l)| l.as_ref().map(|l| (i, l.clone())))
+                    .expect("a labeled call has a label");
+                self.push_arg_problem(call, &callee, ArgProblem::NoNames(label), None, at);
+                continue;
+            };
+            // Missing parameters are the arity check's to report.
+            let specs: Vec<ParamSpec> = names.iter().map(|n| ParamSpec { name: n, has_default: true }).collect();
+            let labels: Vec<Option<&str>> = call.labels.iter().map(|l| l.as_deref()).collect();
+            let label_at = |i: usize| call.labels[i].clone().unwrap_or_default();
+            let (problem, at) = match place_args(&specs, &labels) {
+                Ok(slots) if is_identity(&slots) || self.arg_places.contains_key(&call.call) => continue,
+                Ok(_) => (ArgProblem::NotReordered, 0),
+                Err(PlaceError::UnknownLabel { arg }) => (ArgProblem::UnknownLabel(label_at(arg)), arg),
+                Err(PlaceError::Repeated { arg, .. }) => (ArgProblem::Repeated(label_at(arg)), arg),
+                Err(PlaceError::PositionalAfterLabel { arg }) => (ArgProblem::PositionalAfterLabel, arg),
+                // Arity's to report.
+                Err(PlaceError::TooMany { .. } | PlaceError::Missing { .. }) => continue,
+            };
+            self.push_arg_problem(call, &callee, problem, Some(names), at);
         }
+    }
+
+    fn push_arg_problem(&mut self, call: &LabeledCall, callee: &str, problem: ArgProblem, params: Option<Vec<String>>, at: usize) {
+        let span = call.arg_spans.get(at).copied().unwrap_or(call.span);
+        self.errors.push(TypeError::ArgPlacement { callee: callee.to_string(), problem, params, span });
     }
 
     /// The callee's display name and its parameter names, in order. `None`
@@ -134,104 +282,6 @@ impl TypeChecker {
         let prefix = super::receiver_name(recv, &self.types)?;
         rask_stdlib::lookup_method(&prefix, method)
             .map(|stub| stub.params.iter().map(|(n, _)| n.clone()).collect())
-    }
-}
-
-/// One parameter of a call, as the call fills it.
-enum Slot {
-    /// The argument written at this position.
-    Written(usize),
-    /// The parameter's declared default.
-    Default(usize),
-}
-
-impl TypeChecker {
-    /// The argument types of a method call that leaves parameters to their
-    /// defaults, with the defaults in place.
-    ///
-    /// Done here, where `sig` is the method the receiver's type actually
-    /// declares. Desugaring used to fill them before there were types, so it
-    /// matched a call to its method by name: a program declaring any `shrink`
-    /// took the default away from `Vec.shrink()`, because filling it could
-    /// have meant the wrong one (#1312).
-    ///
-    /// A label skips parameters that have defaults (`f(a, c: 3)`), and only
-    /// those. Anything that doesn't line up is left for the arity and label
-    /// checks to report. The filled arguments go into the call in
-    /// `TypedProgram::attach_derived`.
-    pub(super) fn fill_default_args(
-        &mut self,
-        call_node: Option<NodeId>,
-        sig: &MethodSig,
-        args: Vec<crate::types::Type>,
-    ) -> Vec<crate::types::Type> {
-        let Some(call) = call_node else { return args };
-        if args.len() >= sig.params.len() || sig.defaults.iter().all(Option::is_none) {
-            return args;
-        }
-        // A call can be resolved more than once; the first fill stands.
-        if let Some(filled) = self.default_fills.get(&call) {
-            let mut out = args;
-            for (at, _, ty) in filled {
-                if *at <= out.len() {
-                    out.insert(*at, ty.clone());
-                }
-            }
-            return out;
-        }
-        let label_at = |i: usize| -> Option<String> {
-            self.labeled_calls
-                .iter()
-                .find(|c| c.call == call)
-                .and_then(|c| c.labels.iter().find(|(p, _, _)| *p == i).map(|(_, l, _)| l.clone()))
-        };
-        let default_at = |i: usize| sig.defaults.get(i).and_then(|d| d.as_ref());
-        let mut slots = Vec::with_capacity(sig.params.len());
-        let mut next = 0;
-        for i in 0..sig.params.len() {
-            let written_here = next < args.len()
-                && label_at(next).is_none_or(|l| sig.param_names.get(i) == Some(&l));
-            if written_here {
-                slots.push(Slot::Written(next));
-                next += 1;
-            } else if default_at(i).is_some() {
-                slots.push(Slot::Default(i));
-            } else {
-                return args;
-            }
-        }
-        if next < args.len() {
-            return args;
-        }
-
-        let mut out = Vec::with_capacity(slots.len());
-        let mut filled = Vec::new();
-        let mut moved: Vec<(usize, usize)> = Vec::new();
-        for (at, slot) in slots.iter().enumerate() {
-            match slot {
-                Slot::Written(a) => {
-                    moved.push((*a, at));
-                    out.push(args[*a].clone());
-                }
-                Slot::Default(i) => {
-                    let mut expr = default_at(*i).cloned().expect("slot has a default");
-                    self.renumber(&mut expr);
-                    let ty = self.infer_expr(&expr);
-                    out.push(ty.clone());
-                    filled.push((at, expr, ty));
-                }
-            }
-        }
-        // A label now sits where its argument went.
-        if let Some(c) = self.labeled_calls.iter_mut().find(|c| c.call == call) {
-            for (p, _, _) in c.labels.iter_mut() {
-                if let Some((_, to)) = moved.iter().find(|(from, _)| from == p) {
-                    *p = *to;
-                }
-            }
-        }
-        self.default_fills.insert(call, filled);
-        out
     }
 
     /// Give a copy of a default its own node ids: it is a new expression at

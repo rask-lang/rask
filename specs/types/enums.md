@@ -57,7 +57,7 @@ enum Event {
 }
 ```
 
-**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. Qualified names (`Token.Plus`) also work but are unnecessary when the type is known from context.
+**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. Qualified names (`Token.Plus`) also work but are unnecessary when the type is known from context. When a struct shares a bare variant's name, the matched value decides: `Pair(a, b)` takes a `Pair` struct apart, and the `Pair` variant of the value's enum otherwise.
 
 ```rask
 match token {

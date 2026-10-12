@@ -272,9 +272,10 @@ fn declared_params(name: &str, pinned: Option<TypeId>, types: &TypeTable) -> Opt
         None if types.is_type_param_in_scope(name) => return None,
         None => types.get_type_id(name)?,
     };
+    let type_params = types.get(id)?.type_params();
     match types.get(id)? {
-        TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
-            Some((type_params.clone(), type_params.len()))
+        TypeDef::Struct { .. } | TypeDef::Enum { .. } | TypeDef::NominalAlias { .. } => {
+            Some((type_params.to_vec(), type_params.len()))
         }
         _ => None,
     }

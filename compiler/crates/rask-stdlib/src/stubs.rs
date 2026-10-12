@@ -461,8 +461,8 @@ impl StubRegistry {
     }
 
     /// The stdlib declarations desugaring needs from outside the program:
-    /// every struct and enum, every function that has a defaulted parameter,
-    /// and every function named like a type.
+    /// every struct and enum, and every function that has a defaulted
+    /// parameter.
     ///
     /// Filling an omitted argument needs the declaration it was omitted from
     /// (#1276), and telling `Point(x: 1)` from a call needs to know `Point` is
@@ -482,10 +482,7 @@ impl StubRegistry {
                 let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
                 for decl in parsed {
                     let keep = match &decl.kind {
-                        // A function named like a type builds one
-                        // (`Wrapping(5381u32)`), and desugar has to know it
-                        // exists to leave the call alone.
-                        DeclKind::Fn(f) => defaulted(f) || f.name.starts_with(|c: char| c.is_uppercase()),
+                        DeclKind::Fn(f) => defaulted(f),
                         DeclKind::Impl(i) => i.methods.iter().any(defaulted),
                         DeclKind::Enum(_) | DeclKind::Struct(_) => true,
                         _ => false,

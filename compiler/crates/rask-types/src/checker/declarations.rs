@@ -307,6 +307,9 @@ impl TypeChecker {
                 // whoever wrote it, which is what makes it XC1's way out.
                 if let Some(id) = self.types.get_type_id(&a.name) {
                     self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+                    if !a.is_transparent {
+                        self.types.record_param_bounds(id, &a.type_params);
+                    }
                 }
             }
             // `const W = 4` then `[i32; W]`. The length has to be known
@@ -1193,12 +1196,7 @@ impl TypeChecker {
         let decl_params = self
             .types
             .get(type_id)
-            .and_then(|d| match d {
-                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
-                    Some(type_params.clone())
-                }
-                _ => None,
-            })
+            .map(|d| d.type_params().to_vec())
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| Self::target_type_params(&i.target_ty));
 
@@ -1751,6 +1749,7 @@ impl TypeChecker {
             self.note_linear_container_site(span, underlying.clone());
             self.types.register_type(TypeDef::NominalAlias {
                 name: a.name.clone(),
+                type_params: a.type_params.iter().map(|p| p.name.clone()).collect(),
                 underlying,
                 with_interfaces: a.with_interfaces.clone(),
                 methods: Vec::new(),
@@ -3074,6 +3073,7 @@ pub(super) fn owner_type_params(kind: &DeclKind, types: &crate::TypeTable) -> Ve
         DeclKind::Enum(e) => enum_type_param_names(e),
         DeclKind::Interface(t) => interface_type_param_names(t),
         DeclKind::Impl(i) => header_type_params(i, types),
+        DeclKind::TypeAlias(a) if !a.is_transparent => a.type_params.iter().map(|p| p.name.clone()).collect(),
         _ => Vec::new(),
     }
 }
@@ -3203,12 +3203,8 @@ pub(super) fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<
         .target_ty
         .name()
         .and_then(|n| types.get_type_id(&n))
-        .and_then(|id| match types.get(id)? {
-            TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
-                Some(type_params.clone())
-            }
-            _ => None,
-        })
+        .and_then(|id| types.get(id))
+        .map(|d| d.type_params().to_vec())
         .unwrap_or_default();
     let args = i.target_ty.args();
     let mut out: Vec<String> = if args.is_empty() { declared.clone() } else { Vec::new() };
