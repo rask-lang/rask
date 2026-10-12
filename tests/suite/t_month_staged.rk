@@ -24,18 +24,18 @@ struct Ledger9 {
     savings: i64
 }
 
-const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
-const POT: Shared<Ledger9, Readers> = Shared.new(Ledger9 { checking: 50, savings: 5 })
+const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9(checking: 100, savings: 0))
+const POT: Shared<Ledger9, Readers> = Shared.new(Ledger9(checking: 50, savings: 5))
 
 func reset_books() {
     with BOOKS.write() as b {
-        b = Ledger9 { checking: 100, savings: 0 }
+        b = Ledger9(checking: 100, savings: 0)
     }
 }
 
 func reset_pot() {
     with POT.write() as p {
-        p = Ledger9 { checking: 50, savings: 5 }
+        p = Ledger9(checking: 50, savings: 5)
     }
 }
 
@@ -117,7 +117,7 @@ test "ST1: the Readers strategy stages the same way" {
 test "ST1: the copy starts as the committed value, not a blank" {
     reset_pot()
     with POT.write() as p {
-        p = Ledger9 { checking: 45, savings: 10 }
+        p = Ledger9(checking: 45, savings: 10)
     }
     with POT.staged() as p {
         assert p.checking == 45

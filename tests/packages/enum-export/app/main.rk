@@ -7,8 +7,8 @@ import libpkg.Colour
 // tuple-like variants.
 func name_of(s: libpkg.Shape) -> string {
     match s {
-        libpkg.Shape.Circle { r } => return "circle {r}"
-        libpkg.Shape.Square { side } => return "square {side}"
+        libpkg.Shape.Circle(r) => return "circle {r}"
+        libpkg.Shape.Square(side) => return "square {side}"
         libpkg.Shape.Dot(n) => return "dot {n}"
     }
 }
@@ -22,8 +22,8 @@ func shade(c: libpkg.Colour) -> string {
 
 func main() {
     println("{libpkg.label(Colour.Green)}")
-    println("{libpkg.area(libpkg.Shape.Circle { r: 2 })}")
-    println(name_of(libpkg.Shape.Square { side: 3 }))
+    println("{libpkg.area(libpkg.Shape.Circle(r: 2))}")
+    println(name_of(libpkg.Shape.Square(side: 3)))
     println(name_of(libpkg.Shape.Dot(7)))
     println(shade(libpkg.Colour.Red))
     return

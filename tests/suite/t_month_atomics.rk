@@ -67,8 +67,8 @@ test "mem.atomics — a bool payload loads and stores" {
 }
 
 test "mem.atomics — a word-sized struct payload" {
-    let s = Atomic<Slot>.new(Slot { packed: 0 })
-    s.store(Slot { packed: 3 }, Ordering.SeqCst)
+    let s = Atomic<Slot>.new(Slot(packed: 0))
+    s.store(Slot(packed: 3), Ordering.SeqCst)
     let got = s.load(Ordering.SeqCst)
     assert got.packed == 3
 }

@@ -16,7 +16,7 @@ struct Bag<T> {
 
 extend Bag<T> {
     func new() -> Bag<T> {
-        return Bag { entries: Map.new() }
+        return Bag(entries: Map.new())
     }
 
     func put(mutate self, take v: T) {
@@ -60,11 +60,11 @@ test "annotated and written agree" {
 
 test "written struct arguments build a struct bag" {
     mut c = Bag<Point>.new()
-    c.put(Point { x: 1, y: 2, z: 3 })
-    c.put(Point { x: 4, y: 5, z: 6 })
-    assert c.has(Point { x: 1, y: 2, z: 3 })
-    assert c.has(Point { x: 4, y: 5, z: 6 })
-    assert !c.has(Point { x: 1, y: 2, z: 4 })
+    c.put(Point(x: 1, y: 2, z: 3))
+    c.put(Point(x: 4, y: 5, z: 6))
+    assert c.has(Point(x: 1, y: 2, z: 3))
+    assert c.has(Point(x: 4, y: 5, z: 6))
+    assert !c.has(Point(x: 1, y: 2, z: 4))
     assert c.count() == 2
 }
 

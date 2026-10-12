@@ -11,7 +11,7 @@ import sync.Mutex
 import thread.Thread
 
 struct Counter9 { n: i64 }
-const C: Shared<Counter9, Mutex> = Shared.mutex(Counter9 { n: 5 })
+const C: Shared<Counter9, Mutex> = Shared.mutex(Counter9(n: 5))
 
 func main() {
     using Multitasking {

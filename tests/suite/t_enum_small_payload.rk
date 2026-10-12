@@ -34,7 +34,7 @@ enum ApiError {
     Auth(AuthError)
     Coords(Pair)
     Big(Wide)
-    Named { code: u16, kind: AuthError }
+    Named(code: u16, kind: AuthError)
     Text(string)
 }
 
@@ -44,7 +44,7 @@ extend ApiError {
             Auth(e)     => return e.message(),
             Coords(p)   => return "at {p.a},{p.b}",
             Big(w)      => return "big {w.a}/{w.b}/{w.c}",
-            ApiError.Named { code, kind } => return "{code}: {kind.message()}",
+            ApiError.Named(code, kind) => return "{code}: {kind.message()}",
             Text(m)     => return "text: {m}",
         }
     }
@@ -57,17 +57,17 @@ test "a fieldless enum payload survives the match" {
 }
 
 test "an 8-byte struct payload survives the match" {
-    let e = ApiError.Coords(Pair { a: 3, b: 4 })
+    let e = ApiError.Coords(Pair(a: 3, b: 4))
     assert e.message() == "at 3,4"
 }
 
 test "a payload wider than a word still works" {
-    let e = ApiError.Big(Wide { a: 1, b: 2, c: 3 })
+    let e = ApiError.Big(Wide(a: 1, b: 2, c: 3))
     assert e.message() == "big 1/2/3"
 }
 
 test "a named-field variant reads its small enum field" {
-    let e = ApiError.Named { code: 401, kind: AuthError.Invalid }
+    let e = ApiError.Named(code: 401, kind: AuthError.Invalid)
     assert e.message() == "401: invalid credentials"
 }
 

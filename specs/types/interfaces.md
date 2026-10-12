@@ -55,7 +55,7 @@ The `as any Interface` cast is the cost signal — each conversion heap-allocate
 
 <!-- test: parse -->
 ```rask
-let button = Button { label: "OK" }
+let button = Button(label: "OK")
 
 let w = button as any Widget
 render(button as any Widget)
@@ -255,11 +255,11 @@ extend Container {
 ```rask
 // Enum: closed set, full access
 enum Shape {
-    Circle { radius: f32 }
-    Rect { w: f32, h: f32 }
+    Circle(radius: f32)
+    Rect(w: f32, h: f32)
 }
 match shape {
-    Circle { radius } => ...  // Access fields
+    Circle(radius) => ...  // Access fields
     Rect { w, h } => ...
 }
 

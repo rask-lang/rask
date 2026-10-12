@@ -84,7 +84,7 @@ public struct Span {
 
 extend Span {
     public func new(start: usize, end: usize) -> Span {
-        return Span { start, end }
+        return Span(start, end)
     }
     public func len(self) -> usize {
         return self.end - self.start

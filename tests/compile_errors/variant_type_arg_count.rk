@@ -8,7 +8,7 @@
 enum Slot<T> {
     Empty
     Full(T)
-    Pair { a: T, b: T }
+    Pair(a: T, b: T)
 }
 
 enum Two<A, B> {
@@ -17,7 +17,7 @@ enum Two<A, B> {
 
 enum Shape {
     Circle(f64)
-    Square { side: f64 }
+    Square(side: f64)
 }
 
 func main() {
@@ -25,7 +25,7 @@ func main() {
     let s = Slot<i64, i64>.Full(1)
 
     // ERROR: `Slot` takes 1 type argument, found 2
-    let p = Slot<i64, i64>.Pair { a: 1, b: 2 }
+    let p = Slot<i64, i64>.Pair(a: 1, b: 2)
 
     // ERROR: `Two` takes 2 type arguments, found 1
     let t = Two<i64>.Both(1, 2)
@@ -34,5 +34,5 @@ func main() {
     let c = Shape<i64>.Circle(1.0)
 
     // ERROR: `Shape` takes no type arguments, found 1
-    let q = Shape<i64>.Square { side: 1.0 }
+    let q = Shape<i64>.Square(side: 1.0)
 }

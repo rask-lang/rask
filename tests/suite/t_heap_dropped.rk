@@ -43,7 +43,7 @@ struct Record {
 }
 
 test "mem.heap/HP3 — a local Heap is freed and reads right until then" {
-    let p = Heap(Big { a: 1, b: 2, c: 3 })
+    let p = Heap(Big(a: 1, b: 2, c: 3))
     ensure drop(p)
     assert p.a == 1
     assert p.c == 3
@@ -52,7 +52,7 @@ test "mem.heap/HP3 — a local Heap is freed and reads right until then" {
 
 // Dropped where it was made, with no binding in between.
 test "mem.heap/HP3 — a Heap dropped where it was made" {
-    drop(Heap(Big { a: 1, b: 2, c: 3 }))
+    drop(Heap(Big(a: 1, b: 2, c: 3)))
 }
 
 // A scalar payload gets a block like any other. It used to be the exception —
@@ -67,22 +67,22 @@ test "mem.heap/HP3 — a scalar payload gets a block too" {
 }
 
 test "mem.heap/HP3 — a `Heap` field, filled inline" {
-    let h = Holder { inner: Heap(Big { a: 7, b: 8, c: 9 }) }
+    let h = Holder(inner: Heap(Big(a: 7, b: 8, c: 9)))
     assert h.inner.b == 8
 }
 
 // The Heap moves into the slot rather than being boxed again, so there is one
 // block and one free.
 test "mem.heap/HP3 — a `Heap` field, filled from a local" {
-    let p = Heap(Big { a: 4, b: 5, c: 6 })
-    let h = Holder { inner: p }
+    let p = Heap(Big(a: 4, b: 5, c: 6))
+    let h = Holder(inner: p)
     assert h.inner.a == 4
 }
 
 // HP5: a plain `T` where `Heap<T>` is asked for — the slot allocates.
 test "mem.heap/HP3 — a `Heap` field, filled from a plain value" {
-    let plain = Big { a: 10, b: 11, c: 12 }
-    let h = Holder { inner: plain }
+    let plain = Big(a: 10, b: 11, c: 12)
+    let h = Holder(inner: plain)
     assert h.inner.c == 12
 }
 
@@ -91,10 +91,10 @@ test "mem.heap/HP3 — a `Heap` field, filled from a plain value" {
 // holds, which is the open half (#1144). What this pins is the other half: the
 // values are all readable right up to the drop, so nothing was freed early.
 test "mem.heap/HP3 — a payload holding a string and a vector" {
-    let r = Heap(Record {
+    let r = Heap(Record(
         name: "a record name long enough to allocate",
         marks: [1, 2, 3],
-    })
+    ))
     ensure drop(r)
     assert r.name == "a record name long enough to allocate"
     assert r.marks.len() == 3
@@ -106,7 +106,7 @@ test "mem.heap/HP3 — a payload holding a string and a vector" {
 test "mem.heap/HP3 — a Heap per turn" {
     mut total = 0
     for i in 1..6 {
-        let p = Heap(Big { a: i, b: i * 2, c: i * 3 })
+        let p = Heap(Big(a: i, b: i * 2, c: i * 3))
         ensure drop(p)
         total = total + p.a + p.b + p.c
         drop(p)
@@ -116,11 +116,11 @@ test "mem.heap/HP3 — a Heap per turn" {
 
 // Several alive at once, so the frees don't depend on there being one.
 test "mem.heap/HP3 — three at a time, dropped out of order" {
-    let a = Heap(Big { a: 1, b: 0, c: 0 })
+    let a = Heap(Big(a: 1, b: 0, c: 0))
     ensure drop(a)
-    let b = Heap(Big { a: 2, b: 0, c: 0 })
+    let b = Heap(Big(a: 2, b: 0, c: 0))
     ensure drop(b)
-    let c = Heap(Big { a: 3, b: 0, c: 0 })
+    let c = Heap(Big(a: 3, b: 0, c: 0))
     ensure drop(c)
     drop(b)
     assert a.a == 1

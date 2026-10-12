@@ -53,8 +53,8 @@ Rect implements Shape {
 
 test "type.interfaces — a Vec of interface boxes frees their blocks" {
     mut shapes: Vec<any Shape> = []
-    shapes.push(Square { side: 3 })
-    shapes.push(Rect { w: 2, h: 5 })
+    shapes.push(Square(side: 3))
+    shapes.push(Rect(w: 2, h: 5))
     assert shapes.len() == 2
     assert shapes[0].area() == 9
     assert shapes[1].area() == 10
@@ -63,7 +63,7 @@ test "type.interfaces — a Vec of interface boxes frees their blocks" {
 // A literal rather than pushes, so the tag comes off the first element's type
 // instead of the annotation.
 test "type.interfaces — a literal of interface boxes" {
-    let shapes: Vec<any Shape> = [Square { side: 4 }, Rect { w: 3, h: 3 }]
+    let shapes: Vec<any Shape> = [Square(side: 4), Rect(w: 3, h: 3)]
     assert shapes.len() == 2
     assert shapes[0].area() == 16
     assert shapes[1].area() == 9
@@ -73,7 +73,7 @@ test "type.interfaces — a literal of interface boxes" {
 // both freeing one.
 test "type.interfaces — a cloned Vec of interface boxes" {
     mut shapes: Vec<any Shape> = []
-    shapes.push(Square { side: 5 })
+    shapes.push(Square(side: 5))
     let copy = shapes.clone()
     assert copy.len() == 1
     assert copy[0].area() == 25
@@ -82,8 +82,8 @@ test "type.interfaces — a cloned Vec of interface boxes" {
 
 test "type.interfaces — a Map of interface boxes" {
     mut by_name: Map<string, any Shape> = Map.new()
-    by_name.insert("sq", Square { side: 6 })
-    by_name.insert("re", Rect { w: 4, h: 2 })
+    by_name.insert("sq", Square(side: 6))
+    by_name.insert("re", Rect(w: 4, h: 2))
     assert by_name.len() == 2
     assert by_name["sq"].area() == 36
 }
@@ -93,7 +93,7 @@ test "type.interfaces — a boxed element per turn" {
     mut total = 0
     for i in 1..5 {
         mut shapes: Vec<any Shape> = []
-        shapes.push(Square { side: i })
+        shapes.push(Square(side: i))
         total = total + shapes[0].area()
     }
     assert total == 30
@@ -104,7 +104,7 @@ test "type.interfaces — a boxed element per turn" {
 test "type.interfaces — a Vec of Vecs of interface boxes" {
     mut outer: Vec<Vec<any Shape>> = []
     mut inner: Vec<any Shape> = []
-    inner.push(Rect { w: 7, h: 2 })
+    inner.push(Rect(w: 7, h: 2))
     outer.push(inner)
     assert outer[0][0].area() == 14
 }
@@ -116,9 +116,9 @@ struct Scene {
 }
 
 test "type.interfaces — boxed elements in a struct's Vec field" {
-    mut s = Scene { items: [] }
-    s.items.push(Square { side: 2 })
-    s.items.push(Rect { w: 5, h: 1 })
+    mut s = Scene(items: [])
+    s.items.push(Square(side: 2))
+    s.items.push(Rect(w: 5, h: 1))
     assert s.items.len() == 2
     assert s.items[0].area() == 4
     assert s.items[1].area() == 5

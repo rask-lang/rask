@@ -3022,7 +3022,9 @@ impl TypeChecker {
                     .iter()
                     .map(|a| FnParam {
                         mode: match a.mode {
-                            rask_ast::expr::ArgMode::Default => ParamMode::Borrow,
+                            // A spread never reaches here: desugar makes it a
+                            // struct literal's base or reports it.
+                            rask_ast::expr::ArgMode::Default | rask_ast::expr::ArgMode::Spread => ParamMode::Borrow,
                             rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting => {
                                 ParamMode::Mutate
                             }
@@ -3099,6 +3101,7 @@ impl TypeChecker {
                     ArgMode::Default => "",
                     ArgMode::Mutate => "mutate ",
                     ArgMode::Deleting => "deleting ",
+                    ArgMode::Spread => "..",
                 };
                 let label = a.name.as_ref().map(|n| format!("{}: ", n)).unwrap_or_default();
                 let text = match &a.expr.kind {

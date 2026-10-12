@@ -31,7 +31,7 @@ extend Wrapper {
     // wrong width. On native this kills the test binary rather than returning
     // something wrong.
     func map_to<R>(self, f: func(T) -> R) -> Wrapper<R> {
-        return Wrapper { value: f(self.value) }
+        return Wrapper(value: f(self.value))
     }
 }
 
@@ -41,43 +41,43 @@ func get_free<T>(w: Wrapper<T>) -> T {
 }
 
 test "type.generics — a generic method returns an f64 as an f64" {
-    let c: Wrapper<f64> = Wrapper { value: 0.5 }
+    let c: Wrapper<f64> = Wrapper(value: 0.5)
     assert c.get() == 0.5
 }
 
 test "type.generics — a generic method returns an f32 as an f32" {
-    let c: Wrapper<f32> = Wrapper { value: 0.5 }
+    let c: Wrapper<f32> = Wrapper(value: 0.5)
     assert c.get() == 0.5
 }
 
 test "type.generics — a generic method returns a string as a string" {
-    let c: Wrapper<string> = Wrapper { value: "s" }
+    let c: Wrapper<string> = Wrapper(value: "s")
     assert c.get() == "s"
 }
 
 test "type.generics — the integral instantiations are the case that works" {
-    let a: Wrapper<i32> = Wrapper { value: 7 }
+    let a: Wrapper<i32> = Wrapper(value: 7)
     assert a.get() == 7
-    let b: Wrapper<i64> = Wrapper { value: 9 }
+    let b: Wrapper<i64> = Wrapper(value: 9)
     assert b.get() == 9
-    let c: Wrapper<bool> = Wrapper { value: true }
+    let c: Wrapper<bool> = Wrapper(value: true)
     assert c.get()
 }
 
 test "type.generics — a free function with the same return works at f64" {
-    let c: Wrapper<f64> = Wrapper { value: 0.5 }
+    let c: Wrapper<f64> = Wrapper(value: 0.5)
     assert get_free(c) == 0.5
 }
 
 test "type.generics — reading the field directly works at every type" {
-    let a: Wrapper<f64> = Wrapper { value: 0.5 }
+    let a: Wrapper<f64> = Wrapper(value: 0.5)
     assert a.value == 0.5
-    let b: Wrapper<string> = Wrapper { value: "s" }
+    let b: Wrapper<string> = Wrapper(value: "s")
     assert b.value == "s"
 }
 
 test "type.generics — a method returning its own type parameter's container" {
-    let a: Wrapper<i32> = Wrapper { value: 3 }
+    let a: Wrapper<i32> = Wrapper(value: 3)
     let b: Wrapper<i32> = a.map_to(|x| x * 2)
     assert b.value == 6
     let c: Wrapper<string> = a.map_to(|x| "v{x}")

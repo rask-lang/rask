@@ -33,12 +33,12 @@ func main() {
 
     // ERROR: auto-derive stops at the float field, and nothing declares it [E0834, HA1]
     mut by_floaty: Map<Floaty, string> = Map.new()
-    by_floaty.insert(Floaty { f: 1.0 }, "x")
+    by_floaty.insert(Floaty(f: 1.0), "x")
 
     // These two are fine: `Plain`'s fields are all Hashable so it auto-derives,
     // and `Tag` asked.
     mut by_plain: Map<Plain, string> = Map.new()
-    by_plain.insert(Plain { n: 1 }, "x")
+    by_plain.insert(Plain(n: 1), "x")
     mut by_tag: Map<Tag, string> = Map.new()
     by_tag.insert(Tag(1), "x")
     println("{by_plain.len()} {by_tag.len()}")

@@ -23,7 +23,7 @@ func main() {
     }
 
     mut vb = Vec<Big>.new()
-    vb.push(Big { a: 1, b: 2, c: 3 })
+    vb.push(Big(a: 1, b: 2, c: 3))
     for b in vb {
         println("{b.a} {b.b} {b.c}")
     }

@@ -29,6 +29,6 @@ struct Settings {
 }
 
 func main() {
-    let s = Shared.new(Settings { theme: "dark", size: 1 })
+    let s = Shared.new(Settings(theme: "dark", size: 1))
     println("{s.read().theme} {s.read().size}")
 }

@@ -32,7 +32,7 @@ Num implements Scaled {
 }
 
 enum Shape {
-    Rect { w: i64, h: i64 }
+    Rect(w: i64, h: i64)
 }
 
 func digits(a: i64, b: i64) -> i64 {
@@ -52,7 +52,7 @@ func through_bound<T: Scaled>(x: T) -> i64 {
 
 func area(s: Shape) -> i64 {
     match s {
-        Shape.Rect { w, h } => return w * 10 + h,
+        Shape.Rect(w, h) => return w * 10 + h,
     }
 }
 
@@ -62,7 +62,7 @@ test "free function, labels in order" {
 }
 
 test "method and static method, labels in order" {
-    let x = Num { n: 3 }
+    let x = Num(n: 3)
     assert x.pair(a: 1, b: 2) == 312
     assert Num.make(a: 1, b: 2) == 12
 }
@@ -73,7 +73,7 @@ test "labels skip a defaulted parameter" {
 }
 
 test "method reached through an interface bound" {
-    assert through_bound(Num { n: 4 }) == 41
+    assert through_bound(Num(n: 4)) == 41
 }
 
 test "struct variant built with call syntax" {

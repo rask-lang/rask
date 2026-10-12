@@ -363,13 +363,13 @@ fn check_loaded(
     // --- Desugar (accumulate errors, continue) ---
     let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::defaulted_signatures(),
+        rask_stdlib::StubRegistry::desugar_declarations(),
     );
     for e in &desugared.errors {
         diags.push(
             Diagnostic::error(e.message.clone())
-                .with_code("E0338")
-                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+                .with_code(e.code)
+                .with_primary(e.span, e.label.clone()),
         );
     }
 
@@ -683,13 +683,13 @@ fn check_package_scoped(
     let desugared =
         rask_desugar::desugar_package(
             &mut pkg_ctx.all_decls,
-            rask_stdlib::StubRegistry::defaulted_signatures(),
+            rask_stdlib::StubRegistry::desugar_declarations(),
         );
     for e in &desugared.errors {
         diags.push(
             Diagnostic::error(e.message.clone())
-                .with_code("E0338")
-                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+                .with_code(e.code)
+                .with_primary(e.span, e.label.clone()),
         );
     }
 

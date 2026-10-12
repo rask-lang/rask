@@ -460,23 +460,19 @@ impl StubRegistry {
         CompilableStdlib { decls, operator_calls: desugared.operator_calls }
     }
 
-    /// Stdlib declarations that carry a default somewhere — a defaulted
-    /// parameter or a defaulted struct field.
+    /// The stdlib declarations desugaring needs from outside the program:
+    /// every struct and enum, every function that has a defaulted parameter,
+    /// and every function named like a type.
     ///
-    /// Filling an omitted argument happens in desugaring, which builds its
-    /// table from the declarations it is handed. The stdlib's aren't among
-    /// them, so a defaulted parameter in `stdlib/*.rk` was parsed and thrown
-    /// away: `v.shrink()` reported "expected 1 argument, found 0" for an
-    /// argument the signature defaults, and every SD2 collapse that grows a
-    /// surface by parameter instead of by name was blocked on it (#1276).
+    /// Filling an omitted argument needs the declaration it was omitted from
+    /// (#1276), and telling `Point(x: 1)` from a call needs to know `Point` is
+    /// a struct — the stdlib's `SourceLoc` as much as a program's own.
     /// `rask-desugar` can't read this registry itself — this crate already
     /// depends on it — so the caller hands the list in.
     ///
     /// Parsed, not desugared: a default has to be a literal or an enum path
     /// (`is_valid_default_expr`), and there is nothing in one to rewrite.
-    /// Pruned to the declarations that have a default, because that is all the
-    /// table keeps and the rest would be parsed for nothing.
-    pub fn defaulted_signatures() -> &'static [Decl] {
+    pub fn desugar_declarations() -> &'static [Decl] {
         static CACHE: OnceLock<Vec<Decl>> = OnceLock::new();
         CACHE.get_or_init(|| {
             let mut decls = Vec::new();
@@ -486,13 +482,12 @@ impl StubRegistry {
                 let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
                 for decl in parsed {
                     let keep = match &decl.kind {
-                        DeclKind::Fn(f) => defaulted(f),
+                        // A function named like a type builds one
+                        // (`Wrapping(5381u32)`), and desugar has to know it
+                        // exists to leave the call alone.
+                        DeclKind::Fn(f) => defaulted(f) || f.name.starts_with(|c: char| c.is_uppercase()),
                         DeclKind::Impl(i) => i.methods.iter().any(defaulted),
-                        DeclKind::Enum(e) => e.methods.iter().any(defaulted),
-                        DeclKind::Struct(s) => {
-                            s.methods.iter().any(defaulted)
-                                || s.fields.iter().any(|f| f.default.is_some())
-                        }
+                        DeclKind::Enum(_) | DeclKind::Struct(_) => true,
                         _ => false,
                     };
                     if keep {

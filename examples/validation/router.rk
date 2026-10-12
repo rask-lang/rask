@@ -61,7 +61,7 @@ func dispatch(req: Request) -> Response or ApiError {
             let id = try task_id(p)
             return handle_delete_task(id)
         }
-        _ => return json_response(404, json.encode(ErrorBody { error: "no route for {path}", code: "not_found" }))
+        _ => return json_response(404, json.encode(ErrorBody(error: "no route for {path}", code: "not_found")))
     }
 }
 
@@ -81,7 +81,7 @@ func segment_id(path: string, prefix: string) -> u64 or ApiError {
     let rest = path[prefix.len()..].to_string()
     let trimmed = strip_suffix(rest, "/deps")
     let n: u64 = trimmed.parse<u64>() catch _ => {
-        return ApiError.BadRequest("invalid id in path: {path}")
+        return ApiError.BadRequest(reason: "invalid id in path: {path}")
     }
     return n
 }

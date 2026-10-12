@@ -111,10 +111,10 @@ test "mem.abi — a generic enum's float payloads" {
 }
 
 test "mem.abi — a float in a generic struct field" {
-    let h: Holder<f32> = Holder { value: 0.5 }
+    let h: Holder<f32> = Holder(value: 0.5)
     assert h.value == 0.5
 
-    let hd: Holder<f64> = Holder { value: 1.25 }
+    let hd: Holder<f64> = Holder(value: 1.25)
     assert hd.value == 1.25
 }
 

@@ -49,12 +49,12 @@ func ascii_only(bytes: Vec<u8>) -> string or BadByte {
     while i < bytes.len().clamp<i64>() {
         let b = (bytes.get(i) ?? 0).clamp<i64>()
         if b > 127 {
-            return BadByte { at: i }
+            return BadByte(at: i)
         }
         if char.from_u32(b.clamp<u32>())? as c {
             out.push_char(c)
         } else {
-            return BadByte { at: i }
+            return BadByte(at: i)
         }
         i = i + 1
     }
@@ -81,7 +81,7 @@ func until_stop(words: Vec<string>) -> string or BadByte {
     mut n = 0
     for w in words {
         if w == "stop" {
-            return BadByte { at: n }
+            return BadByte(at: n)
         }
         out.push(w)
         n = n + 1

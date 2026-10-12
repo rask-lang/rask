@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -17,7 +17,8 @@ pub struct Parser {
     pos: usize,
     /// Track pending `>` from splitting `>>` in generics
     pending_gt: bool,
-    /// Controls whether `{` can start struct literals (false in control flow conditions)
+    /// Whether a `{` right after a value can belong to it — `spawn { … }`.
+    /// False in a condition, where the `{` opens the body.
     allow_brace_expr: bool,
     /// Set while parsing an element of a comma list — call arguments, struct
     /// literal fields, array/tuple elements. A diverging `??`/`catch` right
@@ -37,19 +38,6 @@ pub struct Parser {
     /// their signatures. Real source can't — the call would parse as the
     /// keyword form — so only stub parsing sets this.
     allow_keyword_fn_names: bool,
-    /// Every `struct` name this file declares, whatever its case.
-    ///
-    /// A struct literal is otherwise recognised by the name being capitalised,
-    /// which is the right default — `x { … }` in expression position is
-    /// ambiguous with a block, and a lowercase name is usually a variable. But
-    /// it left a *declared* lowercase struct with no way to construct it at all,
-    /// and `cstring` is one the spec names in lowercase (#949). Collected in one
-    /// token scan before parsing, so declaration order doesn't matter.
-    declared_structs: std::collections::HashSet<String>,
-    /// Every name an `import` puts in scope — see `scan_import_namespaces`.
-    /// A dotted head is only a struct literal's when one of these is on the
-    /// left of the dot.
-    import_namespaces: std::collections::HashSet<String>,
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
@@ -68,75 +56,7 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        let declared_structs = Self::scan_declared_structs(&tokens);
-        let import_namespaces = Self::scan_import_namespaces(&tokens);
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, declared_structs, import_namespaces, loop_labels: Vec::new() }
-    }
-
-    /// Names following the `struct` keyword. One pass, before anything is
-    /// parsed, so a literal can name a struct declared further down the file.
-    fn scan_declared_structs(tokens: &[Token]) -> std::collections::HashSet<String> {
-        let mut names = std::collections::HashSet::new();
-        for pair in tokens.windows(2) {
-            if matches!(pair[0].kind, TokenKind::Struct) {
-                if let TokenKind::Ident(name) = &pair[1].kind {
-                    names.insert(name.clone());
-                }
-            }
-        }
-        names
-    }
-
-    /// The namespaces `import c` brings in — `c`, or whatever `as` renamed it
-    /// to. One token scan before parsing, the same way declared struct names
-    /// are found.
-    ///
-    /// A struct literal is recognised by a capitalised head, and `c.Rect { … }`
-    /// has a lowercase one, so the parser read it as a field access and choked
-    /// on the `{`. That left a C API taking a struct by value unreachable — and
-    /// every geometry, colour and vector type in C is one (#948).
-    ///
-    /// Every import, not only `import c`: a module import binds the module and
-    /// its types are reached through it (IM1), so `http.Response { … }` and
-    /// `libpkg.Dog { … }` have the same lowercase head and hit the same wall —
-    /// `let r = http.Response` parsed as a complete expression and the `{`
-    /// opened a block (#1113).
-    ///
-    /// Deliberately a superset: every identifier anywhere in an import path,
-    /// plus what `as` renames it to. Telling a module segment from a named
-    /// type inside one needs to know which names are modules, which the parser
-    /// doesn't. Being generous costs nothing — a capitalised field after the
-    /// dot is still required, and `allow_brace_expr` is already false in a
-    /// condition, which is where a wrong guess would swallow an `if` body.
-    fn scan_import_namespaces(tokens: &[Token]) -> std::collections::HashSet<String> {
-        let mut names = std::collections::HashSet::new();
-        for (i, t) in tokens.iter().enumerate() {
-            if !matches!(t.kind, TokenKind::Import) {
-                continue;
-            }
-            // Walk the declaration to its newline, taking every identifier. An
-            // `as` rename ends it — what follows is the only name in scope.
-            let mut j = i + 1;
-            let mut segments: Vec<String> = Vec::new();
-            while let Some(tok) = tokens.get(j) {
-                match &tok.kind {
-                    TokenKind::Newline => break,
-                    TokenKind::As => {
-                        if let Some(TokenKind::Ident(name)) = tokens.get(j + 1).map(|t| &t.kind) {
-                            segments = vec![name.clone()];
-                        }
-                        break;
-                    }
-                    TokenKind::Ident(name) => {
-                        segments.push(name.clone());
-                        j += 1;
-                    }
-                    _ => j += 1,
-                }
-            }
-            names.extend(segments);
-        }
-        names
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new() }
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -382,7 +302,9 @@ impl Parser {
     }
 
     /// Check for unambiguous infix operator after newlines (expression continuation).
-    /// Excludes `+`, `-` (prefix ambiguity), `*` (deref ambiguity), `<`/`>` (generics ambiguity).
+    /// Excludes `+`, `-` (prefix ambiguity), `*` (deref ambiguity), `<`/`>` (generics
+    /// ambiguity), and `..`/`..=`: a line starting with one is a `..base` spread
+    /// in a value's list, or an open-start range of its own.
     fn peek_past_newlines_is_infix(&self) -> bool {
         let mut pos = self.pos + 1;
         while pos < self.tokens.len() {
@@ -394,8 +316,7 @@ impl Parser {
                 | TokenKind::QuestionQuestion | TokenKind::Catch
                 | TokenKind::Pipe | TokenKind::Caret | TokenKind::Amp
                 | TokenKind::LtLt | TokenKind::GtGt
-                | TokenKind::Slash | TokenKind::Percent
-                | TokenKind::DotDot | TokenKind::DotDotEq => return true,
+                | TokenKind::Slash | TokenKind::Percent => return true,
                 _ => return false,
             }
         }
@@ -846,8 +767,8 @@ impl Parser {
         let mut args = None;
         if self.match_token(&TokenKind::LParen) {
             let mut list = Vec::new();
+            self.skip_newlines();
             loop {
-                self.skip_attribute_newlines();
                 if self.check(&TokenKind::RParen) || self.at_end() {
                     break;
                 }
@@ -865,7 +786,6 @@ impl Parser {
                 } else {
                     rask_ast::attr::AttrValue::Expr(self.parse_expr()?)
                 };
-                self.skip_attribute_newlines();
                 if label.is_none() && self.check(&TokenKind::Eq) {
                     if let Some(name) = value.ident() {
                         return Err(ParseError {
@@ -877,11 +797,11 @@ impl Parser {
                     }
                 }
                 list.push(rask_ast::attr::AttrArg { label, value });
-                if !self.match_token(&TokenKind::Comma) {
+                if !self.list_continues(&TokenKind::RParen)? {
                     break;
                 }
             }
-            self.skip_attribute_newlines();
+            self.skip_newlines();
             self.expect(&TokenKind::RParen)?;
             args = Some(list);
         }
@@ -890,11 +810,56 @@ impl Parser {
         Ok(rask_ast::attr::Attr { path, args, span: self.span(start, end) })
     }
 
-    /// An argument list may run over several lines.
-    fn skip_attribute_newlines(&mut self) {
-        while self.check(&TokenKind::Newline) {
-            self.advance();
+    /// `name:` at the current token, as a label: a field or argument name,
+    /// which may be a word the language also uses (`check:`, `type:`).
+    fn take_label(&mut self) -> Option<String> {
+        if self.peek(1) != &TokenKind::Colon {
+            return None;
         }
+        let name = match self.current_kind() {
+            TokenKind::Ident(n) => n.clone(),
+            other => keyword_spelling(other)?.to_string(),
+        };
+        self.advance();
+        self.advance();
+        Some(name)
+    }
+
+    /// After one item of a `( )` or `[ ]` list: is there another? A comma
+    /// separates items, and so does a newline — the statement rule, applied to
+    /// lists (SYNTAX.md, "Continuation"). A line that continues an item starts
+    /// with a continuation token, which the item's own expression already took.
+    fn list_continues(&mut self, close: &TokenKind) -> Result<bool, ParseError> {
+        if self.match_token(&TokenKind::Comma) {
+            self.skip_newlines();
+            return Ok(!self.check(close) && !self.at_end());
+        }
+        if !self.check(&TokenKind::Newline) {
+            return Ok(false);
+        }
+        self.skip_newlines();
+        if self.check(close) || self.at_end() {
+            return Ok(false);
+        }
+        // `-x` and `*p` are values on their own, so a line starting with one
+        // reads as a new item. Nobody means `a` and `-b` that way by accident
+        // often, but when they do the call silently takes an extra argument.
+        if let TokenKind::Minus | TokenKind::Star = self.current_kind() {
+            let op = if self.check(&TokenKind::Minus) { "-" } else { "*" };
+            // Recorded, and read on as the new item it looks like, so one
+            // misplaced operator is one error.
+            self.errors.push(ParseError {
+                span: self.current().span,
+                message: format!("a list item starts with `{op}` on a new line"),
+                hint: Some(format!(
+                    "to continue the line above, end that line with `{op}`; for a new item, put a comma before it"
+                )),
+                why: Some(format!(
+                    "a newline separates items, and `{op}` also starts a value of its own"
+                )),
+            });
+        }
+        Ok(true)
     }
 
     /// A rule name inside `@allow(…)`, as source text, up to the comma or
@@ -1136,12 +1101,7 @@ impl Parser {
 
             params.push(Param { name, name_span, ty, is_take, is_mutate, is_deleting, default });
 
-            if !self.match_token(&TokenKind::Comma) {
-                break;
-            }
-            self.skip_newlines();
-            // Trailing comma before closing paren
-            if self.check(&TokenKind::RParen) {
+            if !self.list_continues(&TokenKind::RParen)? {
                 break;
             }
         }
@@ -1888,20 +1848,28 @@ impl Parser {
                 let mut fields = Vec::new();
 
                 if self.match_token(&TokenKind::LParen) {
+                    // `Circle(f64)` or `Resize(w: i32, h: i32)`: every field
+                    // named, or none (type.enums/E12-E14).
+                    self.skip_newlines();
+                    let mut named: Option<bool> = None;
                     let mut idx = 0;
                     while !self.check(&TokenKind::RParen) && !self.at_end() {
-                        let (field_name, name_span, ty) = if self.check(&TokenKind::Ident(String::new())) {
-                            if self.peek(1) == &TokenKind::Colon {
-                                let span = self.current().span;
-                                let name = self.expect_ident()?;
-                                self.advance();
-                                let ty = self.parse_type_name()?;
-                                (name, span, ty)
-                            } else {
-                                let type_span = self.current().span;
-                                let ty = self.parse_type_name()?;
-                                (format!("_{}", idx), type_span, ty)
-                            }
+                        let this_named = matches!(self.current_kind(), TokenKind::Ident(_))
+                            && self.peek(1) == &TokenKind::Colon;
+                        if *named.get_or_insert(this_named) != this_named {
+                            return Err(ParseError {
+                                span: self.current().span,
+                                message: format!("variant `{}` names some of its fields and not others", variant_name),
+                                hint: Some("name every field, or none".to_string()),
+                                why: Some("a variant is filled by name or by position, and one variant can't be both [type.enums/E14]".to_string()),
+                            });
+                        }
+                        let (field_name, name_span, ty) = if this_named {
+                            let span = self.current().span;
+                            let name = self.expect_ident()?;
+                            self.advance();
+                            let ty = self.parse_type_name()?;
+                            (name, span, ty)
                         } else {
                             let type_span = self.current().span;
                             let ty = self.parse_type_name()?;
@@ -1911,27 +1879,17 @@ impl Parser {
                         fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });
                         idx += 1;
 
-                        if !self.match_token(&TokenKind::Comma) { break; }
+                        if !self.list_continues(&TokenKind::RParen)? { break; }
                     }
+                    self.skip_newlines();
                     self.expect(&TokenKind::RParen)?;
                 } else if self.check(&TokenKind::LBrace) {
-                    // Struct-style variant: Move { x: i32, y: i32 }
-                    self.advance();
-                    self.skip_newlines();
-                    while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                        let name_span = self.current().span;
-                        let field_name = self.expect_ident()?;
-                        self.expect(&TokenKind::Colon)?;
-                        let ty = self.parse_type_name()?;
-                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });
-                        if !self.match_token(&TokenKind::Comma) {
-                            self.skip_newlines();
-                            if !self.check(&TokenKind::RBrace) { continue; }
-                        } else {
-                            self.skip_newlines();
-                        }
-                    }
-                    self.expect(&TokenKind::RBrace)?;
+                    return Err(ParseError {
+                        span: self.current().span,
+                        message: format!("variant `{}` lists its fields in braces", variant_name),
+                        hint: Some(format!("write `{}(name: Type, …)`", variant_name)),
+                        why: Some("a variant's fields are what its constructor takes, and values go in parentheses [type.enums/E13]".to_string()),
+                    });
                 }
 
                 // E15: Optional explicit discriminant value (e.g., = 42)
@@ -3223,8 +3181,9 @@ impl Parser {
             let mut pats = Vec::new();
             loop {
                 pats.push(self.parse_tuple_pat_element()?);
-                if !self.match_token(&TokenKind::Comma) { break; }
+                if !self.list_continues(&TokenKind::RParen)? { break; }
             }
+            self.skip_newlines();
             self.expect(&TokenKind::RParen)?;
             Ok(TuplePat::Nested(pats))
         } else if matches!(self.current_kind(), TokenKind::Ident(s) if s == "_") {
@@ -3235,23 +3194,19 @@ impl Parser {
         }
     }
 
-    /// `let Point { x, y } = p` / `mut Point { x, .. } = p`, if that's what comes
+    /// `let Point(x, y) = p` / `mut Point(x, ..) = p`, if that's what comes
     /// next. `None` otherwise, so the ordinary name path takes over.
     ///
-    /// A type name followed by `{` is the whole test: `mut x = Point { … }` has the
+    /// A type name followed by `(` is the whole test: `mut x = Point(…)` has the
     /// `=` first, and `mut x: Point = …` has the `:`. A lowercase name falls
     /// through on purpose — it can't be a struct, so the error it gets is the one
     /// about a missing `=`.
     fn try_parse_struct_binding(&mut self, is_mut: bool) -> Result<Option<StmtKind>, ParseError> {
         let TokenKind::Ident(name) = &self.current().kind else { return Ok(None) };
-        if !Self::is_type_name(name) || !matches!(self.peek(1), TokenKind::LBrace) {
+        if !Self::is_type_name(name) || !matches!(self.peek(1), TokenKind::LParen) {
             return Ok(None);
         }
-        let saved = self.allow_brace_expr;
-        self.allow_brace_expr = true;
-        let pattern = self.parse_pattern();
-        self.allow_brace_expr = saved;
-        let pattern = pattern?;
+        let pattern = self.parse_pattern()?;
         self.expect(&TokenKind::Eq)?;
         let init = self.parse_expr()?;
         self.expect_terminator()?;
@@ -4104,15 +4059,7 @@ impl Parser {
                     // Only type names (uppercase) can have static methods or struct literals
                     let is_static_method = Self::is_type_name(&name)
                         && self.looks_like_generic_type_with_static_method();
-                    // Same scan as the two above: `Name<Args>` followed by `{`.
-                    // This used to be its own copy that only matched a single
-                    // `>`, so `Layers<Vec<i64>> {` — where one `>>` token closes
-                    // both brackets — never closed its counter and the literal
-                    // read as a comparison (#1078).
-                    let is_struct_literal = Self::is_type_name(&name)
-                        && self.looks_like_generic_followed_by(&TokenKind::LBrace);
-
-                    if is_generic_call || is_static_method || is_struct_literal {
+                    if is_generic_call || is_static_method {
                         self.advance(); // consume '<'
                         loop {
                             type_args.push(self.parse_type_name()?);
@@ -4126,11 +4073,7 @@ impl Parser {
 
                 let end = self.tokens[self.pos - 1].span.end;
 
-                let names_a_struct = Self::is_type_name(&name)
-                    || self.declared_structs.contains(&name);
-                if names_a_struct && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
-                    self.parse_struct_literal(name, type_args, start)
-                } else if type_args.is_empty() {
+                if type_args.is_empty() {
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
                 } else {
                     Ok(Expr {
@@ -4435,68 +4378,6 @@ impl Parser {
         }
     }
 
-    fn parse_struct_literal(
-        &mut self,
-        name: String,
-        type_args: Vec<TypeExpr>,
-        start: usize,
-    ) -> Result<Expr, ParseError> {
-        let outer_list = std::mem::replace(&mut self.in_comma_list, true);
-        let result = self.parse_struct_literal_inner(name, type_args, start);
-        self.in_comma_list = outer_list;
-        result
-    }
-
-    fn parse_struct_literal_inner(
-        &mut self,
-        name: String,
-        type_args: Vec<TypeExpr>,
-        start: usize,
-    ) -> Result<Expr, ParseError> {
-        self.expect(&TokenKind::LBrace)?;
-        self.skip_newlines();
-
-        let mut fields = Vec::new();
-        let mut spread = None;
-
-        while !self.check(&TokenKind::RBrace) && !self.at_end() {
-            if self.match_token(&TokenKind::DotDot) {
-                spread = Some(Box::new(self.parse_expr()?));
-                self.skip_newlines();
-                break;
-            }
-
-            let field_name = self.expect_ident_or_keyword()?;
-
-            let value = if self.match_token(&TokenKind::Colon) {
-                self.parse_expr()?
-            } else {
-                Expr {
-                    id: self.next_id(),
-                    kind: ExprKind::Ident(field_name.clone()),
-                    span: self.tokens[self.pos - 1].span.clone(),
-                }
-            };
-
-            fields.push(FieldInit { name: field_name, value });
-
-            if !self.match_token(&TokenKind::Comma) {
-                self.skip_newlines();
-                break;
-            }
-            self.skip_newlines();
-        }
-
-        self.expect(&TokenKind::RBrace)?;
-        let end = self.tokens[self.pos - 1].span.end;
-
-        Ok(Expr {
-            id: self.next_id(),
-            kind: ExprKind::StructLit { name, type_args, fields, spread },
-            span: self.span(start, end),
-        })
-    }
-
     fn parse_assert_expr(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::Assert)?;
@@ -4555,20 +4436,24 @@ impl Parser {
             return Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(Vec::new()), span: self.span(start, end) });
         }
 
+        self.skip_newlines();
         let first = self.parse_expr()?;
 
-        if self.match_token(&TokenKind::Comma) {
+        let tuple = self.check(&TokenKind::Comma);
+        if self.list_continues(&TokenKind::RParen)? || tuple {
             let mut elements = vec![first];
             self.in_comma_list = true;
             while !self.check(&TokenKind::RParen) && !self.at_end() {
                 elements.push(self.parse_expr()?);
-                if !self.match_token(&TokenKind::Comma) { break; }
+                if !self.list_continues(&TokenKind::RParen)? { break; }
             }
             self.in_comma_list = false;
+            self.skip_newlines();
             self.expect(&TokenKind::RParen)?;
             let end = self.tokens[self.pos - 1].span.end;
             Ok(Expr { id: self.next_id(), kind: ExprKind::Tuple(elements), span: self.span(start, end) })
         } else {
+            self.skip_newlines();
             self.expect(&TokenKind::RParen)?;
             Ok(first)
         }
@@ -4593,7 +4478,6 @@ impl Parser {
         }
 
         let first = self.parse_expr()?;
-        self.skip_newlines();
 
         if self.match_token(&TokenKind::Semi) {
             let count = self.parse_expr()?;
@@ -4608,16 +4492,14 @@ impl Parser {
         }
 
         let mut elements = vec![first];
-        if self.match_token(&TokenKind::Comma) {
-            self.skip_newlines();
+        if self.list_continues(&TokenKind::RBracket)? {
             while !self.check(&TokenKind::RBracket) && !self.at_end() {
                 elements.push(self.parse_expr()?);
-                self.skip_newlines();
-                if !self.match_token(&TokenKind::Comma) { break; }
-                self.skip_newlines();
+                if !self.list_continues(&TokenKind::RBracket)? { break; }
             }
         }
 
+        self.skip_newlines();
         self.expect(&TokenKind::RBracket)?;
         let end = self.tokens[self.pos - 1].span.end;
         Ok(Expr { id: self.next_id(), kind: ExprKind::Array(elements), span: self.span(start, end) })
@@ -4877,48 +4759,6 @@ impl Parser {
                         self.current_kind(),
                         self.current().span,
                     ).with_hint("Generic type arguments must be followed by ()"))
-                } else if self.check(&TokenKind::LBrace) && self.allow_brace_expr {
-                    // Struct variant constructor: Enum.Variant { field: value }
-                    // Only when base is a type name (uppercase) to avoid ambiguity
-                    // with blocks — and never in a condition, where the brace
-                    // starts the body. Without that second guard,
-                    // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
-                    // literal and swallowed the if-block (#342).
-                    //
-                    // The head is a name chain — `Shape.Circle`, but also
-                    // `bits.BinaryParseError.UnexpectedEnd` through a module
-                    // (#1461) — so the whole path is read, not just one dot.
-                    //
-                    // `Slot<i64>.Pair { … }` names the instantiation at the
-                    // variant (type.enums/E4a), as `Slot<i64>.Full(1)` does.
-                    if let ExprKind::GenericName { name, type_args } = &lhs.kind {
-                        if name.starts_with(|c: char| c.is_uppercase())
-                            && field.starts_with(|c: char| c.is_uppercase())
-                        {
-                            let name = format!("{}.{}", name, field);
-                            let type_args = type_args.clone();
-                            return self.parse_struct_literal(name, type_args, start);
-                        }
-                    }
-                    if let Some(mut path) = Self::name_path(&lhs) {
-                        // A module namespace is lowercase by convention —
-                        // `c.Rect { … }`, `http.Response { … }` — so the
-                        // capitalised-head rule doesn't reach it. Only a name
-                        // this file actually imports counts.
-                        let base = &path[0];
-                        let head_names_a_type = base.starts_with(|c: char| c.is_uppercase())
-                            || self.import_namespaces.contains(base);
-                        if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
-                            path.push(field);
-                            self.parse_struct_literal(path.join("."), Vec::new(), start)
-                        } else {
-                            let end = self.tokens[self.pos - 1].span.end;
-                            Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
-                        }
-                    } else {
-                        let end = self.tokens[self.pos - 1].span.end;
-                        Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
-                    }
                 } else {
                     let end = self.tokens[self.pos - 1].span.end;
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
@@ -5023,13 +4863,8 @@ impl Parser {
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         let outer_list = std::mem::replace(&mut self.in_comma_list, true);
-        // An argument list closes the ambiguity a condition opens, the same way
-        // a parenthesised expression does: once the parser is inside `f(`, a
-        // `{` can only start a struct literal, because the body of the `if`
-        // can't start there. Without this `if !accept(Pay { a: 7 }) { … }`
-        // read the literal's brace as the start of the body and reported a
-        // missing `)` — and authoring a sequence hit it immediately, since the
-        // yield is always in a condition (#1236).
+        // Inside `f(` a `{` can't open the body of an enclosing `if`, so
+        // `spawn { … }` is a value again.
         let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
         let result = self.parse_args_loop(raw_first_string, &mut args);
         self.allow_brace_expr = outer_braces;
@@ -5054,30 +4889,20 @@ impl Parser {
                         mode: ArgMode::Default,
                         expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
                     });
-                    self.skip_newlines();
-                    if !self.match_token(&TokenKind::Comma) { break; }
-                    self.skip_newlines();
-                    if self.check(&TokenKind::RParen) { break; }
+                    if !self.list_continues(&TokenKind::RParen)? { break; }
                     continue;
                 }
             }
+            // `..base`: the fields not named come from `base`. Last, since
+            // the named ones are what it's the rest of.
+            if self.match_token(&TokenKind::DotDot) {
+                let expr = self.parse_expr()?;
+                args.push(CallArg { name: None, mode: ArgMode::Spread, expr });
+                self.list_continues(&TokenKind::RParen)?;
+                break;
+            }
             // Capture named argument labels (name: expr)
-            let arg_name = if let TokenKind::Ident(_) = self.current_kind().clone() {
-                if self.peek(1) == &TokenKind::Colon {
-                    let name = if let TokenKind::Ident(n) = self.current_kind().clone() {
-                        n.clone()
-                    } else {
-                        unreachable!()
-                    };
-                    self.advance();
-                    self.advance();
-                    Some(name)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let arg_name = self.take_label();
 
             // Call-site mode keywords (PM4). A move needs none: the name is
             // consumed and every later use of it is an error, which says it
@@ -5093,10 +4918,7 @@ impl Parser {
 
             let expr = self.parse_expr()?;
             args.push(CallArg { name: arg_name, mode, expr });
-            self.skip_newlines();
-            if !self.match_token(&TokenKind::Comma) { break; }
-            self.skip_newlines();
-            if self.check(&TokenKind::RParen) { break; }
+            if !self.list_continues(&TokenKind::RParen)? { break; }
         }
 
         Ok(())
@@ -5819,11 +5641,13 @@ impl Parser {
         match self.current_kind().clone() {
             TokenKind::LParen => {
                 self.advance();
+                self.skip_newlines();
                 let mut patterns = Vec::new();
                 while !self.check(&TokenKind::RParen) && !self.at_end() {
                     patterns.push(self.parse_pattern()?);
-                    if !self.match_token(&TokenKind::Comma) { break; }
+                    if !self.list_continues(&TokenKind::RParen)? { break; }
                 }
+                self.skip_newlines();
                 self.expect(&TokenKind::RParen)?;
                 Ok(Pattern::Tuple(patterns))
             }
@@ -5873,14 +5697,46 @@ impl Parser {
                 let name = written.to_string();
 
                 if self.match_token(&TokenKind::LParen) {
-                    // Constructor pattern: Name(patterns...) or Enum.Variant(patterns...)
-                    let mut fields = Vec::new();
+                    // `Circle(r)`, `Point(x: 0, y)`, `Vertex(x, ..)`. By
+                    // position or by name is the declaration's call: with a
+                    // label or `..` written it's by name here; otherwise
+                    // desugar decides from what `name` declares.
+                    self.skip_newlines();
+                    let mut items: Vec<(Option<String>, Pattern)> = Vec::new();
+                    let mut rest = false;
                     while !self.check(&TokenKind::RParen) && !self.at_end() {
-                        fields.push(self.parse_pattern()?);
-                        if !self.match_token(&TokenKind::Comma) { break; }
+                        if self.match_token(&TokenKind::DotDot) {
+                            rest = true;
+                        } else if let Some(label) = self.take_label() {
+                            items.push((Some(label), self.parse_pattern()?));
+                        } else {
+                            items.push((None, self.parse_pattern()?));
+                        }
+                        if !self.list_continues(&TokenKind::RParen)? { break; }
                     }
+                    self.skip_newlines();
                     self.expect(&TokenKind::RParen)?;
-                    Ok(Pattern::Constructor { name, fields })
+                    if !rest && items.iter().all(|(l, _)| l.is_none()) {
+                        let fields = items.into_iter().map(|(_, p)| p).collect();
+                        return Ok(Pattern::Constructor { name, fields });
+                    }
+                    let mut fields = Vec::new();
+                    for (label, pattern) in items {
+                        match (label, pattern) {
+                            (Some(l), p) => fields.push((l, p)),
+                            // Shorthand: `x` is `x: x`.
+                            (None, Pattern::Ident(n)) => fields.push((n.clone(), Pattern::Ident(n))),
+                            (None, _) => {
+                                return Err(ParseError {
+                                    span: self.tokens[self.pos - 1].span,
+                                    message: format!("`{}(…)` mixes fields by name and by position", name),
+                                    hint: Some("name the field this pattern is for: `field: pattern`".to_string()),
+                                    why: Some("with a name or `..` written, every field is given by name; a bare name is short for `name: name`".to_string()),
+                                });
+                            }
+                        }
+                    }
+                    Ok(Pattern::Struct { name, fields, rest })
                 } else if self.check(&TokenKind::As)
                     && matches!(self.peek(1), TokenKind::Ident(_))
                 {
@@ -5889,53 +5745,6 @@ impl Parser {
                     self.advance();
                     let binding = self.expect_ident()?;
                     Ok(Pattern::TypePat { ty: written, binding: Some(binding) })
-                } else if self.check(&TokenKind::LBrace)
-                    && self.allow_brace_expr
-                    && (name.contains('.') || Self::is_type_name(&name))
-                {
-                    // A struct pattern: `Point { x, y }`, or an enum's
-                    // struct-shaped variant, `Enum.Variant { field1, field2 }`.
-                    //
-                    // Only qualified names used to be accepted, so the plain
-                    // struct form the spec documents — `Point { x: 0, y }` in
-                    // structs.md and SYNTAX.md — didn't parse at all. Both spec
-                    // blocks are `test: skip`, which is why nothing noticed.
-                    //
-                    // Braces have to be allowed: in `if p is Point { … }` the
-                    // `{` opens the branch, and that's what `allow_brace_expr`
-                    // is for.
-                    self.advance();
-                    self.skip_newlines();
-                    let mut fields = Vec::new();
-                    let mut rest = false;
-                    while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                        // `..` ignores the fields the pattern doesn't name, which
-                        // is also how a `private` field is skipped (structs.md's
-                        // "Partial patterns").
-                        if self.match_token(&TokenKind::DotDot) {
-                            rest = true;
-                            self.skip_newlines();
-                            let _ = self.match_token(&TokenKind::Comma);
-                            self.skip_newlines();
-                            continue;
-                        }
-                        let field_name = self.expect_ident()?;
-                        let pattern = if self.match_token(&TokenKind::Colon) {
-                            self.parse_pattern()?
-                        } else {
-                            // Shorthand: { field } means { field: field }
-                            Pattern::Ident(field_name.clone())
-                        };
-                        fields.push((field_name, pattern));
-                        if !self.match_token(&TokenKind::Comma) {
-                            self.skip_newlines();
-                            if !self.check(&TokenKind::RBrace) { continue; }
-                        } else {
-                            self.skip_newlines();
-                        }
-                    }
-                    self.expect(&TokenKind::RBrace)?;
-                    Ok(Pattern::Struct { name, fields, rest })
                 } else {
                     Ok(Pattern::Ident(name))
                 }

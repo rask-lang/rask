@@ -38,7 +38,7 @@ test "a Map's key slot" {
 }
 
 test "a user generic's slot" {
-    mut bag = Bag<Vec<i64>> { items: Vec.new() }
+    mut bag = Bag<Vec<i64>>(items: Vec.new())
     bag.add([4, 5, 6])
     assert bag.items[0].len() == 3
 }

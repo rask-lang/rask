@@ -130,7 +130,7 @@ test "a compared string that moved into a struct field" {
     while i < 20 {
         let s = long_label(i)
         assert s == "a label long enough to need the heap {i}"
-        let n = Named { label: s }
+        let n = Named(label: s)
         total = total + n.label.len()
         i = i + 1
     }

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects what the bracket rules leave no meaning for (SYNTAX.md, Brackets).
+//
+// A struct is filled by name: a value by position, or a bare name that isn't
+// a field, says nothing about which field it fills (E0416). A `..base` only
+// builds a value from another one. A type's name starts with a capital
+// (E0417). The list rule's own error is a parse error and lives in
+// list_leading_operator.rk, since it would stop the passes these need.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct widget {                       // ERROR: E0417 lowercase type name
+    size: i64
+}
+
+enum Shape {
+    Rect(w: i64, h: i64)
+}
+
+func sum(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+func main() {
+    let p = Point(1, 2)               // ERROR: E0416 a value by position
+    let n = 3
+    let q = Point(n, y: 1)            // ERROR: E0416 `n` isn't a field
+    let s = sum(1, ..p)               // ERROR: E0416 a spread into a function call
+    match Shape.Rect(w: 1, h: 2) {
+        Rect(a, b) => println("{a}")  // ERROR: E0416 bare names that aren't fields
+    }
+}

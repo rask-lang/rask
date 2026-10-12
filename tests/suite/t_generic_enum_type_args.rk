@@ -68,7 +68,7 @@ test "type.enums — two parameters, and the one that names neither" {
 }
 
 test "type.enums — an aggregate payload with written arguments" {
-    let big = Holder<Big>.Full(Big { a: 1, b: 2, c: 3 })
+    let big = Holder<Big>.Full(Big(a: 1, b: 2, c: 3))
     match big {
         Holder.Full(v) => assert v.b == 2
         Holder.Empty => assert false

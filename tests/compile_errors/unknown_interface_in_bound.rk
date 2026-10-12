@@ -74,5 +74,5 @@ func both<T: Printable + Printabel>(x: T) -> string {
 }
 
 func main() {
-    println(both(Page { n: 1 }))
+    println(both(Page(n: 1)))
 }

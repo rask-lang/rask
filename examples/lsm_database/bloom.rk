@@ -20,7 +20,7 @@ extend BloomFilter {
         for _ in 0..BLOOM_BITS {
             bit_vec.push(false)
         }
-        return BloomFilter { bits: bit_vec, count: 0 }
+        return BloomFilter(bits: bit_vec, count: 0)
     }
 
     func insert(mutate self, key: string) {
@@ -81,7 +81,7 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
         bit_vec.push(val)
         if val { count += 1 }
     }
-    return BloomFilter { bits: bit_vec, count }
+    return BloomFilter(bits: bit_vec, count)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

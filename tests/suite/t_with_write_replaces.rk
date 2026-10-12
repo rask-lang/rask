@@ -13,12 +13,12 @@ struct Account {
     balance: i64
 }
 
-const BANK = Shared.mutex(Account { owner: "nobody", balance: 0 })
+const BANK = Shared.mutex(Account(owner: "nobody", balance: 0))
 
 test "a whole-value write replaces a local box's payload" {
-    let acct = Shared.mutex(Account { owner: "ada", balance: 1 })
+    let acct = Shared.mutex(Account(owner: "ada", balance: 1))
     with acct.write() as a {
-        a = Account { owner: "grace {a.balance}", balance: 20 }
+        a = Account(owner: "grace {a.balance}", balance: 20)
     }
     with acct.read() as a {
         assert a.owner == "grace 1"
@@ -28,7 +28,7 @@ test "a whole-value write replaces a local box's payload" {
 
 test "and a module-level box's" {
     with BANK.write() as a {
-        a = Account { owner: "linus", balance: 5 }
+        a = Account(owner: "linus", balance: 5)
     }
     with BANK.read() as a {
         assert a.owner == "linus"
@@ -37,12 +37,12 @@ test "and a module-level box's" {
 }
 
 test "the binding doesn't leak to an outer name of the same spelling" {
-    mut a = Account { owner: "outer", balance: 1 }
-    let box = Shared.mutex(Account { owner: "inner", balance: 2 })
+    mut a = Account(owner: "outer", balance: 1)
+    let box = Shared.mutex(Account(owner: "inner", balance: 2))
     with box.write() as a {
-        a = Account { owner: "replaced", balance: 3 }
+        a = Account(owner: "replaced", balance: 3)
     }
-    a = Account { owner: "outer again", balance: 4 }
+    a = Account(owner: "outer again", balance: 4)
     assert a.owner == "outer again"
     with box.read() as b {
         assert b.owner == "replaced"

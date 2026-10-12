@@ -50,7 +50,7 @@ extend Task {
 
 test "a method on the node, called through its link" {
     mut r: Rack<Task> = Rack.new()
-    let a = r.insert(Task { id: 1, name: "a" })
+    let a = r.insert(Task(id: 1, name: "a"))
     a.tags.push("x")
     assert a.has_tag("x")
     assert !a.has_tag("y")
@@ -60,7 +60,7 @@ test "a method on the node, called through its link" {
 
 test "a mutate self method writes the node in place" {
     mut r: Rack<Task> = Rack.new()
-    let a = r.insert(Task { id: 1, name: "a" })
+    let a = r.insert(Task(id: 1, name: "a"))
     a.tag("x")
     a.tag("x")
     a.tag("y")
@@ -70,8 +70,8 @@ test "a mutate self method writes the node in place" {
 
 test "links held in a collection" {
     mut r: Rack<Task> = Rack.new()
-    let a = r.insert(Task { id: 1, name: "a" })
-    let b = r.insert(Task { id: 2, name: "b" })
+    let a = r.insert(Task(id: 1, name: "a"))
+    let b = r.insert(Task(id: 2, name: "b"))
     b.tag("z")
     mut links: Vec<Link<Task>> = Vec.new()
     links.push(a)
@@ -88,8 +88,8 @@ test "links held in a collection" {
 
 test "identity stays the link's" {
     mut r: Rack<Task> = Rack.new()
-    let a = r.insert(Task { id: 1, name: "same" })
-    let b = r.insert(Task { id: 1, name: "same" })
+    let a = r.insert(Task(id: 1, name: "same"))
+    let b = r.insert(Task(id: 1, name: "same"))
     assert a != b
     assert a == a
 }

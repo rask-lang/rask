@@ -80,9 +80,9 @@ test "type.optionals — string payloads compare by content" {
 }
 
 test "type.optionals — struct payloads compare field-wise" {
-    let p: Point? = Point { x: 1, y: 2 }
-    let q: Point? = Point { x: 1, y: 2 }
-    let r: Point? = Point { x: 1, y: 3 }
+    let p: Point? = Point(x: 1, y: 2)
+    let q: Point? = Point(x: 1, y: 2)
+    let r: Point? = Point(x: 1, y: 3)
     assert p == q
     assert !(p == r)
 }

@@ -44,7 +44,7 @@ test "clear releases what the elements own" {
     vv.clear()
     assert vv.is_empty()
     mut recs: Vec<Rec> = Vec.new()
-    recs.push(Rec { name: "record-with-a-heap-string-name", n: 1 })
+    recs.push(Rec(name: "record-with-a-heap-string-name", n: 1))
     recs.clear()
     assert recs.is_empty()
 }
@@ -100,7 +100,7 @@ test "filtered-out elements stay with the vector take_all made" {
 test "a split through take_all puts survivors back" {
     mut recs: Vec<Rec> = Vec.new()
     for i in 0..6 {
-        recs.push(Rec { name: "record-name-long-enough-{i}", n: i })
+        recs.push(Rec(name: "record-name-long-enough-{i}", n: i))
     }
     mut odd: Vec<Rec> = Vec.new()
     for r in recs.take_all() {

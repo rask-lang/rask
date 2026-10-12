@@ -963,7 +963,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         // The enclosing struct field's declared type, when the checker has nothing
-        // for this node. `Headers { entries: Map<string, string> }` initialised by
+        // for this node. `Headers(entries: Map<string, string>)` initialised by
         // `Map.new()` inside a stdlib body is exactly that case, and falling back
         // to an 8-byte slot silently halved every `string` value stored in it.
         if self.ctx.lookup_raw_type(node_id).is_none() {

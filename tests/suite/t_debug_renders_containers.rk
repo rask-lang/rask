@@ -57,11 +57,11 @@ test "an empty Vec is a pair of brackets" {
 }
 
 test "a Vec inside a struct renders, it doesn't print the buffer" {
-    let h = Holder { items: [1, 2].to_vec(), name: "n" }
+    let h = Holder(items: [1, 2].to_vec(), name: "n")
     assert "{h:debug}" == "Holder {{ items: [1, 2], name: \"n\" }}"
 }
 
 test "a struct and an enum still render as before" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     assert "{p:debug}" == "Point {{ x: 1, y: 2 }}"
 }

@@ -974,6 +974,7 @@ impl Hasher {
                 ArgMode::Default => 0,
                 ArgMode::Mutate => 2,
                 ArgMode::Deleting => 3,
+                ArgMode::Spread => 4,
             });
             self.hash_expr(&arg.expr);
         }

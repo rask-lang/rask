@@ -79,7 +79,7 @@ public struct Headers {
 
 extend Headers {
     public func new() -> Headers {
-        return Headers { entries: Map.new() }
+        return Headers(entries: Map.new())
     }
     public func get(self, name: string) -> string? {
         // Case-insensitive: lowercase the key for lookup
@@ -108,12 +108,12 @@ public struct Request {
 
 extend Request {
     public func new(method: Method, url: string) -> Request {
-        return Request {
+        return Request(
             method,
             url,
             headers: Headers.new(),
             body: "",
-        }
+        )
     }
     public func with_header(take self, name: string, value: string) -> Request {
         self.headers.set(name, value)
@@ -182,11 +182,11 @@ public struct Response {
 extend Response {
     // ── Constructors ──
     public func new(status: u16, body: string) -> Response {
-        return Response {
+        return Response(
             status,
             headers: Headers.new(),
             body,
-        }
+        )
     }
     public func ok(body: string) -> Response {
         return Response.new(200, body)
@@ -360,12 +360,12 @@ func parse_http_request(raw: string) -> Request or HttpError {
         ""
     }
 
-    return Request {
+    return Request(
         method,
         url: path,
         headers,
         body,
-    }
+    )
 }
 
 // ─── HTTP/1.1 Response Formatter ─────────────────────────────────
@@ -729,11 +729,11 @@ func parse_http_response(raw: string) -> Response or HttpError {
         ""
     }
 
-    return Response {
+    return Response(
         status,
         headers,
         body,
-    }
+    )
 }
 
 // Connect, send request, read response, close connection.
@@ -827,7 +827,7 @@ extend HttpServer {
             let _ = conn.close()
             return e
         }
-        return (request, Responder { conn })
+        return (request, Responder(conn))
     }
     public func local_addr(self) -> string {
         return self.addr
@@ -878,7 +878,7 @@ extend http {
         // The address the listener got, not the one asked for: `:0` asks the
         // OS for a port, and handing back `:0` sent clients nowhere.
         let bound = listener.local_addr()
-        return HttpServer { listener, addr: bound }
+        return HttpServer(listener, addr: bound)
     }
 
     /// One-line HTTP server. Spawns a green task per request.
@@ -927,7 +927,7 @@ public struct HttpClient {
 
 extend HttpClient {
     public func new() -> HttpClient {
-        return HttpClient { default_headers: Headers.new() }
+        return HttpClient(default_headers: Headers.new())
     }
     public func with_timeout(take self, timeout: Duration) -> HttpClient {
         // Timeout not yet wired to socket options

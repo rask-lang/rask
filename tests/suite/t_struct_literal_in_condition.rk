@@ -27,14 +27,14 @@ func accept(p: Pay) -> bool {
 
 func pair() -> Sequence<Pay> {
     return |yield| {
-        if !yield(Pay { a: 7 }) { return }
-        if !yield(Pay { a: 42 }) { return }
+        if !yield(Pay(a: 7)) { return }
+        if !yield(Pay(a: 42)) { return }
     }
 }
 
 test "a struct literal in an if condition" {
     mut seen = false
-    if accept(Pay { a: 7 }) {
+    if accept(Pay(a: 7)) {
         seen = true
     }
     assert seen
@@ -42,7 +42,7 @@ test "a struct literal in an if condition" {
 
 test "negated" {
     mut seen = false
-    if !accept(Pay { a: 0 }) {
+    if !accept(Pay(a: 0)) {
         seen = true
     }
     assert seen
@@ -50,7 +50,7 @@ test "negated" {
 
 test "in a while condition" {
     mut turns = 0
-    while accept(Pay { a: 1 - turns }) {
+    while accept(Pay(a: 1 - turns)) {
         turns = turns + 1
     }
     assert turns == 1

@@ -56,25 +56,25 @@ func itself<W: Wrapped>(w: W) -> W.Me {
 }
 
 test "a binding naming the type's parameter reads the instance's argument" {
-    let c = Cell1 { v: 5 }
+    let c = Cell1(v: 5)
     let x: i64 = first(c)
     assert x == 5
 }
 
 test "unannotated, the projection still settles" {
-    let c = Cell1 { v: "hi" }
+    let c = Cell1(v: "hi")
     let s = first(c)
     assert s.len() == 2
 }
 
 test "a renamed header parameter" {
-    let b = Boxed { inner: 2.5 }
+    let b = Boxed(inner: 2.5)
     let f: f64 = first(b)
     assert f == 2.5
 }
 
 test "a `Self` default on a generic type is the instance" {
-    let c = Cell1 { v: 7 }
+    let c = Cell1(v: 7)
     let back: Cell1<i64> = itself(c)
     assert back.v == 7
 }

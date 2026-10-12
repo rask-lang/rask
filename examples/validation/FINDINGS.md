@@ -51,7 +51,7 @@ Last pass, five spec constructs didn't parse. Now:
 | field annotations `@rename/@no_serialize/@default` | ✗ | ✗ still unimplemented |
 
 Nominal interface conformance is **enforced** (G1) — a good change; the program
-relies on it. Field defaults now land: `Config {}` is the fully-defaulted value
+relies on it. Field defaults now land: `Config()` is the fully-defaulted value
 (FD3), and `Task`/`TaskPatch`/`ListFilter` name only the fields that vary. The
 one remaining parser gap is field annotations:
 

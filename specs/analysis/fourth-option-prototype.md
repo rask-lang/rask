@@ -23,13 +23,13 @@ each fail exactly one of those tests, so they check what they claim to.
 Everything below depends on these three paragraphs, so they come first.
 
 **A link is a pointer to a node.** At runtime, literally
-`Link { rack_id, node: <pointer to the node> }`. Reading `l.health` follows the
+`Link(rack_id, node: <pointer to the node>)`. Reading `l.health` follows the
 pointer and reads the field; that is the entire type. It is not a copy of the
 node, not an index, not a ticket. Copying a link copies the pointer — the node is
 never duplicated:
 
 ```rask
-let a = s.insert(Node { id: 1, hits: 0 })
+let a = s.insert(Node(id: 1, hits: 0))
 let b = a                 // second pointer to the same node
 a.hits += 1
 b.hits += 1
@@ -107,7 +107,7 @@ module-level `const` is outside every function body, so no flow analysis reaches
 it, and it is not a field, so the rack never wrote it down:
 
 ```rask
-const ROOT: Link<Node> = Rack.new().insert(Node { id: 1 })
+const ROOT: Link<Node> = Rack.new().insert(Node(id: 1))
 func main() { println("{ROOT.id}") }        // typechecks, prints 1
 ```
 
@@ -394,10 +394,10 @@ link straight into a field and reads it back out for the second use:
 ```rask
 func push_back(mutate list: List, value: i32) {
     if list.tail? as t {
-        t.next = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+        t.next = list.nodes.insert(Node(value: value, next: none, prev: list.tail))
         list.tail = t.next                       // read it back from the field
     } else {
-        list.head = list.nodes.insert(Node { value: value, next: none, prev: none })
+        list.head = list.nodes.insert(Node(value: value, next: none, prev: none))
         list.tail = list.head
     }
 }
@@ -481,7 +481,7 @@ names no link at all and deletes every node, so nothing consumed anything and
 this compiled and printed `a`:
 
 ```rask
-let n = s.insert(Node { name: "a", peer: none })
+let n = s.insert(Node(name: "a", peer: none))
 s.clear()
 println("{n.name}")        // read of a freed node, no diagnostic
 ```
@@ -504,7 +504,7 @@ func cleanup(mutate s: Rack<Node>) {
     for n in s.nodes() { s.delete(n) }    // re-derives links from the rack
 }
 
-let n = s.insert(Node { name: "a", peer: none })
+let n = s.insert(Node(name: "a", peer: none))
 cleanup(s)
 println("{n.name}")        // still compiles, still reads a freed node
 ```
@@ -720,7 +720,7 @@ views at all today — this typechecks:
 
 ```rask
 let v = o.inner
-o.inner = Inner { a: 9, b: 9, c: 9 }   // mutate the source
+o.inner = Inner(a: 9, b: 9, c: 9)   // mutate the source
 println("{v.a}")                       // and read the view afterwards
 ```
 
@@ -768,8 +768,8 @@ was really about `clear` produced the same shape with no `clear` in it, in one
 function body:
 
 ```rask
-let first = s.insert(Node { id: 1, peer: none })
-let _second = s.insert(Node { id: 2, peer: none })
+let first = s.insert(Node(id: 1, peer: none))
+let _second = s.insert(Node(id: 2, peer: none))
 for n in s.nodes() {
     s.delete(n)          // `n` is whichever node the loop reached
 }
@@ -793,8 +793,8 @@ the rule was already load-bearing before the annotation existed.
 Pushed on directly, and the answer is the cascade hole's little sibling:
 
 ```rask
-let a = s.insert(Node { id: 1, peer: none })
-let b = s.insert(Node { id: 2, peer: none })
+let a = s.insert(Node(id: 1, peer: none))
+let b = s.insert(Node(id: 2, peer: none))
 a.peer = b
 if a.peer? as t {
     s.delete(b)          // names `b` — kills the name `b`
@@ -1348,9 +1348,9 @@ the litmus programs:
 
 | Node type | Flat? |
 |---|---|
-| `Node { value: i32, next: Handle?, prev: Handle? }` | yes — tier A |
-| `Entity { name: string, health: i32, target: Handle? }` | no, `string` |
-| `SceneNode { name: string, children: Vec<Handle> }` | no, `string` + `Vec` |
+| `Node(value: i32, next: Handle?, prev: Handle?)` | yes — tier A |
+| `Entity(name: string, health: i32, target: Handle?)` | no, `string` |
+| `SceneNode(name: string, children: Vec<Handle>)` | no, `string` + `Vec` |
 
 Two of three realistic graph nodes were already out of tier A before links were
 proposed. What links actually cost is the remaining slice: mmap and bitwise copy

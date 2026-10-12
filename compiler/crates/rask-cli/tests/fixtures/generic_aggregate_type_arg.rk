@@ -30,10 +30,10 @@ struct Big {
 
 func main() {
     // A scalar argument fits the placeholder slot.
-    let n = One { only: 5 }
+    let n = One(only: 5)
     println("{n.get()}")
 
     // A 24-byte Big needs a layout of its own, and a body that agrees with it.
-    let b = One { only: Big { a: 1, b: 2, c: 3 } }
+    let b = One(only: Big(a: 1, b: 2, c: 3))
     println("{b.get().a}")
 }

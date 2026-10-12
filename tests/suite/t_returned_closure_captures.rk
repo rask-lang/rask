@@ -140,7 +140,7 @@ func heap(s: string) -> string {
 func hands_containers_to_a_take() -> i64 {
     let tags: Vec<string> = [heap("a"), heap("b")]
     let s = heap("s")
-    let b = Bag { name: heap("bag"), items: [heap("i")] }
+    let b = Bag(name: heap("bag"), items: [heap("i")])
     let f = |x| x + tags.len().wrap<i64>() + s.len().wrap<i64>() + b.items.len().wrap<i64>() + b.name.len().wrap<i64>()
     return consume(f)
 }

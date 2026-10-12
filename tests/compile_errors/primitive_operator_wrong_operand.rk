@@ -33,7 +33,7 @@ enum Color {
 }
 
 func main() {
-    let d = Meters { v: 3.0 }
+    let d = Meters(v: 3.0)
     let f: f64 = 2.0
     let i: i64 = 2
     let s = "hi"

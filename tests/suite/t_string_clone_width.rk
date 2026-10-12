@@ -40,7 +40,7 @@ test "cloning a Vec and a struct still works" {
     let v2 = v.clone()
     assert v2[0] == "one"
 
-    let p = Point { x: 1, y: "why" }
+    let p = Point(x: 1, y: "why")
     let q = p.clone()
     assert q.y == "why"
     assert q.x == 1

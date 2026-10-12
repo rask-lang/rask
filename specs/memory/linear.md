@@ -84,7 +84,7 @@ struct DbConn {
 
 extend DbConn {
     func open(path: string) -> DbConn or Error {
-        return DbConn { handle: 1 }
+        return DbConn(handle: 1)
     }
 
     func read_text(self) -> string or Error {

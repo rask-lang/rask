@@ -86,7 +86,7 @@ test "mutate element — narrower and floating element types" {
 
 // A field has storage of its own and has always worked; it must keep working.
 test "mutate element — a struct field still writes back" {
-    mut p = Point { x: 1, y: 2 }
+    mut p = Point(x: 1, y: 2)
     bump(mutate p.x)
     assert p.x == 101
     assert p.y == 2

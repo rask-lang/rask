@@ -16,22 +16,22 @@ enum Shape {
 // E24b: the tag and the field would both be written as "kind".
 @tag("kind")
 enum Event {
-    Click { kind: string }         // ERROR: @tag collides with a payload field
+    Click(kind: string)         // ERROR: @tag collides with a payload field
 }
 
 // The collision is per-variant: a sibling that doesn't use the name is fine,
 // but the offending one is still reported.
 @tag("t")
 enum Mixed {
-    Fine { x: i64 }
-    Bad { t: string }              // ERROR: @tag collides with a payload field
+    Fine(x: i64)
+    Bad(t: string)              // ERROR: @tag collides with a payload field
 }
 
 func main() {
     let s = Shape.Circle(1.0)
     println(json.encode(s))
-    let e = Event.Click { kind: "press" }
+    let e = Event.Click(kind: "press")
     println(json.encode(e))
-    let m = Mixed.Bad { t: "x" }
+    let m = Mixed.Bad(t: "x")
     println(json.encode(m))
 }

@@ -48,7 +48,7 @@ test "mem.ownership — the same for the other primitives" {
 
 // The check still has to fire where it should.
 test "mem.ownership — a real `mutate self` on a `mut` binding still works" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     c.bump()
     c.bump()
     assert c.read() == 2

@@ -87,7 +87,7 @@ struct RateLimiter {
 
 extend RateLimiter {
     func new() -> RateLimiter {
-        return RateLimiter { counters: Shared.mutex(Map.new()) }
+        return RateLimiter(counters: Shared.mutex(Map.new()))
     }
 }
 
@@ -104,7 +104,7 @@ RateLimiter implements Middleware {
         // Mutex doesn't unwrap in the current checker (FINDINGS).
         let used: u64 = self.counters.write().get(key) ?? 0
         if used >= limit {
-            return MwOutcome.Short(error_response(ApiError.RateLimited(60)))
+            return MwOutcome.Short(error_response(ApiError.RateLimited(seconds: 60)))
         }
         self.counters.write().insert(key, used + 1)
         return MwOutcome.Continue
@@ -120,7 +120,7 @@ func client_key(req: Request) -> string {
 // a vtable dispatch (TR12).
 
 func build_chain() -> Vec<any Middleware> {
-    return Vec.from([RequestLogger {} as any Middleware, AuthGuard { required_token: auth_token() } as any Middleware, RateLimiter.new() as any Middleware])
+    return Vec.from([RequestLogger() as any Middleware, AuthGuard(required_token: auth_token()) as any Middleware, RateLimiter.new() as any Middleware])
 }
 
 // Built once at startup, shared read-only across request tasks.

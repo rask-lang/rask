@@ -48,8 +48,8 @@ test "mem.shared-rack-heap — replace hands back a string" {
 }
 
 test "mem.shared-rack-heap — replace hands back a struct" {
-    let c = Shared<Point>.local(Point { x: 1, y: 2 })
-    let old = c.replace(Point { x: 3, y: 4 })
+    let c = Shared<Point>.local(Point(x: 1, y: 2))
+    let old = c.replace(Point(x: 3, y: 4))
     assert old.x == 1
     assert old.y == 2
     assert c.get().x == 3
@@ -78,7 +78,7 @@ test "mem.shared-rack-heap — take of a string" {
 }
 
 test "mem.shared-rack-heap — take of a struct" {
-    let c = Shared<Point>.local(Point { x: 5, y: 6 })
+    let c = Shared<Point>.local(Point(x: 5, y: 6))
     let p = c.take()
     assert p.x == 5
     assert p.y == 6

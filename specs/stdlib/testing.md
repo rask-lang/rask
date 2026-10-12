@@ -234,7 +234,7 @@ benchmark "vec push" {
 interface Clock { func now() -> Timestamp }
 
 test "schedule" {
-    let fake = FakeClock { current: Timestamp(1000) }
+    let fake = FakeClock(current: Timestamp(1000))
     assert schedule(fake, Duration.seconds(5)) == Timestamp(1005)
 }
 ```

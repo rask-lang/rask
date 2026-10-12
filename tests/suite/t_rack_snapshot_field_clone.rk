@@ -40,8 +40,8 @@ struct Indexed {
 
 test "mem.racks — a snapshot's node has its own vector" {
     mut r: Rack<Node> = Rack.new()
-    let a = r.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let b = r.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let a = r.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let b = r.insert(Node(id: 2, peer: none, kids: Vec.new()))
     a.kids.push(b)
 
     let copy = r.snapshot()
@@ -59,8 +59,8 @@ test "mem.racks — a snapshot's node has its own vector" {
 
 test "mem.racks — and the other way round" {
     mut r: Rack<Node> = Rack.new()
-    let a = r.insert(Node { id: 5, peer: none, kids: Vec.new() })
-    let b = r.insert(Node { id: 6, peer: none, kids: Vec.new() })
+    let a = r.insert(Node(id: 5, peer: none, kids: Vec.new()))
+    let b = r.insert(Node(id: 6, peer: none, kids: Vec.new()))
     a.kids.push(b)
 
     mut copy = r.snapshot()
@@ -78,8 +78,8 @@ test "mem.racks — and the other way round" {
 // the second walk is for — so a fix that skipped the walk entirely fails here.
 test "mem.racks — the links inside the copied vector point at the copy" {
     mut r: Rack<Node> = Rack.new()
-    let a = r.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let b = r.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let a = r.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let b = r.insert(Node(id: 2, peer: none, kids: Vec.new()))
     a.kids.push(b)
 
     let copy = r.snapshot()
@@ -98,8 +98,8 @@ test "mem.racks — the links inside the copied vector point at the copy" {
 // is exercised too.
 test "mem.racks — a string and a vector in one node" {
     mut r: Rack<Tagged> = Rack.new()
-    let a = r.insert(Tagged { label: "a label long enough to allocate", kids: Vec.new() })
-    let b = r.insert(Tagged { label: "and a second label, also long", kids: Vec.new() })
+    let a = r.insert(Tagged(label: "a label long enough to allocate", kids: Vec.new()))
+    let b = r.insert(Tagged(label: "and a second label, also long", kids: Vec.new()))
     a.kids.push(b)
 
     let copy = r.snapshot()
@@ -116,8 +116,8 @@ test "mem.racks — a string and a vector in one node" {
 // clone-and-remap arm and nothing exercised it.
 test "mem.racks — a map field is cloned once and remapped" {
     mut r: Rack<Indexed> = Rack.new()
-    let x = r.insert(Indexed { label: "the parent label is long enough", by_name: Map.new() })
-    let y = r.insert(Indexed { label: "the child label is long as well", by_name: Map.new() })
+    let x = r.insert(Indexed(label: "the parent label is long enough", by_name: Map.new()))
+    let y = r.insert(Indexed(label: "the child label is long as well", by_name: Map.new()))
     x.by_name.insert("child", y)
 
     let copy = r.snapshot()
@@ -149,8 +149,8 @@ test "mem.racks — snapshotting in a loop" {
     mut total: usize = 0
     for i in 1..6 {
         mut r: Rack<Node> = Rack.new()
-        let a = r.insert(Node { id: i.clamp<i32>(), peer: none, kids: Vec.new() })
-        let b = r.insert(Node { id: 0, peer: none, kids: Vec.new() })
+        let a = r.insert(Node(id: i.clamp<i32>(), peer: none, kids: Vec.new()))
+        let b = r.insert(Node(id: 0, peer: none, kids: Vec.new()))
         a.kids.push(b)
         let copy = r.snapshot()
         total = total + copy.len()

@@ -89,7 +89,7 @@ func validate(input: string) -> bool {
 func parse(input: string) -> Config or ParseError {
     // P4: returning errors is fine — errors are values
     if input.is_empty() { return ParseError.Empty }
-    return Config { value: input }
+    return Config(value: input)
 }
 
 @pure
@@ -105,7 +105,7 @@ func bad_pure(path: string) -> Config or Error {
 | Rule | Check | Severity |
 |------|-------|----------|
 | **ST1: snake-case-func** | Function names are `snake_case` | warning |
-| **ST2: pascal-case-type** | Type/enum/interface names are `PascalCase`. An empty struct is exempt — it declares no data, so it's a namespace (`struct net { }`, which `extend net { … }` hangs off) or a compiler-provided type spelled to match a builtin (`cstring`) | warning |
+| **ST2: pascal-case-type** | Type/enum/interface names are `PascalCase`. The first letter is a compile error already (`type.structs/S1a`); this is the rest of the casing. An empty struct is exempt — it declares no data, so it's a namespace (`struct net { }`, which `extend net { … }` hangs off) or a compiler-provided type spelled to match a builtin (`cstring`) | warning |
 | **ST3: public-return-type** | Public functions have explicit return type annotations | error |
 
 ## Suppression

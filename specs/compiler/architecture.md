@@ -59,7 +59,7 @@ Same for `MirTerminator`. Every IR node carries provenance.
 
 | Rule | Description |
 |------|-------------|
-| **CL1: Ensure in MIR** | `ensure` blocks lower to `EnsurePush { cleanup_block }` / `EnsurePop` statements with `CleanupReturn` terminators. Already implemented — no structural change needed |
+| **CL1: Ensure in MIR** | `ensure` blocks lower to `EnsurePush(cleanup_block)` / `EnsurePop` statements with `CleanupReturn` terminators. Already implemented — no structural change needed |
 | **CL2: Cleanup chains** | `CleanupReturn` carries a `cleanup_chain: Vec<BlockId>` — the LIFO stack of ensure blocks to execute on scope exit. MIR lowering builds the chain; codegen emits the cleanup sequence |
 | **CL3: SSA interaction** | Cleanup blocks are side exits — they don't produce values that flow back into the main CFG. SSA conversion treats cleanup blocks as separate regions. Phi nodes are never inserted at cleanup block boundaries |
 | **CL4: RC interaction** | If an ensure block references a value, liveness analysis keeps it alive through the cleanup — `RcDec` is placed after cleanup executes, not before. No special ordering logic needed; liveness handles it |

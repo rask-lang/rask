@@ -71,7 +71,7 @@ struct Handle {
 
 extend Handle {
     func open(id: i32) -> Handle {
-        return Handle { id: id }
+        return Handle(id: id)
     }
 
     func close(take self) -> void {

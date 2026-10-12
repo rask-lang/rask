@@ -24,7 +24,7 @@ struct Wrapper<T> {
 
 extend Wrapper<T> {
     func new(take value: T) -> Wrapper<T> {
-        return Wrapper { value }
+        return Wrapper(value)
     }
 
     func get(self) -> T {
@@ -33,7 +33,7 @@ extend Wrapper<T> {
 }
 
 func wrap<T>(take value: T) -> Wrapper<T> {
-    return Wrapper { value }
+    return Wrapper(value)
 }
 
 test "type.generics — a static method on a generic type sees its instantiation" {
@@ -67,21 +67,21 @@ struct Pair<T, U> {
 }
 
 func swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
-    return Pair {
+    return Pair(
         first: pair.second,
         second: pair.first,
-    }
+    )
 }
 
 test "type.generics — swapped instantiations don't share a layout" {
-    let int_string = Pair { first: 42, second: "hello" }
+    let int_string = Pair(first: 42, second: "hello")
     let string_int = swap(int_string)
     assert string_int.first == "hello"
     assert string_int.second == 42
 
     // A float on one side and a string on the other: the two slots differ in
     // register class as well as in what they hold.
-    let float_string = Pair { first: 1.5, second: "x" }
+    let float_string = Pair(first: 1.5, second: "x")
     let swapped = swap(float_string)
     assert swapped.first == "x"
     assert swapped.second == 1.5

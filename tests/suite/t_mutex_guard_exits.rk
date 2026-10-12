@@ -92,7 +92,7 @@ test "the lock is free again after an early return" {
 // block says so, which it can now that a `test` carries attributes (#1010).
 @allow(torn_lock_update)
 test "a struct payload is mutated in place" {
-    let m = Shared.mutex(Counter { hits: 0, misses: 0 })
+    let m = Shared.mutex(Counter(hits: 0, misses: 0))
     with m.write() as c {
         c.hits = c.hits + 1
         c.misses = c.misses + 2

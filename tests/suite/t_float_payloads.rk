@@ -144,7 +144,7 @@ struct Holder {
 }
 
 test "type.optionals — an f32 struct field survives a trip through an optional" {
-    let h = Holder { small: 0.5, big: 4.25 }
+    let h = Holder(small: 0.5, big: 4.25)
     let small: f32? = h.small
     let big: f64? = h.big
     if small? as v {
@@ -160,7 +160,7 @@ test "type.optionals — an f32 struct field survives a trip through an optional
 }
 
 test "stdlib.collections — an f32 field into a Vec and back" {
-    let h = Holder { small: 0.5, big: 4.25 }
+    let h = Holder(small: 0.5, big: 4.25)
     mut v: Vec<f32> = Vec.new()
     v.push(h.small)
     v.push(2.5)

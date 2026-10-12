@@ -33,14 +33,14 @@ struct Room {
 
 func main() {
     // ANCHOR: plainuse
-    mut hero = Player { name: "Ada", health: 100, items: [] }
+    mut hero = Player(name: "Ada", health: 100, items: [])
     hero.items.push("lamp")
     hero.health = hero.health - 10
     println("{hero.name} has {hero.health} hp and {hero.items.len()} item")
     // ANCHOR_END: plainuse
 
     // ANCHOR: sharedmake
-    let settings = Shared.new(Settings { theme: "dark", retries: 3 })
+    let settings = Shared.new(Settings(theme: "dark", retries: 3))
     // ANCHOR_END: sharedmake
 
     // ANCHOR: sharedget
@@ -64,8 +64,8 @@ func main() {
 
     // ANCHOR: rackmake
     mut rooms: Rack<Room> = Rack.new()
-    let hall = rooms.insert(Room { name: "hall", exit: none })
-    let cell = rooms.insert(Room { name: "cell", exit: none })
+    let hall = rooms.insert(Room(name: "hall", exit: none))
+    let cell = rooms.insert(Room(name: "cell", exit: none))
     hall.exit = cell
     // ANCHOR_END: rackmake
 

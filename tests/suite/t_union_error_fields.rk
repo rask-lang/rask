@@ -44,9 +44,9 @@ func pick(which: i64) -> i64 or Fault | Other {
 }
 
 test "a struct field holds each side of the union" {
-    let ok = Holder { res: pick(0), after: 7 }
-    let fault = Holder { res: pick(1), after: 8 }
-    let other = Holder { res: pick(2), after: 9 }
+    let ok = Holder(res: pick(0), after: 7)
+    let fault = Holder(res: pick(1), after: 8)
+    let other = Holder(res: pick(2), after: 9)
     assert ok.res is i64
     assert fault.res is Fault
     assert other.res is Other
@@ -56,23 +56,23 @@ test "a struct field holds each side of the union" {
 }
 
 test "the payload reads back through the field" {
-    let fault = Holder { res: pick(1), after: 8 }
+    let fault = Holder(res: pick(1), after: 8)
     if fault.res is Fault as f {
         assert f.message() == "fault"
     } else {
         assert false
     }
-    let other = Holder { res: pick(2), after: 9 }
+    let other = Holder(res: pick(2), after: 9)
     assert "{other.res:debug}" == "Result.Err(Other.Odd(\"x\"))"
-    let ok = Holder { res: pick(0), after: 7 }
+    let ok = Holder(res: pick(0), after: 7)
     let n = ok.res catch _ => -1
     assert n == 10
 }
 
 test "the struct survives a Vec" {
     mut hs: Vec<Holder> = Vec.new()
-    hs.push(Holder { res: pick(0), after: 1 })
-    hs.push(Holder { res: pick(2), after: 2 })
+    hs.push(Holder(res: pick(0), after: 1))
+    hs.push(Holder(res: pick(2), after: 2))
     assert hs[0].res is i64
     assert hs[1].res is Other
     assert hs[1].after == 2

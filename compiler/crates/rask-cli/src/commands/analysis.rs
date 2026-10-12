@@ -189,7 +189,7 @@ pub fn cmd_comptime(path: &str, format: Format) {
 
         rask_desugar::desugar_with_stdlib(
             &mut parse_result.decls,
-            rask_stdlib::StubRegistry::defaulted_signatures(),
+            rask_stdlib::StubRegistry::desugar_declarations(),
         );
 
         let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();

@@ -20,7 +20,7 @@ func modify_int(mutate n: i32) {
 }
 
 func main() {
-    mut p = Point { x: 1, y: 2 }
+    mut p = Point(x: 1, y: 2)
     swap_fields(mutate p.x, mutate p.y)
     print(p.x)   // 2
     print(p.y)   // 1

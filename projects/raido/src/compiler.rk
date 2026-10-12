@@ -136,16 +136,16 @@ struct Compiler {
 
 extend Compiler {
     func new(source: string) -> Compiler {
-        return Compiler {
+        return Compiler(
             lexer: Lexer.new(source),
             current: Token.Eof,
             previous: Token.Eof,
             current_line: 1,
             proto: Prototype.new("<main>", 0),
             proto_stack: Vec.new(),
-            scope: Scope { locals: Vec.new(), depth: 0 },
+            scope: Scope(locals: Vec.new(), depth: 0),
             next_reg: 0,
-        }
+        )
     }
 
     func advance(self) -> void or CompileError {
@@ -234,12 +234,12 @@ extend Compiler {
 
         // Add a local variable in the current scope. Returns its register.
         let reg = self.alloc_reg()
-        self.scope.locals.push(Local {
+        self.scope.locals.push(Local(
             name: name,
             reg: reg,
             depth: self.scope.depth,
             type_id: 0,
-        })
+        ))
         return reg
     }
 

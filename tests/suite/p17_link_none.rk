@@ -22,7 +22,7 @@ func main() {}
 
 test "a fresh node's absent edge is absent, not an address" {
     mut rack: Rack<Node> = Rack.new()
-    let n = rack.insert(Node { id: 1, peer: none })
+    let n = rack.insert(Node(id: 1, peer: none))
 
     if n.peer? as _p {
         assert false
@@ -34,8 +34,8 @@ test "a fresh node's absent edge is absent, not an address" {
 // with a real address would show as one reading like the other.
 test "present and absent edges don't read as each other" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none })
-    let b = rack.insert(Node { id: 2, peer: a })
+    let a = rack.insert(Node(id: 1, peer: none))
+    let b = rack.insert(Node(id: 2, peer: a))
 
     if b.peer? as p {
         assert p.id == 1
@@ -49,8 +49,8 @@ test "present and absent edges don't read as each other" {
 
 test "clearing an edge to none leaves the node reachable" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none })
-    mut b = rack.insert(Node { id: 2, peer: a })
+    let a = rack.insert(Node(id: 1, peer: none))
+    mut b = rack.insert(Node(id: 2, peer: a))
 
     b.peer = none
 
@@ -69,10 +69,10 @@ test "clearing an edge to none leaves the node reachable" {
 // A container of *nodes carrying* edges, which is the shape programs write.
 test "a none inside a struct in a container stays none" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none })
+    let a = rack.insert(Node(id: 1, peer: none))
     mut v: Vec<Cursor> = Vec.new()
-    v.push(Cursor { at: none })
-    v.push(Cursor { at: a })
+    v.push(Cursor(at: none))
+    v.push(Cursor(at: a))
 
     if v.get(0)? as first {
         if first.at? as _p {
@@ -98,7 +98,7 @@ test "a none inside a struct in a container stays none" {
 // are different answers and both have to survive.
 test "a Vec of optional links keeps its slots apart" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none })
+    let a = rack.insert(Node(id: 1, peer: none))
     mut v: Vec<Link<Node>?> = Vec.new()
     v.push(a)
     v.push(none)

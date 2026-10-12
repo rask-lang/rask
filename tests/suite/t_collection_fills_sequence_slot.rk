@@ -78,7 +78,7 @@ test "heap strings go through and stay the Vec's" {
 
 test "a method and a static method take one" {
     let v: Vec<i64> = [4, 5]
-    mut t = Tally { seen: 0 }
+    mut t = Tally(seen: 0)
     t.add_all(v)
     assert t.seen == 9
     assert Tally.count_all(v) == 2

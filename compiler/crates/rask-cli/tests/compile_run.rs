@@ -1447,15 +1447,15 @@ fn error_type_named_in_diagnostics() {
 
 // A struct or enum name in call position used to type-check silently and then
 // die in MIR lowering as "method `next` on receiver of unresolved type".
-// `Name(value)` is the nominal-type constructor (T7); structs have no tuple
-// form (S1).
+// `Name(value)` is the nominal-type constructor (T7); a struct names its
+// fields (S1), and an enum is one of its variants.
 #[test]
 fn error_type_called_as_function() {
     let (failed, out) = compile_error_output("type_called_as_function.rk");
     assert!(failed, "`TaskId(1)` on a struct must be rejected: {}", out);
     assert!(
-        out.contains("E0345") && out.contains("TaskId { value: …")
-            && out.contains("Color.Variant"),
+        out.contains("E0416") && out.contains("value: …")
+            && out.contains("E0345") && out.contains("Color.Variant"),
         "should name both cases with their fix: {}", out,
     );
 }
@@ -2967,7 +2967,7 @@ fn error_move_in_if_without_else() {
 #[test]
 fn error_linear_consumed_one_branch_ifelse() {
     let output = check_output(
-        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn { fd: 3 }\n    if true {\n        c.close()\n    } else {\n        let x = 1\n    }\n}"
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn(fd: 3)\n    if true {\n        c.close()\n    } else {\n        let x = 1\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "resource consumed in only one if/else branch should be E0805 (L1): {}", output);
@@ -2978,7 +2978,7 @@ fn error_linear_consumed_if_without_else() {
     // #294: consuming a linear resource in an if-without-else leaks on the
     // false path.
     let output = check_output(
-        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn { fd: 3 }\n    if true {\n        c.close()\n    }\n}"
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn(fd: 3)\n    if true {\n        c.close()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "resource consumed in an if-without-else should be E0805 (L1): {}", output);
@@ -4983,7 +4983,7 @@ fn test_dir_runs_files_independently() {
     std::fs::write(dir.join("a.rk"), r#"
 struct Point { x: i32, y: i32 }
 test "a uses its own Point" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     assert p.x == 1
 }
 "#).unwrap();
@@ -4991,7 +4991,7 @@ test "a uses its own Point" {
     std::fs::write(dir.join("b.rk"), r#"
 struct Point { x: i32, y: i32, z: i32 }
 test "b uses its own Point" {
-    let p = Point { x: 1, y: 2, z: 3 }
+    let p = Point(x: 1, y: 2, z: 3)
     assert p.z == 3
 }
 "#).unwrap();
@@ -5057,18 +5057,18 @@ func scaled(n: i32, by: i32 = 3) -> i32 {
 }
 
 func main() {
-    let c = Config {}
+    let c = Config()
     println("{c.port}")
 }
 
 test "all fields defaulted" {
-    let c = Config {}
+    let c = Config()
     assert c.port == 8080
     assert c.host == "localhost"
 }
 
 test "explicit value wins over the default" {
-    let c = Config { port: 9090 }
+    let c = Config(port: 9090)
     assert c.port == 9090
     assert c.host == "localhost"
 }
@@ -5161,7 +5161,7 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
         ("chars", "assert 'a' == 'b'"),
         ("floats", "assert 1.5 == 2.5"),
         ("optionals", "assert maybe(1) == maybe(2)"),
-        ("structs", "assert Point { x: 1, y: 2 } == Point { x: 1, y: 3 }"),
+        ("structs", "assert Point(x: 1, y: 2) == Point(x: 1, y: 3)"),
         ("tuples", "assert (1, 2) == (1, 3)"),
     ];
 
@@ -5280,7 +5280,7 @@ extend Box9 {
 }
 
 func main() {
-    let b = Box9 { n: 1 }
+    let b = Box9(n: 1)
     println("{b.boom()}")
     return
 }
@@ -5510,7 +5510,7 @@ enum StoreError { Boom }
 struct Store { next: UserId }
 
 extend Store {
-    func new() -> Store { return Store { next: UserId(7) } }
+    func new() -> Store { return Store(next: UserId(7)) }
     func make(self) -> UserId or StoreError { return self.next }
 }
 
@@ -5535,22 +5535,22 @@ package "ep" "0.1.0" { description: "T or E error side through a mutex global" }
         ("errs.rk", r#"
 @message
 enum StoreError {
-    @message("nf {id}") NotFound { id: u64 }
-    @message("cap {limit}") Cap { limit: u64 }
+    @message("nf {id}") NotFound(id: u64)
+    @message("cap {limit}") Cap(limit: u64)
 }
 
 @message
 enum ApiError {
     Store(StoreError)
-    @message("bad {reason}") Bad { reason: string }
+    @message("bad {reason}") Bad(reason: string)
 }
 
 func code(e: ApiError) -> string {
-    match e { Store(inner) => return store_code(inner), Bad(_) => return "b" }
+    match e { Store(inner) => return store_code(inner), Bad(..) => return "b" }
 }
 
 func store_code(e: StoreError) -> string {
-    match e { NotFound(_) => return "nf", Cap(_) => return "cap" }
+    match e { NotFound(..) => return "nf", Cap(..) => return "cap" }
 }
 "#),
         ("main.rk", r#"
@@ -5583,10 +5583,10 @@ import sync.Shared
 struct Store { n: u64 }
 
 extend Store {
-    func new() -> Store { return Store { n: 0 } }
+    func new() -> Store { return Store(n: 0) }
     func view(self, id: u64) -> View or StoreError {
         if id > 100 { return StoreError.NotFound(id) }
-        return View { id: id }
+        return View(id: id)
     }
 }
 
@@ -7455,7 +7455,7 @@ test "a string past the inline capacity" {
 }
 
 test "a string field against a string variable" {
-    let h = Holder9 { name: "left" }
+    let h = Holder9(name: "left")
     let other = "right"
     assert h.name == other
 }
@@ -7654,8 +7654,8 @@ const RUN_ASSERT_OPAQUE_SRC: &str = r#"
 struct Pt { x: i64, y: i64 }
 
 func main() {
-    let a = Pt { x: 1, y: 2 }
-    let b = Pt { x: 3, y: 4 }
+    let a = Pt(x: 1, y: 2)
+    let b = Pt(x: 3, y: 4)
     assert a == b
 }
 "#;
@@ -8740,7 +8740,7 @@ fn a_user_error_does_not_drag_the_stdlib_in_with_it() {
     let out = check_output(
         "struct T { n: i32 }\n\
          func main() {\n\
-             let t = T { n: 1 }\n\
+             let t = T(n: 1)\n\
              println(\"{t.n}\")\n\
          }\n",
     );

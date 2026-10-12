@@ -18,7 +18,7 @@ struct Cat {
 }
 
 func main() {
-    let c = Cat { legs: 4 }
+    let c = Cat(legs: 4)
     println("{c.legs}")
     return
 }

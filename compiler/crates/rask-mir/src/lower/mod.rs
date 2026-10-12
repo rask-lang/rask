@@ -1728,7 +1728,7 @@ pub struct MirLowerer<'a> {
     const_init_target: Option<String>,
     /// Declared type of the struct field currently being initialised, as written.
     /// `Map.new()` needs its key/value sizes, and the checker doesn't type the
-    /// nodes of a stdlib body — `Headers { entries: Map.new() }` had no type on
+    /// nodes of a stdlib body — `Headers(entries: Map.new())` had no type on
     /// that call, so the map was built with 8-byte slots and a `string` value lost
     /// half of its 16 bytes.
     field_type_hint: Option<Type>,
@@ -2666,7 +2666,7 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or(false)
     }
 
-    /// Lower a nominal newtype construction — `Id { value: 5 }` or `Id(5)` — to
+    /// Lower a nominal newtype construction — `Id(5)` — to
     /// the wrapped value itself. Returns `None` when `name` isn't one.
     pub(crate) fn lower_newtype_wrap(
         &mut self,
@@ -5158,6 +5158,22 @@ impl<'a> MirLowerer<'a> {
         }).collect())
     }
 
+    /// Field names of a named variant, in declaration order: of the scrutinee's
+    /// own enum, or of the error enum of a `T or E`.
+    fn variant_field_names(&self, scrutinee_ty: &MirType, variant_name: &str) -> Option<Vec<String>> {
+        let enum_ty = match scrutinee_ty {
+            MirType::Result { err, .. } => err.as_ref(),
+            other => other,
+        };
+        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = enum_ty else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*idx as usize)?;
+        let bare_name = variant_name.rsplit('.').next().unwrap_or(variant_name);
+        let variant = layout.variants.iter().find(|v| v.name == bare_name)?;
+        Some(variant.fields.iter().map(|f| f.name.clone()).collect())
+    }
+
     /// `Enum.Variant` naming a variant of a Result's error enum: each field's
     /// type, its offset *within the err payload*, and its size.
     fn err_variant_fields(
@@ -5223,6 +5239,24 @@ impl<'a> MirLowerer<'a> {
     ) {
         use rask_ast::expr::Pattern;
         match pattern {
+            // A named variant binds like its positional spelling: each field's
+            // pattern at that field's index, `_` for the ones it leaves out.
+            Pattern::Struct { name, fields, .. }
+                if self.variant_field_names(scrutinee_ty, name).is_some() =>
+            {
+                let names = self.variant_field_names(scrutinee_ty, name).unwrap_or_default();
+                let positional = names
+                    .iter()
+                    .map(|n| {
+                        fields
+                            .iter()
+                            .find(|(f, _)| f == n)
+                            .map_or(Pattern::Wildcard, |(_, p)| p.clone())
+                    })
+                    .collect();
+                let as_constructor = Pattern::Constructor { name: name.clone(), fields: positional };
+                self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty);
+            }
             Pattern::Constructor { name, .. }
                 if matches!(scrutinee_ty, MirType::Result { err, .. }
                     if matches!(err.as_ref(), MirType::Enum(_))

@@ -51,7 +51,7 @@ func read_large(borrowed: Large) -> i64 {
 }
 
 test "mem.ownership — a small struct copies on assignment" {
-    let a = Small { a: 1, b: 2 }
+    let a = Small(a: 1, b: 2)
     mut b = a
     b.a = 99
     assert b.a == 99
@@ -61,7 +61,7 @@ test "mem.ownership — a small struct copies on assignment" {
 }
 
 test "mem.ownership — 16 bytes exactly still copies" {
-    let a = Boundary { a: 1, b: 2 }
+    let a = Boundary(a: 1, b: 2)
     mut b = a
     b.a = 99
     assert b.a == 99
@@ -69,7 +69,7 @@ test "mem.ownership — 16 bytes exactly still copies" {
 }
 
 test "mem.ownership — over the threshold, clone gives an independent value" {
-    let a = Large { a: 1, b: 2, c: 3 }
+    let a = Large(a: 1, b: 2, c: 3)
     mut b = a.clone()
     b.a = 99
     assert b.a == 99
@@ -78,7 +78,7 @@ test "mem.ownership — over the threshold, clone gives an independent value" {
 }
 
 test "mem.ownership — a clone of a struct holding a string is independent" {
-    let a = Named { name: "original" }
+    let a = Named(name: "original")
     mut b = a.clone()
     b.name = "changed"
     assert b.name == "changed"
@@ -86,14 +86,14 @@ test "mem.ownership — a clone of a struct holding a string is independent" {
 }
 
 test "mem.ownership — take moves the value into the callee" {
-    let s = Small { a: 3, b: 4 }
+    let s = Small(a: 3, b: 4)
     assert consume_small(s) == 7
-    let l = Large { a: 1, b: 2, c: 3 }
+    let l = Large(a: 1, b: 2, c: 3)
     assert consume_large(l) == 6
 }
 
 test "mem.ownership — a borrow leaves the value usable" {
-    let l = Large { a: 7, b: 0, c: 0 }
+    let l = Large(a: 7, b: 0, c: 0)
     assert read_large(l) == 7
     // Still there: a borrow took nothing.
     assert read_large(l) == 7
@@ -101,14 +101,14 @@ test "mem.ownership — a borrow leaves the value usable" {
 }
 
 test "mem.ownership — a let binding can be moved, just not mutated" {
-    let l = Large { a: 5, b: 0, c: 0 }
+    let l = Large(a: 5, b: 0, c: 0)
     // Moving out of a `let` is fine — transfer of ownership is not mutation.
     assert consume_large(l) == 5
 }
 
 test "mem.ownership — a copy inside a collection is independent" {
     mut v: Vec<Small> = Vec.new()
-    let s = Small { a: 1, b: 1 }
+    let s = Small(a: 1, b: 1)
     v.push(s)
     v.push(s)
     v[0].a = 99
@@ -130,7 +130,7 @@ test "mem.ownership — cloning a Vec gives an independent collection" {
 }
 
 test "mem.ownership — cloning a large struct inside a collection" {
-    let base = Large { a: 1, b: 2, c: 3 }
+    let base = Large(a: 1, b: 2, c: 3)
     mut v: Vec<Large> = Vec.new()
     v.push(base.clone())
     v.push(base.clone())
@@ -141,7 +141,7 @@ test "mem.ownership — cloning a large struct inside a collection" {
 }
 
 test "mem.ownership — a string field survives a copy of its holder" {
-    let a = Named { name: "shared text" }
+    let a = Named(name: "shared text")
     let b = a.clone()
     assert a.name == "shared text"
     assert b.name == "shared text"
@@ -149,11 +149,11 @@ test "mem.ownership — a string field survives a copy of its holder" {
 }
 
 test "mem.ownership — reassigning a mut binding drops the old value" {
-    mut l = Large { a: 1, b: 0, c: 0 }
+    mut l = Large(a: 1, b: 0, c: 0)
     assert l.a == 1
-    l = Large { a: 2, b: 0, c: 0 }
+    l = Large(a: 2, b: 0, c: 0)
     assert l.a == 2
-    l = Large { a: 3, b: 0, c: 0 }
+    l = Large(a: 3, b: 0, c: 0)
     assert l.a == 3
 }
 

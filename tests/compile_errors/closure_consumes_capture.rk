@@ -33,19 +33,19 @@ func store(take f: func()) {
 }
 
 func make_eater() -> func() -> u64 {
-    let b = Bag { items: [1, 2] }
+    let b = Bag(items: [1, 2])
     // ERROR: the returned closure would hand `b` to `eat` on every call [E0891]
     return || eat(b)
 }
 
 func make_giver() -> func() -> Bag {
-    let b = Bag { items: [3] }
+    let b = Bag(items: [3])
     // ERROR: returning a carried capture gives every caller the same `Bag` [E0907]
     return || b
 }
 
 func consumes_resource() {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     store(|| {
         // ERROR: `store` keeps the closure, and the body would close `c` per call [E0891]
         c.close()
@@ -54,8 +54,8 @@ func consumes_resource() {
 
 // Fine: the value is the closure's parameter, so each call is handed its own.
 func sink(take f: func(take Conn)) {
-    f(Conn { id: 2 })
-    f(Conn { id: 3 })
+    f(Conn(id: 2))
+    f(Conn(id: 3))
 }
 
 func good() {
@@ -63,7 +63,7 @@ func good() {
         c.close()
     })
     // Fine: a copy per call.
-    let b = Bag { items: [4] }
+    let b = Bag(items: [4])
     let f = make_copier(b)
     println("{f().items.len()}")
 }

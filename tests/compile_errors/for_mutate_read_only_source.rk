@@ -39,7 +39,7 @@ func through_a_set() {
 }
 
 func through_a_user_sequence() {
-    let b = Bag { items: Vec.new() }
+    let b = Bag(items: Vec.new())
     // ERROR: a `Sequence` returned by a method lends read-only [E0914]
     for mutate y in b.each() {
         y = 3

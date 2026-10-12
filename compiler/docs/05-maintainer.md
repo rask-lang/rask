@@ -27,7 +27,7 @@ Practical reference for working in the codebase.
 Say you want to add a new statement like `defer { cleanup() }`. You'd touch
 every stage in order:
 
-1. **`rask-ast`** — Add `StmtKind::Defer { body: Vec<Stmt> }` to `stmt.rs`
+1. **`rask-ast`** — Add `StmtKind::Defer(body: Vec<Stmt>)` to `stmt.rs`
 
 2. **`rask-lexer`** — Add `#[token("defer")]` to `RawToken` in `lexer.rs`.
    Add `Defer` to `TokenKind` in `rask-ast/src/token.rs`.

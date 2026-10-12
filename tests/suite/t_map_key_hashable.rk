@@ -33,10 +33,10 @@ test "type.aliases/T11 — a newtype that lists Hashable can key a Map" {
 
 test "type.generics/HA1 — a struct whose fields all hash is auto-derived" {
     mut m: Map<Pair, string> = Map.new()
-    m.insert(Pair { a: 1, b: 2 }, "one-two")
-    assert (m.get(Pair { a: 1, b: 2 }) ?? "?") == "one-two"
+    m.insert(Pair(a: 1, b: 2), "one-two")
+    assert (m.get(Pair(a: 1, b: 2)) ?? "?") == "one-two"
     // A different second field is a different key.
-    assert m.get(Pair { a: 1, b: 3 }) == none
+    assert m.get(Pair(a: 1, b: 3)) == none
 }
 
 test "type.generics/HA1 — an enum keys on tag and payload" {

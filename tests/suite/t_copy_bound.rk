@@ -16,7 +16,7 @@ struct Point {
 }
 
 func wrap<T: Copy>(value: T) -> Wrapper<T> {
-    return Wrapper { value }
+    return Wrapper(value)
 }
 
 func both<T>(a: T, b: T) -> (T, T) where T: Copy {
@@ -47,7 +47,7 @@ test "a scalar wraps without take" {
 }
 
 test "a small struct is Copy too" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     let w = wrap(p)
     assert w.value.y == 2
     assert p.x == 1

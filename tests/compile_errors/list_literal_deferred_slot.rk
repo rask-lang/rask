@@ -12,15 +12,15 @@ struct Sum {
 
 extend Sum {
     func new() -> Sum {
-        return Sum { n: 0 }
+        return Sum(n: 0)
     }
 
     func last_of(take self, a: [i64; 3]) -> Sum {
-        return Sum { n: self.n + a[2] }
+        return Sum(n: self.n + a[2])
     }
 
     func named(take self, s: string) -> Sum {
-        return Sum { n: self.n + s.len() }
+        return Sum(n: self.n + s.len())
     }
 }
 

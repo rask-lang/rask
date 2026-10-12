@@ -68,7 +68,7 @@ func bump_big(mutate s: Big) {
 }
 
 func replace_small(mutate s: Small) {
-    s = Small { a: 99 }
+    s = Small(a: 99)
 }
 
 func grow(mutate v: Vec<i32>) {
@@ -80,19 +80,19 @@ func consume(take s: Small) -> i32 {
 }
 
 test "mem.parameters — borrow is the default and reads fine" {
-    let s = Small { a: 5 }
+    let s = Small(a: 5)
     assert read_only(s) == 5
     // Still there afterwards: a borrow took nothing.
     assert s.a == 5
 }
 
 test "mem.parameters — take moves the value in" {
-    let s = Small { a: 7 }
+    let s = Small(a: 7)
     assert consume(s) == 7
 }
 
 test "mem.parameters — mutate on a struct field is visible to the caller" {
-    mut s = Small { a: 0 }
+    mut s = Small(a: 0)
     bump_small(mutate s)
     assert s.a == 1
     bump_small(mutate s)
@@ -100,16 +100,16 @@ test "mem.parameters — mutate on a struct field is visible to the caller" {
 }
 
 test "mem.parameters — mutate is visible at every aggregate size" {
-    mut m = Mid { a: 0, b: 0, c: 0 }
+    mut m = Mid(a: 0, b: 0, c: 0)
     bump_mid(mutate m)
     assert m.a == 1
-    mut g = Big { a: 0, b: 0, c: 0, d: 0, e: 0, f: 0 }
+    mut g = Big(a: 0, b: 0, c: 0, d: 0, e: 0, f: 0)
     bump_big(mutate g)
     assert g.a == 1
 }
 
 test "mem.parameters — mutate can replace the whole value" {
-    mut s = Small { a: 0 }
+    mut s = Small(a: 0)
     replace_small(mutate s)
     assert s.a == 99
 }

@@ -98,8 +98,8 @@ cursor += buffer[cursor..].write_u8(1)
 <!-- test: parse -->
 ```rask
 enum ParseError {
-    UnexpectedEnd { expected: usize, actual: usize }
-    InvalidData { message: string }
+    UnexpectedEnd(expected: usize, actual: usize)
+    InvalidData(message: string)
 }
 ```
 

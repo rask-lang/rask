@@ -78,7 +78,7 @@ test "conc.sync — a scalar payload is untouched" {
 }
 
 test "conc.sync — a Shared with a container, in a struct field" {
-    let r = Registry { names: Shared.mutex(Vec.new()) }
+    let r = Registry(names: Shared.mutex(Vec.new()))
     with r.names.write() as v {
         v.push("a name long enough to need a buffer")
     }

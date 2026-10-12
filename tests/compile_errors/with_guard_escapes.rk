@@ -20,7 +20,7 @@ extend Counter {
     func snapshot(self) -> Counter { return self }
 }
 
-const counter = Shared.mutex(Counter { hits: 3, misses: 4 })
+const counter = Shared.mutex(Counter(hits: 3, misses: 4))
 const plain = Shared.mutex(0)
 
 func main() {

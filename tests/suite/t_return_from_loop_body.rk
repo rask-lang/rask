@@ -195,19 +195,19 @@ test "ctrl.control-flow/LP1 — a `return` after other body statements" {
 
 test "type.errors/ER16b — `try … ?? continue` finds the hit past a miss" {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { n: 0 })     // absent -> continue
-    items.push(Item { n: 3 })     // present -> "v3"
+    items.push(Item(n: 0))     // absent -> continue
+    items.push(Item(n: 3))     // present -> "v3"
     assert show(first_hit(items)) == "v3"
 }
 
 test "type.errors/ER16b — an error still propagates, absences still skip" {
     mut broken: Vec<Item> = Vec.new()
-    broken.push(Item { n: 0 })
-    broken.push(Item { n: -1 })
+    broken.push(Item(n: 0))
+    broken.push(Item(n: -1))
     assert show(first_hit(broken)) == "err:broken"
 
     mut empty: Vec<Item> = Vec.new()
-    empty.push(Item { n: 0 })
+    empty.push(Item(n: 0))
     assert show(first_hit(empty)) == "MISS"
 }
 

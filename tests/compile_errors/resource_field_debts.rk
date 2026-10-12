@@ -36,15 +36,15 @@ struct Outer {
 }
 
 func make_pair() -> Pair {
-    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+    return Pair(a: Conn(id: 1), b: Conn(id: 2))
 }
 
 func make_wrapper() -> Wrapper {
-    return Wrapper { conn: Conn { id: 3 }, label: "w" }
+    return Wrapper(conn: Conn(id: 3), label: "w")
 }
 
 func make_outer() -> Outer {
-    return Outer { inner: Wrapper { conn: Conn { id: 4 }, label: "o" } }
+    return Outer(inner: Wrapper(conn: Conn(id: 4), label: "o"))
 }
 
 // ERROR: resource `p.b` must be consumed before scope exit [E0805]

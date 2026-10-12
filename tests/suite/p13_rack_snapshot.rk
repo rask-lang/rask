@@ -32,8 +32,8 @@ func main() {}
 
 test "a snapshot is independent of the original" {
     mut s = fresh()
-    let a = s.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let b = s.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let a = s.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let b = s.insert(Node(id: 2, peer: none, kids: Vec.new()))
 
     let copy = s.snapshot()
     assert copy.len() == 2
@@ -47,8 +47,8 @@ test "a snapshot is independent of the original" {
 
 test "edges inside the copy point at the copy" {
     mut s = fresh()
-    let a = s.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let b = s.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let a = s.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let b = s.insert(Node(id: 2, peer: none, kids: Vec.new()))
     a.peer = b
 
     let copy = s.snapshot()
@@ -69,8 +69,8 @@ test "edges inside the copy point at the copy" {
 
 test "links inside a Vec field are re-pointed too" {
     mut s = fresh()
-    let parent = s.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let kid = s.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let parent = s.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let kid = s.insert(Node(id: 2, peer: none, kids: Vec.new()))
     parent.kids.push(kid)
 
     let copy = s.snapshot()
@@ -91,8 +91,8 @@ test "links inside a Vec field are re-pointed too" {
 
 test "deleting on either side leaves the other alone" {
     mut s = fresh()
-    let a = s.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let b = s.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let a = s.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let b = s.insert(Node(id: 2, peer: none, kids: Vec.new()))
     a.peer = b
 
     mut copy = s.snapshot()
@@ -115,8 +115,8 @@ test "deleting on either side leaves the other alone" {
 test "corresponding says none for a node this rack never copied" {
     mut left = fresh()
     mut right = fresh()
-    let l = left.insert(Node { id: 1, peer: none, kids: Vec.new() })
-    let _r = right.insert(Node { id: 2, peer: none, kids: Vec.new() })
+    let l = left.insert(Node(id: 1, peer: none, kids: Vec.new()))
+    let _r = right.insert(Node(id: 2, peer: none, kids: Vec.new()))
 
     let copy = right.snapshot()
     // `l` is not in `right`, so the snapshot has no copy of it. A link is an

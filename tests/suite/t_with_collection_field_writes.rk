@@ -13,8 +13,8 @@ struct Bag { public items: Vec<Item> }
 extend Bag {
     func new() -> Bag {
         mut v = Vec<Item>.new()
-        v.push(Item { n: 1, tags: Vec.new() })
-        return Bag { items: v }
+        v.push(Item(n: 1, tags: Vec.new()))
+        return Bag(items: v)
     }
 
     // A scalar write and a heap write in the same block — both must stick.
@@ -62,7 +62,7 @@ test "the write is visible inside the block too" {
 
 test "a vec reached by a plain name still works" {
     mut v = Vec<Item>.new()
-    v.push(Item { n: 1, tags: Vec.new() })
+    v.push(Item(n: 1, tags: Vec.new()))
     with v[0] as it { it.n = 77 }
     let got = with v[0] as it { it.n }
     assert got == 77

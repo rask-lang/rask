@@ -53,8 +53,8 @@ struct Task {
     blocked_by: Link<Task>?        // this task waits on another one
 }
 
-let design = tasks.insert(Task { title: "design", done: false, blocked_by: none })
-let build  = tasks.insert(Task { title: "build",  done: false, blocked_by: design })
+let design = tasks.insert(Task(title: "design", done: false, blocked_by: none))
+let build  = tasks.insert(Task(title: "build",  done: false, blocked_by: design))
 ```
 
 Assign one later exactly as you'd expect:
@@ -174,8 +174,8 @@ one that fits — that's the whole decision.
 
 | Rung | Use when | Cost |
 |---|---|---|
-| **Plain field** — `Entity { body: Body }` | Owned by exactly one thing, fixed size, nothing else references it | Nothing. It's inline |
-| **`Heap<T>`** — `Expr { left: Heap<Expr> }` | Owned by exactly one thing, but recursive or variable-sized so it needs the heap. Still nothing else references it | One pointer, one allocation. No bookkeeping |
+| **Plain field** — `Entity(body: Body)` | Owned by exactly one thing, fixed size, nothing else references it | Nothing. It's inline |
+| **`Heap<T>`** — `Expr(left: Heap<Expr>)` | Owned by exactly one thing, but recursive or variable-sized so it needs the heap. Still nothing else references it | One pointer, one allocation. No bookkeeping |
 | **`Rack<T>` + `Link<T>`** | Other things reference it, and it can be deleted out from under them | A pointer plus a back-pointer, and a fixup walk at delete |
 
 The question that decides it: **does anything else point at this?** If not, you
@@ -242,7 +242,7 @@ combination is the whole trigger.
 |---|---|
 | Entities that target, own, or depend on each other | `Rack<T>` + `Link<T>?` |
 | A list of values you iterate, no cross-references | `Vec<T>` — no graph |
-| One thing that belongs to exactly one other and is never referenced elsewhere | a plain field: `Entity { body: Body }` |
+| One thing that belongs to exactly one other and is never referenced elsewhere | a plain field: `Entity(body: Body)` |
 | A tree you own and traverse, no back-pointers, single owner | `Heap<T>` |
 | Something that must survive being written to a file or sent to another task | a domain id (`TaskId`), plus an index |
 | Config, constants, anything never deleted | ordinary values |

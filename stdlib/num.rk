@@ -14,24 +14,24 @@ public struct Wrapping<T: Integer> {
 // constructing the type, not calling a function named after it.
 @allow(style/snake-case-func)
 public func Wrapping<T: Integer>(value: T) -> Wrapping<T> {
-    return Wrapping { value }
+    return Wrapping(value: value)
 }
 
 Wrapping<T> implements Add where T: Integer {
     public func add(self, other: Wrapping<T>) -> Wrapping<T> {
-        return Wrapping { value: self.value.wrapping_add(other.value) }
+        return Wrapping(value: self.value.wrapping_add(other.value))
     }
 }
 
 Wrapping<T> implements Sub where T: Integer {
     public func sub(self, other: Wrapping<T>) -> Wrapping<T> {
-        return Wrapping { value: self.value.wrapping_sub(other.value) }
+        return Wrapping(value: self.value.wrapping_sub(other.value))
     }
 }
 
 Wrapping<T> implements Mul where T: Integer {
     public func mul(self, other: Wrapping<T>) -> Wrapping<T> {
-        return Wrapping { value: self.value.wrapping_mul(other.value) }
+        return Wrapping(value: self.value.wrapping_mul(other.value))
     }
 }
 
@@ -41,23 +41,23 @@ public struct Saturating<T: Integer> {
 
 @allow(style/snake-case-func)
 public func Saturating<T: Integer>(value: T) -> Saturating<T> {
-    return Saturating { value }
+    return Saturating(value: value)
 }
 
 Saturating<T> implements Add where T: Integer {
     public func add(self, other: Saturating<T>) -> Saturating<T> {
-        return Saturating { value: self.value.saturating_add(other.value) }
+        return Saturating(value: self.value.saturating_add(other.value))
     }
 }
 
 Saturating<T> implements Sub where T: Integer {
     public func sub(self, other: Saturating<T>) -> Saturating<T> {
-        return Saturating { value: self.value.saturating_sub(other.value) }
+        return Saturating(value: self.value.saturating_sub(other.value))
     }
 }
 
 Saturating<T> implements Mul where T: Integer {
     public func mul(self, other: Saturating<T>) -> Saturating<T> {
-        return Saturating { value: self.value.saturating_mul(other.value) }
+        return Saturating(value: self.value.saturating_mul(other.value))
     }
 }

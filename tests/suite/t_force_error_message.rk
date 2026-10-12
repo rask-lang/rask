@@ -34,7 +34,7 @@ enum ParseErr {
 }
 
 func routed(n: i64) -> i64 or RouteErr {
-    if n == 0 { return RouteErr { why: "no route" } }
+    if n == 0 { return RouteErr(why: "no route") }
     return n
 }
 
@@ -65,8 +65,8 @@ extend BErr {
 }
 
 func either(n: i64) -> i64 or (AErr | BErr) {
-    if n == 0 { return AErr { a: "x" } }
-    if n == 1 { return BErr { b: 7 } }
+    if n == 0 { return AErr(a: "x") }
+    if n == 1 { return BErr(b: 7) }
     return n
 }
 

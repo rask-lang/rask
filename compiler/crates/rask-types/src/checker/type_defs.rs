@@ -824,6 +824,12 @@ fn rename_types(
                 ExprKind::StructLit { name, .. } => {
                     if let Some(to) = self.map.get(name.as_str()) {
                         *name = to.clone();
+                    } else if let Some((owner, variant)) = name.split_once('.') {
+                        // `ParseError.Carried(p: …)`: the variant of the
+                        // program's enum, named by the enum's symbol.
+                        if let Some(to) = self.map.get(owner) {
+                            *name = format!("{to}.{variant}");
+                        }
                     }
                 }
                 ExprKind::Match { arms, .. } => {

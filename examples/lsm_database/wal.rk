@@ -20,7 +20,7 @@ extend Wal {
                 return WalError.WriteFailure("cannot create WAL: {path}: {e}")
             }
         }
-        return Wal { path, entry_count: 0 }
+        return Wal(path, entry_count: 0)
     }
 
     func append(mutate self, kv: KeyValue) -> void or WalError {

@@ -139,7 +139,7 @@ pub fn cmd_resolve(path: &str, format: Format) {
     let resolve_result = if let Some(mut pkg_ctx) = rask_compiler::detect_package(path) {
         rask_desugar::desugar_package(
             &mut pkg_ctx.all_decls,
-            rask_stdlib::StubRegistry::defaulted_signatures(),
+            rask_stdlib::StubRegistry::desugar_declarations(),
         );
         rask_resolve::resolve_package(&pkg_ctx.all_decls, &pkg_ctx.registry, pkg_ctx.root_id)
     } else {

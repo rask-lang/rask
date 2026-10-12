@@ -26,9 +26,9 @@ func main() {
 
     print("Creating linked list with links:\n")
 
-    let first = nodes.insert(Node { value: 1, next: none })
-    let second = nodes.insert(Node { value: 2, next: none })
-    let third = nodes.insert(Node { value: 3, next: none })
+    let first = nodes.insert(Node(value: 1, next: none))
+    let second = nodes.insert(Node(value: 2, next: none))
+    let third = nodes.insert(Node(value: 3, next: none))
 
     first.next = second
     second.next = third
@@ -52,26 +52,26 @@ func main() {
 
     print("Creating game entities:\n")
 
-    let player = entities.insert(Entity {
+    let player = entities.insert(Entity(
         id: 1,
         name: "Player",
         health: 100,
         target: none,
-    })
+    ))
 
-    let goblin = entities.insert(Entity {
+    let goblin = entities.insert(Entity(
         id: 2,
         name: "Goblin",
         health: 50,
         target: player,
-    })
+    ))
 
-    let orc = entities.insert(Entity {
+    let orc = entities.insert(Entity(
         id: 3,
         name: "Orc",
         health: 80,
         target: player,
-    })
+    ))
 
     player.target = goblin
 

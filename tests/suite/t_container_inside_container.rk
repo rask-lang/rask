@@ -52,13 +52,13 @@ func stock() -> Inventory {
     let two: Vec<i32> = [2, 3]
     lookup.insert("a", one)
     lookup.insert("bc", two)
-    return Inventory {
+    return Inventory(
         orders: [
-            Order { id: 1, items: [Item { name: "a", qty: 1 }] },
-            Order { id: 2, items: [Item { name: "b", qty: 2 }, Item { name: "c", qty: 3 }] },
+            Order(id: 1, items: [Item(name: "a", qty: 1)]),
+            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)]),
         ],
         by_name: lookup,
-    }
+    )
 }
 
 test "mem.ownership — reading three levels down through two containers" {
@@ -99,9 +99,9 @@ test "mem.ownership — a Vec whose elements are Vecs" {
 
 test "mem.ownership — built by push rather than from a literal" {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { name: "x", qty: 7 })
+    items.push(Item(name: "x", qty: 7))
     mut orders: Vec<Order> = Vec.new()
-    orders.push(Order { id: 9, items: items })
+    orders.push(Order(id: 9, items: items))
     assert orders.len() == 1
     assert orders[0].items[0].qty == 7
     assert orders[0].items[0].name == "x"
@@ -110,7 +110,7 @@ test "mem.ownership — built by push rather than from a literal" {
 test "mem.ownership — cloning a container of containers is a deep copy" {
     let inv = stock()
     mut copy = inv.orders.clone()
-    copy.push(Order { id: 3, items: Vec.new() })
+    copy.push(Order(id: 3, items: Vec.new()))
     // The clone grew and the original didn't, and the shared level is still
     // readable through both.
     assert copy.len() == 3

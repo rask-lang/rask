@@ -24,9 +24,9 @@ struct Store {
 extend Store {
     func new() -> Store {
         mut m = Map.new()
-        m.insert(Id { value: 1 }, User { id: Id { value: 1 }, name: "alice", email: "a@x.io", active: true })
-        m.insert(Id { value: 2 }, User { id: Id { value: 2 }, name: "bo", email: "b@x.io", active: false })
-        return Store { users: m }
+        m.insert(Id(value: 1), User(id: Id(value: 1), name: "alice", email: "a@x.io", active: true))
+        m.insert(Id(value: 2), User(id: Id(value: 2), name: "bo", email: "b@x.io", active: false))
+        return Store(users: m)
     }
 
     func name_of(self, id: Id) -> string {
@@ -47,25 +47,25 @@ extend Store {
 
 test "stdlib.collections — every field of a struct map value survives get" {
     let store = Store.new()
-    assert store.name_of(Id { value: 1 }) == "alice"
-    assert store.name_of(Id { value: 2 }) == "bo"
-    assert store.id_of(Id { value: 1 }) == 1
-    assert store.id_of(Id { value: 2 }) == 2
-    assert store.active_of(Id { value: 1 })
-    assert !store.active_of(Id { value: 2 })
+    assert store.name_of(Id(value: 1)) == "alice"
+    assert store.name_of(Id(value: 2)) == "bo"
+    assert store.id_of(Id(value: 1)) == 1
+    assert store.id_of(Id(value: 2)) == 2
+    assert store.active_of(Id(value: 1))
+    assert !store.active_of(Id(value: 2))
 }
 
 test "stdlib.collections — a missing key still takes the none path" {
     let store = Store.new()
-    assert store.name_of(Id { value: 99 }) == "MISSING"
-    assert store.id_of(Id { value: 99 }) == 0
+    assert store.name_of(Id(value: 99)) == "MISSING"
+    assert store.id_of(Id(value: 99)) == 0
 }
 
 // Directly, without going through a struct field holding the map.
 test "stdlib.collections — a local Map of structs reads back whole" {
     mut m = Map.new()
-    m.insert(7, User { id: Id { value: 7 }, name: "cy", email: "c@x.io", active: true })
-    let found = m.get(7) ?? User { id: Id { value: 0 }, name: "none", email: "", active: false }
+    m.insert(7, User(id: Id(value: 7), name: "cy", email: "c@x.io", active: true))
+    let found = m.get(7) ?? User(id: Id(value: 0), name: "none", email: "", active: false)
     assert found.name == "cy"
     assert found.email == "c@x.io"
     assert found.id.value == 7
@@ -82,7 +82,7 @@ struct Headers {
 }
 
 extend Headers {
-    func new() -> Headers { return Headers { entries: Map.new() } }
+    func new() -> Headers { return Headers(entries: Map.new()) }
 
     func set(mutate self, name: string, value: string) -> void {
         self.entries.insert(name.to_lowercase(), value)
@@ -124,7 +124,7 @@ struct Session {
 }
 
 extend Session {
-    func new() -> Session { return Session { values: Map.new() } }
+    func new() -> Session { return Session(values: Map.new()) }
 
     func put(mutate self, k: string, v: string) -> void {
         self.values.insert(k, v)

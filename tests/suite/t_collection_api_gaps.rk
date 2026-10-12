@@ -70,10 +70,10 @@ struct ZipRow {
 }
 
 test "vec zip — over two fields of a struct" {
-    let r = ZipRow {
+    let r = ZipRow(
         xs: [1, 2, 3],
         names: ["a name long enough to live on the heap", "another long enough one"],
-    }
+    )
     let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
     assert pairs.len() == 2
     assert pairs[0].0 == 1
@@ -88,7 +88,7 @@ test "vec zip — over two fields of a struct" {
 // the same thread is holding. No output, no panic, while native printed the
 // right answer.
 test "vec zip — a vector zipped with itself" {
-    let r = ZipRow { xs: [4, 5], names: ["a name long enough to live on the heap"] }
+    let r = ZipRow(xs: [4, 5], names: ["a name long enough to live on the heap"])
     let pairs: Vec<(i64, i64)> = r.xs.zip(r.xs)
     assert pairs.len() == 2
     assert pairs[1].0 == 5
@@ -161,7 +161,7 @@ struct Row {
 }
 
 test "vec zip — both sides reached through a struct field" {
-    let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
+    let r: Row = Row(xs: [1, 2, 3], names: ["a", "b"])
     let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
     assert pairs.len() == 2
     assert pairs[0].0 == 1
@@ -171,7 +171,7 @@ test "vec zip — both sides reached through a struct field" {
 }
 
 test "vec zip — a filter on a field receiver still doesn't skew the other side" {
-    let r: Row = Row { xs: [1, 2, 3], names: ["a", "b"] }
+    let r: Row = Row(xs: [1, 2, 3], names: ["a", "b"])
     let pairs: Vec<(i64, string)> = r.xs.filter(|x| x != 2).to_vec().zip(r.names)
     assert pairs.len() == 2
     assert pairs[0].0 == 1

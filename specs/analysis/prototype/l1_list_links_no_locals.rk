@@ -34,10 +34,10 @@ struct List {
 // directly into a field, and the second use reads it back out of that field.
 func push_back(mutate list: List, value: i32) {
     if list.tail? as t {
-        t.next = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+        t.next = list.nodes.insert(Node(value: value, next: none, prev: list.tail))
         list.tail = t.next
     } else {
-        list.head = list.nodes.insert(Node { value: value, next: none, prev: none })
+        list.head = list.nodes.insert(Node(value: value, next: none, prev: none))
         list.tail = list.head
     }
 }
@@ -97,7 +97,7 @@ func print_backward(list: List) {
 }
 
 func main() {
-    mut list = List { nodes: Rack.new(), head: none, tail: none }
+    mut list = List(nodes: Rack.new(), head: none, tail: none)
 
     push_back(mutate list, 1)
     push_back(mutate list, 2)

@@ -31,6 +31,6 @@ interface Scale<Rhs = Self> {
 }
 
 func main() {
-    let s = Sx { v: 1 }
+    let s = Sx(v: 1)
     println(s.v)
 }

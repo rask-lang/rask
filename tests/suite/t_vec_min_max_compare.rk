@@ -24,18 +24,18 @@ Desc implements Comparable {
 
 test "a struct's min and max" {
     mut p: Vec<Pair> = Vec.new()
-    p.push(Pair { a: 2, b: 0 })
-    p.push(Pair { a: 1, b: 5 })
-    assert (p.min() ?? Pair { a: 0, b: 0 }).a == 1
-    assert (p.max() ?? Pair { a: 0, b: 0 }).a == 2
+    p.push(Pair(a: 2, b: 0))
+    p.push(Pair(a: 1, b: 5))
+    assert (p.min() ?? Pair(a: 0, b: 0)).a == 1
+    assert (p.max() ?? Pair(a: 0, b: 0)).a == 2
 }
 
 test "a hand-written compare decides" {
-    let d: Vec<Desc> = [Desc { raw: 1 }, Desc { raw: 2 }]
-    assert (d.min() ?? Desc { raw: 0 }).raw == 2
-    assert (d.max() ?? Desc { raw: 0 }).raw == 1
-    assert (d.map(|x| x).min() ?? Desc { raw: 0 }).raw == 2
-    assert (d.filter(|x| x.raw > 0).max() ?? Desc { raw: 0 }).raw == 1
+    let d: Vec<Desc> = [Desc(raw: 1), Desc(raw: 2)]
+    assert (d.min() ?? Desc(raw: 0)).raw == 2
+    assert (d.max() ?? Desc(raw: 0)).raw == 1
+    assert (d.map(|x| x).min() ?? Desc(raw: 0)).raw == 2
+    assert (d.filter(|x| x.raw > 0).max() ?? Desc(raw: 0)).raw == 1
 }
 
 test "strings, wide and unsigned elements" {

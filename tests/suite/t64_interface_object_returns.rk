@@ -26,9 +26,9 @@ struct Echo { public n: i64 }
 
 Echo implements Handler {
     public func code(self) -> Status { return Status.NotFound }
-    public func pair(self) -> Pair { return Pair { a: self.n, b: self.n * 2 } }
+    public func pair(self) -> Pair { return Pair(a: self.n, b: self.n * 2) }
     public func big(self) -> Big {
-        return Big { one: 1, two: 2, three: 3, four: 4 }
+        return Big(one: 1, two: 2, three: 3, four: 4)
     }
     public func text(self) -> string { return "echo" }
     public func count(self) -> i64 { return self.n }
@@ -45,7 +45,7 @@ func status_name(s: Status) -> string {
 }
 
 test "an enum comes back through a vtable call" {
-    let h = Echo { n: 5 } as any Handler
+    let h = Echo(n: 5) as any Handler
     assert status_name(h.code()) == "notfound"
     // And directly in a match, which is where the bad tag showed up.
     let picked = match h.code() {
@@ -57,7 +57,7 @@ test "an enum comes back through a vtable call" {
 }
 
 test "a word-sized and an oversized struct both come back" {
-    let h = Echo { n: 5 } as any Handler
+    let h = Echo(n: 5) as any Handler
     let p = h.pair()
     assert p.a == 5
     assert p.b == 10
@@ -67,20 +67,20 @@ test "a word-sized and an oversized struct both come back" {
 }
 
 test "a string comes back through a vtable call" {
-    let h = Echo { n: 5 } as any Handler
+    let h = Echo(n: 5) as any Handler
     assert h.text() == "echo"
     assert h.text().len() == 4
 }
 
 test "scalars and an optional come back through a vtable call" {
-    let h = Echo { n: 7 } as any Handler
+    let h = Echo(n: 7) as any Handler
     assert h.count() == 7
     assert h.ratio() == 1.5
     assert h.maybe() ?? 0 == 7
 }
 
 test "the same method dispatches the same statically and dynamically" {
-    let e = Echo { n: 3 }
+    let e = Echo(n: 3)
     let h = e as any Handler
     assert status_name(e.code()) == status_name(h.code())
     assert e.pair().b == h.pair().b

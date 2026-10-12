@@ -53,8 +53,8 @@ EmailAddress implements Hashable {
 }
 
 test "a custom Hashable can delegate to string.hash()" {
-    let a = EmailAddress { raw: "Bo@Example.IO" }
-    let b = EmailAddress { raw: "bo@example.io" }
+    let a = EmailAddress(raw: "Bo@Example.IO")
+    let b = EmailAddress(raw: "bo@example.io")
     assert a == b
     assert a.hash() == b.hash()
 }
@@ -150,8 +150,8 @@ test "std.fmt — a hash in the top half of u64 renders unsigned" {
 }
 
 test "a custom Hashable can delegate to an integer's hash" {
-    let a = Version { major: 1, minor: 0 }
-    let b = Version { major: 1, minor: 9 }
+    let a = Version(major: 1, minor: 0)
+    let b = Version(major: 1, minor: 9)
     assert a == b
     assert a.hash() == b.hash()
 }

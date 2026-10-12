@@ -106,11 +106,11 @@ struct JsonParser {
 
 extend JsonParser {
     func new(input: string) -> JsonParser {
-        return JsonParser {
+        return JsonParser(
             input,
             pos: 0,
             len: input.len(),
-        }
+        )
     }
 
     func peek(self) -> u8 {

@@ -38,7 +38,6 @@ A line continues the one before it when it starts with:
 | `&` `\|` `^` `<<` `>>` | bitwise |
 | `/` `%` | division, remainder |
 | `??` `catch` | absence, failure |
-| `..` `..=` | a range |
 | `else` | the other branch of an `if` |
 
 ```rask
@@ -51,13 +50,15 @@ let ok = ready
     && !paused
 ```
 
-**Deliberately excluded:** `+`, `-`, `*`, `<`, `>`. Each is ambiguous at the start
-of a line, so a line beginning with one of them is a new statement:
+**Deliberately excluded:** `+`, `-`, `*`, `<`, `>`, `..`. Each is ambiguous at the
+start of a line, so a line beginning with one of them is a new statement:
 
 - `-` is also prefix negation. `-x` on its own line is a negation, not a
   subtraction from the line above.
 - `*` is also a dereference.
 - `<` and `>` also open and close generic arguments.
+- `..` also starts a value's spread, `..base`, and an open range, `..10`. A range
+  stays on one line.
 - `+` has no prefix meaning, so a line starting with one is a parse error rather
   than a separate statement — the one case where the exclusion says so out loud.
 
@@ -67,10 +68,40 @@ let b = a
 ```
 
 The exclusion list is load-bearing: it's what makes the rule decidable by looking
-at one token. Extending continuation to any of the five needs the ambiguity solved
+at one token. Extending continuation to any of the six needs the ambiguity solved
 first, not worked around. JavaScript's automatic semicolon insertion is the
 cautionary case — it guesses from the previous line and never recovered from the
 corners that produces.
+
+### Brackets
+
+Each bracket means one thing, so which to write never needs looking up:
+
+| Bracket | Holds | Examples |
+|---|---|---|
+| `( )` | values: what's passed in, what's built, what a pattern takes apart | `f(x)`, `Point(x: 1, y: 2)`, `Circle(r)`, `(a, b)` |
+| `{ }` | a body: code, or the members of a declaration | `if x { … }`, `struct Point { x: i64 }`, `match v { … }` |
+| `[ ]` | elements: a sequence, or one of them | `[1, 2, 3]`, `v[i]` |
+| `< >` | type arguments | `Vec<i64>`, `Map<string, User>` |
+
+Building a value is calling its type, and a pattern is that call run backwards.
+
+**Lists.** Inside `( )` and `[ ]`, a newline separates items the way it separates
+statements, and the same continuation rule applies to an item that runs over a
+line. Commas are optional, like `;`. A line starting with `-` or `*` would read as a
+new item (`-b`, `*p`), so that's an error unless a comma comes before it: to continue
+the line above, end that line with the operator.
+
+```rask
+send(
+    to: user.email
+    subject: "Welcome"
+    body: render(template)
+)
+
+let total = a -
+    b              // a line ending in an operator can't be finished
+```
 
 ### 2. Colon for Inline, Braces for Multi-line
 
@@ -362,7 +393,7 @@ extend Point {
     }
 
     func origin() -> Point {        // Static (no self)
-        return Point { x: 0, y: 0 }
+        return Point(x: 0, y: 0)
     }
 }
 ```
@@ -378,26 +409,30 @@ struct User {
     password_hash: string     // Package-private
 }
 
-// Construction
-let user = User {
+// Construction: fields by name, in any order
+let user = User(
     name: "Alice"
     email: "alice@example.com"
     password_hash: hash(pwd)
-}
+)
 
-// Update syntax
-let updated = User { email: "new@example.com", ..user }
+// Update syntax: the rest of the fields come from `user`
+let updated = User(email: "new@example.com", ..user)
 
 // Field shorthand — a local with the field's name needs no colon
 let email = "new@example.com"
-let renamed = User { email, ..user }
+let renamed = User(email, ..user)
 ```
 
-The shorthand is the struct literal only. A call has no equivalent: `f(x)` is
-positional and `f(x: x)` is a named argument, so there's nothing for `f(x)` to be
-short for.
+A struct is filled by name, and a bare name is short for `name: name`. A function
+is filled by position: `f(x)` passes `x` as the first argument whatever it's
+called, and `f(x: x)` labels it. So `User(email)` and `f(email)` look alike and
+differ in what fills which slot, and the first letter says which one you're
+reading: a type's name starts with a capital (E0417), a function's doesn't. A
+value written by position, or a bare name that isn't a field, is E0416 with the
+field to name.
 
-**Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` interface or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
+**Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config()` constructs the default value — there is no `Default` interface or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
 
 ```rask
 struct Config {
@@ -406,8 +441,8 @@ struct Config {
     verbose: bool = false
 }
 
-let c = Config { host: "localhost" }        // port=8080, verbose=false
-let c2 = Config { host: "x", port: 443 }
+let c = Config(host: "localhost")        // port=8080, verbose=false
+let c2 = Config(host: "x", port: 443)
 ```
 
 **Unique structs** (can't be copied, can be dropped):
@@ -451,18 +486,19 @@ enum Shape {
     Square(f64)
 }
 
-// Named payloads — when fields have distinct roles
+// Named payloads — when fields have distinct roles. Filled and matched by
+// name, like a struct: `Completed(timestamp: now())`, `Failed(error)`.
 enum Status {
     Pending
     Active
-    Completed { timestamp: i64 }
-    Failed { error: string }
+    Completed(timestamp: i64)
+    Failed(error: string)
 }
 
 // Mix: each variant chooses independently
 enum Event {
     Click(Point)                          // positional
-    Resize { width: i32, height: i32 }    // named
+    Resize(width: i32, height: i32)    // named
     Quit                                   // no payload
 }
 ```
@@ -776,20 +812,20 @@ match response {
 
 // Destructuring — `x: 0` tests a value, `y` binds one (same shorthand)
 match point {
-    Point { x: 0, y } => println("on y-axis at {y}"),
-    Point { x, y: 0 } => println("on x-axis at {x}"),
-    Point { x, y } => println("at ({x}, {y})"),
+    Point(x: 0, y) => println("on y-axis at {y}"),
+    Point(x, y: 0) => println("on x-axis at {x}"),
+    Point(x, y) => println("at ({x}, {y})"),
 }
 
 // `..` covers the fields the pattern doesn't name
 match vertex {
-    Vertex { x, .. } => println("x is {x}"),
+    Vertex(x, ..) => println("x is {x}"),
 }
 ```
 
-Arms are tried in order, so the general one goes last. Braces make this a `match`
-form: in `if point is Point { … }` the `{` opens the branch, so an `is` test names
-the type and nothing else.
+Arms are tried in order, so the general one goes last. A pattern reads the way the
+value is built: `Point(x, y: 0)` binds the field `x` and tests the field `y`, and
+`Circle(r)` takes a positional variant's value by position.
 
 ### Pattern Matching in Conditions: `is`
 
@@ -1028,7 +1064,7 @@ select {
 }!
 
 // Shared state
-let config = Shared.new(AppConfig {})
+let config = Shared.new(AppConfig())
 let timeout = with config.read() as c { c.timeout }
 with config.write() as c { c.timeout = 60.seconds }
 ```

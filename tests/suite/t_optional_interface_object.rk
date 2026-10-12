@@ -60,10 +60,10 @@ func area_or_zero(x: any Shape?) -> i64 {
 
 func pick(n: i64) -> any Shape? {
     if n == 0 {
-        return Sq { s: 2 }
+        return Sq(s: 2)
     }
     if n == 1 {
-        return Rect { w: 2, h: 5 }
+        return Rect(w: 2, h: 5)
     }
     return none
 }
@@ -72,23 +72,23 @@ func checked(n: i64) -> (any Shape)? or Oops {
     if n < 0 {
         return Oops.Bad
     }
-    return Sq { s: n }
+    return Sq(s: n)
 }
 
 test "a local binding" {
-    let b: any Shape? = Sq { s: 3 }
+    let b: any Shape? = Sq(s: 3)
     assert area_or_zero(b) == 9
     let n: any Shape? = none
     assert area_or_zero(n) == 0
 }
 
 test "the parenthesised spelling is the same type" {
-    let b: (any Shape)? = Rect { w: 3, h: 4 }
+    let b: (any Shape)? = Rect(w: 3, h: 4)
     assert area_or_zero(b) == 12
 }
 
 test "a parameter" {
-    assert area_or_zero(Sq { s: 4 }) == 16
+    assert area_or_zero(Sq(s: 4)) == 16
     assert area_or_zero(none) == 0
 }
 
@@ -99,18 +99,18 @@ test "a return" {
 }
 
 test "a struct field" {
-    let full = Slot { shape: Rect { w: 1, h: 7 } }
+    let full = Slot(shape: Rect(w: 1, h: 7))
     assert area_or_zero(full.shape) == 7
-    let empty = Slot { shape: none }
+    let empty = Slot(shape: none)
     assert area_or_zero(empty.shape) == 0
-    let owned = Slot { shape: Label { text: "four" } }
+    let owned = Slot(shape: Label(text: "four"))
     assert area_or_zero(owned.shape) == 4
 }
 
 test "an assignment" {
     mut b: any Shape? = none
     assert area_or_zero(b) == 0
-    b = Sq { s: 5 }
+    b = Sq(s: 5)
     assert area_or_zero(b) == 25
 }
 

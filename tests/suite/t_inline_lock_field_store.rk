@@ -27,19 +27,19 @@ struct Settings {
 }
 
 test "a string field stored through an inline write" {
-    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    let settings = Shared.new(Settings(theme: "dark", size: 1))
     settings.write().theme = "light"
     assert settings.read().theme == "light"
 }
 
 test "a scalar field stored through an inline write" {
-    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    let settings = Shared.new(Settings(theme: "dark", size: 1))
     settings.write().size = 7
     assert settings.read().size == 7
 }
 
 test "the same store inside a with block" {
-    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    let settings = Shared.new(Settings(theme: "dark", size: 1))
     with settings.write() as s {
         s.theme = "light"
     }
@@ -47,20 +47,20 @@ test "the same store inside a with block" {
 }
 
 test "written twice — the replaced string is given back" {
-    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    let settings = Shared.new(Settings(theme: "dark", size: 1))
     settings.write().theme = "a theme name long enough to allocate"
     settings.write().theme = "another one, also long enough to allocate"
     assert settings.read().theme == "another one, also long enough to allocate"
 }
 
 test "a Local Shared takes both verbs" {
-    let settings = Shared.local(Settings { theme: "dark", size: 1 })
+    let settings = Shared.local(Settings(theme: "dark", size: 1))
     settings.write().theme = "light"
     assert settings.read().theme == "light"
 }
 
 test "a Mutex Shared takes both verbs" {
-    let settings = Shared.mutex(Settings { theme: "dark", size: 1 })
+    let settings = Shared.mutex(Settings(theme: "dark", size: 1))
     settings.write().theme = "light"
     assert settings.read().theme == "light"
 }

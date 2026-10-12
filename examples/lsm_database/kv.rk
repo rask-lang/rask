@@ -12,21 +12,21 @@ struct KeyValue {
 
 extend KeyValue {
     func new(key: string, value: string, seq: i64) -> KeyValue {
-        return KeyValue {
+        return KeyValue(
             key,
             value,
             seq,
             deleted: false,
-        }
+        )
     }
 
     func tombstone(key: string, seq: i64) -> KeyValue {
-        return KeyValue {
+        return KeyValue(
             key,
             value: "",
             seq,
             deleted: true,
-        }
+        )
     }
 }
 
@@ -45,12 +45,12 @@ func decode_kv(line: string) -> KeyValue or WalError {
         return WalError.CorruptEntry(0, "invalid sequence number: {parts[2]}")
     }
     let deleted = parts[3].trim() == "1"
-    return KeyValue {
+    return KeyValue(
         key: parts[0].to_string(),
         value: parts[1].to_string(),
         seq: seq as i64,
         deleted,
-    }
+    )
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────

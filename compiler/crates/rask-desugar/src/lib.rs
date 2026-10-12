@@ -13,6 +13,7 @@
 //! These passes run before type checking.
 
 mod annotation_defaults;
+mod construct;
 mod defaults;
 mod generalize;
 mod interface_defaults;
@@ -71,7 +72,7 @@ pub fn desugar(decls: &mut [Decl]) -> DesugarOutput {
 /// Desugar a single file that can call the stdlib.
 ///
 /// `stdlib` is the stdlib's defaulted signatures
-/// (`StubRegistry::defaulted_signatures`). Filling an omitted argument needs
+/// (`StubRegistry::desugar_declarations`). Filling an omitted argument needs
 /// the declaration it was omitted from, and the stdlib's declarations aren't
 /// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
 /// parsed and then unusable (#1276). This crate can't read the registry
@@ -99,11 +100,14 @@ pub fn desugar_package(
     desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
-/// ER26 coverage error from @message desugaring.
+/// Something desugaring found wrong with the program.
 #[derive(Debug, Clone)]
 pub struct DesugarError {
     pub message: String,
     pub span: Span,
+    pub code: &'static str,
+    /// What the primary span points at.
+    pub label: String,
 }
 
 /// What desugaring leaves for the passes after it.
@@ -136,6 +140,10 @@ fn desugar_inner_from(
     id_base: u32,
     default_args_id_base: u32,
 ) -> DesugarOutput {
+    // Values are written in parentheses, so a construction parses as a call.
+    // First, so everything after sees the struct literal it always has.
+    let construct_errors = construct::resolve_constructions(decls, stdlib);
+
     // TD2: an interface method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
@@ -155,8 +163,10 @@ fn desugar_inner_from(
         desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
         desugarer.desugar_decl(decl);
     }
+    let mut errors = construct_errors;
+    errors.append(&mut desugarer.errors);
     let output = DesugarOutput {
-        errors: std::mem::take(&mut desugarer.errors),
+        errors,
         operator_calls: std::mem::take(&mut desugarer.operator_calls),
     };
 
@@ -977,6 +987,8 @@ impl Desugarer {
                 TemplatePiece::Positional(idx, spec) => {
                     let Some(arg) = value_args.get(idx) else {
                         self.errors.push(DesugarError {
+                            code: "E0338",
+                            label: "in this format template".to_string(),
                             message: format!(
                                 "format template wants argument {} but only {} were passed",
                                 idx,
@@ -1048,6 +1060,8 @@ impl Desugarer {
                     }
                     if depth != 0 {
                         self.errors.push(DesugarError {
+                            code: "E0338",
+                            label: "in this format template".to_string(),
                             message: "unclosed `{` in format template — write `{{` for a literal brace".to_string(),
                             span,
                         });
@@ -1065,6 +1079,8 @@ impl Desugarer {
                             Some(s) => Some(s),
                             None => {
                                 self.errors.push(DesugarError {
+                                    code: "E0338",
+                                    label: "in this format template".to_string(),
                                     message: format!("`{}` is not a format spec", text),
                                     span,
                                 });
@@ -1105,6 +1121,8 @@ impl Desugarer {
 
         if saw_auto && saw_explicit {
             self.errors.push(DesugarError {
+                code: "E0338",
+                label: "in this format template".to_string(),
                 message: "format template mixes `{}` with `{0}` — pick one and use it throughout"
                     .to_string(),
                 span,
@@ -1113,6 +1131,8 @@ impl Desugarer {
         }
         if saw_auto && next_auto > arg_count {
             self.errors.push(DesugarError {
+                code: "E0338",
+                label: "in this format template".to_string(),
                 message: format!(
                     "format template has {} placeholders but {} arguments were passed",
                     next_auto, arg_count
@@ -1133,6 +1153,8 @@ impl Desugarer {
         let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
         if !lex.errors.is_empty() {
             self.errors.push(DesugarError {
+                code: "E0338",
+                label: "in this format template".to_string(),
                 message: format!("`{{{}}}` in the format template isn't an expression", text),
                 span,
             });
@@ -1147,6 +1169,8 @@ impl Desugarer {
             }
             Err(_) => {
                 self.errors.push(DesugarError {
+                    code: "E0338",
+                    label: "in this format template".to_string(),
                     message: format!("`{{{}}}` in the format template isn't an expression", text),
                     span,
                 });

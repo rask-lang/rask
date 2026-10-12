@@ -27,11 +27,11 @@ type Celsius = f64 implements Equal
 extend Counter {
     // Static — no self.
     func new() -> Counter {
-        return Counter { n: 0 }
+        return Counter(n: 0)
     }
 
     func starting_at(n: i32) -> Counter {
-        return Counter { n }
+        return Counter(n)
     }
 
     func value(self) -> i32 {
@@ -65,11 +65,11 @@ extend Rect {
     }
 
     func scaled(self, k: f64) -> Rect {
-        return Rect { w: self.w * k, h: self.h * k }
+        return Rect(w: self.w * k, h: self.h * k)
     }
 
     func square(side: f64) -> Rect {
-        return Rect { w: side, h: side }
+        return Rect(w: side, h: side)
     }
 }
 
@@ -144,7 +144,7 @@ test "a method calling another method on self" {
 }
 
 test "methods returning a new value chain" {
-    let r = Rect { w: 2.0, h: 3.0 }
+    let r = Rect(w: 2.0, h: 3.0)
     assert r.area() == 6.0
     assert r.perimeter() == 10.0
     assert r.scaled(2.0).area() == 24.0
@@ -158,10 +158,10 @@ test "a static on a struct with fields" {
 }
 
 test "a second extend block adds to the same type" {
-    let r = Rect { w: 2.0, h: 2.0 }
+    let r = Rect(w: 2.0, h: 2.0)
     assert r.is_square()
     assert r.area() == 4.0
-    let o = Rect { w: 2.0, h: 3.0 }
+    let o = Rect(w: 2.0, h: 3.0)
     assert !o.is_square()
 }
 
@@ -190,7 +190,7 @@ test "methods on a nominal type" {
 }
 
 test "methods on values inside a Vec" {
-    let rects: Vec<Rect> = [Rect { w: 1.0, h: 1.0 }, Rect { w: 2.0, h: 3.0 }]
+    let rects: Vec<Rect> = [Rect(w: 1.0, h: 1.0), Rect(w: 2.0, h: 3.0)]
     mut total = 0.0
     for r in rects {
         total = total + r.area()

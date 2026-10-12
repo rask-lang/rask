@@ -30,7 +30,7 @@ extend Meter {
     }
 
     func make(start: i64 = 7) -> Meter {
-        return Meter { reading: start }
+        return Meter(reading: start)
     }
 }
 
@@ -46,7 +46,7 @@ extend Gauge {
 }
 
 test "a stdlib default survives a program method of the same name" {
-    mut b = Box { n: 1 }
+    mut b = Box(n: 1)
     assert b.shrink(3) == 3
     mut v: Vec<i64> = Vec.with_capacity(32)
     v.push(1)
@@ -55,8 +55,8 @@ test "a stdlib default survives a program method of the same name" {
 }
 
 test "two types, one method name, each its own default" {
-    let m = Meter { reading: 3 }
-    let g = Gauge { reading: 3 }
+    let m = Meter(reading: 3)
+    let g = Gauge(reading: 3)
     assert m.scaled() == 30
     assert g.scaled() == 7
     assert m.scaled(2) == 6
@@ -64,9 +64,9 @@ test "two types, one method name, each its own default" {
 }
 
 test "a label skips a defaulted parameter" {
-    let m = Meter { reading: 3 }
+    let m = Meter(reading: 3)
     assert m.scaled(plus: 1) == 31
-    let g = Gauge { reading: 3 }
+    let g = Gauge(reading: 3)
     assert g.scaled(plus: 0) == 6
 }
 

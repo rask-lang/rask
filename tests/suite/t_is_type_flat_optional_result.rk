@@ -53,7 +53,7 @@ func pick(n: i64) -> string? or MyErr {
 func point(n: i64) -> Point? or MyErr {
     if n == 0 { return none }
     if n < 0 { return MyErr.Worse }
-    return Point { x: n, y: n * 2 }
+    return Point(x: n, y: n * 2)
 }
 
 func bound(n: i64) -> string {

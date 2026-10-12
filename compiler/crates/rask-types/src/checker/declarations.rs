@@ -254,21 +254,21 @@ impl TypeChecker {
     fn collect_type_declaration(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Struct(s) => {
-                self.check_declared_type_name(&s.name, "struct", decl.span);
+                self.check_declared_type_name(&s.name, "struct", decl.span, s.fields.is_empty());
                 let id = self.register_struct(s);
                 self.types.record_param_bounds(id, &s.type_params);
                 self.types.record_method_decl(id, decl.id);
                 self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
             }
             DeclKind::Enum(e) => {
-                self.check_declared_type_name(&e.name, "enum", decl.span);
+                self.check_declared_type_name(&e.name, "enum", decl.span, false);
                 let id = self.register_enum(e, decl.span);
                 self.types.record_param_bounds(id, &e.type_params);
                 self.types.record_method_decl(id, decl.id);
                 self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
             }
             DeclKind::Interface(t) => {
-                self.check_declared_type_name(&t.name, "interface", decl.span);
+                self.check_declared_type_name(&t.name, "interface", decl.span, false);
                 // DT1: shape-matching stops at the package boundary
                 if t.is_pub && t.is_duck {
                     self.errors.push(TypeError::PublicDuckInterface {
@@ -279,14 +279,14 @@ impl TypeChecker {
                 self.register_interface(t);
             }
             DeclKind::Union(u) => {
-                self.check_declared_type_name(&u.name, "union", decl.span);
+                self.check_declared_type_name(&u.name, "union", decl.span, false);
                 self.register_union(u);
             }
             // AN6: annotations register as nominal struct types so
             // `field.has<validate>()` can name them as type arguments.
             // The restricted shape (AN1) is enforced in annotations.rs.
             DeclKind::Annotation(a) => {
-                self.check_declared_type_name(&a.name, "annotation", decl.span);
+                self.check_declared_type_name(&a.name, "annotation", decl.span, false);
                 self.annotation_types.insert(a.name.clone());
                 let s = rask_ast::decl::StructDecl {
                     name: a.name.clone(),
@@ -301,7 +301,7 @@ impl TypeChecker {
                 self.types.record_method_decl(id, decl.id);
             }
             DeclKind::TypeAlias(a) => {
-                self.check_declared_type_name(&a.name, "type alias", decl.span);
+                self.check_declared_type_name(&a.name, "type alias", decl.span, false);
                 self.register_type_alias(a, decl.span);
                 // A nominal type (`type MyDoc = interfacepkg.Doc`) belongs to
                 // whoever wrote it, which is what makes it XC1's way out.
@@ -524,7 +524,20 @@ impl TypeChecker {
         });
     }
 
-    fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span) {
+    fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span, namespace: bool) {
+        // A type starts with a capital, which is what makes `Name(…)` read as
+        // building one and `name(…)` as a call. A struct with no fields is a
+        // namespace (`struct net { }`), never built; a C struct keeps the
+        // header's spelling; an annotation is `@name`, not a type anyone
+        // builds.
+        let compiler_provided = self.types.stdlib_mode || name.contains('.') || kind == "annotation";
+        if !compiler_provided && !namespace && !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+            self.errors.push(TypeError::LowercaseTypeName {
+                name: name.to_string(),
+                kind: kind.to_string(),
+                span,
+            });
+        }
         if is_type_param_name(name) {
             self.errors.push(TypeError::SingleLetterTypeName {
                 name: name.to_string(),

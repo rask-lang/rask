@@ -42,15 +42,15 @@ func frob_it(f: T) -> i64 where T: Frobber { return f.frob() }
 func total(c: T) -> i64 where T: Countable + Sizable { return c.count() + c.size() }
 
 test "nominal user interface via declared conformance" {
-    assert announce(Dog { name: "Rex" }) == "woof:Rex"
+    assert announce(Dog(name: "Rex")) == "woof:Rex"
 }
 
 test "duck interface matches by shape" {
-    assert frob_it(Widget { v: 42 }) == 42
+    assert frob_it(Widget(v: 42)) == 42
 }
 
 test "two conformances satisfy both bounds" {
-    assert total(Bag { n: 5 }) == 15
+    assert total(Bag(n: 5)) == 15
 }
 
 func main() {}

@@ -51,12 +51,12 @@ struct Counted {
 
 test "mem.racks/RK2 — two node types in one program" {
     mut slots: Rack<Slot> = Rack.new()
-    let s = slots.insert(Slot { kids: Vec.new(), n: 1 })
+    let s = slots.insert(Slot(kids: Vec.new(), n: 1))
     assert s.kids.len() == 0
     assert s.n == 1
 
     mut labels: Rack<Labelled> = Rack.new()
-    let l = labels.insert(Labelled { label: "a label long enough to allocate", kids: Vec.new() })
+    let l = labels.insert(Labelled(label: "a label long enough to allocate", kids: Vec.new()))
     assert l.kids.len() == 0
     assert l.label == "a label long enough to allocate"
 }
@@ -66,9 +66,9 @@ test "mem.racks/RK2 — and three, with the container at three offsets" {
     mut labels: Rack<Labelled> = Rack.new()
     mut counted: Rack<Counted> = Rack.new()
 
-    let s = slots.insert(Slot { kids: Vec.new(), n: 7 })
-    let l = labels.insert(Labelled { label: "another label, also long enough", kids: Vec.new() })
-    let c = counted.insert(Counted { a: 10, b: 20, kids: Vec.new() })
+    let s = slots.insert(Slot(kids: Vec.new(), n: 7))
+    let l = labels.insert(Labelled(label: "another label, also long enough", kids: Vec.new()))
+    let c = counted.insert(Counted(a: 10, b: 20, kids: Vec.new()))
 
     assert s.n == 7
     assert l.label == "another label, also long enough"
@@ -83,15 +83,15 @@ test "mem.racks/RK2 — and three, with the container at three offsets" {
 // wrong offset went straight to `Vec.push`.
 test "mem.racks/RK2 — pushing an edge through each" {
     mut labels: Rack<Labelled> = Rack.new()
-    let a = labels.insert(Labelled { label: "the first node's label is long", kids: Vec.new() })
-    let b = labels.insert(Labelled { label: "the second node's label is too", kids: Vec.new() })
+    let a = labels.insert(Labelled(label: "the first node's label is long", kids: Vec.new()))
+    let b = labels.insert(Labelled(label: "the second node's label is too", kids: Vec.new()))
     a.kids.push(b)
     assert a.kids.len() == 1
     assert a.kids[0].label == "the second node's label is too"
 
     mut counted: Rack<Counted> = Rack.new()
-    let x = counted.insert(Counted { a: 1, b: 2, kids: Vec.new() })
-    let y = counted.insert(Counted { a: 3, b: 4, kids: Vec.new() })
+    let x = counted.insert(Counted(a: 1, b: 2, kids: Vec.new()))
+    let y = counted.insert(Counted(a: 3, b: 4, kids: Vec.new()))
     x.kids.push(y)
     assert x.kids.len() == 1
     assert x.kids[0].b == 4
@@ -101,13 +101,13 @@ test "mem.racks/RK2 — pushing an edge through each" {
 // neighbouring field rather than only reading it.
 test "mem.racks/RK2 — writing a field through a link" {
     mut labels: Rack<Labelled> = Rack.new()
-    let a = labels.insert(Labelled { label: "before, and long enough to allocate", kids: Vec.new() })
+    let a = labels.insert(Labelled(label: "before, and long enough to allocate", kids: Vec.new()))
     a.label = "after, and long enough as well"
     assert a.label == "after, and long enough as well"
     assert a.kids.len() == 0
 
     mut counted: Rack<Counted> = Rack.new()
-    let x = counted.insert(Counted { a: 1, b: 2, kids: Vec.new() })
+    let x = counted.insert(Counted(a: 1, b: 2, kids: Vec.new()))
     x.b = 99
     assert x.a == 1
     assert x.b == 99
@@ -116,12 +116,12 @@ test "mem.racks/RK2 — writing a field through a link" {
 
 test "mem.racks/RK2 — through a `Link<T>?` field" {
     mut slots: Rack<Slot> = Rack.new()
-    let s = slots.insert(Slot { kids: Vec.new(), n: 1 })
+    let s = slots.insert(Slot(kids: Vec.new(), n: 1))
     assert s.n == 1
 
     mut peered: Rack<Peered> = Rack.new()
-    let x = peered.insert(Peered { label: "the first label, long enough", peer: none, n: 5 })
-    let y = peered.insert(Peered { label: "the second label, also long", peer: none, n: 6 })
+    let x = peered.insert(Peered(label: "the first label, long enough", peer: none, n: 5))
+    let y = peered.insert(Peered(label: "the second label, also long", peer: none, n: 6))
     x.peer = y
     if x.peer? as p {
         assert p.label == "the second label, also long"
@@ -140,8 +140,8 @@ test "mem.racks/RK2 — interleaved inserts" {
     mut labels: Rack<Labelled> = Rack.new()
     mut total = 0
     for i in 1..5 {
-        let s = slots.insert(Slot { kids: Vec.new(), n: i.clamp<i32>() })
-        let l = labels.insert(Labelled { label: "node {i} with a long enough label", kids: Vec.new() })
+        let s = slots.insert(Slot(kids: Vec.new(), n: i.clamp<i32>()))
+        let l = labels.insert(Labelled(label: "node {i} with a long enough label", kids: Vec.new()))
         total = total + s.n.clamp<i64>() + l.label.len().wrap<i64>()
     }
     assert total == 134

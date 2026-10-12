@@ -1952,6 +1952,9 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_is_pattern(&mut self, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
             let (val, val_ty) = self.lower_expr(inner)?;
+            if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, Pattern::Struct { .. }) {
+                return self.lower_struct_is(inner, val, val_ty, pattern);
+            }
             let niche = self.option_niche(inner, &val_ty);
             let test = self.emit_is_test(&val, &val_ty, niche, pattern);
             Ok((MirOperand::Local(test.matches), MirType::Bool))
@@ -3520,7 +3523,7 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_struct_lit(&mut self, expr: &Expr, name: &str, fields: &[FieldInit], spread: Option<&Expr>) -> Result<TypedOperand, LoweringError> {
-            // A nominal newtype is transparent: `Id { value: 5 }` IS 5.
+            // A nominal newtype is transparent: `Id(5)` IS 5.
             // There's no layout to store into — treating it as an aggregate
             // stored through an uninitialised pointer (#445).
             if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
@@ -3595,21 +3598,13 @@ impl<'a> MirLowerer<'a> {
                     store_size: None,
                     field: None,
                 }));
-                // Store fields at their offsets within the payload
                 for field in fields.iter() {
-                    let (val_op, _) = self.lower_expr(&field.value)?;
-                    let vf = variant_fields.iter()
-                        .find(|f| f.name == field.name);
-                    let offset = vf.map(|f| payload_offset + f.offset)
-                        .unwrap_or(payload_offset);
-                    let store_size = vf.map(|f| f.size);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset,
-                        value: val_op,
-                        store_size,
-                        field: None,
-                    }));
+                    let Some(i) = variant_fields.iter().position(|f| f.name == field.name) else {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "`{name}` has no field `{}`", field.name
+                        )));
+                    };
+                    self.store_variant_field(result_local, payload_offset, variant_fields, i, &field.value)?;
                 }
             } else {
             for field in fields.iter() {
@@ -3632,7 +3627,7 @@ impl<'a> MirLowerer<'a> {
                 // out with a word-sized placeholder per type parameter. An
                 // aggregate type argument is bigger than that, so the store
                 // runs past its own slot and the read comes back garbage —
-                // `One { only: Big { … } }` with a 24-byte Big segfaulted,
+                // `One(only: Big(…))` with a 24-byte Big segfaulted,
                 // silently (#781). Refuse instead, at the field whose two
                 // sizes disagree.
                 //
@@ -3722,7 +3717,7 @@ impl<'a> MirLowerer<'a> {
                 }));
 
                 // Propagate Vec element types from source var to struct field.
-                // If v has known elem type F64 and we're constructing State { data: v },
+                // If v has known elem type F64 and we're constructing State(data: v),
                 // record "self.data" so methods can look it up.
                 if let ExprKind::Ident(src_var) = &field.value.kind {
                     if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.clone())
@@ -3735,7 +3730,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // Struct update syntax: `Point { x: 10, ..p }`. Every field not
+            // Struct update syntax: `Point(x: 10, ..p)`. Every field not
             // given explicitly is copied from the spread base. Without this
             // the un-listed fields are left uninitialized and read garbage on
             // native (interp happens to zero-init).
@@ -3779,8 +3774,62 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), result_ty))
         }
 
+    /// Store field `i` of a variant's payload, written by position or by name.
+    fn store_variant_field(
+        &mut self,
+        result_local: crate::LocalId,
+        payload_offset: u32,
+        fields: &[rask_mono::FieldLayout],
+        i: usize,
+        value: &Expr,
+    ) -> Result<(), LoweringError> {
+        let (val, val_ty) = self.lower_expr(value)?;
+        let (offset, field_size) = match fields.get(i) {
+            Some(f) => (payload_offset + f.offset, f.size),
+            None => (payload_offset + (i as u32 * 8), 8),
+        };
+        // A payload declared `Owned<T>` is a pointer slot, and the value
+        // arriving is a `T` — OW5 lets a `T` stand where `Owned<T>` is asked
+        // for. Put it on the heap and store the pointer. Storing the value
+        // instead wrote 16 bytes of enum into an 8-byte slot, clobbering the
+        // next payload, and the recursive read came back as a tag used for an
+        // address (#705).
+        let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
+            Some(_) => self.box_into_owned_slot(val, &val_ty),
+            None => val,
+        };
+        // Aggregate payloads (string = 16 bytes, embedded structs) must copy
+        // the full value. Without store_size a string constant stores only its
+        // 8-byte data pointer and the length word is left uninitialized (#387).
+        let store_size = if field_size > 8 { Some(field_size) } else { None };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset,
+            value: val,
+            store_size,
+            field: None,
+        }));
+        Ok(())
+    }
+
     fn lower_if_let(&mut self, expr: &Expr, pattern: &Pattern, then_branch: &Expr, else_branch: Option<&Expr>, else_binding: Option<&str>) -> Result<TypedOperand, LoweringError> {
             let (val, val_ty) = self.lower_expr(expr)?;
+
+            // `if p is Point(x: 0, y) { … }` on a plain struct tests fields,
+            // not a tag: it's the two-arm struct match `Point(…) => then,
+            // _ => else`, which has the per-field tests already.
+            if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, Pattern::Struct { .. }) {
+                let otherwise = else_branch.cloned().unwrap_or_else(|| Expr {
+                    id: then_branch.id,
+                    kind: ExprKind::Block(Vec::new()),
+                    span: then_branch.span,
+                });
+                let arms = [
+                    rask_ast::expr::MatchArm { pattern: pattern.clone(), guard: None, body: Box::new(then_branch.clone()) },
+                    rask_ast::expr::MatchArm { pattern: Pattern::Wildcard, guard: None, body: Box::new(otherwise) },
+                ];
+                return self.lower_struct_match(expr, val, val_ty, &arms);
+            }
             let niche = self.option_niche(expr, &val_ty);
             let is_niche = niche.is_some();
 
@@ -5647,39 +5696,8 @@ impl<'a> MirLowerer<'a> {
                                 field: None,
                             }));
 
-                            // Store payload fields
                             for (i, arg) in args.iter().enumerate() {
-                                let (val, val_ty) = self.lower_expr(&arg.expr)?;
-                                let (offset, field_size) = if i < fields.len() {
-                                    (payload_offset + fields[i].offset, fields[i].size)
-                                } else {
-                                    (payload_offset + (i as u32 * 8), 8)
-                                };
-                                // A payload declared `Owned<T>` is a pointer slot,
-                                // and the value arriving is a `T` — OW5 lets a `T`
-                                // stand where `Owned<T>` is asked for. Put it on the
-                                // heap and store the pointer. Storing the value
-                                // instead wrote 16 bytes of enum into an 8-byte slot,
-                                // clobbering the next payload, and the recursive read
-                                // came back as a tag used for an address (#705).
-                                let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
-                                    Some(_) => {
-                                        self.box_into_owned_slot(val, &val_ty)
-                                    }
-                                    None => val,
-                                };
-                                // Aggregate payloads (string = 16 bytes, embedded
-                                // structs) must copy the full value. Without store_size
-                                // a string constant stores only its 8-byte data pointer
-                                // and the length word is left uninitialized (#387).
-                                let store_size = if field_size > 8 { Some(field_size) } else { None };
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: result_local,
-                                    offset,
-                                    value: val,
-                                    store_size,
-                                    field: None,
-                                }));
+                                self.store_variant_field(result_local, payload_offset, &fields, i, &arg.expr)?;
                             }
 
                             return Ok(Some((MirOperand::Local(result_local), enum_ty)));
@@ -9423,7 +9441,7 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// `[Point { x: 1, y: 2 }, …]` — a Vec walked one element at a time.
+    /// `[Point(x: 1, y: 2), …]` — a Vec walked one element at a time.
     ///
     /// The runtime's `rask_vec_debug` reads a slot at a time and switches on a
     /// kind code, which covers the scalars and strings; there is no code for
@@ -10155,7 +10173,7 @@ impl<'a> MirLowerer<'a> {
             // `{:debug}` was checked against Displayable and rejected (#1032).
             //
             // Built here rather than as a runtime call: lowering knows the
-            // layout, so `Point { x: 1, y: 2 }` is a concat chain of constants
+            // layout, so `Point(x: 1, y: 2)` is a concat chain of constants
             // and field renders, decided at compile time. Same shape the rest
             // of formatting already has.
             //
@@ -10836,6 +10854,9 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<TypedOperand, LoweringError> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
+        if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, rask_ast::expr::Pattern::Struct { .. }) {
+            return self.lower_struct_is(scrutinee, val, val_ty, pattern);
+        }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
         let test = self.emit_is_test(&val, &val_ty, niche, pattern);

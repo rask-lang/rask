@@ -38,15 +38,15 @@ struct Outer {
 }
 
 func make_pair() -> Pair {
-    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+    return Pair(a: Conn(id: 1), b: Conn(id: 2))
 }
 
 func make_wrapper() -> Wrapper {
-    return Wrapper { conn: Conn { id: 3 }, label: "w" }
+    return Wrapper(conn: Conn(id: 3), label: "w")
 }
 
 func make_outer() -> Outer {
-    return Outer { inner: Wrapper { conn: Conn { id: 4 }, label: "o" } }
+    return Outer(inner: Wrapper(conn: Conn(id: 4), label: "o"))
 }
 
 func closes_both() -> i64 {
@@ -104,7 +104,7 @@ func takes_conn(take c: Conn) -> i64 {
 }
 
 func hands_over_a_bare_resource() -> i64 {
-    let c = Conn { id: 9 }
+    let c = Conn(id: 9)
     return takes_conn(c)
 }
 

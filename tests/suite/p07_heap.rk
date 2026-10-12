@@ -22,7 +22,7 @@ struct Point {
 }
 
 test "mem.heap/HP3 — deref borrows a field, the `Heap` survives until drop" {
-    let ptr = Heap(Point { x: 1, y: 2 })
+    let ptr = Heap(Point(x: 1, y: 2))
     ensure drop(ptr)
     let x = (*ptr).x                // borrow for read
     drop(ptr)                         // now consumed
@@ -47,7 +47,7 @@ enum List {
 }
 
 test "mem.heap/HP3 — a local bound to `Heap(…)` holds the pointer, not a copy of the value" {
-    let p = Heap(Big { a: 4, b: 5, c: 6 })
+    let p = Heap(Big(a: 4, b: 5, c: 6))
     ensure drop(p)
     assert p.b == 5
     drop(p)
@@ -58,18 +58,18 @@ test "mem.heap/HP3 — a local bound to `Heap(…)` holds the pointer, not a cop
 // is E0880 now: the field and the struct's release would both free it.
 test "mem.heap/HP3 — a declared Heap field allocates once, whichever way it's filled" {
     // Straight from the `own`.
-    let direct = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+    let direct = Holder(inner: Heap(Big(a: 1, b: 2, c: 3)))
     assert direct.inner.b == 2
 
     // Through a local — the box moves, it isn't boxed again.
-    let p = Heap(Big { a: 4, b: 5, c: 6 })
-    let moved = Holder { inner: p }
+    let p = Heap(Big(a: 4, b: 5, c: 6))
+    let moved = Holder(inner: p)
     assert moved.inner.b == 5
 
     // A plain value: HP5 lets a `T` stand where `Heap<T>` is asked for, and the
     // slot is what allocates.
-    let plain = Big { a: 7, b: 8, c: 9 }
-    let boxed = Holder { inner: plain }
+    let plain = Big(a: 7, b: 8, c: 9)
+    let boxed = Holder(inner: plain)
     assert boxed.inner.b == 8
 }
 

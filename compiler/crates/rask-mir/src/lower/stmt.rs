@@ -354,7 +354,7 @@ impl<'a> MirLowerer<'a> {
     /// just landed in.
     ///
     /// An assignment writes one edge and can register it as it goes. A *literal*
-    /// can't: `Cursor { at: victim }` fills the field before the value has an
+    /// can't: `Cursor(at: victim)` fills the field before the value has an
     /// address, so nothing knew which slot to record. This runs once the
     /// destination is settled, which is the first moment there is a slot.
     ///

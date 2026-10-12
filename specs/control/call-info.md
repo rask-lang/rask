@@ -14,7 +14,7 @@ typed values. Design history: [analysis/macro-story.md](../analysis/macro-story.
 
 | Rule | Description |
 |------|-------------|
-| **CS1: Two compiler annotations** | `@call_text(param)` on a `string` parameter yields the source text of the caller's argument for `param` — an annotation taking an argument, the shape `@rename("x")` and `@default(0)` already have. `@call_location` on a `SourceLoc { file: string, line: u32, column: u32 }` parameter yields the call expression's position — a bare marker, the shape `@no_serialize` and `@test` already have. No kind vocabulary: these are two annotation names, and the set is closed |
+| **CS1: Two compiler annotations** | `@call_text(param)` on a `string` parameter yields the source text of the caller's argument for `param` — an annotation taking an argument, the shape `@rename("x")` and `@default(0)` already have. `@call_location` on a `SourceLoc(file: string, line: u32, column: u32)` parameter yields the call expression's position — a bare marker, the shape `@no_serialize` and `@test` already have. No kind vocabulary: these are two annotation names, and the set is closed |
 | **CS2: Named functions only** | Both annotate parameters of named functions. Illegal in closure literals and in interface method signatures |
 | **CS3: Outside arity** | A compiler-filled parameter is not part of the call's argument list. Callers cannot fill it positionally or by name — except by forwarding (CS5) |
 | **CS4: Compiler fill** | At every direct call site the compiler splices the values as constants: `@call_text(p)` from the caller's argument expression for `p`, `@call_location` from the call expression itself |

@@ -111,7 +111,7 @@ test "mem.closures/MC1 — two captures, one read and one written" {
 struct Counter { n: i32 }
 
 test "mem.closures/MC1 — a field write through a captured struct is visible" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     let bump = || { c.n = c.n + 1 }
     bump()
     bump()
@@ -142,8 +142,8 @@ test "mem.closures/MC1 — a write to a captured optional is visible" {
 }
 
 test "mem.closures/MC1 — replacing a captured struct wholesale is visible" {
-    mut c = Counter { n: 1 }
-    let reset = || { c = Counter { n: 9 } }
+    mut c = Counter(n: 1)
+    let reset = || { c = Counter(n: 9) }
     reset()
     assert c.n == 9
 }

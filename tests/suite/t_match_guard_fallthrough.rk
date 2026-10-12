@@ -51,7 +51,7 @@ extend Oops {
 
 func find(n: i64) -> i64? or Oops {
     if n < 0 {
-        return Oops { why: "negative" }
+        return Oops(why: "negative")
     }
     if n == 0 {
         return none

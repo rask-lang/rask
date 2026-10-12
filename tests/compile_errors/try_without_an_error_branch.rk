@@ -51,7 +51,7 @@ struct Config {
 // ERROR: nor is a struct.
 func config_of(text: string) -> Config {
     let port = try port_of(text)
-    return Config { port: port }
+    return Config(port: port)
 }
 
 func main() {

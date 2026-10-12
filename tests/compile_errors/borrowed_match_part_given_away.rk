@@ -60,7 +60,7 @@ func finish(take s: Slot) -> i64 {
 }
 
 func main() {
-    let s = Slot.Full(Conn { id: 7 })
+    let s = Slot.Full(Conn(id: 7))
     ensure finish(s)
     println("{peek(s)} {close_borrowed(s)}")
 }

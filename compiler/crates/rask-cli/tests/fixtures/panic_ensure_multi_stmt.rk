@@ -9,7 +9,7 @@ extend Ledger9 {
     }
 }
 func main() {
-    mut led = Ledger9 { total: 1 }
+    mut led = Ledger9(total: 1)
     ensure {
         println("closing")
         led.show()

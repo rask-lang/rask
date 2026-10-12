@@ -36,7 +36,7 @@ struct Labelled {
 test "a vector in a struct field reads back" {
     mut v: Vec<i32> = Vec.new()
     v.push(7)
-    let h = Holder { items: v }
+    let h = Holder(items: v)
     assert h.items[0] == 7
     assert h.items.len() == 1.wrap<usize>()
 }
@@ -47,7 +47,7 @@ test "read the handle out, then use it" {
     mut v: Vec<i32> = Vec.new()
     v.push(1)
     v.push(2)
-    let h = Holder { items: v }
+    let h = Holder(items: v)
     let n = h.items.len()
     assert n == 2.wrap<usize>()
     assert h.items[1] == 2
@@ -67,7 +67,7 @@ test "read the handle out, then use it" {
 test "a string and a container in the same struct" {
     mut v: Vec<i32> = Vec.new()
     v.push(5)
-    let l = Labelled { name: "with {v.len()} item", items: v }
+    let l = Labelled(name: "with {v.len()} item", items: v)
     assert l.name == "with 1 item"
     assert l.items[0] == 5
 }
@@ -75,7 +75,7 @@ test "a string and a container in the same struct" {
 // Across a call boundary: the callee builds the struct and hands it back, so
 // the caller is the one who owes the release.
 func keep(take v: Vec<i32>) -> Holder {
-    return Holder { items: v }
+    return Holder(items: v)
 }
 
 test "a struct built by a callee" {
@@ -90,7 +90,7 @@ test "a struct built by a callee" {
 test "a struct copied to a second name" {
     mut v: Vec<i32> = Vec.new()
     v.push(3)
-    let a = Holder { items: v }
+    let a = Holder(items: v)
     let b = a
     assert b.items[0] == 3
 }
@@ -98,7 +98,7 @@ test "a struct copied to a second name" {
 func main() {
     mut v: Vec<i32> = Vec.new()
     v.push(42)
-    let h = Holder { items: v }
+    let h = Holder(items: v)
     println("container in a field ok: {h.items[0]} {h.items.len()}")
     return
 }

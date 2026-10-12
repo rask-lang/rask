@@ -31,13 +31,13 @@ enum AuthError {
 @message
 enum StoreError {
     @message("task {id} not found")
-    NotFound { id: u64 }
+    NotFound(id: u64)
     @message("task {id} already exists")
-    Duplicate { id: u64 }
+    Duplicate(id: u64)
     @message("store is at capacity ({limit} items)")
-    CapacityFull { limit: usize }
+    CapacityFull(limit: usize)
     @message("transaction conflict: {reason}")
-    TxConflict { reason: string }
+    TxConflict(reason: string)
 }
 
 // ─── Validation ──────────────────────────────────────────────────────
@@ -73,11 +73,11 @@ enum ApiError {
     Auth(AuthError)
     System(SysError)
     @message("bad request: {reason}")
-    BadRequest { reason: string }
+    BadRequest(reason: string)
     @message("rate limited; retry after {seconds}s")
-    RateLimited { seconds: u64 }
+    RateLimited(seconds: u64)
     @message("internal error: {reason}")
-    Internal { reason: string }
+    Internal(reason: string)
 }
 
 extend ApiError {
@@ -85,22 +85,22 @@ extend ApiError {
     func status(self) -> u16 {
         match self {
             Validation(_) => return 422
-            BadRequest(_) => return 400
+            BadRequest(reason: _) => return 400
             Auth(_) => return 401
-            RateLimited(_) => return 429
+            RateLimited(seconds: _) => return 429
             Store(e) => return store_status(e)
             System(_) => return 500
-            Internal(_) => return 500
+            Internal(reason: _) => return 500
         }
     }
 }
 
 func store_status(e: StoreError) -> u16 {
     match e {
-        NotFound(_) => return 404
-        Duplicate(_) => return 409
-        TxConflict(_) => return 409
-        CapacityFull(_) => return 503
+        NotFound(id: _) => return 404
+        Duplicate(id: _) => return 409
+        TxConflict(reason: _) => return 409
+        CapacityFull(limit: _) => return 503
     }
 }
 // No lifters needed. Each wrapper variant above takes exactly one payload of

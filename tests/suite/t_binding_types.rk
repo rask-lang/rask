@@ -33,7 +33,7 @@ extend Inner {
 
 enum Outer {
     Plain(Inner)
-    Named { code: i64, kind: Inner }
+    Named(code: i64, kind: Inner)
 }
 
 extend Outer {
@@ -43,7 +43,7 @@ extend Outer {
             // A struct-shaped variant names its fields, and the checker looked
             // the name up as a *type* — which `Outer.Named` isn't. So `code` and
             // `kind` both got fresh variables.
-            Outer.Named { code, kind } => return "{code}/{kind.label()}"
+            Outer.Named(code, kind) => return "{code}/{kind.label()}"
         }
     }
 }
@@ -65,7 +65,7 @@ struct Store {
 
 extend Store {
     func new() -> Store {
-        return Store { n: 0 }
+        return Store(n: 0)
     }
 
     func bump(mutate self) -> i64 {
@@ -114,7 +114,7 @@ test "a tuple `for` binding over a Vec of pairs" {
 
 test "a struct-shaped variant's fields are typed" {
     assert Outer.Plain(Inner.A).describe() == "plain a"
-    assert Outer.Named { code: 7, kind: Inner.B }.describe() == "7/b"
+    assert Outer.Named(code: 7, kind: Inner.B).describe() == "7/b"
 }
 
 // Lowering rebuilds `box.write().method(…)` with the guard as the receiver, and

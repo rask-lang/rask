@@ -32,7 +32,7 @@ extend TooBig {
 
 func at_most_one(n: i64) -> i64 or TooBig {
     if n > 1 {
-        return TooBig { n: n }
+        return TooBig(n: n)
     }
     return n
 }
@@ -46,20 +46,20 @@ func bump_and_fail(mutate v: Vec<Counter>) -> i64 or TooBig {
 }
 
 test "return out of a with block keeps the change" {
-    mut v: Vec<Counter> = [Counter { n: 1 }]
+    mut v: Vec<Counter> = [Counter(n: 1)]
     assert bump_and_return(mutate v) == 2
     assert v[0].n == 2
 }
 
 test "try out of a with block keeps the change" {
-    mut v: Vec<Counter> = [Counter { n: 1 }]
+    mut v: Vec<Counter> = [Counter(n: 1)]
     let r = bump_and_fail(mutate v) catch e => e.n
     assert r == 2
     assert v[0].n == 2
 }
 
 test "continue and break out of a with block keep the change" {
-    mut v: Vec<Counter> = [Counter { n: 0 }]
+    mut v: Vec<Counter> = [Counter(n: 0)]
     mut i = 0
     while i < 3 {
         i += 1
@@ -77,7 +77,7 @@ test "continue and break out of a with block keep the change" {
 }
 
 test "a labelled break out of a for mutate keeps the change" {
-    mut v: Vec<Counter> = [Counter { n: 1 }, Counter { n: 10 }]
+    mut v: Vec<Counter> = [Counter(n: 1), Counter(n: 10)]
     outer: for round in 0..2 {
         for mutate c in v {
             c.n = c.n * 2
@@ -90,7 +90,7 @@ test "a labelled break out of a for mutate keeps the change" {
 
 test "a map value through with, left by continue" {
     mut m: Map<string, Counter> = Map.new()
-    m.insert("a", Counter { n: 5 })
+    m.insert("a", Counter(n: 5))
     for round in 0..2 {
         with m["a"] as c {
             c.n = c.n + 1

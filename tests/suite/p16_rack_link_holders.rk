@@ -25,8 +25,8 @@ func main() {}
 
 test "a link put in a field by a literal is still an edge" {
     mut rack: Rack<Node> = Rack.new()
-    let victim = rack.insert(Node { id: 7, peer: none })
-    let c = Cursor { at: victim }
+    let victim = rack.insert(Node(id: 7, peer: none))
+    let c = Cursor(at: victim)
 
     rack.delete(victim)
 
@@ -37,9 +37,9 @@ test "a link put in a field by a literal is still an edge" {
 
 test "a whole struct written over a name registers what it carries" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none })
-    mut c = Cursor { at: none }
-    c = Cursor { at: a }
+    let a = rack.insert(Node(id: 1, peer: none))
+    mut c = Cursor(at: none)
+    c = Cursor(at: a)
 
     rack.delete(a)
 
@@ -50,10 +50,10 @@ test "a whole struct written over a name registers what it carries" {
 
 test "a container inside a literal keeps its entries registered" {
     mut rack: Rack<Node> = Rack.new()
-    let b = rack.insert(Node { id: 2, peer: none })
+    let b = rack.insert(Node(id: 2, peer: none))
     mut v: Vec<Link<Node>> = Vec.new()
     v.push(b)
-    let h = Holder { list: v }
+    let h = Holder(list: v)
     assert h.list.len() == 1
 
     rack.delete(b)
@@ -68,8 +68,8 @@ test "a container inside a literal keeps its entries registered" {
 test "a cross-rack edge inside a snapshot is still nulled by its owner" {
     mut left: Rack<Node> = Rack.new()
     mut right: Rack<Node> = Rack.new()
-    let target = left.insert(Node { id: 1, peer: none })
-    let holder = right.insert(Node { id: 2, peer: none })
+    let target = left.insert(Node(id: 1, peer: none))
+    let holder = right.insert(Node(id: 2, peer: none))
     holder.peer = target
 
     let copy = right.snapshot()

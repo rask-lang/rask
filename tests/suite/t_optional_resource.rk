@@ -30,7 +30,7 @@ extend Conn {
 
 func open_conn(n: i64) -> Conn? {
     if n > 0 {
-        return Conn { id: n }
+        return Conn(id: n)
     }
     return none
 }
@@ -54,7 +54,7 @@ test "mem.linear/L1 — an absent optional has nothing to consume" {
 // A `none` start that gets filled: the obligation appears with the value.
 func filled_then_closed() -> i64 {
     mut c: Conn? = none
-    c = Conn { id: 11 }
+    c = Conn(id: 11)
     if c? as conn {
         return conn.close()
     }
@@ -110,7 +110,7 @@ extend Holder {
 }
 
 test "mem.linear/L1 — an optional resource field travels with its holder" {
-    let h = Holder { link: Conn { id: 5 } }
+    let h = Holder(link: Conn(id: 5))
     assert h.release() == 5
 }
 

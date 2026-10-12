@@ -49,7 +49,7 @@ test "A2 — omitting it still reads as none" {
 test "A3 — a method sees it too" {
     mut pad = Vec.new()
     pad.push(1)
-    let s = Scaler { base: 7 }
+    let s = Scaler(base: 7)
     assert s.apply(pad, |x| x * 10) == 70
     assert s.apply(pad, by: |x| x * 10) == 70
     assert s.apply(pad) == -1

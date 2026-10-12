@@ -44,7 +44,7 @@ test "std.testing — chars, floats and strings" {
 }
 
 test "std.testing — aggregates compare by value" {
-    assert Point { x: 1, y: 2 } == Point { x: 1, y: 2 }
+    assert Point(x: 1, y: 2) == Point(x: 1, y: 2)
     assert (1, "a") == (1, "a")
     assert maybe(2) == maybe(2)
 }

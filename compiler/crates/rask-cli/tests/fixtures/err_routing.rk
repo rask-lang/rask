@@ -3,9 +3,9 @@
 //
 // Old native routed by "lowercase first char ⇒ ok side": a lowercase-named
 // err type (`failure`) was sent to the ok side, so the err arm never ran and
-// `load_num(false)` fell through printing nothing. An uppercase struct on the
-// ok side (`Cfg`) is the mirror case. Both now route by type identity and
-// agree with the interpreter.
+// `load_num(false)` fell through printing nothing. Type names start with a
+// capital now (E0417), so that adversary is gone; `Failure` and `Cfg` still
+// check routing goes by type identity, on both backends.
 //
 // Match form only: the `if r is X` form has a pre-existing interpreter bug
 // (#391) and union-err members a pre-existing native bug (#375), so neither is
@@ -19,26 +19,27 @@ extend CfgError {
     }
 }
 
-// Lowercase-named error type — the adversarial case for the case heuristic.
-enum failure { Down }
-extend failure {
+// An error type with nothing in its name that says error — routing goes by
+// the type, not the spelling.
+enum Failure { Down }
+extend Failure {
     func message(self) -> string {
-        match self { failure.Down => return "down" }
+        match self { Failure.Down => return "down" }
     }
 }
 
 func load_cfg(ok: bool) -> Cfg or CfgError {
     if ok {
-        return Cfg { port: 8080 }
+        return Cfg(port: 8080)
     }
     return CfgError.Bad
 }
 
-func load_num(ok: bool) -> i64 or failure {
+func load_num(ok: bool) -> i64 or Failure {
     if ok {
         return 7
     }
-    return failure.Down
+    return Failure.Down
 }
 
 func main() {
@@ -51,13 +52,13 @@ func main() {
         Cfg as c => println("cfg {c.port}")
         CfgError => println("cfg err")
     }
-    // Lowercase err type on the err side → err arm.
+    // An err type whose name says nothing about errors → err arm.
     match load_num(true) {
         i64 as v => println("num {v}")
-        failure => println("num err")
+        Failure => println("num err")
     }
     match load_num(false) {
         i64 as v => println("num {v}")
-        failure => println("num err")
+        Failure => println("num err")
     }
 }

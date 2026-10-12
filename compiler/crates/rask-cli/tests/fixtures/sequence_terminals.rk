@@ -15,9 +15,9 @@ struct User {
 
 func main() {
     mut users: Vec<User> = Vec.new()
-    users.push(User { id: 1, name: "alice" })
-    users.push(User { id: 2, name: "bob" })
-    users.push(User { id: 3, name: "carol" })
+    users.push(User(id: 1, name: "alice"))
+    users.push(User(id: 2, name: "bob"))
+    users.push(User(id: 3, name: "carol"))
 
     // SEQ28
     let names = users.map(|u| u.name).to_vec()

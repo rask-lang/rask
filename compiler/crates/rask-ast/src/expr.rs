@@ -183,7 +183,7 @@ pub enum ExprKind {
         end: Option<Box<Expr>>,
         inclusive: bool,
     },
-    /// Struct literal (Point { x: 1, y: 2 })
+    /// Struct literal `Point(x: 1, y: 2)`
     StructLit {
         name: String,
         /// `Ring<i64> { … }` writes them; empty otherwise.
@@ -323,6 +323,9 @@ pub enum ArgMode {
     /// is a `mutate` parameter that may also delete, so the call site says the
     /// more specific word (analysis.fourth-option).
     Deleting,
+    /// `..base` — the rest of the fields come from `base`. Only building a
+    /// value takes one: `Point(x: 1, ..p)` (type.structs).
+    Spread,
 }
 
 /// A function call argument with optional name label and mode annotation.
@@ -527,7 +530,7 @@ pub enum Pattern {
         name: String,
         fields: Vec<Pattern>,
     },
-    /// Struct pattern `Name { field: pattern, ... }`
+    /// Struct or named-variant pattern `Name(field: pattern, ..)`
     Struct {
         name: String,
         fields: Vec<(String, Pattern)>,

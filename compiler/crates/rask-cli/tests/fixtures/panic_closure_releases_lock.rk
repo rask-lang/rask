@@ -17,8 +17,8 @@ import sync.Mutex
 import thread.Thread
 
 struct Widget9 { n: i64 }
-const BLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })
-const NONBLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9 { n: 1 })
+const BLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9(n: 1))
+const NONBLOCKING: Shared<Widget9, Mutex> = Shared.mutex(Widget9(n: 1))
 
 func main() {
     using Multitasking {

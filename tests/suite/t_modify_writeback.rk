@@ -59,7 +59,7 @@ struct Counter {
 }
 
 test "modify — a struct element keeps a field write" {
-    mut cs: Vec<Counter> = [Counter { hits: 1 }, Counter { hits: 2 }]
+    mut cs: Vec<Counter> = [Counter(hits: 1), Counter(hits: 2)]
     let r = cs.modify(1, |mutate c: Counter| {
         c.hits = c.hits + 10
         return c.hits
@@ -123,7 +123,7 @@ test "modify — modify_with_default accumulates across calls" {
 test "modify — modify_with_default on a struct value" {
     mut users: Map<string, Counter> = Map.new()
     let r = users.modify_with_default("u", || {
-        return Counter { hits: 0 }
+        return Counter(hits: 0)
     }, |mutate c: Counter| {
         c.hits = c.hits + 1
         return c.hits

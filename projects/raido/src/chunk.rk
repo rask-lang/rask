@@ -49,7 +49,7 @@ struct Prototype {
 
 extend Prototype {
     func new(name: string, arity: i64) -> Prototype {
-        return Prototype {
+        return Prototype(
             code: Vec.new(),
             constants: Vec.new(),
             prototypes: Vec.new(),
@@ -59,7 +59,7 @@ extend Prototype {
             return_type: 0,
             name: name,
             lines: Vec.new(),
-        }
+        )
     }
 
     func add_constant(self, take val: Value) -> i64 {
@@ -97,11 +97,11 @@ struct Chunk {
 
 extend Chunk {
     func new(take main: Prototype) -> Chunk {
-        return Chunk {
+        return Chunk(
             main: main,
             imports: Vec.new(),
             module_imports: Vec.new(),
             exports: Vec.new(),
-        }
+        )
     }
 }

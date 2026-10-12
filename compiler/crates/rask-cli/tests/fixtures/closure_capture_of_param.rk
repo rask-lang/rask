@@ -77,8 +77,8 @@ func main() {
     println("scalar no branch={scalar(2, v, false)}")
 
     mut r: Rack<Item> = Rack.new()
-    let a = r.insert(Item { id: 10, other: none })
-    let b = r.insert(Item { id: 20, other: a })
+    let a = r.insert(Item(id: 10, other: none))
+    let b = r.insert(Item(id: 20, other: a))
     mut ls: Vec<Link<Item>> = Vec.new()
     ls.push(a)
     ls.push(b)
@@ -88,5 +88,5 @@ func main() {
     mut ns: Vec<i64> = Vec.new()
     ns.push(1)
     ns.push(2)
-    println("nocopy={nocopy(Big { a: 1, b: 2, c: 3 }, ns, true)}")
+    println("nocopy={nocopy(Big(a: 1, b: 2, c: 3), ns, true)}")
 }

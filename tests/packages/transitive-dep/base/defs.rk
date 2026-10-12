@@ -5,5 +5,5 @@ public struct Doc {
 }
 
 public func make_doc(n: i64) -> Doc {
-    return Doc { n: n }
+    return Doc(n: n)
 }

@@ -354,7 +354,7 @@ extend Vec<T> where T: Cloneable {
     /// copied here, so a later change to the Vec doesn't reach the plan.
     public func wide(self) -> Wide<T> {
         let lanes = self.clone()
-        return Wide { run: || { return lanes.clone() } }
+        return Wide(run: || { return lanes.clone() })
     }
 
     /// A clone of the element at `index`, or `none` when there isn't one.
@@ -676,7 +676,7 @@ extend Wide<T> {
     /// Transform each lane. Lazy — records `f`, runs nothing.
     public func map(self, f: func(T) -> U) -> Wide<U> {
         let src = self.run
-        return Wide {
+        return Wide(
             run: || {
                 mut out: Vec<U> = Vec.new()
                 for x in src() {
@@ -684,7 +684,7 @@ extend Wide<T> {
                 }
                 return out
             },
-        }
+        )
     }
 
     /// Combine two plans lane by lane. Lazy. The lane counts have to match
@@ -692,7 +692,7 @@ extend Wide<T> {
     public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {
         let a = self.run
         let b = other.run
-        return Wide {
+        return Wide(
             run: || {
                 let xs = a()
                 let ys = b()
@@ -707,7 +707,7 @@ extend Wide<T> {
                 }
                 return out
             },
-        }
+        )
     }
 
     /// Run the plan and hand back its lanes.
@@ -766,7 +766,7 @@ public struct Set<T> {
 extend Set<T> {
     /// Create a new empty set.
     public func new() -> Set<T> {
-        return Set { entries: Map.new() }
+        return Set(entries: Map.new())
     }
 
     /// Number of values.
@@ -828,7 +828,7 @@ extend Set<T> {
 
     /// Clone the set.
     public func clone(self) -> Set<T> {
-        return Set { entries: self.entries.clone() }
+        return Set(entries: self.entries.clone())
     }
 }
 

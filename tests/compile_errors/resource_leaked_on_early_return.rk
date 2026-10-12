@@ -14,7 +14,7 @@ extend Conn {
 }
 
 func maybe_close(cond: bool) -> i32 {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     if cond {
         return 0                // ERROR: E0805 — `c` never consumed on this path
     }

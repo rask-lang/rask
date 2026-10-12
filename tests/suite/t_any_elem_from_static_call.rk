@@ -20,7 +20,7 @@ struct Square {
 
 extend Square {
     func new(side: i64) -> Square {
-        return Square { side }
+        return Square(side)
     }
 }
 
@@ -45,7 +45,7 @@ test "a stdlib type made in place goes in boxed" {
 test "a program's own type made in place goes in boxed" {
     mut shapes: Vec<any Shape> = Vec.new()
     shapes.push(Square.new(2))
-    shapes.push(Square { side: 3 })
+    shapes.push(Square(side: 3))
     shapes.push(Square.new(4))
     mut total = 0
     for s in shapes {
@@ -57,6 +57,6 @@ test "a program's own type made in place goes in boxed" {
 test "a map value made in place goes in boxed" {
     mut by_name: Map<string, any Shape> = Map.new()
     by_name.insert("a", Square.new(5))
-    let a = by_name.get("a") ?? Square { side: 0 }
+    let a = by_name.get("a") ?? Square(side: 0)
     assert a.area() == 25
 }

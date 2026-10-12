@@ -102,7 +102,7 @@ extend CfgError {
     }
 }
 
-func load_cfg() -> Cfg or CfgError { return Cfg { port: 8080 } }
+func load_cfg() -> Cfg or CfgError { return Cfg(port: 8080) }
 
 func cfg_port() -> i32 {
     // The guard binds the success by construction, so the rest reads flat.

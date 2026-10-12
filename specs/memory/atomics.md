@@ -43,10 +43,10 @@ struct Slot {
     gen: u32,
 }   // 8 bytes, Copy, no padding — fits an atomic word
 
-let current = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
+let current = Atomic<Slot>.new(Slot(index: 0, gen: 0))
 
 let old = current.load(Acquire)
-let next = Slot { index: old.index + 1, gen: old.gen }
+let next = Slot(index: old.index + 1, gen: old.gen)
 match current.compare_exchange(old, next, AcqRel, Relaxed) {
     Slot as _      => {},          // swapped as one unit
     CasFailed as _ => retry(),
@@ -119,7 +119,7 @@ Add a field to `Slot` and it either still fits (nothing to update) or the `Atomi
 ```rask
 let counter = Atomic<u64>.new(0)
 let flag = Atomic<bool>.new(false)
-let slot = Atomic<Slot>.new(Slot { index: 0, gen: 0 })
+let slot = Atomic<Slot>.new(Slot(index: 0, gen: 0))
 ```
 
 ### Load, Store, Swap

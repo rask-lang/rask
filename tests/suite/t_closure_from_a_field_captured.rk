@@ -15,12 +15,12 @@ struct Plan {
 
 func stage(v: Vec<i64>) -> Plan {
     let lanes = v.clone()
-    return Plan { run: || { return lanes.clone() } }
+    return Plan(run: || { return lanes.clone() })
 }
 
 func doubled(p: Plan) -> Plan {
     let src = p.run
-    return Plan {
+    return Plan(
         run: || {
             let xs = src()
             mut out: Vec<i64> = Vec.new()
@@ -29,7 +29,7 @@ func doubled(p: Plan) -> Plan {
             }
             return out
         },
-    }
+    )
 }
 
 func run_plan(p: Plan) -> Vec<i64> {

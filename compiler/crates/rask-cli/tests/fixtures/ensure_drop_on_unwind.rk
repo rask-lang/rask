@@ -37,14 +37,14 @@ extend Conn {
 }
 
 func boxed() {
-    let p = Heap(Big { a: 1, b: 2, c: 3 })
+    let p = Heap(Big(a: 1, b: 2, c: 3))
     ensure drop(p)
     println("holding {p.a}")
     panic("boom")
 }
 
 func main() {
-    let c = Conn { id: 9 }
+    let c = Conn(id: 9)
     ensure c.close()
     boxed()
     println("MUST-NOT-PRINT")

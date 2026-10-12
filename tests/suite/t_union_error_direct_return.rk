@@ -44,11 +44,11 @@ extend BErr {
 // ── Producer 1: return a member directly ──
 
 func direct_a() -> i64 or (AErr | BErr) {
-    return AErr { why: "no route" }
+    return AErr(why: "no route")
 }
 
 func direct_b() -> i64 or (AErr | BErr) {
-    return BErr { code: 42 }
+    return BErr(code: 42)
 }
 
 func direct_ok() -> i64 or (AErr | BErr) {
@@ -58,7 +58,7 @@ func direct_ok() -> i64 or (AErr | BErr) {
 // ── Producer 2: propagate through try ──
 
 func inner_a() -> i64 or AErr {
-    return AErr { why: "via try" }
+    return AErr(why: "via try")
 }
 
 func propagated() -> i64 or (AErr | BErr) {

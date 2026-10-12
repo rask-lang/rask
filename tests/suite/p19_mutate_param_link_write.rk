@@ -32,8 +32,8 @@ struct Marked {
 func main() {}
 
 test "a link write through a mutate parameter reaches the caller" {
-    mut h = Holder { nodes: Rack.new(), root: none }
-    let n = h.nodes.insert(Node { value: 7, next: none })
+    mut h = Holder(nodes: Rack.new(), root: none)
+    let n = h.nodes.insert(Node(value: 7, next: none))
     attach(mutate h, n)
 
     if h.root? as r {
@@ -48,9 +48,9 @@ func attach(mutate h: Holder, n: Link<Node>) {
 }
 
 test "a link write still reaches the caller when the callee also stores" {
-    mut m = Marked { root: none, count: 0 }
+    mut m = Marked(root: none, count: 0)
     mut rack: Rack<Node> = Rack.new()
-    let n = rack.insert(Node { value: 9, next: none })
+    let n = rack.insert(Node(value: 9, next: none))
     fill(mutate m, n)
 
     assert m.count == 42
@@ -67,8 +67,8 @@ func fill(mutate m: Marked, n: Link<Node>) {
 }
 
 test "the callee's write is visible to a later delete" {
-    mut h = Holder { nodes: Rack.new(), root: none }
-    let n = h.nodes.insert(Node { value: 3, next: none })
+    mut h = Holder(nodes: Rack.new(), root: none)
+    let n = h.nodes.insert(Node(value: 3, next: none))
     attach(mutate h, n)
 
     // Only reachable if the edge was recorded against the caller's field rather
@@ -80,7 +80,7 @@ test "the callee's write is visible to a later delete" {
 test "a list built through mutate parameters is traversable" {
     // The l1_list_links prototype in miniature. Every root-edge write happens
     // inside push_back, through `mutate list`.
-    mut list = Holder { nodes: Rack.new(), root: none }
+    mut list = Holder(nodes: Rack.new(), root: none)
     push(mutate list, 1)
     push(mutate list, 2)
     push(mutate list, 3)
@@ -100,6 +100,6 @@ test "a list built through mutate parameters is traversable" {
 // Prepends, so the newest node is the root — one link write on the node and one
 // on the holder, both through parameters.
 func push(mutate list: Holder, value: i32) {
-    let n = list.nodes.insert(Node { value: value, next: list.root })
+    let n = list.nodes.insert(Node(value: value, next: list.root))
     list.root = n
 }

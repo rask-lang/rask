@@ -35,9 +35,9 @@ HttpRegistry implements Registry {
 
 func make(k: i64, path: string) -> any Registry {
     if k == 0 {
-        return HttpRegistry { url: path }
+        return HttpRegistry(url: path)
     }
-    return LocalRegistry { root: path, hits: [1, 2, 3] }
+    return LocalRegistry(root: path, hits: [1, 2, 3])
 }
 
 // Recursive, so it stays a call and the box comes back through the return.
@@ -78,7 +78,7 @@ test "a box picked each turn of a loop" {
 }
 
 test "a borrowed box leaves the value to its owner" {
-    let reg = LocalRegistry { root: "w".repeat(30), hits: [4] }
+    let reg = LocalRegistry(root: "w".repeat(30), hits: [4])
     assert length_of(reg) == 30
     assert reg.root.len() == 30
     assert reg.hits[0] == 4

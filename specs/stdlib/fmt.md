@@ -117,7 +117,7 @@ enum AppError {
 extend AppError {
     func message(self) -> string {
         match self {
-            NotFound(p) => format("not found: {}", p),
+            NotFound(path: p) => format("not found: {}", p),
             Timeout => "timed out",
         }
     }
@@ -149,7 +149,7 @@ one instead, and sorted-by-key is the one a reader expects.
 ```rask
 struct Point { x: f64, y: f64 }
 
-let p = Point { x: 1.0, y: 2.0 }
+let p = Point(x: 1.0, y: 2.0)
 println(format("{:debug}", p))    // Point { x: 1, y: 2 }
 ```
 
@@ -167,7 +167,7 @@ println(format("{:debug}", p))    // Point { x: 1, y: 2 }
 let name = "world"
 println("Hello, {name}!")              // Hello, world!
 
-let point = Point { x: 1.0, y: 2.0 }
+let point = Point(x: 1.0, y: 2.0)
 println("Position: {point.x}, {point.y}")
 ```
 

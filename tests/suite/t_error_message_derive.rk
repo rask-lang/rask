@@ -70,7 +70,7 @@ func bare(n: i64) -> i64 or Bare {
 }
 
 func opaque() -> i64 or CarriesOpaque {
-    return CarriesOpaque.Wrapped(p: Opaque { a: 1, b: 2 })
+    return CarriesOpaque.Wrapped(p: Opaque(a: 1, b: 2))
 }
 
 func outer(n: i64) -> i64 or Outer {

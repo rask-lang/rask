@@ -9,27 +9,27 @@
 enum Slot<T> {
     Empty
     Full(T)
-    Pair { left: T, right: T }
+    Pair(left: T, right: T)
 }
 
 enum Shape {
-    Circle { radius: f64 }
-    Rect { w: i64, h: i64 }
+    Circle(radius: f64)
+    Rect(w: i64, h: i64)
 }
 
 func main() {
     // Fine: both fields are `T = i32`, in either order.
-    let ok = Slot.Pair { right: 1, left: 2 }
+    let ok = Slot.Pair(right: 1, left: 2)
 
     // ERROR: `T` can't be both `string` and `i32`
-    let p = Slot.Pair { left: "a", right: 5 }
+    let p = Slot.Pair(left: "a", right: 5)
 
     // ERROR: a written type argument fixes `T`
-    let q: Slot<string> = Slot.Pair { left: 1, right: 2 }
+    let q: Slot<string> = Slot.Pair(left: 1, right: 2)
 
     // ERROR: a non-generic variant's fields are checked by name too
-    let c = Shape.Circle { radius: "wide" }
+    let c = Shape.Circle(radius: "wide")
 
     // ERROR: matched by name, not by position
-    let r = Shape.Rect { h: 2, w: "five" }
+    let r = Shape.Rect(h: 2, w: "five")
 }

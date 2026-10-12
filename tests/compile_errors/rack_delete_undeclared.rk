@@ -58,8 +58,8 @@ func drop_bare(mutate s: Rack<Node>, take n: Link<Node>) {
 }
 
 func main() {
-    mut g = Graph { nodes: Rack.new() }
-    let a = g.nodes.insert(Node { id: 1, peer: none })
+    mut g = Graph(nodes: Rack.new())
+    let a = g.nodes.insert(Node(id: 1, peer: none))
     drop_one(mutate g, a)
     drop_all(mutate g)
     wipe(mutate g)

@@ -64,7 +64,7 @@ test "EO1 — struct literal fields run in written order, not declaration order"
         log.push(label)
         return v
     }
-    let p = Pair { y: tick("y", 2), x: tick("x", 1) }
+    let p = Pair(y: tick("y", 2), x: tick("x", 1))
     assert p.x == 1
     assert p.y == 2
     assert log.join(",") == "y,x"
@@ -76,7 +76,7 @@ test "EO2 — the receiver runs before the arguments" {
         log.push(label)
         return v
     }
-    let q = Pair { x: tick("recv", 1), y: 2 }.sum(tick("arg", 3))
+    let q = Pair(x: tick("recv", 1), y: 2).sum(tick("arg", 3))
     assert q == 6
     assert log.join(",") == "recv,arg"
 }

@@ -51,7 +51,7 @@ test "std.collections — take_where moves matching elements out" {
 }
 
 test "std.collections — Vec.get_clone hands back an independent copy" {
-    let v: Vec<Big> = [Big { a: 1, b: 2, c: 3 }]
+    let v: Vec<Big> = [Big(a: 1, b: 2, c: 3)]
     let got: Big? = v.get_clone(0)
     assert got!.a == 1
     assert v.get_clone(9) is none
@@ -110,7 +110,7 @@ test "std.collections — shrink releases capacity, with and without a floor" {
 
 test "std.collections — Map.get_clone hands back an independent copy" {
     mut m: Map<string, Big> = Map.new()
-    m.insert("k", Big { a: 1, b: 2, c: 3 })
+    m.insert("k", Big(a: 1, b: 2, c: 3))
     let got: Big? = m.get_clone("k")
     assert got!.a == 1
     assert m.get_clone("zzz") is none

@@ -18,7 +18,7 @@ struct Config {
 }
 
 func main() {
-    mut config = Shared.new(Config { timeout: 30, retries: 3 })
+    mut config = Shared.new(Config(timeout: 30, retries: 3))
 
     // Neither `.read()` nor `.write()` — rejected.
     with config as c {

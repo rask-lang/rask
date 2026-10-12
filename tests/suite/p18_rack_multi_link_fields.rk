@@ -21,9 +21,9 @@ func main() {}
 
 test "a delete nulls only the fields that pointed at it" {
     mut rack: Rack<Cell> = Rack.new()
-    let a = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
-    let b = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
-    let c = rack.insert(Cell { id: 3, left: none, kids: Vec.new(), right: none, up: none })
+    let a = rack.insert(Cell(id: 1, left: none, kids: Vec.new(), right: none, up: none))
+    let b = rack.insert(Cell(id: 2, left: none, kids: Vec.new(), right: none, up: none))
+    let c = rack.insert(Cell(id: 3, left: none, kids: Vec.new(), right: none, up: none))
 
     a.left = b
     a.right = c
@@ -46,9 +46,9 @@ test "a delete nulls only the fields that pointed at it" {
 
 test "the same field retargeted across siblings keeps its own record" {
     mut rack: Rack<Cell> = Rack.new()
-    let a = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
-    let b = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
-    let c = rack.insert(Cell { id: 3, left: none, kids: Vec.new(), right: none, up: none })
+    let a = rack.insert(Cell(id: 1, left: none, kids: Vec.new(), right: none, up: none))
+    let b = rack.insert(Cell(id: 2, left: none, kids: Vec.new(), right: none, up: none))
+    let c = rack.insert(Cell(id: 3, left: none, kids: Vec.new(), right: none, up: none))
 
     // Walk one field across targets. Each write has to unlink from the previous
     // target, or b's delete reaches a field that no longer names it.
@@ -68,8 +68,8 @@ test "the same field retargeted across siblings keeps its own record" {
 
 test "an edge list beside scalar edges is fixed too" {
     mut rack: Rack<Cell> = Rack.new()
-    let a = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
-    let b = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
+    let a = rack.insert(Cell(id: 1, left: none, kids: Vec.new(), right: none, up: none))
+    let b = rack.insert(Cell(id: 2, left: none, kids: Vec.new(), right: none, up: none))
 
     a.left = b
     a.kids.push(b)
@@ -84,8 +84,8 @@ test "an edge list beside scalar edges is fixed too" {
 
 test "every link field of a dying node is unhooked from its targets" {
     mut rack: Rack<Cell> = Rack.new()
-    let hub = rack.insert(Cell { id: 1, left: none, kids: Vec.new(), right: none, up: none })
-    let holder = rack.insert(Cell { id: 2, left: none, kids: Vec.new(), right: none, up: none })
+    let hub = rack.insert(Cell(id: 1, left: none, kids: Vec.new(), right: none, up: none))
+    let holder = rack.insert(Cell(id: 2, left: none, kids: Vec.new(), right: none, up: none))
 
     // holder points at hub from three fields at once.
     holder.left = hub

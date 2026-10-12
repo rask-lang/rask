@@ -22,15 +22,15 @@ func twice(f: func()) {
 }
 
 func maker() -> func() -> u64 {
-    mut l = Line { text: heap("carried") }
+    mut l = Line(text: heap("carried"))
     return || {
-        l = Line { text: heap("swapped") }
+        l = Line(text: heap("swapped"))
         return l.text.len()
     }
 }
 
 test "a captured struct is released after the closure" {
-    let held = Line { text: heap("captured") }
+    let held = Line(text: heap("captured"))
     mut seen = 0
     let f = || { seen = held.text.len() }
     f()
@@ -39,7 +39,7 @@ test "a captured struct is released after the closure" {
 }
 
 test "a captured mut struct whose field is replaced" {
-    mut held = Line { text: heap("captured") }
+    mut held = Line(text: heap("captured"))
     let f = || held.text.len()
     assert f() == 41
     held.text = heap("replaced")
@@ -47,7 +47,7 @@ test "a captured mut struct whose field is replaced" {
 }
 
 test "a closure handed to a borrowing function" {
-    let bag = Bag { items: [heap("one"), heap("two")] }
+    let bag = Bag(items: [heap("one"), heap("two")])
     mut n = 0
     twice(|| { n += bag.items.len() })
     assert n == 4
@@ -55,8 +55,8 @@ test "a closure handed to a borrowing function" {
 }
 
 test "a closure writing a whole struct over its capture" {
-    mut count = Line { text: heap("start") }
-    let set = || { count = Line { text: heap("set") } }
+    mut count = Line(text: heap("start"))
+    let set = || { count = Line(text: heap("set")) }
     set()
     set()
     assert count.text == "set, long enough to live on the heap"
@@ -65,7 +65,7 @@ test "a closure writing a whole struct over its capture" {
 test "a capture in a loop" {
     mut total = 0
     for i in 0..3 {
-        let l = Line { text: heap("loop {i}") }
+        let l = Line(text: heap("loop {i}"))
         let g = || l.text.len()
         total += g()
     }

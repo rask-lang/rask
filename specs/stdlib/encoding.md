@@ -205,8 +205,8 @@ struct CachedUser {
 <!-- test: skip -->
 ```rask
 enum Shape {
-    Circle { radius: f64 }
-    Rectangle { width: f64, height: f64 }
+    Circle(radius: f64)
+    Rectangle(width: f64, height: f64)
     Point
 }
 // External (default):
@@ -219,10 +219,10 @@ enum Shape {
 ```rask
 @tag("type")
 enum Event {
-    Click { x: i32, y: i32 }
+    Click(x: i32, y: i32)
 
     @rename("key_press")
-    KeyPress { code: u32 }
+    KeyPress(code: u32)
 }
 // Internal:
 //   Click    → {"type": "Click", "x": 10, "y": 20}
@@ -240,7 +240,7 @@ enum Shape {
 
 @tag("kind")
 enum Event {
-    Click { kind: string }   // E24b/E0842: `"kind"` would be written twice
+    Click(kind: string)   // E24b/E0842: `"kind"` would be written twice
 }
 ```
 
@@ -560,7 +560,7 @@ struct Config {
 
 func main() -> void or Error {
     // Encode
-    let config = Config { host: "localhost", port: 3000, cached_at: 0 }
+    let config = Config(host: "localhost", port: 3000, cached_at: 0)
     let text = json.encode(config)
     // → {"server_host": "localhost", "port": 3000}
 
@@ -593,7 +593,7 @@ func handle_create_user(req: http.Request) -> http.Response {
     let input = json.decode<CreateUserRequest>(req.body)
         catch _ => return http.Response.bad_request("invalid JSON")
     let user = create_user(input.name, input.email, input.age)
-    let response = UserResponse { id: user.id, name: user.name, email: user.email }
+    let response = UserResponse(id: user.id, name: user.name, email: user.email)
     return http.Response.ok(json.encode(response))
 }
 ```

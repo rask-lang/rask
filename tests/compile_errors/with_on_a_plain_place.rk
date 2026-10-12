@@ -19,7 +19,7 @@ import sync.Mutex
 struct Holder { data: Vec<i64> }
 
 func write_through_a_field() {
-    mut h = Holder { data: Vec<i64>.new() }
+    mut h = Holder(data: Vec<i64>.new())
     h.data.push(10)
     // ERROR: `with` needs an element or a box [E0874]
     with h.data as d {
@@ -29,7 +29,7 @@ func write_through_a_field() {
 
 // FIX 1: write through the field where it lives — the block was doing nothing else
 func write_where_it_lives() {
-    mut h = Holder { data: Vec<i64>.new() }
+    mut h = Holder(data: Vec<i64>.new())
     h.data.push(10)
     h.data.push(99)
 }
@@ -37,7 +37,7 @@ func write_where_it_lives() {
 // FIX 2: name the element, if an element is what you wanted
 func name_the_element() {
     mut v: Vec<Holder> = Vec.new()
-    v.push(Holder { data: Vec<i64>.new() })
+    v.push(Holder(data: Vec<i64>.new()))
     with v[0] as first {
         first.data.push(1)
     }

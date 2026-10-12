@@ -17,11 +17,11 @@ struct Row {
 struct Nested { public inner: Row }
 
 func filled() -> Row {
-    return Row { id: 1, name: "bo", who: 7, flag: true, score: 2.5, nested: Inner { n: 3 } }
+    return Row(id: 1, name: "bo", who: 7, flag: true, score: 2.5, nested: Inner(n: 3))
 }
 
 func blank() -> Row {
-    return Row { id: 2, name: none, who: none, flag: none, score: none, nested: none }
+    return Row(id: 2, name: none, who: none, flag: none, score: none, nested: none)
 }
 
 test "optional fields set to a value" {
@@ -50,21 +50,21 @@ test "presence predicate on a filled optional field" {
 }
 
 test "an optional field inside another struct" {
-    let n = Nested { inner: filled() }
+    let n = Nested(inner: filled())
     assert (n.inner.name ?? "MISSING") == "bo"
     assert (n.inner.who ?? 0) == 7
 }
 
 // A heap string past the small-string limit — the payload is a real pointer.
 test "a long string in an optional field" {
-    let r = Row {
+    let r = Row(
         id: 3,
         name: "a fairly long string here",
         who: none,
         flag: none,
         score: none,
         nested: none,
-    }
+    )
     assert (r.name ?? "MISSING") == "a fairly long string here"
     assert r.name!.len() == 25
 }

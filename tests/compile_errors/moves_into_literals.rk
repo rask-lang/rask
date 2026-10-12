@@ -13,7 +13,7 @@ struct Wrapper<T> {
 }
 
 func wrap<T: Copy>(value: T) -> Wrapper<T> {
-    return Wrapper { value }
+    return Wrapper(value)
 }
 
 func into_tuple() {
@@ -26,7 +26,7 @@ func into_tuple() {
 
 func into_struct() {
     let v: Vec<i64> = [1]
-    let h = Holder { v: v }
+    let h = Holder(v: v)
     // ERROR: use of moved value (E0800)
     println(v.len())
     println(h.v.len())
@@ -34,7 +34,7 @@ func into_struct() {
 
 func borrowed_into_struct(v: Vec<i64>) -> Holder {
     // ERROR: `v` is borrowed, so it can't go into the struct (E0835)
-    return Holder { v: v }
+    return Holder(v: v)
 }
 
 func loop_element_pushed(groups: Vec<Vec<i64>>) -> Vec<Vec<i64>> {

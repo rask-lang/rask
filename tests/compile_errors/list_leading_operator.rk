@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a list item that starts with `-` or `*` on a new line (SYNTAX.md,
+// Lists). A newline separates items, and `-b` and `*p` are values of their
+// own, so the line reads as a new item. To continue the line above, end that
+// line with the operator; for a new item, put a comma before it.
+
+func sum(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+func main() {
+    let t = sum(
+        1
+        - 2                           // ERROR: reads as a second item, `-2`
+    )
+    println("{t}")
+}

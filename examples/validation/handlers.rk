@@ -60,11 +60,11 @@ struct CreateProjectRequest {
 func handle_health() -> Response or ApiError {
     let count = store.write().task_count()
     let up = started.elapsed()
-    let body = HealthBody {
+    let body = HealthBody(
         status: "ok",
         uptime_ms: up.as_millis().clamp<i64>(),
         tasks: count,
-    }
+    )
     return json_response(200, json.encode(body))
 }
 
@@ -77,13 +77,13 @@ func handle_metrics() -> Response or ApiError {
 func handle_sleep(req: Request) -> Response or ApiError {
     let raw = req.query_param("ms") ?? "50"
     let ms = raw.parse<u64>() catch _ => {
-        return ApiError.BadRequest("ms must be a non-negative integer")
+        return ApiError.BadRequest(reason: "ms must be a non-negative integer")
     }
     // `parse<u64>` is the non-negative check; `Duration.millis` takes an i64,
     // and a millisecond count past i64's range is nonsense for a sleep, so
     // clamping is total where `to<i64>()!` would panic.
     try time.sleep(time.Duration.millis(ms.clamp<i64>()))
-    return json_response(200, json.encode(OkBody { ok: true }))
+    return json_response(200, json.encode(OkBody(ok: true)))
 }
 
 // ─── Tasks ───────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ func handle_list_tasks(req: Request) -> Response or ApiError {
 
 func handle_create_task(req: Request) -> Response or ApiError {
     let dto = json.decode<CreateTaskRequest>(req.body) catch _ => {
-        return ApiError.BadRequest("invalid JSON")
+        return ApiError.BadRequest(reason: "invalid JSON")
     }
     try dto.validate()
 
@@ -116,7 +116,7 @@ func handle_get_task(id: TaskId) -> Response or ApiError {
 
 func handle_update_task(id: TaskId, req: Request) -> Response or ApiError {
     let dto = json.decode<UpdateTaskRequest>(req.body) catch _ => {
-        return ApiError.BadRequest("invalid JSON")
+        return ApiError.BadRequest(reason: "invalid JSON")
     }
     try dto.validate()
     let patch = try build_patch(dto)
@@ -127,21 +127,21 @@ func handle_update_task(id: TaskId, req: Request) -> Response or ApiError {
 
 func handle_delete_task(id: TaskId) -> Response or ApiError {
     try store.write().delete_task(id)
-    return json_response(200, json.encode(OkBody { ok: true }))
+    return json_response(200, json.encode(OkBody(ok: true)))
 }
 
 func handle_add_dep(id: TaskId, req: Request) -> Response or ApiError {
     let dto = json.decode<AddDepRequest>(req.body) catch _ => {
-        return ApiError.BadRequest("invalid JSON")
+        return ApiError.BadRequest(reason: "invalid JSON")
     }
     let dep = TaskId(dto.dep_id)
     try store.write().add_dependency(id, dep)
-    return json_response(200, json.encode(OkBody { ok: true }))
+    return json_response(200, json.encode(OkBody(ok: true)))
 }
 
 func handle_batch(req: Request) -> Response or ApiError {
     let dto = json.decode<BatchRequest>(req.body) catch _ => {
-        return ApiError.BadRequest("invalid JSON")
+        return ApiError.BadRequest(reason: "invalid JSON")
     }
 
     mut ops = Vec.new()
@@ -151,18 +151,18 @@ func handle_batch(req: Request) -> Response or ApiError {
 
     let applied = ops.len()
     try store.write().apply_batch(ops)
-    return json_response(200, json.encode(BatchResult { applied }))
+    return json_response(200, json.encode(BatchResult(applied)))
 }
 
 // ─── Users & projects ────────────────────────────────────────────────
 
 func handle_create_user(req: Request) -> Response or ApiError {
     let dto = json.decode<CreateUserRequest>(req.body) catch _ => {
-        return ApiError.BadRequest("invalid JSON")
+        return ApiError.BadRequest(reason: "invalid JSON")
     }
     try dto.validate()
 
-    let email = EmailAddress { raw: dto.email }
+    let email = EmailAddress(raw: dto.email)
     let id = try store.write().create_user(dto.name, email)
     let view = try store.write().view_user(id)
     return json_response(201, json.encode(view))
@@ -175,24 +175,24 @@ func handle_get_user(id: UserId) -> Response or ApiError {
 
 func handle_create_project(req: Request) -> Response or ApiError {
     let dto = json.decode<CreateProjectRequest>(req.body) catch _ => {
-        return ApiError.BadRequest("invalid JSON")
+        return ApiError.BadRequest(reason: "invalid JSON")
     }
-    if dto.name.is_empty() { return ApiError.BadRequest("project name required") }
+    if dto.name.is_empty() { return ApiError.BadRequest(reason: "project name required") }
 
     let owner = UserId(dto.owner)
     let id = try store.write().create_project(dto.name, owner)
-    return json_response(201, json.encode(ProjectView {
+    return json_response(201, json.encode(ProjectView(
         id: id.value,
         name: dto.name,
         owner: dto.owner,
         archived: false,
-    }))
+    )))
 }
 
 // ─── Parsing helpers ─────────────────────────────────────────────────
 
 func build_filter(req: Request) -> ListFilter or ValidationError {
-    mut f = ListFilter {}
+    mut f = ListFilter()
     if req.query_param("status")? as s { f.status = try Status.from_label(s) }
     if req.query_param("priority")? as p { f.priority = try Priority.from_label(p) }
     if req.query_param("offset")? as o { f.offset = o.parse<usize>() catch _ => 0 }
@@ -201,7 +201,7 @@ func build_filter(req: Request) -> ListFilter or ValidationError {
 }
 
 func build_patch(take dto: UpdateTaskRequest) -> TaskPatch or ValidationError {
-    mut p = TaskPatch {}
+    mut p = TaskPatch()
     if dto.status? as s { p.status = try Status.from_label(s) }
     if dto.priority? as pr { p.priority = try Priority.from_label(pr) }
     if dto.assignee? as a { p.assignee = UserId(a) }

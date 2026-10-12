@@ -27,11 +27,11 @@ struct Outer { public mid: Mid }
 
 test "a rack node's nested field takes the write" {
     mut rack = Rack<Entity>.new()
-    let n = rack.insert(Entity {
+    let n = rack.insert(Entity(
         active: true,
         hp: 100,
-        health: Health { current: 100, max: 100 },
-    })
+        health: Health(current: 100, max: 100),
+    ))
 
     // One field deep: worked before, still has to.
     n.hp -= 25
@@ -53,7 +53,7 @@ test "a rack node's nested field takes the write" {
 
 test "three fields deep through a link" {
     mut rack = Rack<Outer>.new()
-    let n = rack.insert(Outer { mid: Mid { inner: Inner { v: 1 }, tag: 2 } })
+    let n = rack.insert(Outer(mid: Mid(inner: Inner(v: 1), tag: 2)))
 
     n.mid.inner.v = 99
     n.mid.tag += 5
@@ -64,7 +64,7 @@ test "three fields deep through a link" {
 
 test "a Vec element's nested field takes the write" {
     mut v = Vec<Outer>.new()
-    v.push(Outer { mid: Mid { inner: Inner { v: 1 }, tag: 2 } })
+    v.push(Outer(mid: Mid(inner: Inner(v: 1), tag: 2)))
 
     v[0].mid.inner.v = 77
     v[0].mid.tag -= 1
@@ -75,16 +75,16 @@ test "a Vec element's nested field takes the write" {
 
 test "writes to two rack nodes don't bleed into each other" {
     mut rack = Rack<Entity>.new()
-    let a = rack.insert(Entity {
+    let a = rack.insert(Entity(
         active: true,
         hp: 10,
-        health: Health { current: 10, max: 10 },
-    })
-    let b = rack.insert(Entity {
+        health: Health(current: 10, max: 10),
+    ))
+    let b = rack.insert(Entity(
         active: true,
         hp: 20,
-        health: Health { current: 20, max: 20 },
-    })
+        health: Health(current: 20, max: 20),
+    ))
 
     a.health.current = 1
     b.health.current = 2

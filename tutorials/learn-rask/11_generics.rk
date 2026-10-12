@@ -43,7 +43,7 @@ struct Pair<A, B> {
 
 extend Pair<A, B> {
     func swap(self) -> Pair<B, A> {
-        return Pair { first: self.second, second: self.first }
+        return Pair(first: self.second, second: self.first)
     }
 }
 
@@ -143,7 +143,7 @@ test "contains" {
 }
 
 func main() {
-    let p = Pair { first: "altitude", second: 35000 }
+    let p = Pair(first: "altitude", second: 35000)
     println("{p.first}: {p.second}")
     println("Run 'rask test 11_generics.rk' to check your puzzles")
 }

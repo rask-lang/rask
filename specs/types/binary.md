@@ -170,7 +170,7 @@ ERROR [type.binary/V1]: invalid bit count
 
 <!-- test: skip -->
 ```rask
-let header = IpHeader {
+let header = IpHeader(
     version: 4,
     ihl: 5,
     dscp: 0,
@@ -184,7 +184,7 @@ let header = IpHeader {
     checksum: 0,
     src: 0xC0A80001,     // 192.168.0.1
     dst: 0xC0A80002,     // 192.168.0.2
-}
+)
 
 let bytes = header.build()  // Vec<u8> of 20 bytes
 ```
@@ -219,11 +219,11 @@ let MAGIC_HEADER: [u8; 8] = comptime {
         flags: u16be
     }
 
-    Header {
+    Header(
         magic: 0xCAFEBABE,
         version: 1,
         flags: 0
-    }.build()
+    ).build()
 }
 ```
 

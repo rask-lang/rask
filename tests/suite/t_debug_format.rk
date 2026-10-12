@@ -32,16 +32,16 @@ enum Shape {
 }
 
 test "a struct with no Displayable renders its fields" {
-    let p = Point { x: 1.0, y: 2.0 }
+    let p = Point(x: 1.0, y: 2.0)
     assert format("{:debug}", p) == "Point {{ x: 1, y: 2 }}"
 }
 
 test "an empty struct renders as its name" {
-    assert format("{:debug}", Empty { }) == "Empty {{}}"
+    assert format("{:debug}", Empty()) == "Empty {{}}"
 }
 
 test "a nested struct recurses, and a string field is quoted" {
-    let n = Named { label: "hi", at: Point { x: 1.0, y: 2.0 } }
+    let n = Named(label: "hi", at: Point(x: 1.0, y: 2.0))
     assert format("{:debug}", n) == "Named {{ label: \"hi\", at: Point {{ x: 1, y: 2 }} }}"
 }
 
@@ -66,6 +66,6 @@ test "a char is quoted too" {
 }
 
 test "an interpolation spec reaches the same renderer" {
-    let p = Point { x: 1.0, y: 2.0 }
+    let p = Point(x: 1.0, y: 2.0)
     assert "{p:debug}" == "Point {{ x: 1, y: 2 }}"
 }

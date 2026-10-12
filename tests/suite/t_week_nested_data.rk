@@ -52,10 +52,10 @@ func total_qty(o: Order) -> i32 {
 }
 
 test "a struct holding a Vec of structs" {
-    let o = Order {
+    let o = Order(
         id: 1,
-        items: [Item { name: "bolt", qty: 3 }, Item { name: "nut", qty: 5 }],
-    }
+        items: [Item(name: "bolt", qty: 3), Item(name: "nut", qty: 5)],
+    )
     assert o.id == 1
     assert o.items.len() == 2
     assert o.items[0].name == "bolt"
@@ -64,14 +64,14 @@ test "a struct holding a Vec of structs" {
 }
 
 test "writing into a nested Vec element" {
-    mut o = Order {
+    mut o = Order(
         id: 1,
-        items: [Item { name: "bolt", qty: 3 }],
-    }
+        items: [Item(name: "bolt", qty: 3)],
+    )
     o.items[0].qty = 99
     assert o.items[0].qty == 99
     assert o.items[0].name == "bolt"
-    o.items.push(Item { name: "nut", qty: 1 })
+    o.items.push(Item(name: "nut", qty: 1))
     assert o.items.len() == 2
     assert o.items[0].qty == 99
 }
@@ -115,8 +115,8 @@ test "a Map of Vecs" {
 
 test "a Map of structs" {
     mut m: Map<string, Item> = Map.new()
-    m.insert("bolt", Item { name: "bolt", qty: 3 })
-    m.insert("nut", Item { name: "nut", qty: 5 })
+    m.insert("bolt", Item(name: "bolt", qty: 3))
+    m.insert("nut", Item(name: "nut", qty: 5))
     assert m.get("bolt")!.qty == 3
     assert m.get("nut")!.name == "nut"
     assert m.get("zzz") is none
@@ -125,20 +125,20 @@ test "a Map of structs" {
 test "a struct holding a Map" {
     mut stock: Map<string, i32> = Map.new()
     stock.insert("bolt", 10)
-    let inv = Inventory { stock: stock, orders: Vec.new() }
+    let inv = Inventory(stock: stock, orders: Vec.new())
     assert inv.stock.len() == 1
     assert inv.stock.get("bolt")! == 10
     assert inv.orders.is_empty()
 }
 
 test "three levels: struct, Vec, struct, field" {
-    let inv = Inventory {
+    let inv = Inventory(
         stock: Map.new(),
         orders: [
-            Order { id: 1, items: [Item { name: "a", qty: 1 }] },
-            Order { id: 2, items: [Item { name: "b", qty: 2 }, Item { name: "c", qty: 3 }] },
+            Order(id: 1, items: [Item(name: "a", qty: 1)]),
+            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)]),
         ],
-    }
+    )
     assert inv.orders.len() == 2
     assert inv.orders[1].items.len() == 2
     assert inv.orders[1].items[1].name == "c"
@@ -151,10 +151,10 @@ test "three levels: struct, Vec, struct, field" {
 }
 
 test "writing three levels down" {
-    mut inv = Inventory {
+    mut inv = Inventory(
         stock: Map.new(),
-        orders: [Order { id: 1, items: [Item { name: "a", qty: 1 }] }],
-    }
+        orders: [Order(id: 1, items: [Item(name: "a", qty: 1)])],
+    )
     inv.orders[0].items[0].qty = 42
     assert inv.orders[0].items[0].qty == 42
     assert inv.orders[0].items[0].name == "a"

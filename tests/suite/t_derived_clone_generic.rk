@@ -80,8 +80,8 @@ test "generic enum of strings" {
 }
 
 test "generic struct whose last field is a vector" {
-    let items: Vec<Point> = [Point { x: 1, tag: "p" }]
-    let b: Bag<Point> = Bag { label: "pts", items: items }
+    let items: Vec<Point> = [Point(x: 1, tag: "p")]
+    let b: Bag<Point> = Bag(label: "pts", items: items)
     let c = b.clone()
     assert c.label == "pts"
     assert c.items.len() == 1
@@ -90,13 +90,13 @@ test "generic struct whose last field is a vector" {
 }
 
 test "optional and tuple fields over the parameter" {
-    let e: Extras<string> = Extras { first: "f", pair: ("p", "q"), count: 2 }
+    let e: Extras<string> = Extras(first: "f", pair: ("p", "q"), count: 2)
     let c = e.clone()
     assert c.first! == "f"
     assert c.pair.0 == "p"
     assert c.pair.1 == "q"
     assert c.count == 2
-    let none_first: Extras<string> = Extras { first: none, pair: ("x", "y"), count: 0 }
+    let none_first: Extras<string> = Extras(first: none, pair: ("x", "y"), count: 0)
     assert none_first.clone().first is none
 }
 

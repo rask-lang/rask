@@ -35,28 +35,28 @@ enum Slot {
 }
 
 func bare() -> Conn {
-    let c = Conn { fd: 1 }
+    let c = Conn(fd: 1)
     return c
 }
 
 func in_tuple() -> (i64, Conn) {
-    let c = Conn { fd: 2 }
+    let c = Conn(fd: 2)
     return (7, c)
 }
 
 func in_struct() -> Wrap {
-    let c = Conn { fd: 3 }
-    return Wrap { conn: c }
+    let c = Conn(fd: 3)
+    return Wrap(conn: c)
 }
 
 func in_enum() -> Slot {
-    let c = Conn { fd: 4 }
+    let c = Conn(fd: 4)
     return Slot.Full(c)
 }
 
 // The branch that produces the value is the one that returns it.
 func from_a_branch(pick: bool) -> Conn {
-    let a = Conn { fd: 5 }
+    let a = Conn(fd: 5)
     ensure a.close()
     if pick {
         return a

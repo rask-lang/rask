@@ -15,7 +15,7 @@ struct Memtable {
 
 extend Memtable {
     func new() -> Memtable {
-        return Memtable { entries: Vec.new(), size: 0 }
+        return Memtable(entries: Vec.new(), size: 0)
     }
 
     func drain(mutate self) -> Vec<string> {
@@ -52,7 +52,7 @@ extend Db {
 }
 
 func filled(n: i64) -> Db {
-    mut db = Db { name: "a-database-name-long-enough-for-heap", mt: Memtable.new(), flushed: 0 }
+    mut db = Db(name: "a-database-name-long-enough-for-heap", mt: Memtable.new(), flushed: 0)
     for i in 0..n {
         db.mt.entries.push("entry-number-{i}-long-enough-for-heap")
     }

@@ -102,9 +102,9 @@ test "sort orders narrow integers, floats, chars, bools and strings" {
 
 test "a struct of floats is Comparable and sorts by them" {
     mut r: Vec<Reading> = Vec.new()
-    r.push(Reading { value: 2.0 })
-    r.push(Reading { value: -1.0 })
-    r.push(Reading { value: -3.0 })
+    r.push(Reading(value: 2.0))
+    r.push(Reading(value: -1.0))
+    r.push(Reading(value: -3.0))
     r.sort()
     assert r[0].value == -3.0
     assert r[1].value == -1.0
@@ -113,24 +113,24 @@ test "a struct of floats is Comparable and sorts by them" {
 
 test "a one-word struct sorts by sort, sort_by and sort_by_key" {
     mut a: Vec<Wrap> = Vec.new()
-    a.push(Wrap { n: 2 })
-    a.push(Wrap { n: -1 })
-    a.push(Wrap { n: 0 })
+    a.push(Wrap(n: 2))
+    a.push(Wrap(n: -1))
+    a.push(Wrap(n: 0))
     a.sort()
     assert a[0].n == -1
     assert a[2].n == 2
 
     mut b: Vec<Wrap> = Vec.new()
-    b.push(Wrap { n: 2 })
-    b.push(Wrap { n: -1 })
+    b.push(Wrap(n: 2))
+    b.push(Wrap(n: -1))
     b.sort_by(|x, y| y.n.compare(x.n))
     assert b[0].n == 2
     assert b[1].n == -1
 
     mut c: Vec<Wrap> = Vec.new()
-    c.push(Wrap { n: 2 })
-    c.push(Wrap { n: -1 })
-    c.sort_by_key(|x| Wrap { n: x.n * -1 })
+    c.push(Wrap(n: 2))
+    c.push(Wrap(n: -1))
+    c.sort_by_key(|x| Wrap(n: x.n * -1))
     assert c[0].n == 2
     assert c[1].n == -1
 }

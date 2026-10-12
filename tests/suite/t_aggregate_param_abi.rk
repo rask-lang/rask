@@ -45,11 +45,11 @@ struct Task {
 }
 
 func make(id: Id, title: string, priority: Priority) -> Task {
-    return Task { id: id, title: title, priority: priority, done: false }
+    return Task(id: id, title: title, priority: priority, done: false)
 }
 
 test "codegen — an enum parameter stored into a field keeps its value" {
-    let t = make(Id { value: 7 }, "write it", Priority.High)
+    let t = make(Id(value: 7), "write it", Priority.High)
     assert t.id.value == 7
     assert t.title == "write it"
     assert t.priority.label() == "high"
@@ -57,10 +57,10 @@ test "codegen — an enum parameter stored into a field keeps its value" {
 }
 
 test "codegen — every variant survives the round trip" {
-    let a = make(Id { value: 1 }, "a", Priority.Low)
-    let b = make(Id { value: 2 }, "b", Priority.Medium)
-    let c = make(Id { value: 3 }, "c", Priority.High)
-    let d = make(Id { value: 4 }, "d", Priority.Urgent)
+    let a = make(Id(value: 1), "a", Priority.Low)
+    let b = make(Id(value: 2), "b", Priority.Medium)
+    let c = make(Id(value: 3), "c", Priority.High)
+    let d = make(Id(value: 4), "d", Priority.Urgent)
     assert a.priority.label() == "low"
     assert b.priority.label() == "medium"
     assert c.priority.label() == "high"
@@ -73,7 +73,7 @@ struct Spec {
 }
 
 test "codegen — cloning a struct copies an enum field by value" {
-    let original = Spec { title: "seed", priority: Priority.Urgent }
+    let original = Spec(title: "seed", priority: Priority.Urgent)
     let copy = original.clone()
     assert copy.title == "seed"
     assert copy.priority.label() == "urgent"
@@ -83,8 +83,8 @@ test "codegen — cloning a struct copies an enum field by value" {
     // rank rather than label — a string `==` after a loop over a Vec of structs
     // is separately broken on native (#495).
     mut specs = Vec.new()
-    specs.push(Spec { title: "one", priority: Priority.High })
-    specs.push(Spec { title: "two", priority: Priority.Low })
+    specs.push(Spec(title: "one", priority: Priority.High))
+    specs.push(Spec(title: "two", priority: Priority.Low))
     mut ranks = Vec.new()
     for s in specs {
         let dup = s.clone()

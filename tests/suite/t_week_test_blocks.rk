@@ -19,7 +19,7 @@ func double(x: i32) -> i32 {
 }
 
 func build() -> Counter {
-    return Counter { n: 0 }
+    return Counter(n: 0)
 }
 
 test "std.testing — a bare assert on a true expression" {

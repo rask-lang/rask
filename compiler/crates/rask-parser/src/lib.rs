@@ -825,19 +825,15 @@ mod tests {
     }
 
     #[test]
-    fn generic_struct_literal() {
-        let stmts = parse_body("let p = Point<f64> { x: 1.0, y: 2.0 }");
+    fn generic_construction_parses_as_a_call() {
+        // The parser can't tell building a value from calling a function:
+        // desugar decides from the declarations, so this stays a call here.
+        let stmts = parse_body("let p = Point<f64>(x: 1.0, y: 2.0)");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
-            if let ExprKind::StructLit { ref name, ref type_args, .. } = init.kind {
-                assert_eq!(name, "Point");
-                assert_eq!(type_args, &vec![rask_ast::ty::TypeExpr::named("f64")]);
-            } else {
-                panic!("expected struct literal, got {:?}", init.kind);
-            }
-        } else {
-            panic!("expected let");
-        }
+        let StmtKind::Let { ref init, .. } = stmts[0].kind else { panic!("expected let") };
+        let ExprKind::Call { ref func, ref args } = init.kind else { panic!("expected a call, got {:?}", init.kind) };
+        assert!(matches!(&func.kind, ExprKind::GenericName { name, .. } if name == "Point"));
+        assert_eq!(args.iter().map(|a| a.name.as_deref()).collect::<Vec<_>>(), vec![Some("x"), Some("y")]);
     }
 
     #[test]

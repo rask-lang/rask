@@ -20,8 +20,8 @@ struct Ranked {
 
 func rows() -> Vec<Ranked> {
   mut v = Vec.new()
-  v.push(Ranked { rank: 3, view: View { id: 1, title: "one" } })
-  v.push(Ranked { rank: 2, view: View { id: 2, title: "two" } })
+  v.push(Ranked(rank: 3, view: View(id: 1, title: "one")))
+  v.push(Ranked(rank: 2, view: View(id: 2, title: "two")))
   return v
 }
 

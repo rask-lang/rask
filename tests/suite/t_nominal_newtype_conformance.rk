@@ -51,14 +51,14 @@ func describe<T: Labeled>(x: T) -> string {
 }
 
 test "a declared conformance on a newtype" {
-    let t = Tagged(Doc { n: 3 })
+    let t = Tagged(Doc(n: 3))
     assert t.label() == "tagged 3"
     assert describe(t) == "tagged 3"
 }
 
 test "and one whose methods the compiler would otherwise derive" {
-    let a = Counted(Doc { n: 1 })
-    let b = Counted(Doc { n: 1 })
+    let a = Counted(Doc(n: 1))
+    let b = Counted(Doc(n: 1))
     assert a.hash() == 7
     assert a.eq(b)
 

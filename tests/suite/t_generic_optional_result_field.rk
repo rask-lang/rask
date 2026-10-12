@@ -46,7 +46,7 @@ func describe(m: Maybe<string>) -> string {
 }
 
 test "the value branch binds the string" {
-    let m: Maybe<string> = Maybe { r: found("here") }
+    let m: Maybe<string> = Maybe(r: found("here"))
     let got = match m.r {
         string as x => x,
         none => "none",
@@ -56,13 +56,13 @@ test "the value branch binds the string" {
 }
 
 test "every branch through a field" {
-    assert describe(Maybe { r: found("there") }) == "there"
-    assert describe(Maybe { r: missing() }) == "none"
-    assert describe(Maybe { r: failed() }) == "err"
+    assert describe(Maybe(r: found("there"))) == "there"
+    assert describe(Maybe(r: missing())) == "none"
+    assert describe(Maybe(r: failed())) == "err"
 }
 
 test "a wide argument behind a vector keeps working" {
-    let s: Stack<string> = Stack { items: ["a", "bc"] }
+    let s: Stack<string> = Stack(items: ["a", "bc"])
     assert s.items.len() == 2
     assert s.items[1] == "bc"
 }

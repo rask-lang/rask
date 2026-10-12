@@ -24,8 +24,8 @@ test "status terminality" {
 }
 
 test "email equality is case-insensitive (custom Equal)" {
-    let a = EmailAddress { raw: "Bo@Example.IO" }
-    let b = EmailAddress { raw: "bo@example.io" }
+    let a = EmailAddress(raw: "Bo@Example.IO")
+    let b = EmailAddress(raw: "bo@example.io")
     assert a == b
     // OC1: the redeclared Hashable must agree with the override.
     assert a.hash() == b.hash()
@@ -42,22 +42,22 @@ test "ids are distinct values, stepped through .value" {
 
 test "config carries its defaults" {
     // `Config {}` is the fully-defaulted value (FD3).
-    let c = Config {}
+    let c = Config()
     assert c.port == 8080
     assert c.host == "0.0.0.0"
     assert c.request_log
     // A subset override leaves the rest at their declared defaults.
-    let c2 = Config { port: 9090 }
+    let c2 = Config(port: 9090)
     assert c2.port == 9090
     assert c2.host == "0.0.0.0"
 }
 
 test "validation catches an empty title" {
-    let req = CreateTaskRequest {
+    let req = CreateTaskRequest(
         title: "",
         project_id: 1,
         priority: "medium",
-    }
+    )
     let result = req.validate()
     assert result is ValidationError
     if result is ValidationError as e {

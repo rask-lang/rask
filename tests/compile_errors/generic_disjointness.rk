@@ -36,6 +36,6 @@ func main() {
     let direct = cached(CacheError.Miss)  // E0358: T = CacheError
     let forwarded = wrap(CacheError.Miss) // E0358: T = CacheError
 
-    let c = Cache<CacheError> { hit: true }
+    let c = Cache<CacheError>(hit: true)
     let method = c.get(CacheError.Miss)   // E0358: T = CacheError
 }

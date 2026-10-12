@@ -30,7 +30,7 @@ struct List {
 }
 
 func push_back(mutate list: List, value: i32) -> Link<Node> {
-    let n = list.nodes.insert(Node { value: value, next: none, prev: list.tail })
+    let n = list.nodes.insert(Node(value: value, next: none, prev: list.tail))
     if list.tail? as t {
         t.next = n
     } else {
@@ -69,7 +69,7 @@ func print_backward(list: List) {
 }
 
 func main() {
-    mut list = List { nodes: Rack.new(), head: none, tail: none }
+    mut list = List(nodes: Rack.new(), head: none, tail: none)
 
     let n1 = push_back(mutate list, 1)
     let n2 = push_back(mutate list, 2)

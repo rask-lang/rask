@@ -34,19 +34,19 @@ func through_any(x: any Scaler) -> i64 {
 }
 
 test "the default fills through a generic bound" {
-    assert through_bound(Meters { n: 3 }) == 30
+    assert through_bound(Meters(n: 3)) == 30
 }
 
 test "a written argument still wins through a bound" {
-    assert through_bound_written(Meters { n: 3 }) == 6
+    assert through_bound_written(Meters(n: 3)) == 6
 }
 
 test "the default fills through `any`" {
-    assert through_any(Meters { n: 4 }) == 40
+    assert through_any(Meters(n: 4)) == 40
 }
 
 test "the concrete receiver is unchanged" {
-    let m = Meters { n: 5 }
+    let m = Meters(n: 5)
     assert m.scaled() == 50
     assert m.scaled(by: 3) == 15
 }

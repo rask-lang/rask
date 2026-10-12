@@ -16,7 +16,7 @@ struct Booking {
 
 extend Booking {
     func new(id: i32) -> Booking {
-        return Booking { id: id, committed: false }
+        return Booking(id: id, committed: false)
     }
 
     func commit(mutate self) {
@@ -50,10 +50,10 @@ func two_bookings() -> BookingStatus {
 
     mut b2 = Booking.new(2)
 
-    return BookingStatus {
+    return BookingStatus(
         first_committed: b1.is_committed(),
         second_committed: b2.is_committed(),
-    }
+    )
 }
 
 func process_flights(flights: Vec<string>) -> i32 or BookingError {

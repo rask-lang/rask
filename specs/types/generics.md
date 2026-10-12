@@ -62,7 +62,7 @@ interface Scale<Rhs> {
 
 Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 ```
@@ -447,8 +447,8 @@ struct Point {
 }
 
 // No extend block needed — Point is Equal because i32 is Equal
-let a = Point { x: 1, y: 2 }
-let b = Point { x: 1, y: 2 }
+let a = Point(x: 1, y: 2)
+let b = Point(x: 1, y: 2)
 // a == b → true (field-wise comparison)
 ```
 
@@ -523,15 +523,15 @@ struct Version {
 
 // No extend block needed — Version is Comparable because u32 is Comparable
 // Compares major first, then minor, then patch (lexicographic)
-let a = Version { major: 1, minor: 2, patch: 0 }
-let b = Version { major: 1, minor: 3, patch: 0 }
+let a = Version(major: 1, minor: 2, patch: 0)
+let b = Version(major: 1, minor: 3, patch: 0)
 // a < b → true (minor field differs)
 // a.compare(b) → Ordering.Less
 ```
 
 ## No Default Interface
 
-There is no `Default` interface and no `.default()` method. Declared field defaults (`type.structs`) are the mechanism: a field with a declared default may be omitted at construction, and a struct whose fields all have defaults constructs with zero fields — `Config {}` *is* the default value. A struct with any defaultless field has no empty construction; the compiler names the missing field instead of inventing `""`/`0`. Universal zero-defaults were rejected as Go zero-values by another name.
+There is no `Default` interface and no `.default()` method. Declared field defaults (`type.structs`) are the mechanism: a field with a declared default may be omitted at construction, and a struct whose fields all have defaults constructs with zero fields — `Config()` *is* the default value. A struct with any defaultless field has no empty construction; the compiler names the missing field instead of inventing `""`/`0`. Universal zero-defaults were rejected as Go zero-values by another name.
 
 ## Comptime Generics
 
@@ -634,7 +634,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **OP1 (operators stay authored):** The flip's hazard — being *matched* against a contract you never claimed — requires a bound satisfied by accident. Concrete operator use has no bound; it calls a method someone deliberately wrote. The generic path was already nominal. Watch-item: if public generic code over-constrains through `Numeric` when it only needs `add`, split Numeric from usage evidence — not preemptively.
 
-**Default (removed):** Zero corpus usage, and DF-style universal zeros were Go zero-values by another name — a back door around Rask's all-fields-required construction. Declared field defaults replaced the interface; `Config {}` is the default value when every field declares one. No spec API used `T: Default` as a bound at removal time; a constructible-empty bound can return from usage evidence if ever needed.
+**Default (removed):** Zero corpus usage, and DF-style universal zeros were Go zero-values by another name — a back door around Rask's all-fields-required construction. Declared field defaults replaced the interface; `Config()` is the default value when every field declares one. No spec API used `T: Default` as a bound at removal time; a constructible-empty bound can return from usage evidence if ever needed.
 
 **G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the interface system handles dispatch.
 

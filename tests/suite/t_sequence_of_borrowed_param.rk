@@ -47,8 +47,8 @@ test "a string vector walked in a callee is still the caller's" {
 
 test "a struct vector walked in a callee" {
     mut ps = Vec.new()
-    ps.push(Point { x: 1, y: 2, z: 3 })
-    ps.push(Point { x: 4, y: 5, z: 6 })
+    ps.push(Point(x: 1, y: 2, z: 3))
+    ps.push(Point(x: 4, y: 5, z: 6))
     assert total(ps) == 21
     assert ps.len() == 2
 }

@@ -52,31 +52,31 @@ func bump_nested(mutate c: Counter) { bump(mutate c) }
 func bump_three_deep(mutate c: Counter) { bump_nested(mutate c) }
 
 test "a mutate parameter written directly" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     bump(mutate c)
     assert c.n == 1
 }
 
 test "a mutate parameter forwarded one hop" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     bump_nested(mutate c)
     assert c.n == 1
 }
 
 test "a mutate parameter forwarded two hops" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     bump_three_deep(mutate c)
     assert c.n == 1
 }
 
 test "a method calling another mutate-self method on self" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     c.bump_twice()
     assert c.n == 2
 }
 
 test "a method call on a field of a local" {
-    mut p = Pair { left: Counter { n: 0 }, right: Counter { n: 0 } }
+    mut p = Pair(left: Counter(n: 0), right: Counter(n: 0))
     p.left.bump()
     assert p.left.n == 1
     // The neighbouring field must be untouched — the receiver address has to
@@ -85,7 +85,7 @@ test "a method call on a field of a local" {
 }
 
 test "a method call on a field of self" {
-    mut p = Pair { left: Counter { n: 0 }, right: Counter { n: 0 } }
+    mut p = Pair(left: Counter(n: 0), right: Counter(n: 0))
     p.bump_left()
     p.bump_left()
     assert p.left.n == 2
@@ -93,7 +93,7 @@ test "a method call on a field of self" {
 }
 
 test "a GC9-inferred mutate self, reached through a field" {
-    mut h = HoldsInferred { inner: Inferred { n: 0 } }
+    mut h = HoldsInferred(inner: Inferred(n: 0))
     h.inner.bump()
     h.bump_inner()
     assert h.inner.n == 2

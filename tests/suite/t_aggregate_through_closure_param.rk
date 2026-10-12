@@ -43,7 +43,7 @@ extend Colour {
 }
 
 test "a word-sized struct through a closure parameter" {
-    let x = Pay { a: 42 }
+    let x = Pay(a: 42)
     let f = |p: Pay| {
         return p
     }
@@ -53,7 +53,7 @@ test "a word-sized struct through a closure parameter" {
 // `Big` is past the 16-byte copy threshold, so the closure only borrows it
 // (mem.closures/CP1) and hands back a copy (#1458).
 test "a wider struct through a closure parameter" {
-    let x = Big { a: 1, b: 2, c: 3 }
+    let x = Big(a: 1, b: 2, c: 3)
     let f = |p: Big| {
         return p.clone()
     }

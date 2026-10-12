@@ -446,8 +446,8 @@ extend DivError {
 @traced
 @message
 enum ConfigError {
-    @message("not found: {path}") NotFound { path: string },
-    @message("parse error at {line}") Parse { line: i32 },
+    @message("not found: {path}") NotFound(path: string),
+    @message("parse error at {line}") Parse(line: i32),
 }
 // sizeof(ConfigError) = sizeof(payload) + 16 bytes origin
 
@@ -474,7 +474,7 @@ func start_app() -> App or any Error {
 | Rule | Description |
 |------|-------------|
 | **ER35: @message opt-in** | `@message` on an enum generates `func message(self) -> string`. Compile error if the enum already defines `message()` manually |
-| **ER36: Variant template** | `@message("template")` on a variant is an ordinary interpolated string, built where the variant's payloads are bound by name. A payload the template mentions is named: `NotFound { path: string }` and `{path}`. There is no positional `{0}`: a hole holding a constant is rejected in every string |
+| **ER36: Variant template** | `@message("template")` on a variant is an ordinary interpolated string, built where the variant's payloads are bound by name. A payload the template mentions is named: `NotFound(path: string)` and `{path}`. There is no positional `{0}`: a hole holding a constant is rejected in every string |
 | **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `Error`, and no `@message` annotation, delegates to `inner.message()` |
 | **ER38: Coverage** | A variant with neither an annotation nor a delegatable payload falls back to the derived message — the one every error enum gets from its layout (#1001). It used to be a compile error; there is nothing missing to report once the fallback exists |
 
@@ -483,13 +483,13 @@ func start_app() -> App or any Error {
 @message
 enum RegistryError {
     @message("package not found: {name}")
-    PackageNotFound { name: string },
+    PackageNotFound(name: string),
 
     @message("network error: {reason}")
-    NetworkError { reason: string },
+    NetworkError(reason: string),
 
     @message("checksum mismatch for {pkg}: expected {expected}, got {got}")
-    ChecksumMismatch { pkg: string, expected: string, got: string },
+    ChecksumMismatch(pkg: string, expected: string, got: string),
 }
 
 // Wrapper enum — auto-delegates
@@ -498,7 +498,7 @@ enum FetchError {
     Manifest(ManifestError),    // delegates to ManifestError.message()
     Version(VersionError),      // delegates
     @message("I/O: {reason}")
-    Io { reason: string },                 // needs explicit template
+    Io(reason: string),                 // needs explicit template
 }
 ```
 
@@ -556,7 +556,7 @@ enum FileError {
 
 match result {
     data: Data => process(data),
-    FileError.ReadFailed(file, msg) => {
+    FileError.ReadFailed(file, reason: msg) => {
         try file.close()   // linear file MUST be consumed
         log(msg)
     }
@@ -610,9 +610,9 @@ panic at src/handler.rk:4:19: not yet implemented: keyboard handling
 | `try f() ?? v` on a flat `T? or E` | ER16b | Legal, no parens — `(try f()) ?? v`; error propagates, absence gets `v` |
 | `x ?? return MyError` | OPT11 | Legal anywhere `return MyError` is — normal return rules apply |
 | `r catch _ => return none` in a `T?`-returning function | ER14 | Legal — drops the error detail, acknowledged |
-| `Config { host: g() catch _ => return E, port: 8080 }` | ER45a | Compile error asking for parens around the diverging fallback |
-| `Config { host: (g() catch _ => return E), port: 8080 }` | ER45a | Legal — the parens show where the exit ends |
-| `Config { host: g() ?? "localhost", port: 8080 }` | ER45a | Legal, no parens — a value right side has no exit to locate |
+| `Config(host: g() catch _ => return E, port: 8080)` | ER45a | Compile error asking for parens around the diverging fallback |
+| `Config(host: (g() catch _ => return E), port: 8080)` | ER45a | Legal — the parens show where the exit ends |
+| `Config(host: g() ?? "localhost", port: 8080)` | ER45a | Legal, no parens — a value right side has no exit to locate |
 | `x ?? break` / `?? continue` / `?? panic(…)` | OPT11 | Legal — any divergence, written where it happens. (`?? panic(…)` lints toward `x! "…"`, which is shorter) |
 | `r catch v` (no binder) | ER14 | Compile error — the binder is mandatory. `catch e => v` to use the error, `catch _ => v` to drop it visibly |
 | `r ?? v` on a result | ER12 | Compile error — `?` marks absence. Use `catch _ => v`, which says an error is being dropped |
@@ -935,7 +935,7 @@ Zero sites in the tree pay for this — the house style extracts first anyway, a
 <!-- test: skip -->
 ```rask
 let host = get(raw, "host") ?? return ConfigError.Missing("host")
-return Config { host: host, port: 8080 }
+return Config(host: host, port: 8080)
 ```
 
 **Why `e =>` and not `|e|`.** Two drafts spelled the error binding `|e|`, and both needed a rule saying it wasn't a closure — because it looks exactly like one, and `return` inside a real closure exits the closure (`ctrl.flow/CF26`). A rule whose only job is to disclaim the syntax it's attached to is the syntax admitting it's wrong. The collision was live, too: `try` inside `|e| { … }` leaves the enclosing function, while `try` inside a closure `|x| { … }` leaves the closure, and the two are indistinguishable on the page.
@@ -944,7 +944,7 @@ Making it a genuine closure was the other way out, and it doesn't work. `r catch
 
 `=>` is the match-arm binder, and match arms already have the exact semantics wanted: a name bound over a body that belongs to the enclosing function, so `return` leaves the function. Braces optional, same as an arm. Nothing needs to be said about what it isn't, which is the whole point. It also frees the rule that had been explaining the resemblance — one fewer thing to hold.
 
-**Why not `:`?** `catch e: fallback` is one character shorter and echoes Python's `except E as e:`. It loses on three concrete grounds. First, `:` already carries two meanings in this grammar — type annotation and struct-literal field — and both put it in exactly the positions `catch` appears in: `Config { host: g() catch _: "localhost", port: 8080 }` has three colons meaning three things, and `catch e:` on its own reads as "e has type …". Second, Rask has no colon-introduced body anywhere (Python's colon opens a suite; ours would separate a binder from an expression, a construct the language doesn't otherwise have), while `=>` reuses the one body-introducer that already exists with the right `return` semantics. Third, `=>` keeps the left side reading as a *pattern slot*: today's `e` and `_` are the two degenerate patterns (bind-all, ignore-all), and if a filtered catch is ever wanted (`catch DiskError.Full(n) => …`) the syntax is already sitting there — with `:` it would read as an annotation. Nesting was checked and is a wash: a `catch` inside a match arm puts two `=>` on one line, but they mean the *same* thing (a bound body follows), which is exactly the property Scala's `case e =>` inside try/catch has shipped on for two decades. The colon version nested in a struct literal is strictly worse.
+**Why not `:`?** `catch e: fallback` is one character shorter and echoes Python's `except E as e:`. It loses on three concrete grounds. First, `:` already carries two meanings in this grammar — type annotation and struct-literal field — and both put it in exactly the positions `catch` appears in: `Config(host: g() catch _: "localhost", port: 8080)` has three colons meaning three things, and `catch e:` on its own reads as "e has type …". Second, Rask has no colon-introduced body anywhere (Python's colon opens a suite; ours would separate a binder from an expression, a construct the language doesn't otherwise have), while `=>` reuses the one body-introducer that already exists with the right `return` semantics. Third, `=>` keeps the left side reading as a *pattern slot*: today's `e` and `_` are the two degenerate patterns (bind-all, ignore-all), and if a filtered catch is ever wanted (`catch DiskError.Full(n) => …`) the syntax is already sitting there — with `:` it would read as an annotation. Nesting was checked and is a wash: a `catch` inside a match arm puts two `=>` on one line, but they mean the *same* thing (a bound body follows), which is exactly the property Scala's `case e =>` inside try/catch has shipped on for two decades. The colon version nested in a struct literal is strictly worse.
 
 The cost was checked before committing: 83 binding sites in the tree, **zero** of them inside a match arm, so the one thing `=>` could plausibly have collided with never co-occurs. `|_e|` and `|_|` sites (authors underscoring a binding they didn't want) become `_ =>` or drop the binding entirely.
 
@@ -976,8 +976,8 @@ func load_config(path: string) -> Config or ContextError {
 <!-- test: skip -->
 ```rask
 func load_config(path: string) -> Config or ConfigError {
-    let text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
-    return Config.parse(text) catch e => return ConfigError.Parse { path, source: e }
+    let text = fs.read_text(path) catch e => return ConfigError.Io(path, source: e)
+    return Config.parse(text) catch e => return ConfigError.Parse(path, source: e)
 }
 ```
 

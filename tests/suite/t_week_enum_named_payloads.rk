@@ -23,53 +23,53 @@
 enum Status {
     Pending
     Active
-    Completed { at: i64 }
-    Failed { reason: string }
+    Completed(at: i64)
+    Failed(reason: string)
 }
 
 // One named-payload variant, at each position in its enum.
 enum First {
-    N { v: i64 }
+    N(v: i64)
     Other
 }
 
 enum Second {
     Other
-    N { v: i64 }
+    N(v: i64)
 }
 
 enum Third {
     Other
     Another
-    N { v: i64 }
+    N(v: i64)
 }
 
 func describe(s: Status) -> string {
     return match s {
         Pending => "waiting",
         Active => "running",
-        Completed { at } => "done at {at}",
-        Failed { reason } => "failed: {reason}",
+        Completed(at) => "done at {at}",
+        Failed(reason) => "failed: {reason}",
     }
 }
 
 func first_val(x: First) -> i64 {
     return match x {
-        N { v } => v,
+        N(v) => v,
         _ => -1,
     }
 }
 
 func second_val(x: Second) -> i64 {
     return match x {
-        N { v } => v,
+        N(v) => v,
         _ => -1,
     }
 }
 
 func third_val(x: Third) -> i64 {
     return match x {
-        N { v } => v,
+        N(v) => v,
         _ => -1,
     }
 }
@@ -77,7 +77,7 @@ func third_val(x: Third) -> i64 {
 // All arms present, named one written before its declaration position.
 func third_out_of_order(x: Third) -> i64 {
     return match x {
-        N { v } => v,
+        N(v) => v,
         Other => -10,
         Another => -20,
     }
@@ -88,13 +88,13 @@ func third_in_order(x: Third) -> i64 {
     return match x {
         Other => -10,
         Another => -20,
-        N { v } => v,
+        N(v) => v,
     }
 }
 
 test "type.enums — a named payload binds by name" {
-    assert describe(Status.Completed { at: 99 }) == "done at 99"
-    assert describe(Status.Failed { reason: "timeout" }) == "failed: timeout"
+    assert describe(Status.Completed(at: 99)) == "done at 99"
+    assert describe(Status.Failed(reason: "timeout")) == "failed: timeout"
 }
 
 test "type.enums — the payload-free variants of the same enum still match" {
@@ -103,14 +103,14 @@ test "type.enums — the payload-free variants of the same enum still match" {
 }
 
 test "type.enums — a named-payload variant matches wherever it sits" {
-    assert first_val(First.N { v: 5 }) == 5
-    assert second_val(Second.N { v: 5 }) == 5
-    assert third_val(Third.N { v: 5 }) == 5
+    assert first_val(First.N(v: 5)) == 5
+    assert second_val(Second.N(v: 5)) == 5
+    assert third_val(Third.N(v: 5)) == 5
 }
 
 test "type.enums — arm order does not decide which variant matches" {
-    assert third_out_of_order(Third.N { v: 5 }) == 5
-    assert third_in_order(Third.N { v: 5 }) == 5
+    assert third_out_of_order(Third.N(v: 5)) == 5
+    assert third_in_order(Third.N(v: 5)) == 5
 }
 
 // The out-of-order match doesn't only lose its own arm: `Other` reaches its arm
@@ -123,11 +123,11 @@ test "type.enums — the other variants are unaffected by arm order" {
 }
 
 test "type.enums — a named payload binds in a multi-statement arm" {
-    let s = Status.Failed { reason: "disk" }
+    let s = Status.Failed(reason: "disk")
     mut log = ""
     mut count = 0
     match s {
-        Failed { reason } => {
+        Failed(reason) => {
             log = reason
             count = count + 1
         }
@@ -140,7 +140,7 @@ test "type.enums — a named payload binds in a multi-statement arm" {
 }
 
 test "type.enums — is tests a named-payload variant" {
-    let s = Status.Completed { at: 7 }
+    let s = Status.Completed(at: 7)
     assert s is Completed
     assert !(s is Pending)
 }

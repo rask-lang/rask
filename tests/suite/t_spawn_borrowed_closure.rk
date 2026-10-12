@@ -57,7 +57,7 @@ test "read from the index, spawned twice" {
 
 test "a closure read out of a struct field, spawned" {
     using Multitasking {
-        let h = Holder { f: keep_i(3) }
+        let h = Holder(f: keep_i(3))
         assert spawn { (h.f)() }.join()! == 5
         assert (h.f)() == 5
     }
@@ -67,7 +67,7 @@ test "a vector's closure, put in a struct and in another vector" {
     mut fs = Vec<func() -> i64>.new()
     fs.push(keep_i(5))
     fs.push(keep_i(6))
-    let h = Holder { f: fs[1] }
+    let h = Holder(f: fs[1])
     mut gs = Vec<func() -> i64>.new()
     gs.push(h.f)
     gs.push(fs[0])

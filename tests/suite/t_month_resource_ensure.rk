@@ -18,7 +18,7 @@ struct Handle {
 
 extend Handle {
     func open(id: i32) -> Handle {
-        return Handle { id }
+        return Handle(id)
     }
 
     func value(self) -> i32 {
@@ -124,7 +124,7 @@ test "mem.resource — a resource consumed inside a loop body" {
 }
 
 test "ctrl.ensure — an ensure runs at the end of the block" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     ensure_at_end(mutate log)
     assert log.order.len() == 2
     // The body ran first, the ensure after.
@@ -133,14 +133,14 @@ test "ctrl.ensure — an ensure runs at the end of the block" {
 }
 
 test "ctrl.ensure — an ensure runs before an early return" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     assert ensure_before_early_return(mutate log, true) == 1
     assert log.order.len() == 1
     assert log.order[0] == 9
 }
 
 test "ctrl.ensure — the same ensure runs on the normal path too" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     assert ensure_before_early_return(mutate log, false) == 2
     assert log.order.len() == 2
     assert log.order[0] == 0
@@ -148,7 +148,7 @@ test "ctrl.ensure — the same ensure runs on the normal path too" {
 }
 
 test "ctrl.ensure — several ensures run in reverse declaration order" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     two_ensures(mutate log)
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -161,7 +161,7 @@ test "ctrl.ensure — several ensures run in reverse declaration order" {
 // block-scope cases live in `t_month_ensure_block_scope.rk`. A loop body is
 // correct on both backends, which is what EN7 gets here.
 test "ctrl.ensure — an ensure in a loop body runs each iteration" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     per_iteration(mutate log)
     assert log.order.len() == 7
     assert log.order[0] == 0

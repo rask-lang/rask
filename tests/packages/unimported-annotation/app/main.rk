@@ -12,7 +12,7 @@ struct Form {
 }
 
 func main() {
-    let f = Form { code: 1 }
+    let f = Form(code: 1)
     println("{f.code}")
     return
 }

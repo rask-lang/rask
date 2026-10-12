@@ -23,7 +23,7 @@ struct Scene {
 }
 
 func add_child(mutate scene: Scene, parent: Link<SceneNode>, name: string) -> Link<SceneNode> {
-    let n = scene.nodes.insert(SceneNode { name: name, parent: parent, children: Vec.new() })
+    let n = scene.nodes.insert(SceneNode(name: name, parent: parent, children: Vec.new()))
     parent.children.push(n)
     return n
 }
@@ -70,9 +70,9 @@ func report(scene: Scene) {
 }
 
 func main() {
-    mut scene = Scene { nodes: Rack.new(), root: none, selected: none }
+    mut scene = Scene(nodes: Rack.new(), root: none, selected: none)
 
-    let root = scene.nodes.insert(SceneNode { name: "root", parent: none, children: Vec.new() })
+    let root = scene.nodes.insert(SceneNode(name: "root", parent: none, children: Vec.new()))
     scene.root = root
 
     let a = add_child(mutate scene, root, "a")

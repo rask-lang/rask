@@ -41,7 +41,7 @@ func total(take b: Bag) -> i64 {
 
 test "a task closes the connection it captures" {
     using Multitasking {
-        let c = Conn { id: 1 }
+        let c = Conn(id: 1)
         let h = spawn {
             return c.close()
         }
@@ -51,7 +51,7 @@ test "a task closes the connection it captures" {
 
 test "several resources at once" {
     using Multitasking {
-        let pair = (Conn { id: 2 }, Conn { id: 3 })
+        let pair = (Conn(id: 2), Conn(id: 3))
         let h = spawn {
             let (a, b) = pair
             ensure b.close()
@@ -77,7 +77,7 @@ test "a container goes in and comes back" {
 test "a struct is given away inside the task" {
     using Multitasking {
         let label = "sum"
-        let b = Bag { items: [5, 6], name: "bag" }
+        let b = Bag(items: [5, 6], name: "bag")
         let h = spawn {
             let name = b.name
             "{label} {name} {total(b)}"
@@ -88,7 +88,7 @@ test "a struct is given away inside the task" {
 
 test "the block's value is the result" {
     using Multitasking {
-        let b = Bag { items: [1, 2], name: "two" }
+        let b = Bag(items: [1, 2], name: "two")
         let h = spawn { total(b) }
         assert h.join()! == 3
     }
@@ -135,14 +135,14 @@ test "one per turn of a loop" {
 }
 
 test "an OS thread" {
-    let c = Conn { id: 4 }
+    let c = Conn(id: 4)
     let t = Thread.spawn { c.close() }
     assert t.join()! == 4
 }
 
 test "a pool job" {
     using ThreadPool {
-        let b = Bag { items: [2, 3], name: "pool" }
+        let b = Bag(items: [2, 3], name: "pool")
         let p = ThreadPool.spawn { total(b) }
         assert p.join()! == 5
     }
@@ -150,7 +150,7 @@ test "a pool job" {
 
 test "a detached task still consumes what it captured" {
     using Multitasking {
-        let c = Conn { id: 6 }
+        let c = Conn(id: 6)
         spawn {
             let _ = c.close()
         }.detach()

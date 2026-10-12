@@ -109,14 +109,14 @@ test "std.encoding — a value in the input still wins over the default" {
 }
 
 test "std.encoding — a `@no_serialize` field stays off the wire" {
-    let r = Rec { name: "bo", secret: 1, tag: "t" }
+    let r = Rec(name: "bo", secret: 1, tag: "t")
     assert json.encode(r) == "{{\"name\":\"bo\",\"tag\":\"t\"}}"
 }
 
 // Construction is the other half of the same rule and was never broken —
 // here so a change to one is checked against the other.
 test "type.structs — a declared default fills an omitted field at construction" {
-    let r = Rec { name: "x" }
+    let r = Rec(name: "x")
     assert r.secret == 99
     assert r.tag == "fallback"
 }

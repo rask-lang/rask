@@ -48,10 +48,10 @@ test "iterating a fixed array" {
 }
 
 test "a fixed array of structs" {
-    mut a: [Pt; 2] = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }]
+    mut a: [Pt; 2] = [Pt(x: 1, y: 2), Pt(x: 3, y: 4)]
     assert a[0].x == 1
     assert a[1].y == 4
-    a[1] = Pt { x: 9, y: 9 }
+    a[1] = Pt(x: 9, y: 9)
     assert a[1].x == 9
     assert a[0].x == 1
 }

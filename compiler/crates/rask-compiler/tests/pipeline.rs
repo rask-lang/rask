@@ -94,7 +94,7 @@ fn call_targets_records_free_and_method_dispatch() {
         }
         func helper() -> i32 { return 7 }
         func main() {
-            mut c = Counter { n: 0 }
+            mut c = Counter(n: 0)
             c.bump()
             let x = helper()
             let v = Vec.from([1, 2, 3])
@@ -224,7 +224,7 @@ fn a_program_type_shadows_the_stdlib_one_of_the_same_name() {
             entries: Map<string, string>
         }
         extend Headers {
-            func new() -> Headers { return Headers { entries: Map.new() } }
+            func new() -> Headers { return Headers(entries: Map.new()) }
             func set(mutate self, name: string, value: string) -> void {
                 self.entries.insert(name, value)
             }
@@ -301,7 +301,7 @@ fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
             func message(self) -> string { return "user: {self.detail}" }
         }
         func main() {
-            let e = JsonError { detail: "boom" }
+            let e = JsonError(detail: "boom")
             println(e.message())
         }
     "#);
@@ -341,7 +341,7 @@ fn resolved_dispatch_does_not_drag_in_every_same_named_method() {
         }
 
         func main() {
-            let error = AlphaError {}
+            let error = AlphaError()
             println(error.message())
         }
     "#);
@@ -446,7 +446,7 @@ fn type_and_ownership_errors_accumulate() {
             // take d
         }
         func main() {
-            let d = Data { a: 1, b: 2, c: 3 }
+            let d = Data(a: 1, b: 2, c: 3)
             consume(own d)
             consume(own d)   // use after move
         }
@@ -744,7 +744,7 @@ fn fd4_missing_field_errors() {
             public port: i32 = 8080
         }
         func main() {
-            let c = Config {}
+            let c = Config()
             println(c.host)
         }
     "#);
@@ -769,8 +769,8 @@ fn fd4_defaults_and_spread_satisfy_construction() {
             public port: i32 = 8080
         }
         func main() {
-            let a = Config { host: "x" }
-            let b = Config { port: 1, ..a }
+            let a = Config(host: "x")
+            let b = Config(port: 1, ..a)
             println("{a.port} {b.host}")
         }
     "#);
@@ -823,7 +823,7 @@ fn dt1_package_internal_duck_interface_is_fine() {
             }
         }
         func main() {
-            let w = Widget { id: 7 }
+            let w = Widget(id: 7)
             println("{w.frobnicate()}")
         }
     "#);
@@ -850,7 +850,7 @@ fn dt1_public_nominal_interface_is_fine() {
             }
         }
         func main() {
-            let w = Widget { id: 7 }
+            let w = Widget(id: 7)
             println("{w.frobnicate()}")
         }
     "#);

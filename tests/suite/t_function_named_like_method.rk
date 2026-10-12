@@ -45,12 +45,12 @@ test "a different arity doesn't confuse the call either" {
 }
 
 test "a program type's method and a same-spelled function" {
-    let c = Counter { n: 1 }
+    let c = Counter(n: 1)
     assert c.bump() == 2
     assert Counter_bump(c) == -1
 }
 
 test "the function can be passed around by name" {
     let f = Counter_bump
-    assert f(Counter { n: 5 }) == -1
+    assert f(Counter(n: 5)) == -1
 }

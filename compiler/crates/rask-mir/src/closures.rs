@@ -282,7 +282,7 @@ fn retain_borrowed_closures_handed_on(
                 // Captured by value into a closure that outlives this frame.
                 // Its environment is a keeper like any other: the closure it
                 // copied is still the owner's, and the owner frees it when it
-                // likes — a `Plan { run: … }` the caller built for the call and
+                // likes — a `Plan(run: …)` the caller built for the call and
                 // dropped after, while the new closure still had `p.run` in its
                 // environment. The environment takes a reference of its own
                 // here and gives it back when it is freed (`env_drop_glue`

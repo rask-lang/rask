@@ -34,7 +34,7 @@ func bump_scalar(mutate n: i64) {
 }
 
 func main() {
-    mut player = Player { health: 100 }
+    mut player = Player(health: 100)
 
     // ERROR: `apply_damage` mutates `player` — mark it at the call site
     apply_damage(player, 10)
@@ -45,7 +45,7 @@ func main() {
     bump_scalar(count)
 
     // A field path is a legal `mutate` argument and takes the marker too.
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     // ERROR: `bump_scalar` mutates `c.n` — mark it at the call site
     bump_scalar(c.n)
 

@@ -87,12 +87,12 @@ test "a box payload, released with the block" {
 // The carrier cases. A field is the one the flag could never answer: reading
 // `h.inner` gives a value, and a value carries no flag.
 test "through a struct field, aggregate payload" {
-    let h = Holder { inner: Heap(Pt { x: 42 }) }
+    let h = Holder(inner: Heap(Pt(x: 42)))
     assert (*h.inner).x == 42
 }
 
 test "through a struct field, scalar payload" {
-    let s = Scalars { inner: Heap(42) }
+    let s = Scalars(inner: Heap(42))
     assert *s.inner == 42
 }
 
@@ -102,7 +102,7 @@ test "through a struct field, scalar payload" {
 test "the block a field holds is freed with the struct" {
     mut i = 0
     while i < 3 {
-        let h = Holder { inner: Heap(Pt { x: 42 }) }
+        let h = Holder(inner: Heap(Pt(x: 42)))
         assert (*h.inner).x == 42
         i = i + 1
     }
@@ -116,7 +116,7 @@ test "the block a field holds is freed with the struct" {
 test "a tuple owns the blocks it holds" {
     mut i = 0
     while i < 3 {
-        let tup: (Heap<Pt>, Heap<i64>) = (Heap(Pt { x: 7 }), Heap(42))
+        let tup: (Heap<Pt>, Heap<i64>) = (Heap(Pt(x: 7)), Heap(42))
         assert (*tup.0).x == 7
         assert *tup.1 == 42
         i = i + 1

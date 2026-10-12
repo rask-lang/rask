@@ -16,11 +16,11 @@ struct DbConfig {
 
 extend DbConfig {
     func default_for(dir: string) -> DbConfig {
-        return DbConfig {
+        return DbConfig(
             dir,
             wal_path: "{dir}/wal.log",
             flush_threshold: MEMTABLE_FLUSH_THRESHOLD,
-        }
+        )
     }
 }
 
@@ -79,7 +79,7 @@ extend Db {
             }
         }
 
-        return Db {
+        return Db(
             config,
             memtable,
             wal,
@@ -87,8 +87,8 @@ extend Db {
             cache: BlockCache.new(),
             next_sst_id,
             next_seq: max_seq + 1,
-            lookup: DefaultLookup {},
-        }
+            lookup: DefaultLookup(),
+        )
     }
 
     func put(mutate self, key: string, value: string) -> void or DbError {
@@ -276,7 +276,7 @@ extend Db {
             total_sst += level.len()
         }
 
-        return DbStats {
+        return DbStats(
             memtable_entries: self.memtable.entries.len().wrap<i32>(),
             memtable_bytes: self.memtable.size_bytes,
             sst_count: total_sst.wrap<i32>(),
@@ -284,7 +284,7 @@ extend Db {
             cache_entries: self.cache.count().wrap<i32>(),
             cache_accesses: self.cache.access_counter,
             next_seq: self.next_seq,
-        }
+        )
     }
 
     func compact_all(mutate self) -> void or DbError {

@@ -42,7 +42,7 @@ func ship<T: Encode>(v: T) -> i64 {
 }
 
 func main() {
-    let s = Secret { token: "hunter2" }
+    let s = Secret(token: "hunter2")
     // ERROR: `Secret` is marked `@no_encode` (E0408)
     println(json.encode(s))
 
@@ -52,7 +52,7 @@ func main() {
     // ERROR: the decode direction (E0408)
     let w = json.decode<OneWay>("{}")
 
-    let sess = Session { id: 1, act: |x| x + 1 }
+    let sess = Session(id: 1, act: |x| x + 1)
     // ERROR: a field with no wire representation is E0388, not E0408
     println(json.encode(sess))
     return

@@ -56,7 +56,7 @@ func err_int(code: i64) -> i64 or Fault {
 }
 
 func ok_pt() -> Pt or Fault {
-    return Pt { x: 1, y: 2.5 }
+    return Pt(x: 1, y: 2.5)
 }
 
 func err_pt() -> Pt or Fault {
@@ -95,7 +95,7 @@ test "G6 — an optional" {
     assert "{i:debug}" == "Option.Some(5)"
     let b: bool? = false
     assert "{b:debug}" == "Option.Some(false)"
-    let p: Pt? = Pt { x: 1, y: 2.5 }
+    let p: Pt? = Pt(x: 1, y: 2.5)
     assert "{p:debug}" == "Option.Some(Pt {{ x: 1, y: 2.5 }})"
     let pn: Pt? = none
     assert "{pn:debug}" == "Option.None"
@@ -133,9 +133,9 @@ test "G6 — wrappers nest" {
 }
 
 test "G6 — a wrapper inside a struct, a tuple, a Vec" {
-    let h = Holder { tag: "t", maybe: 3, res: ok_int(4) }
+    let h = Holder(tag: "t", maybe: 3, res: ok_int(4))
     assert "{h:debug}" == "Holder {{ tag: \"t\", maybe: Option.Some(3), res: Result.Ok(4) }}"
-    let h2 = Holder { tag: "u", maybe: none, res: err_int(1) }
+    let h2 = Holder(tag: "u", maybe: none, res: err_int(1))
     assert "{h2:debug}" == "Holder {{ tag: \"u\", maybe: Option.None, res: Result.Err(Fault.Worse(1)) }}"
     let o: f64? = 2.5
     let t = (1, o)
@@ -158,8 +158,8 @@ test "G6 — a wrapper inside a struct, a tuple, a Vec" {
 
 test "G6 — a link renders as its node" {
     mut r = Rack<Node>.new()
-    let first = r.insert(Node { v: 1, next: none })
-    let second = r.insert(Node { v: 2, next: first })
+    let first = r.insert(Node(v: 1, next: none))
+    let second = r.insert(Node(v: 2, next: first))
     assert "{first:debug}" == "Node {{ v: 1, next: Option.None }}"
     assert "{second:debug}" == "Node {{ v: 2, next: Option.Some(Node {{ v: 1, next: Option.None }}) }}"
     assert "{first.next:debug}" == "Option.None"
@@ -179,7 +179,7 @@ test "a container whose type was inferred from its literal" {
     assert "{vc:debug}" == "['a', 'b']"
     let vv = Vec.from([Vec.from([1.0]), Vec.from([2.0])])
     assert "{vv:debug}" == "[[1], [2]]"
-    let vp = Vec.from([Pt { x: 1, y: 2.5 }])
+    let vp = Vec.from([Pt(x: 1, y: 2.5)])
     assert "{vp:debug}" == "[Pt {{ x: 1, y: 2.5 }}]"
     let m = Map.from([("k", 1.5)])
     assert "{m:debug}" == "Map {{ \"k\": 1.5 }}"

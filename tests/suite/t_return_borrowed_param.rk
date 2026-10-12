@@ -26,14 +26,14 @@ func same(n: i64) -> i64 {
 }
 
 test "a `take` parameter hands the value on" {
-    let b = Bag { items: ["x"] }
+    let b = Bag(items: ["x"])
     mut c = give_back(b)
     c.items.push("y")
     assert c.items.len() == 2
 }
 
 test "a clone leaves the caller's value alone" {
-    let b = Bag { items: ["x"] }
+    let b = Bag(items: ["x"])
     mut c = copy_of(b)
     c.items.push("y")
     assert c.items.len() == 2

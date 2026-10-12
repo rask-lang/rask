@@ -37,7 +37,7 @@ struct Duration {
 
 extend Duration {
     func doubled(self) -> Duration {
-        return Duration { ticks: self.ticks * 2 }
+        return Duration(ticks: self.ticks * 2)
     }
 }
 
@@ -63,8 +63,8 @@ func fails(s: string) -> i64 or ParseError {
 
 test "the program's method runs on the program's type" {
     assert ParseError.Mine.message() == "mine"
-    assert ParseError.Carried(Point { x: 1, y: 2 }).message() == "payload 1,2"
-    assert describe(ParseError.Carried(Point { x: 7, y: 0 })) == "carried 7"
+    assert ParseError.Carried(p: Point(x: 1, y: 2)).message() == "payload 1,2"
+    assert describe(ParseError.Carried(p: Point(x: 7, y: 0))) == "carried 7"
 }
 
 test "the stdlib's method runs on the stdlib's type" {
@@ -79,12 +79,12 @@ test "the stdlib's method runs on the stdlib's type" {
 
 test "a printed value says the name the program wrote" {
     assert "{ParseError.Mine:debug}" == "ParseError.Mine"
-    let d = Duration { ticks: 3 }
+    let d = Duration(ticks: 3)
     assert "{d:debug}" == "Duration {{ ticks: 3 }}"
 }
 
 test "a shadowing struct keeps its own methods" {
-    let d = Duration { ticks: 21 }.doubled()
+    let d = Duration(ticks: 21).doubled()
     assert d.ticks == 42
 }
 

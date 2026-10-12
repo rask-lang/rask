@@ -36,7 +36,7 @@ test "take and skip share nothing with the source" {
 }
 
 test "a Copy struct holding a string" {
-    let tags: Vec<Tag> = [Tag { name: heap("tag", 1) }, Tag { name: "x" }]
+    let tags: Vec<Tag> = [Tag(name: heap("tag", 1)), Tag(name: "x")]
     let long_tags = tags.filter(|t| t.name.len() > 3).to_vec()
     let some_tags = tags.skip(1).to_vec()
     assert long_tags.len() == 1

@@ -25,7 +25,7 @@ struct Nest {
 }
 
 func make_pair() -> Pair {
-    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+    return Pair(a: Conn(id: 1), b: Conn(id: 2))
 }
 
 func one_of_two() -> i32 {
@@ -34,7 +34,7 @@ func one_of_two() -> i32 {
 }
 
 func nested() -> i32 {
-    let n = Nest { inner: make_pair(), tag: 7 }
+    let n = Nest(inner: make_pair(), tag: 7)
     return n.inner.a.close()    // ERROR: E0805 — `n.inner.b` still owed
 }
 

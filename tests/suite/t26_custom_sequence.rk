@@ -211,7 +211,7 @@ test "type.sequence/SEQ6 — a method that returns a sequence is iterable" {
     v.push(1)
     v.push(2)
     v.push(3)
-    let bag = Bag { items: v }
+    let bag = Bag(items: v)
     mut sum = 0
     for x in bag.iter() {
         sum = sum + x
@@ -224,7 +224,7 @@ test "type.sequence/SEQ7 — break works through a method-returned sequence" {
     v.push(1)
     v.push(2)
     v.push(3)
-    let bag = Bag { items: v }
+    let bag = Bag(items: v)
     mut seen = 0
     for x in bag.iter() {
         seen = seen + 1

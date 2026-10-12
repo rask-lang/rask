@@ -138,7 +138,7 @@ test "type.optionals — a float survives two layers through an argument" {
 }
 
 test "type.optionals — a float survives two layers in a struct field" {
-    let holder = FloatBox { slot: 2.5 }
+    let holder = FloatBox(slot: 2.5)
     if holder.slot? as inner {
         if inner? as got {
             assert got == 2.5
@@ -171,7 +171,7 @@ test "type.optionals — a string survives two layers through an argument" {
 }
 
 test "type.optionals — a string survives two layers in a struct field" {
-    let holder = TextBox { slot: "hi" }
+    let holder = TextBox(slot: "hi")
     if holder.slot? as inner {
         if inner? as got {
             assert got == "hi"
@@ -223,22 +223,22 @@ test "type.errors — the error side of `T? or E` is still reachable" {
 // nothing about the rule, so every argument cell above has a method twin.
 
 test "type.optionals — a method argument widens one layer" {
-    let sink = Sink { seen: 0 }
+    let sink = Sink(seen: 0)
     assert sink.one_layer(2) == 2
 }
 
 test "type.optionals — a float survives two layers through a method argument" {
-    let sink = Sink { seen: 0 }
+    let sink = Sink(seen: 0)
     assert sink.float_d2(2.5) == 2.5
 }
 
 test "type.optionals — a string survives two layers through a method argument" {
-    let sink = Sink { seen: 0 }
+    let sink = Sink(seen: 0)
     assert sink.string_d2("hi") == "hi"
 }
 
 test "type.optionals — a method argument that is already wrapped is left alone" {
-    let sink = Sink { seen: 0 }
+    let sink = Sink(seen: 0)
     let inner: f32? = 2.5
     assert sink.float_d2(inner) == 2.5
     assert sink.one_layer(none) == -1

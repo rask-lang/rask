@@ -41,14 +41,14 @@ func main() {
     let c: i64 = m["a"] ?? -1
 
     // ERROR: `??` on a struct field that isn't optional
-    let w = Widget { tag: 3 }
+    let w = Widget(tag: 3)
     let d: i64 = w.tag ?? -1
 
     // ERROR: `!` on a plain value
     let e: i64 = n!
 
     // ERROR: `take` on a place that isn't a `T?`
-    mut slot = Slot { held: 3 }
+    mut slot = Slot(held: 3)
     let f: i64 = take slot.held
 
     // THE FIX, and the shapes that stay legal.

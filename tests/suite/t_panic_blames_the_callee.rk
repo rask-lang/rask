@@ -49,9 +49,9 @@ extend Holder {
 }
 
 test "an error caught inside a method stays caught" {
-    let bad = Holder { n: -1 }
+    let bad = Holder(n: -1)
     assert bad.safe() == 0
-    let good = Holder { n: 7 }
+    let good = Holder(n: 7)
     assert good.safe() == 7
 }
 

@@ -16,13 +16,13 @@ struct Meters {
 
 Meters implements Mul<Meters> {
     func mul(self, o: Meters) -> Meters {
-        return Meters { v: self.v * o.v }
+        return Meters(v: self.v * o.v)
     }
 }
 
 Meters implements Mul<f64> {
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -47,20 +47,20 @@ extend Squarer {
 }
 
 test "the parameter itself" {
-    assert squared(Meters { v: 3.0 }).v == 9.0
+    assert squared(Meters(v: 3.0)).v == 9.0
     assert squared(7) == 49
 }
 
 test "a sibling parameter" {
-    assert scaled(Meters { v: 2.0 }, 4.0).v == 8.0
-    assert scaled(Meters { v: 2.0 }, Meters { v: 5.0 }).v == 10.0
+    assert scaled(Meters(v: 2.0), 4.0).v == 8.0
+    assert scaled(Meters(v: 2.0), Meters(v: 5.0)).v == 10.0
 }
 
 test "a method's own parameter" {
-    let s = Squarer { times: 1 }
-    assert s.apply(Meters { v: 1.5 }).v == 2.25
+    let s = Squarer(times: 1)
+    assert s.apply(Meters(v: 1.5)).v == 2.25
 }
 
 func main() {
-    println("{squared(Meters { v: 3.0 }).v}")
+    println("{squared(Meters(v: 3.0)).v}")
 }

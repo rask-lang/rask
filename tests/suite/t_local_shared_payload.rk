@@ -50,7 +50,7 @@ test "the block is an expression" {
 }
 
 test "a struct payload reads and writes through the binding" {
-    let s = Shared.local(State { count: 1, mode: 0 })
+    let s = Shared.local(State(count: 1, mode: 0))
     with s.write() as st {
         st.count = st.count + 10
         st.mode = 3
@@ -62,10 +62,10 @@ test "a struct payload reads and writes through the binding" {
 }
 
 test "Shared<T, S> works in type position" {
-    let app = App {
+    let app = App(
         hits: Shared.local(0),
-        state: Shared.local(State { count: 7, mode: 1 }),
-    }
+        state: Shared.local(State(count: 7, mode: 1)),
+    )
     with app.hits.write() as h {
         h = h + 1
     }

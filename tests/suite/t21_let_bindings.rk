@@ -97,9 +97,9 @@ struct Counter {
 }
 
 test "mut struct reassignment" {
-    mut c = Counter { value: 0 }
+    mut c = Counter(value: 0)
     assert c.value == 0
-    c = Counter { value: 10 }
+    c = Counter(value: 10)
     assert c.value == 10
 }
 

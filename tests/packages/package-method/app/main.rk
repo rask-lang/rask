@@ -7,7 +7,7 @@ import libpkg
 import libpkg.Counter
 
 func main() {
-    let c = Counter { n: 4 }
+    let c = Counter(n: 4)
     println("{c.doubled()}")
     println("{c.raw()}")
     return

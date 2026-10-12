@@ -14,7 +14,7 @@ struct TextBuffer {
 
 extend TextBuffer {
     func new() -> TextBuffer {
-        return TextBuffer { lines: Vec.new() }
+        return TextBuffer(lines: Vec.new())
     }
 
     func add(self, text: string) {
@@ -51,7 +51,7 @@ test "string Copy — multiple bindings same source" {
 struct Named { name: string }
 
 test "string Copy — assign from struct field" {
-    let obj = Named { name: "Alice" }
+    let obj = Named(name: "Alice")
     let n1 = obj.name
     let n2 = obj.name
     assert n1 == "Alice"
@@ -145,25 +145,25 @@ func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
 }
 
 test "catch with method call — success" {
-    mut v = Validator { threshold: 5 }
+    mut v = Validator(threshold: 5)
     let result = use_validator(v, 10)
     assert result is i32
 }
 
 test "catch with method call — error transforms" {
-    mut v = Validator { threshold: 5 }
+    mut v = Validator(threshold: 5)
     let result = use_validator(v, 3)
     assert result is OuterError
 }
 
 test "try-else multiline with method call — success" {
-    mut v = Validator { threshold: 5 }
+    mut v = Validator(threshold: 5)
     let result = use_validator_multiline(v, 10)
     assert result is i32
 }
 
 test "try-else multiline with method call — error transforms" {
-    mut v = Validator { threshold: 5 }
+    mut v = Validator(threshold: 5)
     let result = use_validator_multiline(v, 3)
     assert result is OuterError
 }
@@ -219,14 +219,14 @@ func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
 }
 
 test "try-else with interface object — success" {
-    let p = StrictParser {}
+    let p = StrictParser()
     let result = process_with_parser(p, "42")
     assert result is i32
     assert result! == 84
 }
 
 test "try-else with interface object — error transforms" {
-    let p = StrictParser {}
+    let p = StrictParser()
     let result = process_with_parser(p, "bad")
     assert result is ProcessError
 }
@@ -276,7 +276,7 @@ struct Entity {
 
 test "Rack — string fields Copy correctly" {
     mut rack = Rack.new()
-    let e = rack.insert(Entity { name: "Hero", health: 100 })
+    let e = rack.insert(Entity(name: "Hero", health: 100))
     // Read string field — should be Copy, not move
     let name1 = e.name
     let name2 = e.name
@@ -287,7 +287,7 @@ test "Rack — string fields Copy correctly" {
 
 test "Rack — modify non-string field after reading string" {
     mut rack = Rack.new()
-    let e = rack.insert(Entity { name: "Hero", health: 100 })
+    let e = rack.insert(Entity(name: "Hero", health: 100))
     let name = e.name
     e.health = 50
     assert name == "Hero"
@@ -324,7 +324,7 @@ test "Vec.get — guard pattern" {
 // ─── try-else error value verification ──────────────────────────
 
 test "try-else — error value is correctly transformed" {
-    mut v = Validator { threshold: 10 }
+    mut v = Validator(threshold: 10)
     let result = use_validator(v, 3)
     match result {
         OuterError.Wrapped(InnerError.BadInput(msg)) => assert msg == "below threshold"

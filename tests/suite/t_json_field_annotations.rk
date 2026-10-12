@@ -129,7 +129,7 @@ Marker implements Opaque {
 
 struct HasOpaque {
     @no_serialize
-    public probe: any Opaque = Marker { v: 0 } as any Opaque
+    public probe: any Opaque = Marker(v: 0) as any Opaque
 
     public n: i64
 }

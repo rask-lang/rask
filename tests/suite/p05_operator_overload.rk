@@ -6,16 +6,16 @@ func main() {}
 
 struct Vec2 { x: i32, y: i32 }
 Vec2 implements Add {
-    func add(self, o: Vec2) -> Vec2 { return Vec2 { x: self.x + o.x, y: self.y + o.y } }
+    func add(self, o: Vec2) -> Vec2 { return Vec2(x: self.x + o.x, y: self.y + o.y) }
 }
 
 Vec2 implements Mul {
-    func mul(self, o: Vec2) -> Vec2 { return Vec2 { x: self.x * o.x, y: self.y * o.y } }
+    func mul(self, o: Vec2) -> Vec2 { return Vec2(x: self.x * o.x, y: self.y * o.y) }
 }
 
 test "type.operators — user + and * on a struct" {
-    let a = Vec2 { x: 1, y: 2 }
-    let b = Vec2 { x: 3, y: 4 }
+    let a = Vec2(x: 1, y: 2)
+    let b = Vec2(x: 3, y: 4)
     let s = a + b
     assert s.x == 4
     assert s.y == 6
@@ -25,9 +25,9 @@ test "type.operators — user + and * on a struct" {
 }
 
 test "type.operators/EQ2 — derived struct equality by fields" {
-    let a = Vec2 { x: 1, y: 2 }
-    let b = Vec2 { x: 1, y: 2 }
-    let c = Vec2 { x: 9, y: 9 }
+    let a = Vec2(x: 1, y: 2)
+    let b = Vec2(x: 1, y: 2)
+    let c = Vec2(x: 9, y: 9)
     assert a == b
     assert (a == c) == false
 }

@@ -31,42 +31,42 @@ struct Big {
 }
 
 test "a word-sized payload through a type argument" {
-    let h = Holder<i64?> { v: 5 }
+    let h = Holder<i64?>(v: 5)
     assert h.v! == 5
 }
 
 test "a bool payload" {
-    let h = Holder<bool?> { v: true }
+    let h = Holder<bool?>(v: true)
     assert h.v!
 }
 
 test "a string payload — sixteen bytes, not a word" {
-    let h = Holder<string?> { v: "hi" }
+    let h = Holder<string?>(v: "hi")
     assert h.v! == "hi"
 }
 
 test "a container payload is a pointer, not nothing" {
     let items: Vec<i64> = [1, 2]
-    let h = Holder<Vec<i64>?> { v: items }
+    let h = Holder<Vec<i64>?>(v: items)
     assert h.v!.len() == 2
 }
 
 test "a map payload" {
     mut m: Map<string, i64> = Map.new()
     m.insert("k", 1)
-    let h = Holder<Map<string, i64>?> { v: m }
+    let h = Holder<Map<string, i64>?>(v: m)
     assert h.v!["k"] == 1
 }
 
 test "an aggregate payload bigger than a word" {
     // This one took the binary down rather than answering wrongly: the store
     // ran past the shared layout's one-word slot.
-    let h = Holder<Big?> { v: Big { a: 1, b: 2, c: 3 } }
+    let h = Holder<Big?>(v: Big(a: 1, b: 2, c: 3))
     assert h.v!.a == 1
     assert h.v!.c == 3
 }
 
 test "the absent case still reads as absent" {
-    let h = Holder<Vec<i64>?> { v: none }
+    let h = Holder<Vec<i64>?>(v: none)
     assert h.v is none
 }

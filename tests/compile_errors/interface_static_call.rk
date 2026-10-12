@@ -18,7 +18,7 @@ Doc implements Labeled {
 }
 
 func main() {
-    let d = Doc { n: 1 }
+    let d = Doc(n: 1)
     // ERROR: `Labeled` is an interface, and an interface has no static methods (E0897)
     println(Labeled.label(d))
 }

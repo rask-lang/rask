@@ -1251,6 +1251,18 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("single uppercase letters in signatures always mean type parameters — a concrete type with that name would be unusable [type.gradual/PC3]")
             }
 
+            LowercaseTypeName { name, kind, span } => {
+                let mut fixed = name.clone();
+                if let Some(first) = fixed.get(0..1) {
+                    fixed.replace_range(0..1, &first.to_ascii_uppercase());
+                }
+                Diagnostic::error(format!("type name `{}` starts with a lowercase letter", name))
+                    .with_code("E0417")
+                    .with_primary(*span, format!("{} named in lowercase", kind))
+                    .with_fix(format!("rename it `{}`", fixed))
+                    .with_why("a type's name starts with a capital, so `Name(…)` reads as building a value and `name(…)` as calling a function, without looking anything up [type.structs/S1a]")
+            }
+
             TryInNonPropagatingContext { return_ty, span } => {
                 Diagnostic::error(format!(
                     "`try` requires function returning Result or Option, found `{}`",
@@ -2775,19 +2787,19 @@ impl ToDiagnostic for rask_types::TypeError {
                 let fix = if is_enum {
                     format!("name a variant: `{}.Variant`", name)
                 } else if fields.is_empty() {
-                    format!("write the literal: `{} {{}}`", name)
+                    format!("build it with no fields: `{}()`", name)
                 } else {
                     let list: Vec<String> = fields.iter()
                         .map(|f| format!("{}: …", f))
                         .collect();
-                    format!("write the literal: `{} {{ {} }}`", name, list.join(", "))
+                    format!("name the fields: `{}({})`", name, list.join(", "))
                 };
                 let why = if is_enum {
                     "an enum value is one of its variants — there's no whole-enum constructor. \
                      `Name(value)` builds a nominal type declared with `type Name = …` (T7)"
                 } else {
-                    "`Name(value)` builds a nominal type declared with `type Name = …` (T7). \
-                     Structs are built field by field — there are no tuple structs (S1)"
+                    "a struct is built by naming its fields, `Name(field: value)`; only a nominal \
+                     type declared with `type Name = …` takes one value by position (T7, S1)"
                 };
                 Diagnostic::error(format!("`{}` is {}, so calling it doesn't construct one", name, kind))
                     .with_code("E0345")
@@ -2948,7 +2960,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("`@tag(\"{}\")` needs a named payload, and `{}.{}` has an unnamed one", tag, enum_name, variant))
                     .with_code("E0841")
                     .with_primary(*span, format!("`{}` carries one unnamed value", variant))
-                    .with_fix(format!("{} {{ value: … }}   // name the field, and the tag sits beside it", variant))
+                    .with_fix(format!("{}(value: …)   // name the field, and the tag sits beside it", variant))
                     .with_why(format!("internal tagging writes the tag as a field inside the payload's own object, so the payload needs field names for `{}` to sit beside. An unnamed value has no key to pair it with, and the compiler will not invent one. Dropping `@tag` also works: external tagging (std.encoding/E23) puts an unnamed payload directly under the variant name [std.encoding/E24]", tag))
             }
             TagCollidesWithField { enum_name, variant, tag, span } => {

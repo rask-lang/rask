@@ -89,7 +89,7 @@ A header's struct is named and built under its namespace:
 import c "mylib.h"          // typedef struct { int width; int height; } Rect;
 
 func main() {
-    let r = c.Rect { width: 6, height: 7 }
+    let r = c.Rect(width: 6, height: 7)
     println("{r.width}")
     unsafe {
         println("{c.mylib_area(r)}")     // by value, in registers
@@ -230,7 +230,7 @@ public func open(path: string) -> Database or Error {
             return Error.new("sqlite open failed")
         }
     }
-    return Database { handle: db }
+    return Database(handle: db)
 }
 ```
 

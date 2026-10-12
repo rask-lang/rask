@@ -14,7 +14,7 @@ Tagged unions with positional or named payloads. Compiler infers binding modes. 
 ```rask
 enum Name { A, B }                    // Simple tag-only
 enum Name { A(T), B(U, V) }           // Positional payloads
-enum Name { A { x: T, y: U } }       // Named payloads
+enum Name { A(x: T, y: U) }       // Named payloads
 enum Maybe<T> { Present(T), Missing } // Generic enum
 enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 ```
@@ -30,7 +30,7 @@ enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 | Rule | Description |
 |------|-------------|
 | **E12: Positional variants** | `Variant(T)` or `Variant(T, U)` — fields accessed by position in patterns |
-| **E13: Named variants** | `Variant { name: T }` — fields accessed by name in patterns, and bound by name in the variant's `@message` (`type.errors/ER36`) |
+| **E13: Named variants** | `Variant(name: T)` — built and matched by name, like a struct (`type.structs/S1b`), and bound by name in the variant's `@message` (`type.errors/ER36`) |
 | **E14: No mixing** | A single variant is either positional or named, not both |
 
 <!-- test: parse -->
@@ -45,14 +45,14 @@ enum Token {
 
 // Named: when fields have distinct roles
 enum Shape {
-    Circle { center: Point, radius: f32 },
-    Rect { origin: Point, width: f32, height: f32 },
+    Circle(center: Point, radius: f32),
+    Rect(origin: Point, width: f32, height: f32),
 }
 
 // Mix within one enum is fine — each variant chooses independently
 enum Event {
     Click(Point),                         // positional: one obvious payload
-    Resize { width: i32, height: i32 },   // named: two fields with distinct roles
+    Resize(width: i32, height: i32),   // named: two fields with distinct roles
     Quit,                                  // no payload
 }
 ```
@@ -74,7 +74,7 @@ match shape {
 
 match event {
     Click(pos) => handle_click(pos),
-    Resize { width, height } => resize(width, height),
+    Resize(width, height) => resize(width, height),
     Quit => break,
 }
 ```
@@ -409,7 +409,7 @@ for color in Color.variants() {
 Enums with payloads cannot use `.variants()` — there's no way to construct values without data:
 
 ```rask
-enum Shape { Circle(f64), Rect { w: f64, h: f64 } }
+enum Shape { Circle(f64), Rect(w: f64, h: f64) }
 Shape.variants()  // ❌ Compile error: variants() requires fieldless enum
 ```
 

@@ -23,10 +23,10 @@ struct Cursor {
 func main() {
     using Multitasking {
         mut r: Rack<Node> = Rack.new()
-        let a = r.insert(Node { id: 1 })
+        let a = r.insert(Node(id: 1))
         let maybe: Link<Node>? = a
         let links = Vec.from([a])
-        let cur = Cursor { at: a, steps: 0 }
+        let cur = Cursor(at: a, steps: 0)
         let (tx, rx) = Channel<Link<Node>>.buffered(1)
 
         let h = spawn {

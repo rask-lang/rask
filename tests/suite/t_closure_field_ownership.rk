@@ -45,8 +45,8 @@ func set_run(mutate o: Outer, f: func() -> Vec<i64>) {
 }
 
 test "one struct's shared vector doesn't stop another's from being freed" {
-    let l = Lookup { get: || { return shared() } }
-    let p = Plan { run: || { return fresh() } }
+    let l = Lookup(get: || { return shared() })
+    let p = Plan(run: || { return fresh() })
     let get = l.get
     let run = p.run
     let a = get()
@@ -57,7 +57,7 @@ test "one struct's shared vector doesn't stop another's from being freed" {
 }
 
 test "a closure written through a nested field counts for that field" {
-    mut o = Outer { k: 1, inner: Inner { n: 2, run: || { return fresh() } } }
+    mut o = Outer(k: 1, inner: Inner(n: 2, run: || { return fresh() }))
     set_run(mutate o, || { return shared() })
     let r = o.inner.run
     let v = r()
@@ -75,7 +75,7 @@ test "a closure written through a nested field counts for that field" {
 // vector into `Plan.run` would rightly stop the first test's result from being
 // freed.
 test "overwriting a field's closure releases the old one once" {
-    mut l = Lookup { get: || { return fresh() } }
+    mut l = Lookup(get: || { return fresh() })
     l.get = || { return shared() }
     let get = l.get
     assert get()[0] == 7

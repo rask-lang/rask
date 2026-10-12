@@ -50,6 +50,6 @@ func sort_floats() {
     v.push(2.5)
     v.sort()
     mut r: Vec<Reading> = Vec.new()
-    r.push(Reading { value: 1.0 })
+    r.push(Reading(value: 1.0))
     r.sort()
 }

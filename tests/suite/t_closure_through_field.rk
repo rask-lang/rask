@@ -18,7 +18,7 @@ struct Named {
 
 func make_holder() -> Holder {
     let tags: Vec<i64> = [1, 2, 3]
-    return Holder { f: |x| x + tags.len().wrap<i64>() }
+    return Holder(f: |x| x + tags.len().wrap<i64>())
 }
 
 func call_it(f: func(i64) -> i64, x: i64) -> i64 {
@@ -27,7 +27,7 @@ func call_it(f: func(i64) -> i64, x: i64) -> i64 {
 
 test "a closure carrying a Vec, read back out of a field" {
     let tags: Vec<i64> = [1, 2, 3]
-    let h = Holder { f: |x| x + tags.len().wrap<i64>() }
+    let h = Holder(f: |x| x + tags.len().wrap<i64>())
     let g = h.f
     assert g(1) == 4
     assert g(10) == 13
@@ -35,7 +35,7 @@ test "a closure carrying a Vec, read back out of a field" {
 
 test "the field's closure, called through a parameter" {
     let tags: Vec<i64> = [1, 2]
-    let h = Holder { f: |x| x * tags.len().wrap<i64>() }
+    let h = Holder(f: |x| x * tags.len().wrap<i64>())
     let g = h.f
     assert call_it(g, 5) == 10
 }
@@ -48,7 +48,7 @@ test "a struct handed back by a function, its closure read out" {
 
 test "a closure carrying a string, beside a string field" {
     let suffix = "abcd"
-    let h = Named { name: "n", f: |x| x + suffix.len().wrap<i64>() }
+    let h = Named(name: "n", f: |x| x + suffix.len().wrap<i64>())
     let g = h.f
     assert g(1) == 5
     assert h.name == "n"

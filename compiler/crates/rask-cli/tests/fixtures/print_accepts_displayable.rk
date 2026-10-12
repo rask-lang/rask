@@ -40,9 +40,9 @@ func main() {
     print("\n")
 
     // A declared conformance, and the error bridge
-    print(Point { x: 1, y: 2 })
+    print(Point(x: 1, y: 2))
     print("\n")
-    let f = ParseFailed { detail: "loose wire" }
+    let f = ParseFailed(detail: "loose wire")
     print(f)
     print("\n")
 
@@ -56,7 +56,7 @@ func main() {
 
     // A type with no rendering at all is still constructible and readable —
     // only handing it to the renderer is the error.
-    let b = Bare { n: 3 }
+    let b = Bare(n: 3)
     print(b.n)
     print("\n")
 

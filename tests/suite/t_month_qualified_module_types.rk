@@ -57,7 +57,7 @@ test "a module import reaches its types through the module" {
 }
 
 test "the qualified name works in a field and a return type" {
-    let s = Slot9 { window: time.Duration.millis(40), how: Method.Store }
+    let s = Slot9(window: time.Duration.millis(40), how: Method.Store)
     assert window_of(s).as_millis() == 40
 }
 
@@ -78,20 +78,20 @@ test "the qualified type survives a generic" {
 }
 
 test "a qualified field gets the real layout, not a pointer's" {
-    let f = Frame9 {
+    let f = Frame9(
         result: http.Response.new(207, "body-here"),
         sentinel: 424242,
-    }
+    )
     assert f.result.status == 207
     assert f.result.body == "body-here"
     assert f.sentinel == 424242
 }
 
 test "an aliased module import gets the real layout too" {
-    let f = Frame10 {
+    let f = Frame10(
         result: h.Response.new(409, "conflict"),
         sentinel: 191919,
-    }
+    )
     assert f.result.status == 409
     assert f.result.body == "conflict"
     assert f.sentinel == 191919

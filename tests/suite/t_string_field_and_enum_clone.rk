@@ -22,28 +22,28 @@ func describe(c: Cmd) -> string {
 }
 
 test "a string literal assigned to a struct field" {
-    mut s = Line { text: "orig" }
+    mut s = Line(text: "orig")
     s.text = "replaced"
     assert s.text == "replaced"
 }
 
 test "a string literal assigned through a Vec element" {
     mut v: Vec<Line> = Vec.new()
-    v.push(Line { text: "orig" })
+    v.push(Line(text: "orig"))
     v[0].text = "replaced"
     assert v[0].text == "replaced"
 }
 
 test "a string literal assigned through a link" {
     mut r: Rack<Line> = Rack.new()
-    let line = r.insert(Line { text: "orig" })
+    let line = r.insert(Line(text: "orig"))
     line.text = "replaced"
     assert line.text == "replaced"
 }
 
 test "reading a field before overwriting it keeps the old value" {
     mut r: Rack<Line> = Rack.new()
-    let line = r.insert(Line { text: "before" })
+    let line = r.insert(Line(text: "before"))
     let old = line.text
     line.text = "after"
     assert old == "before"

@@ -73,7 +73,7 @@ test "mem.ownership — a string binding, which is Copy by std.strings/S1" {
 // A small struct: Copy by the 16-byte threshold, so pushing one leaves the
 // binding readable.
 test "mem.ownership — a Copy struct binding" {
-    let pts: Vec<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    let pts: Vec<Point> = [Point(x: 1, y: 2), Point(x: 3, y: 4)]
     mut out: Vec<Point> = []
     mut sum = 0
     for p in pts {
@@ -88,7 +88,7 @@ test "mem.ownership — a Copy struct binding" {
 // The other direction, so the fix didn't make everything Copy: 24 bytes needs
 // an explicit clone, and this is what that reads like.
 test "mem.ownership — a wide struct still needs the clone" {
-    let ws: Vec<Wide> = [Wide { a: 1, b: 2, c: 3 }]
+    let ws: Vec<Wide> = [Wide(a: 1, b: 2, c: 3)]
     mut out: Vec<Wide> = []
     for w in ws {
         out.push(w.clone())

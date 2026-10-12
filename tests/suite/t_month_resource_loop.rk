@@ -29,7 +29,7 @@ struct Handle {
 
 extend Handle {
     func open(id: i32) -> Handle {
-        return Handle { id }
+        return Handle(id)
     }
 
     func close(take self) -> i32 {
@@ -86,7 +86,7 @@ test "mem.resource — mut in the loop is the second control" {
 test "mem.resource — a non-resource struct is the third control" {
     mut total = 0
     for i in 1..4 {
-        let p = Plain { id: i }
+        let p = Plain(id: i)
         total = total + p.close()
     }
     assert total == 6

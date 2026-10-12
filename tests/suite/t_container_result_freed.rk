@@ -75,10 +75,10 @@ extend Holder {
 
 test "a field clone is a real copy, and both sides survive" {
     mut rows: Vec<Row> = Vec.new()
-    rows.push(Row { key: "a", n: 1 })
-    mut h = Holder { rows: rows }
+    rows.push(Row(key: "a", n: 1))
+    mut h = Holder(rows: rows)
     mut copy = h.rows_copy()
-    copy.push(Row { key: "b", n: 2 })
+    copy.push(Row(key: "b", n: 2))
     assert copy.len() == 2
     assert h.rows.len() == 1
     assert h.rows[0].key == "a"

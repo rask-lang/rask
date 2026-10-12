@@ -55,7 +55,7 @@ func maybe_thing(n: i32) -> Thing? or Oops {
     if n == 0 {
         return none
     }
-    return Thing { status: n, text: "hi" }
+    return Thing(status: n, text: "hi")
 }
 
 func plain(n: i32) -> i32 or Oops {

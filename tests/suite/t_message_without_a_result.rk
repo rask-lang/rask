@@ -73,8 +73,8 @@ struct HasAnOptional {
 }
 
 test "a struct with an optional field is not orderable" {
-    let a = HasAnOptional { name: "a", tag: none }
-    let b = HasAnOptional { name: "a", tag: "x" }
+    let a = HasAnOptional(name: "a", tag: none)
+    let b = HasAnOptional(name: "a", tag: "x")
     // The ones that do delegate still work.
     assert a.clone().name == "a"
     assert !(a == b)

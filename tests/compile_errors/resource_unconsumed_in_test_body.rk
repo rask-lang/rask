@@ -16,6 +16,6 @@ extend Conn {
 func main() {}
 
 test "resource left open" {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     assert c.id == 1          // ERROR: E0805 — never consumed
 }

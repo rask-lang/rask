@@ -60,20 +60,20 @@ test "type.primitives — summing an i128 Vec" {
 }
 
 test "type.primitives — an i128 struct field reads back" {
-    let l = Ledger { id: 1, balance: 18446744073709551617 }
+    let l = Ledger(id: 1, balance: 18446744073709551617)
     assert l.id == 1
     assert l.balance == 18446744073709551617
 }
 
 test "type.primitives — an i128 struct field can be written" {
-    mut l = Ledger { id: 2, balance: 0 }
+    mut l = Ledger(id: 2, balance: 0)
     l.balance = 36893488147419103232
     assert l.balance == 36893488147419103232
     assert l.id == 2
 }
 
 test "type.primitives — an i128 field one level down" {
-    let w = Wrapper { inner: Ledger { id: 3, balance: 18446744073709551616 } }
+    let w = Wrapper(inner: Ledger(id: 3, balance: 18446744073709551616))
     assert w.inner.balance == 18446744073709551616
     assert w.inner.id == 3
 }
@@ -146,7 +146,7 @@ test "type.primitives — an i128 optional payload" {
 }
 
 test "type.primitives — a u128 struct field holds its full range" {
-    let w = Wide9 { balance: -18446744073709551617, tag: 3 }
+    let w = Wide9(balance: -18446744073709551617, tag: 3)
     assert w.balance == -18446744073709551617
     assert w.tag == 3
 }
@@ -155,11 +155,11 @@ test "type.primitives — a u128 struct field holds its full range" {
 // field, and every other scalar arm widens to i64 first. There is nothing
 // wider to widen an i128 into, so it needs an arm of its own.
 test "type.primitives — a struct with an i128 field can be ordered" {
-    let lo = Wide9 { balance: 1, tag: 0 }
-    let hi = Wide9 { balance: 18446744073709551616, tag: 0 }
+    let lo = Wide9(balance: 1, tag: 0)
+    let hi = Wide9(balance: 18446744073709551616, tag: 0)
     assert lo < hi
     assert hi > lo
-    assert lo == Wide9 { balance: 1, tag: 0 }
+    assert lo == Wide9(balance: 1, tag: 0)
 }
 
 test "type.primitives — a Vec<i128> element can be written back" {

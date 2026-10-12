@@ -15,7 +15,7 @@ func check(req: Req) -> i64 {
 }
 
 func main() {
-    let r = Req { n: 1 }
+    let r = Req(n: 1)
     let got = check(r)
     println("got={got}")
 }

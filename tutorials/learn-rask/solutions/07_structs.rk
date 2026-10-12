@@ -15,10 +15,10 @@ struct Vec3 {
 
 extend Vec3 {
     func zero() -> Vec3 {
-        return Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+        return Vec3(x: 0.0, y: 0.0, z: 0.0)
     }
     func scale(self, factor: f64) -> Vec3 {
-        return Vec3 { x: self.x * factor, y: self.y * factor, z: self.z * factor }
+        return Vec3(x: self.x * factor, y: self.y * factor, z: self.z * factor)
     }
     func dot(self, other: Vec3) -> f64 {
         return self.x * other.x + self.y * other.y + self.z * other.z
@@ -27,11 +27,11 @@ extend Vec3 {
         return sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
     }
     func cross(self, other: Vec3) -> Vec3 {
-        return Vec3 {
+        return Vec3(
             x: self.y * other.z - self.z * other.y,
             y: self.z * other.x - self.x * other.z,
             z: self.x * other.y - self.y * other.x,
-        }
+        )
     }
 }
 
@@ -41,7 +41,7 @@ extend Vec3 {
 Vec3 implements Add {
     // Component-wise addition: (x₁+x₂, y₁+y₂, z₁+z₂)
     func add(self, other: Vec3) -> Vec3 {
-        return Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+        return Vec3(x: self.x + other.x, y: self.y + other.y, z: self.z + other.z)
     }
 }
 
@@ -52,17 +52,17 @@ struct Projectile {
 
 extend Projectile {
     func launch(take velocity: Vec3) -> Projectile {
-        return Projectile { position: Vec3.zero(), velocity: velocity }
+        return Projectile(position: Vec3.zero(), velocity: velocity)
     }
 
     func step(self, dt: f64) -> Projectile {
-        let gravity = Vec3 { x: 0.0, y: 0.0, z: -9.81 }
+        let gravity = Vec3(x: 0.0, y: 0.0, z: -9.81)
         let new_vel = self.velocity.add(gravity.scale(dt))
         mut new_pos = self.position.add(new_vel.scale(dt))
         if new_pos.z < 0.0 {
-            new_pos = Vec3 { x: new_pos.x, y: new_pos.y, z: 0.0 }
+            new_pos = Vec3(x: new_pos.x, y: new_pos.y, z: 0.0)
         }
-        return Projectile { position: new_pos, velocity: new_vel }
+        return Projectile(position: new_pos, velocity: new_vel)
     }
 
     func is_airborne(self) -> bool {
@@ -78,8 +78,8 @@ test "vec3 zero" {
 }
 
 test "vec3 add" {
-    let a = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-    let b = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    let a = Vec3(x: 1.0, y: 2.0, z: 3.0)
+    let b = Vec3(x: 4.0, y: 5.0, z: 6.0)
     let c = a.add(b)
     assert c.x == 5.0
     assert c.y == 7.0
@@ -87,7 +87,7 @@ test "vec3 add" {
 }
 
 test "vec3 scale" {
-    let v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    let v = Vec3(x: 1.0, y: 2.0, z: 3.0)
     let s = v.scale(2.0)
     assert s.x == 2.0
     assert s.y == 4.0
@@ -95,24 +95,24 @@ test "vec3 scale" {
 }
 
 test "vec3 dot product" {
-    let a = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
-    let b = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    let a = Vec3(x: 1.0, y: 0.0, z: 0.0)
+    let b = Vec3(x: 0.0, y: 1.0, z: 0.0)
     assert a.dot(b) == 0.0
-    let c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-    let d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    let c = Vec3(x: 1.0, y: 2.0, z: 3.0)
+    let d = Vec3(x: 4.0, y: 5.0, z: 6.0)
     assert c.dot(d) == 32.0
 }
 
 test "vec3 magnitude" {
-    let v = Vec3 { x: 3.0, y: 4.0, z: 0.0 }
+    let v = Vec3(x: 3.0, y: 4.0, z: 0.0)
     let m = v.magnitude()
     assert m > 4.99
     assert m < 5.01
 }
 
 test "vec3 cross product" {
-    let i = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
-    let j = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    let i = Vec3(x: 1.0, y: 0.0, z: 0.0)
+    let j = Vec3(x: 0.0, y: 1.0, z: 0.0)
     let k = i.cross(j)
     assert k.x == 0.0
     assert k.y == 0.0
@@ -120,13 +120,13 @@ test "vec3 cross product" {
 }
 
 test "projectile launch" {
-    let p = Projectile.launch(Vec3 { x: 10.0, y: 0.0, z: 20.0 })
+    let p = Projectile.launch(Vec3(x: 10.0, y: 0.0, z: 20.0))
     assert p.position.x == 0.0
     assert p.velocity.z == 20.0
 }
 
 test "projectile step" {
-    let p = Projectile.launch(Vec3 { x: 0.0, y: 0.0, z: 20.0 })
+    let p = Projectile.launch(Vec3(x: 0.0, y: 0.0, z: 20.0))
     let p2 = p.step(0.1)
     assert p2.position.z > 1.8
     assert p2.position.z < 2.0
@@ -134,7 +134,7 @@ test "projectile step" {
 }
 
 test "projectile hits ground" {
-    mut p = Projectile.launch(Vec3 { x: 7.07, y: 0.0, z: 7.07 })
+    mut p = Projectile.launch(Vec3(x: 7.07, y: 0.0, z: 7.07))
     for i in 0..200 {
         p = p.step(0.01)
     }

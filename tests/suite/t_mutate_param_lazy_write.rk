@@ -41,7 +41,7 @@ test "a function's lazy result writes the caller's variable" {
 }
 
 test "a method's lazy result writes the caller's variable" {
-    let s = Source { base: 7 }
+    let s = Source(base: 7)
     mut seen = 0
     let seq = s.counted(mutate seen)
     assert seen == 0

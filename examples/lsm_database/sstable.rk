@@ -75,7 +75,7 @@ func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> 
     let min_key = entries[0].key
     let max_key = entries[entries.len() - 1].key
 
-    return SstMeta {
+    return SstMeta(
         id,
         level,
         path,
@@ -84,7 +84,7 @@ func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> 
         entry_count: entries.len().wrap<i32>(),
         max_seq,
         bloom,
-    }
+    )
 }
 
 // ─── Read ───────────────────────────────────────────────────────────
@@ -156,11 +156,11 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
             continue
         }
 
-        index.push(BlockIndex {
+        index.push(BlockIndex(
             first_key: parts[0].to_string(),
             offset: offset.wrap<i32>(),
             count: count.wrap<i32>(),
-        })
+        ))
     }
     return index
 }
@@ -288,7 +288,7 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
             entry_count += idx_entry.count
         }
 
-        metas.push(SstMeta {
+        metas.push(SstMeta(
             id: id.wrap<i32>(),
             level: level.wrap<i32>(),
             path,
@@ -297,7 +297,7 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
             entry_count,
             max_seq,
             bloom,
-        })
+        ))
     }
 
     return metas
@@ -306,19 +306,19 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
 // ─── Tests ──────────────────────────────────────────────────────────
 
 test "find block for key" {
-    let index = Vec.from([BlockIndex {
+    let index = Vec.from([BlockIndex(
         first_key: "aaa",
         offset: 0,
         count: 64,
-    }, BlockIndex {
+    ), BlockIndex(
         first_key: "mmm",
         offset: 1,
         count: 64,
-    }, BlockIndex {
+    ), BlockIndex(
         first_key: "zzz",
         offset: 2,
         count: 32,
-    }])
+    )])
 
     assert find_block_for_key(index, "abc")! == 0
     assert find_block_for_key(index, "nnn")! == 1

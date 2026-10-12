@@ -1483,6 +1483,7 @@ dependencies = [
  "libc",
  "rask-ast",
  "rask-comptime",
+ "rask-desugar",
  "rask-lexer",
  "rask-mono",
  "rask-parser",

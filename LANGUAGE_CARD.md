@@ -112,8 +112,8 @@ func combat_round(mutate world: Rack<Entity>) {
 
 func fight() {
     mut world = Rack<Entity>.new()
-    let a = world.insert(Entity { name: "A", health: 100, damage: 7, target: none })
-    let b = world.insert(Entity { name: "B", health: 100, damage: 5, target: none })
+    let a = world.insert(Entity(name: "A", health: 100, damage: 7, target: none))
+    let b = world.insert(Entity(name: "B", health: 100, damage: 5, target: none))
     a.target = b
     b.target = a
 
@@ -137,7 +137,7 @@ func heal(mutate p: Link<Player>, n: i32) {   // `p: Link<Player>` is read-only
 }
 
 func tend(mutate roster: Rack<Player>) {
-    let first = roster.insert(Player { name: "Ada", health: 10 })
+    let first = roster.insert(Player(name: "Ada", health: 10))
     heal(mutate first, 5)                     // the caller marks it too
     for p in roster.nodes() { p.health += 1 } // writing through the rack directly
 }
@@ -223,18 +223,18 @@ struct User {
     private hash: u64                        // extend blocks only
     retries: i32 = 3                         // declared field default
 }
-let u = User { name: "bo", email: "e", hash: h() }   // retries filled from default
+let u = User(name: "bo", email: "e", hash: h())   // retries filled from default
 // All fields defaulted → `Config {}` is the empty construction. There is NO Default interface.
 
 extend Point {                               // methods live in extend blocks
     func length(self) -> f64 { return (self.x * self.x + self.y * self.y).sqrt() }
     func scale(mutate self, k: f64) { self.x *= k; self.y *= k }
-    func origin() -> Point { return Point { x: 0.0, y: 0.0 } }   // static: Point.origin()
+    func origin() -> Point { return Point(x: 0.0, y: 0.0) }   // static: Point.origin()
 }
 
 enum Shape {                                 // tagged union; exhaustive match required
     Circle(radius: f64)
-    Rect { width: f64, height: f64 }
+    Rect(width: f64, height: f64)
     Dot
 }
 

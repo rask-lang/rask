@@ -34,7 +34,7 @@ func run_through_a_parameter(f: func()) {
 
 test "a user method named spawn is not a task" {
     mut count = 0
-    let r = Runner { id: 1 }
+    let r = Runner(id: 1)
     r.spawn(|| { count += 1 })
     assert count == 1
 }

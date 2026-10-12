@@ -16,27 +16,27 @@ struct Pair<K, V> {
 }
 
 test "type.generics — an unused type parameter constructs and reads" {
-    let a: Tagged<i64> = Tagged { id: 1, label: "x" }
+    let a: Tagged<i64> = Tagged(id: 1, label: "x")
     assert a.id == 1
     assert a.label == "x"
 }
 
 test "type.generics — two unused parameters" {
-    let p: Pair<i64, string> = Pair { n: 5 }
+    let p: Pair<i64, string> = Pair(n: 5)
     assert p.n == 5
 }
 
 test "type.generics — two instantiations of the same unused parameter" {
-    let a: Tagged<i64> = Tagged { id: 1, label: "one" }
-    let b: Tagged<string> = Tagged { id: 2, label: "two" }
+    let a: Tagged<i64> = Tagged(id: 1, label: "one")
+    let b: Tagged<string> = Tagged(id: 2, label: "two")
     assert a.id + b.id == 3
     assert b.label == "two"
 }
 
 test "type.generics — an unused parameter inside a Vec" {
     mut v: Vec<Tagged<string>> = Vec.new()
-    v.push(Tagged { id: 2, label: "y" })
-    v.push(Tagged { id: 3, label: "z" })
+    v.push(Tagged(id: 2, label: "y"))
+    v.push(Tagged(id: 3, label: "z"))
     assert v.len() == 2
     assert v[0].id == 2
     assert v[1].label == "z"

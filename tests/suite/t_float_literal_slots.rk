@@ -52,7 +52,7 @@ test "the binding really is a float, not an int that prints like one" {
 }
 
 test "a float struct field from an integer literal" {
-    let r = Reading { value: 4 }
+    let r = Reading(value: 4)
     assert r.value == 4.0
     assert r.value * 2.0 == 8.0
 }

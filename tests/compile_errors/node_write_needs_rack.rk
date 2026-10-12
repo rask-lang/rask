@@ -57,7 +57,7 @@ func taken_link(take e: Link<Entity>) {
 
 func main() {
     mut world: Rack<Entity> = Rack.new()
-    let a = world.insert(Entity { health: 100, damage: 5, target: none })
+    let a = world.insert(Entity(health: 100, damage: 5, target: none))
     read_only_rack(world)
     read_only_across_an_edge(world)
     no_store_at_all(a)

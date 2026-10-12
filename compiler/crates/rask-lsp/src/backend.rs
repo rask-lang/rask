@@ -222,13 +222,13 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     // --- Desugar (operators + default/named args) ---
     let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::defaulted_signatures(),
+        rask_stdlib::StubRegistry::desugar_declarations(),
     );
     for e in &desugared.errors {
         diags.push(
             rask_diagnostics::Diagnostic::error(e.message.clone())
-                .with_code("E0338")
-                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+                .with_code(e.code)
+                .with_primary(e.span, e.label.clone()),
         );
     }
 
@@ -277,7 +277,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
         rask_comptime::apply_cfg(&mut sibling_decls, &cfg);
         rask_desugar::desugar_with_stdlib(
             &mut sibling_decls,
-            rask_stdlib::StubRegistry::defaulted_signatures(),
+            rask_stdlib::StubRegistry::desugar_declarations(),
         );
         parse_result.decls.extend(sibling_decls);
 

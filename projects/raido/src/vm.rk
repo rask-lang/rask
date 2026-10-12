@@ -84,13 +84,13 @@ extend Vm {
             i = i + 1
         }
 
-        return Vm {
+        return Vm(
             chunk: chunk,
             registers: regs,
             call_stack: Vec.new(),
             fuel: fuel,
             max_call_depth: 256,
-        }
+        )
     }
 
     func get_reg(self, idx: i64) -> Value {

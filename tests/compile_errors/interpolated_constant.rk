@@ -12,7 +12,7 @@ enum LoadError {
     @message("nf {0}")                 // ERROR: positional payload reference
     NotFound(u64)
     @message("parse error at {line}")
-    Parse { line: i32 }
+    Parse(line: i32)
 }
 
 func main() {

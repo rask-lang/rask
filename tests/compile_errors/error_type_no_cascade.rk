@@ -21,7 +21,7 @@ func f(x: Nonexistent) -> i64 {
 func main() {
     // ERROR: `Box2` takes 1 type argument, found 2 — and nothing for `c`
     let c = |q: Box2<i64, i64>| q.v
-    let b = Box2 { v: 1 }
+    let b = Box2(v: 1)
     // ERROR: no method `size` — and nothing for `s`
     let s = b.size()
     println("ok")

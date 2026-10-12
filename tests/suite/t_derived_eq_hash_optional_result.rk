@@ -33,32 +33,32 @@ func failed(why: string) -> string? or MyErr {
 }
 
 test "each branch equals itself and nothing else" {
-    let a = Maybe { r: found("here") }
-    let b = Maybe { r: found("here") }
-    let c = Maybe { r: found("there") }
-    let n = Maybe { r: missing() }
-    let e = Maybe { r: failed("x") }
+    let a = Maybe(r: found("here"))
+    let b = Maybe(r: found("here"))
+    let c = Maybe(r: found("there"))
+    let n = Maybe(r: missing())
+    let e = Maybe(r: failed("x"))
     assert a == b
     assert a != c
     assert a != n
-    assert n == Maybe { r: missing() }
+    assert n == Maybe(r: missing())
     assert n != e
-    assert e == Maybe { r: failed("x") }
-    assert e != Maybe { r: failed("y") }
+    assert e == Maybe(r: failed("x"))
+    assert e != Maybe(r: failed("y"))
     assert e != a
 }
 
 test "hash follows equality and tells the branches apart" {
-    let a = Maybe { r: found("here") }
-    let n = Maybe { r: missing() }
-    let e = Maybe { r: failed("here") }
-    assert a.hash() == Maybe { r: found("here") }.hash()
+    let a = Maybe(r: found("here"))
+    let n = Maybe(r: missing())
+    let e = Maybe(r: failed("here"))
+    assert a.hash() == Maybe(r: found("here")).hash()
     assert a.hash() != n.hash()
     assert n.hash() != e.hash()
 }
 
 test "clone keeps the branch and the payload" {
-    let a = Maybe { r: found("here") }
+    let a = Maybe(r: found("here"))
     let copy = a.clone()
     assert copy == a
     let got = match copy.r {

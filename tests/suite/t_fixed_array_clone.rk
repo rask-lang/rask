@@ -51,8 +51,8 @@ test "a nested Vec gets one of its own" {
 
 test "a struct element holding a string and a Vec" {
     let a: [Named; 2] = [
-        Named { name: heap("p"), tags: [heap("t")] },
-        Named { name: heap("q"), tags: [] },
+        Named(name: heap("p"), tags: [heap("t")]),
+        Named(name: heap("q"), tags: []),
     ]
     mut b = a.clone()
     b[0].tags.push("more")

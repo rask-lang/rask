@@ -13,7 +13,7 @@ struct Packet {
 // --- G1/G2: build then parse roundtrips every field ---
 
 test "type.binary/G1 — build/parse roundtrip preserves be fields" {
-    let p = Packet { magic: 0x1234, id: 0xDEADBEEF }
+    let p = Packet(magic: 0x1234, id: 0xDEADBEEF)
     let bytes = p.build()              // G2: Vec<u8>, 6 bytes
     let r = Packet.parse(bytes)        // G1: (Packet, Vec<u8>) or ParseError
     assert !(r is ParseError)
@@ -25,7 +25,7 @@ test "type.binary/G1 — build/parse roundtrip preserves be fields" {
 // --- B3: MSB-first / big-endian byte order on the wire ---
 
 test "type.binary/B3 — u16be serializes MSB-first" {
-    let p = Packet { magic: 0x1234, id: 0 }
+    let p = Packet(magic: 0x1234, id: 0)
     let bytes = p.build()
     assert bytes[0] == 0x12              // high byte first
     assert bytes[1] == 0x34

@@ -70,7 +70,7 @@ test "an array of strings keeps its strings through several calls" {
 }
 
 test "structs with owned fields sort in place" {
-    mut es = [Entry { rank: 2, name: "two, and long enough to be on the heap" }, Entry { rank: 1, name: "one, and long enough to be on the heap" }]
+    mut es = [Entry(rank: 2, name: "two, and long enough to be on the heap"), Entry(rank: 1, name: "one, and long enough to be on the heap")]
     es.sort_by(|x, y| x.rank.compare(y.rank))
     assert es[0].name == "one, and long enough to be on the heap"
     assert es[1].rank == 2

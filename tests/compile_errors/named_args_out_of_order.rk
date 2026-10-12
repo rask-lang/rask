@@ -22,7 +22,7 @@ extend Num {
 }
 
 enum Shape {
-    Rect { w: i64, h: i64 }
+    Rect(w: i64, h: i64)
     Pair(i64, i64)
 }
 
@@ -40,12 +40,13 @@ func connect(host: string, port: i64 = 80, timeout: i64 = 30) -> i64 {
 func main() {
     // ERROR: free function, swapped
     println("{digits(b: 2, a: 1)}")
-    let x = Num { n: 0 }
+    let x = Num(n: 0)
     // ERROR: method, swapped
     println("{x.pair(b: 2, a: 1)}")
     // ERROR: static method, swapped
     println("{Num.make(b: 2, a: 1)}")
-    // ERROR: struct variant, swapped
+    // A variant's fields are given by name, so their order is free — like a
+    // struct's, unlike a call's arguments.
     let r = Shape.Rect(h: 2, w: 1)
     // ERROR: tuple variant has no names to label
     let p = Shape.Pair(x: 1, y: 2)

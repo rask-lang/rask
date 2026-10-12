@@ -77,9 +77,9 @@ test "a named closure whose result is wider than a word" {
 
 test "and one whose result is a struct" {
     using Multitasking {
-        let h = || { return Report { lines: 3, name: "r" } }
+        let h = || { return Report(lines: 3, name: "r") }
         let t = spawn { h() }
-        let r = t.join() catch _ => Report { lines: 0, name: "?" }
+        let r = t.join() catch _ => Report(lines: 0, name: "?")
         assert r.lines == 3
         assert r.name == "r"
     }

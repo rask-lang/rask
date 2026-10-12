@@ -5,13 +5,13 @@ struct Meters { value: f64 }
 
 Money implements Add {
     func add(self, other: Money) -> Money {
-        return Money { cents: self.cents + other.cents }
+        return Money(cents: self.cents + other.cents)
     }
 }
 
 Meters implements Add {
     func add(self, other: Meters) -> Meters {
-        return Meters { value: self.value + other.value }
+        return Meters(value: self.value + other.value)
     }
 }
 

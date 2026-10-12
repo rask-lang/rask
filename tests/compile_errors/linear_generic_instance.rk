@@ -85,24 +85,24 @@ extend Pair {
 }
 
 func main() {
-    let s = Sink { n: 1 }
+    let s = Sink(n: 1)
     // ERROR: a generic method drops its `T`, here a `Conn`
-    s.swallow(Conn { id: 4 })
+    s.swallow(Conn(id: 4))
 
-    let h = Holder { item: Conn { id: 5 } }
+    let h = Holder(item: Conn(id: 5))
     // ERROR: `Holder<T>.drop_it` drops `self.item`, which is a `Conn` here
     h.drop_it()
 
-    Pair { c: Conn { id: 6 } }.leak()
+    Pair(c: Conn(id: 6)).leak()
 
     // ERROR: `forget` drops its `T`, and here `T` is `Conn`
-    forget(Conn { id: 1 })
+    forget(Conn(id: 1))
 
     // ERROR: the issue's case — the payload matched out of `List<Conn>` is dropped
-    drop_first(List.More(Conn { id: 2 }, Heap(List.Empty)))
+    drop_first(List.More(Conn(id: 2), Heap(List.Empty)))
 
     // ERROR: `lose` drops it two generic calls down; reported here, where `Conn` came in
-    outer(Conn { id: 3 })
+    outer(Conn(id: 3))
 
     // Fine: an ordinary type argument
     forget(5)

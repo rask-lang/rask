@@ -50,27 +50,27 @@ struct Pair {
 func main() {}
 
 test "a boxed value called through its field" {
-    let s = Shelf { item: Holder { label: "long enough to allocate", counts: [1, 2] } }
+    let s = Shelf(item: Holder(label: "long enough to allocate", counts: [1, 2]))
     assert s.item.describe() == "long enough to allocate:2"
 }
 
 test "the same field read twice" {
-    let s = Shelf { item: Holder { label: "also long enough to allocate", counts: [7] } }
+    let s = Shelf(item: Holder(label: "also long enough to allocate", counts: [7]))
     assert s.item.describe() == "also long enough to allocate:1"
     assert s.item.describe() == "also long enough to allocate:1"
 }
 
 test "two boxed fields in one struct" {
-    let p = Pair {
-        left: Holder { label: "the left one is long enough", counts: [1, 2, 3] },
-        right: Holder { label: "the right one is long enough", counts: [4] },
-    }
+    let p = Pair(
+        left: Holder(label: "the left one is long enough", counts: [1, 2, 3]),
+        right: Holder(label: "the right one is long enough", counts: [4]),
+    )
     assert p.left.describe() == "the left one is long enough:3"
     assert p.right.describe() == "the right one is long enough:1"
 }
 
 test "a boxed field never read" {
-    let s = Shelf { item: Holder { label: "nobody calls through this one", counts: [9, 9] } }
+    let s = Shelf(item: Holder(label: "nobody calls through this one", counts: [9, 9]))
     assert s.item.describe().len() > 0
 }
 

@@ -992,6 +992,11 @@ impl Resolver {
                     if let Err(e) = self.scopes.define(alias.name.clone(), sym_id, decl.span) {
                         self.errors.push(e);
                     }
+                    // Like a stdlib struct or enum: a program's `import` of it
+                    // replaces this binding, it doesn't clash with it.
+                    if self.stdlib_mode {
+                        self.stdlib_symbols.insert(sym_id);
+                    }
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
                 DeclKind::Package(_) => {}

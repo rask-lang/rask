@@ -54,11 +54,11 @@ struct Keyed {
 
 func present(label: string) -> Maybe {
     let v: Vec<i64> = [1, 2, 3]
-    return Maybe { label: label, items: v }
+    return Maybe(label: label, items: v)
 }
 
 func absent(label: string) -> Maybe {
-    return Maybe { label: label, items: none }
+    return Maybe(label: label, items: none)
 }
 
 test "mem.ownership — a Vec behind a `?` field, read after" {
@@ -98,12 +98,12 @@ func wrapped(take v: Vec<i64>) -> Vec<i64> or Refused {
 }
 
 func refused(why: string) -> Vec<i64> or Refused {
-    return Refused { why: why }
+    return Refused(why: why)
 }
 
 test "mem.ownership — a Vec behind an `or` field" {
     let v: Vec<i64> = [4, 5]
-    let ok = Fallible { label: "ok", items: wrapped(v) }
+    let ok = Fallible(label: "ok", items: wrapped(v))
     if ok.items is Vec<i64> as items {
         assert items.len() == 2
         assert items[1] == 5
@@ -111,7 +111,7 @@ test "mem.ownership — a Vec behind an `or` field" {
         assert false
     }
 
-    let bad = Fallible { label: "bad", items: refused("no") }
+    let bad = Fallible(label: "bad", items: refused("no"))
     if bad.items is Vec<i64> as items {
         assert false
     } else {
@@ -123,7 +123,7 @@ test "mem.ownership — a Map behind a `?` field" {
     mut m: Map<string, i64> = Map.new()
     m.insert("a", 1)
     m.insert("b", 2)
-    let k = Keyed { lookup: m }
+    let k = Keyed(lookup: m)
     assert k.lookup!.len() == 2
     assert k.lookup!["a"] == 1
 }

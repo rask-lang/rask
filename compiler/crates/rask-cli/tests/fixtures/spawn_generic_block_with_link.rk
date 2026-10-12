@@ -19,7 +19,7 @@ func keep<T>(x: T) -> Handle<i64> {
 func main() {
     using Multitasking {
         mut rack: Rack<Node> = Rack.new()
-        let a = rack.insert(Node { id: 1 })
+        let a = rack.insert(Node(id: 1))
         let plain = keep(7)
         println("{plain.join()!}")
         println("before")

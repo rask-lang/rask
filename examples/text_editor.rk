@@ -18,9 +18,9 @@ struct Line {
 
 // Edit commands that can be undone
 enum EditCommand {
-    InsertLine { after: i32, text: string }
-    DeleteLine { at: i32, deleted_text: string }
-    ModifyLine { at: i32, old_text: string, new_text: string }
+    InsertLine(after: i32, text: string)
+    DeleteLine(at: i32, deleted_text: string)
+    ModifyLine(at: i32, old_text: string, new_text: string)
 }
 
 extend EditCommand {
@@ -44,12 +44,12 @@ struct Document {
 
 extend Document {
     func new() -> Document {
-        return Document {
+        return Document(
             lines: Vec.new(),
             undo_stack: Vec.new(),
             redo_stack: Vec.new(),
             modified: false,
-        }
+        )
     }
 
     func from_file(path: string) -> Document or fs.IoError {
@@ -57,7 +57,7 @@ extend Document {
 
         mut doc = Document.new()
         for line in lines {
-            doc.lines.push(Line { text: line })
+            doc.lines.push(Line(text: line))
         }
         return doc
     }
@@ -76,7 +76,7 @@ extend Document {
         let raw_pos = (after + 1) as i64
         let cap = self.lines.len().wrap<i64>()
         let insert_pos = if raw_pos > cap { cap } else { raw_pos }
-        self.lines.insert(insert_pos, Line { text })
+        self.lines.insert(insert_pos, Line(text))
 
         // Record for undo
         self.undo_stack.push(EditCommand.InsertLine(after: after, text: text))
@@ -137,12 +137,12 @@ extend Document {
     func apply_command_silent(self, cmd: EditCommand) -> void or EditError {
         match cmd {
             InsertLine(after, text) => {
-                self.lines.insert((after + 1) as i64, Line { text })
+                self.lines.insert((after + 1) as i64, Line(text))
             }
-            DeleteLine(at, _) => {
+            DeleteLine(at, ..) => {
                 self.lines.remove(at as i64)
             }
-            ModifyLine(at, _, new_text) => {
+            ModifyLine(at, new_text, ..) => {
                 self.lines[at].text = new_text
             }
         }
@@ -173,12 +173,12 @@ extend Document {
 
 // Simple command parser for the editor REPL
 enum EditorCommand {
-    Insert { after: i32, text: string }
-    Delete { line: i32 }
-    Edit { line: i32, text: string }
+    Insert(after: i32, text: string)
+    Delete(line: i32)
+    Edit(line: i32, text: string)
     Undo
     Redo
-    Save { path: string }
+    Save(path: string)
     Print
     Quit
     Help

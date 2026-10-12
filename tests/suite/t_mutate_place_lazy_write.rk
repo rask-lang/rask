@@ -42,7 +42,7 @@ struct Lamp {
 }
 
 test "a field" {
-    mut b = Outer { n: 0, inner: Inner { n: 0 } }
+    mut b = Outer(n: 0, inner: Inner(n: 0))
     let seq = counting_source(mutate b.n)
     assert b.n == 0
     let total: i32 = seq.sum()
@@ -51,7 +51,7 @@ test "a field" {
 }
 
 test "a nested field" {
-    mut b = Outer { n: 0, inner: Inner { n: 4 } }
+    mut b = Outer(n: 0, inner: Inner(n: 4))
     let seq = counting_source(mutate b.inner.n)
     let total: i32 = seq.sum()
     assert total == 1
@@ -79,7 +79,7 @@ test "a Map value" {
 }
 
 test "a whole `mutate self` replacement through a field" {
-    mut lamp = Lamp { light: Light.Red }
+    mut lamp = Lamp(light: Light.Red)
     lamp.light.advance()
     assert lamp.light == Light.Green
     mut lights = Vec.from([Light.Red, Light.Red])

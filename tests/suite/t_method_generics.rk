@@ -38,7 +38,7 @@ extend Holder<T> {
 func main() {}
 
 test "one type param, used at several types" {
-    let u = Util { seed: 1 }
+    let u = Util(seed: 1)
     assert u.echo(7) == 7
     assert u.echo("hi") == "hi"
     assert u.echo(true)
@@ -47,13 +47,13 @@ test "one type param, used at several types" {
 }
 
 test "the receiver's own fields are still reachable" {
-    let u = Util { seed: 1 }
+    let u = Util(seed: 1)
     assert u.uses_field("x") == "x"
     assert u.uses_field(3) == 3
 }
 
 test "two type params" {
-    let u = Util { seed: 0 }
+    let u = Util(seed: 0)
     let p = u.both(1, "two")
     assert p.0 == 1
     assert p.1 == "two"
@@ -63,19 +63,19 @@ test "two type params" {
 }
 
 test "an aggregate type argument" {
-    let u = Util { seed: 0 }
-    let p = u.echo(Pair2 { a: 1, b: 2 })
+    let u = Util(seed: 0)
+    let p = u.echo(Pair2(a: 1, b: 2))
     assert p.a == 1
     assert p.b == 2
 }
 
 test "a bounded type param dispatches through the bound" {
-    let u = Util { seed: 0 }
-    assert u.describe(Tag { n: 1 }) == "tag"
+    let u = Util(seed: 0)
+    assert u.describe(Tag(n: 1)) == "tag"
 }
 
 test "a method param alongside the receiver's own" {
-    let h = Holder { item: 9 }
+    let h = Holder(item: 9)
     assert h.mine() == 9
     assert h.other("s") == "s"
     assert h.other(4) == 4

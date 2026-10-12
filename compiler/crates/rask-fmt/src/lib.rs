@@ -710,16 +710,6 @@ func main() {
         assert_eq!(once, format_source(&once), "and stays put on a second pass:\n{}", once);
     }
 
-    #[test]
-    fn keeps_parens_around_a_condition_ending_in_a_struct_literal() {
-        // Without them the `{` of the body attaches to the literal.
-        keeps(
-            "func main() {\n    if (c == Shape.Circle { r: 4 }) {\n        println(\"y\")\n    }\n}\n",
-            "if (c == Shape.Circle { r: 4 }) {",
-            "the condition",
-        );
-    }
-
     // The other half of the same rule: a comment alone on its line is a
     // standalone comment and doesn't get pulled up onto the code above it.
     #[test]

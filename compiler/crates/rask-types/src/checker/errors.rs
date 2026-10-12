@@ -172,6 +172,13 @@ pub enum TypeError {
         kind: String,
         span: Span,
     },
+    /// A type's name starts with a capital, so `Name(…)` reads as building one.
+    #[error("type name `{name}` starts with a lowercase letter")]
+    LowercaseTypeName {
+        name: String,
+        kind: String,
+        span: Span,
+    },
     #[error("try can only be used in functions returning Option or Result, found {return_ty}")]
     TryInNonPropagatingContext { return_ty: Type, span: Span },
     #[error("error type mismatch in `try`: propagating `{inner_err}`, but function returns `_ or {outer_err}`")]
@@ -1648,6 +1655,7 @@ impl TypeError {
             | InvalidTypeString(..)
             | UnknownTypeName { .. }
             | SingleLetterTypeName { .. }
+            | LowercaseTypeName { .. }
             | TryErrorMismatch { .. }
             | AmbiguousErrorWrap { .. }
             | TryOutsideFunction { .. }

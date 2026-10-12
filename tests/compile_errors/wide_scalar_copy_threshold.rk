@@ -16,7 +16,7 @@ struct Wide {
 }
 
 func main() {
-    let x = Wide { a: 1, b: 2 }
+    let x = Wide(a: 1, b: 2)
     let y = x
     let z = x
     println("{y.a} {z.a}")

@@ -23,11 +23,11 @@ const FRAC_BITS: i64 = 32
 
 extend Fixed {
     func from_int(n: i64) -> Fixed {
-        return Fixed { raw: n << FRAC_BITS }
+        return Fixed(raw: n << FRAC_BITS)
     }
 
     func zero() -> Fixed {
-        return Fixed { raw: 0 }
+        return Fixed(raw: 0)
     }
 
     func to_int(self) -> i64 {
@@ -39,13 +39,13 @@ extend Fixed {
 // ORD2's derive — one field, so the lexicographic order is the raw order.
 Fixed implements Add {
     func add(self, other: Fixed) -> Fixed {
-        return Fixed { raw: self.raw + other.raw }
+        return Fixed(raw: self.raw + other.raw)
     }
 }
 
 Fixed implements Mul<i64> {
     func mul(self, k: i64) -> Fixed {
-        return Fixed { raw: self.raw * k }
+        return Fixed(raw: self.raw * k)
     }
 }
 
@@ -54,7 +54,7 @@ i64 implements Mul<Fixed> {
     type Out = Fixed
 
     func mul(self, x: Fixed) -> Fixed {
-        return Fixed { raw: x.raw * self }
+        return Fixed(raw: x.raw * self)
     }
 }
 
