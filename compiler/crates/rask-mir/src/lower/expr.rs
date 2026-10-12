@@ -8967,7 +8967,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Derived `Debug` for a struct or enum: the layout, rendered.
     ///
-    /// `Point { x: 1, y: 2 }` for a struct, `Shape.Circle(1.5)` for an enum
+    /// `Point(x: 1, y: 2)` for a struct, `Shape.Circle(1.5)` for an enum
     /// variant with a payload, `Shape.Empty` for one without. Strings and chars
     /// come out quoted, which is the whole reason `{:debug}` exists next to
     /// `{}` (std.fmt/G2, G4).
@@ -8998,32 +8998,28 @@ impl<'a> MirLowerer<'a> {
                 // a symbol of its own; it prints as written.
                 let name = self.ctx.type_defs.written_name(&layout.name).to_string();
                 let mut parts: Vec<MirOperand> = Vec::new();
-                if layout.fields.is_empty() {
-                    parts.push(lit(self, &format!("{} {{}}", name)));
-                } else {
-                    parts.push(lit(self, &format!("{} {{ ", name)));
-                    for (i, f) in layout.fields.iter().enumerate() {
-                        if i > 0 {
-                            parts.push(lit(self, ", "));
-                        }
-                        parts.push(lit(self, &format!("{}: ", f.name)));
-                        let field_ty = self.ctx.type_to_mir(&f.ty);
-                        let field = self.builder.alloc_temp(field_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: field,
-                            rvalue: MirRValue::Field {
-                                base: obj_op.clone(),
-                                field_index: i as u32,
-                                byte_offset: Some(f.offset),
-                                access: FieldAccess::for_field(&field_ty, f.size),
-                            },
-                        }));
-                        parts.push(self.debug_render_value(
-                            &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
-                        )?);
+                parts.push(lit(self, &format!("{}(", name)));
+                for (i, f) in layout.fields.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(lit(self, ", "));
                     }
-                    parts.push(lit(self, " }"));
+                    parts.push(lit(self, &format!("{}: ", f.name)));
+                    let field_ty = self.ctx.type_to_mir(&f.ty);
+                    let field = self.builder.alloc_temp(field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: field,
+                        rvalue: MirRValue::Field {
+                            base: obj_op.clone(),
+                            field_index: i as u32,
+                            byte_offset: Some(f.offset),
+                            access: FieldAccess::for_field(&field_ty, f.size),
+                        },
+                    }));
+                    parts.push(self.debug_render_value(
+                        &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
+                    )?);
                 }
+                parts.push(lit(self, ")"));
                 Ok(Some(self.concat_all(parts)))
             }
             MirType::Enum(id) => {
@@ -9074,6 +9070,9 @@ impl<'a> MirLowerer<'a> {
                         for (fi, f) in variant.fields.iter().enumerate() {
                             if fi > 0 {
                                 parts.push(lit(self, ", "));
+                            }
+                            if !rask_ast::decl::is_positional_field_name(&f.name) {
+                                parts.push(lit(self, &format!("{}: ", f.name)));
                             }
                             let field_ty = self.ctx.type_to_mir(&f.ty);
                             let field = self.builder.alloc_temp(field_ty.clone());

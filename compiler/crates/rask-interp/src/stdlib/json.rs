@@ -807,9 +807,9 @@ fn value_to_json(
                 variant_decl
                     .and_then(|v| v.fields.get(i))
                     .map(|f| f.name.clone())
-                    .unwrap_or_else(|| format!("_{}", i))
+                    .unwrap_or_else(|| rask_ast::decl::positional_field_name(i))
             };
-            let is_single_unnamed = fields.len() == 1 && field_name(0) == "_0";
+            let is_single_unnamed = fields.len() == 1 && rask_ast::decl::is_positional_field_name(&field_name(0));
 
             if is_single_unnamed && tag_field.is_none() {
                 // E23: the payload goes directly under the variant name.

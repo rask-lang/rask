@@ -132,7 +132,7 @@ extend AppError {
 | Rule | Description |
 |------|-------------|
 | **G1: Interface** | `interface Debug { func debug(self) -> string }` |
-| **G2: Auto-derive** | All types auto-derive `Debug` by default |
+| **G2: Auto-derive** | All types auto-derive `Debug` by default. A struct or variant renders the way it's built: `Point(x: 1, y: 2)`, `Shape.Rect(w: 3, h: 4)`, `Shape.Circle(1.5)` |
 | **G3: Override** | Auto-derived `Debug` can be overridden via `Type implements Debug` |
 | **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
@@ -145,12 +145,12 @@ and seeded per process (`std.collections`, `determinism/D7`), so printing the
 table's order would print something different on every run. The renderer picks
 one instead, and sorted-by-key is the one a reader expects.
 
-<!-- test: run | Point { x: 1, y: 2 } -->
+<!-- test: run | Point(x: 1, y: 2) -->
 ```rask
 struct Point { x: f64, y: f64 }
 
 let p = Point(x: 1.0, y: 2.0)
-println(format("{:debug}", p))    // Point { x: 1, y: 2 }
+println(format("{:debug}", p))    // Point(x: 1, y: 2)
 ```
 
 ## println / print Interpolation

@@ -1528,7 +1528,7 @@ impl TypeChecker {
                 // An unnamed payload has no field name to flatten into: the
                 // object already holds the tag, and the payload would need an
                 // invented key to sit beside it.
-                if v.fields.len() == 1 && v.fields[0].name == "_0" {
+                if v.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&v.fields[0].name) {
                     self.errors.push(TypeError::TagOnUnnamedPayload {
                         enum_name: e.name.clone(),
                         variant: v.name.clone(),

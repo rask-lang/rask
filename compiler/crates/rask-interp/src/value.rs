@@ -1634,14 +1634,14 @@ impl fmt::Display for Value {
             Value::String(s) => write!(f, "{}", s.lock().unwrap()),
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
-                write!(f, "{} {{ ", guard.name)?;
+                write!(f, "{}(", guard.name)?;
                 for (i, (k, v)) in guard.fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: {}", k, v)?;
                 }
-                write!(f, " }}")
+                write!(f, ")")
             }
             Value::Enum { name, variant, fields, .. } => {
                 write!(f, "{}.{}", name, variant)?;

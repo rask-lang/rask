@@ -225,19 +225,15 @@ impl Interpreter {
             }
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
-                // A fieldless struct is `Empty {}`, not `Empty {  }` — the
-                // braces-with-a-space template gave two spaces around nothing.
-                // A program type sharing a stdlib type's name carries a symbol
-                // of its own; it prints as written.
+                // Printed the way it's built: `Point(x: 1, y: 2)`. A program
+                // type sharing a stdlib type's name carries a symbol of its
+                // own; it prints as written.
                 let name = self.types.written_name(&guard.name);
-                if guard.fields.is_empty() {
-                    return format!("{} {{}}", name);
-                }
                 let field_strs: Vec<String> = guard.fields
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, self.debug_format(v)))
                     .collect();
-                format!("{} {{ {} }}", name, field_strs.join(", "))
+                format!("{}({})", name, field_strs.join(", "))
             }
             // A map's iteration order is unspecified and seeded per process
             // (std.collections, determinism/D7) — this interpreter seeds it
@@ -268,12 +264,27 @@ impl Interpreter {
                 format!("Map {{ {} }}", parts.join(", "))
             }
             Value::Enum { name, variant, fields, .. } => {
+                // A named variant prints its field names, as it's built.
+                let declared: Vec<String> = self
+                    .enums
+                    .get(name.as_str())
+                    .and_then(|e| e.variants.iter().find(|v| v.name == *variant))
+                    .map(|v| v.fields.iter().map(|f| f.name.clone()).collect())
+                    .unwrap_or_default();
                 let name = self.types.written_name(name);
                 if fields.is_empty() {
                     format!("{}.{}", name, variant)
                 } else {
-                    let field_strs: Vec<String> =
-                        fields.iter().map(|v| self.debug_format(v)).collect();
+                    let field_strs: Vec<String> = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| match declared.get(i) {
+                            Some(f) if !rask_ast::decl::is_positional_field_name(f) => {
+                                format!("{}: {}", f, self.debug_format(v))
+                            }
+                            _ => self.debug_format(v),
+                        })
+                        .collect();
                     format!("{}.{}({})", name, variant, field_strs.join(", "))
                 }
             }

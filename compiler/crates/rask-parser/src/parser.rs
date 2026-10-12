@@ -1873,7 +1873,7 @@ impl Parser {
                         } else {
                             let type_span = self.current().span;
                             let ty = self.parse_type_name()?;
-                            (format!("_{}", idx), type_span, ty)
+                            (rask_ast::decl::positional_field_name(idx), type_span, ty)
                         };
 
                         fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });

@@ -80,7 +80,7 @@ test "the stdlib's method runs on the stdlib's type" {
 test "a printed value says the name the program wrote" {
     assert "{ParseError.Mine:debug}" == "ParseError.Mine"
     let d = Duration(ticks: 3)
-    assert "{d:debug}" == "Duration {{ ticks: 3 }}"
+    assert "{d:debug}" == "Duration(ticks: 3)"
 }
 
 test "a shadowing struct keeps its own methods" {

@@ -485,7 +485,7 @@ impl<'a> MirLowerer<'a> {
 
             self.builder.switch_to_block(hit);
             let variant_name = rask_ast::decl::field_attrs::serial_name(&variant.attrs, &variant.name);
-            let is_single_unnamed = variant.fields.len() == 1 && variant.fields[0].name == "_0";
+            let is_single_unnamed = variant.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&variant.fields[0].name);
 
             if variant.fields.is_empty() {
                 match &tag_field {

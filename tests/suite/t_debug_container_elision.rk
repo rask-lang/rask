@@ -41,7 +41,7 @@ func main() {
 
 test "a Vec of aggregates shows its contents on both backends" {
     let ps: Vec<Point> = [Point(x: 1, y: 2)].to_vec()
-    assert "{ps:debug}" == "[Point {{ x: 1, y: 2 }}]"
+    assert "{ps:debug}" == "[Point(x: 1, y: 2)]"
 }
 
 test "a Vec of Vecs recurses" {
@@ -76,7 +76,7 @@ test "a Map of aggregates renders them" {
     mut m: Map<string, Point> = Map.new()
     m.insert("b", Point(x: 3, y: 4))
     m.insert("a", Point(x: 1, y: 2))
-    assert "{m:debug}" == "Map {{ \"a\": Point {{ x: 1, y: 2 }}, \"b\": Point {{ x: 3, y: 4 }} }}"
+    assert "{m:debug}" == "Map {{ \"a\": Point(x: 1, y: 2), \"b\": Point(x: 3, y: 4) }}"
 }
 
 test "a tuple renders positionally" {

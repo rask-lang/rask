@@ -356,6 +356,17 @@ pub struct EnumDecl {
     pub backing_type: Option<crate::ty::TypeExpr>,
 }
 
+/// The name a positional variant field goes by: `_0`, `_1`, … No written
+/// field can be called that, since a field name starts with a letter.
+pub fn positional_field_name(index: usize) -> String {
+    format!("_{index}")
+}
+
+/// Whether `name` is one `positional_field_name` made.
+pub fn is_positional_field_name(name: &str) -> bool {
+    name.strip_prefix('_').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// An enum variant.
 #[derive(Debug, Clone)]
 pub struct Variant {

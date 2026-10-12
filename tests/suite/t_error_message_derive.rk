@@ -140,7 +140,7 @@ test "a payload with no to_string still renders" {
     // `to_string`, and demanding one would make an ordinary enum stop
     // compiling for a method its author never asked for. Payloads that
     // aren't primitives go through Debug, which every type has.
-    assert opaque_msg() == "wrapped: Opaque {{ a: 1, b: 2 }}"
+    assert opaque_msg() == "wrapped: Opaque(a: 1, b: 2)"
 }
 
 test "a single payload that is itself an error delegates to it" {

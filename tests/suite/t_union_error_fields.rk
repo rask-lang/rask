@@ -76,5 +76,5 @@ test "the struct survives a Vec" {
     assert hs[0].res is i64
     assert hs[1].res is Other
     assert hs[1].after == 2
-    assert "{hs:debug}" == "[Holder {{ res: Result.Ok(10), after: 1 }}, Holder {{ res: Result.Err(Other.Odd(\"x\")), after: 2 }}]"
+    assert "{hs:debug}" == "[Holder(res: Result.Ok(10), after: 1), Holder(res: Result.Err(Other.Odd(\"x\")), after: 2)]"
 }

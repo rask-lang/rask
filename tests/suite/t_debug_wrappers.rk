@@ -96,7 +96,7 @@ test "G6 — an optional" {
     let b: bool? = false
     assert "{b:debug}" == "Option.Some(false)"
     let p: Pt? = Pt(x: 1, y: 2.5)
-    assert "{p:debug}" == "Option.Some(Pt {{ x: 1, y: 2.5 }})"
+    assert "{p:debug}" == "Option.Some(Pt(x: 1, y: 2.5))"
     let pn: Pt? = none
     assert "{pn:debug}" == "Option.None"
 }
@@ -107,7 +107,7 @@ test "G6 — a result" {
     let b = err_int(7)
     assert "{b:debug}" == "Result.Err(Fault.Worse(7))"
     let c = ok_pt()
-    assert "{c:debug}" == "Result.Ok(Pt {{ x: 1, y: 2.5 }})"
+    assert "{c:debug}" == "Result.Ok(Pt(x: 1, y: 2.5))"
     let d = err_pt()
     assert "{d:debug}" == "Result.Err(Fault.Bad)"
     let e = ok_str()
@@ -134,9 +134,9 @@ test "G6 — wrappers nest" {
 
 test "G6 — a wrapper inside a struct, a tuple, a Vec" {
     let h = Holder(tag: "t", maybe: 3, res: ok_int(4))
-    assert "{h:debug}" == "Holder {{ tag: \"t\", maybe: Option.Some(3), res: Result.Ok(4) }}"
+    assert "{h:debug}" == "Holder(tag: \"t\", maybe: Option.Some(3), res: Result.Ok(4))"
     let h2 = Holder(tag: "u", maybe: none, res: err_int(1))
-    assert "{h2:debug}" == "Holder {{ tag: \"u\", maybe: Option.None, res: Result.Err(Fault.Worse(1)) }}"
+    assert "{h2:debug}" == "Holder(tag: \"u\", maybe: Option.None, res: Result.Err(Fault.Worse(1)))"
     let o: f64? = 2.5
     let t = (1, o)
     assert "{t:debug}" == "(1, Option.Some(2.5))"
@@ -160,10 +160,10 @@ test "G6 — a link renders as its node" {
     mut r = Rack<Node>.new()
     let first = r.insert(Node(v: 1, next: none))
     let second = r.insert(Node(v: 2, next: first))
-    assert "{first:debug}" == "Node {{ v: 1, next: Option.None }}"
-    assert "{second:debug}" == "Node {{ v: 2, next: Option.Some(Node {{ v: 1, next: Option.None }}) }}"
+    assert "{first:debug}" == "Node(v: 1, next: Option.None)"
+    assert "{second:debug}" == "Node(v: 2, next: Option.Some(Node(v: 1, next: Option.None)))"
     assert "{first.next:debug}" == "Option.None"
-    assert "{second.next:debug}" == "Option.Some(Node {{ v: 1, next: Option.None }})"
+    assert "{second.next:debug}" == "Option.Some(Node(v: 1, next: Option.None))"
 }
 
 test "a container whose type was inferred from its literal" {
@@ -180,7 +180,7 @@ test "a container whose type was inferred from its literal" {
     let vv = Vec.from([Vec.from([1.0]), Vec.from([2.0])])
     assert "{vv:debug}" == "[[1], [2]]"
     let vp = Vec.from([Pt(x: 1, y: 2.5)])
-    assert "{vp:debug}" == "[Pt {{ x: 1, y: 2.5 }}]"
+    assert "{vp:debug}" == "[Pt(x: 1, y: 2.5)]"
     let m = Map.from([("k", 1.5)])
     assert "{m:debug}" == "Map {{ \"k\": 1.5 }}"
 }

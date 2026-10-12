@@ -391,7 +391,7 @@ impl Interpreter {
                         name: "Some".to_string(),
                         name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
-                            name: "value".to_string(),
+                            name: rask_ast::decl::positional_field_name(0),
                             name_span: Span::new(0, 0),
                             ty: TypeExpr::named("T"),
                             visibility: FieldVisibility::Package,
@@ -427,7 +427,7 @@ impl Interpreter {
                         name: "Ok".to_string(),
                         name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
-                            name: "value".to_string(),
+                            name: rask_ast::decl::positional_field_name(0),
                             name_span: Span::new(0, 0),
                             ty: TypeExpr::named("T"),
                             visibility: FieldVisibility::Package,
@@ -442,7 +442,7 @@ impl Interpreter {
                         name: "Err".to_string(),
                         name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
-                            name: "error".to_string(),
+                            name: rask_ast::decl::positional_field_name(0),
                             name_span: Span::new(0, 0),
                             ty: TypeExpr::named("E"),
                             visibility: FieldVisibility::Package,
