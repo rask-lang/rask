@@ -24,6 +24,11 @@ extend Counter {
     func plus(self, k: i64) -> i64 {
         return self.n + k
     }
+
+    func bump(mutate self) -> i64 {
+        self.n = self.n + 1
+        return self.n
+    }
 }
 
 func tick(mutate c: Counter) -> i64 {
@@ -38,4 +43,6 @@ func main() {
     mut c = Counter(n: 1)
     // ERROR: E0869 a method's receiver is lent before its arguments
     println("{c.plus(tick(mutate c))}")
+    // ERROR: E0869 a method that changes its receiver counts too
+    println("{pair(c.n, c.bump())}")
 }

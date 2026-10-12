@@ -2734,7 +2734,7 @@ impl TypeChecker {
 
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         let written = func.name().unwrap_or("this function").to_string();
-        self.check_argument_changed_later(&written, None, args);
+        self.check_argument_lending(&written, None, args);
         self.note_arg_labels(call_id, written, args, span);
         // A declared function the desugarer couldn't place (one from the
         // stdlib or another package): its arguments in parameter order.
@@ -3391,54 +3391,6 @@ impl TypeChecker {
         self.check_overlapping_argument_borrows(&callee_name, args, params);
     }
 
-    /// An argument that changes a place an earlier argument already lent to
-    /// the call: `pair(x, bump(mutate x))`. Arguments are lent in the order
-    /// written (mem.aliasing), and a method's receiver before them, so `x`
-    /// is lent to the first one when the second asks to change it. Allowed,
-    /// the answer depended on the backend: one read `x` before `bump` ran,
-    /// the other after (#1534).
-    ///
-    /// Checked as written, before the labels place anything.
-    fn check_argument_changed_later(&mut self, callee: &str, receiver: Option<&Expr>, args: &[CallArg]) {
-        let mut lent: Vec<Vec<String>> = receiver.and_then(Self::access_path).into_iter().collect();
-        for arg in args {
-            for (path, span) in Self::places_changed_inside(&arg.expr) {
-                if let Some(held) = lent.iter().find(|held| paths_overlap(held, &path)) {
-                    self.errors.push(TypeError::ArgumentChangedLater {
-                        callee: callee.to_string(),
-                        place: held.join("."),
-                        span,
-                    });
-                    return;
-                }
-            }
-            if let Some(path) = Self::access_path(&arg.expr) {
-                lent.push(path);
-            }
-        }
-    }
-
-    /// The places a call inside `e` changes through a `mutate` or `deleting`
-    /// argument. A closure's body runs later, if at all, so it isn't looked
-    /// into.
-    fn places_changed_inside(e: &Expr) -> Vec<(Vec<String>, Span)> {
-        use rask_ast::expr::ArgMode;
-        let mut out = Vec::new();
-        rask_ast::visit::walk_expr_pruned(e, &mut |inner| {
-            if let ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } = &inner.kind {
-                for a in args {
-                    if matches!(a.mode, ArgMode::Mutate | ArgMode::Deleting) {
-                        if let Some(path) = Self::access_path(&a.expr) {
-                            out.push((path, a.expr.span));
-                        }
-                    }
-                }
-            }
-            !matches!(inner.kind, ExprKind::Closure { .. })
-        });
-        out
-    }
-
     /// F1-F3: two arguments of one call that reach the same storage, where at
     /// least one of them writes.
     ///
@@ -3492,7 +3444,7 @@ impl TypeChecker {
     /// `["p", "pos", "x"]`. `None` for anything that isn't a place — a literal,
     /// a call, an index (the subscript decides which element at run time, so two
     /// index expressions can't be told apart here).
-    fn access_path(expr: &Expr) -> Option<Vec<String>> {
+    pub(super) fn access_path(expr: &Expr) -> Option<Vec<String>> {
         match &expr.kind {
             ExprKind::Ident(name) => Some(vec![name.clone()]),
             ExprKind::Field { object, field } => {
@@ -3866,7 +3818,7 @@ impl TypeChecker {
             Some(o) => format!("{o}.{method}"),
             None => method.to_string(),
         };
-        self.check_argument_changed_later(&written, Some(object), args);
+        self.check_argument_lending(&written, Some(object), args);
         self.note_arg_labels(call_id, written, args, span);
         self.note_method_call(call_id, span);
 
@@ -7236,7 +7188,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
 
 /// Two access paths reach the same storage when one is a prefix of the other.
 /// `p` contains `p.health`; `p.health` and `p.score` are disjoint (F2).
-fn paths_overlap(a: &[String], b: &[String]) -> bool {
+pub(super) fn paths_overlap(a: &[String], b: &[String]) -> bool {
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }
 
