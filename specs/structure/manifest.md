@@ -24,7 +24,7 @@ http   = { registry = "^2.0", allow = ["net"] }
 shared = { path = "../shared" }
 tls    = { git = "https://github.com/x/tls", rev = "a1b2c3" }
 
-[dev_dependencies]
+[dev-dependencies]
 mock-server = { registry = "^2.0" }
 ```
 
@@ -38,7 +38,7 @@ mock-server = { registry = "^2.0" }
 | **MF4: Typed strings** | TOML has no unit or version literals, so the field type checks the string: `"^2.0"` for a version range, `"1.0.0"` for a version, `"30s"` for a duration, a fixed set for an enum-like field |
 | **MF5: Variant tables** | A table that picks one of several cases names the case by its key: exactly one of the case keys appears. A case may own companion keys (a git dependency's `rev`, `branch`), and shared keys are allowed whatever the case |
 | **MF6: Every error at once** | Checking collects every problem in the file, each with its dotted path, instead of stopping at the first |
-| **MF7: snake_case keys** | Keys match the Rask field names they map onto: `dev_dependencies`, `opt_level` |
+| **MF7: kebab-case keys** | Keys are kebab-case, the TOML convention and the same shape as package names: `dev-dependencies`, `opt-level`. A key maps onto the Rask field with `-` read as `_` |
 
 A dependency is the clearest variant table. Where it comes from is the case; `target`, `with`, `allow`, `select` and `feature` are shared:
 

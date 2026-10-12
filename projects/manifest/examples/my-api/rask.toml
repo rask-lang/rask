@@ -14,7 +14,7 @@ epoll         = { registry = "^1.0", target = "linux" }
 protobuf-rask = { registry = "^0.9", allow = ["build_exec"] }
 tls           = { git = "https://github.com/example/tls", rev = "a1b2c3" }
 
-[dev_dependencies]
+[dev-dependencies]
 mock-server = { registry = "^2.0" }
 
 [features.ssl.dependencies]
@@ -26,4 +26,4 @@ enables = ["ssl", "logging"]
 
 [profiles.staging]
 inherits = "release"
-debug_info = true
+debug-info = true

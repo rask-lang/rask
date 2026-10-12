@@ -86,8 +86,8 @@ public func load_package(text: string) -> Package or LoadError {
         members: strs_at(pkg, "members"),
         sandbox: bool_at(pkg, "sandbox") ?? false,
         dependencies: deps_at(tree, "dependencies"),
-        dev_dependencies: deps_at(tree, "dev_dependencies"),
-        build_dependencies: deps_at(tree, "build_dependencies"),
+        dev_dependencies: deps_at(tree, "dev-dependencies"),
+        build_dependencies: deps_at(tree, "build-dependencies"),
         features: features_at(tree),
         exclusive_features: exclusive_at(tree),
         profiles: profiles_at(tree),
@@ -142,7 +142,7 @@ func pairs_at(entries: Vec<Entry>, key: string) -> Vec<(string, string)> {
 
 func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
     mut out = Vec<ExclusiveFeature>.new()
-    for e in table_at(tree, "exclusive_features") {
+    for e in table_at(tree, "exclusive-features") {
         if e.value is Table(g) {
             mut options = Vec<FeatureOption>.new()
             for o in table_at(g, "options") {
@@ -215,8 +215,8 @@ func features_at(tree: Vec<Entry>) -> Vec<Feature> {
                 on_by_default: bool_at(f, "default") ?? false,
                 enables: strs_at(f, "enables"),
                 dependencies: deps_at(f, "dependencies"),
-                dev_dependencies: deps_at(f, "dev_dependencies"),
-                build_dependencies: deps_at(f, "build_dependencies"),
+                dev_dependencies: deps_at(f, "dev-dependencies"),
+                build_dependencies: deps_at(f, "build-dependencies"),
             })
         }
     }
@@ -230,11 +230,11 @@ func profiles_at(tree: Vec<Entry>) -> Vec<Profile> {
             out.push(Profile {
                 name: e.key,
                 inherits: str_at(p, "inherits"),
-                opt_level: str_at(p, "opt_level"),
-                debug_info: bool_at(p, "debug_info"),
-                overflow_checks: bool_at(p, "overflow_checks"),
+                opt_level: str_at(p, "opt-level"),
+                debug_info: bool_at(p, "debug-info"),
+                overflow_checks: bool_at(p, "overflow-checks"),
                 lto: str_at(p, "lto"),
-                codegen_units: int_at(p, "codegen_units"),
+                codegen_units: int_at(p, "codegen-units"),
                 strip: bool_at(p, "strip"),
                 panic: str_at(p, "panic"),
             })

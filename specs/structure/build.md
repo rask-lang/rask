@@ -36,10 +36,10 @@ json = { registry = "^1.5" }
 |-------|---------|
 | `[package]` | Identity and metadata (required) |
 | `[dependencies]` | Ordinary dependencies |
-| `[dev_dependencies]` | Dependencies of `test` blocks (D4) |
-| `[build_dependencies]` | Dependencies of `func build()` (D4) |
+| `[dev-dependencies]` | Dependencies of `test` blocks (D4) |
+| `[build-dependencies]` | Dependencies of `func build()` (D4) |
 | `[features.<name>]` | Feature flag, with the dependencies it gates (F1) |
-| `[exclusive_features.<name>]` | Pick-one feature group (FG1) |
+| `[exclusive-features.<name>]` | Pick-one feature group (FG1) |
 | `[profiles.<name>]` | Custom build profile (PR2) |
 
 ### Package Keys
@@ -53,7 +53,7 @@ json = { registry = "^1.5" }
 | `repository` | string | Source repository URL |
 | `members` | list | Workspace member directories |
 | `sandbox` | bool | Sandbox root build script (default: `false`). Deps always sandboxed (SB1) |
-| `vendor_dir` | string | Resolve dependencies from this directory first (VD3) |
+| `vendor-dir` | string | Resolve dependencies from this directory first (VD3) |
 
 ## Dependencies
 
@@ -62,7 +62,7 @@ json = { registry = "^1.5" }
 | **D1: Semver ranges** | Version strings use semver: `"^2.0"` (compatible), `">=1.5"` (minimum), `"=1.0.0"` (exact) |
 | **D2: One source** | A dependency names exactly one of `registry`, `path` or `git` (`struct.manifest/MF5`). `rev` and `branch` belong to `git` |
 | **D3: No duplicates** | The same name twice in one table is an error (`struct.manifest/WF4`) |
-| **D4: Scopes** | `dev_dependencies` for test deps, `build_dependencies` for build script deps. Any other table is an error (`struct.manifest/MF3`) |
+| **D4: Scopes** | `dev-dependencies` for test deps, `build-dependencies` for build script deps. Any other table is an error (`struct.manifest/MF3`) |
 | **D4a: A dev dep goes where the test blocks go** | A release build strips `test` blocks (`std.testing/T1`), so it links no dev dependency and drops the now-dead imports with them. Every other build keeps the test blocks and links the deps they need. A use that survives the strip — ordinary code reaching a dev dep — names the scope and fails |
 | **D4b: Scopes don't inherit** | Only the root's scoped deps are linked. A dependency's own dev deps belong to its own test run; pulling them in would link half the tree to run one test |
 
@@ -140,7 +140,7 @@ ERROR [struct.build/PM9]: build_exec capability required
 | **F1: Optional deps** | Deps in a feature's tables are gated by that feature |
 | **F2: Code-only features** | Features without deps are flags for `comptime if` |
 | **F3: Default features** | `default = true` — users disable with `--no-default-features` |
-| **F4: Scopes nest** | A feature's dev and build deps go in its own `dev_dependencies` and `build_dependencies` tables |
+| **F4: Scopes nest** | A feature's dev and build deps go in its own `dev-dependencies` and `build-dependencies` tables |
 | **F5: No duplicates** | Same dep in multiple features is an error — gate it on the other with `feature = "other"` |
 | **F6: No circular enables** | Circular `enables` references are a compile error |
 
@@ -159,7 +159,7 @@ enables = ["ssl", "logging"]
 
 | Rule | Description |
 |------|-------------|
-| **FG1: Mutual exclusion** | `[exclusive_features.<name>]` — exactly one option selected |
+| **FG1: Mutual exclusion** | `[exclusive-features.<name>]` — exactly one option selected |
 | **FG2: Required default** | Every group names its `default` option |
 | **FG3: Named options** | Each `options.<name>` table holds that option's dependencies |
 | **FG4: Selector agreement** | If multiple deps select different options, resolution fails with a conflict error showing both sources |
@@ -167,7 +167,7 @@ enables = ["ssl", "logging"]
 | **FG6: Root wins** | Root package's selection overrides transitive selections |
 
 ```toml
-[exclusive_features.runtime]
+[exclusive-features.runtime]
 default = "tokio"
 options.tokio     = { tokio     = { registry = "^1.0" } }
 options.async-std = { async-std = { registry = "^1.12" } }
@@ -200,18 +200,18 @@ FIX: Override in the root rask.toml:
 ```toml
 [profiles.embedded]
 inherits = "release"
-opt_level = "z"
+opt-level = "z"
 panic = "abort"
 ```
 
 | Key | Type | Values |
 |-----|------|--------|
 | `inherits` | string | Profile name |
-| `opt_level` | string | `"0"`-`"3"`, `"s"`, `"z"` |
-| `debug_info` | bool | Include debug symbols |
-| `overflow_checks` | bool | Runtime integer overflow checks |
+| `opt-level` | string | `"0"`-`"3"`, `"s"`, `"z"` |
+| `debug-info` | bool | Include debug symbols |
+| `overflow-checks` | bool | Runtime integer overflow checks |
 | `lto` | string | `"off"`, `"thin"`, `"fat"` |
-| `codegen_units` | int | 1-256 |
+| `codegen-units` | int | 1-256 |
 | `strip` | bool | Strip debug symbols |
 | `panic` | string | `"unwind"`, `"abort"` |
 
@@ -453,7 +453,7 @@ $ rask add openssl --feature ssl
   Added openssl = { registry = "^3.1.0" } to [features.ssl.dependencies]
 
 $ rask add mock-server --dev
-  Added mock-server = { registry = "^2.0.0" } to [dev_dependencies]
+  Added mock-server = { registry = "^2.0.0" } to [dev-dependencies]
 ```
 
 ### rask remove
@@ -640,7 +640,7 @@ ERROR [struct.build/SG4]: signature verification failed
 |------|-------------|
 | **VD1: Copy** | `rask vendor` copies all resolved dependencies to `vendor/` |
 | **VD2: Checksum preserved** | Vendored packages include their checksums for integrity |
-| **VD3: vendor_dir config** | `vendor_dir = "vendor"` under `[package]` enables vendor resolution |
+| **VD3: vendor-dir config** | `vendor-dir = "vendor"` under `[package]` enables vendor resolution |
 | **VD4: Priority** | Vendor dir takes priority over registry. Lock file still required |
 | **VD5: Offline** | With vendored deps, `rask build` works without network access |
 
@@ -769,7 +769,7 @@ json          = { registry = "^1.5" }
 epoll         = { registry = "^1.0", target = "linux" }
 protobuf-rask = { registry = "^0.9", allow = ["build_exec"] }
 
-[dev_dependencies]
+[dev-dependencies]
 mock-server = { registry = "^2.0" }
 
 [features.ssl.dependencies]
@@ -781,7 +781,7 @@ enables = ["ssl", "logging"]
 
 [profiles.staging]
 inherits = "release"
-debug_info = true
+debug-info = true
 ```
 
 And `build.rk`, because this package generates code:

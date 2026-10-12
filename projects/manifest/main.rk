@@ -65,13 +65,13 @@ func print_package(p: Package) {
     }
     println("  sandbox: {p.sandbox}")
     print_deps("  ", "dependencies", p.dependencies)
-    print_deps("  ", "dev_dependencies", p.dev_dependencies)
-    print_deps("  ", "build_dependencies", p.build_dependencies)
+    print_deps("  ", "dev-dependencies", p.dev_dependencies)
+    print_deps("  ", "build-dependencies", p.build_dependencies)
     for f in p.features {
         println("  feature {f.name} (default {f.on_by_default}) enables [{f.enables.join(", ")}]")
         print_deps("    ", "dependencies", f.dependencies)
-        print_deps("    ", "dev_dependencies", f.dev_dependencies)
-        print_deps("    ", "build_dependencies", f.build_dependencies)
+        print_deps("    ", "dev-dependencies", f.dev_dependencies)
+        print_deps("    ", "build-dependencies", f.build_dependencies)
     }
     for g in p.exclusive_features {
         println("  exclusive feature {g.name} (default {g.default})")
@@ -85,7 +85,7 @@ func print_package(p: Package) {
             line = "{line} inherits {i}"
         }
         if pr.debug_info? as d {
-            line = "{line} debug_info {d}"
+            line = "{line} debug-info {d}"
         }
         println(line)
     }
