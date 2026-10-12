@@ -50,6 +50,21 @@ func first_arr(v: Val) -> Vec<i64> {
     }
 }
 
+struct Slot {
+    val: Val
+}
+
+// Through an element of a borrowed vector: the element still lives in the
+// vector, so its payload is the caller's too. This one got through while the
+// plain-parameter form above was caught, and double-freed natively.
+func first_slot_arr(slots: Vec<Slot>) -> Vec<i64> {
+    if slots[0].val is Arr(a) {
+        // ERROR: E0872
+        return a
+    }
+    return Vec.new()
+}
+
 func main() {
     let v = Val.Arr([1, 2])
     println("{v.arr_copy()!.len()}")

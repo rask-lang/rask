@@ -6562,11 +6562,18 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// The collection a value-mode `for` lends its elements out of, when it is
-    /// one: a `Vec`, `Map` or array named by a binding or a field path. A call
-    /// or an adapter chain yields values the loop owns (`take_all()`, a `map`),
-    /// and a range yields integers.
+    /// one: a `Vec`, `Map` or array, named by a binding or a field path or
+    /// returned by a call. An adapter chain yields values the loop owns
+    /// (`take_all()`, a `map`), and a range yields integers; neither is a
+    /// `Vec`, so neither lends.
+    ///
+    /// A returned collection used to count as owned. It isn't: the loop holds
+    /// the temporary and frees it, elements included, when it ends, so an
+    /// element given away inside was freed twice natively (`for s in sites()
+    /// { out.push(Change.Rename { at: s }) }`). LP4 has value mode lend
+    /// whatever the source; `take_all()` is the consuming walk (LP7).
     fn loop_lender(&self, iter: &Expr) -> Option<String> {
-        let place = Self::place_text(iter)?;
+        let place = Self::place_text(iter).or_else(|| Self::call_text(iter))?;
         let ty = self.node_ty(&iter.id)?;
         let lends = match ty {
             Type::Array { .. } => true,
@@ -6577,6 +6584,18 @@ impl<'a> OwnershipChecker<'a> {
             _ => false,
         };
         lends.then_some(place)
+    }
+
+    /// `sites()` or `items.clone()`, for a message.
+    fn call_text(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Call { func, .. } => Some(format!("{}()", Self::place_text(func)?)),
+            ExprKind::MethodCall { object, method, .. } => {
+                let recv = Self::place_text(object).or_else(|| Self::call_text(object))?;
+                Some(format!("{}.{}()", recv, method))
+            }
+            _ => None,
+        }
     }
 
     /// `items` or `self.items`, for a message; `None` for anything that isn't
@@ -6872,6 +6891,9 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Field { object, .. } => self.borrowed_source(object),
+            // An element still lives in its container (mem.borrowing/E4), so
+            // `es[0].v` is as much the caller's as `es` is.
+            ExprKind::Index { object, .. } => self.borrowed_source(object),
             _ => None,
         }
     }

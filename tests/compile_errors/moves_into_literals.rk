@@ -54,6 +54,27 @@ func loop_element_bound(groups: Vec<Vec<i64>>) {
     }
 }
 
+func make_groups() -> Vec<Vec<i64>> {
+    mut out = Vec<Vec<i64>>.new()
+    out.push([1, 2])
+    return out
+}
+
+// A collection a call returned lends the same way: the loop frees it,
+// elements included, when it ends. This compiled and double-freed natively.
+func give_away_from_temporary() {
+    mut all = Vec<Holder>.new()
+    for g in make_groups() {
+        // ERROR: the loop only lends `g` out of `make_groups()` (E0902)
+        all.push(Holder { v: g })
+    }
+    for g in make_groups().clone() {
+        // ERROR: same for a method call's result (E0902)
+        all.push(Holder { v: g })
+    }
+    println(all.len())
+}
+
 func not_copy() {
     let v: Vec<i64> = [1]
     // ERROR: `Vec<i64>` isn't Copy, and `wrap` needs `T: Copy` (E0333)
