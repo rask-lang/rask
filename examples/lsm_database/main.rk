@@ -16,13 +16,13 @@ struct CliArgs {
 
 func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
     mut result = CliArgs(
-        command: "",
-        db_dir: "./rask-db",
-        key: "",
-        value: "",
-        end_key: "",
-        count: 100,
-        prefix: "key",
+        command: ""
+        db_dir: "./rask-db"
+        key: ""
+        value: ""
+        end_key: ""
+        count: 100
+        prefix: "key"
     )
 
     mut positional = Vec.new()

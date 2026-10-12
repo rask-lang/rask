@@ -78,31 +78,31 @@ extend Range<T> where T: Integer {
     public func rev(self) -> Range<T> {
         if !self.bounded {
             return Range(
-                start: self.start,
-                end: self.start,
-                stride: self.stride,
-                inclusive: false,
-                descending: false,
-                bounded: true,
+                start: self.start
+                end: self.start
+                stride: self.stride
+                inclusive: false
+                descending: false
+                bounded: true
             )
         }
         if self.is_empty() {
             return Range(
-                start: self.start,
-                end: self.start,
-                stride: self.stride,
-                inclusive: false,
-                descending: false,
-                bounded: true,
+                start: self.start
+                end: self.start
+                stride: self.stride
+                inclusive: false
+                descending: false
+                bounded: true
             )
         }
         return Range(
-            start: self.last_value(),
-            end: self.start,
-            stride: self.stride,
-            inclusive: true,
-            descending: !self.descending,
-            bounded: true,
+            start: self.last_value()
+            end: self.start
+            stride: self.stride
+            inclusive: true
+            descending: !self.descending
+            bounded: true
         )
     }
 
@@ -121,30 +121,30 @@ extend Range<T> where T: Integer {
             // interpreter.
             if !self.bounded {
                 return Range(
-                    start: self.start,
-                    end: self.start,
-                    stride: 0 - s,
-                    inclusive: false,
-                    descending: false,
-                    bounded: true,
+                    start: self.start
+                    end: self.start
+                    stride: 0 - s
+                    inclusive: false
+                    descending: false
+                    bounded: true
                 )
             }
             return Range(
-                start: self.start,
-                end: self.end,
-                stride: 0 - s,
-                inclusive: self.inclusive,
-                descending: true,
-                bounded: self.bounded,
+                start: self.start
+                end: self.end
+                stride: 0 - s
+                inclusive: self.inclusive
+                descending: true
+                bounded: self.bounded
             )
         }
         return Range(
-            start: self.start,
-            end: self.end,
-            stride: s,
-            inclusive: self.inclusive,
-            descending: self.descending,
-            bounded: self.bounded,
+            start: self.start
+            end: self.end
+            stride: s
+            inclusive: self.inclusive
+            descending: self.descending
+            bounded: self.bounded
         )
     }
 

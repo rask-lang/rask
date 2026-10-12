@@ -33,12 +33,12 @@ extend GrepError {
 
 func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
     mut opts = GrepOptions(
-        pattern: "",
-        files: Vec.new(),
-        ignore_case: false,
-        line_numbers: false,
-        count_only: false,
-        invert_match: false,
+        pattern: ""
+        files: Vec.new()
+        ignore_case: false
+        line_numbers: false
+        count_only: false
+        invert_match: false
     )
 
     mut positional = Vec.new()

@@ -48,10 +48,10 @@ struct CopyOptions {
 
 func parse_args(take args: Vec<string>) -> CopyOptions or ArgError {
     mut opts = CopyOptions(
-        source: "",
-        dest: "",
-        force: false,
-        verbose: false,
+        source: ""
+        dest: ""
+        force: false
+        verbose: false
     )
 
     mut positional = Vec.new()

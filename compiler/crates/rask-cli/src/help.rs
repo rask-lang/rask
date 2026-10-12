@@ -25,7 +25,7 @@ pub fn print_usage() {
     println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
     println!("  {} {}     Remove build artifacts", output::command("clean"), output::arg("[dir]"));
     println!("  {}          List available compilation targets", output::command("targets"));
-    println!("  {} {}  Format source files", output::command("fmt"), output::arg("<file | dir>"));
+    println!("  {} {}  Format source files", output::command("fmt"), output::arg("<file | dir>..."));
     println!("  {} {}   Explain an error code", output::command("explain"), output::arg("<code>"));
     println!("  {}             Show this help", output::command("help"));
     println!("  {}          Show version", output::command("version"));
@@ -413,7 +413,7 @@ pub fn print_fmt_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("fmt"),
-        output::arg("[file.rk | dir] [-w] [--check]"));
+        output::arg("[file.rk | dir]... [-w] [--check]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}       Write formatted output back to file(s) in place", output::arg("-w, --write"));

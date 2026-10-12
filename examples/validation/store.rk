@@ -41,13 +41,13 @@ struct Store {
 extend Store {
     func new() -> Store {
         return Store(
-            tasks: Rack.new(),
-            by_id: Map.new(),
-            users: Map.new(),
-            projects: Map.new(),
-            next_task: TaskId(1),
-            next_user: UserId(1),
-            next_project: ProjectId(1),
+            tasks: Rack.new()
+            by_id: Map.new()
+            users: Map.new()
+            projects: Map.new()
+            next_task: TaskId(1)
+            next_user: UserId(1)
+            next_project: ProjectId(1)
         )
     }
 
@@ -62,11 +62,11 @@ extend Store {
 
         // status/assignee/deps/tags all fall to their field defaults (FD3).
         let task = Task(
-            id,
-            title,
-            project,
-            priority,
-            created_at: now_millis(),
+            id
+            title
+            project
+            priority
+            created_at: now_millis()
         )
 
         let h = self.tasks.insert(task)
@@ -179,10 +179,10 @@ extend Store {
         let id = self.next_user
         self.next_user = self.next_user.next()
         self.users.insert(id, User(
-            id,
-            name,
-            email,
-            active: true,
+            id
+            name
+            email
+            active: true
         ))
         return id
     }
@@ -192,10 +192,10 @@ extend Store {
             return StoreError.NotFound(id: id.value)
         }
         return UserView(
-            id: u.id.value,
-            name: u.name,
-            email: u.email.raw,
-            active: u.active,
+            id: u.id.value
+            name: u.name
+            email: u.email.raw
+            active: u.active
         )
     }
 
@@ -203,10 +203,10 @@ extend Store {
         let id = self.next_project
         self.next_project = self.next_project.next()
         self.projects.insert(id, Project(
-            id,
-            name,
-            owner,
-            archived: false,
+            id
+            name
+            owner
+            archived: false
         ))
         return id
     }
@@ -254,14 +254,14 @@ func task_is_blocked(h: Link<Task>) -> bool {
 
 func to_view(h: Link<Task>) -> TaskView {
     return TaskView(
-        id: h.id.value,
-        title: h.title,
-        project_id: h.project.value,
-        priority: h.priority.label(),
-        status: h.status.label(),
-        assignee: opt_id(h.assignee),
-        tags: h.tags.clone(),
-        blocked: task_is_blocked(h),
+        id: h.id.value
+        title: h.title
+        project_id: h.project.value
+        priority: h.priority.label()
+        status: h.status.label()
+        assignee: opt_id(h.assignee)
+        tags: h.tags.clone()
+        blocked: task_is_blocked(h)
     )
 }
 

@@ -76,14 +76,14 @@ func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> 
     let max_key = entries[entries.len() - 1].key
 
     return SstMeta(
-        id,
-        level,
-        path,
-        min_key,
-        max_key,
-        entry_count: entries.len().wrap<i32>(),
-        max_seq,
-        bloom,
+        id
+        level
+        path
+        min_key
+        max_key
+        entry_count: entries.len().wrap<i32>()
+        max_seq
+        bloom
     )
 }
 
@@ -157,9 +157,9 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
         }
 
         index.push(BlockIndex(
-            first_key: parts[0].to_string(),
-            offset: offset.wrap<i32>(),
-            count: count.wrap<i32>(),
+            first_key: parts[0].to_string()
+            offset: offset.wrap<i32>()
+            count: count.wrap<i32>()
         ))
     }
     return index
@@ -289,14 +289,14 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         }
 
         metas.push(SstMeta(
-            id: id.wrap<i32>(),
-            level: level.wrap<i32>(),
-            path,
-            min_key,
-            max_key,
-            entry_count,
-            max_seq,
-            bloom,
+            id: id.wrap<i32>()
+            level: level.wrap<i32>()
+            path
+            min_key
+            max_key
+            entry_count
+            max_seq
+            bloom
         ))
     }
 
@@ -307,17 +307,17 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
 
 test "find block for key" {
     let index = Vec.from([BlockIndex(
-        first_key: "aaa",
-        offset: 0,
-        count: 64,
+        first_key: "aaa"
+        offset: 0
+        count: 64
     ), BlockIndex(
-        first_key: "mmm",
-        offset: 1,
-        count: 64,
+        first_key: "mmm"
+        offset: 1
+        count: 64
     ), BlockIndex(
-        first_key: "zzz",
-        offset: 2,
-        count: 32,
+        first_key: "zzz"
+        offset: 2
+        count: 32
     )])
 
     assert find_block_for_key(index, "abc")! == 0

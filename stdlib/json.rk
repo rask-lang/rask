@@ -107,9 +107,9 @@ struct JsonParser {
 extend JsonParser {
     func new(input: string) -> JsonParser {
         return JsonParser(
-            input,
-            pos: 0,
-            len: input.len(),
+            input
+            pos: 0
+            len: input.len()
         )
     }
 

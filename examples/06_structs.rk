@@ -21,8 +21,8 @@ extend Person {
 
 func main() {
     let alice = Person(
-        name: "Alice",
-        age: 25,
+        name: "Alice"
+        age: 25
     )
 
     alice.greet()
@@ -32,8 +32,8 @@ func main() {
     }
 
     let bob = Person(
-        name: "Bob",
-        age: 16,
+        name: "Bob"
+        age: 16
     )
 
     bob.greet()

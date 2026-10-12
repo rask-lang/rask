@@ -318,9 +318,9 @@ extend fs {
             return IoError.last_os_error()
         }
         return Metadata(
-            size: unsafe rask_stat_loaded_size(),
-            modified: unsafe rask_stat_loaded_mtime(),
-            accessed: unsafe rask_stat_loaded_atime(),
+            size: unsafe rask_stat_loaded_size()
+            modified: unsafe rask_stat_loaded_mtime()
+            accessed: unsafe rask_stat_loaded_atime()
         )
     }
 

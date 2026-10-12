@@ -130,9 +130,9 @@ func interrupt_handler(tx: Sender<Reading>, start_time: time.Instant, sample_rat
         for sensor_id in 0..3 {
             let value = read_hardware_sensor(sensor_id, sequence)
             let _ = tx.send(Reading(
-                sensor_id,
-                value,
-                timestamp_ns: now_ns,
+                sensor_id
+                value
+                timestamp_ns: now_ns
             ))
         }
 
@@ -234,15 +234,15 @@ func main() {
         hum_hist.push(0.0)
     }
     mut state = ProcessorState(
-        temp_history: temp_hist,
-        pressure_history: pres_hist,
-        humidity_history: hum_hist,
-        history_idx: 0,
-        history_count: 0,
-        temp_avg: 0.0,
-        pressure_avg: 0.0,
-        humidity_avg: 0.0,
-        samples_processed: 0,
+        temp_history: temp_hist
+        pressure_history: pres_hist
+        humidity_history: hum_hist
+        history_idx: 0
+        history_count: 0
+        temp_avg: 0.0
+        pressure_avg: 0.0
+        humidity_avg: 0.0
+        samples_processed: 0
     )
 
     mut timing_samples = Vec.new()
@@ -250,13 +250,13 @@ func main() {
         timing_samples.push(0)
     }
     mut timing = TimingStats(
-        samples: timing_samples,
-        sample_idx: 0,
-        sample_count: 0,
-        min_ns: 9999999999,
-        max_ns: 0,
-        sum_ns: 0,
-        deadline_misses: 0,
+        samples: timing_samples
+        sample_idx: 0
+        sample_count: 0
+        min_ns: 9999999999
+        max_ns: 0
+        sum_ns: 0
+        deadline_misses: 0
     )
 
     let start_time = time.Instant.now()

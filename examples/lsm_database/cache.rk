@@ -22,8 +22,8 @@ struct BlockCache {
 extend BlockCache {
     func new() -> BlockCache {
         return BlockCache(
-            blocks: Map.new(),
-            access_counter: 0,
+            blocks: Map.new()
+            access_counter: 0
         )
     }
 
@@ -53,10 +53,10 @@ extend BlockCache {
 
         self.access_counter += 1
         self.blocks.insert(key, CacheBlock(
-            sst_id,
-            block_id,
-            entries,
-            access_count: self.access_counter,
+            sst_id
+            block_id
+            entries
+            access_count: self.access_counter
         ))
     }
 

@@ -52,8 +52,8 @@ struct Database {
 extend Database {
     func new() -> Database {
         return Database(
-            users: Map.new(),
-            next_id: 1,
+            users: Map.new()
+            next_id: 1
         )
     }
 }
@@ -86,9 +86,9 @@ func handle(req: Request) -> Response {
 func list_users() -> Response {
     let users = with db.read() as d {
         d.users.values().map(|u| UserResponse(
-            id: u.id,
-            name: u.name,
-            email: u.email,
+            id: u.id
+            name: u.name
+            email: u.email
         )).to_vec()
     }
     return Response.json(json.encode(users))
@@ -108,9 +108,7 @@ func get_user(id: i64) -> Response {
 
 func create_user(body: string) -> Response {
     let req = json.decode<CreateUserRequest>(body) is CreateUserRequest else {
-        return Response.bad_request(json.encode(ErrorResponse(
-            error: "invalid JSON",
-        )))
+        return Response.bad_request(json.encode(ErrorResponse(error: "invalid JSON")))
     }
 
     let user = with db.write() as d {

@@ -54,9 +54,9 @@ test "config carries its defaults" {
 
 test "validation catches an empty title" {
     let req = CreateTaskRequest(
-        title: "",
-        project_id: 1,
-        priority: "medium",
+        title: ""
+        project_id: 1
+        priority: "medium"
     )
     let result = req.validate()
     assert result is ValidationError

@@ -109,10 +109,10 @@ public struct Request {
 extend Request {
     public func new(method: Method, url: string) -> Request {
         return Request(
-            method,
-            url,
-            headers: Headers.new(),
-            body: "",
+            method
+            url
+            headers: Headers.new()
+            body: ""
         )
     }
     public func with_header(take self, name: string, value: string) -> Request {
@@ -183,9 +183,9 @@ extend Response {
     // ── Constructors ──
     public func new(status: u16, body: string) -> Response {
         return Response(
-            status,
-            headers: Headers.new(),
-            body,
+            status
+            headers: Headers.new()
+            body
         )
     }
     public func ok(body: string) -> Response {
@@ -361,10 +361,10 @@ func parse_http_request(raw: string) -> Request or HttpError {
     }
 
     return Request(
-        method,
-        url: path,
-        headers,
-        body,
+        method
+        url: path
+        headers
+        body
     )
 }
 
@@ -730,9 +730,9 @@ func parse_http_response(raw: string) -> Response or HttpError {
     }
 
     return Response(
-        status,
-        headers,
-        body,
+        status
+        headers
+        body
     )
 }
 

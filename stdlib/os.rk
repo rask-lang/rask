@@ -144,13 +144,13 @@ extend Command {
     /// can't read has little to offer — and stdin is inherited.
     public func new(program: string) -> Command {
         return Command(
-            program,
-            argv: Vec.new(),
-            envs: Vec.new(),
-            dir: "",
-            stdin_cfg: Stdio.Inherit,
-            stdout_cfg: Stdio.Piped,
-            stderr_cfg: Stdio.Piped,
+            program
+            argv: Vec.new()
+            envs: Vec.new()
+            dir: ""
+            stdin_cfg: Stdio.Inherit
+            stdout_cfg: Stdio.Piped
+            stderr_cfg: Stdio.Piped
         )
     }
 
@@ -224,9 +224,9 @@ extend Command {
             return IoError.Other("could not start `{self.program}`")
         }
         return Output(
-            status: status.clamp<i32>(),
-            stdout: os.process_stdout(),
-            stderr: os.process_stderr(),
+            status: status.clamp<i32>()
+            stdout: os.process_stdout()
+            stderr: os.process_stderr()
         )
     }
 
@@ -242,9 +242,9 @@ extend Command {
             return IoError.Other("could not start `{self.program}`")
         }
         return Process(
-            handle: h,
-            stdin_piped: is_piped(self.stdin_cfg),
-            stdout_piped: is_piped(self.stdout_cfg),
+            handle: h
+            stdin_piped: is_piped(self.stdin_cfg)
+            stdout_piped: is_piped(self.stdout_cfg)
         )
     }
 }
@@ -324,9 +324,9 @@ extend Process {
             return IoError.Other("the child could not be waited for")
         }
         let out = Output(
-            status: status.clamp<i32>(),
-            stdout: os.process_captured_stdout(self.handle),
-            stderr: os.process_captured_stderr(self.handle),
+            status: status.clamp<i32>()
+            stdout: os.process_captured_stdout(self.handle)
+            stderr: os.process_captured_stderr(self.handle)
         )
         os.process_release(self.handle)
         return out
@@ -341,9 +341,9 @@ extend Process {
             return none
         }
         return Output(
-            status: status.clamp<i32>(),
-            stdout: os.process_captured_stdout(self.handle),
-            stderr: os.process_captured_stderr(self.handle),
+            status: status.clamp<i32>()
+            stdout: os.process_captured_stdout(self.handle)
+            stderr: os.process_captured_stderr(self.handle)
         )
     }
 

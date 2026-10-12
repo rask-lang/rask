@@ -48,9 +48,9 @@ extend Version {
         }
 
         return Version(
-            major,
-            minor,
-            patch,
+            major
+            minor
+            patch
         )
     }
 
@@ -100,9 +100,9 @@ extend Constraint {
                 // ^1.2.3 → >=1.2.3, <2.0.0
                 if v < min { return false }
                 let next_major = Version(
-                    major: min.major + 1,
-                    minor: 0,
-                    patch: 0,
+                    major: min.major + 1
+                    minor: 0
+                    patch: 0
                 )
                 return v < next_major
             }
@@ -110,9 +110,9 @@ extend Constraint {
                 // ~1.2.3 → >=1.2.3, <1.3.0
                 if v < min { return false }
                 let next_minor = Version(
-                    major: min.major,
-                    minor: min.minor + 1,
-                    patch: 0,
+                    major: min.major
+                    minor: min.minor + 1
+                    patch: 0
                 )
                 return v < next_minor
             }
@@ -267,9 +267,9 @@ struct DepGraph {
 extend DepGraph {
     func new() -> DepGraph {
         return DepGraph(
-            packages: Rack.new(),
-            root: none,
-            by_name: Map.new(),
+            packages: Rack.new()
+            root: none
+            by_name: Map.new()
         )
     }
 }
@@ -530,10 +530,10 @@ func parse_meta_fields(m: Map<string, JsonValue>, source: string) -> PackageMeta
     }
 
     return PackageMeta(
-        name,
-        version,
-        checksum,
-        deps,
+        name
+        version
+        checksum
+        deps
     )
 }
 
@@ -616,14 +616,14 @@ func resolve(manifest: Manifest, registry: any Registry, mutate graph: DepGraph)
 
     // Insert root package
     let root_meta = PackageMeta(
-        name: manifest.name,
-        version: manifest.version.clone(),
-        checksum: "",
-        deps: Vec.new(),
+        name: manifest.name
+        version: manifest.version.clone()
+        checksum: ""
+        deps: Vec.new()
     )
     mut root = graph.packages.insert(ResolvedPkg(
-        meta: root_meta,
-        deps: Vec.new(),
+        meta: root_meta
+        deps: Vec.new()
     ))
     graph.root = root
 
@@ -675,12 +675,12 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
 
     mut link = graph.packages.insert(ResolvedPkg(
         meta: PackageMeta(
-            name: meta.name,
-            version: meta.version.clone(),
-            checksum: meta.checksum,
-            deps: Vec.new(),
-        ),
-        deps: Vec.new(),
+            name: meta.name
+            version: meta.version.clone()
+            checksum: meta.checksum
+            deps: Vec.new()
+        )
+        deps: Vec.new()
     ))
 
     graph.by_name.insert(name, link)
@@ -728,10 +728,10 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
         }
 
         items.push(FetchItem(
-            name,
-            version: pkg.meta.version.clone(),
-            checksum: pkg.meta.checksum,
-            cache_path,
+            name
+            version: pkg.meta.version.clone()
+            checksum: pkg.meta.checksum
+            cache_path
         ))
     }
     return items
@@ -915,9 +915,9 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
             // Flush previous
             if !current_name.is_empty() {
                 packages.insert(current_name, LockedPackage(
-                    name: current_name,
-                    version: current_version,
-                    checksum: current_checksum,
+                    name: current_name
+                    version: current_version
+                    checksum: current_checksum
                 ))
             }
             current_name = ""
@@ -943,9 +943,9 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
     // Flush last
     if !current_name.is_empty() {
         packages.insert(current_name, LockedPackage(
-            name: current_name,
-            version: current_version,
-            checksum: current_checksum,
+            name: current_name
+            version: current_version
+            checksum: current_checksum
         ))
     }
 
@@ -1064,13 +1064,13 @@ struct CliArgs {
 
 func parse_cli_args(args: Vec<string>) -> CliArgs or FetchError {
     mut result = CliArgs(
-        command: "",
-        manifest_path: "build.rk",
-        registry_type: RegistryType.Local,
-        registry_path: "./registry",
-        registry_url: "http://packages.rask-lang.dev",
-        cache_dir: "/tmp/rask-cache",
-        lock_path: "rask.lock",
+        command: ""
+        manifest_path: "build.rk"
+        registry_type: RegistryType.Local
+        registry_path: "./registry"
+        registry_url: "http://packages.rask-lang.dev"
+        cache_dir: "/tmp/rask-cache"
+        lock_path: "rask.lock"
     )
 
     mut positional = Vec.new()

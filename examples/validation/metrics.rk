@@ -14,10 +14,10 @@ struct Metrics {
 extend Metrics {
     func new() -> Metrics {
         return Metrics(
-            total_requests: 0,
-            total_errors: 0,
-            status_counts: Map.new(),
-            latencies_ms: Vec.new(),
+            total_requests: 0
+            total_errors: 0
+            status_counts: Map.new()
+            latencies_ms: Vec.new()
         )
     }
 
@@ -51,12 +51,12 @@ extend Metrics {
         let rate = if total == 0 { 0.0 } else { errors.round<f64>() / total.round<f64>() }
 
         return MetricsSummary(
-            total_requests: total,
-            total_errors: errors,
-            error_rate: rate,
-            p50_ms: percentile(sorted.clone(), 50),
-            p95_ms: percentile(sorted, 95),
-            slow_over_250ms: self.slow_count(250.0),
+            total_requests: total
+            total_errors: errors
+            error_rate: rate
+            p50_ms: percentile(sorted.clone(), 50)
+            p95_ms: percentile(sorted, 95)
+            slow_over_250ms: self.slow_count(250.0)
         )
     }
 }

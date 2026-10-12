@@ -45,17 +45,21 @@ pub fn cmd_fmt_stdin() {
     }
 }
 
-pub fn cmd_fmt(path: &str, check_only: bool, write_in_place: bool) {
-    let p = Path::new(path);
-    let files: Vec<String> = if p.is_dir() {
-        collect_rk_files(p)
-    } else {
-        vec![path.to_string()]
-    };
-
-    if files.is_empty() {
-        eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
-        process::exit(1);
+/// Format every file named, and every `.rk` file under each directory named.
+pub fn cmd_fmt(paths: &[&str], check_only: bool, write_in_place: bool) {
+    let mut files: Vec<String> = Vec::new();
+    for path in paths {
+        let p = Path::new(path);
+        if p.is_dir() {
+            let found = collect_rk_files(p);
+            if found.is_empty() {
+                eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
+                process::exit(1);
+            }
+            files.extend(found);
+        } else {
+            files.push(path.to_string());
+        }
     }
 
     let mut had_failure = false;

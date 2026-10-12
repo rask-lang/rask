@@ -622,8 +622,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     let item_text = it[2..].to_string()
                     let item_inlines = try parse_inline(item_text)
                     items.push(ListItem(
-                        content: item_inlines,
-                        children: Vec.new(),
+                        content: item_inlines
+                        children: Vec.new()
                     ))
                     i = i + 1
                 } else {
@@ -661,8 +661,8 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     let item_text = it[dot_pos + 2..].to_string()
                     let item_inlines = try parse_inline(item_text)
                     items.push(ListItem(
-                        content: item_inlines,
-                        children: Vec.new(),
+                        content: item_inlines
+                        children: Vec.new()
                     ))
                     i = i + 1
                 } else if it.starts_with("  ") || it.starts_with("\t") {

@@ -45,10 +45,10 @@ struct Document {
 extend Document {
     func new() -> Document {
         return Document(
-            lines: Vec.new(),
-            undo_stack: Vec.new(),
-            redo_stack: Vec.new(),
-            modified: false,
+            lines: Vec.new()
+            undo_stack: Vec.new()
+            redo_stack: Vec.new()
+            modified: false
         )
     }
 

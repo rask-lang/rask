@@ -169,12 +169,12 @@ struct Tiered {
 extend Tiered {
     func new(cfg: Config) -> Tiered {
         return Tiered(
-            active: MemTable.new(),
-            pending: none,
-            tables: Vec.new(),
-            disk: Disk.new(64),
-            cap: cfg.memtable_cap,
-            sealed: 0,
+            active: MemTable.new()
+            pending: none
+            tables: Vec.new()
+            disk: Disk.new(64)
+            cap: cfg.memtable_cap
+            sealed: 0
         )
     }
 

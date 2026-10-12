@@ -30,8 +30,8 @@ extend Wrapper<T> {
 // Generic function that swaps a pair
 func swap(pair: Pair<T, U>) -> Pair<U, T> {
     return Pair(
-        first: pair.second,
-        second: pair.first,
+        first: pair.second
+        second: pair.first
     )
 }
 

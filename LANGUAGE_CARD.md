@@ -27,6 +27,8 @@ func main() {
 ```
 
 - Newlines terminate statements; `;` only for multiple per line. Braces for multi-statement blocks, `: expr` for single-expression blocks.
+- Brackets: `( )` holds values, `[ ]` lists and indexes, `{ }` code and declaration bodies. A struct is built like a call, by field name in any order: `Point(x: 1.0, y: 2.0)`, `Point(y: 2.0, x)` (bare `x` is `x: x`), `Point(y: 0.0, ..p)`. A pattern reads the same way: `let Point(x, y) = p`.
+- Inside `( )` and `[ ]` a newline separates items, so a list written one per line needs no commas. A line can't start with `-` or `*` to continue the one above; end the line with the operator instead.
 - Blocks in expression context produce their last expression; functions always `return` (`ctrl.flow`).
 - Static access uses `.`: `Token.Plus`, `Point.origin()`, `Vec.new()` — there is no `::`.
 - Loops: `for x in xs`, `for i in 0..n` (half-open) / `0..=n` (inclusive), `while cond`, `loop` (only `loop` supports `break value`). Labels: `outer: loop { break outer }`.
@@ -224,7 +226,7 @@ struct User {
     retries: i32 = 3                         // declared field default
 }
 let u = User(name: "bo", email: "e", hash: h())   // retries filled from default
-// All fields defaulted → `Config {}` is the empty construction. There is NO Default interface.
+// All fields defaulted → `Config()` is the empty construction. There is NO Default interface.
 
 extend Point {                               // methods live in extend blocks
     func length(self) -> f64 { return (self.x * self.x + self.y * self.y).sqrt() }
@@ -417,7 +419,8 @@ No I/O (`@embed_file` excepted), no racks/concurrency/`any Interface` at comptim
 12. **Map iteration order is seeded-random** — sort before iterating if order matters. `push`/`insert` panic on OOM; `try_push` for fallible.
 13. **Static paths use `.`**: `Shape.Circle(2.0)`, `Vec.new()`, `Token.Plus` — never `::`.
 14. **`void` and `none`**, not `()` and `null`: `func f() -> void or Error`, `return none`. `nullptr` exists only for raw pointers inside `unsafe`.
-15. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
+15. **Struct literals use parens, not braces**: `Point(x: 1.0, y: 2.0)`, never `Point { x: 1.0, y: 2.0 }`. Fields go by name, so `Point(1.0, 2.0)` is an error; only functions, positional variants and newtypes take values by position.
+16. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
 
 ## Spec vs compiler (temporary)
 

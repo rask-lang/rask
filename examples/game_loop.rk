@@ -75,20 +75,20 @@ extend GameState {
         // rack this body owns can't be returned (mem.racks/RK6), so the player
         // is inserted through the finished state rather than beside it.
         mut state = GameState(
-            entities: Rack<Entity>.new(),
-            player: none,
-            score: 0,
-            game_over: false,
-            rng: Random.from_seed(20260809),
+            entities: Rack<Entity>.new()
+            player: none
+            score: 0
+            game_over: false
+            rng: Random.from_seed(20260809)
         )
 
         state.player = state.entities.insert(Entity(
-            position: Position(x: 400.0f32, y: 300.0f32),
-            velocity: Velocity(dx: 0.0f32, dy: 0.0f32),
-            health: Health(current: 100, max: 100),
-            collider: Collider(radius: 16.0f32),
-            active: true,
-            entity_type: EntityType.Player,
+            position: Position(x: 400.0f32, y: 300.0f32)
+            velocity: Velocity(dx: 0.0f32, dy: 0.0f32)
+            health: Health(current: 100, max: 100)
+            collider: Collider(radius: 16.0f32)
+            active: true
+            entity_type: EntityType.Player
         ))
 
         return state
@@ -96,23 +96,23 @@ extend GameState {
 
     func spawn_enemy(mutate self, x: f32, y: f32) -> Link<Entity> {
         return self.entities.insert(Entity(
-            position: Position(x, y),
-            velocity: Velocity(dx: -50.0f32, dy: 0.0f32),
-            health: Health(current: 20, max: 20),
-            collider: Collider(radius: 12.0f32),
-            active: true,
-            entity_type: EntityType.Enemy,
+            position: Position(x, y)
+            velocity: Velocity(dx: -50.0f32, dy: 0.0f32)
+            health: Health(current: 20, max: 20)
+            collider: Collider(radius: 12.0f32)
+            active: true
+            entity_type: EntityType.Enemy
         ))
     }
 
     func spawn_projectile(mutate self, x: f32, y: f32, dx: f32, dy: f32) -> Link<Entity> {
         return self.entities.insert(Entity(
-            position: Position(x, y),
-            velocity: Velocity(dx, dy),
-            health: Health(current: 1, max: 1),
-            collider: Collider(radius: 4.0f32),
-            active: true,
-            entity_type: EntityType.Projectile,
+            position: Position(x, y)
+            velocity: Velocity(dx, dy)
+            health: Health(current: 1, max: 1)
+            collider: Collider(radius: 4.0f32)
+            active: true
+            entity_type: EntityType.Projectile
         ))
     }
 }

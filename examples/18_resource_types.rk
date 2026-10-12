@@ -58,9 +58,9 @@ func successful_payment() {
     print("\n=== Successful Payment ===\n")
 
     let tx = Transaction(
-        id: 1,
-        amount: 100,
-        committed: false,
+        id: 1
+        amount: 100
+        committed: false
     )
 
     // Ensure cleanup if function exits early
@@ -78,9 +78,9 @@ func failed_payment() {
     print("\n=== Failed Payment ===\n")
 
     let tx = Transaction(
-        id: 2,
-        amount: 200,
-        committed: false,
+        id: 2
+        amount: 200
+        committed: false
     )
 
     ensure tx.rollback()
@@ -96,8 +96,8 @@ func network_operation() {
     print("\n=== Network Operation ===\n")
 
     let conn = Connection(
-        host: "example.com",
-        port: 8080,
+        host: "example.com"
+        port: 8080
     )
 
     ensure conn.close()
@@ -112,8 +112,8 @@ func manual_close() {
     print("\n=== Manual Close ===\n")
 
     let conn = Connection(
-        host: "api.example.com",
-        port: 443,
+        host: "api.example.com"
+        port: 443
     )
 
     ensure conn.close()

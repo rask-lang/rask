@@ -676,15 +676,13 @@ extend Wide<T> {
     /// Transform each lane. Lazy — records `f`, runs nothing.
     public func map(self, f: func(T) -> U) -> Wide<U> {
         let src = self.run
-        return Wide(
-            run: || {
-                mut out: Vec<U> = Vec.new()
-                for x in src() {
-                    out.push(f(x))
-                }
-                return out
-            },
-        )
+        return Wide(run: || {
+            mut out: Vec<U> = Vec.new()
+            for x in src() {
+                out.push(f(x))
+            }
+            return out
+        })
     }
 
     /// Combine two plans lane by lane. Lazy. The lane counts have to match
@@ -692,22 +690,20 @@ extend Wide<T> {
     public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {
         let a = self.run
         let b = other.run
-        return Wide(
-            run: || {
-                let xs = a()
-                let ys = b()
-                if xs.len() != ys.len() {
-                    panic("zip_with: lane counts differ ({xs.len()} vs {ys.len()})")
-                }
-                mut out: Vec<V> = Vec.new()
-                mut i = 0
-                while i < xs.len() {
-                    out.push(f(xs[i], ys[i]))
-                    i = i + 1
-                }
-                return out
-            },
-        )
+        return Wide(run: || {
+            let xs = a()
+            let ys = b()
+            if xs.len() != ys.len() {
+                panic("zip_with: lane counts differ ({xs.len()} vs {ys.len()})")
+            }
+            mut out: Vec<V> = Vec.new()
+            mut i = 0
+            while i < xs.len() {
+                out.push(f(xs[i], ys[i]))
+                i = i + 1
+            }
+            return out
+        })
     }
 
     /// Run the plan and hand back its lanes.

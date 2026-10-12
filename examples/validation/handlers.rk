@@ -61,9 +61,9 @@ func handle_health() -> Response or ApiError {
     let count = store.write().task_count()
     let up = started.elapsed()
     let body = HealthBody(
-        status: "ok",
-        uptime_ms: up.as_millis().clamp<i64>(),
-        tasks: count,
+        status: "ok"
+        uptime_ms: up.as_millis().clamp<i64>()
+        tasks: count
     )
     return json_response(200, json.encode(body))
 }
@@ -182,10 +182,10 @@ func handle_create_project(req: Request) -> Response or ApiError {
     let owner = UserId(dto.owner)
     let id = try store.write().create_project(dto.name, owner)
     return json_response(201, json.encode(ProjectView(
-        id: id.value,
-        name: dto.name,
-        owner: dto.owner,
-        archived: false,
+        id: id.value
+        name: dto.name
+        owner: dto.owner
+        archived: false
     )))
 }
 
