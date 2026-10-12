@@ -339,7 +339,15 @@ fn main() {
             let file = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target"])
                 .unwrap_or(".");
 
-            if Path::new(file).is_dir() {
+            // The interpreter loads a package directory the same way it loads
+            // a file, so `--interp` decides first. Checking for a directory
+            // first sent `rask run <dir> --interp` native without a word.
+            let interp = cmd_args.contains(&"--interp");
+            if interp {
+                let mut program_args: Vec<String> = vec![file.to_string()];
+                program_args.extend(prog_args.iter().map(|s| s.to_string()));
+                commands::run::cmd_run(file, program_args, format);
+            } else if Path::new(file).is_dir() {
                 let profile = if release {
                     "release".to_string()
                 } else if let Some(p) = extract_flag_value(&cmd_args, "--profile") {
@@ -359,15 +367,8 @@ fn main() {
                 let run_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
                 commands::run::cmd_run_project(file, run_args, opts);
             } else {
-                let interp = cmd_args.contains(&"--interp");
-                if interp {
-                    let mut program_args: Vec<String> = vec![file.to_string()];
-                    program_args.extend(prog_args.iter().map(|s| s.to_string()));
-                    commands::run::cmd_run(file, program_args, format);
-                } else {
-                    let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
-                    commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
-                }
+                let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
+                commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
             }
         }
         "compile" => {

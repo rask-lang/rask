@@ -8979,3 +8979,38 @@ fn built_failure_messages_print_on_both_backends() {
         }
     }
 }
+
+// `rask run <dir> --interp` checked for a directory before it looked at the
+// flag, so a package always ran native and nothing said so. A native run
+// leaves `build/` behind; the interpreter writes nothing.
+#[test]
+fn run_interp_on_a_package_directory_uses_the_interpreter() {
+    let dir = std::env::temp_dir().join(format!("rask_interp_pkg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("build.rk"),
+        "package \"interp-pkg\" \"0.1.0\" {\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.rk"),
+        "import os\n\nfunc main() {\n    println(\"args {os.args().len()}\")\n}\n",
+    )
+    .unwrap();
+
+    let out = Command::new(rask_binary())
+        .arg("run")
+        .arg(&dir)
+        .args(["--interp", "--", "a", "b"])
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run --interp");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let built = dir.join("build").exists();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(stdout.trim(), "args 3");
+    assert!(!built, "`--interp` compiled the package natively");
+}
