@@ -459,9 +459,10 @@ impl Desugarer {
             .and_then(|a| a.positional())
             .and_then(|v| v.expr())
         {
+            // An ordinary string, interpolated where the variant's named
+            // payloads are bound (ER36). A copy, so it gets ids of its own:
+            // the attribute keeps its expression.
             let mut expr = written.clone();
-            positional_refs(&mut expr);
-            // A copy, so it gets ids of its own: the attribute keeps its expression.
             rask_ast::rewrite::rewrite_expr(&mut expr, &mut FreshIds(&mut self.next_id));
             return MessageTemplate::Format(expr);
         }
@@ -1414,21 +1415,6 @@ fn renders_as_display(ty: &str) -> bool {
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"
     )
-}
-
-/// ER36: positional payload refs `{0}`/`{1}` in a `@message` name the
-/// auto-generated tuple fields, which the parser binds as `_0`/`_1`. Inside
-/// the string they parsed as the integers `0`/`1`; point them at the fields.
-/// Named refs (`{ctx}`) are already the binding.
-fn positional_refs(expr: &mut Expr) {
-    let ExprKind::StringInterp(segments) = &mut expr.kind else { return };
-    for seg in segments {
-        if let rask_ast::expr::StringSegment::Expr(e, _) = seg {
-            if let ExprKind::Int(n, None) = e.kind {
-                e.kind = ExprKind::Ident(format!("_{}", n));
-            }
-        }
-    }
 }
 
 /// Gives every expression it walks a fresh id.

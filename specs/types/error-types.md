@@ -446,8 +446,8 @@ extend DivError {
 @traced
 @message
 enum ConfigError {
-    @message("not found: {0}") NotFound(string),
-    @message("parse error at {line}") Parse(line: i32),
+    @message("not found: {path}") NotFound { path: string },
+    @message("parse error at {line}") Parse { line: i32 },
 }
 // sizeof(ConfigError) = sizeof(payload) + 16 bytes origin
 
@@ -474,7 +474,7 @@ func start_app() -> App or any Error {
 | Rule | Description |
 |------|-------------|
 | **ER35: @message opt-in** | `@message` on an enum generates `func message(self) -> string`. Compile error if the enum already defines `message()` manually |
-| **ER36: Variant template** | `@message("template")` on a variant provides the format string. `{name}` for named payloads, `{0}` / `{1}` for positional |
+| **ER36: Variant template** | `@message("template")` on a variant is an ordinary interpolated string, built where the variant's payloads are bound by name. A payload the template mentions is named: `NotFound { path: string }` and `{path}`. There is no positional `{0}`: a hole holding a constant is rejected in every string |
 | **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `Error`, and no `@message` annotation, delegates to `inner.message()` |
 | **ER38: Coverage** | A variant with neither an annotation nor a delegatable payload falls back to the derived message — the one every error enum gets from its layout (#1001). It used to be a compile error; there is nothing missing to report once the fallback exists |
 
@@ -483,13 +483,13 @@ func start_app() -> App or any Error {
 @message
 enum RegistryError {
     @message("package not found: {name}")
-    PackageNotFound(name: string),
+    PackageNotFound { name: string },
 
-    @message("network error: {0}")
-    NetworkError(string),
+    @message("network error: {reason}")
+    NetworkError { reason: string },
 
     @message("checksum mismatch for {pkg}: expected {expected}, got {got}")
-    ChecksumMismatch(pkg: string, expected: string, got: string),
+    ChecksumMismatch { pkg: string, expected: string, got: string },
 }
 
 // Wrapper enum — auto-delegates
@@ -497,8 +497,8 @@ enum RegistryError {
 enum FetchError {
     Manifest(ManifestError),    // delegates to ManifestError.message()
     Version(VersionError),      // delegates
-    @message("I/O: {0}")
-    Io(string),                 // needs explicit template
+    @message("I/O: {reason}")
+    Io { reason: string },                 // needs explicit template
 }
 ```
 

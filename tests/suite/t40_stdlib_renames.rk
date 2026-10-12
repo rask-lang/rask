@@ -57,7 +57,8 @@ test "Random.range stays in bounds" {
 test "{x:debug} interpolation" {
     let n = 7
     assert "{n:debug}" == "7"
-    assert "val={42:debug}" == "val=42"
+    let answer = 42
+    assert "val={answer:debug}" == "val=42"
 }
 
 // --- fs.read_text / write_text / append_text (was read_file/write_file/append_file) ---

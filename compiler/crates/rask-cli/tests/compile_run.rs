@@ -5535,14 +5535,14 @@ package "ep" "0.1.0" { description: "T or E error side through a mutex global" }
         ("errs.rk", r#"
 @message
 enum StoreError {
-    @message("nf {0}") NotFound(u64)
-    @message("cap {0}") Cap(u64)
+    @message("nf {id}") NotFound { id: u64 }
+    @message("cap {limit}") Cap { limit: u64 }
 }
 
 @message
 enum ApiError {
     Store(StoreError)
-    @message("bad {0}") Bad(string)
+    @message("bad {reason}") Bad { reason: string }
 }
 
 func code(e: ApiError) -> string {

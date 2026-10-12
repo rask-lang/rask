@@ -7,7 +7,8 @@
 //! carry the name package scoping gave the declaration, so attachments are
 //! matched to declarations by name alone.
 
-use rask_ast::attr::{Literal, ShowConst};
+use rask_ast::attr::ShowConst;
+use rask_ast::expr::Literal;
 use rask_ast::decl::{AnnotationDecl, Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::Span;
@@ -72,7 +73,7 @@ enum Lit {
 }
 
 fn classify(expr: &Expr) -> Lit {
-    if let Some(lit) = rask_ast::attr::literal(expr) {
+    if let Some(lit) = expr.as_literal() {
         return match lit {
             Literal::Int(_) => Lit::Int,
             Literal::Float(_) => Lit::Float,

@@ -124,7 +124,7 @@ This is closer to Kotlin's `T?` or TypeScript's `T | undefined` than Rust's `Opt
 ```rask
 @message
 enum FetchError {
-    @message("not found: {pkg}") NotFound(pkg: string),
+    @message("not found: {pkg}") NotFound { pkg: string },
     @message("checksum mismatch") Checksum,
 }
 ```

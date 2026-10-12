@@ -244,7 +244,7 @@ fn vec_slot_type(ty: MirType) -> MirType {
 /// `3` is an integer for `weight: i64` and a float for `scale: f64` — so this
 /// takes the declaration's answer rather than guessing from the literal.
 fn annotation_const(value: &rask_ast::attr::AttrValue, ty: &MirType) -> Option<MirConst> {
-    use rask_ast::attr::Literal;
+    use rask_ast::expr::Literal;
     match (value.literal()?, ty) {
         (Literal::Bool(b), MirType::Bool) => Some(MirConst::Bool(b)),
         (Literal::Float(f), MirType::F32 | MirType::F64) => Some(MirConst::Float(f)),

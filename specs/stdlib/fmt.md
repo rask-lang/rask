@@ -160,6 +160,7 @@ println(format("{:debug}", p))    // Point { x: 1, y: 2 }
 | **I1: Variable capture** | `println("Hello, {name}!")` interpolates `name` from scope |
 | **I2: Field access** | `{point.x}` works for dotted field access |
 | **I3: No expressions** | `{x + y}` is an error — use `format()` for expressions |
+| **I4: No constants** | `{0}`, `{true}`, `{"x"}` are errors. A constant goes in the text as written; a hole is for a value only known when the string is built. `{0}` is `format`'s positional placeholder (F2) and means nothing outside it |
 
 <!-- test: skip -->
 ```rask

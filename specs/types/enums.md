@@ -30,7 +30,7 @@ enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 | Rule | Description |
 |------|-------------|
 | **E12: Positional variants** | `Variant(T)` or `Variant(T, U)` — fields accessed by position in patterns |
-| **E13: Named variants** | `Variant { name: T }` — fields accessed by name in patterns |
+| **E13: Named variants** | `Variant { name: T }` — fields accessed by name in patterns, and bound by name in the variant's `@message` (`type.errors/ER36`) |
 | **E14: No mixing** | A single variant is either positional or named, not both |
 
 <!-- test: parse -->

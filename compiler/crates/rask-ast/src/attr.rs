@@ -22,7 +22,7 @@
 //! kin, whose arguments are lint rule names (`idiom/duck-interface`) and not
 //! expressions at all; [`COMPILER_ATTRS`] says which those are.
 
-use crate::expr::{Expr, ExprKind, StringSegment, UnaryOp};
+use crate::expr::{Expr, ExprKind, Literal, UnaryOp};
 use crate::Span;
 
 /// How a compiler-known attribute's arguments are written.
@@ -35,14 +35,19 @@ pub enum ArgForm {
 }
 
 /// Every attribute name the compiler owns, and how its arguments are written.
-/// The one list: the parser asks it which arguments are rule names, and the
-/// checker refuses these names to user annotations (type.annotations/AN5).
-/// Some are spec'd and not built yet; their names are taken all the same.
+/// The one list: the parser asks it which arguments are rule names, the
+/// checker refuses these names to user annotations (type.annotations/AN5), and
+/// `every_attribute_the_compiler_reads_is_listed` fails the build when the
+/// compiler reads a name that isn't here.
+///
+/// Names the specs decide but nothing reads yet are listed too, so a user
+/// annotation can't take one before it's built. `@embed_file` and the other
+/// `@name(…)` forms written in an expression aren't attributes and aren't here.
 pub const COMPILER_ATTRS: &[(&str, ArgForm)] = &[
     // Serialization (std.encoding)
     ("rename", ArgForm::Exprs),
     ("no_serialize", ArgForm::Exprs),
-    ("skip", ArgForm::Exprs),
+    ("skip", ArgForm::Exprs), // only to say it's now `@no_serialize`
     ("default", ArgForm::Exprs),
     ("tag", ArgForm::Exprs),
     ("no_encode", ArgForm::Exprs),
@@ -54,29 +59,36 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm)] = &[
     ("small", ArgForm::Exprs),
     ("layout", ArgForm::Exprs),
     ("message", ArgForm::Exprs),
-    ("derive", ArgForm::Exprs),
     // Functions
     ("entry", ArgForm::Exprs),
     ("no_alloc", ArgForm::Exprs),
     ("no_io", ArgForm::Exprs),
-    ("inline", ArgForm::Exprs),
+    ("test", ArgForm::Exprs),
+    // Stdlib declarations: where the body lives
     ("native", ArgForm::Exprs),
     ("builtin", ArgForm::Exprs),
     ("unimplemented", ArgForm::Exprs),
-    ("test", ArgForm::Exprs),
+    // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs),
-    ("benchmark", ArgForm::Exprs),
-    ("call_text", ArgForm::Exprs),
-    ("call_location", ArgForm::Exprs),
     // Comptime
     ("comptime_quota", ArgForm::Exprs),
-    ("embed_file", ArgForm::Exprs),
-    ("comptime_print", ArgForm::Exprs),
-    ("comptime_assert", ArgForm::Exprs),
     // Lints and warnings (tool.lint, tool.warnings)
     ("allow", ArgForm::RuleNames),
     ("warn", ArgForm::RuleNames),
     ("deny", ArgForm::RuleNames),
+    // Decided, not built yet
+    ("inline", ArgForm::Exprs),             // SYNTAX.md
+    ("deprecated", ArgForm::Exprs),         // tool.warnings/W5
+    ("packed", ArgForm::Exprs),             // type.structs
+    ("align", ArgForm::Exprs),              // type.structs
+    ("bitfield", ArgForm::Exprs),           // struct.c-interop
+    ("export", ArgForm::Exprs),             // compiler.mangling
+    ("traced", ArgForm::Exprs),             // type.errors/ER34
+    ("pure", ArgForm::Exprs),               // tool.lint/P1
+    ("checked_unsafe", ArgForm::Exprs),     // mem.unsafe
+    ("unchecked_unsafe", ArgForm::Exprs),   // mem.unsafe
+    ("call_text", ArgForm::Exprs),          // ctrl.call-info (proposed)
+    ("call_location", ArgForm::Exprs),      // ctrl.call-info (proposed)
 ];
 
 /// How the compiler-known attribute `name` takes its arguments, or `None` for
@@ -132,7 +144,7 @@ impl AttrValue {
 
     /// The value as a literal constant, when it is one.
     pub fn literal(&self) -> Option<Literal> {
-        literal(self.expr()?)
+        self.expr()?.as_literal()
     }
 
     /// The contents of a string literal: `"user_name"` → `user_name`.
@@ -157,45 +169,6 @@ impl AttrValue {
             AttrValue::Expr(_) => None,
         }
     }
-}
-
-/// A constant written as a literal. What a value in an attribute, or a field's
-/// declared default, reduces to for the readers that splice it.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Literal {
-    Int(i128),
-    Float(f64),
-    Bool(bool),
-    Str(String),
-    Char(char),
-}
-
-/// `expr` as a literal, with a leading `-` folded into a number.
-pub fn literal(expr: &Expr) -> Option<Literal> {
-    Some(match &expr.kind {
-        ExprKind::Int(n, _) => Literal::Int(*n),
-        ExprKind::Float(f, _) => Literal::Float(*f),
-        ExprKind::Bool(b) => Literal::Bool(*b),
-        ExprKind::String(s) => Literal::Str(s.clone()),
-        // `"{{x}}"` arrives as segments, all of them text.
-        ExprKind::StringInterp(segments) => {
-            let mut text = String::new();
-            for seg in segments {
-                match seg {
-                    StringSegment::Literal(t) => text.push_str(t),
-                    StringSegment::Expr(..) => return None,
-                }
-            }
-            Literal::Str(text)
-        }
-        ExprKind::Char(c) => Literal::Char(*c),
-        ExprKind::Unary { op: UnaryOp::Neg, operand } => match literal(operand)? {
-            Literal::Int(n) => Literal::Int(-n),
-            Literal::Float(f) => Literal::Float(-f),
-            _ => return None,
-        },
-        _ => return None,
-    })
 }
 
 impl Attr {

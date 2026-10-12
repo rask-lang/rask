@@ -5753,6 +5753,28 @@ impl Parser {
                     bad_expr(self, "a string literal on its own isn't something to interpolate");
                     return None;
                 }
+                // `{0}` puts the number 0 in the string, which writing `0`
+                // already does. It's never meant: it's a `format` placeholder
+                // outside `format` (std.fmt/I4).
+                if let Some(lit) = parsed.as_literal() {
+                    let shown = match lit {
+                        rask_ast::expr::Literal::Int(n) => n.to_string(),
+                        rask_ast::expr::Literal::Float(f) => f.to_string(),
+                        rask_ast::expr::Literal::Bool(b) => b.to_string(),
+                        rask_ast::expr::Literal::Char(c) => c.to_string(),
+                        rask_ast::expr::Literal::Str(t) => t,
+                    };
+                    self.errors.push(ParseError {
+                        span: self.span(to_file(0), to_file(expr_str.len())),
+                        message: format!("`{{{}}}` interpolates a constant", expr_str),
+                        hint: Some(format!(
+                            "write `{}` in the text itself; a hole takes a name, like `{{id}}`",
+                            shown
+                        )),
+                        why: Some("a `{…}` hole is for a value only known when the string is built".to_string()),
+                    });
+                    return None;
+                }
 
                 segments.push(StringSegment::Expr(Box::new(parsed), parsed_spec));
             } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {

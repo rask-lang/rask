@@ -3461,7 +3461,7 @@ impl Interpreter {
 /// driven off the declared type so `weight: f64 = 1` isn't an integer on one
 /// backend and a float on the other.
 fn annotation_value(value: &rask_ast::attr::AttrValue, ty: &str) -> Value {
-    use rask_ast::attr::Literal;
+    use rask_ast::expr::Literal;
     match (value.literal(), ty) {
         (Some(Literal::Bool(b)), "bool") => Value::Bool(b),
         (Some(Literal::Float(f)), "f32" | "f64") => {

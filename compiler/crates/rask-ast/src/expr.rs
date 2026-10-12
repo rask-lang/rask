@@ -703,3 +703,44 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Check { .. } => "Check",
     }
 }
+
+/// A constant written as a literal: what an attribute's value or a field's
+/// declared default reduces to for the readers that splice it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Literal {
+    Int(i128),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Char(char),
+}
+
+impl Expr {
+    /// This expression as a literal, with a leading `-` folded into a number.
+    pub fn as_literal(&self) -> Option<Literal> {
+        Some(match &self.kind {
+            ExprKind::Int(n, _) => Literal::Int(*n),
+            ExprKind::Float(f, _) => Literal::Float(*f),
+            ExprKind::Bool(b) => Literal::Bool(*b),
+            ExprKind::String(s) => Literal::Str(s.clone()),
+            // `"{{x}}"` arrives as segments, all of them text.
+            ExprKind::StringInterp(segments) => {
+                let mut text = String::new();
+                for seg in segments {
+                    match seg {
+                        StringSegment::Literal(t) => text.push_str(t),
+                        StringSegment::Expr(..) => return None,
+                    }
+                }
+                Literal::Str(text)
+            }
+            ExprKind::Char(c) => Literal::Char(*c),
+            ExprKind::Unary { op: UnaryOp::Neg, operand } => match operand.as_literal()? {
+                Literal::Int(n) => Literal::Int(-n),
+                Literal::Float(f) => Literal::Float(-f),
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+}

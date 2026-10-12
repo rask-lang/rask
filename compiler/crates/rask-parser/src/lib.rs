@@ -39,7 +39,7 @@ mod tests {
         bs.iter().map(|b| b.ty.to_string()).collect()
     }
 
-    use rask_ast::attr::Literal;
+    use rask_ast::expr::Literal;
     use rask_ast::decl::DeclKind;
     use rask_ast::expr::{BinOp, ExprKind, UnaryOp};
     use rask_ast::stmt::StmtKind;
@@ -1719,7 +1719,7 @@ mod tests {
     #[test]
     fn attribute_values_are_expressions() {
         let result = parse(
-            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {0}\")\nc: i64\n@rename(\"{{x}}\")\nd: i64 }",
+            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {id}\")\nc: i64\n@rename(\"{{x}}\")\nd: i64 }",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };

@@ -17,16 +17,16 @@ import os
 
 @message
 enum DiskError {
-    @message("disk full ({0} blocks)")
-    Full(usize)
+    @message("disk full ({blocks} blocks)")
+    Full { blocks: usize }
 }
 
 @message
 enum ConfigError {
     @message("TIERED_DIR not set")
     NoEnv
-    @message("config file missing: {0}")
-    NoFile(string)
+    @message("config file missing: {path}")
+    NoFile { path: string }
 }
 
 // Hand-written message() — @message auto-delegation for the wrapped

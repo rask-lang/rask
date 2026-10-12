@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
-use rask_ast::attr::Literal;
+use rask_ast::expr::Literal;
 use rask_ast::decl::{field_attrs, StructDecl};
 use rask_ast::ty::TypeExpr;
 
@@ -1139,7 +1139,7 @@ fn json_to_typed(
 fn decode_default(field: &rask_ast::decl::Field) -> Option<Literal> {
     match field_attrs::default_value(&field.attrs) {
         Some(value) => value.literal(),
-        None => field.default.as_ref().and_then(rask_ast::attr::literal),
+        None => field.default.as_ref().and_then(rask_ast::expr::Expr::as_literal),
     }
 }
 

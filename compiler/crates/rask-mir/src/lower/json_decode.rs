@@ -12,7 +12,7 @@
 //! the checker gave the expression: 0 → Ok(value), anything else → Err with the
 //! matching variant and the runtime's message.
 
-use rask_ast::attr::Literal;
+use rask_ast::expr::Literal;
 use rask_ast::decl::field_attrs;
 use rask_mono::StructLayout;
 use rask_types::{GenericArg, Type};

@@ -62,7 +62,7 @@ pub fn evaluate_comptime_globals(
                     let mut quota = None;
                     if let Some(arg) = c.comptime_quota_arg() {
                         match arg.literal() {
-                            Some(rask_ast::attr::Literal::Int(n)) if n > 0 => {
+                            Some(rask_ast::expr::Literal::Int(n)) if n > 0 => {
                                 quota = Some(usize::try_from(n).unwrap_or(usize::MAX))
                             }
                             _ => diags.push(
