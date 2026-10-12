@@ -3,7 +3,7 @@
 // Check a tree against the current shape. Every problem is collected, so one
 // run shows them all; each names its dotted path and what to write instead.
 
-public func check_value(v: Value, t: Ty, at: string, mutate errors: Vec<string>) {
+func check_value(v: Value, t: Ty, at: string, mutate errors: Vec<string>) {
     match t {
         Ty.Str => expect_str(v, at, mutate errors),
         Ty.Int => {
