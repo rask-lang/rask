@@ -100,6 +100,14 @@ impl<'a> Printer<'a> {
         self.emit(&format!("<{}>", written.join(", ")));
     }
 
+    /// Whether a type declaration's `{ … }` body spanned lines in the source.
+    /// From the brace on: the span starts at the first attribute, so
+    /// `@resource` alone used to make every annotated `struct File { }` multiline.
+    fn body_is_multiline(&self, span: Span) -> bool {
+        let src = self.source_text(span);
+        src.find('{').map_or(src, |i| &src[i..]).contains('\n')
+    }
+
     fn source_text(&self, span: Span) -> &str {
         &self.source[span.start..span.end]
     }
@@ -677,7 +685,7 @@ impl<'a> Printer<'a> {
             self.emit(">");
         }
 
-        let source_is_multiline = self.source_text(span).contains('\n');
+        let source_is_multiline = self.body_is_multiline(span);
         let has_methods = !s.methods.is_empty();
 
         if !source_is_multiline && !has_methods && s.fields.is_empty() {
@@ -789,7 +797,7 @@ impl<'a> Printer<'a> {
         self.emit("union ");
         self.emit(&u.name);
 
-        let source_is_multiline = self.source_text(span).contains('\n');
+        let source_is_multiline = self.body_is_multiline(span);
 
         if !source_is_multiline && u.fields.is_empty() {
             self.emit(" { }");
@@ -891,7 +899,7 @@ impl<'a> Printer<'a> {
             self.emit(">");
         }
 
-        let source_is_multiline = self.source_text(span).contains('\n');
+        let source_is_multiline = self.body_is_multiline(span);
         let all_fieldless = e.variants.iter().all(|v| v.fields.is_empty());
         let has_methods = !e.methods.is_empty();
 
