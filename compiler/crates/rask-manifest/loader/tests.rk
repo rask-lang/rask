@@ -472,14 +472,15 @@ test "dependencies keep the order they were written in" {
 }
 
 test "every version range form is accepted" {
-    for r in ["*", "^2", "^2.0", "^2.0.1", "~1.2", ">=1.5", "<=3", ">2", "<2.0", "=1.0.0", "1.2.3"] {
+    for r in ["*", "^2", "^2.0", "^2.0.1", "~1.2", ">=1.5", "=1.0.0", "=1.0.0-beta.1", "1.2.3"] {
         let pkg = pkg_of("{HEAD}[dependencies]\nx = {{ registry = \"{r}\" }}\n")
         assert dep_in(pkg.dependencies, "x").source.describe() == "registry {r}"
     }
 }
 
 test "a malformed version range is rejected" {
-    for r in ["two", "^", "", "1.2.3.4", ">= 1.5", "^1.x", "latest"] {
+    // An upper bound means nothing to the resolver (struct.packages).
+    for r in ["two", "^", "", "1.2.3.4", ">= 1.5", "^1.x", "latest", "<=3", ">2", "<2.0"] {
         let e = pkg_error("{HEAD}[dependencies]\nx = {{ registry = \"{r}\" }}\n")
         assert e.contains("dependencies.x.registry: \"{r}\" is not a version range")
     }

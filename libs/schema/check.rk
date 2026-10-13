@@ -233,6 +233,11 @@ func digits_then(s: string, start: usize) -> usize {
     return i
 }
 
+// Each format below is also written as a regular expression, for editors
+// reading the JSON Schema export. The expression sits with the function it
+// describes, and rask-manifest's tests run both over the same samples.
+const DURATION_PATTERN = "^[0-9]+(ms|s|m|h)$"
+
 func is_duration(s: string) -> bool {
     let end = digits_then(s, 0)
     if end == 0 {
@@ -241,6 +246,8 @@ func is_duration(s: string) -> bool {
     let unit = s[end..].to_string()
     return unit == "ms" || unit == "s" || unit == "m" || unit == "h"
 }
+
+const VERSION_PATTERN = "^[0-9]+[.][0-9]+[.][0-9]+(-[A-Za-z0-9]+([.][A-Za-z0-9]+)*)?$"
 
 // `1.0.0`, or a pre-release `1.0.0-beta.3`: three numbers, then optionally
 // `-` and dot-separated labels of letters and digits.
@@ -277,7 +284,9 @@ func is_numbers(s: string, least: i64, most: i64) -> bool {
     return parts >= least && parts <= most
 }
 
-const RANGE_OPS = [">=", "<=", "^", "~", "=", ">", "<"]
+// What struct.packages lists, and what the resolver reads. An upper bound
+// (`<2.0`) has no meaning there, so it isn't a range here either.
+const RANGE_OPS = [">=", "^", "~", "="]
 
 func strip_range_op(s: string) -> (string, string) {
     for op in RANGE_OPS {
@@ -294,6 +303,8 @@ func is_prerelease_range(s: string) -> bool {
     let (op, rest) = strip_range_op(s)
     return op != "=" && rest.contains("-") && is_version(rest)
 }
+
+const VERSION_REQ_PATTERN = "^([*]|(>=|[\\^]|~|=)?[0-9]+([.][0-9]+){{0,2}}|=[0-9]+[.][0-9]+[.][0-9]+-[A-Za-z0-9]+([.][A-Za-z0-9]+)*)$"
 
 func is_version_req(s: string) -> bool {
     // Any version at all, which `rask add` writes when none is given.

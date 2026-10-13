@@ -52,9 +52,9 @@ func ty_map(t: Ty) -> Map<string, JsonValue> {
         Ty.Str => return typed("string"),
         Ty.Int => return typed("integer"),
         Ty.Bool => return typed("boolean"),
-        Ty.Duration => return pattern("^[0-9]+(ms|s|m|h)$", "a duration, like \"30s\""),
-        Ty.Version => return pattern("^[0-9]+[.][0-9]+[.][0-9]+$", "a version, like \"1.0.0\""),
-        Ty.VersionReq => return pattern("^([*]|(>=|<=|[\\^]|~|=|>|<)?[0-9]+([.][0-9]+){{0,2}})$", "a version range, like \"^2.0\""),
+        Ty.Duration => return pattern(DURATION_PATTERN, "a duration, like \"30s\""),
+        Ty.Version => return pattern(VERSION_PATTERN, "a version, like \"1.0.0\""),
+        Ty.VersionReq => return pattern(VERSION_REQ_PATTERN, "a version range, like \"^2.0\""),
         Ty.OneOf(options) => {
             mut vals = Vec<JsonValue>.new()
             for o in options {

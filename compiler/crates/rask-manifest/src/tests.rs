@@ -103,6 +103,45 @@ fn json_schema_names_the_tables() {
     assert!(s.contains("\"dev-dependencies\""));
 }
 
+/// Every `pattern` in the JSON Schema, keyed by its description.
+fn patterns(v: &Value, out: &mut std::collections::BTreeMap<String, String>) {
+    match v {
+        Value::Object(m) => {
+            if let (Some(Value::String(p)), Some(Value::String(d))) = (m.get("pattern"), m.get("description")) {
+                out.insert(d.clone(), p.clone());
+            }
+            m.values().for_each(|x| patterns(x, out));
+        }
+        Value::Array(a) => a.iter().for_each(|x| patterns(x, out)),
+        _ => {}
+    }
+}
+
+/// An editor checks a version with the exported regular expression, the
+/// loader with its own code. Both have to give the same answer.
+#[test]
+fn json_schema_patterns_agree_with_the_loader() {
+    let mut found = std::collections::BTreeMap::new();
+    patterns(&serde_json::from_str(&json_schema().unwrap()).unwrap(), &mut found);
+    let regex = |prefix: &str| {
+        let (_, p) = found.iter().find(|(d, _)| d.starts_with(prefix)).unwrap_or_else(|| panic!("no pattern for {prefix}: {found:?}"));
+        regex::Regex::new(p).unwrap()
+    };
+    let version = regex("a version,");
+    let range = regex("a version range");
+    let manifest = |version: &str, range: &str| {
+        format!("schema = \"rask-package@1\"\n[package]\nname = \"a\"\nversion = \"{version}\"\n[dependencies]\nb = {{ registry = \"{range}\" }}\n")
+    };
+    let versions = ["1.0.0", "10.20.30", "1.0.0-beta.3", "1.0.0-rc1", "1.0", "1", "1.0.0-", "1.0.0-beta..3", "1.0.0-be_ta", "v1.0.0", "1.0.0.0", ""];
+    for v in versions {
+        assert_eq!(version.is_match(v), load_text(&manifest(v, "*")).is_ok(), "version {v:?}");
+    }
+    let ranges = ["*", "1", "1.2", "1.2.3", "^1.2", "~1.2.3", "=1.2.3", ">=1.5", "=1.0.0-beta.1", "^1.0.0-beta.1", "1.0.0-beta.1", "<2.0", ">1", "<=1", "^", "two", "1.2.3.4", ""];
+    for r in ranges {
+        assert_eq!(range.is_match(r), load_text(&manifest("1.0.0", r)).is_ok(), "range {r:?}");
+    }
+}
+
 fn run_rask_tests(result: &rask_compiler::CheckResult) -> Vec<String> {
     let mut interp = interpreter_for(result);
     let results = interp.run_tests(&rask_compiler::program_decls(&result.decls), None);

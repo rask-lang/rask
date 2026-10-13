@@ -90,9 +90,34 @@ impl Ord for Version {
                     (true, true) => std::cmp::Ordering::Equal,
                     (true, false) => std::cmp::Ordering::Greater,
                     (false, true) => std::cmp::Ordering::Less,
-                    (false, false) => self.pre.cmp(&other.pre),
+                    (false, false) => compare_pre(&self.pre, &other.pre),
                 }
             })
+    }
+}
+
+/// Semver's pre-release order: dot-separated identifiers left to right,
+/// numbers by value and below words, and a prefix before anything longer.
+/// So `beta.2` < `beta.10` and `alpha` < `alpha.1`.
+fn compare_pre(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut left = a.split('.');
+    let mut right = b.split('.');
+    loop {
+        let ord = match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => match (x.parse::<u64>(), y.parse::<u64>()) {
+                (Ok(m), Ok(n)) => m.cmp(&n),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => x.cmp(y),
+            },
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
     }
 }
 
@@ -155,6 +180,11 @@ impl Constraint {
 
     /// Check whether a candidate version satisfies this constraint.
     pub fn matches(&self, candidate: &Version) -> bool {
+        // A pre-release is never picked by a range, only named exactly (VR2):
+        // `^1.0` with 1.0.5 and 1.1.0-beta.1 available means 1.0.5.
+        if candidate.is_prerelease() && !matches!(self, Constraint::Exact(_)) {
+            return false;
+        }
         match self {
             Constraint::Any => true,
             Constraint::Exact(v) => candidate == v,
@@ -385,4 +415,27 @@ mod tests {
         let c = Constraint::parse("\"^2.0\"").unwrap();
         assert!(c.matches(&Version::parse("2.5.0").unwrap()));
     }
+
+    #[test]
+    fn a_range_never_picks_a_prerelease() {
+        let stable = Version::parse("1.0.5").unwrap();
+        let beta = Version::parse("1.1.0-beta.1").unwrap();
+        for c in ["^1.0", "~1.1", ">=1.0.0", "*"] {
+            assert!(!Constraint::parse(c).unwrap().matches(&beta), "{c}");
+        }
+        assert!(Constraint::parse("=1.1.0-beta.1").unwrap().matches(&beta));
+        let picked = resolve_version(&[Constraint::parse("^1.0").unwrap()], &[stable.clone(), beta]).unwrap();
+        assert_eq!(picked, stable);
+    }
+
+    #[test]
+    fn prerelease_labels_compare_by_semver_rules() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        assert!(v("1.0.0-beta.2") < v("1.0.0-beta.10"));
+        assert!(v("1.0.0-alpha") < v("1.0.0-alpha.1"));
+        assert!(v("1.0.0-1") < v("1.0.0-alpha"));
+        assert!(v("1.0.0-alpha.beta") < v("1.0.0-beta"));
+        assert!(v("1.0.0-rc.1") < v("1.0.0"));
+    }
+
 }

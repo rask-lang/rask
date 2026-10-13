@@ -23,6 +23,8 @@ Semantic versioning with maximal version selection, dependencies declared in `ra
 | `"~1.2.3"` | Tilde: `>=1.2.3, <1.3.0` (patch only) |
 | `"=1.2.3"` | Exact version |
 | `"1.2"` | Compatible: `>=1.2.0, <2.0.0` |
+| `">=1.2.3"` | Minimum: any newer version, across majors |
+| `"*"` | Any version (what `rask add` writes without one) |
 
 Default: bare version → `^` (compatible). For `0.x`: bare → `~` (patch only, since MINOR may break).
 
