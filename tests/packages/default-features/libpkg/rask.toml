@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "libpkg"
+version = "0.1.0"
+description = "A dependency with a comptime branch of its own"
+license = "MIT OR Apache-2.0"

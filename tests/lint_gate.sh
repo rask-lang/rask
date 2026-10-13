@@ -38,13 +38,14 @@ else
 fi
 
 fail=0
-for dir in stdlib examples docs projects; do
+# The manifest loader is Rask the toolchain ships and runs, like stdlib/.
+for dir in stdlib examples docs projects compiler/crates/rask-manifest/loader; do
     [ -d "$dir" ] || continue
     out="$("$RASK" lint "$dir/" 2>&1)"
     if echo "$out" | grep -q '^✓'; then
-        printf '  %-10s clean\n' "$dir"
+        printf '  %-10s clean\n' "$(basename "$dir")"
     else
-        printf '  %-10s %s\n' "$dir" "$(echo "$out" | tail -1)"
+        printf '  %-10s %s\n' "$(basename "$dir")" "$(echo "$out" | tail -1)"
         echo "$out" | grep -E '^(error|warning)\[' | sed 's/^/      /'
         fail=1
     fi
@@ -52,7 +53,7 @@ done
 
 echo "──────────────────────────────────────────────────"
 if [ "$fail" -eq 0 ]; then
-    echo "lint gate: stdlib, examples, docs and projects are clean"
+    echo "lint gate: stdlib, examples, docs, projects and the manifest loader are clean"
 else
     echo "lint gate: FAILED — fix it, or @allow it at the declaration with the reason"
 fi

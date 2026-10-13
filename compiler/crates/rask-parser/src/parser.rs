@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
@@ -112,7 +112,7 @@ impl Parser {
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                 TokenKind::Interface | TokenKind::Extend | TokenKind::Import | TokenKind::Type |
-                TokenKind::Extern | TokenKind::Public | TokenKind::Private | TokenKind::Package if brace_depth == 0 => {
+                TokenKind::Extern | TokenKind::Public | TokenKind::Private if brace_depth == 0 => {
                     return;
                 }
                 _ => { self.advance(); }
@@ -460,7 +460,7 @@ impl Parser {
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
-                        TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
+                        TokenKind::Test | TokenKind::Benchmark |
                         TokenKind::Public | TokenKind::Private |
                         // Attributes go on declarations only.
                         TokenKind::At
@@ -713,20 +713,9 @@ impl Parser {
                 }
                 first
             }
-            TokenKind::Package => {
-                if is_pub || is_comptime || is_unsafe || !attrs.is_empty() {
-                    return Err(ParseError {
-                        span: self.current().span,
-                        message: "package declarations cannot have modifiers".to_string(),
-                        hint: Some("remove 'public', 'comptime', 'unsafe', or attributes".to_string()),
-                        why: None,
-                    });
-                }
-                self.parse_package_decl()?
-            }
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, union, interface, extend, `T implements I`, import, export, const, type, test, benchmark, extern, package)",
+                    "declaration (func, struct, enum, union, interface, extend, `T implements I`, import, export, const, type, test, benchmark, extern)",
                     self.current_kind(),
                     self.current().span,
                 ));
@@ -2637,327 +2626,6 @@ impl Parser {
         Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, block_start }))
     }
 
-    /// Parse a package block (struct.build/PK1-PK5).
-    ///
-    /// ```rask
-    /// package "my-app" "1.0.0" {
-    ///     dep "http" "^2.0"
-    ///     dep "shared" { path: "../shared" }
-    /// }
-    /// ```
-    fn parse_package_decl(&mut self) -> Result<DeclKind, ParseError> {
-        self.expect(&TokenKind::Package)?;
-
-        let name = self.expect_string()?;
-        let version = self.expect_string()?;
-
-        let mut deps = Vec::new();
-        let mut features = Vec::new();
-        let mut metadata = Vec::new();
-        let mut list_metadata = Vec::new();
-        let mut profiles = Vec::new();
-
-        self.skip_newlines();
-        if self.match_token(&TokenKind::LBrace) {
-            self.skip_newlines();
-
-            while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                match self.current_kind() {
-                    TokenKind::Ident(ref s) if s == "dep" => {
-                        deps.push(self.parse_dep_item(None)?);
-                    }
-                    TokenKind::Scope => {
-                        // scope "dev" { dep ... }
-                        self.advance();
-                        let scope_span = self.current().span;
-                        let scope_name = self.expect_string()?;
-                        if scope_name != "dev" && scope_name != "build" {
-                            return Err(ParseError {
-                                span: scope_span,
-                                message: format!(
-                                    "unknown dependency scope \"{}\" — the scopes are \"dev\" and \"build\"",
-                                    scope_name,
-                                ),
-                                hint: Some(
-                                    "\"dev\" deps are linked by `rask test`, \"build\" deps by the \
-                                     build script; a dep outside any scope is linked by \
-                                     every build"
-                                        .to_string(),
-                                ),
-                                why: None,
-                            });
-                        }
-                        self.skip_newlines();
-                        self.expect(&TokenKind::LBrace)?;
-                        self.skip_newlines();
-                        while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                            if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                                deps.push(self.parse_dep_item(Some(&scope_name))?);
-                            } else {
-                                self.advance();
-                            }
-                            self.skip_newlines();
-                        }
-                        self.expect(&TokenKind::RBrace)?;
-                    }
-                    TokenKind::Feature => {
-                        features.push(self.parse_feature_decl()?);
-                    }
-                    TokenKind::Profile => {
-                        // profile "embedded" { key: "value", ... }
-                        self.advance();
-                        let profile_name = self.expect_string()?;
-                        let mut settings = Vec::new();
-                        self.skip_newlines();
-                        if self.match_token(&TokenKind::LBrace) {
-                            self.skip_newlines();
-                            while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                                if matches!(self.current_kind(), TokenKind::Ident(_)) {
-                                    let key = self.expect_ident()?;
-                                    self.expect(&TokenKind::Colon)?;
-                                    let value = self.expect_string()?;
-                                    settings.push((key, value));
-                                } else {
-                                    self.advance();
-                                }
-                                self.skip_newlines();
-                            }
-                            self.expect(&TokenKind::RBrace)?;
-                        }
-                        profiles.push(ProfileDecl { name: profile_name, settings });
-                    }
-                    TokenKind::Ident(_) => {
-                        let key = self.expect_ident()?;
-                        self.expect(&TokenKind::Colon)?;
-                        if self.check(&TokenKind::LBracket) {
-                            // list metadata: key: ["a", "b"]
-                            self.advance(); // consume [
-                            let mut values = Vec::new();
-                            self.skip_newlines();
-                            while !self.check(&TokenKind::RBracket) && !self.at_end() {
-                                values.push(self.expect_string()?);
-                                self.skip_newlines();
-                                if !self.match_token(&TokenKind::Comma) {
-                                    self.skip_newlines();
-                                    break;
-                                }
-                                self.skip_newlines();
-                            }
-                            self.expect(&TokenKind::RBracket)?;
-                            list_metadata.push((key, values));
-                        } else {
-                            // scalar metadata: key: "value"
-                            let value = self.expect_string()?;
-                            metadata.push((key, value));
-                        }
-                    }
-                    _ => {
-                        self.advance();
-                    }
-                }
-                self.skip_newlines();
-            }
-            self.expect(&TokenKind::RBrace)?;
-        }
-
-        Ok(DeclKind::Package(PackageDecl { name, version, deps, features, metadata, list_metadata, profiles }))
-    }
-
-    /// Parse a feature declaration inside a package block.
-    ///
-    /// Additive: `feature "ssl" { dep "openssl" "^3.0" }`
-    /// Exclusive: `feature "runtime" exclusive { "tokio" { dep "tokio" "^1.0" } default: "tokio" }`
-    fn parse_feature_decl(&mut self) -> Result<FeatureDecl, ParseError> {
-        self.expect(&TokenKind::Feature)?;
-        let name = self.expect_string()?;
-
-        let exclusive = self.match_token(&TokenKind::Exclusive);
-
-        let mut feature_deps = Vec::new();
-        let mut options = Vec::new();
-        let mut default = None;
-        let mut on_by_default = false;
-
-        self.skip_newlines();
-        if self.match_token(&TokenKind::LBrace) {
-            self.skip_newlines();
-            while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                if exclusive && matches!(self.current_kind(), TokenKind::String(..)) {
-                    // String-named option block: "tokio" { dep ... }
-                    let opt_name = self.expect_string()?;
-                    let mut opt_deps = Vec::new();
-                    self.skip_newlines();
-                    if self.match_token(&TokenKind::LBrace) {
-                        self.skip_newlines();
-                        while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                            if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                                opt_deps.push(self.parse_dep_item(None)?);
-                            } else {
-                                self.advance();
-                            }
-                            self.skip_newlines();
-                        }
-                        self.expect(&TokenKind::RBrace)?;
-                    }
-                    options.push(FeatureOption { name: opt_name, deps: opt_deps });
-                } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                    feature_deps.push(self.parse_dep_item(None)?);
-                } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
-                    // `default: "tokio"` picks an exclusive option; `default: true`
-                    // turns an additive feature on (F3).
-                    let key = self.expect_ident()?;
-                    if key == "default" {
-                        self.expect(&TokenKind::Colon)?;
-                        if let TokenKind::Bool(b) = *self.current_kind() {
-                            on_by_default = b;
-                            self.advance();
-                        } else {
-                            default = Some(self.expect_string()?);
-                        }
-                    } else {
-                        // skip unknown key
-                        if self.match_token(&TokenKind::Colon) {
-                            self.advance();
-                        }
-                    }
-                } else {
-                    self.advance();
-                }
-                self.skip_newlines();
-            }
-            self.expect(&TokenKind::RBrace)?;
-        }
-
-        Ok(FeatureDecl { name, exclusive, deps: feature_deps, options, default, on_by_default })
-    }
-
-    /// Parse a single dep item inside a package block.
-    ///
-    /// ```rask
-    /// dep "http" "^2.0"
-    /// dep "shared" { path: "../shared" }
-    /// dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
-    /// ```
-    fn parse_dep_item(&mut self, scope: Option<&str>) -> Result<DepDecl, ParseError> {
-        let mut dep_scope: Option<String> = scope.map(str::to_string);
-        // `dep` is a contextual keyword — only recognized inside package blocks
-        if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-            self.advance();
-        } else {
-            return Err(ParseError::expected("'dep'", self.current_kind(), self.current().span));
-        }
-
-        let name = self.expect_string()?;
-
-        // Optional version string
-        let version = if matches!(self.current_kind(), TokenKind::String(..)) {
-            Some(self.expect_string()?)
-        } else {
-            None
-        };
-
-        let mut path = None;
-        let mut git = None;
-        let mut branch = None;
-        let mut with_features = Vec::new();
-        let mut target = None;
-        let mut allow = Vec::new();
-        let mut exclusive_selections = Vec::new();
-
-        // Optional sub-block { key: value, ... }
-        self.skip_newlines();
-        if self.match_token(&TokenKind::LBrace) {
-            self.skip_newlines();
-            while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                // Keys may be keywords (e.g. `with`, `target`)
-                let key = self.expect_ident_or_keyword()?;
-                self.expect(&TokenKind::Colon)?;
-
-                match key.as_str() {
-                    "path" => { path = Some(self.expect_string()?); }
-                    "git" => { git = Some(self.expect_string()?); }
-                    "branch" => { branch = Some(self.expect_string()?); }
-                    "target" => { target = Some(self.expect_string()?); }
-                    // A dep inside a `feature` block can name its scope here
-                    // instead — `scope` blocks and `feature` blocks may not
-                    // nest (struct.build/F4), so this key is the only way to
-                    // say "this optional dep is a dev dep".
-                    "scope" => {
-                        let span = self.current().span;
-                        let named = self.expect_string()?;
-                        if named != "dev" && named != "build" {
-                            return Err(ParseError {
-                                span,
-                                message: format!(
-                                    "unknown dependency scope \"{}\" — the scopes are \"dev\" and \"build\"",
-                                    named,
-                                ),
-                                hint: None,
-                                why: None,
-                            });
-                        }
-                        dep_scope = Some(named);
-                    }
-                    "with" => {
-                        self.expect(&TokenKind::LBracket)?;
-                        while !self.check(&TokenKind::RBracket) && !self.at_end() {
-                            with_features.push(self.expect_string()?);
-                            if !self.match_token(&TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&TokenKind::RBracket)?;
-                    }
-                    "allow" => {
-                        // allow: ["net", "read"]
-                        self.expect(&TokenKind::LBracket)?;
-                        while !self.check(&TokenKind::RBracket) && !self.at_end() {
-                            allow.push(self.expect_string()?);
-                            if !self.match_token(&TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&TokenKind::RBracket)?;
-                    }
-                    other => {
-                        // Could be an exclusive feature selection: runtime: "tokio"
-                        if matches!(self.current_kind(), TokenKind::String(..)) {
-                            let selection = self.expect_string()?;
-                            exclusive_selections.push((other.to_string(), selection));
-                        } else if self.check(&TokenKind::LBrace) {
-                            // Skip unknown block value
-                            let mut depth = 1;
-                            self.advance();
-                            while depth > 0 && !self.at_end() {
-                                match self.current_kind() {
-                                    TokenKind::LBrace => depth += 1,
-                                    TokenKind::RBrace => depth -= 1,
-                                    _ => {}
-                                }
-                                if depth > 0 { self.advance(); }
-                            }
-                            if self.check(&TokenKind::RBrace) {
-                                self.advance();
-                            }
-                        } else {
-                            self.advance();
-                        }
-                    }
-                }
-
-                // Optional comma or newline separator
-                let _ = self.match_token(&TokenKind::Comma);
-                self.skip_newlines();
-            }
-            self.expect(&TokenKind::RBrace)?;
-        }
-
-        Ok(DepDecl {
-            name, version, path, git, branch, with_features, target,
-            allow, exclusive_selections,
-            scope: dep_scope,
-        })
-    }
 
     // =========================================================================
     // Statement Parsing
@@ -6074,11 +5742,6 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Extern => "extern",
         TokenKind::Asm => "asm",
         TokenKind::Discard => "discard",
-        // Build system
-        TokenKind::Package => "package",
-        TokenKind::Scope => "scope",
-        TokenKind::Feature => "feature",
-        TokenKind::Profile => "profile",
         _ => return None,
     })
 }

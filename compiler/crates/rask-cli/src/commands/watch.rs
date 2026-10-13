@@ -141,8 +141,8 @@ fn collect_watched_files(dir: &Path, map: &mut HashMap<String, SystemTime>) {
             continue;
         }
 
-        // Watch .rk files and build.rk (WA4)
-        let is_watched = name.ends_with(".rk") || name == "build.rk";
+        // Watch .rk files, which include build.rk, and the manifest (WA4)
+        let is_watched = name.ends_with(".rk") || name == rask_resolve::package::MANIFEST_FILE;
         if !is_watched {
             continue;
         }

@@ -5,7 +5,7 @@
 
 # Package Versioning and Dependencies
 
-Semantic versioning with maximal version selection, `build.rk` package block for dependencies, generated lock file for reproducibility.
+Semantic versioning with maximal version selection, dependencies declared in `rask.toml` (`struct.manifest`), generated lock file for reproducibility.
 
 ## Versioning
 
@@ -106,7 +106,7 @@ Note: `signing-key` is only present for registry packages. Path and git dependen
 
 | Rule | Description |
 |------|-------------|
-| **WS1: Members** | `members: ["app", "lib1", "lib2"]` in workspace root `build.rk` |
+| **WS1: Members** | `members = ["app", "lib1", "lib2"]` under `[package]` in the workspace root `rask.toml` |
 | **WS2: Shared lock** | Single `rask.lock` at workspace root |
 | **WS3: Path deps** | Members reference each other via path dependencies |
 
@@ -121,7 +121,7 @@ FIX: Check if X or Y has a newer version compatible with the other.
 
 ```
 ERROR [struct.packages/LK4]: lock file out of sync
-  rask.lock doesn't match build.rk dependencies
+  rask.lock doesn't match the dependencies in rask.toml
 
 FIX: rask update
 ```
@@ -130,7 +130,7 @@ FIX: rask update
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Missing `build.rk` | — | No external deps, version 0.0.0 |
+| Missing `rask.toml` | — | No external deps, version 0.0.0 |
 | Lock file out of date | LK4 | Error: run `rask update` |
 | Network unavailable | CA1 | Error: check network or cache |
 | Checksum mismatch | CA2 | Error: possible tampering |
@@ -148,19 +148,20 @@ FIX: rask update
 
 ### Rationale
 
-**MV1 (maximal compatible):** Select the newest compatible version. Developers expect the latest bug fixes when they write `dep "http" "^2.0"`. The lock file provides reproducibility — once resolved, versions don't change until `rask update`.
+**MV1 (maximal compatible):** Select the newest compatible version. Developers expect the latest bug fixes when they write `http = { registry = "^2.0" }`. The lock file provides reproducibility — once resolved, versions don't change until `rask update`.
 
 **LK1 (lock files):** Applications should commit `rask.lock` for reproducibility. Libraries may omit it (consumers resolve their own versions).
 
 ### Dependency Sources
 
-<!-- test: skip -->
-```rask
-dep "http" "^2.1"                        // Registry (default)
-dep "parser" { git: "https://github.com/author/parser.git", branch: "main" }
-dep "mylib" { path: "../mylib" }         // Local
-dep "mylib" "^1.0" { path: "../mylib" }  // Path for dev, version for publishing
+```toml
+[dependencies]
+http   = { registry = "^2.1" }
+parser = { git = "https://github.com/author/parser.git", branch = "main" }
+mylib  = { path = "../mylib" }
 ```
+
+A dependency names exactly one source (`struct.build/D2`). The old block allowed a version and a path together, meaning "path while developing, version when published"; that's gone, and publishing a package with a path dependency is an error (PB5).
 
 ### Best Practices
 

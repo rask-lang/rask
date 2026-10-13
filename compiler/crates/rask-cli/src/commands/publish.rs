@@ -20,9 +20,8 @@ pub fn cmd_publish(path: &str, dry_run: bool, unsigned: bool, verbose: bool) {
         process::exit(1);
     }
 
-    let build_rk = root.join("build.rk");
-    if !build_rk.exists() {
-        eprintln!("{}: no build.rk found — cannot publish without a package manifest", output::error_label());
+    if !root.join(rask_resolve::package::MANIFEST_FILE).exists() {
+        eprintln!("{}: no rask.toml found — cannot publish without a package manifest", output::error_label());
         process::exit(1);
     }
 
@@ -39,7 +38,7 @@ pub fn cmd_publish(path: &str, dry_run: bool, unsigned: bool, verbose: bool) {
     let manifest = match registry.get(root_id).and_then(|p| p.manifest.clone()) {
         Some(m) => m,
         None => {
-            eprintln!("{}: build.rk has no package block", output::error_label());
+            eprintln!("{}: rask.toml didn't load", output::error_label());
             process::exit(1);
         }
     };
@@ -48,11 +47,11 @@ pub fn cmd_publish(path: &str, dry_run: bool, unsigned: bool, verbose: bool) {
 
     // PB2: Required metadata — description and license
     if manifest.meta("description").is_none() {
-        eprintln!("{}: missing `description` metadata in build.rk (PB2)", output::error_label());
+        eprintln!("{}: missing `description` under [package] in rask.toml (PB2)", output::error_label());
         errors += 1;
     }
     if manifest.meta("license").is_none() {
-        eprintln!("{}: missing `license` metadata in build.rk (PB2)", output::error_label());
+        eprintln!("{}: missing `license` under [package] in rask.toml (PB2)", output::error_label());
         errors += 1;
     }
 

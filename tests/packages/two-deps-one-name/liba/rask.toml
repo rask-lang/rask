@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "liba"
+version = "0.1.0"
+description = "One of two dependencies that both declare Helper"
+license = "MIT OR Apache-2.0"

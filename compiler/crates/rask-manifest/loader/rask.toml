@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "manifest"
+version = "0.1.0"
+description = "Prototype: rask.toml checked against a versioned schema"
+license = "MIT OR Apache-2.0"

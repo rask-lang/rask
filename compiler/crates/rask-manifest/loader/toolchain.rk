@@ -1,0 +1,216 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// What the toolchain calls. The compiler runs these through the interpreter
+// (rask-manifest), so every parameter and every result is a string, and
+// structured results travel as JSON.
+
+import json
+import json.JsonValue
+
+// {"ok": <package>} or {"error": "<every problem, one per line>"}.
+// The package has the shape rask-ast's PackageDecl has, so the compiler
+// reads it field for field and decides nothing itself.
+public func toolchain_load(text: string) -> string {
+    return match load_package(text) {
+        Package as p => one("ok", package_json(p)),
+        LoadError as e => one("error", JsonValue.String(e.message())),
+    }.to_string()
+}
+
+// {"ok": "<rewritten file>"} or {"error": "..."}.
+public func toolchain_migrate(text: string, to: string) -> string {
+    let version = to.parse<i64>() catch _ => return one("error", JsonValue.String("version must be a whole number, got `{to}`")).to_string()
+    return match migrate(text, package_schema(), version) {
+        string as out => one("ok", JsonValue.String(out)),
+        LoadError as e => one("error", JsonValue.String(e.message())),
+    }.to_string()
+}
+
+// "" when the history replays to the shape, else what's wrong.
+public func toolchain_check_history() -> string {
+    check_history(package_schema()) catch e => return e.message()
+    return ""
+}
+
+public func toolchain_json_schema() -> string {
+    return json_schema(package_schema())
+}
+
+public func toolchain_schema_line() -> string {
+    let s = package_schema()
+    return "{s.name}@{s.version()}"
+}
+
+// ─── Package as JSON ────────────────────────────────────────────
+
+func one(key: string, take value: JsonValue) -> JsonValue {
+    mut m = Map<string, JsonValue>.new()
+    m.insert(key, value)
+    return JsonValue.Object(m)
+}
+
+func strings(items: Vec<string>) -> JsonValue {
+    mut out = Vec<JsonValue>.new()
+    for s in items {
+        out.push(JsonValue.String(s))
+    }
+    return JsonValue.Array(out)
+}
+
+func pair(a: string, take b: JsonValue) -> JsonValue {
+    mut out = Vec<JsonValue>.new()
+    out.push(JsonValue.String(a))
+    out.push(b)
+    return JsonValue.Array(out)
+}
+
+func opt(s: string?) -> JsonValue {
+    if s? as v {
+        return JsonValue.String(v)
+    }
+    return JsonValue.Null
+}
+
+func package_json(p: Package) -> JsonValue {
+    mut m = Map<string, JsonValue>.new()
+    m.insert("name", JsonValue.String(p.name))
+    m.insert("version", JsonValue.String(p.version))
+
+    mut deps = Vec<JsonValue>.new()
+    push_deps(mutate deps, p.dependencies, none)
+    push_deps(mutate deps, p.dev_dependencies, "dev")
+    push_deps(mutate deps, p.build_dependencies, "build")
+    m.insert("deps", JsonValue.Array(deps))
+
+    mut features = Vec<JsonValue>.new()
+    for f in p.features {
+        mut fm = Map<string, JsonValue>.new()
+        fm.insert("name", JsonValue.String(f.name))
+        fm.insert("exclusive", JsonValue.Bool(false))
+        mut fdeps = Vec<JsonValue>.new()
+        push_deps(mutate fdeps, f.dependencies, none)
+        push_deps(mutate fdeps, f.dev_dependencies, "dev")
+        push_deps(mutate fdeps, f.build_dependencies, "build")
+        fm.insert("deps", JsonValue.Array(fdeps))
+        fm.insert("options", JsonValue.Array(Vec.new()))
+        fm.insert("default", JsonValue.Null)
+        fm.insert("on_by_default", JsonValue.Bool(f.on_by_default))
+        fm.insert("enables", strings(f.enables))
+        features.push(JsonValue.Object(fm))
+    }
+    for g in p.exclusive_features {
+        mut gm = Map<string, JsonValue>.new()
+        gm.insert("name", JsonValue.String(g.name))
+        gm.insert("exclusive", JsonValue.Bool(true))
+        gm.insert("deps", JsonValue.Array(Vec.new()))
+        mut options = Vec<JsonValue>.new()
+        for o in g.options {
+            mut om = Map<string, JsonValue>.new()
+            om.insert("name", JsonValue.String(o.name))
+            mut odeps = Vec<JsonValue>.new()
+            push_deps(mutate odeps, o.dependencies, none)
+            om.insert("deps", JsonValue.Array(odeps))
+            options.push(JsonValue.Object(om))
+        }
+        gm.insert("options", JsonValue.Array(options))
+        gm.insert("default", JsonValue.String(g.default))
+        gm.insert("on_by_default", JsonValue.Bool(false))
+        gm.insert("enables", JsonValue.Array(Vec.new()))
+        features.push(JsonValue.Object(gm))
+    }
+    m.insert("features", JsonValue.Array(features))
+
+    mut metadata = Vec<JsonValue>.new()
+    if p.description? as d {
+        metadata.push(pair("description", JsonValue.String(d)))
+    }
+    if p.license? as l {
+        metadata.push(pair("license", JsonValue.String(l)))
+    }
+    if p.repository? as r {
+        metadata.push(pair("repository", JsonValue.String(r)))
+    }
+    if p.vendor_dir? as v {
+        metadata.push(pair("vendor_dir", JsonValue.String(v)))
+    }
+    metadata.push(pair("sandbox", JsonValue.String(if p.sandbox: "true" else: "false")))
+    m.insert("metadata", JsonValue.Array(metadata))
+
+    mut lists = Vec<JsonValue>.new()
+    if !p.members.is_empty() {
+        lists.push(pair("members", strings(p.members)))
+    }
+    m.insert("list_metadata", JsonValue.Array(lists))
+
+    mut profiles = Vec<JsonValue>.new()
+    for pr in p.profiles {
+        mut settings = Vec<JsonValue>.new()
+        if pr.inherits? as v {
+            settings.push(pair("inherits", JsonValue.String(v)))
+        }
+        if pr.opt_level? as v {
+            settings.push(pair("opt_level", JsonValue.String(v)))
+        }
+        if pr.debug_info? as v {
+            settings.push(pair("debug_info", JsonValue.String("{v}")))
+        }
+        if pr.overflow_checks? as v {
+            settings.push(pair("overflow_checks", JsonValue.String("{v}")))
+        }
+        if pr.lto? as v {
+            settings.push(pair("lto", JsonValue.String(v)))
+        }
+        if pr.codegen_units? as v {
+            settings.push(pair("codegen_units", JsonValue.String("{v}")))
+        }
+        if pr.strip? as v {
+            settings.push(pair("strip", JsonValue.String("{v}")))
+        }
+        if pr.panic? as v {
+            settings.push(pair("panic", JsonValue.String(v)))
+        }
+        mut pm = Map<string, JsonValue>.new()
+        pm.insert("name", JsonValue.String(pr.name))
+        pm.insert("settings", JsonValue.Array(settings))
+        profiles.push(JsonValue.Object(pm))
+    }
+    m.insert("profiles", JsonValue.Array(profiles))
+    return JsonValue.Object(m)
+}
+
+func push_deps(mutate out: Vec<JsonValue>, deps: Vec<Dep>, scope_name: string?) {
+    for d in deps {
+        mut m = Map<string, JsonValue>.new()
+        m.insert("name", JsonValue.String(d.name))
+        mut version = JsonValue.Null
+        mut path = JsonValue.Null
+        mut git = JsonValue.Null
+        mut rev = JsonValue.Null
+        mut branch = JsonValue.Null
+        match d.source {
+            DepSource.Registry(req) => version = JsonValue.String(req),
+            DepSource.Path(p) => path = JsonValue.String(p),
+            DepSource.Git(url, rev: r, branch: b) => {
+                git = JsonValue.String(url)
+                rev = opt(r)
+                branch = opt(b)
+            }
+        }
+        m.insert("version", version)
+        m.insert("path", path)
+        m.insert("git", git)
+        m.insert("rev", rev)
+        m.insert("branch", branch)
+        m.insert("with", strings(d.with))
+        m.insert("target", opt(d.target))
+        m.insert("allow", strings(d.allow))
+        mut selections = Vec<JsonValue>.new()
+        for (group, option) in d.select {
+            selections.push(pair(group, JsonValue.String(option)))
+        }
+        m.insert("selections", JsonValue.Array(selections))
+        m.insert("feature", opt(d.feature))
+        m.insert("scope", opt(scope_name))
+        out.push(JsonValue.Object(m))
+    }
+}

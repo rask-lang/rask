@@ -999,7 +999,6 @@ impl Resolver {
                     }
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
-                DeclKind::Package(_) => {}
                 // Annotations register as struct symbols so the name resolves
                 // — `has<A>()` names it as a type argument, and a runtime
                 // construction attempt reaches the checker's tailored
@@ -1948,7 +1947,7 @@ impl Resolver {
                 DeclKind::Import(_) => {}
                 DeclKind::Export(_) => {}
                 DeclKind::Extern(_) => {}
-                DeclKind::Package(_) | DeclKind::CImport(_) => {}
+                DeclKind::CImport(_) => {}
                 DeclKind::Union(_) => {}
                 DeclKind::TypeAlias(_) => {}
                 DeclKind::Annotation(ann) => {

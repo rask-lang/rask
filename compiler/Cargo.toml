@@ -27,6 +27,7 @@ members = [
     "crates/rask-effects",
     "crates/rask-c-parse",
     "crates/rask-compiler",
+    "crates/rask-manifest",
 ]
 
 [workspace.package]

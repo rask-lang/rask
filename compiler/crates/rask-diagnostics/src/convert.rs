@@ -322,16 +322,17 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 } else {
                     "the build script"
                 };
+                let table = format!("[{}-dependencies]", scope);
                 Diagnostic::error(format!(
-                    "`{}` is a `scope \"{}\"` dependency, and this build doesn't link it",
-                    name, scope,
+                    "`{}` is in `{}`, and this build doesn't link it",
+                    name, table,
                 ))
                 .with_code("E0216")
-                .with_primary(self.span, format!("declared under `scope \"{}\"`", scope))
+                .with_primary(self.span, format!("`{}` is declared under `{}` in rask.toml", name, table))
                 .with_help(format!("{} links it; a release build doesn't", keeps_it))
                 .with_fix(format!(
-                    "move the dep out of `scope \"{}\"` if the shipped program needs it",
-                    scope,
+                    "move it from `{}` to `[dependencies]` in rask.toml if the shipped program needs it",
+                    table,
                 ))
                 .with_why(
                     "a scoped dependency is declared for one kind of build — if a \

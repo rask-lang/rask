@@ -31,4 +31,5 @@ rask-stdlib = { path = "../rask-stdlib" }
 rask-effects = { path = "../rask-effects" }
 rask-c-parse = { path = "../rask-c-parse" }
 rask-compiler = { path = "../rask-compiler" }
+rask-manifest = { path = "../rask-manifest" }
 colored = "3"

@@ -144,10 +144,16 @@ impl<T> PipelineOutput<T> {
 
 /// Detect whether a .rk file belongs to a multi-file package.
 ///
-/// Walks up from the file's directory looking for `build.rk`, stopping at
+/// Walks up from the file's directory looking for `rask.toml` or `build.rk`, stopping at
 /// `.git` or filesystem root. Returns a `PackageContext` with all parsed
-/// declarations if found.
-pub fn detect_package(file_path: &str) -> Option<PackageContext> {
+/// declarations if found, `Ok(None)` outside any package, and the loader's
+/// error when the package is there but doesn't load.
+///
+/// The error used to be dropped, which made a package with a file that
+/// doesn't parse look like no package at all: `rask check <dir>` then read
+/// the directory as a file and said "Is a directory", and handed a file
+/// inside the package it checked that file alone.
+pub fn detect_package(file_path: &str) -> Result<Option<PackageContext>, rask_resolve::PackageError> {
     let path = Path::new(file_path);
     // A directory is the package itself, not a file inside one. Taking
     // `parent()` of `app/` looked one level too far up and found whatever
@@ -156,15 +162,16 @@ pub fn detect_package(file_path: &str) -> Option<PackageContext> {
     let file_dir = if path.is_dir() {
         path.to_path_buf()
     } else {
-        let dir = path.parent()?;
+        let Some(dir) = path.parent() else { return Ok(None) };
         if dir.as_os_str().is_empty() {
-            std::env::current_dir().ok()?
+            let Ok(cwd) = std::env::current_dir() else { return Ok(None) };
+            cwd
         } else {
             dir.to_path_buf()
         }
     };
 
-    let project_root = find_project_root(&file_dir)?;
+    let Some(project_root) = find_project_root(&file_dir) else { return Ok(None) };
     discover_package(&project_root)
 }
 
@@ -183,7 +190,7 @@ pub fn find_project_root_from(file_path: &str) -> Option<PathBuf> {
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
     let mut dir = start_dir.canonicalize().unwrap_or_else(|_| start_dir.to_path_buf());
     loop {
-        if dir.join("build.rk").is_file() {
+        if rask_resolve::package::is_package_root(&dir) {
             return Some(dir);
         }
         if dir.join(".git").exists() {
@@ -196,21 +203,59 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
     }
 }
 
-fn discover_package(root: &Path) -> Option<PackageContext> {
+fn discover_package(root: &Path) -> Result<Option<PackageContext>, rask_resolve::PackageError> {
     let mut registry = PackageRegistry::new();
     // The check path keeps every `test` block — it never strips them, the way a
     // release build does — so it needs the same dev dependencies compiling them
     // requires (struct.build/D4). Without this, `rask check` and
-    // `rask test --interp` on a package with a `scope "dev"` dep reported
+    // `rask test --interp` on a package with a dev dependency reported
     // `E0216: this build doesn't link it` for an import the tests legitimately
     // make, while `rask build` on the same package was fine.
     registry.include_scope("dev");
-    let root_id = registry.discover(root).ok()?;
-    let all_decls: Vec<Decl> = registry.get(root_id)?.all_decls().cloned().collect();
+    let root_id = registry.discover(root)?;
+    let Some(root_pkg) = registry.get(root_id) else { return Ok(None) };
+    let all_decls: Vec<Decl> = root_pkg.all_decls().cloned().collect();
     if all_decls.is_empty() {
-        return None;
+        return Ok(None);
     }
-    Some(PackageContext { registry, root_id, all_decls })
+    Ok(Some(PackageContext { registry, root_id, all_decls }))
+}
+
+/// A package that didn't load, as pipeline diagnostics. Each failing file
+/// becomes one entry in `source_files`, and its diagnostics' spans are
+/// renumbered to that entry, since the display finds a span's file by index.
+fn package_error_output<T>(e: &rask_resolve::PackageError) -> PipelineOutput<T> {
+    let mut out = PipelineOutput { result: None, diagnostics: Vec::new(), source_files: Vec::new() };
+    collect_package_error(e, &mut out);
+    out
+}
+
+fn collect_package_error<T>(e: &rask_resolve::PackageError, out: &mut PipelineOutput<T>) {
+    use rask_resolve::PackageError;
+    let mut push_file = |out: &mut PipelineOutput<T>, file: &PathBuf, source: &str, diags: Vec<Diagnostic>| {
+        let id = out.source_files.len() as u16;
+        out.source_files.push((file.clone(), source.to_string()));
+        for mut d in diags {
+            for label in &mut d.labels {
+                label.span.file_id = id;
+            }
+            out.diagnostics.push(d);
+        }
+    };
+    match e {
+        PackageError::Parse { file, source, errors } => {
+            push_file(out, file, source, errors.iter().map(|err| err.to_diagnostic()).collect());
+        }
+        PackageError::Lex { file, source, errors } => {
+            push_file(out, file, source, errors.iter().map(|err| err.to_diagnostic()).collect());
+        }
+        PackageError::Multiple(errors) => {
+            for inner in errors {
+                collect_package_error(inner, out);
+            }
+        }
+        other => out.diagnostics.push(Diagnostic::error(other.to_string())),
+    }
 }
 
 // ============================================================================
@@ -246,10 +291,11 @@ pub fn program_decls(decls: &[Decl]) -> Vec<Decl> {
 /// Auto-detects package context. Accumulates errors from all stages that run,
 /// so callers see everything at once instead of one error category at a time.
 pub fn check_file(path: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
-    if let Some(mut pkg_ctx) = detect_package(path) {
-        return check_package(&mut pkg_ctx, config);
+    match detect_package(path) {
+        Ok(Some(mut pkg_ctx)) => check_package(&mut pkg_ctx, config),
+        Ok(None) => check_single(path, config),
+        Err(e) => package_error_output(&e),
     }
-    check_single(path, config)
 }
 
 /// The files a single-file command compiles as one unit.
@@ -315,7 +361,7 @@ pub fn check_source(name: &str, source: &str, config: &CompilerConfig) -> Pipeli
 /// source, and node ids chain across them so combining the declarations can't
 /// produce two nodes with the same id — the same rules `rask-resolve`'s package
 /// loader follows, for the same reasons.
-fn check_loaded(
+pub fn check_loaded(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
@@ -875,10 +921,11 @@ pub fn compile_file_with(
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
-    if let Some(mut pkg_ctx) = detect_package(path) {
-        return compile_package_with(&mut pkg_ctx, config, transform);
+    match detect_package(path) {
+        Ok(Some(mut pkg_ctx)) => compile_package_with(&mut pkg_ctx, config, transform),
+        Ok(None) => compile_single(path, config, transform),
+        Err(e) => package_error_output(&e),
     }
-    compile_single(path, config, transform)
 }
 
 fn compile_single(

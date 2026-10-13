@@ -181,7 +181,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
     // === LC1 Step 1-3: Parse build.rk, discover packages + deps ===
     // A dev dependency is present exactly where `test` blocks are.
     // `std.testing/T1` strips them in release, so release is the build that
-    // doesn't link one — which is the whole reason to write `scope "dev"`.
+    // doesn't link one — which is the whole reason to write `[dev-dependencies]`.
     // Every other build compiles the test blocks and needs their imports to
     // resolve.
     let mut registry = PackageRegistry::new();
@@ -256,7 +256,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             &dep_selections,
         );
 
-        for err in &features.errors {
+        for err in features.errors.iter().chain(&rask_resolve::features::check_enables_cycles(&manifest.features)) {
             eprintln!("{}: {}", output::error_label(), err);
             validation_errors += 1;
         }
@@ -347,7 +347,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             if !violations.is_empty() {
                 for cap in &violations {
                     eprintln!(
-                        "{}: dependency '{}' uses {} but is not allowed\n  add `allow: [\"{}\"]` to the dep declaration in build.rk",
+                        "{}: dependency '{}' uses {} but is not allowed\n  add `allow = [\"{}\"]` to its entry in rask.toml",
                         output::error_label(),
                         pkg.name,
                         rask_resolve::capabilities::capability_description(cap),

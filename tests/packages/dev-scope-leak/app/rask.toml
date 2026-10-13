@@ -1,0 +1,13 @@
+schema = "rask-package@1"
+
+[package]
+name = "app"
+version = "0.1.0"
+description = "A release build must not reach a dev-scoped dep"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+libpkg = { path = "../libpkg" }
+
+[dev-dependencies]
+testkit = { path = "../testkit" }

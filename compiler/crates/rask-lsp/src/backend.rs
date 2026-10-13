@@ -239,7 +239,9 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     let file_path_str = uri.to_file_path()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pkg_ctx = rask_compiler::detect_package(&file_path_str);
+    // A sibling that doesn't parse gets its own diagnostics when it's open;
+    // this file is analyzed alone until then.
+    let pkg_ctx = rask_compiler::detect_package(&file_path_str).ok().flatten();
     let sibling_decl_names = if let Some(ref ctx) = pkg_ctx {
         build_sibling_names(uri, ctx)
     } else {

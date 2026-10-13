@@ -1,0 +1,11 @@
+schema = "rask-package@1"
+
+[package]
+name = "app"
+version = "0.1.0"
+description = "Uses the conformance a third package declared"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+interfacepkg = { path = "../interfacepkg" }
+liba         = { path = "../liba" }

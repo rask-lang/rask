@@ -28,7 +28,7 @@ pub const MAX_PUBLISH_SIZE: u64 = 10 * 1024 * 1024;
 
 /// Create a reproducible tarball from a package directory (PB6).
 ///
-/// Includes all .rk files, build.rk, README*, LICENSE* files.
+/// Includes all .rk files, rask.toml, README*, LICENSE* files.
 /// File order is deterministic (sorted by relative path).
 /// Timestamps, uid, gid are zeroed for reproducibility.
 pub fn create_reproducible_tarball(
@@ -132,8 +132,8 @@ fn collect_publishable_files(
 /// Check if a file should be included in the published tarball.
 fn is_publishable(name: &str) -> bool {
     let lower = name.to_lowercase();
-    // .rk source files (including build.rk)
-    if name.ends_with(".rk") {
+    // .rk source files (including build.rk) and the manifest
+    if name.ends_with(".rk") || name == crate::package::MANIFEST_FILE {
         return true;
     }
     // Standard project files
@@ -156,7 +156,7 @@ mod tests {
         let pkg = tmp.path().join("pkg");
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(pkg.join("main.rk"), "func main() { }").unwrap();
-        std::fs::write(pkg.join("build.rk"), "package \"test\" \"1.0.0\"").unwrap();
+        std::fs::write(pkg.join("rask.toml"), "schema = \"rask-package@1\"\n").unwrap();
         std::fs::write(pkg.join("README.md"), "# Test").unwrap();
 
         let dest1 = tmp.path().join("out1.tar.gz");

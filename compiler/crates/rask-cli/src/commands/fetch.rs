@@ -26,9 +26,8 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         process::exit(1);
     }
 
-    let build_rk = root.join("build.rk");
-    if !build_rk.exists() {
-        println!("  {} (no build.rk, nothing to fetch)", "OK".green());
+    if !root.join(rask_resolve::package::MANIFEST_FILE).exists() {
+        println!("  {} (no rask.toml, nothing to fetch)", "OK".green());
         return;
     }
 
@@ -96,7 +95,7 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         let mut seen_deps: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for dep in &manifest.deps {
             if !seen_deps.insert(&dep.name) {
-                eprintln!("{}: duplicate dep \"{}\" in build.rk",
+                eprintln!("{}: dependency \"{}\" is declared twice in rask.toml (in two tables)",
                     output::error_label(), dep.name);
                 constraint_errors += 1;
             }
@@ -454,7 +453,7 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
             let violations = rask_resolve::capabilities::check_capabilities(caps, &allowed);
             for cap in &violations {
                 eprintln!(
-                    "  {} '{}' uses {} — add allow: [\"{}\"] to build.rk",
+                    "  {} '{}' uses {} — add allow = [\"{}\"] to its entry in rask.toml",
                     "Warning:".yellow(), pkg_name,
                     rask_resolve::capabilities::capability_description(cap),
                     cap,

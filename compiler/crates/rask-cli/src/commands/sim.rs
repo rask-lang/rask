@@ -317,7 +317,7 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
     }
     let p = Path::new(path);
     let (files, single) = if p.is_dir() {
-        if p.join("build.rk").is_file() {
+        if rask_resolve::package::is_package_root(p) {
             eprintln!(
                 "{}: `rask test --sim` doesn't take a package directory yet — pass one of its test files",
                 output::error_label(),

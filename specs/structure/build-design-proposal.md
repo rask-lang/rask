@@ -1,9 +1,11 @@
 <!-- id: struct.build-v2 -->
-<!-- status: proposed -->
+<!-- status: deprecated -->
 <!-- summary: Comprehensive build system: incremental steps, cross-compilation, caching, CLI, security -->
 <!-- depends: structure/build.md, structure/packages.md, structure/targets.md -->
 
 # Build System Design — Proposal
+
+**Superseded.** What this proposed was folded into [struct.build](build.md), and the `package` block it writes in has since moved to `rask.toml` ([struct.manifest](manifest.md)). Kept for the reasoning; the syntax here no longer parses.
 
 Assessment of the current `struct.build` and `struct.packages` specs, plus proposed
 additions. The goal: a build system that scores well on METRICS.md and is genuinely
