@@ -43,7 +43,9 @@ public enum Value {
     Table(Vec<Entry>)
 }
 
-// Tables keep their keys in file order, so a rewrite keeps the order too.
+// Tables keep their keys in file order. A rewrite keeps that order among a
+// table's values and among its sub-tables, but writes the values first: a
+// value can't follow a sub-table's header and still belong to the parent.
 public struct Entry {
     public key: string
     public value: Value
@@ -103,6 +105,9 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
             }
             r.pos = r.pos + 1
             try r.end_of_line()
+            if path.len() > MAX_DEPTH {
+                return TomlError { line, what: "keys nest deeper than {MAX_DEPTH} levels" }
+            }
             prefix = path.clone()
             assigns.push(Assign { path, value: Value.Table(Vec.new()), header: true, line })
             continue
@@ -114,8 +119,6 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
         }
         r.pos = r.pos + 1
         r.skip_spaces()
-        let value = try r.parse_value(0)
-        try r.end_of_line()
         mut path = prefix.clone()
         for k in key {
             path.push(k)
@@ -123,6 +126,8 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
         if path.len() > MAX_DEPTH {
             return TomlError { line, what: "keys nest deeper than {MAX_DEPTH} levels" }
         }
+        let value = try r.parse_value(path.len())
+        try r.end_of_line()
         assigns.push(Assign { path, value, header: false, line })
     }
 
@@ -149,31 +154,37 @@ func build_table(assigns: Vec<Assign>, idx: Vec<usize>, depth: usize) -> Vec<Ent
     mut out = Vec<Entry>.new()
     for k in keys {
         mut leaf: usize? = none
-        mut header_seen = false
+        mut header: usize? = none
+        mut child: usize? = none
         mut children = Vec<usize>.new()
         for i in idx {
             if assigns[i].path[depth] != k {
                 continue
             }
-            if assigns[i].path.len() == depth + 1 {
-                if assigns[i].header {
-                    if header_seen {
-                        return TomlError { line: assigns[i].line, what: "table [{assigns[i].path.join(".")}] is defined twice" }
-                    }
-                    header_seen = true
-                } else {
-                    if leaf? {
-                        return TomlError { line: assigns[i].line, what: "duplicate key `{assigns[i].path.join(".")}`" }
-                    }
-                    leaf = i
+            if assigns[i].path.len() > depth + 1 {
+                if child is none {
+                    child = i
                 }
-            } else {
                 children.push(i)
+            } else if assigns[i].header {
+                if header? as h {
+                    return TomlError { line: assigns[i].line, what: "table [{assigns[i].path.join(".")}] is defined twice{first_on(assigns[h].line, assigns[i].line)}" }
+                }
+                header = i
+            } else {
+                if leaf? as l {
+                    return TomlError { line: assigns[i].line, what: "duplicate key `{assigns[i].path.join(".")}`{first_on(assigns[l].line, assigns[i].line)}" }
+                }
+                leaf = i
             }
         }
         if leaf? as li {
-            if header_seen || !children.is_empty() {
-                return TomlError { line: assigns[li].line, what: "`{assigns[li].path.join(".")}` is a value here and a table elsewhere" }
+            let other = header ?? child ?? li
+            if other != li {
+                let lv = assigns[li].line
+                let lt = assigns[other].line
+                let line = if lv > lt: lv else: lt
+                return TomlError { line, what: "`{assigns[li].path.join(".")}` is a value on line {lv} and a table on line {lt}" }
             }
             out.push(Entry { key: k, value: assigns[li].value.clone() })
         } else {
@@ -182,6 +193,14 @@ func build_table(assigns: Vec<Assign>, idx: Vec<usize>, depth: usize) -> Vec<Ent
         }
     }
     return out
+}
+
+// A conflict names both lines, unless both are the same line.
+func first_on(first: i64, now: i64) -> string {
+    if first == now {
+        return ""
+    }
+    return " (first on line {first})"
 }
 
 // Raw bidi controls can make text read differently from how it parses.
@@ -195,19 +214,33 @@ func check_bidi(input: string) -> void or TomlError {
         if b == LF {
             line = line + 1
         }
-        if b == 226 && i + 2 < n {
-            let b1 = input.byte_at(i + 1) ?? 0
-            let b2 = input.byte_at(i + 2) ?? 0
-            let marks = b1 == 128 && (b2 == 142 || b2 == 143)
-            let embeds = b1 == 128 && b2 >= 170 && b2 <= 174
-            let isolates = b1 == 129 && b2 >= 166 && b2 <= 169
-            if marks || embeds || isolates {
-                return TomlError { line, what: "raw bidirectional control character; write it as a \\u escape inside a string" }
-            }
+        if bidi_at(input, i) != 0 {
+            return TomlError { line, what: "raw bidirectional control character; write it as a \\u escape inside a string" }
         }
         i = i + 1
     }
     return
+}
+
+// The Bidi_Control code point starting at byte `i`, or 0: U+061C,
+// U+200E-200F, U+202A-202E, U+2066-2069.
+func bidi_at(s: string, i: usize) -> usize {
+    let b0 = s.byte_at(i) ?? 0
+    let b1 = s.byte_at(i + 1) ?? 0
+    if b0 == 216 && b1 == 156 {
+        return 1564
+    }
+    if b0 != 226 {
+        return 0
+    }
+    let b2 = s.byte_at(i + 2) ?? 0
+    let marks = b1 == 128 && (b2 == 142 || b2 == 143)
+    let embeds = b1 == 128 && b2 >= 170 && b2 <= 174
+    let isolates = b1 == 129 && b2 >= 166 && b2 <= 169
+    if marks || embeds || isolates {
+        return 8192 + (b1 - 128) as usize * 64 + (b2 - 128) as usize
+    }
+    return 0
 }
 
 func is_bare_key_byte(b: u8) -> bool {
@@ -216,6 +249,22 @@ func is_bare_key_byte(b: u8) -> bool {
 
 func is_digit(b: u8) -> bool {
     return b >= 48 && b <= 57
+}
+
+// The digit's value in `radix`, or -1.
+func digit_value(b: u8, radix: i64) -> i64 {
+    mut d: i64 = -1
+    if b >= 48 && b <= 57 {
+        d = (b - 48) as i64
+    } else if b >= 97 && b <= 102 {
+        d = (b - 87) as i64
+    } else if b >= 65 && b <= 70 {
+        d = (b - 55) as i64
+    }
+    if d >= radix {
+        return -1
+    }
+    return d
 }
 
 extend Reader {
@@ -323,6 +372,7 @@ extend Reader {
         return self.input[start..self.pos].to_string()
     }
 
+    // `depth` counts every key segment and container above this value.
     func parse_value(mutate self, depth: usize) -> Value or TomlError {
         if depth > MAX_DEPTH {
             return self.error("values nest deeper than {MAX_DEPTH} levels")
@@ -352,30 +402,94 @@ extend Reader {
         return self.error("expected a value: a string, integer, boolean, array or inline table")
     }
 
+    // Decimal with an optional sign, or unsigned 0x/0o/0b. `_` only between
+    // digits, no leading zeros, and the value must fit in an i64.
     func parse_integer(mutate self) -> Value or TomlError {
-        mut negative = false
-        if self.peek() == MINUS || self.peek() == PLUS {
-            negative = self.peek() == MINUS
+        let signed = self.peek() == MINUS || self.peek() == PLUS
+        let negative = self.peek() == MINUS
+        if signed {
             self.pos = self.pos + 1
         }
         if !is_digit(self.peek()) {
             return self.error("expected a digit")
         }
+        mut radix: i64 = 10
+        if self.peek() == 48 {
+            let p = self.input.byte_at(self.pos + 1) ?? 0
+            if p == 120 {
+                radix = 16
+            } else if p == 111 {
+                radix = 8
+            } else if p == 98 {
+                radix = 2
+            }
+            if radix != 10 {
+                if signed {
+                    return self.error("a hex, octal or binary integer can't have a sign")
+                }
+                self.pos = self.pos + 2
+            }
+        }
+        // Counted below zero: i64's minimum has no positive twin.
         mut n: i64 = 0
-        while is_digit(self.peek()) || self.peek() == UNDERSCORE {
-            let d = self.peek()
-            self.pos = self.pos + 1
-            if d == UNDERSCORE {
+        mut digits: usize = 0
+        mut first: u8 = 0
+        mut after_digit = false
+        mut fits = true
+        loop {
+            let b = self.peek()
+            if b == UNDERSCORE {
+                if !after_digit {
+                    return self.error("`_` in a number must sit between two digits")
+                }
+                after_digit = false
+                self.pos = self.pos + 1
                 continue
             }
-            n = n * 10 + (d - 48).wrap<i64>()
+            let d = digit_value(b, radix)
+            if d < 0 {
+                break
+            }
+            if digits == 0 {
+                first = b
+            }
+            digits = digits + 1
+            after_digit = true
+            self.pos = self.pos + 1
+            if n.checked_mul(radix)? as m {
+                if m.checked_sub(d)? as s {
+                    n = s
+                    continue
+                }
+            }
+            fits = false
+        }
+        if digits == 0 {
+            return self.error("expected digits after the base prefix")
+        }
+        if !after_digit {
+            return self.error("`_` in a number must sit between two digits")
         }
         let next = self.peek()
-        if next == DOT || next == 101 || next == 69 || next == 58 || next == MINUS {
-            return self.error("floats and dates aren't supported")
+        if radix == 10 {
+            if next == DOT || next == 101 || next == 69 || next == 58 || next == MINUS {
+                return self.error("floats and dates aren't supported")
+            }
+            if first == 48 && digits > 1 {
+                return self.error("leading zeros aren't allowed in an integer")
+            }
+        } else if is_bare_key_byte(next) {
+            return self.error("`{self.input[self.pos..self.pos + 1]}` is not a base-{radix} digit")
         }
-        if negative {
-            return Value.Int(0 - n)
+        if !negative {
+            if n.checked_mul(-1)? as p {
+                n = p
+            } else {
+                fits = false
+            }
+        }
+        if !fits {
+            return self.error("integer doesn't fit in 64 bits")
         }
         return Value.Int(n)
     }
@@ -423,7 +537,7 @@ extend Reader {
             }
             self.pos = self.pos + 1
             self.skip_spaces()
-            let value = try self.parse_value(depth + 1)
+            let value = try self.parse_value(depth + path.len())
             assigns.push(Assign { path, value, header: false, line })
             self.skip_spaces()
             if self.peek() == COMMA {
@@ -455,10 +569,14 @@ extend Reader {
         mut out = StringBuilder.new()
         mut run_start = self.pos
         loop {
-            if self.at_end() || self.peek() == LF {
+            let b = self.peek()
+            let crlf = b == CR && (self.input.byte_at(self.pos + 1) ?? 0) == LF
+            if self.at_end() || b == LF || crlf {
                 return self.error("unterminated string")
             }
-            let b = self.peek()
+            if (b < SPACE && b != TAB) || b == 127 {
+                return self.error("raw control character in a string; write it as an escape")
+            }
             if b == quote {
                 out.push(self.input[run_start..self.pos].to_string())
                 self.pos = self.pos + 1
@@ -479,6 +597,10 @@ extend Reader {
                     out.push_char('\t')
                 } else if esc == 114 {
                     out.push_char('\r')
+                } else if esc == 98 {
+                    out.push_char('\u{8}')
+                } else if esc == 102 {
+                    out.push_char('\u{C}')
                 } else if esc == 117 {
                     let c = try self.parse_hex_escape(4)
                     out.push_char(c)
@@ -658,23 +780,65 @@ func render_key(k: string) -> string {
     return k
 }
 
+// Escapes whatever the reader would refuse raw: control characters and
+// bidi controls.
 func quote_string(s: string) -> string {
     mut out = StringBuilder.new()
     out.push_char('"')
-    for c in s.chars() {
-        if c == '"' {
-            out.push("\\\"")
-        } else if c == '\\' {
-            out.push("\\\\")
-        } else if c == '\n' {
-            out.push("\\n")
-        } else if c == '\t' {
-            out.push("\\t")
+    let n = s.len()
+    mut run: usize = 0
+    mut i: usize = 0
+    while i < n {
+        let b = s.byte_at(i) ?? 0
+        mut width: usize = 1
+        mut esc = ""
+        if b == DQUOTE {
+            esc = "\\\""
+        } else if b == BACKSLASH {
+            esc = "\\\\"
+        } else if b == LF {
+            esc = "\\n"
+        } else if b == TAB {
+            esc = "\\t"
+        } else if b == CR {
+            esc = "\\r"
+        } else if b == 8 {
+            esc = "\\b"
+        } else if b == 12 {
+            esc = "\\f"
+        } else if b < SPACE || b == 127 {
+            esc = unicode_escape(b as usize)
         } else {
-            out.push_char(c)
+            let cp = bidi_at(s, i)
+            if cp != 0 {
+                esc = unicode_escape(cp)
+                width = if cp == 1564: 2 else: 3
+            }
         }
+        if esc.is_empty() {
+            i = i + 1
+            continue
+        }
+        out.push(s[run..i].to_string())
+        out.push(esc)
+        i = i + width
+        run = i
     }
+    out.push(s[run..n].to_string())
     out.push_char('"')
+    return out.build()
+}
+
+func unicode_escape(cp: usize) -> string {
+    let hex = "0123456789ABCDEF"
+    mut out = StringBuilder.new()
+    out.push("\\u")
+    mut div: usize = 4096
+    while div > 0 {
+        let d = cp / div % 16
+        out.push(hex[d..d + 1].to_string())
+        div = div / 16
+    }
     return out.build()
 }
 
