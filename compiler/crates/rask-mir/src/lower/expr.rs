@@ -8485,7 +8485,105 @@ impl<'a> MirLowerer<'a> {
             return PatternTest { matches, flat_payload: Some((inner, payload_ty)) };
         }
         let expected = self.pattern_tag_in_type_context(pattern, val_ty);
-        PatternTest { matches: self.emit_eq_const(tag, expected), flat_payload: None }
+        let mut matches = self.emit_eq_const(tag, expected);
+        // A literal or range inside the variant's pattern has to match too:
+        // `s is Sq(0)` isn't true of every `Sq` (#1532). Reading a field of a
+        // variant the value doesn't hold reads payload bytes nobody uses, and
+        // the tag test already says no.
+        for (field, wanted) in self.tested_variant_fields(val, val_ty, pattern) {
+            if let Some(ok) = self.emit_value_matches(&field, &wanted) {
+                matches = self.emit_and(matches, ok);
+            }
+        }
+        PatternTest { matches, flat_payload: None }
+    }
+
+    /// The fields a variant pattern on a user enum tests with a literal or a
+    /// range, read out of `val`, with what each has to match.
+    fn tested_variant_fields(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Vec<(MirOperand, rask_ast::expr::Pattern)> {
+        use rask_ast::expr::Pattern;
+        let tested = |p: &Pattern| matches!(p, Pattern::Literal(_) | Pattern::Range { .. });
+        let (name, positional): (&str, Vec<Pattern>) = match pattern {
+            Pattern::Constructor { name, fields } if fields.iter().any(tested) => (name, fields.clone()),
+            Pattern::Struct { name, fields, .. } if fields.iter().any(|(_, p)| tested(p)) => {
+                let Some(names) = self.variant_field_names(val_ty, name) else { return Vec::new() };
+                let positional = names
+                    .iter()
+                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or(Pattern::Wildcard, |(_, p)| p.clone()))
+                    .collect();
+                (name, positional)
+            }
+            _ => return Vec::new(),
+        };
+        let Some(layout) = self.variant_field_types(val_ty, name) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (i, p) in positional.into_iter().enumerate() {
+            if !tested(&p) {
+                continue;
+            }
+            let Some((ty, offset, size)) = layout.get(i).cloned() else { continue };
+            let local = self.builder.alloc_temp(ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: val.clone(),
+                    field_index: i as u32,
+                    byte_offset: Some(offset),
+                    access: FieldAccess::for_field(&ty, size),
+                },
+            }));
+            out.push((MirOperand::Local(local), p));
+        }
+        out
+    }
+
+    /// Whether `value` matches a literal or range pattern, as a bool local.
+    fn emit_value_matches(
+        &mut self,
+        value: &MirOperand,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Option<crate::LocalId> {
+        use rask_ast::expr::Pattern;
+        let compare = |this: &mut Self, op: crate::operand::BinOp, right: MirOperand| {
+            let out = this.builder.alloc_temp(MirType::Bool);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: MirRValue::BinaryOp { op, left: value.clone(), right },
+            }));
+            out
+        };
+        match pattern {
+            Pattern::Literal(lit) => {
+                let (lit_op, _) = self.lower_expr(lit).ok()?;
+                Some(compare(self, crate::operand::BinOp::Eq, lit_op))
+            }
+            Pattern::Range { start, end } => {
+                let (lo, _) = self.lower_expr(start).ok()?;
+                let (hi, _) = self.lower_expr(end).ok()?;
+                let above = compare(self, crate::operand::BinOp::Ge, lo);
+                let below = compare(self, crate::operand::BinOp::Le, hi);
+                Some(self.emit_and(above, below))
+            }
+            _ => None,
+        }
+    }
+
+    fn emit_and(&mut self, a: crate::LocalId, b: crate::LocalId) -> crate::LocalId {
+        let out = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::And,
+                left: MirOperand::Local(a),
+                right: MirOperand::Local(b),
+            },
+        }));
+        out
     }
 
     /// The payload or `none` leaf of a flat `T? or E` that `pattern` names.

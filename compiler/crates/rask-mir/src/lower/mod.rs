@@ -4762,7 +4762,7 @@ impl<'a> MirLowerer<'a> {
     fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
         use rask_ast::expr::Pattern;
         match pattern {
-            Pattern::Constructor { name, .. } => self.variant_tag(name),
+            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.variant_tag(name),
             Pattern::Ident(name) if is_variant_name(name) => self.variant_tag(name),
             _ => 0,
         }
@@ -4799,7 +4799,10 @@ impl<'a> MirLowerer<'a> {
             Pattern::TypePat { ty, .. } => {
                 if self.pattern_is_err_side(&type_pat_name(ty), val_ty) { 1 } else { 0 }
             }
-            Pattern::Constructor { name, .. } => self
+            // A named variant is a variant like a positional one: `s is
+            // Rect(w, h)` tested against tag 0 whatever `Rect` was, so it was
+            // true of every first variant and of nothing else.
+            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self
                 .variant_tag_in_scrutinee(name, val_ty)
                 .unwrap_or_else(|| self.variant_tag(name)),
             _ => self.pattern_tag(pattern),
