@@ -68,6 +68,9 @@ struct Assign {
     value: Value
     header: bool
     line: i64
+    // How much of `path` came from the `[header]` above; the rest was the
+    // dotted key itself.
+    prefix_len: usize
 }
 
 struct Reader {
@@ -81,7 +84,7 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
     if input.len() > MAX_BYTES {
         return TomlError { line: 0, what: "file is larger than {MAX_BYTES} bytes" }
     }
-    try check_bidi(input)
+    try check_raw_text(input)
     mut r = Reader { input, pos: 0, len: input.len(), line: 1 }
     mut assigns = Vec<Assign>.new()
     mut prefix = Vec<string>.new()
@@ -109,7 +112,8 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
                 return TomlError { line, what: "keys nest deeper than {MAX_DEPTH} levels" }
             }
             prefix = path.clone()
-            assigns.push(Assign { path, value: Value.Table(Vec.new()), header: true, line })
+            let prefix_len = path.len()
+            assigns.push(Assign { path, value: Value.Table(Vec.new()), header: true, line, prefix_len })
             continue
         }
         let key = try r.parse_key()
@@ -128,8 +132,9 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
         }
         let value = try r.parse_value(path.len())
         try r.end_of_line()
-        assigns.push(Assign { path, value, header: false, line })
+        assigns.push(Assign { path, value, header: false, line, prefix_len: prefix.len() })
     }
+    try check_dotted_tables(assigns)
 
     mut all = Vec<usize>.new()
     mut i: usize = 0
@@ -138,6 +143,38 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
         i = i + 1
     }
     return build_table(assigns, all, 0)
+}
+
+// A table made by dotted keys (`apple.color = "red"` makes `apple`) can't
+// also have a `[header]`, in either order. A header can still add a table
+// *below* one: `[fruit.apple.texture]` after `apple.color` is fine.
+func check_dotted_tables(assigns: Vec<Assign>) -> void or TomlError {
+    for h in assigns {
+        if !h.header {
+            continue
+        }
+        for a in assigns {
+            if a.header || a.prefix_len >= h.path.len() || a.path.len() <= h.path.len() {
+                continue
+            }
+            if starts_with_path(a.path, h.path) {
+                let line = if a.line > h.line: a.line else: h.line
+                return TomlError { line, what: "table [{h.path.join(".")}] has a header on line {h.line} and dotted keys on line {a.line}; define it one way" }
+            }
+        }
+    }
+    return
+}
+
+func starts_with_path(path: Vec<string>, head: Vec<string>) -> bool {
+    mut i: usize = 0
+    while i < head.len() {
+        if path[i] != head[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 // Group assignments by their next path segment, in first-seen order.
@@ -203,9 +240,12 @@ func first_on(first: i64, now: i64) -> string {
     return " (first on line {first})"
 }
 
-// Raw bidi controls can make text read differently from how it parses.
-// They're rejected everywhere; a string that needs one writes it escaped.
-func check_bidi(input: string) -> void or TomlError {
+// Characters rejected raw anywhere (WF3): control characters other than tab
+// and a line ending, a carriage return not followed by a newline, and
+// bidirectional controls, which make text read differently from how it
+// parses. Inside a string each has an escape; in a comment or between tokens
+// there's no reason for one. Checked up front, so comments are covered too.
+func check_raw_text(input: string) -> void or TomlError {
     mut line: i64 = 1
     mut i: usize = 0
     let n = input.len()
@@ -213,6 +253,12 @@ func check_bidi(input: string) -> void or TomlError {
         let b = input.byte_at(i) ?? 0
         if b == LF {
             line = line + 1
+        } else if b == CR {
+            if (input.byte_at(i + 1) ?? 0) != LF {
+                return TomlError { line, what: "a carriage return must be followed by a newline" }
+            }
+        } else if (b < SPACE && b != TAB) || b == 127 {
+            return TomlError { line, what: "raw control character; write it as an escape inside a string" }
         }
         if bidi_at(input, i) != 0 {
             return TomlError { line, what: "raw bidirectional control character; write it as a \\u escape inside a string" }
@@ -538,7 +584,7 @@ extend Reader {
             self.pos = self.pos + 1
             self.skip_spaces()
             let value = try self.parse_value(depth + path.len())
-            assigns.push(Assign { path, value, header: false, line })
+            assigns.push(Assign { path, value, header: false, line, prefix_len: 0 })
             self.skip_spaces()
             if self.peek() == COMMA {
                 self.pos = self.pos + 1
@@ -573,9 +619,6 @@ extend Reader {
             let crlf = b == CR && (self.input.byte_at(self.pos + 1) ?? 0) == LF
             if self.at_end() || b == LF || crlf {
                 return self.error("unterminated string")
-            }
-            if (b < SPACE && b != TAB) || b == 127 {
-                return self.error("raw control character in a string; write it as an escape")
             }
             if b == quote {
                 out.push(self.input[run_start..self.pos].to_string())

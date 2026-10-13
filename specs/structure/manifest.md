@@ -58,8 +58,8 @@ Checked on the TOML itself, before any schema sees it.
 |------|-------------|
 | **WF1: TOML subset** | Comments, bare/quoted/dotted keys, `[table]` headers, basic and literal strings, integers, booleans, arrays, inline tables. Floats, dates, multi-line strings and `[[array of tables]]` are errors that say so. A manifest has no use for them |
 | **WF2: NFC keys** | A quoted key must be in NFC form. Two spellings of one name would otherwise be two keys |
-| **WF3: No raw bidi controls** | Unescaped bidirectional control characters are rejected anywhere in the file. Text must parse the way it reads |
-| **WF4: Duplicates** | A key set twice, a table defined twice, or a key used as both a value and a table is an error naming both |
+| **WF3: No raw controls** | Unescaped control characters (tab aside), a carriage return without a newline after it, and bidirectional controls are rejected anywhere in the file, comments included. Text must parse the way it reads |
+| **WF4: Duplicates** | A key set twice, a table defined twice, a key used as both a value and a table, or a table made by dotted keys that also has a `[header]` is an error naming both lines |
 | **WF5: Limits** | 1 MiB per file, 32 levels of nesting. Fixed numbers with defined errors |
 
 ## Schema and History

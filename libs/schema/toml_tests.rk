@@ -168,9 +168,29 @@ test "an unterminated string is an error on its line" {
 
 test "a raw control character in a string is an error" {
     assert err("s = \"a\u{1}b\"\n").contains("raw control character")
-    assert err("s = 'a\rb'\n").contains("raw control character")
     // Tab is the one exception.
     assert str_at(tree("s = \"a\tb\"\n"), "s") == "a\tb"
+}
+
+test "a lone carriage return is an error" {
+    assert err("s = 'a\rb'\n") == "line 1: a carriage return must be followed by a newline"
+    assert err("a = 1\rb = 2\n") == "line 1: a carriage return must be followed by a newline"
+    assert err("a = 1\r\nb = 2\r\n") == ""
+}
+
+test "a raw control character in a comment is an error" {
+    assert err("a = 1\n# bell \u{7}\n") == "line 2: raw control character; write it as an escape inside a string"
+    assert err("a = 1 # del \u{7F}\n").contains("raw control character")
+    assert err("a = 1 # tab\tis fine\n") == ""
+}
+
+test "a table defined by dotted keys can't also have a header" {
+    assert err("[a]\nb.c = 1\n[a.b]\n") == "line 3: table [a.b] has a header on line 3 and dotted keys on line 2; define it one way"
+    assert err("a.x = 1\n[a]\ny = 2\n") == "line 2: table [a] has a header on line 2 and dotted keys on line 1; define it one way"
+    // A header may add a table below one that dotted keys made.
+    assert err("[fruit]\napple.color = \"red\"\n[fruit.apple.texture]\nsmooth = true\n") == ""
+    // And dotted keys under a header extend that header's table.
+    assert err("[a]\nb.c = 1\nb.d = 2\n") == ""
 }
 
 // ─── Integers ───────────────────────────────────────────────────
