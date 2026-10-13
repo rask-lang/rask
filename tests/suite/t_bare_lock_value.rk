@@ -27,9 +27,9 @@ struct Holder {
 extend Holder {
     func new() -> Holder {
         return Holder(
-            n: Shared.mutex(3),
-            v: Shared.mutex(Vec.new()),
-            c: Shared.mutex(Counter.new()),
+            n: Shared.mutex(3)
+            v: Shared.mutex(Vec.new())
+            c: Shared.mutex(Counter.new())
         )
     }
 

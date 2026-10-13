@@ -92,8 +92,8 @@ test "mem.heap/HP3 — a `Heap` field, filled from a plain value" {
 // values are all readable right up to the drop, so nothing was freed early.
 test "mem.heap/HP3 — a payload holding a string and a vector" {
     let r = Heap(Record(
-        name: "a record name long enough to allocate",
-        marks: [1, 2, 3],
+        name: "a record name long enough to allocate"
+        marks: [1, 2, 3]
     ))
     ensure drop(r)
     assert r.name == "a record name long enough to allocate"

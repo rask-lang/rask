@@ -79,8 +79,8 @@ test "the qualified type survives a generic" {
 
 test "a qualified field gets the real layout, not a pointer's" {
     let f = Frame9(
-        result: http.Response.new(207, "body-here"),
-        sentinel: 424242,
+        result: http.Response.new(207, "body-here")
+        sentinel: 424242
     )
     assert f.result.status == 207
     assert f.result.body == "body-here"
@@ -89,8 +89,8 @@ test "a qualified field gets the real layout, not a pointer's" {
 
 test "an aliased module import gets the real layout too" {
     let f = Frame10(
-        result: h.Response.new(409, "conflict"),
-        sentinel: 191919,
+        result: h.Response.new(409, "conflict")
+        sentinel: 191919
     )
     assert f.result.status == 409
     assert f.result.body == "conflict"

@@ -55,8 +55,8 @@ test "the same Shared staged twice" {
 
 test "a payload that allocates, so a wrong owner would show as a double free" {
     let s = Shared<Tally, Mutex>.mutex(Tally(
-        count: 1,
-        label: "a label long enough to live on the heap",
+        count: 1
+        label: "a label long enough to live on the heap"
     ))
     with s.staged() as t {
         t.count = t.count + 4

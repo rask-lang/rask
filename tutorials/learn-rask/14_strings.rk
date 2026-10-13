@@ -151,9 +151,9 @@ test "parse wind" {
 
 test "format flight plan" {
     let plan = format_flight_plan(
-        "ENGM",
-        "EGLL",
-        Vec.from(["CEDAR", "MAPLE", "BIRCH"]),
+        "ENGM"
+        "EGLL"
+        Vec.from(["CEDAR", "MAPLE", "BIRCH"])
     )
     assert plan == "ENGM → CEDAR → MAPLE → BIRCH → EGLL"
 }

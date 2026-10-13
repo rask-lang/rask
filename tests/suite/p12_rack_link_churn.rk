@@ -25,11 +25,11 @@ struct Holder {
 
 func fresh() -> Holder {
     return Holder(
-        rack: Rack.new(),
-        list: Vec.new(),
-        other: Vec.new(),
-        nested: Vec.new(),
-        index: Map.new(),
+        rack: Rack.new()
+        list: Vec.new()
+        other: Vec.new()
+        nested: Vec.new()
+        index: Map.new()
     )
 }
 

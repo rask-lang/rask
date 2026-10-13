@@ -136,9 +136,9 @@ func build(ctx: BuildContext) -> void or Error {
     // Step 3: C compilation — re-runs when C sources change
     try ctx.step("native", inputs: ["vendor/zlib/*.c"], || {
         try ctx.compile_c(CompileOptions(
-            sources: ["vendor/zlib/*.c"],
-            include: ["vendor/zlib/"],
-            flags: ["-O2"],
+            sources: ["vendor/zlib/*.c"]
+            include: ["vendor/zlib/"]
+            flags: ["-O2"]
         ))
     })
 }
@@ -531,8 +531,8 @@ consistency with the rest of the API. `exec` is a method, not a manual struct co
 ```rask
 // Current (verbose)
 let result = try ctx.run(Command(
-    program: "protoc",
-    args: ["--rask_out=.rk-gen/", "api.proto"],
+    program: "protoc"
+    args: ["--rask_out=.rk-gen/", "api.proto"]
 ))
 if result.status != 0 {
     return Error.new("protoc failed: {}", result.stderr)

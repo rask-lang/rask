@@ -67,8 +67,8 @@ test "stdlib.collections — a comparator closure belongs to the frame" {
 
 test "stdlib.collections — a comparator that reads a field" {
     mut v: Vec<Ranked> = [
-        Ranked(name: "the third one by score", score: 3),
-        Ranked(name: "the first one by score", score: 1),
+        Ranked(name: "the third one by score", score: 3)
+        Ranked(name: "the first one by score", score: 1)
     ]
     v.sort_by(|a, b| a.score.compare(b.score))
     assert v[0].score == 1

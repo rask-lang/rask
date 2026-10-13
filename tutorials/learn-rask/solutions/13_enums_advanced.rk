@@ -101,10 +101,10 @@ test "entry time" {
 
 test "flight time" {
     let log = Vec.from([
-        LogEntry.EngineStart(time: 800), LogEntry.Takeoff(time: 815, runway: "27L"),
-        LogEntry.WaypointReached(time: 900, name: "CEDAR", altitude: 35000.0),
-        LogEntry.WaypointReached(time: 945, name: "MAPLE", altitude: 35000.0),
-        LogEntry.Landing(time: 1030, runway: "09R"), LogEntry.EngineStop(time: 1045),
+        LogEntry.EngineStart(time: 800), LogEntry.Takeoff(time: 815, runway: "27L")
+        LogEntry.WaypointReached(time: 900, name: "CEDAR", altitude: 35000.0)
+        LogEntry.WaypointReached(time: 945, name: "MAPLE", altitude: 35000.0)
+        LogEntry.Landing(time: 1030, runway: "09R"), LogEntry.EngineStop(time: 1045)
     ])
     assert flight_time(log) == 215
 }

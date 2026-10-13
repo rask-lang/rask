@@ -573,9 +573,9 @@ LogSource implements Error {
 **Runtime polymorphism:** Use `any Interface` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.interfaces/TR5`):
 ```rask
 let widgets: Vec<any Widget> = [
-    button as any Widget,
-    textbox as any Widget,
-    slider as any Widget,
+    button as any Widget
+    textbox as any Widget
+    slider as any Widget
 ]
 for w in widgets: w.draw()    // Dynamic dispatch
 ```

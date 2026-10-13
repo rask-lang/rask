@@ -42,12 +42,12 @@ test "std.json — encode_pretty indents, encode doesn't" {
 
 test "std.json — pretty nests, and leaves an empty container inline" {
     let d = Doc(
-        name: "a,b:c",
-        tags: ["x"],
-        point: point(),
-        empty: [],
-        score: 2.5,
-        ok: true,
+        name: "a,b:c"
+        tags: ["x"]
+        point: point()
+        empty: []
+        score: 2.5
+        ok: true
     )
     let expected = "{{\n  \"name\": \"a,b:c\",\n  \"tags\": [\n    \"x\"\n  ],\n  \"point\": {{\n    \"x\": 1,\n    \"y\": 2\n  }},\n  \"empty\": [],\n  \"score\": 2.5,\n  \"ok\": true\n}}"
     assert json.encode_pretty(d) == expected
@@ -63,12 +63,12 @@ test "std.json — a Vec encodes pretty too" {
 // The separators inside a string must not be indented on.
 test "std.json — punctuation inside a string is left alone" {
     let d = Doc(
-        name: "{{a}}: [b], \"c\"",
-        tags: [],
-        point: point(),
-        empty: [],
-        score: 0.0,
-        ok: false,
+        name: "{{a}}: [b], \"c\""
+        tags: []
+        point: point()
+        empty: []
+        score: 0.0
+        ok: false
     )
     let pretty = json.encode_pretty(d)
     assert(pretty.contains("\"{{a}}: [b], \\\"c\\\"\""))

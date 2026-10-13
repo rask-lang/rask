@@ -97,9 +97,9 @@ test "mem.ownership — an array literal's strings belong to the Vec it built" {
     // back garbage showed up.
     let inv = Inventory(
         orders: [
-            Order(id: 1, items: [Item(name: "a", qty: 1)]),
-            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)]),
-        ],
+            Order(id: 1, items: [Item(name: "a", qty: 1)])
+            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)])
+        ]
     )
     assert inv.orders.len() == 2
     assert inv.orders[1].items.len() == 2

@@ -47,10 +47,10 @@ struct Arena {
 extend Arena {
     func new(capacity: i64) -> Arena {
         return Arena(
-            buf: Vec.with_capacity(capacity.wrap<usize>()),
-            top: 0,
-            capacity: capacity,
-            frame_base: 0,
+            buf: Vec.with_capacity(capacity.wrap<usize>())
+            top: 0
+            capacity: capacity
+            frame_base: 0
         )
     }
 

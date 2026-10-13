@@ -69,8 +69,8 @@ test "std.strings/V5 — the spec's parse_header shares one buffer" {
     let line = "Content-Type: text/html"
     let colon = line.index_of(":") ?? 0
     let h = Header(
-        name: line[0..colon].trim().view(),
-        value: line[colon + 1..].trim().view(),
+        name: line[0..colon].trim().view()
+        value: line[colon + 1..].trim().view()
     )
     assert h.name.to_string() == "Content-Type"
     assert h.value.to_string() == "text/html"

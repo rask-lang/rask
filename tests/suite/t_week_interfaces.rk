@@ -121,9 +121,9 @@ test "type.interfaces — any Interface as a return type" {
 
 test "type.interfaces — a Vec of interface objects dispatches per element" {
     let shapes: Vec<any Shape> = [
-        Circle(r: 1.0) as any Shape,
-        Square(side: 4.0) as any Shape,
-        Circle(r: 2.0) as any Shape,
+        Circle(r: 1.0) as any Shape
+        Square(side: 4.0) as any Shape
+        Circle(r: 2.0) as any Shape
     ]
     assert shapes.len() == 3
     mut total = 0.0
@@ -154,8 +154,8 @@ test "type.interfaces — an interface object of the second interface" {
 test "type.interfaces — dispatch inside a loop over mixed concrete types" {
     mut areas = Vec.new()
     let shapes: Vec<any Shape> = [
-        Square(side: 1.0) as any Shape,
-        Square(side: 2.0) as any Shape,
+        Square(side: 1.0) as any Shape
+        Square(side: 2.0) as any Shape
     ]
     for s in shapes {
         areas.push(s.area())

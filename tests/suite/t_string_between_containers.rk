@@ -84,10 +84,10 @@ test "mem.ownership — split pieces used as map keys and values" {
 
 test "mem.ownership — vector to vector" {
     let src: Vec<string> = [
-        "short",
-        "this one is definitely long enough",
-        "tiny",
-        "and so is this second long one",
+        "short"
+        "this one is definitely long enough"
+        "tiny"
+        "and so is this second long one"
     ]
     let long = copy_long_ones(src)
     assert long.len() == 2
@@ -135,8 +135,8 @@ test "mem.ownership — split collected with to_vec" {
 // `moved_out` and reading the destination afterwards is a read of freed bytes.
 func moved_out() -> Vec<string> {
     let src: Vec<string> = [
-        "a long enough string to live on the heap",
-        "another long enough string right here",
+        "a long enough string to live on the heap"
+        "another long enough string right here"
     ]
     mut out: Vec<string> = Vec.new()
     for s in src {

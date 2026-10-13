@@ -48,20 +48,20 @@ Example using Rask as the host language (any language with C FFI can host Raido)
 import raido
 
 const vm = raido.Vm.new(raido.Config(
-    arena_size: 256.kilobytes(),
-    initial_fuel: 100_000,
-    max_call_depth: 256,
+    arena_size: 256.kilobytes()
+    initial_fuel: 100_000
+    max_call_depth: 256
 ))
 ensure vm.close()
 
 // Register extern bindings before loading
 vm.register_extern_struct("Enemy", raido.ExternStruct(
     fields: [
-        raido.Field.int("health", get_health, set_health),
-        raido.Field.number("x", get_x, set_x),
-        raido.Field.number("y", get_y, set_y),
-        raido.Field.string("name", get_name, null),  // readonly
-    ],
+        raido.Field.int("health", get_health, set_health)
+        raido.Field.number("x", get_x, set_x)
+        raido.Field.number("y", get_y, set_y)
+        raido.Field.string("name", get_name, null)  // readonly
+    ]
 ))
 vm.register_extern_func("move_to", move_to_handler)
 

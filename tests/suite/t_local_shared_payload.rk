@@ -63,8 +63,8 @@ test "a struct payload reads and writes through the binding" {
 
 test "Shared<T, S> works in type position" {
     let app = App(
-        hits: Shared.local(0),
-        state: Shared.local(State(count: 7, mode: 1)),
+        hits: Shared.local(0)
+        state: Shared.local(State(count: 7, mode: 1))
     )
     with app.hits.write() as h {
         h = h + 1

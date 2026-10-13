@@ -51,8 +51,8 @@ func two_bookings() -> BookingStatus {
     mut b2 = Booking.new(2)
 
     return BookingStatus(
-        first_committed: b1.is_committed(),
-        second_committed: b2.is_committed(),
+        first_committed: b1.is_committed()
+        second_committed: b2.is_committed()
     )
 }
 

@@ -85,11 +85,11 @@ extend Vm {
         }
 
         return Vm(
-            chunk: chunk,
-            registers: regs,
-            call_stack: Vec.new(),
-            fuel: fuel,
-            max_call_depth: 256,
+            chunk: chunk
+            registers: regs
+            call_stack: Vec.new()
+            fuel: fuel
+            max_call_depth: 256
         )
     }
 

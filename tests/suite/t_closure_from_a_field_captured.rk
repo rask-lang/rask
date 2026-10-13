@@ -28,7 +28,7 @@ func doubled(p: Plan) -> Plan {
                 out.push(x * 2)
             }
             return out
-        },
+        }
     )
 }
 

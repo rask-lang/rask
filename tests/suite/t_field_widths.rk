@@ -53,10 +53,10 @@ test "two word-halves side by side" {
 
 test "mixed widths, each at its own" {
     let m = Mixed(
-        flag: true,
-        count: 9223372036854775807i64,
-        tag: 65535u16,
-        ratio: 0.5f32,
+        flag: true
+        count: 9223372036854775807i64
+        tag: 65535u16
+        ratio: 0.5f32
     )
     assert m.flag
     assert m.count == 9223372036854775807i64

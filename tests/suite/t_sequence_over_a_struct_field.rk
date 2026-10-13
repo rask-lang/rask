@@ -118,9 +118,9 @@ test "type.sequence — a generic holder" {
 // would fail rather than the count being wrong.
 test "type.sequence — a struct with a string and two vectors" {
     let l = Ledger(
-        name: "the ledger's name, long enough to allocate",
-        amounts: [10, 20, 30],
-        tags: ["one tag long enough to allocate", "and a second one, also long"],
+        name: "the ledger's name, long enough to allocate"
+        amounts: [10, 20, 30]
+        tags: ["one tag long enough to allocate", "and a second one, also long"]
     )
     assert l.walk().count() == 3
     assert l.name == "the ledger's name, long enough to allocate"

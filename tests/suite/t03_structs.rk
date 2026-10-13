@@ -78,8 +78,8 @@ test "multiple structs with string fields" {
 
 test "nested struct" {
     let n = Nested(
-        inner: Point(x: 5, y: 10),
-        label: "test",
+        inner: Point(x: 5, y: 10)
+        label: "test"
     )
     assert n.inner.x == 5
     assert n.inner.y == 10

@@ -168,9 +168,9 @@ test "longer range" {
 
 test "summable measurements" {
     let readings = Vec.from([
-        Measurement(reading: 9.81, unit: "m/s^2"),
-        Measurement(reading: 9.79, unit: "m/s^2"),
-        Measurement(reading: 9.83, unit: "m/s^2"),
+        Measurement(reading: 9.81, unit: "m/s^2")
+        Measurement(reading: 9.79, unit: "m/s^2")
+        Measurement(reading: 9.83, unit: "m/s^2")
     ])
     let t = total(readings)
     assert t > 29.42

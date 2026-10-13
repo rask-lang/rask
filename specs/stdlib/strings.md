@@ -149,8 +149,8 @@ struct Header {
 func parse_header(line: string) -> Header? {
     let colon = try line.index_of(":")
     return Header(
-        name: line[0..colon].trim().view(),
-        value: line[colon+1..].trim().view(),
+        name: line[0..colon].trim().view()
+        value: line[colon+1..].trim().view()
     )
 }
 ```

@@ -41,10 +41,10 @@ struct Graph {
 
 func empty() -> Graph {
     return Graph(
-        rack: Rack.new(),
-        list: Vec.new(),
-        nested: Vec.new(),
-        index: Map.new(),
+        rack: Rack.new()
+        list: Vec.new()
+        nested: Vec.new()
+        index: Map.new()
     )
 }
 

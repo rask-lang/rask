@@ -37,7 +37,7 @@ struct List {
 
 func push_back(mutate list: List, value: i32) -> Link<Node> {
     let n = list.nodes.insert(Node(
-        value: value, next: none, prev: list.tail, kids: Vec.new(),
+        value: value, next: none, prev: list.tail, kids: Vec.new()
     ))
     if list.tail? as t {
         t.next = n

@@ -53,8 +53,8 @@ func total_qty(o: Order) -> i32 {
 
 test "a struct holding a Vec of structs" {
     let o = Order(
-        id: 1,
-        items: [Item(name: "bolt", qty: 3), Item(name: "nut", qty: 5)],
+        id: 1
+        items: [Item(name: "bolt", qty: 3), Item(name: "nut", qty: 5)]
     )
     assert o.id == 1
     assert o.items.len() == 2
@@ -65,8 +65,8 @@ test "a struct holding a Vec of structs" {
 
 test "writing into a nested Vec element" {
     mut o = Order(
-        id: 1,
-        items: [Item(name: "bolt", qty: 3)],
+        id: 1
+        items: [Item(name: "bolt", qty: 3)]
     )
     o.items[0].qty = 99
     assert o.items[0].qty == 99
@@ -133,11 +133,11 @@ test "a struct holding a Map" {
 
 test "three levels: struct, Vec, struct, field" {
     let inv = Inventory(
-        stock: Map.new(),
+        stock: Map.new()
         orders: [
-            Order(id: 1, items: [Item(name: "a", qty: 1)]),
-            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)]),
-        ],
+            Order(id: 1, items: [Item(name: "a", qty: 1)])
+            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)])
+        ]
     )
     assert inv.orders.len() == 2
     assert inv.orders[1].items.len() == 2
@@ -152,8 +152,8 @@ test "three levels: struct, Vec, struct, field" {
 
 test "writing three levels down" {
     mut inv = Inventory(
-        stock: Map.new(),
-        orders: [Order(id: 1, items: [Item(name: "a", qty: 1)])],
+        stock: Map.new()
+        orders: [Order(id: 1, items: [Item(name: "a", qty: 1)])]
     )
     inv.orders[0].items[0].qty = 42
     assert inv.orders[0].items[0].qty == 42

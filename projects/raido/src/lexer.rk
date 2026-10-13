@@ -105,9 +105,9 @@ struct Lexer {
 extend Lexer {
     func new(source: string) -> Lexer {
         return Lexer(
-            source: source,
-            pos: 0,
-            line: 1,
+            source: source
+            pos: 0
+            line: 1
         )
     }
 

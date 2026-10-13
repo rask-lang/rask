@@ -36,10 +36,10 @@ func main() -> void or Error {
                         received = m.bytes_received
                     }
                     let body = json.encode(Metrics(
-                        request_count: requests,
-                        error_count: errors,
-                        bytes_sent: sent,
-                        bytes_received: received,
+                        request_count: requests
+                        error_count: errors
+                        bytes_sent: sent
+                        bytes_received: received
                     ))
                     let _ = responder.respond(Response.json(body))
                     return

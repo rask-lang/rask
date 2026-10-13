@@ -71,8 +71,8 @@ struct ZipRow {
 
 test "vec zip — over two fields of a struct" {
     let r = ZipRow(
-        xs: [1, 2, 3],
-        names: ["a name long enough to live on the heap", "another long enough one"],
+        xs: [1, 2, 3]
+        names: ["a name long enough to live on the heap", "another long enough one"]
     )
     let pairs: Vec<(i64, string)> = r.xs.zip(r.names)
     assert pairs.len() == 2

@@ -101,8 +101,8 @@ struct Point {
 
 test "nested struct field access" {
     let r = Rect(
-        origin: Point(x: 10, y: 20),
-        width: 100,
+        origin: Point(x: 10, y: 20)
+        width: 100
         height: 50
     )
     assert r.origin.x == 10

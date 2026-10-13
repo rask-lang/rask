@@ -50,15 +50,15 @@ struct Prototype {
 extend Prototype {
     func new(name: string, arity: i64) -> Prototype {
         return Prototype(
-            code: Vec.new(),
-            constants: Vec.new(),
-            prototypes: Vec.new(),
-            num_registers: 0,
-            arity: arity,
-            param_types: Vec.new(),
-            return_type: 0,
-            name: name,
-            lines: Vec.new(),
+            code: Vec.new()
+            constants: Vec.new()
+            prototypes: Vec.new()
+            num_registers: 0
+            arity: arity
+            param_types: Vec.new()
+            return_type: 0
+            name: name
+            lines: Vec.new()
         )
     }
 
@@ -98,10 +98,10 @@ struct Chunk {
 extend Chunk {
     func new(take main: Prototype) -> Chunk {
         return Chunk(
-            main: main,
-            imports: Vec.new(),
-            module_imports: Vec.new(),
-            exports: Vec.new(),
+            main: main
+            imports: Vec.new()
+            module_imports: Vec.new()
+            exports: Vec.new()
         )
     }
 }

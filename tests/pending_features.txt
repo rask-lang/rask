@@ -17,6 +17,6 @@
 
 # --- spec-heavy pending features ---
 p09_simd.rk                # type.simd f32x4 etc. vector types — checks, but no SIMD value is ever built below the checker, #1059 (both check)
-p11_gradual_generalization.rk # type.gradual GC13 — a method call that names no interface pins the parameter at the first call site, which is now what the spec says (#1141, decided). Pending on the direction rather than on the argument: the structural bound needs the requirement collected in the checker, not in desugar, which can't know `len` returns `usize`. The operator half of #904 is done and green in t_week_gradual_generics.rk (both check)
+p11_gradual_generalization.rk # type.gradual GC13 — a method call that names no interface pins the parameter at the first call site, which is now what the spec says (#1141, decided; building it is #1540). Pending on the direction rather than on the argument: the structural bound needs the requirement collected in the checker, not in desugar, which can't know `len` returns `usize`. The operator half of #904 is done and green in t_week_gradual_generics.rk (both check)
 
 # --- declared-but-unbuilt stdlib surface ---

@@ -60,9 +60,9 @@ let button = Button(label: "OK")
 let w = button as any Widget
 render(button as any Widget)
 let widgets: Vec<any Widget> = [
-    button as any Widget,
-    slider as any Widget,
-    label as any Widget,
+    button as any Widget
+    slider as any Widget
+    label as any Widget
 ]
 router.add("/home", handler as any Handler)
 ```

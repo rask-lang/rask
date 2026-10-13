@@ -62,20 +62,20 @@ func describe_both(a: any Named, b: any Named) -> string {
 
 test "type.interfaces — a box passed to a borrowing callee is dropped by the caller" {
     let c = Crate(
-        name: "a crate name long enough to allocate",
-        note: "and a note that is also long enough",
+        name: "a crate name long enough to allocate"
+        note: "and a note that is also long enough"
     )
     assert describe(c) == "a crate name long enough to allocate"
 }
 
 test "type.interfaces — two call sites, so the callee is a real call" {
     let one = Crate(
-        name: "the first crate has a long name",
-        note: "and the first crate's note is long",
+        name: "the first crate has a long name"
+        note: "and the first crate's note is long"
     )
     let two = Crate(
-        name: "the second crate has one too",
-        note: "as does the second crate's note",
+        name: "the second crate has one too"
+        note: "as does the second crate's note"
     )
     assert describe_both(one, two) == "the first crate has a long name/the second crate has one too"
     assert describe(two) == "the second crate has one too"
@@ -94,8 +94,8 @@ test "type.interfaces — and a boxed value that holds nothing" {
 // its own drop glue.
 test "type.interfaces — two concrete types through the same parameter" {
     let c = Crate(
-        name: "a crate with a name long enough",
-        note: "and a note long enough as well",
+        name: "a crate with a name long enough"
+        note: "and a note long enough as well"
     )
     let b = Bin(id: 3)
     assert describe_both(c, b) == "a crate with a name long enough/bin 3"
@@ -106,8 +106,8 @@ test "type.interfaces — two concrete types through the same parameter" {
 // which is a different bug and would be the only thing this test measured.
 test "type.interfaces — the same value boxed again and again" {
     let c = Crate(
-        name: "a crate name long enough to allocate",
-        note: "and a note that is also long enough",
+        name: "a crate name long enough to allocate"
+        note: "and a note that is also long enough"
     )
     let b = Bin(id: 5)
     mut total: usize = 0

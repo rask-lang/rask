@@ -135,10 +135,10 @@ problem:
 ```rask
 func spawn_enemy(mutate w: World, name: string, x: f32, y: f32) {
     let e = w.entities.insert(Entity(
-        name: name, health: 20, damage: 5,
-        target: w.player,          // cross-references the root edge, fine
-        body: Body(x: x, y: y, vx: 0.0, vy: 0.0),
-        squad: Vec.new(),
+        name: name, health: 20, damage: 5
+        target: w.player          // cross-references the root edge, fine
+        body: Body(x: x, y: y, vx: 0.0, vy: 0.0)
+        squad: Vec.new()
     ))
     w.by_name.insert(name, e)
 }

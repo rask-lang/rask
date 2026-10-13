@@ -71,11 +71,11 @@ test "the source can go first" {
 
 test "a struct holding one clones every field" {
     let it = Item(
-        name: "a",
-        tags: ["x", "y"],
-        parent: "p",
-        pair: ("q", 2),
-        tree: Tree.Node([Tree.Leaf(1.0)]),
+        name: "a"
+        tags: ["x", "y"]
+        parent: "p"
+        pair: ("q", 2)
+        tree: Tree.Node([Tree.Leaf(1.0)])
     )
     let c = it.clone()
     assert c.name == "a"

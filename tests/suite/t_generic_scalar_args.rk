@@ -68,8 +68,8 @@ struct Pair<T, U> {
 
 func swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
     return Pair(
-        first: pair.second,
-        second: pair.first,
+        first: pair.second
+        second: pair.first
     )
 }
 

@@ -62,8 +62,8 @@ test "the same field read twice" {
 
 test "two boxed fields in one struct" {
     let p = Pair(
-        left: Holder(label: "the left one is long enough", counts: [1, 2, 3]),
-        right: Holder(label: "the right one is long enough", counts: [4]),
+        left: Holder(label: "the left one is long enough", counts: [1, 2, 3])
+        right: Holder(label: "the right one is long enough", counts: [4])
     )
     assert p.left.describe() == "the left one is long enough:3"
     assert p.right.describe() == "the right one is long enough:1"

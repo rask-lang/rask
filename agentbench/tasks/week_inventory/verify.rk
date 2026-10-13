@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 func stock() -> Vec<Item> {
     return [Item(
-        name: "bolt",
-        sku: "B-1",
-        price_cents: 120,
+        name: "bolt"
+        sku: "B-1"
+        price_cents: 120
     ), Item(
-        name: "nut",
-        sku: none,
-        price_cents: 45,
+        name: "nut"
+        sku: none
+        price_cents: 45
     ), Item(
-        name: "washer",
-        sku: "W-9",
-        price_cents: 10,
+        name: "washer"
+        sku: "W-9"
+        price_cents: 10
     )]
 }
 
