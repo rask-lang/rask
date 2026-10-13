@@ -777,8 +777,13 @@ mod tests {
         let ExprKind::StructLit { fields, .. } = &e.kind else { panic!("expected struct lit") };
         assert_eq!(fields.len(), 2, "port default should be filled in");
         let port = fields.iter().find(|fi| fi.name == "port").expect("port field");
-        match &port.value.kind {
-            ExprKind::Int(8080, _) => {}
+        // A default is a compile-time constant (FD1), so it's filled in as a
+        // `comptime` block around the declared value.
+        let ExprKind::Comptime { body } = &port.value.kind else {
+            panic!("expected the default in a comptime block, got {:?}", port.value.kind)
+        };
+        match body.as_slice() {
+            [Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Int(8080, _), .. }), .. }] => {}
             other => panic!("expected filled default 8080, got {other:?}"),
         }
     }
