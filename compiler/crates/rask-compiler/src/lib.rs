@@ -674,7 +674,10 @@ fn check_package_scoped(
     // the program naming a dependency's internals — checked after resolve,
     // where the use sites are. Keyed by the name as the dependency's author
     // wrote it, which is the name a program would try.
-    let mut private_elsewhere: HashMap<String, (rask_resolve::PackageId, String, Span)> =
+    //
+    // Several packages may each keep a declaration of one name, so a name maps
+    // to all of them; a use is matched to one by where its symbol was declared.
+    let mut private_elsewhere: HashMap<String, Vec<(rask_resolve::PackageId, String, Span)>> =
         HashMap::new();
 
     // A dependency's declarations carry where they came from: `Cat` in
@@ -701,7 +704,7 @@ fn check_package_scoped(
         for decl in &decls {
             if !is_public_decl(decl) {
                 if let Some(name) = declared_name(decl) {
-                    private_elsewhere.insert(name, (pkg.id, pkg.name.clone(), decl.span));
+                    private_elsewhere.entry(name).or_default().push((pkg.id, pkg.name.clone(), decl.span));
                 }
             }
         }
@@ -815,7 +818,13 @@ fn check_package_scoped(
         for (node, sym_id) in &resolved.resolutions {
             let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
             let base = &sym.name;
-            let Some((owner, owner_name, decl_span)) = private_elsewhere.get(base) else {
+            // The symbol has to *be* one of those private declarations. Matching
+            // the name alone flagged a program's own `helper` the moment some
+            // dependency also had a private `helper`.
+            let Some((owner, owner_name, decl_span)) = private_elsewhere
+                .get(base)
+                .and_then(|kept| kept.iter().find(|(_, _, at)| span_within(sym.span, *at)))
+            else {
                 continue;
             };
             let Some(use_span) = where_used.get(node) else { continue };
@@ -1155,6 +1164,11 @@ fn collect_builtin_imports(decls: &[Decl]) -> Vec<String> {
     names
 }
 
+/// Is `inner` inside `outer`, in the same file?
+fn span_within(inner: Span, outer: Span) -> bool {
+    inner.file_id == outer.file_id && outer.start <= inner.start && inner.end <= outer.end
+}
+
 /// Does this declaration say `public`?
 ///
 /// `extend` blocks carry their own visibility through the methods in them, so
@@ -1181,14 +1195,14 @@ fn is_public_decl(decl: &Decl) -> bool {
 /// E0877 for a resolve failure that is really a dependency's own declaration.
 fn private_declaration_named(
     e: &rask_resolve::ResolveError,
-    private_elsewhere: &HashMap<String, (rask_resolve::PackageId, String, Span)>,
+    private_elsewhere: &HashMap<String, Vec<(rask_resolve::PackageId, String, Span)>>,
 ) -> Option<Diagnostic> {
     let name = match &e.kind {
         rask_resolve::ResolveErrorKind::UndefinedSymbol { name } => name,
         _ => return None,
     };
     let base = name.as_str();
-    let (_, owner_name, decl_span) = private_elsewhere.get(base)?;
+    let (_, owner_name, decl_span) = private_elsewhere.get(base)?.first()?;
     Some(
         Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
             .with_code("E0877")
