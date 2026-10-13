@@ -1,7 +1,0 @@
-// SPDX-License-Identifier: (MIT OR Apache-2.0)
-
-package "app" "0.1.0" {
-    description: "Attaches a dependency's annotation without importing it by name"
-    license: "MIT OR Apache-2.0"
-    dep "annpkg" { path: "../annpkg" }
-}
