@@ -128,7 +128,7 @@ impl LockFile {
             .map_err(|e| format!("failed to write lock file: {}", e))
     }
 
-    fn render(&self) -> String {
+    pub fn render(&self) -> String {
         let mut content = String::from("# rask.lock — auto-generated, do not edit\n");
         content.push_str(&format!("lockfile-version = {}\n\n", LOCKFILE_VERSION));
 

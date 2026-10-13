@@ -1382,6 +1382,7 @@ dependencies = [
  "rask-spec-test",
  "rask-stdlib",
  "rask-types",
+ "serde_json",
 ]
 
 [[package]]
