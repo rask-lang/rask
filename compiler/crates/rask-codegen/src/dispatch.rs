@@ -1320,8 +1320,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // type, then hands it to the decoder (json.c).
         StdlibEntry::simple("json_shape_prim", "rask_json_shape_prim", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_struct", "rask_json_shape_struct", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_shape_vec", "rask_json_shape_vec", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_shape_map", "rask_json_shape_map", &[types::I64, types::I64], Some(types::I64), false),
+        // A list or map shape carries what its elements own, as a container
+        // constructor would: the container the decoder builds frees it.
+        StdlibEntry {
+            mir_name: "json_shape_vec", c_name: "rask_json_shape_vec",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "json_shape_map", c_name: "rask_json_shape_map",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("json_shape_opt", "rask_json_shape_opt", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_field", "rask_json_shape_field",
             &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None, false),

@@ -995,8 +995,10 @@ void         rask_json_tree_free(RaskJsonVal *v);
 
 RaskJsonShape *rask_json_shape_prim(int64_t kind);
 RaskJsonShape *rask_json_shape_struct(int64_t size);
-RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot);
-RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot);
+RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
+                                   const int32_t *owned, int64_t n_owned);
+RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
+                                   const int32_t *owned, int64_t n_owned);
 RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
                                      RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);

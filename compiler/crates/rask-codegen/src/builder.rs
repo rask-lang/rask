@@ -1349,8 +1349,10 @@ impl<'a> FunctionBuilder<'a> {
                 let Some(offs) = Self::element_owned_offsets(Some(&ty), ctx).filter(|o| !o.is_empty()) else {
                     return Ok(());
                 };
+                let Some(entries) = Self::element_offsets_global(builder, &offs, ctx) else {
+                    return Ok(());
+                };
                 let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
-                let entries = Self::element_offsets_global(builder, &offs, ctx);
                 let count = builder.ins().iconst(types::I64, offs.len() as i64);
                 let retain_ref = ctx.func_refs.get("rask_owned_retain_all")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_retain_all".to_string()))?;
@@ -7286,13 +7288,13 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         offsets: &[i32],
         ctx: &CodegenCtx,
-    ) -> Value {
-        if let Some(gv) = ctx.element_offset_globals.get(offsets) {
-            return builder.ins().global_value(types::I64, *gv);
-        }
-        // Nothing declared this list — leave the elements alone rather than
-        // hand the runtime a pointer to nowhere.
-        builder.ins().iconst(types::I64, 0)
+    ) -> Option<Value> {
+        // `None` when nothing declared this list. The caller hands over the
+        // null map then, count and all: a null pointer with a count of two
+        // is what made a decoded `Vec` of structs keep everything its elements
+        // held (#1528).
+        let gv = ctx.element_offset_globals.get(offsets)?;
+        Some(builder.ins().global_value(types::I64, *gv))
     }
 
     /// How deep to look for a string inside a type before giving up.
@@ -8438,13 +8440,18 @@ impl<'a> FunctionBuilder<'a> {
                         MirOperand::Constant(MirConst::Elem(ty)) => Some(ty),
                         _ => None,
                     });
-                    match Self::element_owned_offsets(elem, ctx) {
-                        Some(offs) if !offs.is_empty() => {
-                            let n = offs.len() as i64;
-                            expanded.push(Self::element_offsets_global(builder, &offs, ctx));
+                    let map = Self::element_owned_offsets(elem, ctx)
+                        .filter(|offs| !offs.is_empty())
+                        .and_then(|offs| {
+                            let at = Self::element_offsets_global(builder, &offs, ctx)?;
+                            Some((at, offs.len() as i64))
+                        });
+                    match map {
+                        Some((at, n)) => {
+                            expanded.push(at);
                             expanded.push(builder.ins().iconst(types::I64, n));
                         }
-                        _ => {
+                        None => {
                             expanded.push(builder.ins().iconst(types::I64, 0));
                             expanded.push(builder.ins().iconst(types::I64, 0));
                         }

@@ -533,6 +533,10 @@ struct RaskJsonShape {
     int64_t slot;                 // struct byte size, or element/value slot width
     int      is_static;           // primitive singletons are never freed
     RaskJsonShape *elem;          // Vec element / Map value / T? payload
+    // What a Vec element or Map value owns, in the form every container
+    // constructor takes, so the container the decoder builds frees it.
+    const int32_t *elem_owned;
+    int64_t n_elem_owned;
     struct RaskJsonField *fields; // struct fields
     int32_t nfields;
     int32_t cap;
@@ -578,15 +582,21 @@ RaskJsonShape *rask_json_shape_struct(int64_t size) {
     return json_shape_new(RASK_JSHAPE_STRUCT, size);
 }
 
-RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot) {
+RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
+                                   const int32_t *owned, int64_t n_owned) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_VEC, elem_slot);
     s->elem = elem;
+    s->elem_owned = owned;
+    s->n_elem_owned = n_owned;
     return s;
 }
 
-RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot) {
+RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
+                                   const int32_t *owned, int64_t n_owned) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_MAP, val_slot);
     s->elem = val;
+    s->elem_owned = owned;
+    s->n_elem_owned = n_owned;
     return s;
 }
 
@@ -744,12 +754,8 @@ static int json_decode_vec(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         return 0;
     }
     int64_t slot = shape->slot > 0 ? shape->slot : 8;
-    // A list of bare strings owns them; a list of structs would need the
-    // struct's own offsets, which the shape doesn't carry (#1027).
-    int elem_is_str = shape->elem && shape->elem->kind == RASK_JSHAPE_STRING;
     RaskVec *vec = rask_vec_with_capacity(slot, v->as.arr.len,
-                                          elem_is_str ? rask_elem_strs_one : NULL,
-                                          elem_is_str ? 1 : 0);
+                                          shape->elem_owned, shape->n_elem_owned);
     char stack_slot[64];
     char *cell = slot <= (int64_t)sizeof(stack_slot)
         ? stack_slot
@@ -778,11 +784,9 @@ static int json_decode_map(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         return 0;
     }
     int64_t slot = shape->slot > 0 ? shape->slot : 8;
-    int val_is_str = shape->elem && shape->elem->kind == RASK_JSHAPE_STRING;
     RaskMap *map = rask_map_new_string_keys(16, slot,
                                             rask_elem_strs_one, 1,
-                                            val_is_str ? rask_elem_strs_one : NULL,
-                                            val_is_str ? 1 : 0);
+                                            shape->elem_owned, shape->n_elem_owned);
     char stack_slot[64];
     char *cell = slot <= (int64_t)sizeof(stack_slot)
         ? stack_slot
