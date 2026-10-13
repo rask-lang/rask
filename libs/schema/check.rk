@@ -28,7 +28,7 @@ func check_value(v: Value, t: Ty, at: string, mutate errors: Vec<string>) {
         Ty.Version => {
             if v is Str(s) {
                 if !is_version(s) {
-                    errors.push("{at}: \"{s}\" is not a version; write three numbers, like \"1.0.0\"")
+                    errors.push("{at}: \"{s}\" is not a version; write three numbers, like \"1.0.0\", or a pre-release like \"1.0.0-beta.3\"")
                 }
             } else {
                 errors.push("{at}: expected a version string like \"1.0.0\", found {v.kind()}")
@@ -36,7 +36,9 @@ func check_value(v: Value, t: Ty, at: string, mutate errors: Vec<string>) {
         }
         Ty.VersionReq => {
             if v is Str(s) {
-                if !is_version_req(s) {
+                if is_prerelease_range(s) {
+                    errors.push("{at}: \"{s}\" ranges over a pre-release, which can only be pinned exactly; write \"={strip_range_op(s).1}\"")
+                } else if !is_version_req(s) {
                     errors.push("{at}: \"{s}\" is not a version range; write one like \"^2.0\", \">=1.5\", \"=1.0.0\" or \"*\"")
                 }
             } else {
@@ -103,7 +105,8 @@ func check_fields(entries: Vec<Entry>, fields: Vec<Field>, skip: Vec<string>, at
     }
     for f in fields {
         if f.required && find_entry(entries, f.name) is none {
-            errors.push("{at}: missing required key `{f.name}` ({describe(f.ty)})")
+            let place = if at.is_empty(): "top level" else: at
+            errors.push("{place}: missing required key `{f.name}` ({kind_of(f.ty)})")
         }
     }
 }
@@ -239,7 +242,31 @@ func is_duration(s: string) -> bool {
     return unit == "ms" || unit == "s" || unit == "m" || unit == "h"
 }
 
+// `1.0.0`, or a pre-release `1.0.0-beta.3`: three numbers, then optionally
+// `-` and dot-separated labels of letters and digits.
 func is_version(s: string) -> bool {
+    let dash = s.index_of("-")
+    let core = if dash? as i: s[..i].to_string() else: s
+    if !is_numbers(core, 3, 3) {
+        return false
+    }
+    if dash? as i {
+        for label in s[i + 1..].split(".") {
+            if label.is_empty() {
+                return false
+            }
+            for c in label.chars() {
+                if !c.is_ascii_alphabetic() && !c.is_ascii_digit() {
+                    return false
+                }
+            }
+        }
+    }
+    return true
+}
+
+// One to `most` dot-separated numbers, at least `least` of them.
+func is_numbers(s: string, least: i64, most: i64) -> bool {
     mut parts = 0
     for p in s.split(".") {
         if p.is_empty() || digits_then(p, 0) != p.len() {
@@ -247,7 +274,25 @@ func is_version(s: string) -> bool {
         }
         parts = parts + 1
     }
-    return parts == 3
+    return parts >= least && parts <= most
+}
+
+const RANGE_OPS = [">=", "<=", "^", "~", "=", ">", "<"]
+
+func strip_range_op(s: string) -> (string, string) {
+    for op in RANGE_OPS {
+        if s.starts_with(op) {
+            return (op, s[op.len()..].to_string())
+        }
+    }
+    return ("", s)
+}
+
+// A pre-release matches only itself (struct.packages/VR2), so `=` is the
+// only operator it takes.
+func is_prerelease_range(s: string) -> bool {
+    let (op, rest) = strip_range_op(s)
+    return op != "=" && rest.contains("-") && is_version(rest)
 }
 
 func is_version_req(s: string) -> bool {
@@ -255,22 +300,9 @@ func is_version_req(s: string) -> bool {
     if s == "*" {
         return true
     }
-    mut rest = s
-    for op in [">=", "<=", "^", "~", "=", ">", "<"] {
-        if rest.starts_with(op) {
-            rest = rest[op.len()..].to_string()
-            break
-        }
+    let (op, rest) = strip_range_op(s)
+    if op == "=" && is_version(rest) {
+        return true
     }
-    if rest.is_empty() {
-        return false
-    }
-    mut parts = 0
-    for p in rest.split(".") {
-        if p.is_empty() || digits_then(p, 0) != p.len() {
-            return false
-        }
-        parts = parts + 1
-    }
-    return parts >= 1 && parts <= 3
+    return is_numbers(rest, 1, 3)
 }

@@ -165,6 +165,24 @@ public func describe(t: Ty) -> string {
     }
 }
 
+// What a value of this shape looks like, for a message. `describe` spells
+// out the whole shape, which is for comparing shapes, not for reading.
+public func kind_of(t: Ty) -> string {
+    match t {
+        Ty.Record(_) => return "table",
+        Ty.List(item) => return "list of {kind_of(item[0].clone())}",
+        Ty.MapOf(value) => return "table of {kind_of(value[0].clone())}",
+        Ty.Variant { cases, .. } => {
+            mut names = Vec<string>.new()
+            for c in cases {
+                names.push(c.name)
+            }
+            return "table holding one of {quoted_list(names)}"
+        }
+        _ => return describe(t),
+    }
+}
+
 func describe_fields(fields: Vec<Field>) -> string {
     mut parts = Vec<string>.new()
     for f in fields {
@@ -267,7 +285,7 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                 let edited = try edit_fields(shared, c, first)
                 return Ty.Variant { cases: cases.clone(), shared: edited }
             }
-            _ => return SchemaError { what: "{describe_path(at)} is {describe(t)}, which has no fields to change" },
+            _ => return SchemaError { what: "{describe_path(at)} holds a {kind_of(t)}, not a table, so it has no fields to change" },
         }
     }
     let step = at[depth].clone()
@@ -282,7 +300,7 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                     let edited = try edit_field_type(shared, k, at, depth, c, first)
                     return Ty.Variant { cases: cases.clone(), shared: edited }
                 }
-                _ => return SchemaError { what: "{describe_path(at)}: `{k}` is not a field of {describe(t)}" },
+                _ => return SchemaError { what: "{describe_path(at)}: `{k}` is not a field of this {kind_of(t)}" },
             }
         }
         Step.Each => {
@@ -295,7 +313,7 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                     let inner = try edit_fields_at(value[0].clone(), at, depth + 1, c, first)
                     return map_of(inner)
                 }
-                _ => return SchemaError { what: "{describe_path(at)}: `*` needs a list or a map, found {describe(t)}" },
+                _ => return SchemaError { what: "{describe_path(at)}: `*` needs a list or a map, found {kind_of(t)}" },
             }
         }
         Step.Case(name) => {
@@ -324,7 +342,7 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                     }
                     return Ty.Variant { cases: out, shared: shared.clone() }
                 }
-                _ => return SchemaError { what: "{describe_path(at)}: `<{name}>` needs a variant, found {describe(t)}" },
+                _ => return SchemaError { what: "{describe_path(at)}: `<{name}>` needs a variant, found {kind_of(t)}" },
             }
         }
     }

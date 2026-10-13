@@ -306,3 +306,56 @@ test "the JSON Schema closes every table and lists variant cases" {
     assert js.contains("\"oneOf\"")
     assert js.contains("\"schema\"")
 }
+
+// ─── Versions ───────────────────────────────────────────────────
+
+func version_schema() -> Schema {
+    let history = Vec<Release>.from([Release {
+        version: 1,
+        changes: Vec<Change>.from([
+            Change.Add { at: root(), field: optional("v", Ty.Version) },
+            Change.Add { at: root(), field: optional("r", Ty.VersionReq) },
+        ]),
+    }])
+    let shape = replay_shape(history) catch e => panic(e.message())
+    return Schema { name: "svc", shape, history }
+}
+
+func version_error(line: string) -> string {
+    return load_error("schema = \"svc@1\"\n{line}\n", version_schema())
+}
+
+test "a version is three numbers, optionally a pre-release" {
+    assert version_error("v = \"1.0.0\"") == ""
+    assert version_error("v = \"1.0.0-beta.3\"") == ""
+    assert version_error("v = \"1.0\"").contains("is not a version")
+    assert version_error("v = \"1.0.0-\"").contains("is not a version")
+    assert version_error("v = \"1.0.0-beta..3\"").contains("is not a version")
+    assert version_error("v = \"1.0.0-be_ta\"").contains("is not a version")
+}
+
+test "a pre-release can only be pinned exactly" {
+    assert version_error("r = \"=1.0.0-beta.1\"") == ""
+    assert version_error("r = \"^1.0.0-beta.1\"").contains("write \"=1.0.0-beta.1\"")
+    assert version_error("r = \"1.0.0-beta.1\"").contains("write \"=1.0.0-beta.1\"")
+    assert version_error("r = \"^2.0\"") == ""
+    assert version_error("r = \"*\"") == ""
+    assert version_error("r = \"two\"").contains("is not a version range")
+}
+
+test "a missing required key at the top level says so and names a kind, not a shape" {
+    let e = load_error("schema = \"svc@1\"\n", svc())
+    assert e.contains("top level: missing required key `name` (string)")
+    let nested = Schema {
+        name: "svc",
+        shape: Ty.Record(Vec<Field>.from([required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)])))])),
+        history: Vec<Release>.from([Release {
+            version: 1,
+            changes: Vec<Change>.from([Change.Add {
+                at: root(),
+                field: required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)]))),
+            }]),
+        }]),
+    }
+    assert load_error("schema = \"svc@1\"\n", nested).contains("top level: missing required key `server` (table)")
+}
