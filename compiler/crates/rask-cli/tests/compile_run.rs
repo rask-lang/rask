@@ -964,6 +964,17 @@ fn a_field_default_that_does_io_is_rejected() {
     assert!(!out.contains("__decode_default"), "the generated name leaked into the message: {out}");
 }
 
+/// #1537: a default argument is held to the same rule as a field's default.
+#[test]
+fn a_default_argument_that_does_io_is_rejected() {
+    let (failed, out) = compile_error_output("param_default_not_constant.rk");
+    assert!(failed, "a default argument calling `println` must not compile: {out}");
+    assert_eq!(out.matches("E0875").count(), 2, "one error per default: {out}");
+    assert!(out.contains("parameter `times` of `retry`"), "{out}");
+    assert!(out.contains("parameter `attempts` of `send`"), "{out}");
+    assert!(!out.contains("E0341"), "the method default's name has to resolve: {out}");
+}
+
 /// A default is folded at the width of its field, so overflowing it is a
 /// compile error (type.overflow/CT1), not a panic on the first decode that
 /// leaves the field out.

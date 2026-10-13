@@ -441,6 +441,9 @@ fn check_loaded(
     for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
+    for e in rask_effects::comptime_purity::check_param_defaults(&parse_result.decls, &effects) {
+        diags.push(param_default_to_diagnostic(&e));
+    }
 
     let package_names = collect_builtin_imports(&parse_result.decls);
 
@@ -811,6 +814,9 @@ fn check_package_scoped(
     // --- CT60: a `comptime func` keeps its promise where it is written ---
     for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
+    }
+    for e in rask_effects::comptime_purity::check_param_defaults(&pkg_ctx.all_decls, &effects) {
+        diags.push(param_default_to_diagnostic(&e));
     }
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
@@ -1260,6 +1266,26 @@ fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
 }
 
 /// CT60: the promise `comptime func` makes, checked at the definition.
+/// A default argument that isn't a compile-time constant (#1537).
+fn param_default_to_diagnostic(e: &rask_effects::comptime_purity::ParamDefaultError) -> Diagnostic {
+    Diagnostic::error(format!(
+        "the default for parameter `{}` of `{}` reaches {} at compile time — `{}` does",
+        e.param, e.func, e.effect, e.via
+    ))
+    .with_code("E0875")
+    .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+    .with_fix(format!(
+        "write the value itself, or drop the default and pass `{}` at each call",
+        e.param
+    ))
+    .with_why(
+        "a default argument is a compile-time constant, the same rule as a \
+         field's default, so it can't do anything that needs the program \
+         running [type.structs/FD1, ctrl.comptime/CT7]"
+            .to_string(),
+    )
+}
+
 fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePurityError) -> Diagnostic {
     let via = match &e.via {
         Some(call) => format!(" — `{}` does", call),

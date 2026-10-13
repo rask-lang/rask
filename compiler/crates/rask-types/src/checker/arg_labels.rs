@@ -374,14 +374,30 @@ impl TypeChecker {
 
     /// Give a copy of a default its own node ids: it is a new expression at
     /// every call that takes it.
+    /// Fresh ids for a copy of a default, each name keeping what it resolved
+    /// to at the declaration. The copy is made here, after resolution, so a
+    /// fresh id has no entry of its own: a method default calling a free
+    /// function, `func send(self, n: i64 = tries())`, was "undefined name
+    /// `tries`" at every call that left `n` out.
     fn renumber(&mut self, expr: &mut rask_ast::expr::Expr) {
-        struct Fresh<'a>(&'a mut u32);
+        struct Fresh<'a> {
+            next: &'a mut u32,
+            moved: Vec<(NodeId, NodeId)>,
+        }
         impl rask_ast::rewrite::Rewrite for Fresh<'_> {
             fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-                e.id = NodeId(*self.0);
-                *self.0 += 1;
+                let fresh = NodeId(*self.next);
+                *self.next += 1;
+                self.moved.push((e.id, fresh));
+                e.id = fresh;
             }
         }
-        rask_ast::rewrite::rewrite_expr(expr, &mut Fresh(&mut self.next_derived_id));
+        let mut fresh = Fresh { next: &mut self.next_derived_id, moved: Vec::new() };
+        rask_ast::rewrite::rewrite_expr(expr, &mut fresh);
+        for (old, new) in fresh.moved {
+            if let Some(&sym) = self.resolved.resolutions.get(&old) {
+                self.resolved.resolutions.insert(new, sym);
+            }
+        }
     }
 }

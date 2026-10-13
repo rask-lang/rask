@@ -164,13 +164,22 @@ fn resolve_call_args(
         .iter()
         .zip(params)
         .filter(|(slot, _)| **slot == ArgSlot::Default)
-        .map(|(_, param)| CallArg {
-            name: Some(param.name.clone()),
-            mode: ArgMode::Default,
-            expr: clone_expr_with_fresh_ids(
+        .map(|(_, param)| {
+            // A default is a compile-time constant, so the copy is a
+            // `comptime` block: a scalar or a string folds where it's filled
+            // in. Its purity is checked once, at the parameter
+            // (`comptime_purity::check_param_defaults`).
+            let value = clone_expr_with_fresh_ids(
                 param.default.as_ref().expect("a defaulted slot has a default"),
                 fresh_id,
-            ),
+            );
+            let span = value.span;
+            let block = Stmt { id: fresh_id(), kind: StmtKind::Expr(value), span };
+            CallArg {
+                name: Some(param.name.clone()),
+                mode: ArgMode::Default,
+                expr: Expr { id: fresh_id(), kind: ExprKind::Comptime { body: vec![block] }, span },
+            }
         })
         .collect();
     if defaults.is_empty() {

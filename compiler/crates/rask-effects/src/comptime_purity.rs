@@ -89,6 +89,57 @@ fn check_fn(f: &FnDecl, qname: &str, effects: &EffectMap, out: &mut Vec<Comptime
     });
 }
 
+/// A parameter default that reaches outside the compile-time subset.
+#[derive(Debug, Clone)]
+pub struct ParamDefaultError {
+    /// The function, e.g. `connect`.
+    pub func: String,
+    /// The parameter whose default it is.
+    pub param: String,
+    /// What it reaches — "I/O", "concurrency", "a pool insert".
+    pub effect: &'static str,
+    /// The call that brings the effect in.
+    pub via: String,
+    pub span: Span,
+}
+
+/// A default argument is a compile-time constant (SYNTAX: "constants only"),
+/// the same rule as a field's default (type.structs/FD1). It's copied to every
+/// call that leaves the argument out, so a default that printed printed once
+/// per call and nothing said it wasn't a constant (#1537).
+pub fn check_param_defaults(decls: &[Decl], effects: &EffectMap) -> Vec<ParamDefaultError> {
+    let mut out = Vec::new();
+    let mut check = |f: &FnDecl| {
+        for param in &f.params {
+            let Some(default) = &param.default else { continue };
+            let body = [rask_ast::stmt::Stmt {
+                id: rask_ast::NodeId(0),
+                kind: rask_ast::stmt::StmtKind::Expr(default.clone()),
+                span: default.span,
+            }];
+            if let Some((via, span, effect)) = first_impure_call_effect(&body, effects) {
+                out.push(ParamDefaultError {
+                    func: f.name.clone(),
+                    param: param.name.clone(),
+                    effect,
+                    via,
+                    span,
+                });
+            }
+        }
+    };
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => check(f),
+            DeclKind::Struct(s) => s.methods.iter().for_each(&mut check),
+            DeclKind::Enum(e) => e.methods.iter().for_each(&mut check),
+            DeclKind::Impl(i) => i.methods.iter().for_each(&mut check),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// What CT7 rules out, in the order a reader would want to hear it. `None` when
 /// the function stays inside the subset.
 fn names_the_effect(e: &Effects) -> Option<&'static str> {
@@ -105,6 +156,22 @@ fn names_the_effect(e: &Effects) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// `first_impure_call`, with the name of what it reaches.
+fn first_impure_call_effect(
+    body: &[rask_ast::stmt::Stmt],
+    effects: &EffectMap,
+) -> Option<(String, Span, &'static str)> {
+    let (name, span) = first_impure_call(body, effects)?;
+    let mut reached = crate::sources::classify_call(&name);
+    let inferred = effects.get(&name).copied().unwrap_or_default();
+    reached.io |= inferred.io;
+    reached.async_ |= inferred.async_;
+    reached.grow |= inferred.grow;
+    reached.shrink |= inferred.shrink;
+    let effect = names_the_effect(&reached).unwrap_or("I/O");
+    Some((name, span, effect))
 }
 
 /// The first call in the body whose callee isn't pure, with its span.

@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A method's default argument can call a function. The checker fills a
+// method's defaults in at the call, after names are resolved, and gave the
+// copy fresh node ids with no resolution: `c.send()` was "undefined name
+// `standard_tries`" at the default. A free function's defaults are filled in
+// before resolution, which is why only methods broke.
+
+func standard_tries() -> i64 {
+    return 3
+}
+
+struct Client {
+    public name: string
+}
+
+extend Client {
+    func send(self, attempts: i64 = standard_tries()) -> i64 {
+        return attempts * 10
+    }
+}
+
+test "a method default that calls a function" {
+    let c = Client(name: "a")
+    assert c.send() == 30
+    assert c.send(attempts: 1) == 10
+}
+
+func main() {}
