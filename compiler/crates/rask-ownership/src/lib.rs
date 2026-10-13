@@ -6114,26 +6114,33 @@ impl<'a> OwnershipChecker<'a> {
             .retain(|c| !(c.block == block_id && c.dies_after <= index));
     }
 
-    /// The call that consumes resource `name`, spelled for a fix: `drop(frame)`
-    /// for a `Heap` box, `file.close()` when the type has a `close`, else its
-    /// first `take self` method with `…` standing in for any arguments
-    /// (`responder.respond(…)`).
-    fn consume_call(&self, name: &str) -> Option<String> {
+    /// The calls that consume resource `name`, spelled for a fix: `drop(frame)`
+    /// for a `Heap` box, else each public `take self` method in declaration
+    /// order, with `…` standing in for any arguments (`responder.respond(…)`).
+    ///
+    /// All of them rather than one: a `Transaction` has `commit` and
+    /// `rollback`, nothing in its declaration says which is the cleanup, and
+    /// naming the wrong one in an `ensure` commits half-done work on every
+    /// error exit. Private helpers (`Process.finish`) are left out.
+    fn consume_calls(&self, name: &str) -> Vec<String> {
         if self.owned_bindings.contains(name) {
-            return Some(format!("drop({})", name));
+            return vec![format!("drop({})", name)];
         }
-        let id = self.named_type_id(self.binding_types.get(name)?)?;
-        let methods = match self.program.types.get(id)? {
-            rask_types::TypeDef::Struct { methods, .. } | rask_types::TypeDef::Enum { methods, .. } => methods,
-            _ => return None,
+        let Some(id) = self.binding_types.get(name).and_then(|t| self.named_type_id(t)) else {
+            return Vec::new();
         };
-        let mut takes = methods.iter().filter(|m| m.self_param == rask_types::SelfParam::Take);
-        let m = methods
+        let methods = match self.program.types.get(id) {
+            Some(rask_types::TypeDef::Struct { methods, .. } | rask_types::TypeDef::Enum { methods, .. }) => methods,
+            _ => return Vec::new(),
+        };
+        methods
             .iter()
-            .find(|m| m.name == "close" && m.self_param == rask_types::SelfParam::Take)
-            .or_else(|| takes.next())?;
-        let args = if m.params.is_empty() { "" } else { "…" };
-        Some(format!("{}.{}({})", name, m.name, args))
+            .filter(|m| m.self_param == rask_types::SelfParam::Take && m.is_public)
+            .map(|m| {
+                let args = if m.params.is_empty() { "" } else { "…" };
+                format!("{}.{}({})", name, m.name, args)
+            })
+            .collect()
     }
 
     /// Check if a method call uses `take self`.
@@ -6261,7 +6268,7 @@ impl<'a> OwnershipChecker<'a> {
             if !self.exit_reported.insert(format!("try:{}", name)) {
                 continue;
             }
-            let consume = self.consume_call(&name);
+            let consume = self.consume_calls(&name);
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ResourceLeaksOnTry { name, acquired_at, consume },
                 span,
@@ -6385,7 +6392,7 @@ impl<'a> OwnershipChecker<'a> {
                 .unwrap_or(stmt.span);
             // An `ensure` here was meant to be the commit. Saying "move the
             // ensure up" would point at the line already in the right place.
-            let consume = self.consume_call(name);
+            let consume = self.consume_calls(name);
             let kind = if matches!(stmt.kind, StmtKind::Ensure { .. }) {
                 OwnershipErrorKind::EnsureConsumesNothing { name: name.clone(), acquired_at, consume }
             } else {
@@ -6447,7 +6454,7 @@ impl<'a> OwnershipChecker<'a> {
                 if !consumed {
                     self.errors.push(OwnershipError {
                         kind: OwnershipErrorKind::ResourceNotConsumed {
-                            consume: self.consume_call(&name),
+                            consume: self.consume_calls(&name),
                             name: name.clone(),
                         },
                         span,
@@ -7301,7 +7308,7 @@ impl<'a> OwnershipChecker<'a> {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ResourceNotConsumed {
                     name: name.to_string(),
-                    consume: self.consume_call(name),
+                    consume: self.consume_calls(name),
                 },
                 span,
             });
@@ -7528,7 +7535,7 @@ impl<'a> OwnershipChecker<'a> {
                     paths.sort();
                     for path in paths {
                         self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ResourceNotConsumed { name: path, consume: None },
+                            kind: OwnershipErrorKind::ResourceNotConsumed { name: path, consume: Vec::new() },
                             span,
                         });
                     }
@@ -7542,7 +7549,7 @@ impl<'a> OwnershipChecker<'a> {
                     // stopped it is what keeps that from reading like a bug.
                     OwnershipErrorKind::ResourceNotConsumedOpaque { name, where_ }
                 } else {
-                    let consume = self.consume_call(&name);
+                    let consume = self.consume_calls(&name);
                     OwnershipErrorKind::ResourceNotConsumed { name, consume }
                 };
                 self.errors.push(OwnershipError { kind, span });

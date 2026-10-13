@@ -296,6 +296,9 @@ pub struct MethodSig {
     /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
     /// no body behind it, which the backends answer structurally.
     pub derived: bool,
+    /// Declared `public`. A checker-supplied signature has no declaration and
+    /// is callable from anywhere, so it counts as public.
+    pub is_public: bool,
     /// Each parameter's declared default, positionally matching `params`.
     /// Empty for a signature with no declaration behind it.
     pub defaults: Vec<Option<rask_ast::expr::Expr>>,

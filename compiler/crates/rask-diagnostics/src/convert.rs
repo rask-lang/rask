@@ -4270,14 +4270,18 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
             }
 
             ResourceNotConsumed { name, consume } => {
-                let fix = match consume {
-                    Some(c) => format!(
+                let fix = match consume.as_slice() {
+                    [] => format!(
+                        "pass `{}` to something that takes it, or `ensure` a call that does",
+                        name
+                    ),
+                    [c] => format!(
                         "call `{0}` before the block ends, or `ensure {0}` right after acquiring it",
                         c
                     ),
-                    None => format!(
-                        "pass `{}` to something that takes it, or `ensure` a call that does",
-                        name
+                    calls => format!(
+                        "call {} before the block ends, or `ensure` one of them right after acquiring it",
+                        either(calls, "")
                     ),
                 };
                 Diagnostic::error(format!(
@@ -4309,7 +4313,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
                 .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
                 .with_fix(format!(
-                    "add `{}` on the line after it's acquired",
+                    "add {} on the line after it's acquired",
                     ensure_call(name, consume)
                 ))
                 .with_why(
@@ -4326,7 +4330,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
                     .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
                     .with_fix(format!(
-                        "add `{}` on the line after it's acquired, then use `{}` freely",
+                        "add {} on the line after it's acquired, then use `{}` freely",
                         ensure_call(name, consume),
                         name
                     ))
@@ -4343,7 +4347,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         format!("this doesn't consume `{}`, so nothing closes it at scope exit", name),
                     )
                     .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
-                    .with_fix(format!("call a method that takes `{}`: `{}`", name, ensure_call(name, consume)))
+                    .with_fix(format!("call a method that takes `{}`: {}", name, ensure_call(name, consume)))
                     .with_why(
                         "`ensure` commits the cleanup its body runs, and a call that only borrows the resource is no cleanup",
                     )
@@ -4864,11 +4868,22 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
     }
 }
 
-/// `ensure conn.close()` — the resource's own consuming call when there is one,
-/// a placeholder naming the shape when there isn't.
-fn ensure_call(name: &str, consume: &Option<String>) -> String {
-    match consume {
-        Some(c) => format!("ensure {}", c),
-        None => format!("ensure {}.<consuming method>()", name),
+/// `` `ensure conn.close()` ``, or `` `ensure tx.commit()` or `ensure tx.rollback()` ``
+/// when the type has several consuming methods and nothing says which one
+/// cleans up.
+fn ensure_call(name: &str, consume: &[String]) -> String {
+    if consume.is_empty() {
+        return format!("`ensure {}.<consuming method>()`", name);
+    }
+    either(consume, "ensure ")
+}
+
+/// `` `a` ``, `` `a` or `b` ``, `` `a`, `b` or `c` `` — each call quoted and prefixed.
+fn either(calls: &[String], prefix: &str) -> String {
+    let quoted: Vec<String> = calls.iter().map(|c| format!("`{}{}`", prefix, c)).collect();
+    match quoted.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {}", rest.join(", "), last),
+        None => String::new(),
     }
 }

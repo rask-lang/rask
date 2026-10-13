@@ -1310,13 +1310,32 @@ impl TypeChecker {
                     .record_impl_method_package(type_id, &m.name, &pkg, decl_id);
             }
         }
+        let stdlib_mode = self.types.stdlib_mode;
         if let Some(def) = self.types.get_mut(type_id) {
             match def {
                 TypeDef::Struct { methods, .. }
                 | TypeDef::Enum { methods, .. }
                 | TypeDef::NominalAlias { methods, .. }
                 | TypeDef::Primitive { methods, .. } => {
-                    methods.extend(new_methods);
+                    // Workaround (#1553): the stdlib is parsed twice, as the stub
+                    // set and as the compilable set, and both are collected. Each
+                    // `extend` block arrives twice, so without this every bodied
+                    // stdlib method was listed twice — `File` had two `close`s.
+                    // Same name and signature is the same method; `Mul<f64>` and
+                    // `Mul<Meters>` differ in their parameter and both stay.
+                    if stdlib_mode {
+                        let fresh: Vec<MethodSig> = new_methods
+                            .into_iter()
+                            .filter(|n| {
+                                !methods.iter().any(|m| {
+                                    m.name == n.name && m.self_param == n.self_param && m.params == n.params
+                                })
+                            })
+                            .collect();
+                        methods.extend(fresh);
+                    } else {
+                        methods.extend(new_methods);
+                    }
                 }
                 _ => {}
             }
@@ -1868,6 +1887,7 @@ impl TypeChecker {
         MethodSig {
             param_names,
             derived: false,
+            is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
             // stored name is `tag<E>`. Method lookup compares against what the
             // call site writes — `tag` — so strip it back off and keep the
@@ -2105,6 +2125,7 @@ impl TypeChecker {
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
                 derived: true,
+                is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
                 type_params: Vec::new(),
@@ -2774,6 +2795,7 @@ impl TypeChecker {
                 MethodSig {
                     param_names: Vec::new(),
                     derived: false,
+                    is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
                     type_params: Vec::new(),
@@ -2786,6 +2808,7 @@ impl TypeChecker {
                 MethodSig {
                     param_names: Vec::new(),
                     derived: false,
+                    is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
                     type_params: Vec::new(),
@@ -2798,6 +2821,7 @@ impl TypeChecker {
                 MethodSig {
                     param_names: Vec::new(),
                     derived: false,
+                    is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
                     type_params: Vec::new(),
