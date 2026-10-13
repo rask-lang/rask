@@ -333,6 +333,22 @@ pub mod field_attrs {
         attr::find(attrs, "default")?.positional()
     }
 
+    /// What a field the input doesn't supply is built from: the `@default(…)`
+    /// override first, then the declared default (type.structs/FD6).
+    pub fn decode_default(field: &super::Field) -> Option<&crate::expr::Expr> {
+        match default_value(&field.attrs) {
+            Some(value) => value.expr(),
+            None => field.default.as_ref(),
+        }
+    }
+
+    /// The static method desugar writes for a field's decode default. Both
+    /// decoders call it for a field the input leaves out, so the default runs
+    /// as ordinary code: `2 + 3`, `Status.Closed` and `Vec.new()` all work.
+    pub fn decode_default_method(field_name: &str) -> String {
+        format!("__decode_default_{field_name}")
+    }
+
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {

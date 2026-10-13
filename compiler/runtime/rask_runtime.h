@@ -976,8 +976,13 @@ void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 #define RASK_JSHAPE_STRUCT 15
 
 // Shape field flags.
-// The key may be absent; whatever the caller already wrote stands (@default).
-#define RASK_JFIELD_OPTIONAL 1
+// Not in the serialized form (`@no_serialize`): encode leaves it out, and
+// decode never looks for it and always runs its fill.
+#define RASK_JFIELD_NOT_SERIALIZED 1
+
+// Writes a field's default into its slot. Called for a field the input leaves
+// out; generated per field by the call site.
+typedef void (*RaskJsonFill)(void *slot);
 
 // Mirrors rask_mono::abi — an Option is [tag:8][payload], tag 0 = Some.
 #define RASK_OPTION_PAYLOAD_OFFSET 8
@@ -994,7 +999,7 @@ RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot);
 RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot);
 RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
-                                     RaskJsonShape *fs, int64_t flags);
+                                     RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);

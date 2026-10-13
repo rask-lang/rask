@@ -342,9 +342,40 @@ impl Desugarer {
     }
 
     fn desugar_struct(&mut self, s: &mut StructDecl) {
+        let defaults: Vec<FnDecl> = s.fields.iter().filter_map(|f| self.decode_default_method(f)).collect();
+        s.methods.extend(defaults);
         for method in &mut s.methods {
             self.desugar_fn(method);
         }
+    }
+
+    /// `func __decode_default_n() -> i64 { return 2 + 3 }` for a field whose
+    /// default a decode may need (std.encoding/E20, type.structs/FD6).
+    ///
+    /// A real method, so the default is type-checked at the declaration and
+    /// runs as ordinary code on both backends. The decoders used to read it
+    /// as a literal and fill anything else with a zero: `@default(2 + 3)` made
+    /// the field required, and `st: Status = Status.Closed` decoded as `Open`.
+    fn decode_default_method(&mut self, field: &rask_ast::decl::Field) -> Option<FnDecl> {
+        let mut value = rask_ast::decl::field_attrs::decode_default(field)?.clone();
+        rask_ast::rewrite::rewrite_expr(&mut value, &mut FreshIds(&mut self.next_id));
+        let sp = value.span;
+        Some(FnDecl {
+            name: rask_ast::decl::field_attrs::decode_default_method(&field.name),
+            type_params: vec![],
+            params: vec![],
+            ret_ty: Some(field.ty.clone()),
+            body: vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(value)), span: sp }],
+            is_pub: false,
+            is_private: false,
+            is_comptime: false,
+            is_unsafe: false,
+            abi: None,
+            attrs: vec![],
+            doc: None,
+            span: sp,
+            decl_start: sp.start,
+        })
     }
 
     fn desugar_enum(&mut self, e: &mut EnumDecl) {

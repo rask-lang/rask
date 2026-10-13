@@ -42,11 +42,6 @@ pub struct FieldLayout {
     /// (`type.structs/FD6`) — `reflect.fields<T>()`'s `has_default` is true
     /// for either.
     pub has_declared_default: bool,
-    /// The declared default, when it is a literal (`port: i32 = 8080`). A
-    /// field the input leaves out takes it on decode, the same as a
-    /// `@default(…)` in `attrs` (`type.structs/FD6`). `None` for a default
-    /// that isn't a plain literal, which stays construction-only.
-    pub declared_default: Option<rask_ast::expr::Literal>,
     /// V5 visibility. Carried because `reflect.fields<T>()` reports it: without
     /// it the native side had nothing to read and answered `true` for every
     /// field, so a `private` one looked public there and not on the
@@ -650,7 +645,7 @@ fn struct_layout(
     let is_binary = struct_decl.attrs.iter().any(|a| a.is("binary"));
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, Option<rask_ast::expr::Literal>, bool, bool, u32)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, bool, bool, u32)> = struct_decl.fields.iter()
         .enumerate()
         .map(|(decl_index, field)| {
             let (field_ty, from_param) = if is_binary {
@@ -671,7 +666,6 @@ fn struct_layout(
                 field_align,
                 field.attrs.clone(),
                 field.default.is_some(),
-                field.default.as_ref().and_then(rask_ast::expr::Expr::as_literal),
                 field.visibility.is_pub(),
                 from_param,
                 decl_index as u32,
@@ -690,7 +684,7 @@ fn struct_layout(
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    for (name, ty, size, align, attrs, has_declared_default, declared_default, is_public, is_type_param, decl_index) in resolved {
+    for (name, ty, size, align, attrs, has_declared_default, is_public, is_type_param, decl_index) in resolved {
         max_align = max_align.max(align);
         // S3: Align offset for this field
         offset = align_up(offset, align);
@@ -703,7 +697,6 @@ fn struct_layout(
             align,
             attrs,
             has_declared_default,
-            declared_default,
             is_public,
             decl_index,
             is_type_param,
@@ -753,7 +746,6 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             align: field_align,
             attrs: field.attrs.clone(),
             has_declared_default: field.default.is_some(),
-            declared_default: field.default.as_ref().and_then(rask_ast::expr::Expr::as_literal),
             is_public: field.visibility.is_pub(),
             decl_index: decl_index as u32,
             is_type_param: false,
@@ -895,7 +887,6 @@ fn enum_layout(
                     align,
                     attrs: Vec::new(),
                     has_declared_default: field.default.is_some(),
-                    declared_default: field.default.as_ref().and_then(rask_ast::expr::Expr::as_literal),
                     // A variant's payload has no visibility of its own.
                     is_public: true,
                     decl_index: decl_index as u32,

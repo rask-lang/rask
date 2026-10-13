@@ -103,6 +103,8 @@ pub struct Monomorphizer<'a> {
     pub call_rewrites: HashMap<NodeId, String>,
     /// The key `hash`/`eq` each map-building call needs (`note_map_key_fns`).
     pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
+    /// The field defaults each decoded struct calls (`note_decode_defaults`).
+    pub decode_defaults: HashMap<(String, String), String>,
     /// Node ids handed out to instantiated copies. Starts above every id the
     /// original program used, so a copy's nodes can never be mistaken for the
     /// nodes they were cloned from.
@@ -484,6 +486,7 @@ impl<'a> Monomorphizer<'a> {
             results: Vec::new(),
             call_rewrites: HashMap::new(),
             map_key_fns: HashMap::new(),
+            decode_defaults: HashMap::new(),
             next_instantiated_id: 0,
             in_test_body: false,
             instantiated_node_types: HashMap::new(),
@@ -1539,6 +1542,51 @@ impl<'a> Monomorphizer<'a> {
         Some(crate::MapKeyFns { hash, eq })
     }
 
+    /// Queue the field defaults a `json.decode` call may run, and record which
+    /// method is which. Nothing in the source calls them: the decoder does,
+    /// for a field the input leaves out (std.encoding/E20).
+    fn note_decode_defaults(&mut self, id: NodeId) {
+        let Some(typed) = self.typed else { return };
+        let ty = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id));
+        let Some(Type::Result { ok, .. }) = ty else { return };
+        let ok = ok.as_ref().clone();
+        self.queue_decode_defaults(&ok, &mut HashSet::new());
+    }
+
+    fn queue_decode_defaults(&mut self, ty: &Type, seen: &mut HashSet<rask_types::TypeId>) {
+        let Some(typed) = self.typed else { return };
+        match ty {
+            Type::Named(id) => {
+                if !seen.insert(*id) {
+                    return;
+                }
+                let Some(rask_types::TypeDef::Struct { name, fields, .. }) = typed.types.get(*id) else {
+                    return;
+                };
+                for (field, field_ty) in fields {
+                    let method = format!(
+                        "{name}_{}",
+                        rask_ast::decl::field_attrs::decode_default_method(field)
+                    );
+                    if self.method_table.contains_key(&method) {
+                        self.enqueue(method.clone(), Vec::new());
+                        self.decode_defaults.insert((name.clone(), field.clone()), method);
+                    }
+                    self.queue_decode_defaults(field_ty, seen);
+                }
+            }
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                for arg in args {
+                    if let rask_types::GenericArg::Type(t) = arg {
+                        self.queue_decode_defaults(t, seen);
+                    }
+                }
+            }
+            Type::Result { ok, .. } => self.queue_decode_defaults(ok, seen),
+            _ => {}
+        }
+    }
+
     /// Whether the `json.decode` call `id` builds a `JsonValue`: the ok side of
     /// its type, which is what lowering reads to choose `json.parse`.
     fn decodes_json_value(&self, id: NodeId) -> bool {
@@ -1865,8 +1913,12 @@ impl<'a> Monomorphizer<'a> {
                         // spelling, and `json.JsonValue` didn't match one, so
                         // the call reached a `json_parse` nobody compiled
                         // (#1435).
-                        if name == "json" && method == "decode" && self.decodes_json_value(expr.id) {
-                            self.enqueue("json_parse".to_string(), Vec::new());
+                        if name == "json" && method == "decode" {
+                            if self.decodes_json_value(expr.id) {
+                                self.enqueue("json_parse".to_string(), Vec::new());
+                            } else {
+                                self.note_decode_defaults(expr.id);
+                            }
                         }
                     }
 

@@ -308,6 +308,7 @@ mod empty {
     empty_of!(node_names, HashMap<NodeId, String>);
     empty_of!(nominal_map, HashMap<String, Type>);
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
+    empty_of!(decode_defaults, HashMap<(String, String), String>);
 }
 
 impl<'a> MirContext<'a> {
@@ -363,6 +364,7 @@ impl<'a> MirContext<'a> {
             interface_methods: HashMap::new(),
             call_rewrites: empty::node_names(),
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             comptime_interp: None,
@@ -409,6 +411,7 @@ impl<'a> MirContext<'a> {
     pub fn with_mono_calls(mut self, mono: &'a rask_mono::MonoProgram) -> Self {
         self.call_rewrites = &mono.call_rewrites;
         self.map_key_fns = &mono.map_key_fns;
+        self.decode_defaults = &mono.decode_defaults;
         self
     }
 
@@ -509,6 +512,8 @@ pub struct MirContext<'a> {
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// A map-building call → the `hash`/`eq` its keys go through (#1391).
     pub map_key_fns: &'a HashMap<NodeId, rask_mono::MapKeyFns>,
+    /// (struct, field) → the method that builds that field's decode default.
+    pub decode_defaults: &'a HashMap<(String, String), String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -629,6 +634,7 @@ impl<'a> MirContext<'a> {
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &EMPTY_TARGETS,
             operator_targets: &EMPTY_OPERATOR_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -7281,7 +7287,6 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
-                            declared_default: None,
                         is_public: true,
                         decl_index: 0,
                         is_type_param: false,
@@ -7301,7 +7306,6 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
-                            declared_default: None,
                         is_public: true,
                         decl_index: 0,
                         is_type_param: false,
@@ -7355,6 +7359,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7437,6 +7442,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7474,10 +7480,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false,
-                            declared_default: None, is_public: true, decl_index: 0, is_type_param: false },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false,
-                            declared_default: None, is_public: true, decl_index: 0, is_type_param: false },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false },
                     ],
                     attrs: vec![],
                 },
@@ -7528,6 +7532,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,

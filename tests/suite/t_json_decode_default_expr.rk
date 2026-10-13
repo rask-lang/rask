@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A field the input leaves out takes its default, and the default is an
+// expression like any other (std.encoding/E20, type.structs/FD6). Both
+// decoders used to read it as a literal: `@default(2 + 3)` made the field
+// required, and a `@no_serialize` field defaulting to `Status.Closed` came
+// back as `Open` natively and as nothing on the interpreter (#1528).
+import json
+
+enum Status {
+    Open
+    Closed
+}
+
+struct Limits {
+    public lo: i64 = 1
+    public hi: i64 = 10 * 10
+}
+
+struct Job {
+    public name: string
+    @default(2 + 3)
+    public retries: i64 = 1
+    public tries: i64 = 4 - 1
+    public limits: Limits = Limits()
+    public tags: Vec<string> = ["a", "b"]
+    public level: i64? = 7
+    @no_serialize
+    public status: Status = Status.Closed
+    @no_serialize
+    public note: string = "kept"
+}
+
+struct Batch {
+    public jobs: Vec<Job>
+}
+
+test "an expression default fills a missing field" {
+    let j = json.decode<Job>("{{\"name\": \"a\"}}") catch e => {
+        assert false
+        return
+    }
+    assert j.retries == 5
+    assert j.tries == 3
+    assert j.limits.hi == 100
+    assert j.tags.len() == 2
+    assert j.tags[1] == "b"
+    assert (j.level ?? 0) == 7
+    assert j.status == Status.Closed
+    assert j.note == "kept"
+}
+
+test "a present field wins over its default" {
+    let j = json.decode<Job>("{{\"name\": \"a\", \"retries\": 9, \"level\": null, \"limits\": {{\"lo\": 2}}}}") catch e => {
+        assert false
+        return
+    }
+    assert j.retries == 9
+    assert j.level is none
+    assert j.limits.lo == 2
+    assert j.limits.hi == 100
+}
+
+test "defaults fill structs inside a list" {
+    let b = json.decode<Batch>("{{\"jobs\": [{{\"name\": \"x\"}}, {{\"name\": \"y\", \"tries\": 0}}]}}") catch e => {
+        assert false
+        return
+    }
+    assert b.jobs.len() == 2
+    assert b.jobs[0].retries == 5
+    assert b.jobs[0].status == Status.Closed
+    assert b.jobs[0].note == "kept"
+    assert b.jobs[1].tries == 0
+}
+
+func main() {}

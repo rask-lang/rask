@@ -1324,7 +1324,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_shape_map", "rask_json_shape_map", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_opt", "rask_json_shape_opt", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_field", "rask_json_shape_field",
-            &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
+            &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_shape_free", "rask_json_shape_free", &[types::I64], None, false),
         StdlibEntry::simple("json_decode_into", "rask_json_decode_into",
             &[types::I64, types::I64, types::I64], Some(types::I64), false),

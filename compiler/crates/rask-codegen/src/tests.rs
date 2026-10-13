@@ -1972,6 +1972,7 @@ mod tests {
             type_names: Default::default(),
             call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
+            decode_defaults: std::collections::HashMap::new(),
         }
     }
 
@@ -2001,7 +2002,6 @@ mod tests {
                             align: 4,
                             attrs: vec![],
                             has_declared_default: false,
-                            declared_default: None,
                             is_public: true,
                             decl_index: 0,
                         is_type_param: false,
@@ -2014,7 +2014,6 @@ mod tests {
                             align: 4,
                             attrs: vec![],
                             has_declared_default: false,
-                            declared_default: None,
                             is_public: true,
                             decl_index: 0,
                         is_type_param: false,
@@ -2027,6 +2026,7 @@ mod tests {
             type_names: Default::default(),
             call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
+            decode_defaults: std::collections::HashMap::new(),
         }
     }
 
@@ -2066,7 +2066,6 @@ mod tests {
                                     align: 4,
                                     attrs: vec![],
                                     has_declared_default: false,
-                            declared_default: None,
                                     is_public: true,
                                     decl_index: 0,
                         is_type_param: false,
@@ -2088,7 +2087,6 @@ mod tests {
                                     align: 4,
                                     attrs: vec![],
                                     has_declared_default: false,
-                            declared_default: None,
                                     is_public: true,
                                     decl_index: 0,
                         is_type_param: false,
@@ -2102,6 +2100,7 @@ mod tests {
             ],
             call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
+            decode_defaults: std::collections::HashMap::new(),
         }
     }
 }

@@ -523,8 +523,9 @@ RaskJsonVal *rask_json_tree_parse(const RaskStr *s) {
 struct RaskJsonField {
     char *key;
     int64_t offset;
-    RaskJsonShape *shape;
+    RaskJsonShape *shape;   // NULL for a field that isn't serialized
     int64_t flags;
+    RaskJsonFill fill;      // the field's default, or NULL when it has none
 };
 
 struct RaskJsonShape {
@@ -596,7 +597,7 @@ RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size) {
 }
 
 void rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
-                           RaskJsonShape *fs, int64_t flags) {
+                           RaskJsonShape *fs, int64_t flags, RaskJsonFill fill) {
     if (!s) return;
     if (s->nfields == s->cap) {
         int32_t old = s->cap;
@@ -616,6 +617,7 @@ void rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
     f->offset = offset;
     f->shape = fs;
     f->flags = flags;
+    f->fill = fill;
 }
 
 void rask_json_shape_free(RaskJsonShape *s) {
@@ -697,6 +699,10 @@ static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     }
     for (int32_t i = 0; i < shape->nfields; i++) {
         struct RaskJsonField *f = &shape->fields[i];
+        if (f->flags & RASK_JFIELD_NOT_SERIALIZED) {
+            f->fill((char *)dst + f->offset);
+            continue;
+        }
         RaskJsonVal *member = NULL;
         for (int32_t j = 0; j < v->as.obj.len; j++) {
             const char *k = rask_string_ptr(&v->as.obj.keys[j]);
@@ -710,14 +716,16 @@ static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         snprintf(child, sizeof(child), "%s%s%s", path, path[0] ? "." : "field ", f->key);
 
         if (!member) {
+            // A field with a default takes it (E20, type.structs/FD6).
+            if (f->fill) {
+                f->fill((char *)dst + f->offset);
+                continue;
+            }
             // A `T?` field takes `none`; anything else has to be there (J9).
             if (f->shape->kind == RASK_JSHAPE_OPT) {
                 if (!json_decode_opt((char *)dst + f->offset, f->shape, NULL, child)) return 0;
                 continue;
             }
-            // A field with `@default` already holds its value — the call site
-            // wrote it before handing the destination over.
-            if (f->flags & RASK_JFIELD_OPTIONAL) continue;
             json_fail(RASK_JSON_ERR_MISSING, "field \"%s\" not found in the JSON object", f->key);
             return 0;
         }
@@ -933,9 +941,11 @@ static void json_write_shaped(JsonStrBuf *b, const void *src, const RaskJsonShap
 
 static void json_write_struct(JsonStrBuf *b, const void *src, const RaskJsonShape *shape) {
     jsb_push(b, "{", 1);
+    int written = 0;
     for (int32_t i = 0; i < shape->nfields; i++) {
-        if (i) jsb_push(b, ",", 1);
         const struct RaskJsonField *f = &shape->fields[i];
+        if (f->flags & RASK_JFIELD_NOT_SERIALIZED) continue;
+        if (written++) jsb_push(b, ",", 1);
         json_write_escaped(b, f->key, (int64_t)strlen(f->key));
         jsb_push(b, ":", 1);
         json_write_shaped(b, (const char *)src + f->offset, f->shape);
