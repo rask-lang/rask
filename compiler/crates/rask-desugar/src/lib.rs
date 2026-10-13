@@ -349,6 +349,14 @@ impl Desugarer {
     }
 
     fn desugar_fn(&mut self, f: &mut FnDecl) {
+        // A default is copied into each call that leaves it out, after this
+        // pass. Left as written, `n: i64 = 2 * 3` reached every call with a
+        // raw `*` in it, which nothing past desugar has to understand.
+        for p in &mut f.params {
+            if let Some(d) = &mut p.default {
+                self.desugar_expr(d);
+            }
+        }
         for stmt in &mut f.body {
             self.desugar_stmt(stmt);
         }
@@ -357,6 +365,13 @@ impl Desugarer {
     fn desugar_struct(&mut self, s: &mut StructDecl) {
         let defaults: Vec<FnDecl> = s.fields.iter().flat_map(|f| self.default_methods(f)).collect();
         s.methods.extend(defaults);
+        // Same for a field's default, copied into each construction that
+        // leaves the field out.
+        for f in &mut s.fields {
+            if let Some(d) = &mut f.default {
+                self.desugar_expr(d);
+            }
+        }
         let injected = std::mem::take(&mut self.injected_methods);
         for (index, method) in s.methods.iter_mut().enumerate() {
             self.renumber = injected.contains(&index);
@@ -371,12 +386,10 @@ impl Desugarer {
     /// on decode, so that one is held to the same rule.
     ///
     /// A default is a compile-time constant (FD1, E21). As a `comptime func`
-    /// it can't reach I/O, transitively (CT60). A scalar or a string is folded
-    /// at compile time like any `let … = comptime`, so an overflow is a compile
-    /// error at the field's own width (CT1) and native carries the value as a
-    /// constant. Anything else is checked the same way and built by the same
-    /// code at run time; the evaluator has no constant form for a struct or an
-    /// enum yet.
+    /// it can't reach I/O, transitively (CT60). Its value is folded at compile
+    /// time like any `let … = comptime`, so an overflow is a compile error at
+    /// the field's own width (CT1) and native carries the value as constant
+    /// data: a scalar, a string, a list, or a struct or enum built of those.
     ///
     /// Methods rather than copies, so a decode can call one: the decoders used
     /// to read a default as a literal, and `@default(2 + 3)` made the field
@@ -404,26 +417,19 @@ impl Desugarer {
             },
             span: sp,
         };
-        let has_constant_form = ty
-            .bare_name()
-            .is_some_and(|n| rask_ast::primitives::is_scalar(n) || n == "string");
-        let body = if has_constant_form {
-            let binding = "__default".to_string();
-            vec![
-                Stmt {
-                    id: self.fresh_id(),
-                    kind: StmtKind::Let { name: binding.clone(), name_span: sp, ty: Some(ty.clone()), init: folded },
-                    span: sp,
-                },
-                Stmt {
-                    id: self.fresh_id(),
-                    kind: StmtKind::Return(Some(Expr { id: self.fresh_id(), kind: ExprKind::Ident(binding), span: sp })),
-                    span: sp,
-                },
-            ]
-        } else {
-            vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }]
-        };
+        let binding = "__default".to_string();
+        let body = vec![
+            Stmt {
+                id: self.fresh_id(),
+                kind: StmtKind::Let { name: binding.clone(), name_span: sp, ty: Some(ty.clone()), init: folded },
+                span: sp,
+            },
+            Stmt {
+                id: self.fresh_id(),
+                kind: StmtKind::Return(Some(Expr { id: self.fresh_id(), kind: ExprKind::Ident(binding), span: sp })),
+                span: sp,
+            },
+        ];
         FnDecl {
             name,
             type_params: vec![],

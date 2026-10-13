@@ -470,19 +470,38 @@ impl<'a> MirLowerer<'a> {
                         self.meta_mut(name).type_prefix = Some("string".to_string());
                         return Ok(());
                     }
-                    if meta.type_prefix == "Vec" {
-                        // Array: store pointer for later Vec wrapping
-                        let mir_ty = if let Some(written) = ty.as_ref() {
-                            self.ctx.resolve_type_expr(written)
-                        } else {
-                            MirType::Ptr
+                    if let Some(agg) = meta.aggregate {
+                        let (value, mir_ty) = self.load_comptime_aggregate(&key, agg);
+                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local_id,
+                            rvalue: MirRValue::Use(value),
+                        }));
+                        self.locals.insert(name.to_string(), (local_id, mir_ty));
+                        return Ok(());
+                    }
+                    // A list or a map is built here, once, into the
+                    // collection the binding owns. Bound as the bare data
+                    // address instead, a use that went through the local —
+                    // `return v`, `v.len()` — read the elements as a vector
+                    // header and crashed.
+                    let data = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+                        dst: data,
+                        name: key.clone(),
+                    }));
+                    if let Some(built) = self.build_comptime_collection(data, meta) {
+                        let (value, _) = built?;
+                        let mir_ty = match ty.as_ref() {
+                            Some(written) => self.ctx.resolve_type_expr(written),
+                            None => MirType::Ptr,
                         };
                         let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.locals.insert(name.to_string(), (local_id, mir_ty));
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: local_id,
-                            name: key.clone(),
+                            rvalue: MirRValue::Use(value),
                         }));
+                        self.locals.insert(name.to_string(), (local_id, mir_ty));
                     } else {
                         // Scalar: load the data pointer, then deref to get the value
                         //
@@ -496,15 +515,10 @@ impl<'a> MirLowerer<'a> {
                                 Some(written) => self.ctx.resolve_type_expr(written),
                                 None => MirType::I64,
                             });
-                        let ptr_local = self.builder.alloc_temp(MirType::Ptr);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                            dst: ptr_local,
-                            name: key.clone(),
-                        }));
                         let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: local_id,
-                            rvalue: MirRValue::Deref(MirOperand::Local(ptr_local)),
+                            rvalue: MirRValue::Deref(MirOperand::Local(data)),
                         }));
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
                     }

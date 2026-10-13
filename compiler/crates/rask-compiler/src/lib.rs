@@ -35,6 +35,7 @@ use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 pub mod package_scope;
+mod comptime_aggregate;
 mod comptime_eval;
 
 // Re-export key types so callers don't need direct deps on pipeline crates.

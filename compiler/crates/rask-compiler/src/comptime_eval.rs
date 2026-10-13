@@ -18,6 +18,7 @@ use rask_mir::ComptimeGlobalMeta;
 use rask_mono::MonoProgram;
 use rask_types::TypedProgram;
 
+use crate::comptime_aggregate::NoBytes;
 use crate::{is_comptime_init, CfgConfig};
 
 /// Evaluate every comptime-initialized const. Returns the folded globals plus
@@ -55,6 +56,11 @@ pub fn evaluate_comptime_globals(
     // Only a top-level const can carry `@comptime_quota`: a `let … = comptime`
     // inside a body has nowhere to write an attribute.
     let mut comptime_consts: Vec<(String, String, &rask_ast::expr::Expr, Option<usize>, Option<&rask_ast::ty::TypeExpr>)> = Vec::new();
+    // A field's default, folded in the method desugaring writes for it. When
+    // the value has no constant form it's built where it's used, which is
+    // what the field asked for, so there is nothing to warn about: the
+    // warnings name a binding nobody wrote. A hard failure still reports.
+    let mut field_defaults: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
     for decl in decls {
         match &decl.kind {
             DeclKind::Const(c) => {
@@ -107,6 +113,9 @@ pub fn evaluate_comptime_globals(
                             None,
                             None,
                         ));
+                        if rask_ast::decl::field_attrs::field_of_default_method(&m.name).is_some() {
+                            field_defaults.insert(init.id);
+                        }
                     }
                 }
             }
@@ -160,17 +169,36 @@ pub fn evaluate_comptime_globals(
                         map_types: val
                             .map_types()
                             .map(|(k, v)| (k.to_string(), v.to_string())),
+                        aggregate: None,
                     };
                     fit_to_declared(&mut meta, declared);
                     globals.insert(key, meta);
                 }
-                // Folded, but the value has no constant representation — a
-                // gap like any other, and the const runs at runtime.
-                None => diags.push(no_constant_form(&name, val.type_name(), init.span)),
+                None => match crate::comptime_aggregate::aggregate_const(&val, checked_name(typed, init).as_deref(), mono) {
+                    Ok((ser, agg)) => {
+                        globals.insert(key, ComptimeGlobalMeta {
+                            bytes: ser.bytes,
+                            string_relocs: ser.string_relocs,
+                            elem_count: 0,
+                            type_prefix: val.type_prefix().to_string(),
+                            elem_type: None,
+                            map_types: None,
+                            aggregate: Some(agg),
+                        });
+                    }
+                    Err(NoBytes::Overflow(why)) => diags.push(
+                        comptime_diagnostic(&why, ("R0018", "comptime overflow is a compile error (type.overflow/CT1)"), init.span),
+                    ),
+                    // Folded, but the value has no constant representation — a
+                    // gap like any other, and the const runs at runtime.
+                    Err(NoBytes::Gap) if field_defaults.contains(&init.id) => {}
+                    Err(NoBytes::Gap) => diags.push(no_constant_form(&name, val.type_name(), init.span)),
+                },
             },
             Err(e) if e.is_hard() => {
                 diags.push(comptime_diagnostic(&e.to_string(), comptime_code(&e), init.span));
             }
+            Err(_) if field_defaults.contains(&init.id) => {}
             Err(e) => diags.push(fallback_warning(&name, &e, init.span)),
         }
     }
@@ -178,6 +206,14 @@ pub fn evaluate_comptime_globals(
     check_comptime_field_names(decls, &mut comptime_interp, &mut diags);
 
     (globals, diags)
+}
+
+/// The struct or enum the checker typed `init` as, by name.
+fn checked_name(typed: &TypedProgram, init: &rask_ast::expr::Expr) -> Option<String> {
+    match typed.node_types.get(&init.id)? {
+        rask_types::Type::Named(id) => Some(typed.types.type_name(*id)),
+        _ => None,
+    }
 }
 
 /// A folded integer at the width the const declares.
@@ -577,5 +613,6 @@ fn try_eval_comptime_mir(
         // map: `MiriValue` has no map at all.
         string_relocs: Vec::new(),
         map_types: None,
+        aggregate: None,
     })
 }

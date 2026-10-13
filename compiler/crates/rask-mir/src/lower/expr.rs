@@ -2296,48 +2296,18 @@ impl<'a> MirLowerer<'a> {
                         ));
                     }
                 }
+                if let Some(agg) = meta.aggregate {
+                    return Ok(self.load_comptime_aggregate(&key, agg));
+                }
                 let global_local = self.builder.alloc_temp(MirType::Ptr);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                     dst: global_local,
                     name: key,
                 }));
 
-                if meta.type_prefix == "Vec" {
-                    // Array global: wrap raw data into a Vec.
-                    //
-                    // Elements are machine words, except strings — a
-                    // `RaskStr` is sixteen bytes, and the vector has to be
-                    // told it holds strings so that what it hands out is
-                    // retained and released like one.
-                    let holds_strings = meta.elem_type.as_deref() == Some("string");
-                    let (elem_size, elem_desc) = if holds_strings {
-                        (16, MirType::String)
-                    } else {
-                        (8, MirType::I64)
-                    };
-                    let vec_local = self.builder.alloc_temp(MirType::Ptr);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(vec_local),
-                        func: FunctionRef::internal("rask_vec_from_static".to_string()),
-                        args: vec![
-                            MirOperand::Local(global_local),
-                            MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
-                            MirOperand::Constant(MirConst::Int(elem_size)),
-                            crate::elem_strs::elem(elem_desc),
-                        ],
-                    }));
-                    self.meta_mut(&name).type_prefix = Some("Vec".to_string());
-                    Ok((MirOperand::Local(vec_local), MirType::Ptr))
-                } else if meta.type_prefix == "Map" {
-                    // An empty map has no first entry to read the key and
-                    // value types off, and holds nothing that could tell
-                    // the difference, so any pair will do for one.
-                    let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
-                        ("i64".to_string(), "i64".to_string())
-                    });
-                    let entries = meta.elem_count;
-                    self.meta_mut(&name).type_prefix = Some("Map".to_string());
-                    self.build_comptime_map(global_local, entries, &k, &v)
+                if let Some(built) = self.build_comptime_collection(global_local, meta) {
+                    self.meta_mut(&name).type_prefix = Some(meta.type_prefix.clone());
+                    built
                 } else {
                     // Scalar global: load value from the data pointer
                     let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
@@ -2967,7 +2937,7 @@ impl<'a> MirLowerer<'a> {
             // is the middle segment naming an enum that has this variant,
             // with the head naming no local.
             if let ExprKind::Field { object: head, field: type_name } = &object.kind {
-                if matches!(&head.kind, ExprKind::Ident(n) if !self.locals.contains_key(n)) {
+                if matches!(&head.kind, ExprKind::Ident(n) if !self.name_holds_a_value(n)) {
                     if let Some(op) = self.lower_enum_variant_path(type_name, field) {
                         return Ok(op);
                     }
@@ -2977,8 +2947,12 @@ impl<'a> MirLowerer<'a> {
             // Enum variant access: Color.Red (no parens, fieldless variant).
             // `find_enum_written` so `Holder<i64>.Empty` resolves too — the
             // parser folds the written type arguments into the name (#782).
+            //
+            // A module const isn't a local either, and it holds a value:
+            // `ORIGIN.y` on `const ORIGIN: Point` read as a variant of a type
+            // named `ORIGIN`, came back as the tag stub, and printed 0.
             if let Some(name) = object.name() {
-                if !self.locals.contains_key(name) {
+                if !self.name_holds_a_value(name) {
                     if let Some(op) = self.lower_enum_variant_path(name, field) {
                         return Ok(op);
                     }
@@ -7215,7 +7189,7 @@ impl<'a> MirLowerer<'a> {
         let Some(enum_name) = object.name() else {
             return Ok(None);
         };
-        if self.locals.contains_key(enum_name) {
+        if self.name_holds_a_value(enum_name) {
             return Ok(None);
         }
         let Some((layout_id, layout)) = self.ctx.find_enum(enum_name) else {
@@ -7580,7 +7554,7 @@ impl<'a> MirLowerer<'a> {
     fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
         let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
         let Some(head_name) = head.name() else { return None };
-        if self.locals.contains_key(head_name) {
+        if self.name_holds_a_value(head_name) {
             return None;
         }
         let head_owns_it = self
@@ -7627,7 +7601,9 @@ impl<'a> MirLowerer<'a> {
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(type_name);
                 // A scalar names a type, never a module: `f64.INFINITY.neg()`
                 // is a method on a constant, not `INFINITY_neg` in module f64.
-                if !self.locals.contains_key(module_name)
+                // A module const holds a value too: `CFG.name.len()` on
+                // `const CFG: Config` was `name_len` in a module `CFG`.
+                if !self.name_holds_a_value(module_name)
                     && !is_enum_variant
                     && !rask_ast::primitives::is_scalar(module_name)
                     && (is_type_constructor_name(module_name) || names_a_type)
@@ -9679,7 +9655,7 @@ impl<'a> MirLowerer<'a> {
     /// number of words so a sixteen-byte string never lands at a four-byte
     /// offset. `rask_vec_from_static` reads it as a Vec of those pairs, which
     /// is the same shape `Map_entries` hands back going the other way.
-    fn build_comptime_map(
+    pub(super) fn build_comptime_map(
         &mut self,
         blob: crate::LocalId,
         entries: usize,

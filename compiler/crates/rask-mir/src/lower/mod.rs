@@ -230,6 +230,18 @@ pub struct ComptimeGlobalMeta {
     /// Codegen emits a static header for the text and writes its address at the
     /// offset — a pointer isn't a byte, so it can't travel in `bytes`.
     pub string_relocs: Vec<(usize, String)>,
+    /// The layout the bytes are laid out in, when the value is a struct or an
+    /// enum. `bytes` is then the value exactly as it sits in memory, and a
+    /// use copies it out.
+    pub aggregate: Option<ConstAggregate>,
+}
+
+/// Which layout a folded struct or enum constant was written in: an index
+/// into the program's struct or enum layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstAggregate {
+    Struct(usize),
+    Enum(usize),
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
@@ -2010,27 +2022,17 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("rask_alloc".to_string()),
                 args: vec![MirOperand::Constant(MirConst::Int(size as i64))],
             }));
-            let mut off = 0u32;
-            while off < size {
-                let word = self.builder.alloc_temp(MirType::I64);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: word,
-                    rvalue: MirRValue::Field {
-                        base: value.clone(),
-                        field_index: 0,
-                        byte_offset: Some(off),
-                        access: FieldAccess::Sized(8),
-                    },
-                }));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: heap,
-                    offset: off,
-                    value: MirOperand::Local(word),
-                    store_size: Some(8),
-                    field: None,
-                }));
-                off += 8;
-            }
+            // One store of the whole value. Copied a word at a time through
+            // `Field { field_index: 0, byte_offset }`, every word read field 0:
+            // codegen picks a struct's field by index and the offset never
+            // counted, so `const P: Point = Point(x: 1, y: 6)` read back `1 1`.
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: heap,
+                offset: 0,
+                value,
+                store_size: Some(size),
+                field: None,
+            }));
             MirOperand::Local(heap)
         } else {
             value
@@ -2355,6 +2357,81 @@ impl<'a> MirLowerer<'a> {
             return Some((local_key, meta));
         }
         self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
+    }
+
+    /// A folded `Vec` or `Map` constant built into a real collection from the
+    /// bytes at `data`. `None` when the constant is neither.
+    ///
+    /// The bytes are the elements, not a collection: a list's are what
+    /// `rask_vec_from_static` copies in, a map's the entries to insert.
+    pub(crate) fn build_comptime_collection(
+        &mut self,
+        data: LocalId,
+        meta: &ComptimeGlobalMeta,
+    ) -> Option<Result<(MirOperand, MirType), LoweringError>> {
+        match meta.type_prefix.as_str() {
+            "Vec" => {
+                // Elements are machine words, except strings — a `RaskStr`
+                // is sixteen bytes, and the vector has to be told it holds
+                // strings so that what it hands out is retained and released
+                // like one.
+                let holds_strings = meta.elem_type.as_deref() == Some("string");
+                let (elem_size, elem_desc) = if holds_strings {
+                    (16, MirType::String)
+                } else {
+                    (8, MirType::I64)
+                };
+                let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(vec_local),
+                    func: FunctionRef::internal("rask_vec_from_static".to_string()),
+                    args: vec![
+                        MirOperand::Local(data),
+                        MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
+                        MirOperand::Constant(MirConst::Int(elem_size)),
+                        crate::elem_strs::elem(elem_desc),
+                    ],
+                }));
+                Some(Ok((MirOperand::Local(vec_local), MirType::Ptr)))
+            }
+            "Map" => {
+                // An empty map has no first entry to read the key and value
+                // types off, and holds nothing that could tell the
+                // difference, so any pair will do for one.
+                let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
+                    ("i64".to_string(), "i64".to_string())
+                });
+                Some(self.build_comptime_map(data, meta.elem_count, &k, &v))
+            }
+            _ => None,
+        }
+    }
+
+    /// A folded struct or enum constant, copied out of its bytes into a value
+    /// of its own. The bytes are read-only data and every use is a fresh copy,
+    /// the same as reading any other const.
+    pub(crate) fn load_comptime_aggregate(&mut self, key: &str, agg: ConstAggregate) -> (MirOperand, MirType) {
+        let ty = match agg {
+            ConstAggregate::Struct(i) => {
+                let l = &self.ctx.struct_layouts[i];
+                MirType::Struct(StructLayoutId::new(i as u32, l.size, l.align))
+            }
+            ConstAggregate::Enum(i) => {
+                let l = &self.ctx.enum_layouts[i];
+                MirType::Enum(EnumLayoutId::new(i as u32, l.size, l.align))
+            }
+        };
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+            dst: addr,
+            name: key.to_string(),
+        }));
+        let value = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Use(MirOperand::Local(addr)),
+        }));
+        (MirOperand::Local(value), ty)
     }
 
     /// The MIR type of a folded comptime global, from the width its value
