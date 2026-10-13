@@ -256,7 +256,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             &dep_selections,
         );
 
-        for err in features.errors.iter().chain(&rask_resolve::features::check_enables_cycles(&manifest.features)) {
+        for err in &features.errors {
             eprintln!("{}: {}", output::error_label(), err);
             validation_errors += 1;
         }

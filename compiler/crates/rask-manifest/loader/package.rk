@@ -6,7 +6,7 @@
 //
 // Written by hand: it restates the shape in package_schema.rk.
 
-import schema.{Entry, LoadError, load, table_at, str_at, bool_at, int_at, pairs_at, strs_at}
+import schema.{Entry, LoadError, load, table_at, str_at, bool_at, int_at, pairs_at, strs_at, quoted_list}
 
 public struct Package {
     public name: string
@@ -78,7 +78,7 @@ public struct Profile {
 public func load_package(text: string) -> Package or LoadError {
     let tree = try load(text, package_schema())
     let pkg = table_at(tree, "package")
-    return Package {
+    let built = Package {
         name: str_at(pkg, "name") ?? "",
         version: str_at(pkg, "version") ?? "",
         description: str_at(pkg, "description"),
@@ -93,6 +93,121 @@ public func load_package(text: string) -> Package or LoadError {
         features: features_at(tree),
         exclusive_features: exclusive_at(tree),
         profiles: profiles_at(tree),
+    }
+    let errors = rule_errors(built)
+    if !errors.is_empty() {
+        return LoadError { what: errors.join("\n") }
+    }
+    return built
+}
+
+// ─── Rules the shape can't state ────────────────────────────────
+// Each needs only this file, so it's checked here with the rest of the file
+// rather than at build time (struct.build F5, F6, FG2 and the profile
+// ranges). They run once the shape holds.
+
+func rule_errors(p: Package) -> Vec<string> {
+    mut errors = Vec<string>.new()
+    check_enables(p, mutate errors)
+    check_one_feature_per_dep(p.features, mutate errors)
+    for g in p.exclusive_features {
+        mut names = Vec<string>.new()
+        for o in g.options {
+            names.push(o.name)
+        }
+        if !names.contains(g.default) {
+            errors.push("exclusive-features.{g.name}.default: `{g.default}` is not one of its options ({quoted_list(names)})")
+        }
+    }
+    for pr in p.profiles {
+        if pr.codegen_units? as n {
+            if n < 1 || n > 256 {
+                errors.push("profiles.{pr.name}.codegen-units: {n} is outside 1 to 256")
+            }
+        }
+    }
+    return errors
+}
+
+// F6: `enables` names a declared feature, and no chain of them comes back
+// around.
+func check_enables(p: Package, mutate errors: Vec<string>) {
+    mut names = Vec<string>.new()
+    for f in p.features {
+        names.push(f.name)
+    }
+    for g in p.exclusive_features {
+        names.push(g.name)
+    }
+    for f in p.features {
+        for n in f.enables {
+            if !names.contains(n) {
+                errors.push("features.{f.name}.enables: `{n}` is not a feature")
+            }
+        }
+    }
+    mut done = Vec<string>.new()
+    for f in p.features {
+        mut path = Vec<string>.new()
+        walk_enables(f.name, p.features, mutate path, mutate done, mutate errors)
+    }
+}
+
+func walk_enables(name: string, features: Vec<Feature>, mutate path: Vec<string>, mutate done: Vec<string>, mutate errors: Vec<string>) {
+    if path.contains(name) {
+        mut cycle = Vec<string>.new()
+        mut on = false
+        for n in path {
+            if n == name {
+                on = true
+            }
+            if on {
+                cycle.push(n)
+            }
+        }
+        cycle.push(name)
+        errors.push("features.{name}.enables: features enable each other in a circle: {cycle.join(" -> ")}")
+        return
+    }
+    if done.contains(name) {
+        return
+    }
+    done.push(name)
+    for f in features {
+        if f.name == name {
+            path.push(name)
+            for next in f.enables {
+                walk_enables(next, features, mutate path, mutate done, mutate errors)
+            }
+            path.pop()
+        }
+    }
+}
+
+// F5: a dependency is gated by one feature. A second gate goes through
+// `feature = "other"` on the one entry.
+func check_one_feature_per_dep(features: Vec<Feature>, mutate errors: Vec<string>) {
+    mut seen = Vec<(string, string)>.new()
+    for f in features {
+        for scope in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let deps = if scope == "dependencies": f.dependencies.clone()
+                else if scope == "dev-dependencies": f.dev_dependencies.clone()
+                else: f.build_dependencies.clone()
+            for d in deps {
+                let key = "{scope}.{d.name}"
+                mut first = ""
+                for (k, owner) in seen {
+                    if k == key {
+                        first = owner
+                    }
+                }
+                if first.is_empty() {
+                    seen.push((key, f.name))
+                } else {
+                    errors.push("features.{f.name}.{scope}.{d.name}: `{d.name}` is already gated by feature `{first}`; gate this one on it with `feature = \"{first}\"` instead")
+                }
+            }
+        }
     }
 }
 

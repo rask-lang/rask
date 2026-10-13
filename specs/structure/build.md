@@ -148,7 +148,7 @@ openssl = { registry = "^3.0" }
 ring    = { registry = "^0.17", feature = "crypto" }
 
 [features.full]
-enables = ["ssl", "logging"]
+enables = ["ssl", "verbose"]
 
 [features.verbose]   # code-only flag
 ```
@@ -776,6 +776,8 @@ security-framework = { registry = "^2.0", target = "macos" }
 
 [features.full]
 enables = ["ssl", "logging"]
+
+[features.logging]
 
 [profiles.staging]
 inherits = "release"

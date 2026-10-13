@@ -184,7 +184,7 @@ test "a change the old shape can't take is refused" {
 
 // ─── The full example from struct.build ─────────────────────────
 
-const MY_API = "# The full example from specs/structure/build.md, plus a git dependency.\nschema = \"rask-package@1\"\n\n[package]\nname = \"my-api\"\nversion = \"1.0.0\"\ndescription = \"REST API server\"\nlicense = \"MIT\"\n\n[dependencies]\nhttp          = {{ registry = \"^2.0\", allow = [\"net\"] }}\njson          = {{ registry = \"^1.5\" }}\nepoll         = {{ registry = \"^1.0\", target = \"linux\" }}\nprotobuf-rask = {{ registry = \"^0.9\", allow = [\"build_exec\"] }}\ntls           = {{ git = \"https://github.com/example/tls\", rev = \"a1b2c3\" }}\n\n[dev-dependencies]\nmock-server = {{ registry = \"^2.0\" }}\n\n[features.ssl.dependencies]\nopenssl            = {{ registry = \"^3.0\", target = \"linux\", allow = [\"ffi\"] }}\nsecurity-framework = {{ registry = \"^2.0\", target = \"macos\" }}\n\n[features.full]\nenables = [\"ssl\", \"logging\"]\n\n[profiles.staging]\ninherits = \"release\"\ndebug-info = true\n"
+const MY_API = "# The full example from specs/structure/build.md, plus a git dependency.\nschema = \"rask-package@1\"\n\n[package]\nname = \"my-api\"\nversion = \"1.0.0\"\ndescription = \"REST API server\"\nlicense = \"MIT\"\n\n[dependencies]\nhttp          = {{ registry = \"^2.0\", allow = [\"net\"] }}\njson          = {{ registry = \"^1.5\" }}\nepoll         = {{ registry = \"^1.0\", target = \"linux\" }}\nprotobuf-rask = {{ registry = \"^0.9\", allow = [\"build_exec\"] }}\ntls           = {{ git = \"https://github.com/example/tls\", rev = \"a1b2c3\" }}\n\n[dev-dependencies]\nmock-server = {{ registry = \"^2.0\" }}\n\n[features.ssl.dependencies]\nopenssl            = {{ registry = \"^3.0\", target = \"linux\", allow = [\"ffi\"] }}\nsecurity-framework = {{ registry = \"^2.0\", target = \"macos\" }}\n\n[features.full]\nenables = [\"ssl\", \"logging\"]\n\n[features.logging]\n\n[profiles.staging]\ninherits = \"release\"\ndebug-info = true\n"
 
 test "the full example loads" {
     assert load_error(MY_API, package_schema()) == ""
@@ -756,4 +756,49 @@ test "every error at once reaches the toolchain, one per line" {
     assert out.starts_with("{{\"error\"")
     assert out.contains("package.version: \\\"1\\\" is not a version")
     assert out.contains("\\npackage: unknown key `licence`; did you mean `license`?")
+}
+
+// ─── Rules beyond the shape ─────────────────────────────────────
+
+// "" when load_package takes the file, else its error. pkg_error stops at
+// the shape check; these rules run after it.
+func package_error(text: string) -> string {
+    match load_package(text) {
+        Package => return "",
+        LoadError as e => return e.message(),
+    }
+}
+
+test "enables must name a declared feature" {
+    let e = package_error("{HEAD}[features.full]\nenables = [\"ssl\", \"ghost\"]\n[features.ssl]\n")
+    assert e.contains("features.full.enables: `ghost` is not a feature")
+    assert !e.contains("`ssl` is not")
+}
+
+test "features that enable each other in a circle are an error" {
+    let e = package_error("{HEAD}[features.a]\nenables = [\"b\"]\n[features.b]\nenables = [\"c\"]\n[features.c]\nenables = [\"a\"]\n")
+    assert e.contains("features enable each other in a circle: a -> b -> c -> a")
+    assert package_error("{HEAD}[features.a]\nenables = [\"a\"]\n").contains("a -> a")
+}
+
+test "enables may name an exclusive group" {
+    assert package_error("{HEAD}[features.full]\nenables = [\"rt\"]\n[exclusive-features.rt]\ndefault = \"x\"\noptions.x = {{}}\n") == ""
+}
+
+test "one dependency in two features is an error naming the first" {
+    let e = package_error("{HEAD}[features.a.dependencies]\nring = {{ registry = \"^1\" }}\n[features.b.dependencies]\nring = {{ registry = \"^1\" }}\n")
+    assert e.contains("features.b.dependencies.ring: `ring` is already gated by feature `a`; gate this one on it with `feature = \"a\"` instead")
+    // A different scope is a different dependency.
+    assert package_error("{HEAD}[features.a.dependencies]\nring = {{ registry = \"^1\" }}\n[features.b.dev-dependencies]\nring = {{ registry = \"^1\" }}\n") == ""
+}
+
+test "an exclusive group's default must be one of its options" {
+    let e = package_error("{HEAD}[exclusive-features.rt]\ndefault = \"nope\"\noptions.tokio = {{}}\noptions.smol = {{}}\n")
+    assert e.contains("exclusive-features.rt.default: `nope` is not one of its options (`tokio`, `smol`)")
+}
+
+test "codegen-units is 1 to 256" {
+    assert package_error("{HEAD}[profiles.x]\ncodegen-units = 0\n").contains("profiles.x.codegen-units: 0 is outside 1 to 256")
+    assert package_error("{HEAD}[profiles.x]\ncodegen-units = 257\n").contains("257 is outside")
+    assert package_error("{HEAD}[profiles.x]\ncodegen-units = 256\n") == ""
 }
