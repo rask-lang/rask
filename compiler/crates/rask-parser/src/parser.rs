@@ -192,7 +192,7 @@ impl Parser {
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                 TokenKind::Interface | TokenKind::Extend | TokenKind::Import | TokenKind::Type |
-                TokenKind::Extern | TokenKind::Public | TokenKind::Private | TokenKind::Package if brace_depth == 0 => {
+                TokenKind::Extern | TokenKind::Public | TokenKind::Private if brace_depth == 0 => {
                     return;
                 }
                 _ => { self.advance(); }
@@ -539,7 +539,7 @@ impl Parser {
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
-                        TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
+                        TokenKind::Test | TokenKind::Benchmark |
                         TokenKind::Public | TokenKind::Private
                     ) {
                         if !self.record_error(decl_err) { break; }
@@ -789,29 +789,6 @@ impl Parser {
                     extern_first_span = Some(first_span);
                 }
                 first
-            }
-            // The manifest left Rask syntax for rask.toml (struct.manifest).
-            // `package` stays reserved so an old block gets this instead of
-            // a generic "expected a declaration".
-            TokenKind::Package => {
-                return Err(ParseError {
-                    span: self.current().span,
-                    message: "the `package` block is gone: a package declares itself in rask.toml".to_string(),
-                    hint: Some(
-                        "move it to rask.toml next to build.rk:\n\n    \
-                         schema = \"rask-package@1\"\n\n    \
-                         [package]\n    name = \"my-app\"\n    version = \"1.0.0\"\n\n    \
-                         [dependencies]\n    http = { registry = \"^2.0\" }\n\n\
-                         build.rk keeps only `func build()`, and can go if that's all it had"
-                            .to_string(),
-                    ),
-                    why: Some(
-                        "tools that aren't Rask (registry indexers, dependency bots, editors) \
-                         read and edit the manifest, so it is TOML checked against a versioned \
-                         schema rather than Rask syntax"
-                            .to_string(),
-                    ),
-                });
             }
             _ => {
                 return Err(ParseError::expected(
@@ -5892,8 +5869,6 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Extern => "extern",
         TokenKind::Asm => "asm",
         TokenKind::Discard => "discard",
-        // Reserved: the old manifest block, kept so it gets a pointed error
-        TokenKind::Package => "package",
         _ => return None,
     })
 }

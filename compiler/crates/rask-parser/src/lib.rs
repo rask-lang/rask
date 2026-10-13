@@ -560,11 +560,12 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
+    /// `package` was a keyword only for the manifest block, which moved to
+    /// rask.toml. It's an ordinary name now.
     #[test]
-    fn a_package_block_points_at_rask_toml() {
-        let result = parse("package \"myapp\" \"0.1.0\" {\n    dep \"serde\" \"1.0\"\n}");
-        assert!(!result.is_ok());
-        assert!(result.errors[0].message.contains("rask.toml"), "{:?}", result.errors);
+    fn package_is_an_ordinary_name() {
+        let result = parse("func main() {\n    let package = 1\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
     // ================================================================
