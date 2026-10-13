@@ -951,6 +951,29 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// #1537: a field default is a compile-time constant (type.structs/FD1). One
+/// that reaches I/O, declared or `@default`, is rejected where it's written,
+/// named by its field rather than by the method desugar wrote for it.
+#[test]
+fn a_field_default_that_does_io_is_rejected() {
+    let (failed, out) = compile_error_output("field_default_not_constant.rk");
+    assert!(failed, "a default calling `println` must not compile: {out}");
+    assert_eq!(out.matches("E0875").count(), 2, "one error per default: {out}");
+    assert!(out.contains("the default for field `retries`"), "{out}");
+    assert!(out.contains("the default for field `tries`"), "{out}");
+    assert!(!out.contains("__decode_default"), "the generated name leaked into the message: {out}");
+}
+
+/// A default is folded at the width of its field, so overflowing it is a
+/// compile error (type.overflow/CT1), not a panic on the first decode that
+/// leaves the field out.
+#[test]
+fn a_field_default_that_overflows_is_rejected() {
+    let (failed, out) = compile_error_output("field_default_overflows.rk");
+    assert!(failed, "`@default(200 + 100)` on a u8 must not compile: {out}");
+    assert!(out.contains("exceeds u8 range"), "{out}");
+}
+
 /// #1034: `some_u8 == 'h'` type-checked, then native compared the char as its
 /// underlying scalar and answered `true` because 104 is both a byte and `'h'`,
 /// while the interpreter refused at runtime. The comparison arms unify the

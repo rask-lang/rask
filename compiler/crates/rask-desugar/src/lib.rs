@@ -355,7 +355,7 @@ impl Desugarer {
     }
 
     fn desugar_struct(&mut self, s: &mut StructDecl) {
-        let defaults: Vec<FnDecl> = s.fields.iter().filter_map(|f| self.decode_default_method(f)).collect();
+        let defaults: Vec<FnDecl> = s.fields.iter().flat_map(|f| self.default_methods(f)).collect();
         s.methods.extend(defaults);
         let injected = std::mem::take(&mut self.injected_methods);
         for (index, method) in s.methods.iter_mut().enumerate() {
@@ -365,33 +365,81 @@ impl Desugarer {
         self.renumber = false;
     }
 
-    /// `func __decode_default_n() -> i64 { return 2 + 3 }` for a field whose
-    /// default a decode may need (std.encoding/E20, type.structs/FD6).
+    /// A field's defaults as `comptime func`s: `__decode_default_n` for what a
+    /// decode fills a missing field with (std.encoding/E20, type.structs/FD6),
+    /// and `__default_n` for the declared default when `@default` overrides it
+    /// on decode, so that one is held to the same rule.
     ///
-    /// A real method, so the default is type-checked at the declaration and
-    /// runs as ordinary code on both backends. The decoders used to read it
-    /// as a literal and fill anything else with a zero: `@default(2 + 3)` made
-    /// the field required, and `st: Status = Status.Closed` decoded as `Open`.
-    fn decode_default_method(&mut self, field: &rask_ast::decl::Field) -> Option<FnDecl> {
-        let mut value = rask_ast::decl::field_attrs::decode_default(field)?.clone();
+    /// A default is a compile-time constant (FD1, E21). As a `comptime func`
+    /// it can't reach I/O, transitively (CT60). A scalar or a string is folded
+    /// at compile time like any `let … = comptime`, so an overflow is a compile
+    /// error at the field's own width (CT1) and native carries the value as a
+    /// constant. Anything else is checked the same way and built by the same
+    /// code at run time; the evaluator has no constant form for a struct or an
+    /// enum yet.
+    ///
+    /// Methods rather than copies, so a decode can call one: the decoders used
+    /// to read a default as a literal, and `@default(2 + 3)` made the field
+    /// required (#1528).
+    fn default_methods(&mut self, field: &rask_ast::decl::Field) -> Vec<FnDecl> {
+        use rask_ast::decl::field_attrs;
+        let mut out = Vec::new();
+        if let Some(value) = field_attrs::decode_default(field) {
+            out.push(self.default_method(field_attrs::decode_default_method(&field.name), &field.ty, value));
+        }
+        if let (Some(_), Some(declared)) = (field_attrs::default_value(&field.attrs), &field.default) {
+            out.push(self.default_method(field_attrs::declared_default_method(&field.name), &field.ty, declared));
+        }
+        out
+    }
+
+    fn default_method(&mut self, name: String, ty: &TypeExpr, value: &Expr) -> FnDecl {
+        let mut value = value.clone();
         rask_ast::rewrite::rewrite_expr(&mut value, &mut FreshIds(&mut self.next_id));
         let sp = value.span;
-        Some(FnDecl {
-            name: rask_ast::decl::field_attrs::decode_default_method(&field.name),
+        let folded = Expr {
+            id: self.fresh_id(),
+            kind: ExprKind::Comptime {
+                body: vec![Stmt { id: self.fresh_id(), kind: StmtKind::Expr(value), span: sp }],
+            },
+            span: sp,
+        };
+        let has_constant_form = ty
+            .bare_name()
+            .is_some_and(|n| rask_ast::primitives::is_scalar(n) || n == "string");
+        let body = if has_constant_form {
+            let binding = "__default".to_string();
+            vec![
+                Stmt {
+                    id: self.fresh_id(),
+                    kind: StmtKind::Let { name: binding.clone(), name_span: sp, ty: Some(ty.clone()), init: folded },
+                    span: sp,
+                },
+                Stmt {
+                    id: self.fresh_id(),
+                    kind: StmtKind::Return(Some(Expr { id: self.fresh_id(), kind: ExprKind::Ident(binding), span: sp })),
+                    span: sp,
+                },
+            ]
+        } else {
+            vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }]
+        };
+        FnDecl {
+            name,
             type_params: vec![],
             params: vec![],
-            ret_ty: Some(field.ty.clone()),
-            body: vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(value)), span: sp }],
+            ret_ty: Some(ty.clone()),
+            body,
             is_pub: false,
             is_private: false,
-            is_comptime: false,
+            is_comptime: true,
             is_unsafe: false,
             abi: None,
             attrs: vec![],
             doc: None,
             span: sp,
             decl_start: sp.start,
-        })
+        }
     }
 
     fn desugar_enum(&mut self, e: &mut EnumDecl) {

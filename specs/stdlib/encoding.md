@@ -149,7 +149,7 @@ extend DateTime {
 | **E18: @rename** | `@rename("name")` on a struct field overrides the serialized key name. Reflected as `FieldInfo.serial_name` |
 | **E19: @no_serialize** | `@no_serialize` excludes a non-private field from the serialized form in **both** directions. Decode value comes from the declared default (E13a). Reflected as `FieldInfo.serialized == false` |
 | **E20: @default** | `@default(expr)` provides a comptime value used when the field is missing during deserialization. The field becomes optional in the input. A decode-only override of the declared default (`type.structs/FD6`). Reflected as `FieldInfo.has_default` |
-| **E21: Comptime expressions** | `@rename` takes a string literal. `@default` takes a comptime expression, type-checked against the field where it's written. Any constant works, not only a literal: `@default(2 + 3)`, `@default(Status.Closed)` |
+| **E21: Comptime expressions** | `@rename` takes a string literal. `@default` takes a comptime expression, checked against the field where it's written and folded while compiling under the same rule as a declared default (`type.structs/FD1`). Any constant works, not only a literal: `@default(2 + 3)`, `@default(Status.Closed)` |
 
 `@no_serialize` covers both directions on purpose. One-directional exclusion — off the wire on encode, still filled on decode — is how mass-assignment holes get built.
 

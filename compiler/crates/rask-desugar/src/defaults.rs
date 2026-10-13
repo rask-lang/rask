@@ -477,9 +477,16 @@ impl DefaultDesugarer {
             if fields.iter().any(|f| &f.name == field_name) {
                 continue;
             }
+            // A default is a compile-time constant (FD1): the copy is a
+            // `comptime` block, so a scalar or a string folds to a constant
+            // where it's filled in. Its purity is checked once, at the
+            // declaration, through the default's own `comptime func`.
+            let value = clone_expr_with_fresh_ids(default_expr, &mut id_gen);
+            let span = value.span;
+            let block = Stmt { id: id_gen(), kind: StmtKind::Expr(value), span };
             fields.push(FieldInit {
                 name: field_name.clone(),
-                value: clone_expr_with_fresh_ids(default_expr, &mut id_gen),
+                value: Expr { id: id_gen(), kind: ExprKind::Comptime { body: vec![block] }, span },
             });
             filled += 1;
         }

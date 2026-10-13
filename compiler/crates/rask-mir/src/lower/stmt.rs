@@ -451,6 +451,25 @@ impl<'a> MirLowerer<'a> {
                 }
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some((key, meta)) = self.comptime_global_for(name) {
+                    // A folded string is its characters, not a `RaskStr`, so it
+                    // binds as the literal it is. Read through the data slot
+                    // like a scalar, `let v: string = comptime { "ab" }` handed
+                    // the characters' bytes back as a string header and
+                    // crashed on first use. A use of the name already did
+                    // this (#1074); the binding didn't.
+                    let folded_text = (meta.type_prefix == "string")
+                        .then(|| String::from_utf8(meta.bytes.clone()).ok())
+                        .flatten();
+                    if let Some(text) = folded_text {
+                        let local_id = self.builder.alloc_local(name.to_string(), MirType::String);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local_id,
+                            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(text))),
+                        }));
+                        self.locals.insert(name.to_string(), (local_id, MirType::String));
+                        self.meta_mut(name).type_prefix = Some("string".to_string());
+                        return Ok(());
+                    }
                     if meta.type_prefix == "Vec" {
                         // Array: store pointer for later Vec wrapping
                         let mir_ty = if let Some(written) = ty.as_ref() {

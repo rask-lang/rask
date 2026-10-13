@@ -510,6 +510,9 @@ fn comptime_diagnostics_for(
         // compile path — which is one backend reporting and the other not.
         DeclKind::Fn(f) => has_comptime_let(&f.body, decls),
         DeclKind::Test(t) => has_comptime_let(&t.body, decls),
+        DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_) => comptime_eval::methods_of(d)
+            .iter()
+            .any(|(_, m)| has_comptime_let(&m.body, decls)),
         _ => false,
     });
     // A `value.(comptime { … })` naming a field is neither a const nor a let,
@@ -1262,6 +1265,26 @@ fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePuri
         Some(call) => format!(" — `{}` does", call),
         None => String::new(),
     };
+    // A field's default is a `comptime func` desugar wrote; the reader wrote
+    // the default, so say it in those words.
+    let method = e.func.rsplit('.').next().unwrap_or(&e.func);
+    if let Some(field) = rask_ast::decl::field_attrs::field_of_default_method(method) {
+        return Diagnostic::error(format!(
+            "the default for field `{field}` reaches {} at compile time{via}",
+            e.effect
+        ))
+        .with_code("E0875")
+        .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+        .with_fix(format!(
+            "write the value itself, or drop the default and set `{field}` where the struct is built"
+        ))
+        .with_why(
+            "a field's default is a compile-time constant, worked out once while \
+             compiling, so it can't do anything that needs the program running \
+             [type.structs/FD1, std.encoding/E21, ctrl.comptime/CT7]"
+                .to_string(),
+        );
+    }
     let diag = Diagnostic::error(format!(
         "`comptime func {}` reaches {} at compile time{}",
         e.func, e.effect, via

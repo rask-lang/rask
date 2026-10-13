@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a field default that isn't a compile-time constant
+//
+// Spec: type.structs (FD1), std.encoding (E21), ctrl.comptime (CT1, CT7)
+//
+// A field's default, declared or `@default(…)`, is worked out once while
+// compiling. Each default is a `comptime func` desugar writes, so one that
+// reaches I/O is rejected where it's written, through whatever call it goes.
+// The defaults used to be copied to every construction and run on every
+// decode, so `tick()` printed each time and nothing said it wasn't a constant
+// (#1537).
+
+func tick() -> i64 {
+    println("tick")
+    return 1
+}
+
+struct Job {
+    public name: string
+
+    // ERROR: a default that does I/O [E0875]
+    public retries: i64 = tick()
+
+    // ERROR: and through `@default` too [E0875]
+    @default(tick())
+    public tries: i64 = 3
+}
+
+// FIX: write the value itself
+struct Fixed {
+    public name: string
+    public retries: i64 = 1
+}
+
+func main() {
+    let j = Job(name: "a")
+    let f = Fixed(name: "b")
+    println("{j.retries} {f.retries}")
+}

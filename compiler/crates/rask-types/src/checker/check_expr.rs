@@ -34,6 +34,12 @@ impl TypeChecker {
     /// result, so that's the one kept — plus the two things `check_stmt` would
     /// have done afterwards for an expression statement.
     pub(super) fn check_block_body(&mut self, body: &[Stmt]) -> Type {
+        self.check_block_body_expecting(body, None)
+    }
+
+    /// A block whose value fills a slot of a known type: the tail is checked
+    /// against it, the way a bare expression in that slot would be.
+    pub(super) fn check_block_body_expecting(&mut self, body: &[Stmt], expected: Option<&Type>) -> Type {
         let value_stmt_idx = match body.last() {
             Some(last) if matches!(last.kind, StmtKind::Expr(_)) => Some(body.len() - 1),
             _ => None,
@@ -48,7 +54,10 @@ impl TypeChecker {
         match body.last() {
             Some(last) => match &last.kind {
                 StmtKind::Expr(e) => {
-                    let ty = self.infer_expr(e);
+                    let ty = match expected {
+                        Some(want) => self.infer_expr_expecting(e, want),
+                        None => self.infer_expr(e),
+                    };
                     self.check_bare_sync_access(e);
                     self.clear_expression_borrows();
                     self.solve_constraints();
@@ -82,6 +91,16 @@ impl TypeChecker {
             }
         }
         match &expr.kind {
+            // `comptime { [1, 2] }` in a `Vec<i64>` slot is the literal in that
+            // slot: the block's value is what's being asked for. A field's
+            // default is spliced in as one, so a `Vec` default written as a
+            // list came out `[string; 2]` against its own field (type.structs/FD1).
+            ExprKind::Comptime { body } => {
+                let ty = self.check_block_body_expecting(body, Some(expected));
+                self.node_types.insert(expr.id, ty.clone());
+                self.note_node_origin(expr);
+                return ty;
+            }
             // An unsuffixed literal takes the slot's type, including the two
             // magnitude bands that only rule types out. Taking the expectation
             // is what turns `let a: i128 = <too big>` into "this literal is out

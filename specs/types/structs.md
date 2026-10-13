@@ -245,7 +245,7 @@ let p2 = Point(x: 5, ..p1)    // OK: all fields public, copy p1, override x
 
 | Rule | Description |
 |------|-------------|
-| **FD1: Declared defaults** | A field may declare a default: `port: i32 = 8080`. Compile-time constants only — same rule as default arguments |
+| **FD1: Declared defaults** | A field may declare a default: `port: i32 = 8080`. A compile-time constant, worked out once while compiling: a default that reaches I/O, or overflows its field's type, is a compile error at the default. A scalar or string default is carried as the folded value; a struct or enum default is checked the same way and built by the same code at run time |
 | **FD2: Omittable at construction** | Defaulted fields may be omitted in a struct literal; the declared value fills in |
 | **FD3: Zero-field construction** | If every field has a default, `Config()` constructs the default value. There is no `Default` interface and no `.default()` method — this is it |
 | **FD4: Missing field is an error** | A field with no default and no value is a compile error naming the field. Never silently zero |

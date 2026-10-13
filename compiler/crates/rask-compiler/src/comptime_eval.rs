@@ -93,6 +93,23 @@ pub fn evaluate_comptime_globals(
                     ));
                 }
             }
+            // A method's lets are keyed by the name its body is compiled under,
+            // `Type_method`. None were folded at all, so a `comptime` let in a
+            // method ran at run time with no check — which is where a field's
+            // default lives now (type.structs/FD1).
+            DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_) => {
+                for (owner, m) in methods_of(decl) {
+                    for (name, init) in comptime_lets(&m.body, decls) {
+                        comptime_consts.push((
+                            rask_mir::lower::comptime_local_key(&format!("{owner}_{}", m.name), name),
+                            name.clone(),
+                            init,
+                            None,
+                            None,
+                        ));
+                    }
+                }
+            }
             // A `test` block is a function by the time the compile path folds
             // (the runner rewrites it to `__test_N`), but not yet on the check
             // path — and check has to see the same consts or one backend warns
@@ -242,6 +259,20 @@ fn check_comptime_field_names(
 }
 
 /// Every `let x = comptime …` directly in a body, as (name, initializer).
+/// The methods a type declaration carries, with the type they're filed under.
+pub(crate) fn methods_of(decl: &Decl) -> Vec<(String, &FnDecl)> {
+    let (owner, methods) = match &decl.kind {
+        DeclKind::Struct(s) => (s.name.clone(), &s.methods),
+        DeclKind::Enum(e) => (e.name.clone(), &e.methods),
+        DeclKind::Impl(i) => match i.target_ty.name() {
+            Some(name) => (name, &i.methods),
+            None => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    methods.iter().map(|m| (owner.clone(), m)).collect()
+}
+
 fn comptime_lets<'a>(
     body: &'a [Stmt],
     decls: &[Decl],

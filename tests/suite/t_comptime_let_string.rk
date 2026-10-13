@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// ctrl.comptime: a `let` bound to a folded string. Natively the binding read
+// the folded characters back as if they were a string header, so the first
+// use crashed. A use of a folded *const* already turned the characters into a
+// literal (#1074); the `let` didn't. A field's default goes through exactly
+// this binding now, so a `string` default crashed every decode that used it.
+
+func greeting() -> string {
+    let text: string = comptime { "hello" }
+    return text
+}
+
+func shout() -> string {
+    let loud: string = comptime { "HEY" }
+    return "{loud}!"
+}
+
+struct Note {
+    public title: string = "untitled"
+}
+
+test "a folded string binds as the string" {
+    assert greeting() == "hello"
+    assert shout() == "HEY!"
+}
+
+test "a string field default" {
+    let n = Note()
+    assert n.title == "untitled"
+}
+
+func main() {}

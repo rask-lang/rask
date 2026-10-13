@@ -349,6 +349,19 @@ pub mod field_attrs {
         format!("__decode_default_{field_name}")
     }
 
+    /// The `comptime func` desugar writes for a declared default that
+    /// `@default` overrides on decode, so it's checked like the other one.
+    pub fn declared_default_method(field_name: &str) -> String {
+        format!("__default_{field_name}")
+    }
+
+    /// The field a generated default method belongs to, from its name.
+    pub fn field_of_default_method(method: &str) -> Option<&str> {
+        method
+            .strip_prefix("__decode_default_")
+            .or_else(|| method.strip_prefix("__default_"))
+    }
+
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {
