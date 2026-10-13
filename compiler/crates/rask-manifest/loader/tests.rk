@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+// The rask-package schema. What a schema does in general is tested in
+// libs/schema; these cover the manifest's own shape and history.
+
+import schema.{Schema, Ty, Step, Release, Change, Value, Entry, LoadError, load, migrate, check_history, replay_shape, defaulted, required, optional, find_entry, table_at, bool_at, strs_at, render_document}
+
 // ─── Helpers ────────────────────────────────────────────────────
 
 // "" when the file loads, else the error text.
@@ -101,48 +106,6 @@ test "strings are checked by field type" {
     assert cap.contains("\"network\" is not allowed here")
 }
 
-test "every error is reported, not just the first" {
-    let e = load_error("{HEAD}licence = \"MIT\"\nsandbox = \"yes\"\n", package_schema())
-    assert e.contains("`licence`")
-    assert e.contains("sandbox: expected `true` or `false`")
-}
-
-test "a file newer than the toolchain is rejected outright" {
-    let e = load_error("schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n", package_schema())
-    assert e.contains("only knows up to @1")
-}
-
-test "the schema line is required and must name this schema" {
-    assert load_error("[package]\nname = \"a\"\nversion = \"0.1.0\"\n", package_schema()).contains("missing `schema")
-    assert load_error("schema = \"cargo@1\"\n", package_schema()).contains("a `cargo` file")
-    assert load_error("schema = \"rask-package\"\n", package_schema()).contains("has no version")
-}
-
-// ─── Well-formedness ────────────────────────────────────────────
-
-test "duplicate keys are an error" {
-    let e = load_error("{HEAD}name = \"again\"\n", package_schema())
-    assert e.contains("duplicate key `package.name`")
-    let t = load_error("{HEAD}[package]\n", package_schema())
-    assert t.contains("defined twice")
-}
-
-test "raw bidi controls are rejected" {
-    let e = load_error("{HEAD}description = \"a\u{202E}b\"\n", package_schema())
-    assert e.contains("bidirectional")
-}
-
-test "quoted keys must be NFC" {
-    // "e" + combining acute: NFD, renders like "é".
-    let e = load_error("{HEAD}[dependencies]\n\"cafe\u{301}\" = {{ path = \"x\" }}\n", package_schema())
-    assert e.contains("not in NFC form")
-}
-
-test "unsupported TOML says so" {
-    assert load_error("{HEAD}[[bin]]\n", package_schema()).contains("array of tables")
-    assert load_error("{HEAD}x = 1.5\n", package_schema()).contains("floats and dates")
-}
-
 // ─── Release 2: replaying forward ───────────────────────────────
 
 test "release 2's history replays" {
@@ -207,27 +170,7 @@ test "round trip: 1 to 2 and back gives a file that means the same" {
     assert render_document(a) == render_document(b)
 }
 
-// ─── Catching an edited past ────────────────────────────────────
-
-test "a shape changed without a change in the log fails check" {
-    mut s = package_schema()
-    if s.shape is Record(fields) {
-        mut grown = fields.clone()
-        grown.push(optional("homepage", Ty.Str))
-        s.shape = Ty.Record(grown)
-    }
-    let e = schema_error(s)
-    assert e.contains("does not give the current shape")
-}
-
-test "a rewritten past release fails check" {
-    mut s = schema_v2()
-    // Quietly drop release 1's last Add, as if it had never shipped.
-    mut first = s.history[0].clone()
-    first.changes.pop()
-    s.history.set(0, first)
-    assert schema_error(s).contains("does not give the current shape")
-}
+// ─── A new release has to keep old files loading ──────────────
 
 test "a change the old shape can't take is refused" {
     mut s = package_schema()
@@ -238,52 +181,6 @@ test "a change the old shape can't take is refused" {
     assert schema_error(s).contains("every older file would stop loading")
 }
 
-// ─── A schema with a retype and a duration ──────────────────────
-
-// release 1: timeout is an integer of seconds
-// release 2: timeout is a duration string
-func timeout_schema() -> Schema {
-    let r1 = Release {
-        version: 1,
-        changes: Vec<Change>.from([Change.Add { at: root(), field: defaulted("timeout", Ty.Int, Value.Int(30)) }]),
-    }
-    let r2 = Release {
-        version: 2,
-        changes: Vec<Change>.from([Change.Retype {
-            at: root(),
-            name: "timeout",
-            from: Ty.Int,
-            to: Ty.Duration,
-            mapping: Vec<ValuePair>.from([
-                ValuePair { before: Value.Int(30), after: Value.Str("30s") },
-                ValuePair { before: Value.Int(60), after: Value.Str("1m") },
-            ]),
-        }]),
-    }
-    let history = Vec<Release>.from([r1, r2])
-    let shape = replay_shape(history) catch e => panic(e.message())
-    return Schema { name: "svc", shape, history }
-}
-
-test "a retype maps old values through the table" {
-    let tree = load("schema = \"svc@1\"\ntimeout = 60\n", timeout_schema()) catch e => panic(e.message())
-    assert str_at(tree, "timeout") == "1m"
-}
-
-test "a value with no mapping is an error, not a guess" {
-    assert load_error("schema = \"svc@1\"\ntimeout = 45\n", timeout_schema()).contains("no equivalent in the newer version")
-}
-
-test "a duration is checked" {
-    assert load_error("schema = \"svc@2\"\ntimeout = \"30 seconds\"\n", timeout_schema()).contains("is not a duration")
-    assert load_error("schema = \"svc@2\"\ntimeout = \"250ms\"\n", timeout_schema()) == ""
-}
-
-test "a retype runs backward through the same table" {
-    let out = migrated("schema = \"svc@2\"\ntimeout = \"1m\"\n", timeout_schema(), 1)
-    assert out.contains("timeout = 60")
-    assert migrate_error("schema = \"svc@2\"\ntimeout = \"5m\"\n", timeout_schema(), 1).contains("no equivalent in the older version")
-}
 
 // ─── The full example from struct.build ─────────────────────────
 

@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "schema"
+version = "0.1.0"
+description = "TOML config files checked against a versioned schema with an append-only history"
+license = "MIT OR Apache-2.0"

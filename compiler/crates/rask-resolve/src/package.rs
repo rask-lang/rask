@@ -231,16 +231,36 @@ fn parse_rk_files(
     next_file_id: &mut u16,
     paths: Vec<PathBuf>,
 ) -> Result<Vec<SourceFile>, PackageError> {
+    let mut sources = Vec::new();
+    let mut read_errors = Vec::new();
+    for file_path in paths {
+        match fs::read_to_string(&file_path) {
+            Ok(s) => sources.push((file_path, s)),
+            Err(e) => read_errors.push(PackageError::Io(e, file_path)),
+        }
+    }
+    let parsed = parse_rk_sources(next_id, next_file_id, sources);
+    match (parsed, read_errors.len()) {
+        (Ok(files), 0) => Ok(files),
+        (Ok(_), 1) => Err(read_errors.pop().unwrap()),
+        (Ok(_), _) => Err(PackageError::Multiple(read_errors)),
+        (Err(e), 0) => Err(e),
+        (Err(e), _) => {
+            read_errors.push(e);
+            Err(PackageError::Multiple(read_errors))
+        }
+    }
+}
+
+/// Lex and parse sources already in hand, each with the path it reports as.
+fn parse_rk_sources(
+    next_id: &mut u32,
+    next_file_id: &mut u16,
+    sources: Vec<(PathBuf, String)>,
+) -> Result<Vec<SourceFile>, PackageError> {
     let mut source_files = Vec::new();
     let mut file_errors = Vec::new();
-    for file_path in paths.into_iter() {
-        let source = match fs::read_to_string(&file_path) {
-            Ok(s) => s,
-            Err(e) => {
-                file_errors.push(PackageError::Io(e, file_path));
-                continue;
-            }
-        };
+    for (file_path, source) in sources {
 
         // Same id the parser is about to use — token spans have to agree with
         // the composite spans the parser builds, or half the diagnostics in this
@@ -752,6 +772,34 @@ impl PackageRegistry {
     }
 
     /// Add a package manually (for testing).
+    /// Register a package whose sources the caller holds in memory, importing
+    /// `imports` (packages already registered). How the toolchain checks Rask
+    /// it ships inside its own binary, like the manifest loader and the
+    /// schema library under it. An external package gets its declarations
+    /// qualified, as a fetched dependency does.
+    pub fn add_source_package(
+        &mut self,
+        name: &str,
+        sources: Vec<(PathBuf, String)>,
+        imports: Vec<PackageId>,
+        is_external: bool,
+    ) -> Result<PackageId, PackageError> {
+        let files = parse_rk_sources(&mut self.next_node_id, &mut self.next_file_id, sources)?;
+        let package = Package {
+            id: PackageId(0),
+            name: name.to_string(),
+            path: vec![name.to_string()],
+            root_dir: PathBuf::from(format!("<{name}>")),
+            files,
+            imports,
+            manifest: None,
+            build_decls: Vec::new(),
+            is_external,
+            registry_source: None,
+        };
+        Ok(self.register_package(package, vec![name.to_string()]))
+    }
+
     #[cfg(test)]
     pub fn add_package(&mut self, name: String, path: Vec<String>, root_dir: std::path::PathBuf) -> PackageId {
         let package = Package {

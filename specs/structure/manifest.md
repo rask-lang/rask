@@ -106,7 +106,7 @@ Includes, variables, interpolation, conditionals and computed values. Each turns
 
 ## In the Toolchain
 
-The loader is written in Rask (`compiler/crates/rask-manifest/loader/`): the TOML reader, the schema and its history as Rask data, checking, migration and the JSON Schema export. The compiler embeds those sources and runs them on its interpreter, so there is one implementation, and it is Rask. Package discovery calls it through a hook the `rask` binary installs at startup.
+The loader is written in Rask, as two packages. `libs/schema/` is the general part: the TOML reader, schemas with history, checking, migration and the JSON Schema export, usable for any config file. `compiler/crates/rask-manifest/loader/` holds the `rask-package` schema and the functions the compiler calls, and depends on `schema`. The compiler embeds both and runs them on its interpreter, as a package and its dependency, so there is one implementation, and it is Rask. Package discovery calls it through a hook the `rask` binary installs at startup.
 
 That costs a type-check of the loader per process and an interpreter run per manifest. I took that over a second implementation in Rust: the loader is a real Rask program the toolchain depends on, which keeps the language honest, and speed isn't the constraint yet.
 
@@ -128,7 +128,7 @@ That costs a type-check of the loader per process and an interpreter run per man
 
 | Feature | Status |
 |---------|--------|
-| TOML reader, schema, history check, load, migrate, JSON Schema export | Implemented, in Rask (`compiler/crates/rask-manifest/loader/`) |
+| TOML reader, schema, history check, load, migrate, JSON Schema export | Implemented, in Rask (`libs/schema/`, with the `rask-package` schema in `compiler/crates/rask-manifest/loader/`) |
 | Toolchain reads `rask.toml` | Implemented |
 | `rask migrate`, `rask manifest check`, `rask manifest json-schema` | Implemented |
 | Format-preserving `rask add` / `rask remove` | Implemented (line-based) |

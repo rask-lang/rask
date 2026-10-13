@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Step 5 of loading: the checked tree onto Rask types. The tree already
-// passed the shape check, so a missing or mistyped value here is a bug in
-// this file, not in the manifest.
+// The checked tree onto Rask types. The tree already passed the shape
+// check, so a missing or mistyped value here is a bug in this file, not in
+// the manifest.
 //
-// Written by hand for the prototype. It restates the shape in
-// package_schema.rk; if the schema were written as Rask types, this half
-// would come for free.
+// Written by hand: it restates the shape in package_schema.rk.
+
+import schema.{Entry, LoadError, load, table_at, str_at, bool_at, int_at, pairs_at, strs_at}
 
 public struct Package {
     public name: string
@@ -96,52 +96,6 @@ public func load_package(text: string) -> Package or LoadError {
     }
 }
 
-func table_at(entries: Vec<Entry>, key: string) -> Vec<Entry> {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Table(inner) {
-            return inner.clone()
-        }
-    }
-    return Vec.new()
-}
-
-func str_at(entries: Vec<Entry>, key: string) -> string? {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Str(s) {
-            return s
-        }
-    }
-    return none
-}
-
-func bool_at(entries: Vec<Entry>, key: string) -> bool? {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Bool(b) {
-            return b
-        }
-    }
-    return none
-}
-
-func int_at(entries: Vec<Entry>, key: string) -> i64? {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Int(n) {
-            return n
-        }
-    }
-    return none
-}
-
-func pairs_at(entries: Vec<Entry>, key: string) -> Vec<(string, string)> {
-    mut out = Vec<(string, string)>.new()
-    for e in table_at(entries, key) {
-        if e.value is Str(s) {
-            out.push((e.key, s))
-        }
-    }
-    return out
-}
-
 func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
     mut out = Vec<ExclusiveFeature>.new()
     for e in table_at(tree, "exclusive-features") {
@@ -159,20 +113,6 @@ func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
                 }
             }
             out.push(ExclusiveFeature { name: e.key, default: str_at(g, "default") ?? "", options })
-        }
-    }
-    return out
-}
-
-func strs_at(entries: Vec<Entry>, key: string) -> Vec<string> {
-    mut out = Vec<string>.new()
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Array(items) {
-            for item in items {
-                if item is Str(s) {
-                    out.push(s)
-                }
-            }
         }
     }
     return out

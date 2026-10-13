@@ -103,26 +103,40 @@ fn json_schema_names_the_tables() {
     assert!(s.contains("\"dev-dependencies\""));
 }
 
-/// The loader's own `test` blocks, on the interpreter that runs it.
+fn run_rask_tests(result: &rask_compiler::CheckResult) -> Vec<String> {
+    let mut interp = interpreter_for(result);
+    let results = interp.run_tests(&rask_compiler::program_decls(&result.decls), None);
+    assert!(results.len() > 10, "only {} tests ran", results.len());
+    results.iter().filter(|r| !r.passed).map(|r| r.name.clone()).collect()
+}
+
+/// The `manifest` package's own `test` blocks, on the interpreter that runs
+/// it, with `schema` as its dependency.
 #[test]
 fn the_loaders_rask_tests_pass() {
-    let mut files: Vec<(PathBuf, String)> = SOURCES
-        .iter()
-        .map(|(n, t)| (PathBuf::from(*n), t.to_string()))
-        .collect();
-    files.push((PathBuf::from("tests.rk"), include_str!("../loader/tests.rk").to_string()));
-    let config = rask_compiler::CompilerConfig {
-        cfg: rask_comptime::CfgConfig::from_host("debug", vec![]),
-    };
-    let out = rask_compiler::check_loaded(&files, &config);
+    let result = check_packages(&[], &[("tests.rk", include_str!("../loader/tests.rk"))]).unwrap();
+    let failed = run_rask_tests(&result);
+    assert!(failed.is_empty(), "failed: {failed:?}");
+}
+
+/// The `schema` library's own `test` blocks, with the library as the root.
+#[test]
+fn the_schema_librarys_rask_tests_pass() {
+    let mut registry = rask_resolve::PackageRegistry::new();
+    let root = registry
+        .add_source_package(
+            "schema",
+            sources("libs/schema", LIBRARY, &[("tests.rk", include_str!("../../../../libs/schema/tests.rk"))]),
+            vec![],
+            false,
+        )
+        .unwrap();
+    let all_decls: Vec<Decl> = registry.get(root).unwrap().all_decls().cloned().collect();
+    let mut ctx = rask_compiler::PackageContext { registry, root_id: root, all_decls };
+    let config = rask_compiler::CompilerConfig { cfg: rask_comptime::CfgConfig::from_host("debug", vec![]) };
+    let out = rask_compiler::check_package(&mut ctx, &config);
     assert!(!out.has_errors(), "{:?}", out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
-    let result = out.result.unwrap();
-    let mut interp = rask_interp::Interpreter::new();
-    interp.inject_cfg(&rask_comptime::CfgConfig::from_host("debug", vec![]));
-    interp.adopt_checker_tables(&result.typed);
-    let results = interp.run_tests(&rask_compiler::program_decls(&result.decls), None);
-    assert!(results.len() > 30);
-    let failed: Vec<_> = results.iter().filter(|r| !r.passed).map(|r| r.name.clone()).collect();
+    let failed = run_rask_tests(&out.result.unwrap());
     assert!(failed.is_empty(), "failed: {failed:?}");
 }
 

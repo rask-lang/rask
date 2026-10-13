@@ -1547,6 +1547,7 @@ dependencies = [
  "rask-ast",
  "rask-compiler",
  "rask-comptime",
+ "rask-diagnostics",
  "rask-interp",
  "rask-resolve",
  "serde_json",

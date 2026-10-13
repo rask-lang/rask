@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// The TOML a manifest needs, read into a tree with no schema involved.
+// The TOML a config file needs, read into a tree with no schema involved.
 //
 // Supported: comments, bare/quoted/dotted keys, [table] headers, basic and
 // literal strings, integers, booleans, arrays, inline tables. Rejected with
-// a message: floats, dates, multi-line strings, [[array-of-tables]]. A
-// manifest has no use for them, and saying so beats half-reading them.
+// a message: floats, dates, multi-line strings, [[array-of-tables]]. No
+// field type reads them yet, and saying so beats half-reading them.
 //
 // Well-formedness, checked here because no schema can see it later:
 // quoted keys must be NFC, raw bidi controls are rejected anywhere in the
@@ -93,7 +93,7 @@ public func parse_toml(input: string) -> Vec<Entry> or TomlError {
         if r.peek() == LBRACKET {
             r.pos = r.pos + 1
             if r.peek() == LBRACKET {
-                return r.error("[[array of tables]] is not supported in a manifest; use a table of tables")
+                return r.error("[[array of tables]] isn't supported; use a table of tables")
             }
             r.skip_spaces()
             let path = try r.parse_key()
@@ -372,7 +372,7 @@ extend Reader {
         }
         let next = self.peek()
         if next == DOT || next == 101 || next == 69 || next == 58 || next == MINUS {
-            return self.error("floats and dates are not supported in a manifest")
+            return self.error("floats and dates aren't supported")
         }
         if negative {
             return Value.Int(0 - n)
@@ -449,7 +449,7 @@ extend Reader {
     func parse_string(mutate self) -> string or TomlError {
         let quote = self.peek()
         if self.input[self.pos..].starts_with("\"\"\"") || self.input[self.pos..].starts_with("'''") {
-            return self.error("multi-line strings are not supported in a manifest")
+            return self.error("multi-line strings aren't supported")
         }
         self.pos = self.pos + 1
         mut out = StringBuilder.new()
@@ -548,6 +548,70 @@ public func find_entry(entries: Vec<Entry>, key: string) -> usize? {
         i = i + 1
     }
     return none
+}
+
+// Typed reads of a checked tree. A key that's missing or holds another
+// kind of value reads as absent: after the shape check, that only happens
+// for optional fields.
+
+public func table_at(entries: Vec<Entry>, key: string) -> Vec<Entry> {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Table(inner) {
+            return inner.clone()
+        }
+    }
+    return Vec.new()
+}
+
+public func str_at(entries: Vec<Entry>, key: string) -> string? {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Str(s) {
+            return s
+        }
+    }
+    return none
+}
+
+public func bool_at(entries: Vec<Entry>, key: string) -> bool? {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Bool(b) {
+            return b
+        }
+    }
+    return none
+}
+
+public func int_at(entries: Vec<Entry>, key: string) -> i64? {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Int(n) {
+            return n
+        }
+    }
+    return none
+}
+
+public func pairs_at(entries: Vec<Entry>, key: string) -> Vec<(string, string)> {
+    mut out = Vec<(string, string)>.new()
+    for e in table_at(entries, key) {
+        if e.value is Str(s) {
+            out.push((e.key, s))
+        }
+    }
+    return out
+}
+
+public func strs_at(entries: Vec<Entry>, key: string) -> Vec<string> {
+    mut out = Vec<string>.new()
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Array(items) {
+            for item in items {
+                if item is Str(s) {
+                    out.push(s)
+                }
+            }
+        }
+    }
+    return out
 }
 
 // ─── Writing ─────────────────────────────────────────────────────
