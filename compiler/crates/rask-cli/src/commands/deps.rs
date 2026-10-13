@@ -168,9 +168,11 @@ fn plan_remove(content: &str, name: &str) -> Result<String, String> {
 }
 
 fn declares(pkg: &rask_ast::decl::PackageDecl, name: &str) -> bool {
+    let options = pkg.features.iter().flat_map(|f| f.options.iter()).flat_map(|o| o.deps.iter());
     pkg.deps
         .iter()
         .chain(pkg.features.iter().flat_map(|f| f.deps.iter()))
+        .chain(options)
         .any(|d| d.name == name)
 }
 
@@ -264,6 +266,8 @@ fn dep_named_by(path: &[String]) -> Option<&str> {
     let at = match path {
         [t, ..] if is_table(t) => 1,
         [f, _, t, ..] if f == "features" && is_table(t) => 3,
+        // `[exclusive-features.rt.options.tokio]` holds that option's deps.
+        [e, _, o, _, ..] if e == "exclusive-features" && o == "options" => 4,
         _ => return None,
     };
     path.get(at).map(String::as_str)
@@ -621,4 +625,28 @@ mod tests {
         let err = plan_remove(&broken, "http").unwrap_err();
         assert!(err.contains("doesn't load, so nothing was removed") && err.contains("package.version"), "{err}");
     }
+
+    const GROUPS: &str = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[exclusive-features.rt]\ndefault = \"tokio\"\n\n[exclusive-features.rt.options.tokio]\ntokio = { registry = \"^1\" }  # the default\n\n[exclusive-features.rt.options.smol]\nsmol = { registry = \"^2\" }\n";
+
+    #[test]
+    fn add_refuses_a_name_an_exclusive_option_declares() {
+        let err = plan_add(Some(GROUPS), "a", "tokio", Some("^1"), false, None, None).unwrap_err();
+        assert!(err.contains("\"tokio\" is already in rask.toml"), "{err}");
+    }
+
+    #[test]
+    fn remove_reaches_a_dependency_in_an_exclusive_option() {
+        let out = plan_remove(GROUPS, "smol").unwrap();
+        assert!(!out.contains("smol = "), "{out}");
+        assert!(out.contains("[exclusive-features.rt.options.smol]\n"), "the option itself stays: {out}");
+        assert!(out.contains("tokio = { registry = \"^1\" }  # the default"), "{out}");
+    }
+
+    #[test]
+    fn remove_says_so_for_an_option_written_inline() {
+        let text = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[exclusive-features.rt]\ndefault = \"tokio\"\noptions.tokio = { tokio = { registry = \"^1\" } }\n";
+        let err = plan_remove(text, "tokio").unwrap_err();
+        assert!(err.contains("can't edit line by line"), "{err}");
+    }
+
 }
