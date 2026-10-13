@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Step 5 of loading: the checked tree onto Rask types. The tree already
-// passed the shape check, so a missing or mistyped value here is a bug in
-// this file, not in the manifest.
+// The checked tree onto Rask types. The tree already passed the shape
+// check, so a missing or mistyped value here is a bug in this file, not in
+// the manifest.
 //
-// Written by hand for the prototype. It restates the shape in
-// package_schema.rk; if the schema were written as Rask types, this half
-// would come for free.
+// Written by hand: it restates the shape in package_schema.rk.
+
+import schema.{Entry, LoadError, load, table_at, str_at, bool_at, int_at, pairs_at, strs_at, quoted_list}
 
 public struct Package {
     public name: string
@@ -78,7 +78,7 @@ public struct Profile {
 public func load_package(text: string) -> Package or LoadError {
     let tree = try load(text, package_schema())
     let pkg = table_at(tree, "package")
-    return Package(
+    let built = Package(
         name: str_at(pkg, "name") ?? ""
         version: str_at(pkg, "version") ?? ""
         description: str_at(pkg, "description")
@@ -94,52 +94,133 @@ public func load_package(text: string) -> Package or LoadError {
         exclusive_features: exclusive_at(tree)
         profiles: profiles_at(tree)
     )
+    let errors = rule_errors(built)
+    if !errors.is_empty() {
+        return LoadError(what: errors.join("\n"))
+    }
+    return built
 }
 
-func table_at(entries: Vec<Entry>, key: string) -> Vec<Entry> {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Table(inner) {
-            return inner.clone()
+// ─── Rules the shape can't state ────────────────────────────────
+// Each needs only this file, so it's checked here with the rest of the file
+// rather than at build time (struct.build F5, F6, FG2 and the profile
+// ranges). They run once the shape holds.
+
+func rule_errors(p: Package) -> Vec<string> {
+    mut errors = Vec<string>.new()
+    check_enables(p, mutate errors)
+    check_one_entry_per_dep(p, mutate errors)
+    for g in p.exclusive_features {
+        mut names = Vec<string>.new()
+        for o in g.options {
+            names.push(o.name)
+        }
+        if !names.contains(g.default) {
+            errors.push("exclusive-features.{g.name}.default: `{g.default}` is not one of its options ({quoted_list(names)})")
         }
     }
-    return Vec.new()
+    for pr in p.profiles {
+        if pr.codegen_units? as n {
+            if n < 1 || n > 256 {
+                errors.push("profiles.{pr.name}.codegen-units: {n} is outside 1 to 256")
+            }
+        }
+    }
+    return errors
 }
 
-func str_at(entries: Vec<Entry>, key: string) -> string? {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Str(s) {
-            return s
+// F6: `enables` names a declared feature, and no chain of them comes back
+// around.
+func check_enables(p: Package, mutate errors: Vec<string>) {
+    mut names = Vec<string>.new()
+    for f in p.features {
+        names.push(f.name)
+    }
+    for g in p.exclusive_features {
+        names.push(g.name)
+    }
+    for f in p.features {
+        for n in f.enables {
+            if !names.contains(n) {
+                errors.push("features.{f.name}.enables: `{n}` is not a feature")
+            }
         }
     }
-    return none
+    mut done = Vec<string>.new()
+    for f in p.features {
+        mut path = Vec<string>.new()
+        walk_enables(f.name, p.features, mutate path, mutate done, mutate errors)
+    }
 }
 
-func bool_at(entries: Vec<Entry>, key: string) -> bool? {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Bool(b) {
-            return b
+func walk_enables(name: string, features: Vec<Feature>, mutate path: Vec<string>, mutate done: Vec<string>, mutate errors: Vec<string>) {
+    if path.contains(name) {
+        mut cycle = Vec<string>.new()
+        mut on = false
+        for n in path {
+            if n == name {
+                on = true
+            }
+            if on {
+                cycle.push(n)
+            }
+        }
+        cycle.push(name)
+        errors.push("features.{name}.enables: features enable each other in a circle: {cycle.join(" -> ")}")
+        return
+    }
+    if done.contains(name) {
+        return
+    }
+    done.push(name)
+    for f in features {
+        if f.name == name {
+            path.push(name)
+            for next in f.enables {
+                walk_enables(next, features, mutate path, mutate done, mutate errors)
+            }
+            path.pop()
         }
     }
-    return none
 }
 
-func int_at(entries: Vec<Entry>, key: string) -> i64? {
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Int(n) {
-            return n
+// D3 and F5: a name gets one entry across every dependency table in the
+// file, whatever its scope. `import x` has to lead to one package, and two
+// entries are either redundant (a [dependencies] entry is already there in
+// tests) or two different packages under one name. A second feature gate
+// goes through `feature = "other"` on the one entry. An exclusive group's
+// options are alternatives, only one of them ever on, so each may name it.
+func check_one_entry_per_dep(p: Package, mutate errors: Vec<string>) {
+    // (name, where it was first declared, the feature it belongs to or "")
+    mut seen = Vec<(string, string, string)>.new()
+    mut tables = Vec<(string, string, Vec<Dep>)>.new()
+    tables.push(("dependencies", "", p.dependencies.clone()))
+    tables.push(("dev-dependencies", "", p.dev_dependencies.clone()))
+    tables.push(("build-dependencies", "", p.build_dependencies.clone()))
+    for f in p.features {
+        tables.push(("features.{f.name}.dependencies", f.name, f.dependencies.clone()))
+        tables.push(("features.{f.name}.dev-dependencies", f.name, f.dev_dependencies.clone()))
+        tables.push(("features.{f.name}.build-dependencies", f.name, f.build_dependencies.clone()))
+    }
+    for (place, feature, deps) in tables {
+        for d in deps {
+            mut first = ""
+            mut first_feature = ""
+            for (name, at, owner) in seen {
+                if name == d.name && first.is_empty() {
+                    first = at
+                    first_feature = owner
+                }
+            }
+            if first.is_empty() {
+                seen.push((d.name, place, feature))
+            } else if !feature.is_empty() && !first_feature.is_empty() && feature != first_feature {
+                errors.push("{place}.{d.name}: `{d.name}` is already gated by feature `{first_feature}`; gate this one on it with `feature = \"{first_feature}\"` instead")
+            } else {
+                errors.push("{place}.{d.name}: `{d.name}` is already declared in [{first}]; a name gets one entry")
+            }
         }
     }
-    return none
-}
-
-func pairs_at(entries: Vec<Entry>, key: string) -> Vec<(string, string)> {
-    mut out = Vec<(string, string)>.new()
-    for e in table_at(entries, key) {
-        if e.value is Str(s) {
-            out.push((e.key, s))
-        }
-    }
-    return out
 }
 
 func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
@@ -159,20 +240,6 @@ func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
                 }
             }
             out.push(ExclusiveFeature(name: e.key, default: str_at(g, "default") ?? "", options))
-        }
-    }
-    return out
-}
-
-func strs_at(entries: Vec<Entry>, key: string) -> Vec<string> {
-    mut out = Vec<string>.new()
-    if find_entry(entries, key)? as i {
-        if entries[i].value is Array(items) {
-            for item in items {
-                if item is Str(s) {
-                    out.push(s)
-                }
-            }
         }
     }
     return out

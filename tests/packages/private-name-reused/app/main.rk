@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+
+// libpkg keeps a `helper` of its own. This one is the program's, and calling
+// it was reported as "`helper` is private to `libpkg`": the check matched
+// uses by name alone, so any `helper` counted as libpkg's.
+func helper() -> i64 {
+    return 2
+}
+
+func main() {
+    println("{helper()} {libpkg.api()}")
+}

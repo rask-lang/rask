@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg.{Change, Item, doubled, size}
+
+// A literal of a dependency's variant with named fields kept the enum's
+// unprefixed name, so the program failed to type-check.
+func main() {
+    let c = Change.Add(at: Vec.new(), item: Item(v: 3))
+    println("{size(c)} {size(doubled(c))}")
+}

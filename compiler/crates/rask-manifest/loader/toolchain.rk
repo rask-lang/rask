@@ -6,6 +6,7 @@
 
 import json
 import json.JsonValue
+import schema.{LoadError, migrate, check_history, json_schema}
 
 // {"ok": <package>} or {"error": "<every problem, one per line>"}.
 // The package has the shape rask-ast's PackageDecl has, so the compiler

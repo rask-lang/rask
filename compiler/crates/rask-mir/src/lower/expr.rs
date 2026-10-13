@@ -3469,59 +3469,50 @@ impl<'a> MirLowerer<'a> {
             if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
                 return Ok((op, ty));
             }
-            // Check for enum variant constructor: "EnumName.VariantName { ... }".
-            // The enum is the segment before the variant — a module in front,
-            // `bits.BinaryParseError.UnexpectedEnd { … }`, only says where it
-            // lives (#1461).
-            let (result_ty, layout, enum_variant_info) = if let Some((enum_path, variant_name)) = name.rsplit_once('.') {
-                let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
-                // A generic enum's instance has its own layout: `Slot<string>`'s
-                // `Pair` holds two 16-byte strings where the bare `Slot` has
-                // word-sized placeholders. The checker's type for this node
-                // names the instance, as it does for `Slot.Full(x)` (#1473).
-                let found = self
-                    .ctx
-                    .generic_instance_enum(self.ctx.lookup_raw_type(expr.id))
-                    .or_else(|| self.ctx.find_enum(enum_name));
-                if let Some((idx, el)) = found {
-                    let variant_info = el.variants.iter().find(|v| v.name == variant_name)
-                        .map(|v| (el.tag_offset, v.tag, v.payload_offset, v.fields.clone()));
-                    (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, variant_info)
-                } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
-                    (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
-                } else if let Some((idx, sl)) = self.ctx.find_struct(variant_name) {
-                    // `http.Response { … }` — the struct reached through the
-                    // module that exports it, which is what IM1 asks for.
-                    // Layouts are filed under the bare name, so the whole
-                    // spelling misses and the literal fell through to a bare
-                    // pointer with no layout: every field store went through
-                    // an address nobody had written, and the program
-                    // segfaulted (#1113, the same last-segment rule as #1097
-                    // and #1108).
-                    (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
-                } else {
-                    (MirType::Ptr, None, None)
+            // The checker's type for this node is what the literal builds. The
+            // written name can't say: `Shape.Circle { … }` is a variant and
+            // `http.Response { … }` a struct, and guessing which from the dots
+            // fell through to a bare pointer whenever the guess missed (#1113,
+            // #1461), which segfaulted at the first field store. An enum's literal names one
+            // of its variants, and that's the name's last segment.
+            //
+            // A generic type's instance has a layout of its own: `Slot<string>`'s
+            // `Pair` holds two 16-byte strings where the bare `Slot` has
+            // word-sized placeholders (#781, #1473).
+            let ty = self.ctx.lookup_raw_type(expr.id);
+            let declared = match ty {
+                Some(rask_types::Type::Named(id)) | Some(rask_types::Type::Generic { base: id, .. }) => {
+                    self.ctx.type_names.get(id).cloned()
                 }
-            } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                _ => None,
+            };
+            let (result_ty, layout, enum_variant_info) = if let Some((idx, el)) = self
+                .ctx
+                .generic_instance_enum(ty)
+                .or_else(|| declared.as_deref().and_then(|n| self.ctx.find_enum(n)))
+            {
+                let variant_name = name.rsplit_once('.').map_or(name, |(_, v)| v);
+                let Some(v) = el.variants.iter().find(|v| v.name == variant_name) else {
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "`{name} {{ … }}` builds `{}`, which has no variant `{variant_name}`",
+                        el.name
+                    )));
+                };
+                let info = (el.tag_offset, v.tag, v.payload_offset, v.fields.clone());
+                (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, Some(info))
+            } else if let Some((idx, sl)) = self
+                .ctx
+                .generic_instance_struct(ty)
+                .or_else(|| declared.as_deref().and_then(|n| self.ctx.find_struct(n)))
+            {
                 (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
             } else {
-                (MirType::Ptr, None, None)
-            };
-
-            // A generic struct with an inline aggregate type argument has a
-            // layout of its own, and the written name doesn't identify it —
-            // `One { only: Big { … } }` says only "One". The checker's type for
-            // this node carries the instantiation, so that picks the layout
-            // (#781).
-            let (result_ty, layout) = match self
-                .ctx
-                .generic_instance_struct(self.ctx.lookup_raw_type(expr.id))
-            {
-                Some((idx, sl)) => (
-                    MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)),
-                    Some(sl),
-                ),
-                None => (result_ty, layout),
+                // Without a layout every field store goes through an address
+                // nobody wrote, so this is a compiler bug to report, not
+                // something to lower and segfault on.
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "`{name} {{ … }}` has no layout to build into; the checker typed it as {ty:?}"
+                )));
             };
 
             let result_local = self.builder.alloc_temp(result_ty.clone());

@@ -59,7 +59,7 @@ json = { registry = "^1.5" }
 |------|-------------|
 | **D1: Semver ranges** | Version strings use semver: `"^2.0"` (compatible), `">=1.5"` (minimum), `"=1.0.0"` (exact) |
 | **D2: One source** | A dependency names exactly one of `registry`, `path` or `git` (`struct.manifest/MF5`). `rev` and `branch` belong to `git` |
-| **D3: No duplicates** | The same name twice in one table is an error (`struct.manifest/WF4`) |
+| **D3: No duplicates** | A name gets one entry across every dependency table, top-level and feature alike: `import x` has to lead to one package. An exclusive group's options are alternatives, so each may name it |
 | **D4: Scopes** | `dev-dependencies` for test deps, `build-dependencies` for build script deps. Any other table is an error (`struct.manifest/MF3`) |
 | **D4a: A dev dep goes where the test blocks go** | A release build strips `test` blocks (`std.testing/T1`), so it links no dev dependency and drops the now-dead imports with them. Every other build keeps the test blocks and links the deps they need. A use that survives the strip — ordinary code reaching a dev dep — names the scope and fails |
 | **D4b: Scopes don't inherit** | Only the root's scoped deps are linked. A dependency's own dev deps belong to its own test run; pulling them in would link half the tree to run one test |
@@ -148,7 +148,7 @@ openssl = { registry = "^3.0" }
 ring    = { registry = "^0.17", feature = "crypto" }
 
 [features.full]
-enables = ["ssl", "logging"]
+enables = ["ssl", "verbose"]
 
 [features.verbose]   # code-only flag
 ```
@@ -437,11 +437,11 @@ All commands live under the `rask` binary. No separate tools.
 
 | Rule | Description |
 |------|-------------|
-| **AD1: Registry lookup** | Fetches latest compatible version from registry |
+| **AD1: Registry lookup** | Without a version, asks the registry for its newest stable release and writes `^` of it. Pre-releases are only added when named exactly |
 | **AD2: Preserves formatting** | Inserts the dependency with a comment- and format-preserving TOML edit; nothing else in the file changes |
-| **AD3: Dedup check** | Error if dep already exists (suggest `rask update <pkg>`) |
-| **AD4: Lock update** | Runs resolution and updates `rask.lock` after adding |
-| **AD5: Capability prompt** | Prompts if dep requires capabilities — auto-generates `allow` |
+| **AD3: Dedup check** | Error if the name is already a dependency anywhere in the file (suggest `rask update`) |
+| **AD4: Lock update** | Runs resolution and updates `rask.lock` after adding. If that fails, `rask.toml` is put back as it was |
+| **AD5: Capability prompt** | Prompts if the registry says the dep uses capabilities, and writes `allow` on yes. Without a terminal to ask on, `--allow` has to name them |
 
 ```
 $ rask add http
@@ -777,6 +777,8 @@ security-framework = { registry = "^2.0", target = "macos" }
 [features.full]
 enables = ["ssl", "logging"]
 
+[features.logging]
+
 [profiles.staging]
 inherits = "release"
 debug-info = true
@@ -807,7 +809,7 @@ func build(ctx: BuildContext) -> void or Error {
 | Lock file system (LK1-LK7) | Implemented |
 | Feature resolution (F1-F6, FG1-FG6) | Implemented |
 | Dependency scopes (D4, D4a, D4b) | Implemented |
-| `rask add`/`remove` (AD1-AD4, RM1-RM2) | Implemented |
+| `rask add`/`remove` (AD1-AD5, RM1-RM2) | Implemented. Without a terminal, AD5's prompt becomes an error asking for `--allow` |
 | `rask init` project scaffolding | Implemented |
 | `rask fetch` dependency validation | Implemented |
 | `rask update` lock regeneration | Implemented |

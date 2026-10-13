@@ -40,8 +40,10 @@ pub fn cmd_vendor(path: &str, verbose: bool) {
     }
 
     // Collect registry packages from lock file
+    // The lock requires a checksum on every registry entry, so this keeps them all.
     let registry_pkgs: Vec<_> = lockfile.packages.iter()
         .filter(|p| p.source.starts_with("registry+"))
+        .filter_map(|p| Some((p, p.checksum.as_deref()?)))
         .collect();
 
     if registry_pkgs.is_empty() {
@@ -67,14 +69,14 @@ pub fn cmd_vendor(path: &str, verbose: bool) {
     let mut vendored = 0;
     let mut errors = 0;
 
-    for pkg in &registry_pkgs {
+    for &(pkg, checksum) in &registry_pkgs {
         let pkg_vendor_dir = vendor_dir.join(format!("{}-{}", pkg.name, pkg.version));
 
         // Check if already vendored with correct checksum (VD2)
         let checksum_file = pkg_vendor_dir.join(".checksum");
         if pkg_vendor_dir.is_dir() && checksum_file.is_file() {
             if let Ok(stored) = std::fs::read_to_string(&checksum_file) {
-                if stored.trim() == pkg.checksum {
+                if stored.trim() == checksum {
                     if verbose {
                         println!("  {} \"{}\" {} (up to date)", "Vendor".dimmed(), pkg.name, pkg.version);
                     }
@@ -111,7 +113,7 @@ pub fn cmd_vendor(path: &str, verbose: bool) {
         }
 
         // Write checksum file (VD2)
-        if let Err(e) = std::fs::write(&checksum_file, &pkg.checksum) {
+        if let Err(e) = std::fs::write(&checksum_file, checksum) {
             eprintln!("{}: failed to write checksum for \"{}\" {}: {}",
                 output::error_label(), pkg.name, pkg.version, e);
             errors += 1;
