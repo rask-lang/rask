@@ -231,9 +231,16 @@ pub fn compute_checksum(dir: &Path) -> String {
     let mut files: BTreeMap<PathBuf, Vec<u8>> = BTreeMap::new();
     collect_rk_files_recursive(dir, dir, &mut files);
 
+    // Each file as its relative path with `/` between components (so every
+    // OS agrees), a zero byte, the content's length, then the content. The
+    // terminator and the length keep one file's bytes from reading as the
+    // next one's name: an empty `a.rk` beside `b.rk` holding `z` used to hash
+    // like a lone `a.rk` holding `b.rkz`.
     for (rel_path, content) in &files {
-        // Hash relative path (not absolute) for reproducibility across machines
-        hasher.update(rel_path.to_string_lossy().as_bytes());
+        let parts: Vec<String> = rel_path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        hasher.update(parts.join("/").as_bytes());
+        hasher.update([0u8]);
+        hasher.update((content.len() as u64).to_le_bytes());
         hasher.update(content);
     }
 
@@ -820,6 +827,16 @@ mod tests {
 
         write_files(&dir, &[("extra/new.rk", "")]);
         assert_ne!(compute_checksum(&dir), base, "an added file, even empty, changes it");
+    }
+
+    #[test]
+    fn checksum_keeps_file_boundaries() {
+        let tmp = TempDir::new().unwrap();
+        let two = tmp.path().join("two");
+        write_files(&two, &[("a.rk", ""), ("b.rk", "z")]);
+        let one = tmp.path().join("one");
+        write_files(&one, &[("a.rk", "b.rkz")]);
+        assert_ne!(compute_checksum(&two), compute_checksum(&one));
     }
 
     #[test]
