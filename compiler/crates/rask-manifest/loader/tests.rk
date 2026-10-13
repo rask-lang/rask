@@ -210,3 +210,549 @@ test "the toolchain gets JSON it can read field for field" {
     let bad = toolchain_load("schema = \"rask-package@1\"\n[package]\nname = \"a\"\n")
     assert bad.contains("missing required key `version`")
 }
+
+// ─── Reading a package: helpers ─────────────────────────────────
+
+func pkg_of(text: string) -> Package {
+    return load_package(text) catch e => panic(e.message())
+}
+
+func dep_in(deps: Vec<Dep>, name: string) -> Dep {
+    for d in deps {
+        if d.name == name {
+            return d.clone()
+        }
+    }
+    panic("no dependency `{name}`")
+}
+
+func feature_in(features: Vec<Feature>, name: string) -> Feature {
+    for f in features {
+        if f.name == name {
+            return f.clone()
+        }
+    }
+    panic("no feature `{name}`")
+}
+
+func group_in(groups: Vec<ExclusiveFeature>, name: string) -> ExclusiveFeature {
+    for g in groups {
+        if g.name == name {
+            return g.clone()
+        }
+    }
+    panic("no exclusive feature `{name}`")
+}
+
+func option_in(options: Vec<FeatureOption>, name: string) -> FeatureOption {
+    for o in options {
+        if o.name == name {
+            return o.clone()
+        }
+    }
+    panic("no option `{name}`")
+}
+
+func profile_in(profiles: Vec<Profile>, name: string) -> Profile {
+    for p in profiles {
+        if p.name == name {
+            return p.clone()
+        }
+    }
+    panic("no profile `{name}`")
+}
+
+func pkg_error(text: string) -> string {
+    return load_error(text, package_schema())
+}
+
+func line_count(s: string) -> i64 {
+    mut n = 0
+    for _ in s.split("\n") {
+        n = n + 1
+    }
+    return n
+}
+
+// ─── [package] ──────────────────────────────────────────────────
+
+const FULL_PACKAGE = "schema = \"rask-package@1\"\n[package]\nname = \"ws\"\nversion = \"2.3.4\"\ndescription = \"A workspace\"\nlicense = \"MIT OR Apache-2.0\"\nrepository = \"https://github.com/x/ws\"\nmembers = [\"app\", \"lib\"]\nsandbox = true\nvendor-dir = \"third_party\"\n"
+
+test "every package key comes through" {
+    let pkg = pkg_of(FULL_PACKAGE)
+    assert pkg.name == "ws"
+    assert pkg.version == "2.3.4"
+    assert (pkg.description ?? "") == "A workspace"
+    assert (pkg.license ?? "") == "MIT OR Apache-2.0"
+    assert (pkg.repository ?? "") == "https://github.com/x/ws"
+    assert pkg.members.len() == 2
+    assert pkg.members[0] == "app"
+    assert pkg.members[1] == "lib"
+    assert pkg.sandbox
+    assert (pkg.vendor_dir ?? "") == "third_party"
+}
+
+test "optional package keys left out read as absent" {
+    let pkg = pkg_of(HEAD)
+    assert pkg.name == "app"
+    assert pkg.version == "0.1.0"
+    assert pkg.description is none
+    assert pkg.license is none
+    assert pkg.repository is none
+    assert pkg.members.is_empty()
+    assert !pkg.sandbox
+    assert pkg.vendor_dir is none
+    assert pkg.dependencies.is_empty()
+    assert pkg.dev_dependencies.is_empty()
+    assert pkg.build_dependencies.is_empty()
+    assert pkg.features.is_empty()
+    assert pkg.exclusive_features.is_empty()
+    assert pkg.profiles.is_empty()
+}
+
+test "an empty members list is no members" {
+    let pkg = pkg_of("{HEAD}members = []\nsandbox = false\n")
+    assert pkg.members.is_empty()
+    assert !pkg.sandbox
+}
+
+test "every mistyped package key is reported with its path" {
+    let text = "schema = \"rask-package@1\"\n[package]\nname = 3\nversion = 1\ndescription = 2\nlicense = true\nrepository = [\"x\"]\nmembers = \"app\"\nsandbox = \"yes\"\nvendor-dir = 4\n"
+    let e = pkg_error(text)
+    assert e.contains("package.name: expected a string, found an integer")
+    assert e.contains("package.version: expected a version string like \"1.0.0\", found an integer")
+    assert e.contains("package.description: expected a string, found an integer")
+    assert e.contains("package.license: expected a string, found a boolean")
+    assert e.contains("package.repository: expected a string, found an array")
+    assert e.contains("package.members: expected an array, found a string")
+    assert e.contains("package.sandbox: expected `true` or `false`, found a string")
+    assert e.contains("package.vendor-dir: expected a string, found an integer")
+    assert line_count(e) == 8
+}
+
+test "a member that isn't a string is named by index" {
+    let e = pkg_error("{HEAD}members = [\"app\", 2]\n")
+    assert e == "package.members[1]: expected a string, found an integer"
+}
+
+test "a version is three numbers" {
+    for v in ["0.0.0", "1.0.0", "10.20.300"] {
+        let pkg = pkg_of("schema = \"rask-package@1\"\n[package]\nname = \"a\"\nversion = \"{v}\"\n")
+        assert pkg.version == v
+    }
+    for v in ["1", "1.0", "1.0.0.0", "v1.0.0", "1.x.0", "", "1..0"] {
+        let e = pkg_error("schema = \"rask-package@1\"\n[package]\nname = \"a\"\nversion = \"{v}\"\n")
+        assert e.contains("package.version: \"{v}\" is not a version; write three numbers")
+    }
+}
+
+test "name and version are both required" {
+    let e = pkg_error("schema = \"rask-package@1\"\n[package]\ndescription = \"x\"\n")
+    assert e.contains("package: missing required key `name` (string)")
+    assert e.contains("package: missing required key `version` (version)")
+}
+
+test "the package table is required and must be a table" {
+    assert pkg_error("schema = \"rask-package@1\"\n").contains("missing required key `package`")
+    assert pkg_error("schema = \"rask-package@1\"\npackage = \"app\"\n").contains("package: expected a table, found a string")
+}
+
+test "an unknown package key lists what belongs there" {
+    let e = pkg_error("{HEAD}edition = \"2026\"\n")
+    assert e.contains("package: unknown key `edition`; expected one of `name`, `version`, `description`, `license`, `repository`, `members`, `sandbox`, `vendor-dir`")
+}
+
+test "keys are kebab-case" {
+    let e = pkg_error("{HEAD}vendor_dir = \"v\"\n")
+    assert e.contains("package: unknown key `vendor_dir`; did you mean `vendor-dir`?")
+}
+
+// ─── The schema line ────────────────────────────────────────────
+
+test "the schema line is checked before anything else" {
+    let body = "[package]\nname = \"a\"\nversion = \"1.0.0\"\n"
+    assert pkg_error(body).contains("missing `schema = \"<name>@<version>\"`")
+    assert pkg_error("schema = \"rask-lock@1\"\n{body}").contains("this file is a `rask-lock` file; expected `rask-package`")
+    assert pkg_error("schema = \"rask-package@2\"\n{body}").contains("update the toolchain")
+    assert pkg_error("schema = \"rask-package@0\"\n{body}").contains("rask-package@0 doesn't exist")
+    assert pkg_error("schema = \"rask-package\"\n{body}").contains("has no version")
+    assert pkg_error("schema = 1\n{body}").contains("`schema` must be a string")
+}
+
+// ─── Top-level tables ───────────────────────────────────────────
+
+test "an unknown table is an error" {
+    let e = pkg_error("{HEAD}[test-dependencies]\nx = {{ registry = \"^1\" }}\n")
+    assert e.contains("top level: unknown key `test-dependencies`")
+    let d = pkg_error("{HEAD}[dependancies]\nx = {{ registry = \"^1\" }}\n")
+    assert d.contains("top level: unknown key `dependancies`; did you mean `dependencies`?")
+}
+
+test "a top-level table that isn't one is an error" {
+    let e = pkg_error("{HEAD}[features]\n[profiles]\n")
+    assert e == ""
+    let bad = pkg_error("schema = \"rask-package@1\"\ndependencies = \"x\"\nprofiles = 1\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n")
+    assert bad.contains("dependencies: expected a table, found a string")
+    assert bad.contains("profiles: expected a table, found an integer")
+}
+
+// ─── Dependencies: the seven places ─────────────────────────────
+
+// Workaround: these texts are functions, not consts. Natively, a const that
+// interpolates another const and holds `{{ k = v }}` reads freed memory: the
+// const's init frees the string it just stored in its slot.
+func seven_sites() -> string {
+    return "{HEAD}[dependencies]\na = {{ registry = \"^1\" }}\n[dev-dependencies]\nb = {{ registry = \"^1\" }}\n[build-dependencies]\nc = {{ registry = \"^1\" }}\n[features.f.dependencies]\nd = {{ registry = \"^1\" }}\n[features.f.dev-dependencies]\ne = {{ registry = \"^1\" }}\n[features.f.build-dependencies]\ng = {{ registry = \"^1\" }}\n[exclusive-features.x]\ndefault = \"o\"\noptions.o = {{ h = {{ registry = \"^1\" }} }}\n"
+}
+
+test "a dependency lands where it was written, in all seven places" {
+    let pkg = pkg_of(seven_sites())
+    assert pkg.dependencies.len() == 1
+    assert pkg.dependencies[0].name == "a"
+    assert pkg.dev_dependencies.len() == 1
+    assert pkg.dev_dependencies[0].name == "b"
+    assert pkg.build_dependencies.len() == 1
+    assert pkg.build_dependencies[0].name == "c"
+    let f = feature_in(pkg.features, "f")
+    assert f.dependencies.len() == 1
+    assert f.dependencies[0].name == "d"
+    assert f.dev_dependencies.len() == 1
+    assert f.dev_dependencies[0].name == "e"
+    assert f.build_dependencies.len() == 1
+    assert f.build_dependencies[0].name == "g"
+    let x = group_in(pkg.exclusive_features, "x")
+    assert x.options.len() == 1
+    assert x.options[0].dependencies.len() == 1
+    assert x.options[0].dependencies[0].name == "h"
+}
+
+test "dep_sites names the seven places" {
+    assert dep_sites().len() == 7
+}
+
+test "a bad dependency is named by its dotted path in each place, all at once" {
+    let text = "{HEAD}[dependencies]\na = {{ registry = \"^1\", revv = \"x\" }}\n[dev-dependencies]\nb = {{ registry = \"one\" }}\n[build-dependencies]\nc = {{ }}\n[features.f.dependencies]\nd = {{ path = 1 }}\n[features.f.dev-dependencies]\ne = {{ registry = \"^1\", path = \"p\" }}\n[features.f.build-dependencies]\ng = {{ git = \"u\", tag = \"v1\" }}\n[exclusive-features.x]\ndefault = \"o\"\noptions.o = {{ h = {{ registry = \"^1\", allow = [\"disk\"] }} }}\n"
+    let e = pkg_error(text)
+    assert e.contains("dependencies.a: unknown key `revv`")
+    assert e.contains("dev-dependencies.b.registry: \"one\" is not a version range")
+    assert e.contains("build-dependencies.c: needs one of `registry`, `path`, `git`")
+    assert e.contains("features.f.dependencies.d.path: expected a string, found an integer")
+    assert e.contains("features.f.dev-dependencies.e: holds `registry`, `path`; pick exactly one of `registry`, `path`, `git`")
+    assert e.contains("features.f.build-dependencies.g: unknown key `tag`")
+    assert e.contains("exclusive-features.x.options.o.h.allow[0]: \"disk\" is not allowed here")
+    assert line_count(e) == 7
+}
+
+// ─── Dependencies: sources ──────────────────────────────────────
+
+test "every source form comes out as its DepSource" {
+    let text = "{HEAD}[dependencies]\nreg = {{ registry = \"^2.0\" }}\nloc = {{ path = \"../loc\" }}\npinned = {{ git = \"https://g/p\", rev = \"a1b2c3\" }}\ntracking = {{ git = \"https://g/t\", branch = \"main\" }}\nbare = {{ git = \"https://g/b\" }}\n"
+    let pkg = pkg_of(text)
+    assert pkg.dependencies.len() == 5
+    assert dep_in(pkg.dependencies, "reg").source.describe() == "registry ^2.0"
+    assert dep_in(pkg.dependencies, "loc").source.describe() == "path ../loc"
+    assert dep_in(pkg.dependencies, "pinned").source.describe() == "git https://g/p rev a1b2c3"
+    assert dep_in(pkg.dependencies, "tracking").source.describe() == "git https://g/t branch main"
+    assert dep_in(pkg.dependencies, "bare").source.describe() == "git https://g/b"
+    match dep_in(pkg.dependencies, "tracking").source {
+        DepSource.Git { url, rev, branch } => {
+            assert url == "https://g/t"
+            assert rev is none
+            assert (branch ?? "") == "main"
+        }
+        _ => panic("tracking should be a git dependency"),
+    }
+}
+
+test "dependencies keep the order they were written in" {
+    let pkg = pkg_of("{HEAD}[dependencies]\nzeta = {{ registry = \"^1\" }}\nalpha = {{ registry = \"^1\" }}\nmid = {{ path = \"m\" }}\n")
+    assert pkg.dependencies[0].name == "zeta"
+    assert pkg.dependencies[1].name == "alpha"
+    assert pkg.dependencies[2].name == "mid"
+}
+
+test "every version range form is accepted" {
+    for r in ["*", "^2", "^2.0", "^2.0.1", "~1.2", ">=1.5", "<=3", ">2", "<2.0", "=1.0.0", "1.2.3"] {
+        let pkg = pkg_of("{HEAD}[dependencies]\nx = {{ registry = \"{r}\" }}\n")
+        assert dep_in(pkg.dependencies, "x").source.describe() == "registry {r}"
+    }
+}
+
+test "a malformed version range is rejected" {
+    for r in ["two", "^", "", "1.2.3.4", ">= 1.5", "^1.x", "latest"] {
+        let e = pkg_error("{HEAD}[dependencies]\nx = {{ registry = \"{r}\" }}\n")
+        assert e.contains("dependencies.x.registry: \"{r}\" is not a version range")
+    }
+}
+
+test "rev and branch belong to git alone" {
+    assert pkg_error("{HEAD}[dependencies]\nx = {{ path = \"p\", branch = \"main\" }}\n").contains("dependencies.x: unknown key `branch`")
+    assert pkg_error("{HEAD}[dependencies]\nx = {{ path = \"p\", rev = \"a1\" }}\n").contains("dependencies.x: unknown key `rev`")
+    assert pkg_error("{HEAD}[dependencies]\nx = {{ registry = \"^1\", branch = \"main\" }}\n").contains("dependencies.x: unknown key `branch`")
+}
+
+test "a dependency written as a bare string is an error that says what goes there" {
+    let e = pkg_error("{HEAD}[dependencies]\nhttp = \"^2.0\"\n")
+    assert e.contains("dependencies.http: expected a table holding one of `registry`, `path`, `git`, found a string")
+}
+
+// ─── Dependencies: shared keys ──────────────────────────────────
+
+test "every shared key comes through on a registry dependency" {
+    let text = "{HEAD}[dependencies]\nfull = {{ registry = \"^1.0\", target = \"linux\", with = [\"rt\", \"net\"], allow = [\"net\", \"read\", \"write\", \"exec\", \"ffi\", \"build_exec\"], select = {{ runtime = \"tokio\", tls = \"rustls\" }}, feature = \"async\" }}\n"
+    let d = dep_in(pkg_of(text).dependencies, "full")
+    assert (d.target ?? "") == "linux"
+    assert d.with.len() == 2
+    assert d.with[0] == "rt"
+    assert d.with[1] == "net"
+    assert d.allow.len() == 6
+    assert d.allow[0] == "net"
+    assert d.allow[5] == "build_exec"
+    assert d.select.len() == 2
+    let (g0, o0) = d.select[0]
+    assert g0 == "runtime"
+    assert o0 == "tokio"
+    let (g1, o1) = d.select[1]
+    assert g1 == "tls"
+    assert o1 == "rustls"
+    assert (d.feature ?? "") == "async"
+}
+
+test "shared keys are allowed on path and git dependencies too" {
+    let text = "{HEAD}[dependencies]\nloc = {{ path = \"../loc\", target = \"macos\", with = [\"x\"], allow = [\"ffi\"], select = {{ g = \"o\" }}, feature = \"f\" }}\nremote = {{ git = \"u\", branch = \"dev\", target = \"windows\", allow = [\"net\"] }}\n"
+    let pkg = pkg_of(text)
+    let loc = dep_in(pkg.dependencies, "loc")
+    assert (loc.target ?? "") == "macos"
+    assert loc.with[0] == "x"
+    assert loc.allow[0] == "ffi"
+    assert loc.select.len() == 1
+    assert (loc.feature ?? "") == "f"
+    let remote = dep_in(pkg.dependencies, "remote")
+    assert (remote.target ?? "") == "windows"
+    assert remote.allow[0] == "net"
+    assert remote.source.describe() == "git u branch dev"
+}
+
+test "shared keys left out read as absent or empty" {
+    let d = dep_in(pkg_of("{HEAD}[dependencies]\nx = {{ registry = \"^1\", with = [] }}\n").dependencies, "x")
+    assert d.target is none
+    assert d.with.is_empty()
+    assert d.allow.is_empty()
+    assert d.select.is_empty()
+    assert d.feature is none
+}
+
+test "every mistyped dependency key is reported" {
+    let text = "{HEAD}[dependencies]\na = {{ registry = 2 }}\nb = {{ path = 1 }}\nc = {{ git = true }}\nd = {{ git = \"u\", rev = 1, branch = [\"m\"] }}\ne = {{ registry = \"^1\", target = [\"linux\"] }}\nf = {{ registry = \"^1\", with = \"net\" }}\ng = {{ registry = \"^1\", with = [1] }}\nh = {{ registry = \"^1\", allow = \"net\" }}\ni = {{ registry = \"^1\", select = [\"tokio\"] }}\nj = {{ registry = \"^1\", select = {{ runtime = 1 }} }}\nk = {{ registry = \"^1\", feature = true }}\nl = {{ registry = \"^1\", allow = [\"net\", 7] }}\n"
+    let e = pkg_error(text)
+    assert e.contains("dependencies.a.registry: expected a version range like \"^2.0\", found an integer")
+    assert e.contains("dependencies.b.path: expected a string, found an integer")
+    assert e.contains("dependencies.c.git: expected a string, found a boolean")
+    assert e.contains("dependencies.d.rev: expected a string, found an integer")
+    assert e.contains("dependencies.d.branch: expected a string, found an array")
+    assert e.contains("dependencies.e.target: expected a string, found an array")
+    assert e.contains("dependencies.f.with: expected an array, found a string")
+    assert e.contains("dependencies.g.with[0]: expected a string, found an integer")
+    assert e.contains("dependencies.h.allow: expected an array, found a string")
+    assert e.contains("dependencies.i.select: expected a table, found an array")
+    assert e.contains("dependencies.j.select.runtime: expected a string, found an integer")
+    assert e.contains("dependencies.k.feature: expected a string, found a boolean")
+    assert e.contains("dependencies.l.allow[1]: expected one of `net`, `read`, `write`, `exec`, `ffi`, `build_exec`, found an integer")
+    assert line_count(e) == 13
+}
+
+test "an unknown capability lists the ones there are" {
+    let e = pkg_error("{HEAD}[dependencies]\nx = {{ registry = \"^1\", allow = [\"disk\"] }}\n")
+    assert e == "dependencies.x.allow[0]: \"disk\" is not allowed here; pick one of `net`, `read`, `write`, `exec`, `ffi`, `build_exec`"
+}
+
+test "the same dependency twice in one table is an error" {
+    let e = pkg_error("{HEAD}[dependencies]\nx = {{ registry = \"^1\" }}\nx = {{ path = \"p\" }}\n")
+    assert e.contains("duplicate key `dependencies.x` (first on line 6)")
+}
+
+// ─── Features ───────────────────────────────────────────────────
+
+func features_text() -> string {
+    return "{HEAD}[features.ssl]\ndefault = true\nenables = [\"crypto\", \"logging\"]\n[features.ssl.dependencies]\nopenssl = {{ registry = \"^3.0\", target = \"linux\" }}\nring = {{ registry = \"^0.17\", feature = \"crypto\" }}\n[features.ssl.dev-dependencies]\nmock-tls = {{ path = \"../mock-tls\" }}\n[features.ssl.build-dependencies]\ncc = {{ registry = \"^1\" }}\n[features.crypto]\n[features.logging]\ndefault = false\n"
+}
+
+test "a feature carries its default, enables and three dependency tables" {
+    let pkg = pkg_of(features_text())
+    assert pkg.features.len() == 3
+    let ssl = feature_in(pkg.features, "ssl")
+    assert ssl.on_by_default
+    assert ssl.enables.len() == 2
+    assert ssl.enables[0] == "crypto"
+    assert ssl.enables[1] == "logging"
+    assert ssl.dependencies.len() == 2
+    assert (dep_in(ssl.dependencies, "openssl").target ?? "") == "linux"
+    assert (dep_in(ssl.dependencies, "ring").feature ?? "") == "crypto"
+    assert dep_in(ssl.dev_dependencies, "mock-tls").source.describe() == "path ../mock-tls"
+    assert dep_in(ssl.build_dependencies, "cc").source.describe() == "registry ^1"
+    // A feature's deps stay with the feature, not the package.
+    assert pkg.dependencies.is_empty()
+    assert pkg.dev_dependencies.is_empty()
+}
+
+test "a code-only feature is an empty table, off by default" {
+    let pkg = pkg_of(features_text())
+    let crypto = feature_in(pkg.features, "crypto")
+    assert !crypto.on_by_default
+    assert crypto.enables.is_empty()
+    assert crypto.dependencies.is_empty()
+    assert crypto.dev_dependencies.is_empty()
+    assert crypto.build_dependencies.is_empty()
+    assert !feature_in(pkg.features, "logging").on_by_default
+    assert pkg.features[0].name == "ssl"
+    assert pkg.features[1].name == "crypto"
+    assert pkg.features[2].name == "logging"
+}
+
+test "every bad feature is reported with its path" {
+    let text = "{HEAD}[features.a]\ndefault = \"yes\"\n[features.b]\nenables = \"a\"\n[features.c]\nenables = [1]\n[features.d]\nrequires = [\"a\"]\n[features.e.dependencies]\nx = {{ registry = \"nope\" }}\n[features.g]\ndependencies = [\"x\"]\n"
+    let e = pkg_error(text)
+    assert e.contains("features.a.default: expected `true` or `false`, found a string")
+    assert e.contains("features.b.enables: expected an array, found a string")
+    assert e.contains("features.c.enables[0]: expected a string, found an integer")
+    assert e.contains("features.d: unknown key `requires`; expected one of `default`, `enables`, `dependencies`, `dev-dependencies`, `build-dependencies`")
+    assert e.contains("features.e.dependencies.x.registry: \"nope\" is not a version range")
+    assert e.contains("features.g.dependencies: expected a table, found an array")
+    assert line_count(e) == 6
+}
+
+test "a feature that isn't a table is an error" {
+    assert pkg_error("{HEAD}[features]\nverbose = true\n").contains("features.verbose: expected a table, found a boolean")
+}
+
+// ─── Exclusive feature groups ───────────────────────────────────
+
+func groups_text() -> string {
+    return "{HEAD}[exclusive-features.runtime]\ndefault = \"tokio\"\noptions.tokio = {{ tokio = {{ registry = \"^1.0\", with = [\"full\"] }} }}\noptions.async-std = {{ async-std = {{ registry = \"^1.12\" }}, futures = {{ registry = \"^0.3\" }} }}\n[exclusive-features.tls]\ndefault = \"rustls\"\n[exclusive-features.tls.options.rustls]\nrustls = {{ git = \"https://g/rustls\", branch = \"main\" }}\n[exclusive-features.tls.options.none]\n"
+}
+
+test "an exclusive group carries its default and each option's deps" {
+    let pkg = pkg_of(groups_text())
+    assert pkg.exclusive_features.len() == 2
+    assert pkg.features.is_empty()
+    let runtime = group_in(pkg.exclusive_features, "runtime")
+    assert runtime.default == "tokio"
+    assert runtime.options.len() == 2
+    assert runtime.options[0].name == "tokio"
+    assert runtime.options[1].name == "async-std"
+    let tokio = option_in(runtime.options, "tokio")
+    assert tokio.dependencies.len() == 1
+    assert dep_in(tokio.dependencies, "tokio").with[0] == "full"
+    let async_std = option_in(runtime.options, "async-std")
+    assert async_std.dependencies.len() == 2
+    assert dep_in(async_std.dependencies, "futures").source.describe() == "registry ^0.3"
+}
+
+test "an option can be written as its own table, or be empty" {
+    let tls = group_in(pkg_of(groups_text()).exclusive_features, "tls")
+    assert tls.default == "rustls"
+    assert tls.options.len() == 2
+    let rustls = option_in(tls.options, "rustls")
+    assert dep_in(rustls.dependencies, "rustls").source.describe() == "git https://g/rustls branch main"
+    assert option_in(tls.options, "none").dependencies.is_empty()
+}
+
+test "every bad exclusive group is reported with its path" {
+    let text = "{HEAD}[exclusive-features.a]\noptions.x = {{ }}\n[exclusive-features.b]\ndefault = \"x\"\n[exclusive-features.c]\ndefault = 1\noptions.x = {{ }}\n[exclusive-features.d]\ndefault = \"x\"\noptions = [\"x\"]\n[exclusive-features.e]\ndefault = \"x\"\noptions.x = \"y\"\n[exclusive-features.f]\ndefault = \"x\"\noptions.x = {{ y = \"^1\" }}\n[exclusive-features.g]\ndefault = \"x\"\nenables = [\"a\"]\noptions.x = {{ }}\n"
+    let e = pkg_error(text)
+    assert e.contains("exclusive-features.a: missing required key `default` (string)")
+    assert e.contains("exclusive-features.b: missing required key `options`")
+    assert e.contains("exclusive-features.c.default: expected a string, found an integer")
+    assert e.contains("exclusive-features.d.options: expected a table, found an array")
+    assert e.contains("exclusive-features.e.options.x: expected a table, found a string")
+    assert e.contains("exclusive-features.f.options.x.y: expected a table holding one of `registry`, `path`, `git`, found a string")
+    assert e.contains("exclusive-features.g: unknown key `enables`")
+    assert line_count(e) == 7
+}
+
+// ─── Profiles ───────────────────────────────────────────────────
+
+test "every profile key comes through" {
+    let text = "{HEAD}[profiles.embedded]\ninherits = \"release\"\nopt-level = \"z\"\ndebug-info = false\noverflow-checks = true\nlto = \"fat\"\ncodegen-units = 1\nstrip = true\npanic = \"abort\"\n"
+    let p = profile_in(pkg_of(text).profiles, "embedded")
+    assert (p.inherits ?? "") == "release"
+    assert (p.opt_level ?? "") == "z"
+    assert (p.debug_info ?? true) == false
+    assert (p.overflow_checks ?? false) == true
+    assert (p.lto ?? "") == "fat"
+    assert (p.codegen_units ?? 0) == 1
+    assert (p.strip ?? false) == true
+    assert (p.panic ?? "") == "abort"
+}
+
+test "an empty profile has every key absent" {
+    let pkg = pkg_of("{HEAD}[profiles.bare]\n[profiles.staging]\ninherits = \"release\"\n")
+    assert pkg.profiles.len() == 2
+    let p = profile_in(pkg.profiles, "bare")
+    assert p.inherits is none
+    assert p.opt_level is none
+    assert p.debug_info is none
+    assert p.overflow_checks is none
+    assert p.lto is none
+    assert p.codegen_units is none
+    assert p.strip is none
+    assert p.panic is none
+    assert (profile_in(pkg.profiles, "staging").inherits ?? "") == "release"
+}
+
+test "every allowed value of the fixed-set profile keys loads" {
+    for v in ["0", "1", "2", "3", "s", "z"] {
+        assert (profile_in(pkg_of("{HEAD}[profiles.p]\nopt-level = \"{v}\"\n").profiles, "p").opt_level ?? "") == v
+    }
+    for v in ["off", "thin", "fat"] {
+        assert (profile_in(pkg_of("{HEAD}[profiles.p]\nlto = \"{v}\"\n").profiles, "p").lto ?? "") == v
+    }
+    for v in ["unwind", "abort"] {
+        assert (profile_in(pkg_of("{HEAD}[profiles.p]\npanic = \"{v}\"\n").profiles, "p").panic ?? "") == v
+    }
+}
+
+test "every bad profile value is reported with its path" {
+    let text = "{HEAD}[profiles.a]\nopt-level = \"4\"\n[profiles.b]\nopt-level = 3\n[profiles.c]\nlto = \"full\"\n[profiles.d]\nlto = true\n[profiles.e]\npanic = \"crash\"\n[profiles.f]\ncodegen-units = \"16\"\n[profiles.g]\ndebug-info = \"yes\"\n[profiles.h]\noverflow-checks = 1\n[profiles.i]\nstrip = \"all\"\n[profiles.j]\ninherits = 1\n[profiles.k]\nopt_level = \"3\"\n"
+    let e = pkg_error(text)
+    assert e.contains("profiles.a.opt-level: \"4\" is not allowed here; pick one of `0`, `1`, `2`, `3`, `s`, `z`")
+    assert e.contains("profiles.b.opt-level: expected one of `0`, `1`, `2`, `3`, `s`, `z`, found an integer")
+    assert e.contains("profiles.c.lto: \"full\" is not allowed here; pick one of `off`, `thin`, `fat`")
+    assert e.contains("profiles.d.lto: expected one of `off`, `thin`, `fat`, found a boolean")
+    assert e.contains("profiles.e.panic: \"crash\" is not allowed here; pick one of `unwind`, `abort`")
+    assert e.contains("profiles.f.codegen-units: expected an integer, found a string")
+    assert e.contains("profiles.g.debug-info: expected `true` or `false`, found a string")
+    assert e.contains("profiles.h.overflow-checks: expected `true` or `false`, found an integer")
+    assert e.contains("profiles.i.strip: expected `true` or `false`, found a string")
+    assert e.contains("profiles.j.inherits: expected a string, found an integer")
+    assert e.contains("profiles.k: unknown key `opt_level`; did you mean `opt-level`?")
+    assert line_count(e) == 11
+}
+
+test "a profile that isn't a table is an error" {
+    assert pkg_error("{HEAD}[profiles]\nfast = \"yes\"\n").contains("profiles.fast: expected a table, found a string")
+}
+
+test "a float in a profile says floats aren't supported" {
+    let e = pkg_error("{HEAD}[profiles.p]\ncodegen-units = 1.5\n")
+    assert e.contains("floats and dates aren't supported")
+}
+
+// ─── What the toolchain is handed ───────────────────────────────
+
+test "absent values travel as null and scopes follow the table" {
+    let out = toolchain_load("{HEAD}[dependencies]\nloc = {{ path = \"../loc\" }}\n[features.f.build-dependencies]\ncc = {{ registry = \"^1\" }}\n")
+    assert out.contains("\"version\":null")
+    assert out.contains("\"path\":\"../loc\"")
+    assert out.contains("\"target\":null")
+    assert out.contains("\"scope\":\"build\"")
+    assert out.contains("[\"sandbox\",\"false\"]")
+    assert !out.contains("\"description\"")
+}
+
+test "every error at once reaches the toolchain, one per line" {
+    let out = toolchain_load("schema = \"rask-package@1\"\n[package]\nname = \"a\"\nversion = \"1\"\nlicence = \"MIT\"\n")
+    assert out.starts_with("{{\"error\"")
+    assert out.contains("package.version: \\\"1\\\" is not a version")
+    assert out.contains("\\npackage: unknown key `licence`; did you mean `license`?")
+}
