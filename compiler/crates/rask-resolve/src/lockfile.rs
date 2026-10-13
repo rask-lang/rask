@@ -22,7 +22,11 @@ pub struct LockedPackage {
     pub name: String,
     pub version: String,
     pub source: String,
-    pub checksum: String,
+    /// What a registry package's sources hashed to when it was locked (LK3).
+    /// `None` for a path dependency: that's code in the same tree, edited
+    /// alongside, and a checksum would only demand `rask update` after every
+    /// edit.
+    pub checksum: Option<String>,
     /// Inferred capabilities: "net", "read", "write", "exec", "ffi".
     pub capabilities: Vec<String>,
     /// Ed25519 signing key fingerprint for registry packages (LK8).
@@ -73,14 +77,13 @@ impl LockFile {
                 .map(|m| m.version.clone())
                 .unwrap_or_else(|| "0.0.0".into());
 
-            let source = if let Some(ref url) = pkg.registry_source {
-                format!("registry+{}", url)
+            let (source, checksum) = if let Some(ref url) = pkg.registry_source {
+                (format!("registry+{}", url), Some(compute_checksum(&pkg.root_dir)))
             } else {
                 let rel_path = diff_paths(&pkg.root_dir, root_dir)
                     .unwrap_or_else(|| pkg.root_dir.clone());
-                format!("path+{}", rel_path.display())
+                (format!("path+{}", rel_path.display()), None)
             };
-            let checksum = compute_checksum(&pkg.root_dir);
 
             packages.push(LockedPackage {
                 name: pkg.name.clone(),
@@ -134,7 +137,9 @@ impl LockFile {
             content.push_str(&format!("name = {}\n", quote(&pkg.name)));
             content.push_str(&format!("version = {}\n", quote(&pkg.version)));
             content.push_str(&format!("source = {}\n", quote(&pkg.source)));
-            content.push_str(&format!("checksum = {}\n", quote(&pkg.checksum)));
+            if let Some(ref sum) = pkg.checksum {
+                content.push_str(&format!("checksum = {}\n", quote(sum)));
+            }
             if let Some(ref key) = pkg.signing_key {
                 content.push_str(&format!("signing-key = {}\n", quote(key)));
             }
@@ -158,8 +163,8 @@ impl LockFile {
             if !pkg.is_external { continue; }
 
             if let Some(locked_pkg) = locked.get(pkg.name.as_str()) {
-                let current_checksum = compute_checksum(&pkg.root_dir);
-                if current_checksum != locked_pkg.checksum {
+                let Some(locked_sum) = &locked_pkg.checksum else { continue };
+                if compute_checksum(&pkg.root_dir) != *locked_sum {
                     return Err(format!(
                         "dependency '{}' has changed (checksum mismatch) — run `rask update`",
                         pkg.name,
@@ -391,11 +396,23 @@ impl Entry {
 }
 
 fn to_locked(mut e: Entry) -> Result<LockedPackage, (usize, String)> {
+    let name = e.required("name")?;
+    let version = e.required("version")?;
+    let source = e.required("source")?;
+    let checksum_line = e.fields.get("checksum").map(|(line, _)| *line);
+    let checksum = e.string("checksum");
+    if source.starts_with("path+") {
+        if let Some(line) = checksum_line {
+            return Err((line, "a path dependency carries no checksum (LK3); run `rask update` to rewrite the lock".into()));
+        }
+    } else if checksum.is_none() {
+        return Err((e.line, "this [[package]] entry has no `checksum`".into()));
+    }
     Ok(LockedPackage {
-        name: e.required("name")?,
-        version: e.required("version")?,
-        source: e.required("source")?,
-        checksum: e.required("checksum")?,
+        name,
+        version,
+        source,
+        checksum,
         signing_key: e.string("signing-key"),
         capabilities: match e.fields.remove("capabilities") {
             Some((_, Value::List(l))) => l,
@@ -554,7 +571,7 @@ mod tests {
             name: name.into(),
             version: "1.0.0".into(),
             source: format!("path+../{}", name),
-            checksum: "sha256:00".into(),
+            checksum: None,
             capabilities: Vec::new(),
             signing_key: None,
         }
@@ -579,12 +596,12 @@ mod tests {
         let http = &lock.packages[0];
         assert_eq!(http.version, "2.1.0");
         assert_eq!(http.source, "registry+https://packages.rask-lang.dev");
-        assert_eq!(http.checksum, compute_checksum(&f.tmp.path().join("cache/http")));
+        assert_eq!(http.checksum, Some(compute_checksum(&f.tmp.path().join("cache/http"))));
 
         let json = &lock.packages[1];
         assert_eq!(json.version, "1.4.2");
         assert_eq!(json.source, "path+../libs/json", "relative to the root package (LK7)");
-        assert!(json.checksum.starts_with("sha256:") && json.checksum.len() == 7 + 64, "{}", json.checksum);
+        assert_eq!(json.checksum, None, "a path dependency is the tree's own code (LK3)");
         assert!(json.capabilities.is_empty() && json.signing_key.is_none());
     }
 
@@ -654,7 +671,7 @@ mod tests {
 
     #[test]
     fn the_spec_example_loads() {
-        let text = "# rask.lock — auto-generated, do not edit\nlockfile-version = 1\n\n[[package]]\nname = \"http-client\"\nversion = \"2.1.0\"\nsource = \"registry+https://packages.rask-lang.dev\"\nchecksum = \"sha256:a1b2c3d4...\"\nsigning-key = \"ed25519:f9e8d7c6...\"\ncapabilities = [\"net\"]\n\n[[package]]\nname = \"parser\"\nversion = \"1.3.0\"\nsource = \"path+../parser\"\nchecksum = \"sha256:e5f6g7h8...\"\n";
+        let text = "# rask.lock — auto-generated, do not edit\nlockfile-version = 1\n\n[[package]]\nname = \"http-client\"\nversion = \"2.1.0\"\nsource = \"registry+https://packages.rask-lang.dev\"\nchecksum = \"sha256:a1b2c3d4...\"\nsigning-key = \"ed25519:f9e8d7c6...\"\ncapabilities = [\"net\"]\n\n[[package]]\nname = \"parser\"\nversion = \"1.3.0\"\nsource = \"path+../parser\"\n";
         let lock = parse(text, "rask.lock").unwrap();
         assert_eq!(lock.packages.len(), 2);
         assert_eq!(lock.packages[0].signing_key.as_deref(), Some("ed25519:f9e8d7c6..."));
@@ -679,7 +696,7 @@ mod tests {
         }
     }
 
-    const ENTRY: &str = "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\nsource = \"path+a\"\nchecksum = \"sha256:00\"\n";
+    const ENTRY: &str = "[[package]]\nname = \"a\"\nversion = \"1.0.0\"\nsource = \"registry+https://r\"\nchecksum = \"sha256:00\"\n";
 
     #[test]
     fn load_names_the_line_of_a_malformed_entry() {
@@ -704,7 +721,7 @@ mod tests {
         assert!(err.starts_with("rask.lock:7: `capabilities` must be a list of quoted strings"), "{err}");
         let err = load_err(&format!("lockfile-version = 1\n{ENTRY}capabilities = [\"net\" \"read\"]\n"));
         assert!(err.starts_with("rask.lock:7: `capabilities`"), "{err}");
-        let err = load_err(&format!("lockfile-version = 1\n{}", ENTRY.replace("\"path+a\"", "\"path+a\" trailing")));
+        let err = load_err(&format!("lockfile-version = 1\n{}", ENTRY.replace("\"registry+https://r\"", "\"registry+https://r\" trailing")));
         assert!(err.starts_with("rask.lock:5: `source`"), "{err}");
     }
 
@@ -715,6 +732,14 @@ mod tests {
             let err = load_err(&format!("lockfile-version = 1\n{ENTRY}\n{entry}"));
             assert_eq!(err, format!("rask.lock:8: this [[package]] entry has no `{field}`"));
         }
+    }
+
+    #[test]
+    fn a_path_entry_carries_no_checksum() {
+        let entry = "[[package]]\nname = \"p\"\nversion = \"1.0.0\"\nsource = \"path+../p\"\n";
+        assert_eq!(parse(&format!("lockfile-version = 1\n{entry}"), "rask.lock").unwrap().packages[0].checksum, None);
+        let err = load_err(&format!("lockfile-version = 1\n{entry}checksum = \"sha256:00\"\n"));
+        assert!(err.starts_with("rask.lock:6: a path dependency carries no checksum"), "{err}");
     }
 
     #[test]
@@ -752,16 +777,28 @@ mod tests {
     fn verify_catches_a_changed_source_file() {
         let f = Fixture::new();
         let lock = f.lock();
-        fs::write(f.tmp.path().join("libs/json/lib.rk"), "public func parse() { todo() }\n").unwrap();
+        let http_src = fs::read_dir(f.tmp.path().join("cache/http")).unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|x| x == "rk"))
+            .unwrap();
+        fs::write(&http_src, "public func get() { todo() }\n").unwrap();
         let err = lock.verify(&f.registry, f.root).unwrap_err();
-        assert!(err.contains("'json' has changed") && err.contains("rask update"), "{err}");
+        assert!(err.contains("'http' has changed") && err.contains("rask update"), "{err}");
+    }
+
+    #[test]
+    fn verify_lets_a_path_dependency_change() {
+        let f = Fixture::new();
+        let lock = f.lock();
+        fs::write(f.tmp.path().join("libs/json/lib.rk"), "public func parse() { todo() }\n").unwrap();
+        lock.verify(&f.registry, f.root).unwrap();
     }
 
     #[test]
     fn verify_catches_a_tampered_checksum() {
         let f = Fixture::new();
         let mut lock = f.lock();
-        lock.packages[0].checksum = "sha256:0000".into();
+        lock.packages[0].checksum = Some("sha256:0000".into());
         let err = lock.verify(&f.registry, f.root).unwrap_err();
         assert!(err.contains("'http' has changed (checksum mismatch)"), "{err}");
     }
