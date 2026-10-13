@@ -296,7 +296,7 @@ The `.o` file is cleaned up after linking.
 **`rask compile file.rk`** — Single-file compilation. Runs the full pipeline
 on one file, produces a native binary.
 
-**`rask build`** — Multi-package build. Reads `build.rk` for package metadata,
+**`rask build`** — Multi-package build. Reads `rask.toml` for package metadata,
 discovers dependencies, resolves them, type-checks everything, then compiles
 the root package. Supports profiles (`--release`), cross-compilation targets
 (`--target`), and build scripts (a `func build()` in `build.rk` runs via the

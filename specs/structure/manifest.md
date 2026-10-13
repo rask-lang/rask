@@ -1,15 +1,13 @@
 <!-- id: struct.manifest -->
-<!-- status: proposed -->
+<!-- status: decided -->
 <!-- summary: rask.toml manifest, checked against a versioned schema with an append-only change history -->
 <!-- depends: structure/build.md, structure/packages.md -->
 
 # Manifest
 
-**Proposed, not decided.** The decided design is the `package` block in `build.rk` (`struct.build`). This spec describes the alternative: moving that data to `rask.toml`.
+A package's metadata and dependencies live in `rask.toml`: plain TOML, checked against a versioned schema. The schema carries its own change history, so a file written against any past version still loads.
 
-Under this proposal, a package's metadata and dependencies live in `rask.toml`: plain TOML, checked against a versioned schema. The schema carries its own change history, so a file written against any past version still loads.
-
-The case for TOML is that every language already parses it: a registry indexer, Renovate or an editor plugin reads the manifest without knowing Rask, and `rask add` edits it with an ordinary comment-preserving TOML editor. The case for the `build.rk` block is one language and one file, with metadata checked by the compiler that already reads it. The schema layer below (versions, history, migration) operates on the data, not the syntax, so it applies to either.
+I picked TOML over a Rask block because every language already parses it. A registry indexer, Renovate or an editor plugin reads the manifest without knowing Rask, and `rask add` edits it with an ordinary comment-preserving TOML editor. What TOML lacks, the schema puts back: unknown keys are errors, strings are checked by field type, and the history keeps old files loading.
 
 The registry is why the history matters. It holds manifests written against every version of the schema there has ever been, and a resolver today still has to read all of them.
 
@@ -34,7 +32,7 @@ mock-server = { registry = "^2.0" }
 
 | Rule | Description |
 |------|-------------|
-| **MF1: Schema line** | The file starts with `schema = "<name>@<version>"`. The package manifest is `rask-package`. Missing, malformed or naming another schema is an error |
+| **MF1: Schema line** | The file starts with `schema = "<name>@<version>"`. The package manifest is `rask-package`. Missing, malformed or naming another schema is an error. `rask init` writes the current version and `rask migrate` changes it |
 | **MF2: Newer is rejected** | A version newer than the toolchain's schema is an error that says to update the toolchain. The tool never guesses at a future format |
 | **MF3: Unknown keys are errors** | Every key must be in the schema. The error names the nearest valid key when one is close, else lists what belongs there. Silently ignored typos are the bug class this exists to prevent |
 | **MF4: Typed strings** | TOML has no unit or version literals, so the field type checks the string: `"^2.0"` for a version range, `"1.0.0"` for a version, `"30s"` for a duration, a fixed set for an enum-like field |
@@ -106,11 +104,23 @@ The export is weaker than the loader. It flags a typo but suggests nothing, and 
 
 Includes, variables, interpolation, conditionals and computed values. Each turns configuration into a program. A package that needs code writes `func build()` in `build.rk` (`struct.build/BL1`).
 
+## In the Toolchain
+
+The loader is written in Rask (`compiler/crates/rask-manifest/loader/`): the TOML reader, the schema and its history as Rask data, checking, migration and the JSON Schema export. The compiler embeds those sources and runs them on its interpreter, so there is one implementation, and it is Rask. Package discovery calls it through a hook the `rask` binary installs at startup.
+
+That costs a type-check of the loader per process and an interpreter run per manifest. I took that over a second implementation in Rust: the loader is a real Rask program the toolchain depends on, which keeps the language honest, and speed isn't the constraint yet.
+
+| Command | Does |
+|---------|------|
+| `rask manifest check [dir]` | Load `rask.toml` and print every problem |
+| `rask manifest json-schema` | Print the current shape as JSON Schema |
+| `rask migrate --to N [dir]` | Rewrite `rask.toml` for schema version N (MG1-MG3) |
+| `rask add` / `rask remove` | Edit by line, so comments and layout stay; refused if the result wouldn't load (`struct.build/AD2`) |
+
 ## Open Questions
 
-- What the schema itself is written in. Rask types with history annotations would give the compiler one source of truth (today the prototype states the shape once and the Rask mapping again by hand). TOML would give outside tools one syntax.
+- The schema is Rask data in the loader, and the Rask types it maps onto (`Package`, `Dep`, `DepSource`) restate its shape by hand. Deriving one from the other would remove that.
 - Changes name no types, so a change to the dependency shape is repeated at each of the seven places a dependency table appears. Named shapes in the schema would collapse that.
-- Where the schema line comes from: written by `rask new` and bumped by `rask migrate`, or implied by the toolchain version.
 - How the history relates to editions, if editions ever exist: one version number or two axes.
 - Whether the registry ever serves old manifests to old toolchains through `migrate --to`, or forward-only is enough.
 
@@ -118,10 +128,11 @@ Includes, variables, interpolation, conditionals and computed values. Each turns
 
 | Feature | Status |
 |---------|--------|
-| TOML reader, schema, history check, load, migrate, JSON Schema export | Prototype in Rask: [projects/manifest/](../../projects/manifest/) |
-| Toolchain reads `rask.toml` | Not implemented; pending the decision (#1535) |
-| `rask migrate`, `rask check` for manifests | Not implemented |
-| Format-preserving `rask add` on `rask.toml` | Not implemented |
+| TOML reader, schema, history check, load, migrate, JSON Schema export | Implemented, in Rask (`compiler/crates/rask-manifest/loader/`) |
+| Toolchain reads `rask.toml` | Implemented |
+| `rask migrate`, `rask manifest check`, `rask manifest json-schema` | Implemented |
+| Format-preserving `rask add` / `rask remove` | Implemented (line-based) |
+| Format-preserving `rask migrate` | Not implemented: a migrated file loses its comments, and the command says so first |
 
 ### See Also
 

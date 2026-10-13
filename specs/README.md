@@ -154,8 +154,8 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 |------|-------------|
 | [modules.md](structure/modules.md) | Modules, imports, visibility |
 | [packages.md](structure/packages.md) | Dependencies, versioning |
-| [manifest.md](structure/manifest.md) | Proposed: `rask.toml`, versioned schema, migration |
-| [build.md](structure/build.md) | `build.rk` package block, build scripts, CLI |
+| [manifest.md](structure/manifest.md) | `rask.toml`, versioned schema, migration |
+| [build.md](structure/build.md) | What the manifest holds, build scripts, CLI |
 | [targets.md](structure/targets.md) | Library vs binary |
 
 ## Stdlib — Standard library

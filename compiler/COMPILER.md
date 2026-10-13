@@ -115,7 +115,7 @@ After stage 6, the pipeline forks:
   temp binary, execute it, delete it.
 - **Compilation** (`rask compile`): Full pipeline to native binary via
   Cranelift codegen + C runtime linking.
-- **Build** (`rask build`): Multi-package compilation with `build.rk` scripts,
+- **Build** (`rask build`): Multi-package compilation from `rask.toml`, with `build.rk` scripts,
   dependency resolution, and profile support.
 
 Each stage also has a CLI command for inspection: `rask lex`, `rask parse`,
