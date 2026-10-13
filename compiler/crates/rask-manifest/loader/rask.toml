@@ -3,5 +3,8 @@ schema = "rask-package@1"
 [package]
 name = "manifest"
 version = "0.1.0"
-description = "Prototype: rask.toml checked against a versioned schema"
+description = "The rask-package schema and the toolchain's entry points into it"
 license = "MIT OR Apache-2.0"
+
+[dependencies]
+schema = { path = "../../../../libs/schema" }

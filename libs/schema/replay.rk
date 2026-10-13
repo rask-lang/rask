@@ -7,7 +7,7 @@
 //   2. read the declared version; one newer than the schema is rejected
 //   3. replay the log forward from that version
 //   4. check against the current shape
-// Mapping onto Rask types is the caller's step (see package.rk).
+// Mapping the checked tree onto the caller's own types is the caller's step.
 //
 // Migrate runs the same log in either direction, and refuses a downgrade
 // that would throw information away.
@@ -32,13 +32,13 @@ public struct Declared {
     public version: i64
 }
 
-// `schema = "rask-package@3"` names the schema and the version the file
+// `schema = "svc@3"` names the schema and the version the file
 // was written against.
 public func read_declared(doc: Vec<Entry>) -> Declared or LoadError {
     let i = find_entry(doc, "schema") ?? return LoadError { what: "missing `schema = \"<name>@<version>\"` at the top of the file" }
     let raw = match doc[i].value.clone() {
         Value.Str(s) => s,
-        _ => return LoadError { what: "`schema` must be a string like \"rask-package@1\"" },
+        _ => return LoadError { what: "`schema` must be a string like \"<name>@1\"" },
     }
     let at = raw.last_index_of("@") ?? return LoadError { what: "`schema = \"{raw}\"` has no version; write it as \"{raw}@1\"" }
     let name = raw[..at].to_string()

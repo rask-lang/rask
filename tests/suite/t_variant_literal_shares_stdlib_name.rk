@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A program enum named like a stdlib type, with a variant built by a literal.
+//
+// Once checking is done the program's `HttpError` goes by a name of its own
+// (#1333). That rename reached `HttpError.Timeout { after }` in a pattern but
+// not `HttpError.Timeout { after: 7 }` as a value, so the literal still built
+// the stdlib's enum: the interpreter's match found no arm, and native lowering
+// found no layout and segfaulted.
+//
+// `t_type_shares_stdlib_name.rk` covers the rest of the rename.
+
+enum HttpError {
+    Timeout { after: i64 }
+    Refused
+}
+
+func waited(e: HttpError) -> i64 {
+    match e {
+        HttpError.Timeout { after } => return after,
+        HttpError.Refused => return 0,
+    }
+}
+
+test "a same-named enum's variant literal builds the program's enum" {
+    assert waited(HttpError.Timeout { after: 7 }) == 7
+    assert waited(HttpError.Refused) == 0
+}

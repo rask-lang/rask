@@ -75,11 +75,7 @@ impl Rewrite for Qualifier<'_> {
                 }
             }
             // A type name, so no shadow check.
-            ExprKind::StructLit { name, .. } => {
-                if let Some(q) = self.map.get(name.as_str()) {
-                    *name = q.clone();
-                }
-            }
+            ExprKind::StructLit { name, .. } => rename_path_head(name, |n| self.map.get(n).cloned()),
             // `using pool { … }` names a declaration the same way a call does.
             ExprKind::UsingBlock { name, .. } => {
                 if let Some(q) = self.lookup(name) {
@@ -106,18 +102,25 @@ impl Rewrite for Qualifier<'_> {
             | Pattern::Range { .. }
             | Pattern::TypePat { .. } => return,
         };
-        match name.split_once('.') {
-            Some((head, tail)) => {
-                if let Some(q) = self.map.get(head) {
-                    *name = format!("{}.{}", q, tail);
-                }
-            }
-            None => {
-                if let Some(q) = self.map.get(name.as_str()) {
-                    *name = q.clone();
-                }
-            }
-        }
+        rename_path_head(name, |n| self.map.get(n).cloned());
+    }
+}
+
+/// Rename the declaration a dotted name starts with.
+///
+/// `Shape`, `Shape.Circle` in a pattern, `Shape.Circle { r: 1 }` as a
+/// literal: the first segment is the declaration and the rest are its
+/// members, which keep their names.
+pub fn rename_path_head(name: &mut String, new_name: impl Fn(&str) -> Option<String>) {
+    let (head, tail) = match name.split_once('.') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (name.as_str(), None),
+    };
+    if let Some(to) = new_name(head) {
+        *name = match tail {
+            Some(tail) => format!("{to}.{tail}"),
+            None => to,
+        };
     }
 }
 

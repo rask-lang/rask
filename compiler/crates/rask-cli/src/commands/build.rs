@@ -256,7 +256,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             &dep_selections,
         );
 
-        for err in features.errors.iter().chain(&rask_resolve::features::check_enables_cycles(&manifest.features)) {
+        for err in &features.errors {
             eprintln!("{}: {}", output::error_label(), err);
             validation_errors += 1;
         }
@@ -298,8 +298,8 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                     // Check that registry deps are cached (RG1)
                     let cache = rask_resolve::cache::PackageCache::new();
                     for pkg in &lockfile.packages {
-                        if pkg.source.starts_with("registry+") {
-                            let cached = cache.get(&pkg.name, &pkg.version, &pkg.checksum);
+                        if let (true, Some(sum)) = (pkg.source.starts_with("registry+"), &pkg.checksum) {
+                            let cached = cache.get(&pkg.name, &pkg.version, sum);
                             if cached.is_none() {
                                 eprintln!("{}: registry package '{}' {} not cached — run `rask fetch`",
                                     output::error_label(), pkg.name, pkg.version);

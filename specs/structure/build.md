@@ -148,7 +148,7 @@ openssl = { registry = "^3.0" }
 ring    = { registry = "^0.17", feature = "crypto" }
 
 [features.full]
-enables = ["ssl", "logging"]
+enables = ["ssl", "verbose"]
 
 [features.verbose]   # code-only flag
 ```
@@ -777,6 +777,8 @@ security-framework = { registry = "^2.0", target = "macos" }
 [features.full]
 enables = ["ssl", "logging"]
 
+[features.logging]
+
 [profiles.staging]
 inherits = "release"
 debug-info = true
@@ -807,7 +809,9 @@ func build(ctx: BuildContext) -> void or Error {
 | Lock file system (LK1-LK7) | Implemented |
 | Feature resolution (F1-F6, FG1-FG6) | Implemented |
 | Dependency scopes (D4, D4a, D4b) | Implemented |
-| `rask add`/`remove` (AD1-AD4, RM1-RM2) | Implemented |
+| `rask add`/`remove`: formatting-preserving edit, dedup check (AD2, AD3) | Implemented |
+| `rask add`: registry lookup, lock update, capability prompt (AD1, AD4, AD5) | Not implemented: writes `registry = "*"` without a version and leaves `rask.lock` alone |
+| `rask remove`: unused check, lock update (RM1, RM2) | Not implemented |
 | `rask init` project scaffolding | Implemented |
 | `rask fetch` dependency validation | Implemented |
 | `rask update` lock regeneration | Implemented |

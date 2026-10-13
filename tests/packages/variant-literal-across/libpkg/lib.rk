@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+public struct Item {
+    public v: i64
+}
+
+public enum Change {
+    Add { at: Vec<i64>, item: Item }
+    Clear
+}
+
+// The package builds its own variant too, after its names get the package
+// suffix: `Change.Add { … }` has to follow `Change` to its new name.
+public func doubled(c: Change) -> Change {
+    return match c {
+        Change.Add { at, item } => Change.Add { at: at.clone(), item: Item { v: item.v * 2 } },
+        Change.Clear => Change.Clear,
+    }
+}
+
+public func size(c: Change) -> i64 {
+    return match c {
+        Change.Add { item, .. } => item.v,
+        Change.Clear => 0,
+    }
+}

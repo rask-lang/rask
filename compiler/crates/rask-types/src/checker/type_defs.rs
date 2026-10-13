@@ -822,9 +822,7 @@ fn rename_types(
                     }
                 }
                 ExprKind::StructLit { name, .. } => {
-                    if let Some(to) = self.map.get(name.as_str()) {
-                        *name = to.clone();
-                    }
+                    rask_ast::qualify::rename_path_head(name, |n| self.map.get(n).cloned())
                 }
                 ExprKind::Match { arms, .. } => {
                     for arm in arms {
@@ -855,18 +853,7 @@ fn rename_types(
                 Pattern::Struct { name, .. } => name,
                 _ => return,
             };
-            match name.split_once('.') {
-                Some((head, tail)) => {
-                    if let Some(to) = self.map.get(head) {
-                        *name = format!("{to}.{tail}");
-                    }
-                }
-                None => {
-                    if let Some(to) = self.map.get(name.as_str()) {
-                        *name = to.clone();
-                    }
-                }
-            }
+            rask_ast::qualify::rename_path_head(name, |n| self.map.get(n).cloned());
         }
     }
 

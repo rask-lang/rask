@@ -170,50 +170,6 @@ pub fn resolve_features(
     result
 }
 
-/// Circular `enables` references (F6), one message per cycle found, and
-/// `enables` naming a feature that doesn't exist.
-pub fn check_enables_cycles(features: &[FeatureDecl]) -> Vec<String> {
-    let by_name: HashMap<&str, &FeatureDecl> =
-        features.iter().map(|f| (f.name.as_str(), f)).collect();
-    let mut errors = Vec::new();
-    for f in features {
-        for next in &f.enables {
-            if !by_name.contains_key(next.as_str()) {
-                errors.push(format!("feature '{}' enables '{}', which isn't declared", f.name, next));
-            }
-        }
-    }
-    // Depth-first walk; a feature met again on the current path closes a cycle.
-    fn walk<'a>(
-        name: &'a str,
-        by_name: &HashMap<&'a str, &'a FeatureDecl>,
-        path: &mut Vec<&'a str>,
-        done: &mut HashSet<&'a str>,
-        errors: &mut Vec<String>,
-    ) {
-        if let Some(start) = path.iter().position(|p| *p == name) {
-            let mut cycle: Vec<&str> = path[start..].to_vec();
-            cycle.push(name);
-            errors.push(format!("features enable each other in a circle: {}", cycle.join(" -> ")));
-            return;
-        }
-        if !done.insert(name) {
-            return;
-        }
-        let Some(f) = by_name.get(name) else { return };
-        path.push(name);
-        for next in &f.enables {
-            walk(next, by_name, path, done, errors);
-        }
-        path.pop();
-    }
-    let mut done = HashSet::new();
-    for f in features {
-        walk(&f.name, &by_name, &mut Vec::new(), &mut done, &mut errors);
-    }
-    errors
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,16 +335,5 @@ mod tests {
         assert_eq!(only_ssl.activated_deps.len(), 1);
         let both = resolve_features(&[ssl, crypto], &["ssl".into(), "crypto".into()], false, &[]);
         assert_eq!(both.activated_deps.len(), 2);
-    }
-
-    #[test]
-    fn enables_cycle_and_unknown_name_are_reported() {
-        let mut a = make_additive("a", vec![]);
-        a.enables = vec!["b".into()];
-        let mut b = make_additive("b", vec![]);
-        b.enables = vec!["a".into(), "ghost".into()];
-        let errors = check_enables_cycles(&[a, b]);
-        assert!(errors.iter().any(|e| e.contains("a -> b -> a")), "{errors:?}");
-        assert!(errors.iter().any(|e| e.contains("'ghost'")), "{errors:?}");
     }
 }

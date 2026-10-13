@@ -1,0 +1,363 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+// "" when the file loads, else the error text.
+func load_error(text: string, s: Schema) -> string {
+    match load(text, s) {
+        Vec<Entry> => return "",
+        LoadError as e => return e.message(),
+    }
+}
+
+func migrate_error(text: string, s: Schema, to: i64) -> string {
+    match migrate(text, s, to) {
+        string => return "",
+        LoadError as e => return e.message(),
+    }
+}
+
+func migrated(text: string, s: Schema, to: i64) -> string {
+    match migrate(text, s, to) {
+        string as out => return out,
+        LoadError as e => {
+            println(e.message())
+            return ""
+        }
+    }
+}
+
+func schema_error(s: Schema) -> string {
+    check_history(s) catch e => return e.message()
+    return ""
+}
+
+// ─── A demo schema ──────────────────────────────────────────────
+//
+// svc@1
+//   name      string, required
+//   timeout   integer, default 30
+//   mode      "fast" or "safe", default "safe"
+//   backends  map of backend: `host = "..."` with an optional `port`,
+//             or `socket = "..."`; `weight` allowed on either
+//
+// svc@2: `mode` is renamed `profile`, timeout's default becomes 60, and
+// `region` arrives with default "eu".
+
+const HEAD = "schema = \"svc@1\"\nname = \"api\"\n"
+
+func backend_ty() -> Ty {
+    return Ty.Variant {
+        cases: Vec<Case>.from([
+            Case { name: "host", payload: Ty.Str, fields: Vec<Field>.from([optional("port", Ty.Int)]) },
+            Case { name: "socket", payload: Ty.Str, fields: Vec.new() },
+        ]),
+        shared: Vec<Field>.from([optional("weight", Ty.Int)]),
+    }
+}
+
+func svc_fields() -> Vec<Field> {
+    return Vec<Field>.from([
+        required("name", Ty.Str),
+        defaulted("timeout", Ty.Int, Value.Int(30)),
+        defaulted("mode", Ty.OneOf(Vec<string>.from(["fast", "safe"])), Value.Str("safe")),
+        optional("backends", map_of(backend_ty())),
+    ])
+}
+
+func svc_history() -> Vec<Release> {
+    mut adds = Vec<Change>.new()
+    mut fields = svc_fields()
+    for f in fields.take_all() {
+        adds.push(Change.Add { at: root(), field: f })
+    }
+    return Vec<Release>.from([Release { version: 1, changes: adds }])
+}
+
+// The shape written out, as a real schema has it.
+func svc() -> Schema {
+    return Schema { name: "svc", shape: Ty.Record(svc_fields()), history: svc_history() }
+}
+
+// The shape replayed from the log.
+func svc_v2() -> Schema {
+    mut history = svc_history()
+    history.push(Release {
+        version: 2,
+        changes: Vec<Change>.from([
+            Change.Rename { at: root(), from: "mode", to: "profile" },
+            Change.Default { at: root(), name: "timeout", from: Value.Int(30), to: Value.Int(60) },
+            Change.Add { at: root(), field: defaulted("region", Ty.Str, Value.Str("eu")) },
+        ]),
+    })
+    let shape = replay_shape(history) catch e => panic(e.message())
+    return Schema { name: "svc", shape, history }
+}
+
+// ─── Checking a file ────────────────────────────────────────────
+
+test "the written shape matches its history" {
+    assert schema_error(svc()) == ""
+}
+
+test "a minimal file loads" {
+    assert load_error(HEAD, svc()) == ""
+}
+
+test "a typo is an error that names the fix" {
+    let e = load_error("{HEAD}timout = 5\n", svc())
+    assert e.contains("top level: unknown key `timout`; did you mean `timeout`?")
+}
+
+test "a typo inside a variant's case is caught" {
+    let e = load_error("{HEAD}[backends]\na = {{ host = \"x\", prot = 80 }}\n", svc())
+    assert e.contains("backends.a: unknown key `prot`; did you mean `port`?")
+}
+
+test "a missing required key is named with its type" {
+    assert load_error("schema = \"svc@1\"\n", svc()).contains("missing required key `name` (string)")
+}
+
+test "a variant picks exactly one case" {
+    assert load_error("{HEAD}[backends]\na = {{ weight = 2 }}\n", svc()).contains("needs one of `host`, `socket`")
+    assert load_error("{HEAD}[backends]\na = {{ host = \"x\", socket = \"y\" }}\n", svc()).contains("pick exactly one of")
+}
+
+test "a case's companion keys belong to that case" {
+    assert load_error("{HEAD}[backends]\na = {{ socket = \"/s\", port = 1 }}\n", svc()).contains("unknown key `port`")
+    assert load_error("{HEAD}[backends]\na = {{ host = \"x\", port = 1, weight = 2 }}\n", svc()) == ""
+}
+
+test "a string from a fixed set is checked" {
+    assert load_error("{HEAD}mode = \"slow\"\n", svc()).contains("\"slow\" is not allowed here; pick one of `fast`, `safe`")
+}
+
+test "every error is reported, not just the first" {
+    let e = load_error("{HEAD}timout = 5\nmode = 1\n", svc())
+    assert e.contains("`timout`")
+    assert e.contains("mode: expected one of")
+}
+
+test "a file newer than the schema is rejected outright" {
+    assert load_error("schema = \"svc@2\"\nname = \"a\"\n", svc()).contains("only knows up to @1")
+}
+
+test "the schema line is required and must name this schema" {
+    assert load_error("name = \"a\"\n", svc()).contains("missing `schema")
+    assert load_error("schema = \"other@1\"\n", svc()).contains("a `other` file")
+    assert load_error("schema = \"svc\"\n", svc()).contains("has no version")
+}
+
+// ─── Well-formedness ────────────────────────────────────────────
+
+test "duplicate keys are an error" {
+    assert load_error("{HEAD}name = \"again\"\n", svc()).contains("duplicate key `name`")
+    assert load_error("{HEAD}[backends]\n[backends]\n", svc()).contains("defined twice")
+}
+
+test "raw bidi controls are rejected" {
+    assert load_error("{HEAD}mode = \"a\u{202E}b\"\n", svc()).contains("bidirectional")
+}
+
+test "quoted keys must be NFC" {
+    // "e" + combining acute: NFD, renders like "é".
+    assert load_error("{HEAD}[backends]\n\"cafe\u{301}\" = {{ socket = \"x\" }}\n", svc()).contains("not in NFC form")
+}
+
+test "unsupported TOML says so" {
+    assert load_error("{HEAD}[[bin]]\n", svc()).contains("array of tables")
+    assert load_error("{HEAD}x = 1.5\n", svc()).contains("floats and dates")
+}
+
+// ─── Release 2: replaying forward ───────────────────────────────
+
+test "release 2's history replays" {
+    assert schema_error(svc_v2()) == ""
+}
+
+test "a release 1 file loads under release 2" {
+    let tree = load("{HEAD}mode = \"fast\"\n", svc_v2()) catch e => panic(e.message())
+    assert str_at(tree, "profile") == "fast"
+    assert find_entry(tree, "mode") is none
+    // It left timeout out, and in release 1 that meant 30.
+    assert int_at(tree, "timeout") == 30
+}
+
+test "the old spelling is an error in a release 2 file" {
+    assert load_error("schema = \"svc@2\"\nname = \"a\"\nmode = \"fast\"\n", svc_v2()).contains("unknown key `mode`")
+}
+
+test "old and new spelling together is an error" {
+    assert load_error("{HEAD}mode = \"fast\"\nprofile = \"safe\"\n", svc_v2()).contains("both `mode` and `profile` are set")
+}
+
+test "migrating forward writes out what the old default meant" {
+    let out = migrated(HEAD, svc_v2(), 2)
+    assert out.contains("schema = \"svc@2\"")
+    assert out.contains("timeout = 30")
+}
+
+// ─── Release 2: running backward ────────────────────────────────
+
+test "a lossless downgrade" {
+    let out = migrated("schema = \"svc@2\"\nname = \"a\"\nprofile = \"fast\"\nregion = \"eu\"\n", svc_v2(), 1)
+    assert out.contains("schema = \"svc@1\"")
+    assert out.contains("mode = \"fast\"")
+    // Release 2 defaults timeout to 60; release 1 has to be told.
+    assert out.contains("timeout = 60")
+    // At its default, `region` drops without changing what the file means.
+    assert !out.contains("region")
+    assert load_error(out, svc()) == ""
+}
+
+test "a downgrade that would lose information is refused" {
+    let e = migrate_error("schema = \"svc@2\"\nname = \"a\"\nregion = \"us\"\n", svc_v2(), 1)
+    assert e.contains("`region = \"us\"` doesn't exist in the older version")
+}
+
+test "round trip: 1 to 2 and back gives a file that means the same" {
+    let text = "{HEAD}timeout = 5\nmode = \"fast\"\n[backends]\na = {{ host = \"x\", port = 1 }}\n"
+    let down = migrated(migrated(text, svc_v2(), 2), svc_v2(), 1)
+    let a = load(text, svc()) catch e => panic(e.message())
+    let b = load(down, svc()) catch e => panic(e.message())
+    assert render_document(a) == render_document(b)
+}
+
+// ─── Catching an edited past ────────────────────────────────────
+
+test "a shape changed without a change in the log fails check" {
+    mut s = svc()
+    mut grown = svc_fields()
+    grown.push(optional("homepage", Ty.Str))
+    s.shape = Ty.Record(grown)
+    assert schema_error(s).contains("does not give the current shape")
+}
+
+test "a rewritten past release fails check" {
+    mut s = svc_v2()
+    // Quietly drop release 1's last Add, as if it had never shipped.
+    mut first = s.history[0].clone()
+    first.changes.pop()
+    s.history.set(0, first)
+    assert schema_error(s).contains("does not give the current shape")
+}
+
+test "a required field can't arrive after release 1" {
+    mut s = svc()
+    s.history.push(Release {
+        version: 2,
+        changes: Vec<Change>.from([Change.Add { at: root(), field: required("owner", Ty.Str) }]),
+    })
+    assert schema_error(s).contains("every older file would stop loading")
+}
+
+// ─── A retype and a duration ────────────────────────────────────
+
+// release 1: timeout is an integer of seconds
+// release 2: timeout is a duration string
+func timeout_schema() -> Schema {
+    let r1 = Release {
+        version: 1,
+        changes: Vec<Change>.from([Change.Add { at: root(), field: defaulted("timeout", Ty.Int, Value.Int(30)) }]),
+    }
+    let r2 = Release {
+        version: 2,
+        changes: Vec<Change>.from([Change.Retype {
+            at: root(),
+            name: "timeout",
+            from: Ty.Int,
+            to: Ty.Duration,
+            mapping: Vec<ValuePair>.from([
+                ValuePair { before: Value.Int(30), after: Value.Str("30s") },
+                ValuePair { before: Value.Int(60), after: Value.Str("1m") },
+            ]),
+        }]),
+    }
+    let history = Vec<Release>.from([r1, r2])
+    let shape = replay_shape(history) catch e => panic(e.message())
+    return Schema { name: "svc", shape, history }
+}
+
+test "a retype maps old values through the table" {
+    let tree = load("schema = \"svc@1\"\ntimeout = 60\n", timeout_schema()) catch e => panic(e.message())
+    assert str_at(tree, "timeout") == "1m"
+}
+
+test "a value with no mapping is an error, not a guess" {
+    assert load_error("schema = \"svc@1\"\ntimeout = 45\n", timeout_schema()).contains("no equivalent in the newer version")
+}
+
+test "a duration is checked" {
+    assert load_error("schema = \"svc@2\"\ntimeout = \"30 seconds\"\n", timeout_schema()).contains("is not a duration")
+    assert load_error("schema = \"svc@2\"\ntimeout = \"250ms\"\n", timeout_schema()) == ""
+}
+
+test "a retype runs backward through the same table" {
+    let out = migrated("schema = \"svc@2\"\ntimeout = \"1m\"\n", timeout_schema(), 1)
+    assert out.contains("timeout = 60")
+    assert migrate_error("schema = \"svc@2\"\ntimeout = \"5m\"\n", timeout_schema(), 1).contains("no equivalent in the older version")
+}
+
+// ─── JSON Schema ────────────────────────────────────────────────
+
+test "the JSON Schema closes every table and lists variant cases" {
+    let js = json_schema(svc())
+    assert js.contains("\"additionalProperties\": false")
+    assert js.contains("\"oneOf\"")
+    assert js.contains("\"schema\"")
+}
+
+// ─── Versions ───────────────────────────────────────────────────
+
+func version_schema() -> Schema {
+    let history = Vec<Release>.from([Release {
+        version: 1,
+        changes: Vec<Change>.from([
+            Change.Add { at: root(), field: optional("v", Ty.Version) },
+            Change.Add { at: root(), field: optional("r", Ty.VersionReq) },
+        ]),
+    }])
+    let shape = replay_shape(history) catch e => panic(e.message())
+    return Schema { name: "svc", shape, history }
+}
+
+func version_error(line: string) -> string {
+    return load_error("schema = \"svc@1\"\n{line}\n", version_schema())
+}
+
+test "a version is three numbers, optionally a pre-release" {
+    assert version_error("v = \"1.0.0\"") == ""
+    assert version_error("v = \"1.0.0-beta.3\"") == ""
+    assert version_error("v = \"1.0\"").contains("is not a version")
+    assert version_error("v = \"1.0.0-\"").contains("is not a version")
+    assert version_error("v = \"1.0.0-beta..3\"").contains("is not a version")
+    assert version_error("v = \"1.0.0-be_ta\"").contains("is not a version")
+}
+
+test "a pre-release can only be pinned exactly" {
+    assert version_error("r = \"=1.0.0-beta.1\"") == ""
+    assert version_error("r = \"^1.0.0-beta.1\"").contains("write \"=1.0.0-beta.1\"")
+    assert version_error("r = \"1.0.0-beta.1\"").contains("write \"=1.0.0-beta.1\"")
+    assert version_error("r = \"^2.0\"") == ""
+    assert version_error("r = \"*\"") == ""
+    assert version_error("r = \"two\"").contains("is not a version range")
+    assert version_error("r = \">=1.5\"") == ""
+    assert version_error("r = \"<2.0\"").contains("is not a version range")
+}
+
+test "a missing required key at the top level says so and names a kind, not a shape" {
+    let e = load_error("schema = \"svc@1\"\n", svc())
+    assert e.contains("top level: missing required key `name` (string)")
+    let nested = Schema {
+        name: "svc",
+        shape: Ty.Record(Vec<Field>.from([required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)])))])),
+        history: Vec<Release>.from([Release {
+            version: 1,
+            changes: Vec<Change>.from([Change.Add {
+                at: root(),
+                field: required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)]))),
+            }]),
+        }]),
+    }
+    assert load_error("schema = \"svc@1\"\n", nested).contains("top level: missing required key `server` (table)")
+}

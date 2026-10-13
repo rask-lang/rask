@@ -2,9 +2,11 @@
 
 // rask-package: the schema for rask.toml.
 //
-// Release 1 is what the `package` block in build.rk holds today, moved to
+// Release 1 is what the old `package` block in build.rk held, moved to
 // TOML. Its history is one Add per top-level table, so the shape and the log
 // share their subtrees rather than spelling them twice.
+
+import schema.{Schema, Ty, Field, Case, Step, Release, Change, Value, required, optional, defaulted, list_of, map_of, root}
 
 public func package_schema() -> Schema {
     return Schema {

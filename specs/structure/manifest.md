@@ -58,8 +58,8 @@ Checked on the TOML itself, before any schema sees it.
 |------|-------------|
 | **WF1: TOML subset** | Comments, bare/quoted/dotted keys, `[table]` headers, basic and literal strings, integers, booleans, arrays, inline tables. Floats, dates, multi-line strings and `[[array of tables]]` are errors that say so. A manifest has no use for them |
 | **WF2: NFC keys** | A quoted key must be in NFC form. Two spellings of one name would otherwise be two keys |
-| **WF3: No raw bidi controls** | Unescaped bidirectional control characters are rejected anywhere in the file. Text must parse the way it reads |
-| **WF4: Duplicates** | A key set twice, a table defined twice, or a key used as both a value and a table is an error naming both |
+| **WF3: No raw controls** | Unescaped control characters (tab aside), a carriage return without a newline after it, and bidirectional controls are rejected anywhere in the file, comments included. Text must parse the way it reads |
+| **WF4: Duplicates** | A key set twice, a table defined twice, a key used as both a value and a table, or a table made by dotted keys that also has a `[header]` is an error naming both lines |
 | **WF5: Limits** | 1 MiB per file, 32 levels of nesting. Fixed numbers with defined errors |
 
 ## Schema and History
@@ -106,7 +106,7 @@ Includes, variables, interpolation, conditionals and computed values. Each turns
 
 ## In the Toolchain
 
-The loader is written in Rask (`compiler/crates/rask-manifest/loader/`): the TOML reader, the schema and its history as Rask data, checking, migration and the JSON Schema export. The compiler embeds those sources and runs them on its interpreter, so there is one implementation, and it is Rask. Package discovery calls it through a hook the `rask` binary installs at startup.
+The loader is written in Rask, as two packages. `libs/schema/` is the general part: the TOML reader, schemas with history, checking, migration and the JSON Schema export, usable for any config file. `compiler/crates/rask-manifest/loader/` holds the `rask-package` schema and the functions the compiler calls, and depends on `schema`. The compiler embeds both and runs them on its interpreter, as a package and its dependency, so there is one implementation, and it is Rask. Package discovery calls it through a hook the `rask` binary installs at startup.
 
 That costs a type-check of the loader per process and an interpreter run per manifest. I took that over a second implementation in Rust: the loader is a real Rask program the toolchain depends on, which keeps the language honest, and speed isn't the constraint yet.
 
@@ -128,7 +128,7 @@ That costs a type-check of the loader per process and an interpreter run per man
 
 | Feature | Status |
 |---------|--------|
-| TOML reader, schema, history check, load, migrate, JSON Schema export | Implemented, in Rask (`compiler/crates/rask-manifest/loader/`) |
+| TOML reader, schema, history check, load, migrate, JSON Schema export | Implemented, in Rask (`libs/schema/`, with the `rask-package` schema in `compiler/crates/rask-manifest/loader/`) |
 | Toolchain reads `rask.toml` | Implemented |
 | `rask migrate`, `rask manifest check`, `rask manifest json-schema` | Implemented |
 | Format-preserving `rask add` / `rask remove` | Implemented (line-based) |
