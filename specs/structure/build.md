@@ -437,11 +437,11 @@ All commands live under the `rask` binary. No separate tools.
 
 | Rule | Description |
 |------|-------------|
-| **AD1: Registry lookup** | Fetches latest compatible version from registry |
+| **AD1: Registry lookup** | Without a version, asks the registry for its newest stable release and writes `^` of it. Pre-releases are only added when named exactly |
 | **AD2: Preserves formatting** | Inserts the dependency with a comment- and format-preserving TOML edit; nothing else in the file changes |
-| **AD3: Dedup check** | Error if dep already exists (suggest `rask update <pkg>`) |
-| **AD4: Lock update** | Runs resolution and updates `rask.lock` after adding |
-| **AD5: Capability prompt** | Prompts if dep requires capabilities — auto-generates `allow` |
+| **AD3: Dedup check** | Error if the name is already a dependency anywhere in the file (suggest `rask update`) |
+| **AD4: Lock update** | Runs resolution and updates `rask.lock` after adding. If that fails, `rask.toml` is put back as it was |
+| **AD5: Capability prompt** | Prompts if the registry says the dep uses capabilities, and writes `allow` on yes. Without a terminal to ask on, `--allow` has to name them |
 
 ```
 $ rask add http
@@ -809,9 +809,7 @@ func build(ctx: BuildContext) -> void or Error {
 | Lock file system (LK1-LK7) | Implemented |
 | Feature resolution (F1-F6, FG1-FG6) | Implemented |
 | Dependency scopes (D4, D4a, D4b) | Implemented |
-| `rask add`/`remove`: formatting-preserving edit, dedup check (AD2, AD3) | Implemented |
-| `rask add`: registry lookup, lock update, capability prompt (AD1, AD4, AD5) | Not implemented: writes `registry = "*"` without a version and leaves `rask.lock` alone |
-| `rask remove`: unused check, lock update (RM1, RM2) | Not implemented |
+| `rask add`/`remove` (AD1-AD5, RM1-RM2) | Implemented. Without a terminal, AD5's prompt becomes an error asking for `--allow` |
 | `rask init` project scaffolding | Implemented |
 | `rask fetch` dependency validation | Implemented |
 | `rask update` lock regeneration | Implemented |

@@ -254,12 +254,20 @@ pub fn print_add_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("add"),
-        output::arg("<package> [version] [--dev] [--feature <name>] [--path <dir>]"));
+        output::arg("<package> [version] [options]"));
+    println!();
+    println!("Without a version, the registry's newest stable release is added as `^` of it.");
+    println!("rask.lock is updated afterwards; if that fails, rask.toml is left as it was.");
     println!();
     println!("{}", output::section_header("Options:"));
-    println!("  {}          Add to [dev-dependencies] (test dependencies)", output::arg("--dev"));
-    println!("  {} {} Add to a feature block", output::arg("--feature"), output::arg("<name>"));
-    println!("  {} {}    Local path dependency", output::arg("--path"), output::arg("<dir>"));
+    println!("  {}              Add to [dev-dependencies] (test dependencies)", output::arg("--dev"));
+    println!("  {}            Add to [build-dependencies] (build script dependencies)", output::arg("--build"));
+    println!("  {} {}     Add to a feature's tables", output::arg("--feature"), output::arg("<name>"));
+    println!("  {} {}         Local path dependency", output::arg("--path"), output::arg("<dir>"));
+    println!("  {} {}          Git dependency, with {} or {}", output::arg("--git"), output::arg("<url>"), output::arg("--rev <rev>"), output::arg("--branch <name>"));
+    println!("  {} {}        Turn on the dependency's features", output::arg("--with"), output::arg("<a,b>"));
+    println!("  {} {}       Grant capabilities without asking (net, read, write, exec, ffi, ...)", output::arg("--allow"), output::arg("<a,b>"));
+    println!("  {} {}      Only for one target, e.g. linux", output::arg("--target"), output::arg("<os>"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}             Add latest version",
