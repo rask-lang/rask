@@ -74,10 +74,17 @@ impl Rewrite for Qualifier<'_> {
                     *name = q.clone();
                 }
             }
-            // A type name, so no shadow check.
+            // A type name, so no shadow check. `Shape.Circle { r: 1 }` builds
+            // a variant with named fields: the enum is the declaration and
+            // the variant rides along, as in a pattern. Renaming only a whole
+            // name left that literal pointing at the enum's old name.
             ExprKind::StructLit { name, .. } => {
                 if let Some(q) = self.map.get(name.as_str()) {
                     *name = q.clone();
+                } else if let Some((head, tail)) = name.split_once('.') {
+                    if let Some(q) = self.map.get(head) {
+                        *name = format!("{}.{}", q, tail);
+                    }
                 }
             }
             // `using pool { … }` names a declaration the same way a call does.
