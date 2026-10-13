@@ -561,15 +561,10 @@ mod tests {
     }
 
     #[test]
-    fn dep_still_works_in_package() {
+    fn a_package_block_points_at_rask_toml() {
         let result = parse("package \"myapp\" \"0.1.0\" {\n    dep \"serde\" \"1.0\"\n}");
-        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
-        if let DeclKind::Package(ref p) = result.decls[0].kind {
-            assert_eq!(p.deps.len(), 1);
-            assert_eq!(p.deps[0].name, "serde");
-        } else {
-            panic!("Expected package declaration");
-        }
+        assert!(!result.is_ok());
+        assert!(result.errors[0].message.contains("rask.toml"), "{:?}", result.errors);
     }
 
     // ================================================================

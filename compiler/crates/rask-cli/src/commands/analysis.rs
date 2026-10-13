@@ -32,7 +32,7 @@ fn resolve_rk_targets(path: &str) -> Vec<String> {
     // A package is checked as one program, from its directory. Handing over
     // the first file instead checked `build.rk` alone (it sorts first) and
     // printed OK over type and parse errors in every other file.
-    if p.join("build.rk").is_file() {
+    if rask_resolve::package::is_package_root(p) {
         return vec![path.to_string()];
     }
 

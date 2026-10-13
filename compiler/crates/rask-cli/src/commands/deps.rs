@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Dependency management commands — struct.build/AD1-AD4, RM1-RM2.
+//!
+//! Edits are line-based, so comments and layout stay as the author left them
+//! (AD2). Each edited file goes through the manifest loader before it's
+//! written: an edit that would leave the manifest invalid is refused, and the
+//! file is untouched.
 
 use colored::Colorize;
 use std::fs;
 use std::path::Path;
 use std::process;
 
+use rask_resolve::package::MANIFEST_FILE;
+
 use crate::output;
 
-const MANIFEST: &str = "build.rk";
-
-/// Add a dependency to build.rk (AD1-AD4).
+/// Add a dependency to rask.toml (AD1-AD4).
 pub fn cmd_add(
     name: &str,
     version: Option<&str>,
@@ -18,251 +23,224 @@ pub fn cmd_add(
     feature: Option<&str>,
     local_path: Option<&str>,
 ) {
-    let manifest_path = Path::new(MANIFEST);
-
-    // Build the dep line
-    let dep_line = if let Some(p) = local_path {
-        format!("    dep \"{}\" {{ path: \"{}\" }}", name, p)
-    } else {
-        let ver = version.unwrap_or("\"*\"");
-        // Normalize: if user passed bare version like 1.0, wrap in quotes
-        if ver.starts_with('"') {
-            format!("    dep \"{}\" {}", name, ver)
-        } else {
-            format!("    dep \"{}\" \"{}\"", name, ver)
+    let manifest_path = Path::new(MANIFEST_FILE);
+    let spec = match local_path {
+        Some(p) => format!("{{ path = \"{}\" }}", toml_escape(p)),
+        None => {
+            let ver = version.unwrap_or("*").trim_matches('"');
+            format!("{{ registry = \"{}\" }}", toml_escape(ver))
         }
     };
+    let entry = format!("{} = {}", toml_key(name), spec);
+    let table = match (dev, feature) {
+        (true, Some(f)) => format!("features.{}.dev-dependencies", toml_key(f)),
+        (true, None) => "dev-dependencies".to_string(),
+        (false, Some(f)) => format!("features.{}.dependencies", toml_key(f)),
+        (false, None) => "dependencies".to_string(),
+    };
 
-    if !manifest_path.exists() {
-        // Create a new build.rk with the dependency
+    let content = if manifest_path.exists() {
+        read_manifest(manifest_path)
+    } else {
         let dir_name = std::env::current_dir()
             .ok()
             .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
             .unwrap_or_else(|| "my-package".to_string());
+        let schema = rask_manifest::schema_line().unwrap_or_else(|e| fail(&e));
+        println!("  {} {}", "Created".green(), MANIFEST_FILE);
+        format!(
+            "schema = \"{}\"\n\n[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
+            schema,
+            toml_escape(&dir_name)
+        )
+    };
 
-        let scope_open = if dev {
-            format!("\n    scope \"dev\" {{\n{}\n    }}", dep_line.trim())
-        } else if let Some(feat) = feature {
-            format!("\n    feature \"{}\" {{\n{}\n    }}", feat, dep_line.trim())
-        } else {
-            format!("\n{}", dep_line)
-        };
-
-        let content = format!(
-            "package \"{}\" \"0.1.0\" {{{}\n}}\n",
-            dir_name, scope_open
-        );
-
-        if let Err(e) = fs::write(manifest_path, &content) {
-            eprintln!("{}: failed to create {}: {}", output::error_label(), MANIFEST, e);
+    // AD3: one name, one dependency, across every table. Asked of the
+    // loader, which has already parsed every spelling of the file.
+    if manifest_path.exists() {
+        let pkg = rask_manifest::load_text(&content)
+            .unwrap_or_else(|e| fail(&format!("{} doesn't load, so nothing was added:\n{}", MANIFEST_FILE, e)));
+        let declared = pkg.deps.iter().chain(pkg.features.iter().flat_map(|f| f.deps.iter()));
+        if declared.into_iter().any(|d| d.name == name) {
+            eprintln!(
+                "{}: \"{}\" is already in {}. Use {} to change its version.",
+                output::error_label(), name, MANIFEST_FILE, "rask update".green()
+            );
             process::exit(1);
         }
-        println!("  {} {}", "Created".green(), MANIFEST);
-        println!("  {} {}", "Added".green(), dep_line.trim());
-        return;
     }
 
-    // Read existing manifest
-    let content = match fs::read_to_string(manifest_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{}: failed to read {}: {}", output::error_label(), MANIFEST, e);
-            process::exit(1);
-        }
-    };
-
-    // Check for duplicates (AD3)
-    let check_name = format!("dep \"{}\"", name);
-    if content.contains(&check_name) {
-        eprintln!("{}: \"{}\" already in {}. Use {} to change version.",
-            output::error_label(), name, MANIFEST,
-            "rask update".green()
-        );
-        process::exit(1);
-    }
-
-    // Find insertion point (AD2: preserve formatting)
-    let new_content = if dev {
-        insert_in_scope(&content, "dev", &dep_line)
-    } else if let Some(feat) = feature {
-        insert_in_feature(&content, feat, &dep_line)
-    } else {
-        insert_dep(&content, &dep_line)
-    };
-
-    if let Err(e) = fs::write(manifest_path, &new_content) {
-        eprintln!("{}: failed to write {}: {}", output::error_label(), MANIFEST, e);
-        process::exit(1);
-    }
-
-    let location = if dev {
-        " to scope \"dev\"".to_string()
-    } else if let Some(feat) = feature {
-        format!(" to feature \"{}\"", feat)
-    } else {
-        String::new()
-    };
-
-    println!("  {} {}{}", "Added".green(), dep_line.trim(), location);
+    let new_content = insert_entry(&content, &table, &entry);
+    write_checked(manifest_path, &new_content);
+    println!("  {} {} to [{}]", "Added".green(), entry, table);
 }
 
-/// Remove a dependency from build.rk (RM1-RM2).
+/// Remove a dependency from rask.toml (RM1-RM2).
 pub fn cmd_remove(name: &str) {
-    let manifest_path = Path::new(MANIFEST);
-
+    let manifest_path = Path::new(MANIFEST_FILE);
     if !manifest_path.exists() {
-        eprintln!("{}: no {} found", output::error_label(), MANIFEST);
-        process::exit(1);
+        fail(&format!("no {} here", MANIFEST_FILE));
     }
-
-    let content = match fs::read_to_string(manifest_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{}: failed to read {}: {}", output::error_label(), MANIFEST, e);
-            process::exit(1);
-        }
-    };
-
-    let pattern = format!("dep \"{}\"", name);
-    if !content.contains(&pattern) {
-        eprintln!("{}: \"{}\" not found in {}", output::error_label(), name, MANIFEST);
-        process::exit(1);
+    let content = read_manifest(manifest_path);
+    let (new_content, removed) = remove_entry(&content, name);
+    if removed == 0 {
+        fail(&format!("\"{}\" isn't a dependency in {}", name, MANIFEST_FILE));
     }
-
-    // Remove lines containing the dep declaration
-    let new_lines: Vec<&str> = content
-        .lines()
-        .filter(|line| !line.contains(&pattern))
-        .collect();
-    let new_content = new_lines.join("\n") + "\n";
-
-    if let Err(e) = fs::write(manifest_path, &new_content) {
-        eprintln!("{}: failed to write {}: {}", output::error_label(), MANIFEST, e);
-        process::exit(1);
-    }
-
-    println!("  {} dep \"{}\"", "Removed".green(), name);
+    write_checked(manifest_path, &new_content);
+    println!("  {} \"{}\"", "Removed".green(), name);
 }
 
-/// Insert a dep line into the package block, after existing deps.
-fn insert_dep(content: &str, dep_line: &str) -> String {
+fn fail(msg: &str) -> ! {
+    eprintln!("{}: {}", output::error_label(), msg);
+    process::exit(1);
+}
+
+fn read_manifest(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| fail(&format!("reading {}: {}", MANIFEST_FILE, e)))
+}
+
+/// Write only an edit the loader accepts.
+fn write_checked(path: &Path, content: &str) {
+    if let Err(e) = rask_manifest::load_text(content) {
+        fail(&format!(
+            "the edit would leave {} invalid, so it wasn't written:\n{}",
+            MANIFEST_FILE, e
+        ));
+    }
+    if let Err(e) = fs::write(path, content) {
+        fail(&format!("writing {}: {}", MANIFEST_FILE, e));
+    }
+}
+
+/// The inside of a TOML basic string.
+fn toml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// A key, bare when TOML allows it.
+fn toml_key(s: &str) -> String {
+    let bare = !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if bare { s.to_string() } else { format!("\"{}\"", toml_escape(s)) }
+}
+
+/// `[dependencies]` → `dependencies`, for a header line.
+fn header_of(line: &str) -> Option<&str> {
+    let t = line.trim();
+    if t.starts_with("[[") {
+        return None;
+    }
+    let inner = t.strip_prefix('[')?;
+    let end = inner.find(']')?;
+    Some(inner[..end].trim())
+}
+
+fn is_dep_table(header: &str) -> bool {
+    header == "dependencies"
+        || header == "dev-dependencies"
+        || header == "build-dependencies"
+        || (header.starts_with("features.")
+            && (header.ends_with(".dependencies")
+                || header.ends_with(".dev-dependencies")
+                || header.ends_with(".build-dependencies")))
+}
+
+/// Put `entry` at the end of `[table]`'s own lines, creating the table at
+/// the end of the file if it isn't there.
+fn insert_entry(content: &str, table: &str, entry: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let mut result = Vec::new();
-    let mut inserted = false;
-
-    // Find the last dep line or the opening brace of the package block
-    let mut last_dep_idx = None;
-    let mut package_open_idx = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("package ") && trimmed.ends_with('{') {
-            package_open_idx = Some(i);
-        }
-        if trimmed.starts_with("dep ") {
-            last_dep_idx = Some(i);
-        }
-    }
-
-    let insert_after = last_dep_idx.or(package_open_idx);
-
-    for (i, line) in lines.iter().enumerate() {
-        result.push(*line);
-        if !inserted {
-            if let Some(idx) = insert_after {
-                if i == idx {
-                    result.push(dep_line);
-                    inserted = true;
-                }
-            }
+    let Some(start) = lines.iter().position(|l| header_of(l) == Some(table)) else {
+        let mut out = content.trim_end().to_string();
+        out.push_str(&format!("\n\n[{}]\n{}\n", table, entry));
+        return out;
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| header_of(l).is_some())
+        .map_or(lines.len(), |i| start + 1 + i);
+    // After the last key line, before any trailing blanks or comments.
+    let mut at = start + 1;
+    for (i, l) in lines.iter().enumerate().take(end).skip(start + 1) {
+        let t = l.trim();
+        if !t.is_empty() && !t.starts_with('#') {
+            at = i + 1;
         }
     }
-
-    if !inserted {
-        // Fallback: insert before closing brace
-        let len = result.len();
-        if len > 0 {
-            result.insert(len - 1, dep_line);
-        }
-    }
-
-    result.join("\n") + "\n"
+    let mut out: Vec<&str> = lines[..at].to_vec();
+    out.push(entry);
+    out.extend_from_slice(&lines[at..]);
+    out.join("\n") + "\n"
 }
 
-/// Insert a dep into a scope block, creating it if needed.
-fn insert_in_scope(content: &str, scope_name: &str, dep_line: &str) -> String {
-    let scope_pattern = format!("scope \"{}\"", scope_name);
-    if content.contains(&scope_pattern) {
-        // Insert into existing scope block
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result: Vec<String> = Vec::new();
-        let mut in_scope = false;
-
-        for line in &lines {
-            let trimmed = line.trim();
-            if trimmed.contains(&scope_pattern) {
-                in_scope = true;
+/// Drop `name`'s line from every dependency table, and a whole
+/// `[dependencies.name]` table if it's written that way.
+fn remove_entry(content: &str, name: &str) -> (String, usize) {
+    let quoted = format!("\"{}\"", toml_escape(name));
+    let names_it = |line: &str| {
+        let t = line.trim_start();
+        let key = t.split('=').next().unwrap_or("").trim();
+        !t.starts_with('#') && t.contains('=') && (key == name || key == quoted)
+    };
+    let mut out = Vec::new();
+    let mut removed = 0;
+    let mut table: Option<String> = None;
+    let mut skipping_table = false;
+    for line in content.lines() {
+        if let Some(h) = header_of(line) {
+            let h = h.to_string();
+            skipping_table = h
+                .rsplit_once('.')
+                .is_some_and(|(parent, last)| is_dep_table(parent) && (last == name || last == quoted));
+            if skipping_table {
+                removed += 1;
             }
-            if in_scope && trimmed == "}" {
-                // Insert before the scope's closing brace, a level deeper
-                // than a top-level dep — `dep_line` comes indented for the
-                // package body.
-                result.push(format!("    {}", dep_line));
-                in_scope = false;
+            table = Some(h);
+            if skipping_table {
+                continue;
             }
-            result.push((*line).to_string());
+        } else if skipping_table {
+            continue;
+        } else if table.as_deref().is_some_and(is_dep_table) && names_it(line) {
+            removed += 1;
+            continue;
         }
-        result.join("\n") + "\n"
-    } else {
-        // Create new scope block before closing brace of package
-        let scope_block = format!(
-            "\n    scope \"{}\" {{\n    {}\n    }}",
-            scope_name,
-            dep_line.trim()
-        );
-        insert_before_closing_brace(content, &scope_block)
+        out.push(line);
     }
+    (out.join("\n") + "\n", removed)
 }
 
-/// Insert a dep into a feature block, creating it if needed.
-fn insert_in_feature(content: &str, feature_name: &str, dep_line: &str) -> String {
-    let feat_pattern = format!("feature \"{}\"", feature_name);
-    if content.contains(&feat_pattern) {
-        let lines: Vec<&str> = content.lines().collect();
-        let mut result = Vec::new();
-        let mut in_feature = false;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        for line in &lines {
-            let trimmed = line.trim();
-            if trimmed.contains(&feat_pattern) {
-                in_feature = true;
-            }
-            if in_feature && trimmed == "}" {
-                result.push(dep_line.as_ref());
-                in_feature = false;
-            }
-            result.push(*line);
-        }
-        result.join("\n") + "\n"
-    } else {
-        let feat_block = format!(
-            "\n    feature \"{}\" {{\n    {}\n    }}",
-            feature_name,
-            dep_line.trim()
-        );
-        insert_before_closing_brace(content, &feat_block)
+    const BASE: &str = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\nhttp = { registry = \"^2\" }  # keep me\n\n# trailing comment\n[features.ssl]\ndefault = true\n";
+
+    #[test]
+    fn insert_goes_after_the_last_key_and_keeps_comments() {
+        let out = insert_entry(BASE, "dependencies", "json = { registry = \"^1\" }");
+        assert!(out.contains("http = { registry = \"^2\" }  # keep me\njson = { registry = \"^1\" }\n\n# trailing comment"), "{out}");
     }
-}
 
-/// Insert text before the last closing brace in the file.
-fn insert_before_closing_brace(content: &str, text: &str) -> String {
-    if let Some(pos) = content.rfind('}') {
-        let mut result = content[..pos].to_string();
-        result.push_str(text);
-        result.push('\n');
-        result.push_str(&content[pos..]);
-        result
-    } else {
-        format!("{}\n{}\n", content, text)
+    #[test]
+    fn insert_creates_a_missing_table() {
+        let out = insert_entry(BASE, "dev-dependencies", "mock = { path = \"../mock\" }");
+        assert!(out.ends_with("\n\n[dev-dependencies]\nmock = { path = \"../mock\" }\n"), "{out}");
+    }
+
+    #[test]
+    fn remove_takes_the_line_and_nothing_else() {
+        let (out, n) = remove_entry(BASE, "http");
+        assert_eq!(n, 1);
+        assert!(!out.contains("http"));
+        assert!(out.contains("# trailing comment"));
+        let (_, none) = remove_entry(BASE, "name");
+        assert_eq!(none, 0, "`name` under [package] is not a dependency");
+    }
+
+    #[test]
+    fn remove_takes_a_table_form_dependency() {
+        let text = "[dependencies.tls]\ngit = \"u\"\nrev = \"a\"\n\n[features.x]\n";
+        let (out, n) = remove_entry(text, "tls");
+        assert_eq!(n, 1);
+        assert_eq!(out.trim(), "[features.x]");
     }
 }

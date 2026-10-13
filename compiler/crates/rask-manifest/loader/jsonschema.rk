@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// The current shape as JSON Schema (draft-07), so editors that check TOML
+// against JSON Schema (Taplo and the plugins built on it) flag a bad
+// rask.toml inline. Only the current version: an editor shows what to
+// write now, and the loader handles older files.
+
+import json
+import json.JsonValue
+
+public func json_schema(s: Schema) -> string {
+    mut fields = Vec<Field>.new()
+    fields.push(required("schema", Ty.Str))
+    if s.shape is Record(fs) {
+        for f in fs {
+            fields.push(f.clone())
+        }
+    }
+    mut top = closed_object(fields)
+    top.insert("$schema", JsonValue.String("http://json-schema.org/draft-07/schema#"))
+    top.insert("title", JsonValue.String("{s.name}@{s.version()}"))
+    return JsonValue.Object(top).to_string_pretty()
+}
+
+func obj2(k1: string, take v1: JsonValue, k2: string, take v2: JsonValue) -> Map<string, JsonValue> {
+    mut m = Map<string, JsonValue>.new()
+    m.insert(k1, v1)
+    m.insert(k2, v2)
+    return m
+}
+
+func typed(t: string) -> Map<string, JsonValue> {
+    mut m = Map<string, JsonValue>.new()
+    m.insert("type", JsonValue.String(t))
+    return m
+}
+
+func pattern(p: string, description: string) -> Map<string, JsonValue> {
+    mut m = Map<string, JsonValue>.new()
+    m.insert("type", JsonValue.String("string"))
+    m.insert("pattern", JsonValue.String(p))
+    m.insert("description", JsonValue.String(description))
+    return m
+}
+
+public func ty_to_json(t: Ty) -> JsonValue {
+    return JsonValue.Object(ty_map(t))
+}
+
+func ty_map(t: Ty) -> Map<string, JsonValue> {
+    match t {
+        Ty.Str => return typed("string"),
+        Ty.Int => return typed("integer"),
+        Ty.Bool => return typed("boolean"),
+        Ty.Duration => return pattern("^[0-9]+(ms|s|m|h)$", "a duration, like \"30s\""),
+        Ty.Version => return pattern("^[0-9]+[.][0-9]+[.][0-9]+$", "a version, like \"1.0.0\""),
+        Ty.VersionReq => return pattern("^([*]|(>=|<=|[\\^]|~|=|>|<)?[0-9]+([.][0-9]+){{0,2}})$", "a version range, like \"^2.0\""),
+        Ty.OneOf(options) => {
+            mut vals = Vec<JsonValue>.new()
+            for o in options {
+                vals.push(JsonValue.String(o))
+            }
+            mut m = Map<string, JsonValue>.new()
+            m.insert("enum", JsonValue.Array(vals))
+            return m
+        }
+        Ty.List(item) => return obj2("type", JsonValue.String("array"), "items", ty_to_json(item[0].clone())),
+        Ty.MapOf(value) => return obj2("type", JsonValue.String("object"), "additionalProperties", ty_to_json(value[0].clone())),
+        Ty.Record(fields) => return closed_object(fields),
+        Ty.Variant { cases, shared } => {
+            mut options = Vec<JsonValue>.new()
+            for c in cases {
+                mut fields = Vec<Field>.new()
+                fields.push(required(c.name, c.payload.clone()))
+                for f in c.fields {
+                    fields.push(f.clone())
+                }
+                for f in shared {
+                    fields.push(f.clone())
+                }
+                options.push(JsonValue.Object(closed_object(fields)))
+            }
+            mut m = Map<string, JsonValue>.new()
+            m.insert("type", JsonValue.String("object"))
+            m.insert("oneOf", JsonValue.Array(options))
+            return m
+        }
+    }
+}
+
+func closed_object(fields: Vec<Field>) -> Map<string, JsonValue> {
+    mut props = Map<string, JsonValue>.new()
+    mut req = Vec<JsonValue>.new()
+    for f in fields {
+        mut p = ty_map(f.ty)
+        if f.default? as d {
+            p.insert("default", value_to_json(d))
+        }
+        props.insert(f.name, JsonValue.Object(p))
+        if f.required {
+            req.push(JsonValue.String(f.name))
+        }
+    }
+    mut m = Map<string, JsonValue>.new()
+    m.insert("type", JsonValue.String("object"))
+    m.insert("properties", JsonValue.Object(props))
+    if !req.is_empty() {
+        m.insert("required", JsonValue.Array(req))
+    }
+    m.insert("additionalProperties", JsonValue.Bool(false))
+    return m
+}
+
+func value_to_json(v: Value) -> JsonValue {
+    match v {
+        Value.Str(s) => return JsonValue.String(s),
+        Value.Int(n) => return JsonValue.Number(n.to<f64>() catch _ => 0.0),
+        Value.Bool(b) => return JsonValue.Bool(b),
+        Value.Array(items) => {
+            mut out = Vec<JsonValue>.new()
+            for x in items {
+                out.push(value_to_json(x))
+            }
+            return JsonValue.Array(out)
+        }
+        Value.Table(entries) => {
+            mut m = Map<string, JsonValue>.new()
+            for e in entries {
+                m.insert(e.key, value_to_json(e.value))
+            }
+            return JsonValue.Object(m)
+        }
+    }
+}

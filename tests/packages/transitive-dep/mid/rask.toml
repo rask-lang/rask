@@ -1,0 +1,10 @@
+schema = "rask-package@1"
+
+[package]
+name = "mid"
+version = "0.1.0"
+description = "A library with a dependency of its own"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+base = { path = "../base" }

@@ -1022,7 +1022,7 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Benchmark(bench_decl) => {
                 self.check_body(&bench_decl.body);
             }
-            DeclKind::Package(_) | DeclKind::CImport(_) => {}
+            DeclKind::CImport(_) => {}
             DeclKind::Union(_) => {}
             DeclKind::TypeAlias(_) => {}
             DeclKind::Annotation(_) => {}

@@ -113,7 +113,6 @@ pub fn visit_decl<'a>(decl: &'a Decl, v: &mut impl Visit<'a>) {
         | DeclKind::TypeAlias(_)
         | DeclKind::Union(_)
         | DeclKind::Extern(_)
-        | DeclKind::Package(_)
         | DeclKind::Annotation(_) => {}
     }
 }
@@ -408,7 +407,6 @@ pub fn walk_decl<'a>(decl: &'a Decl, f: &mut impl FnMut(&'a Expr)) {
         | DeclKind::TypeAlias(_)
         | DeclKind::Union(_)
         | DeclKind::Extern(_)
-        | DeclKind::Package(_)
         | DeclKind::Annotation(_) => {}
     }
 }

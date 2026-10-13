@@ -1,0 +1,10 @@
+schema = "rask-package@1"
+
+[package]
+name = "libb"
+version = "0.1.0"
+description = "Conforms a foreign type to a foreign interface"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+interfacepkg = { path = "../interfacepkg" }

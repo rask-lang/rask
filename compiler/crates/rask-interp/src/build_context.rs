@@ -108,7 +108,7 @@ fn check_build_exec(state: &BuildState, method: &str) -> Result<(), String> {
             return Err(format!(
                 "[struct.build/PM9]: build_exec capability required\n\
                  \x20  dependency '{}' build script calls {}() but is not allowed\n\
-                 \x20  add `allow: [\"build_exec\"]` to the dep declaration in build.rk",
+                 \x20  add `allow = [\"build_exec\"]` to its entry in rask.toml",
                 state.package_name, method,
             ));
         }
@@ -628,7 +628,7 @@ mod tests {
     fn error_message_includes_fix() {
         let mut state = make_state(Some(vec![]));
         let err = call_method(&mut state, "exec", vec![str_val("echo"), empty_vec()]).unwrap_err();
-        assert!(err.contains(r#"add `allow: ["build_exec"]`"#), "should suggest fix: {}", err);
-        assert!(err.contains("build.rk"), "should mention build.rk: {}", err);
+        assert!(err.contains(r#"add `allow = ["build_exec"]`"#), "should suggest fix: {}", err);
+        assert!(err.contains("rask.toml"), "should mention rask.toml: {}", err);
     }
 }

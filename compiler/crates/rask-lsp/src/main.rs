@@ -40,6 +40,7 @@ use crate::server::BackendHandle;
 
 #[tokio::main]
 async fn main() {
+    rask_manifest::install();
     install_panic_hook();
 
     let stdin = tokio::io::stdin();

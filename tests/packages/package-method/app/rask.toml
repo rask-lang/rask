@@ -1,0 +1,10 @@
+schema = "rask-package@1"
+
+[package]
+name = "app"
+version = "0.1.0"
+description = "Calls a dependency's method it doesn't make public"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+libpkg = { path = "../libpkg" }

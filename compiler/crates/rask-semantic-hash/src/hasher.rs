@@ -281,9 +281,6 @@ impl Hasher {
             DeclKind::Export(_) => {
                 self.feed_tag(12);
             }
-            DeclKind::Package(_) => {
-                self.feed_tag(13);
-            }
             DeclKind::TypeAlias(ta) => {
                 self.feed_tag(14);
                 self.feed_str(&ta.name);

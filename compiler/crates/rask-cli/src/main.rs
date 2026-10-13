@@ -184,6 +184,7 @@ pub(crate) fn run_check(
 
 fn main() {
     output::init();
+    rask_manifest::install();
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
@@ -529,20 +530,20 @@ fn main() {
             }
             if interp {
                 // A package directory checks as one program — `check_file`
-                // finds the `build.rk` and merges every package's declarations
+                // finds the manifest and merges every package's declarations
                 // — so the interpreter takes the same decl list a single file
-                // gives it. A directory of loose files has no build.rk and no
+                // gives it. A directory of loose files has no manifest and no
                 // shared namespace, so each one still runs on its own.
-                if p.is_dir() && !p.join("build.rk").is_file() {
+                if p.is_dir() && !rask_resolve::package::is_package_root(p) {
                     commands::run::cmd_test_files_interp(file, filter, format);
                 } else {
                     commands::run::cmd_test_interp(file, filter, format);
                 }
             } else if p.is_dir() {
-                // Directory with build.rk → single project (all files share types).
-                // Directory without build.rk → folder of standalone files; run each
+                // A package directory → single project (all files share types).
+                // Anything else → folder of standalone files; run each
                 // independently so duplicate type names across files don't collide.
-                if p.join("build.rk").is_file() {
+                if rask_resolve::package::is_package_root(p) {
                     commands::run::cmd_test_project(file, filter, format);
                 } else {
                     commands::run::cmd_test_files_native(file, filter, format);
@@ -732,6 +733,41 @@ fn main() {
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
             let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
             commands::fetch::cmd_fetch(path, verbose);
+        }
+        "manifest" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") || cmd_args.len() < 3 {
+                help::print_manifest_help();
+                return;
+            }
+            match cmd_args[2] {
+                "check" => {
+                    let dir = find_positional_arg(&cmd_args, 3, &[]).unwrap_or(".");
+                    commands::manifest::cmd_check(dir);
+                }
+                "json-schema" => commands::manifest::cmd_json_schema(),
+                other => {
+                    eprintln!("{}: unknown `rask manifest` command `{}`", output::error_label(), other);
+                    help::print_manifest_help();
+                    process::exit(2);
+                }
+            }
+        }
+        "migrate" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_migrate_help();
+                return;
+            }
+            let Some(to) = extract_flag_value(&cmd_args, "--to") else {
+                eprintln!("{}: missing `--to <version>`", output::error_label());
+                help::print_migrate_help();
+                process::exit(2);
+            };
+            let Ok(to) = to.parse::<u32>() else {
+                eprintln!("{}: `--to` takes a whole number, got `{}`", output::error_label(), to);
+                process::exit(2);
+            };
+            let dir = find_positional_arg(&cmd_args, 2, &["--to"]).unwrap_or(".");
+            commands::manifest::cmd_migrate(dir, to);
         }
         "vendor" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

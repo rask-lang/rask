@@ -137,7 +137,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
         // An import names a package and a member of it, a C import names a
         // header, an export names what it re-exports, a package block is
         // metadata. None of them holds a type or a body.
-        DeclKind::Import(_) | DeclKind::Export(_) | DeclKind::CImport(_) | DeclKind::Package(_) => {}
+        DeclKind::Import(_) | DeclKind::Export(_) | DeclKind::CImport(_) => {}
     }
 }
 

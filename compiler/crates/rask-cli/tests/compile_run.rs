@@ -4957,7 +4957,7 @@ commit
 
 // ─── Regression: issue #236 ─────────────────────────────────
 //
-// `rask test <dir>` on a directory of standalone files (no build.rk)
+// `rask test <dir>` on a directory of standalone files (no manifest)
 // must run each file in isolation. Without isolation, identically named
 // types in different files collide ("expected `Point`, found `Point`"
 // with different TypeIds) — type checking regresses vs single-file mode.
@@ -5030,10 +5030,12 @@ fn test_package_applies_field_defaults() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    std::fs::write(dir.join("build.rk"), r#"
-package "fd" "0.1.0" {
-    description: "field defaults under rask test"
-}
+    std::fs::write(dir.join("rask.toml"), r#"schema = "rask-package@1"
+
+[package]
+name = "fd"
+version = "0.1.0"
+description = "field defaults under rask test"
 "#).unwrap();
 
     std::fs::write(dir.join("main.rk"), r#"
@@ -5419,8 +5421,8 @@ fn editing_a_sub_package_invalidates_the_build_cache() {
     std::fs::create_dir_all(dir.join("helpers")).unwrap();
 
     std::fs::write(
-        dir.join("build.rk"),
-        "package \"subpkg\" \"0.1.0\" {\n    description: \"cache keying\"\n    license: \"MIT OR Apache-2.0\"\n}\n",
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"subpkg\"\nversion = \"0.1.0\"\ndescription = \"cache keying\"\nlicense = \"MIT OR Apache-2.0\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -5473,8 +5475,12 @@ fn editing_a_sub_package_invalidates_the_build_cache() {
 #[test]
 fn newtype_value_survives_cross_module_mutex_method() {
     let (ok, out) = build_and_run_package("nt", &[
-        ("build.rk", r#"
-package "nt" "0.1.0" { description: "newtype through a mutex global" }
+        ("rask.toml", r#"schema = "rask-package@1"
+
+[package]
+name = "nt"
+version = "0.1.0"
+description = "newtype through a mutex global"
 "#),
         ("ids.rk", r#"
 type UserId = u64 implements Equal, Hashable, Comparable, Debug
@@ -5519,8 +5525,12 @@ const store = Shared.mutex(Store.new())
 #[test]
 fn error_payload_survives_cross_module_mutex_method() {
     let (ok, out) = build_and_run_package("ep", &[
-        ("build.rk", r#"
-package "ep" "0.1.0" { description: "T or E error side through a mutex global" }
+        ("rask.toml", r#"schema = "rask-package@1"
+
+[package]
+name = "ep"
+version = "0.1.0"
+description = "T or E error side through a mutex global"
 "#),
         ("errs.rk", r#"
 @message
@@ -8989,8 +8999,8 @@ fn run_interp_on_a_package_directory_uses_the_interpreter() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
-        dir.join("build.rk"),
-        "package \"interp-pkg\" \"0.1.0\" {\n}\n",
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"interp-pkg\"\nversion = \"0.1.0\"\n",
     )
     .unwrap();
     std::fs::write(
@@ -9015,7 +9025,7 @@ fn run_interp_on_a_package_directory_uses_the_interpreter() {
     assert!(!built, "`--interp` compiled the package natively");
 }
 
-// `rask check <dir>` checked the package's first file, `build.rk`, on its own
+// `rask check <dir>` checked the package's first file on its own
 // and printed OK over errors in every other file. And a file that didn't
 // parse made the package look like no package at all.
 #[test]
@@ -9023,7 +9033,7 @@ fn check_on_a_package_directory_checks_every_file() {
     let dir = std::env::temp_dir().join(format!("rask_check_pkg_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("build.rk"), "package \"check-pkg\" \"0.1.0\" {\n}\n").unwrap();
+    std::fs::write(dir.join("rask.toml"), "schema = \"rask-package@1\"\n\n[package]\nname = \"check-pkg\"\nversion = \"0.1.0\"\n").unwrap();
     std::fs::write(dir.join("main.rk"), "func main() {\n    println(\"hi\")\n}\n").unwrap();
     let check = |dir: &std::path::Path| {
         let out = Command::new(rask_binary())

@@ -179,7 +179,7 @@ impl<T> PipelineOutput<T> {
 
 /// Detect whether a .rk file belongs to a multi-file package.
 ///
-/// Walks up from the file's directory looking for `build.rk`, stopping at
+/// Walks up from the file's directory looking for `rask.toml` or `build.rk`, stopping at
 /// `.git` or filesystem root. Returns a `PackageContext` with all parsed
 /// declarations if found, `Ok(None)` outside any package, and the loader's
 /// error when the package is there but doesn't load.
@@ -225,7 +225,7 @@ pub fn find_project_root_from(file_path: &str) -> Option<PathBuf> {
 fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
     let mut dir = start_dir.canonicalize().unwrap_or_else(|_| start_dir.to_path_buf());
     loop {
-        if dir.join("build.rk").is_file() {
+        if rask_resolve::package::is_package_root(&dir) {
             return Some(dir);
         }
         if dir.join(".git").exists() {
@@ -243,7 +243,7 @@ fn discover_package(root: &Path) -> Result<Option<PackageContext>, rask_resolve:
     // The check path keeps every `test` block — it never strips them, the way a
     // release build does — so it needs the same dev dependencies compiling them
     // requires (struct.build/D4). Without this, `rask check` and
-    // `rask test --interp` on a package with a `scope "dev"` dep reported
+    // `rask test --interp` on a package with a dev dependency reported
     // `E0216: this build doesn't link it` for an import the tests legitimately
     // make, while `rask build` on the same package was fine.
     registry.include_scope("dev");
@@ -396,7 +396,7 @@ pub fn check_source(name: &str, source: &str, config: &CompilerConfig) -> Pipeli
 /// source, and node ids chain across them so combining the declarations can't
 /// produce two nodes with the same id — the same rules `rask-resolve`'s package
 /// loader follows, for the same reasons.
-fn check_loaded(
+pub fn check_loaded(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {

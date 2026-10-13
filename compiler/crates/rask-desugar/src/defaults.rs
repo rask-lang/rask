@@ -324,7 +324,7 @@ impl DefaultDesugarer {
                 for s in &mut b.body { self.desugar_stmt(s); }
             }
             DeclKind::Import(_) | DeclKind::Export(_) | DeclKind::Extern(_)
-            | DeclKind::Package(_) | DeclKind::Union(_) | DeclKind::TypeAlias(_)
+            | DeclKind::Union(_) | DeclKind::TypeAlias(_)
             | DeclKind::CImport(_) | DeclKind::Annotation(_) => {}
         }
     }

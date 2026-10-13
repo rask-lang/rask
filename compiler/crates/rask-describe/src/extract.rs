@@ -130,7 +130,7 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                     });
                 }
             }
-            DeclKind::Test(_) | DeclKind::Benchmark(_) | DeclKind::Export(_) | DeclKind::Package(_) | DeclKind::Union(_) | DeclKind::TypeAlias(_) | DeclKind::CImport(_) | DeclKind::Annotation(_) => {}
+            DeclKind::Test(_) | DeclKind::Benchmark(_) | DeclKind::Export(_) | DeclKind::Union(_) | DeclKind::TypeAlias(_) | DeclKind::CImport(_) | DeclKind::Annotation(_) => {}
         }
     }
 

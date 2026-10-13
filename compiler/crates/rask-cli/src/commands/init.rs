@@ -43,21 +43,27 @@ pub fn cmd_init(name: Option<&str>) {
         }
     }
 
-    // Don't overwrite existing build.rk
-    let build_rk = project_dir.join("build.rk");
-    if build_rk.exists() {
+    // Don't overwrite an existing manifest
+    let manifest = project_dir.join(rask_resolve::package::MANIFEST_FILE);
+    if manifest.exists() {
         eprintln!("{}: {} already exists in {}",
-            output::error_label(), "build.rk", project_dir.display());
+            output::error_label(), rask_resolve::package::MANIFEST_FILE, project_dir.display());
         process::exit(1);
     }
 
-    // Write build.rk
-    let build_rk_content = format!(
-        "package \"{}\" \"0.1.0\" {{\n    description: \"A Rask project\"\n    license: \"MIT\"\n}}\n",
-        project_name
+    // The schema line names the version this toolchain ships, so a new
+    // manifest starts current (struct.manifest/MF1).
+    let schema = rask_manifest::schema_line().unwrap_or_else(|e| {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    });
+    let manifest_content = format!(
+        "schema = \"{}\"\n\n[package]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"A Rask project\"\nlicense = \"MIT\"\n",
+        schema,
+        toml_escape(&project_name),
     );
-    write_file(&build_rk, &build_rk_content);
-    println!("  {} {}", "Created".green(), "build.rk");
+    write_file(&manifest, &manifest_content);
+    println!("  {} {}", "Created".green(), rask_resolve::package::MANIFEST_FILE);
 
     // Write main.rk if it doesn't exist
     let main_rk = project_dir.join("main.rk");
@@ -111,6 +117,11 @@ pub fn cmd_init(name: Option<&str>) {
         println!("  Run with:");
         println!("    {} {} {}", output::command("rask"), output::command("run"), "main.rk");
     }
+}
+
+/// The inside of a TOML basic string.
+fn toml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn write_file(path: &Path, content: &str) {

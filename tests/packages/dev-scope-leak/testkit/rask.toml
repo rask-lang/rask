@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "testkit"
+version = "0.1.0"
+description = "Dev-only dependency — reachable from test blocks and nowhere else"
+license = "MIT OR Apache-2.0"
