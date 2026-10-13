@@ -15,6 +15,8 @@ use rask_resolve::package::MANIFEST_FILE;
 
 use crate::output;
 
+const DEP_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
+
 /// Add a dependency to rask.toml (AD1-AD4).
 pub fn cmd_add(
     name: &str,
@@ -24,55 +26,20 @@ pub fn cmd_add(
     local_path: Option<&str>,
 ) {
     let manifest_path = Path::new(MANIFEST_FILE);
-    let spec = match local_path {
-        Some(p) => format!("{{ path = \"{}\" }}", toml_escape(p)),
-        None => {
-            let ver = version.unwrap_or("*").trim_matches('"');
-            format!("{{ registry = \"{}\" }}", toml_escape(ver))
-        }
-    };
-    let entry = format!("{} = {}", toml_key(name), spec);
-    let table = match (dev, feature) {
-        (true, Some(f)) => format!("features.{}.dev-dependencies", toml_key(f)),
-        (true, None) => "dev-dependencies".to_string(),
-        (false, Some(f)) => format!("features.{}.dependencies", toml_key(f)),
-        (false, None) => "dependencies".to_string(),
-    };
-
-    let content = if manifest_path.exists() {
-        read_manifest(manifest_path)
-    } else {
-        let dir_name = std::env::current_dir()
-            .ok()
-            .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "my-package".to_string());
-        let schema = rask_manifest::schema_line().unwrap_or_else(|e| fail(&e));
-        println!("  {} {}", "Created".green(), MANIFEST_FILE);
-        format!(
-            "schema = \"{}\"\n\n[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
-            schema,
-            toml_escape(&dir_name)
-        )
-    };
-
-    // AD3: one name, one dependency, across every table. Asked of the
-    // loader, which has already parsed every spelling of the file.
-    if manifest_path.exists() {
-        let pkg = rask_manifest::load_text(&content)
-            .unwrap_or_else(|e| fail(&format!("{} doesn't load, so nothing was added:\n{}", MANIFEST_FILE, e)));
-        let declared = pkg.deps.iter().chain(pkg.features.iter().flat_map(|f| f.deps.iter()));
-        if declared.into_iter().any(|d| d.name == name) {
-            eprintln!(
-                "{}: \"{}\" is already in {}. Use {} to change its version.",
-                output::error_label(), name, MANIFEST_FILE, "rask update".green()
-            );
-            process::exit(1);
-        }
+    let existing = manifest_path.exists().then(|| read_manifest(manifest_path));
+    let dir_name = std::env::current_dir()
+        .ok()
+        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "my-package".to_string());
+    let added = plan_add(existing.as_deref(), &dir_name, name, version, dev, feature, local_path)
+        .unwrap_or_else(|e| fail(&e));
+    if let Err(e) = fs::write(manifest_path, &added.content) {
+        fail(&format!("writing {}: {}", MANIFEST_FILE, e));
     }
-
-    let new_content = insert_entry(&content, &table, &entry);
-    write_checked(manifest_path, &new_content);
-    println!("  {} {} to [{}]", "Added".green(), entry, table);
+    if existing.is_none() {
+        println!("  {} {}", "Created".green(), MANIFEST_FILE);
+    }
+    println!("  {} {} to [{}]", "Added".green(), added.entry, added.table);
 }
 
 /// Remove a dependency from rask.toml (RM1-RM2).
@@ -82,11 +49,10 @@ pub fn cmd_remove(name: &str) {
         fail(&format!("no {} here", MANIFEST_FILE));
     }
     let content = read_manifest(manifest_path);
-    let (new_content, removed) = remove_entry(&content, name);
-    if removed == 0 {
-        fail(&format!("\"{}\" isn't a dependency in {}", name, MANIFEST_FILE));
+    let new_content = plan_remove(&content, name).unwrap_or_else(|e| fail(&e));
+    if let Err(e) = fs::write(manifest_path, &new_content) {
+        fail(&format!("writing {}: {}", MANIFEST_FILE, e));
     }
-    write_checked(manifest_path, &new_content);
     println!("  {} \"{}\"", "Removed".green(), name);
 }
 
@@ -99,17 +65,113 @@ fn read_manifest(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| fail(&format!("reading {}: {}", MANIFEST_FILE, e)))
 }
 
-/// Write only an edit the loader accepts.
-fn write_checked(path: &Path, content: &str) {
-    if let Err(e) = rask_manifest::load_text(content) {
-        fail(&format!(
-            "the edit would leave {} invalid, so it wasn't written:\n{}",
-            MANIFEST_FILE, e
+/// A checked edit, ready to write.
+#[derive(Debug)]
+struct Added {
+    content: String,
+    entry: String,
+    table: String,
+}
+
+/// The manifest after adding `name`. `existing` is None when there is no
+/// rask.toml yet; one is started, named after `dir_name`.
+fn plan_add(
+    existing: Option<&str>,
+    dir_name: &str,
+    name: &str,
+    version: Option<&str>,
+    dev: bool,
+    feature: Option<&str>,
+    local_path: Option<&str>,
+) -> Result<Added, String> {
+    let spec = match (local_path, version) {
+        (Some(_), Some(v)) => {
+            return Err(format!(
+                "a dependency has one source: version `{}` or `--path`, not both",
+                v
+            ))
+        }
+        (Some(p), None) => format!("{{ path = \"{}\" }}", toml_escape(p)),
+        (None, v) => {
+            let ver = v.unwrap_or("*").trim_matches('"');
+            format!("{{ registry = \"{}\" }}", toml_escape(ver))
+        }
+    };
+    let entry = format!("{} = {}", toml_key(name), spec);
+    let scope = if dev { "dev-dependencies" } else { "dependencies" };
+    let table: Vec<String> = match feature {
+        Some(f) => vec!["features".into(), f.into(), scope.into()],
+        None => vec![scope.into()],
+    };
+    let table_text = render_key(&table);
+
+    let content = match existing {
+        Some(text) => {
+            // AD3: one name, one dependency, across every table. Asked of the
+            // loader, which has already parsed every spelling of the file.
+            let pkg = rask_manifest::load_text(text).map_err(|e| {
+                format!("{} doesn't load, so nothing was added:\n{}", MANIFEST_FILE, e)
+            })?;
+            if declares(&pkg, name) {
+                return Err(format!(
+                    "\"{}\" is already in {}. Use `rask update {}` to change its version",
+                    name, MANIFEST_FILE, name
+                ));
+            }
+            text.to_string()
+        }
+        None => format!(
+            "schema = \"{}\"\n\n[package]\nname = \"{}\"\nversion = \"0.1.0\"\n",
+            rask_manifest::schema_line()?,
+            toml_escape(dir_name)
+        ),
+    };
+
+    let new_content = insert_entry(&content, &table, &entry);
+    let pkg = rask_manifest::load_text(&new_content).map_err(|e| {
+        format!("the edit would leave {} invalid, so it wasn't written:\n{}", MANIFEST_FILE, e)
+    })?;
+    if !declares(&pkg, name) {
+        return Err(format!(
+            "adding \"{}\" by line didn't declare it, so {} wasn't written",
+            name, MANIFEST_FILE
         ));
     }
-    if let Err(e) = fs::write(path, content) {
-        fail(&format!("writing {}: {}", MANIFEST_FILE, e));
+    Ok(Added { content: new_content, entry, table: table_text })
+}
+
+/// The manifest after removing `name` from every dependency table.
+fn plan_remove(content: &str, name: &str) -> Result<String, String> {
+    let before = rask_manifest::load_text(content)
+        .map_err(|e| format!("{} doesn't load, so nothing was removed:\n{}", MANIFEST_FILE, e))?;
+    let (new_content, removed) = remove_entry(content, name);
+    if removed == 0 {
+        if declares(&before, name) {
+            return Err(format!(
+                "\"{}\" is declared in a form `rask remove` can't edit line by line, such as an inline \
+                 `dependencies = {{ ... }}` table; remove it by hand",
+                name
+            ));
+        }
+        return Err(format!("\"{}\" isn't a dependency in {}", name, MANIFEST_FILE));
     }
+    let after = rask_manifest::load_text(&new_content).map_err(|e| {
+        format!("the edit would leave {} invalid, so it wasn't written:\n{}", MANIFEST_FILE, e)
+    })?;
+    if declares(&after, name) {
+        return Err(format!(
+            "\"{}\" is still declared after removing its lines, so {} wasn't written; remove it by hand",
+            name, MANIFEST_FILE
+        ));
+    }
+    Ok(new_content)
+}
+
+fn declares(pkg: &rask_ast::decl::PackageDecl, name: &str) -> bool {
+    pkg.deps
+        .iter()
+        .chain(pkg.features.iter().flat_map(|f| f.deps.iter()))
+        .any(|d| d.name == name)
 }
 
 /// The inside of a TOML basic string.
@@ -119,43 +181,111 @@ fn toml_escape(s: &str) -> String {
 
 /// A key, bare when TOML allows it.
 fn toml_key(s: &str) -> String {
-    let bare = !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    let bare = !s.is_empty() && s.bytes().all(is_bare_key_byte);
     if bare { s.to_string() } else { format!("\"{}\"", toml_escape(s)) }
 }
 
-/// `[dependencies]` → `dependencies`, for a header line.
-fn header_of(line: &str) -> Option<&str> {
-    let t = line.trim();
-    if t.starts_with("[[") {
-        return None;
-    }
-    let inner = t.strip_prefix('[')?;
-    let end = inner.find(']')?;
-    Some(inner[..end].trim())
+fn render_key(path: &[String]) -> String {
+    path.iter().map(|s| toml_key(s)).collect::<Vec<_>>().join(".")
 }
 
-fn is_dep_table(header: &str) -> bool {
-    header == "dependencies"
-        || header == "dev-dependencies"
-        || header == "build-dependencies"
-        || (header.starts_with("features.")
-            && (header.ends_with(".dependencies")
-                || header.ends_with(".dev-dependencies")
-                || header.ends_with(".build-dependencies")))
+fn is_bare_key_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// One key segment at the start of `s`: bare, "basic" or 'literal'.
+/// None for anything else, including escapes this editor doesn't decode.
+fn parse_key_segment(s: &str) -> Option<(String, &str)> {
+    if let Some(r) = s.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = r.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '"' => return Some((out, &r[i + 1..])),
+                '\\' => match chars.next()?.1 {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    _ => return None,
+                },
+                _ => out.push(c),
+            }
+        }
+        None
+    } else if let Some(r) = s.strip_prefix('\'') {
+        let end = r.find('\'')?;
+        Some((r[..end].to_string(), &r[end + 1..]))
+    } else {
+        let end = s.bytes().position(|b| !is_bare_key_byte(b)).unwrap_or(s.len());
+        (end > 0).then(|| (s[..end].to_string(), &s[end..]))
+    }
+}
+
+/// A dotted key at the start of `s`, and what follows it.
+fn parse_key(s: &str) -> Option<(Vec<String>, &str)> {
+    let mut segments = Vec::new();
+    let mut rest = s.trim_start();
+    loop {
+        let (seg, after) = parse_key_segment(rest)?;
+        segments.push(seg);
+        let after = after.trim_start();
+        match after.strip_prefix('.') {
+            Some(r) => rest = r.trim_start(),
+            None => return Some((segments, after)),
+        }
+    }
+}
+
+/// `[features.ssl.dependencies]` → `["features", "ssl", "dependencies"]`.
+fn header_of(line: &str) -> Option<Vec<String>> {
+    let inner = line.trim_start().strip_prefix('[')?;
+    if inner.starts_with('[') {
+        return None;
+    }
+    let (path, rest) = parse_key(inner)?;
+    let rest = rest.strip_prefix(']')?.trim_start();
+    (rest.is_empty() || rest.starts_with('#')).then_some(path)
+}
+
+/// Whether a line starts a new table, `[[array]]` headers included.
+fn starts_table(line: &str) -> bool {
+    header_of(line).is_some() || line.trim_start().starts_with("[[")
+}
+
+/// The key a `key = value` line sets.
+fn key_of(line: &str) -> Option<Vec<String>> {
+    let (path, rest) = parse_key(line)?;
+    rest.starts_with('=').then_some(path)
+}
+
+/// The dependency a full key path belongs to, if it sits under a
+/// dependency table.
+fn dep_named_by(path: &[String]) -> Option<&str> {
+    let is_table = |s: &String| DEP_TABLES.contains(&s.as_str());
+    let at = match path {
+        [t, ..] if is_table(t) => 1,
+        [f, _, t, ..] if f == "features" && is_table(t) => 3,
+        _ => return None,
+    };
+    path.get(at).map(String::as_str)
+}
+
+fn line_ending(content: &str) -> &'static str {
+    if content.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 /// Put `entry` at the end of `[table]`'s own lines, creating the table at
 /// the end of the file if it isn't there.
-fn insert_entry(content: &str, table: &str, entry: &str) -> String {
+fn insert_entry(content: &str, table: &[String], entry: &str) -> String {
+    let nl = line_ending(content);
     let lines: Vec<&str> = content.lines().collect();
-    let Some(start) = lines.iter().position(|l| header_of(l) == Some(table)) else {
+    let Some(start) = lines.iter().position(|l| header_of(l).as_deref() == Some(table)) else {
         let mut out = content.trim_end().to_string();
-        out.push_str(&format!("\n\n[{}]\n{}\n", table, entry));
+        out.push_str(&format!("{nl}{nl}[{}]{nl}{}{nl}", render_key(table), entry));
         return out;
     };
     let end = lines[start + 1..]
         .iter()
-        .position(|l| header_of(l).is_some())
+        .position(|l| starts_table(l))
         .map_or(lines.len(), |i| start + 1 + i);
     // After the last key line, before any trailing blanks or comments.
     let mut at = start + 1;
@@ -168,44 +298,52 @@ fn insert_entry(content: &str, table: &str, entry: &str) -> String {
     let mut out: Vec<&str> = lines[..at].to_vec();
     out.push(entry);
     out.extend_from_slice(&lines[at..]);
-    out.join("\n") + "\n"
+    out.join(nl) + nl
 }
 
-/// Drop `name`'s line from every dependency table, and a whole
-/// `[dependencies.name]` table if it's written that way.
+/// Drop `name`'s lines from every dependency table, and a whole
+/// `[dependencies.name]` table if it's written that way. Comments after the
+/// dropped table's last key stay: they usually introduce the next table.
 fn remove_entry(content: &str, name: &str) -> (String, usize) {
-    let quoted = format!("\"{}\"", toml_escape(name));
-    let names_it = |line: &str| {
-        let t = line.trim_start();
-        let key = t.split('=').next().unwrap_or("").trim();
-        !t.starts_with('#') && t.contains('=') && (key == name || key == quoted)
-    };
-    let mut out = Vec::new();
+    let nl = line_ending(content);
+    let mut out: Vec<&str> = Vec::new();
     let mut removed = 0;
-    let mut table: Option<String> = None;
-    let mut skipping_table = false;
+    let mut header: Vec<String> = Vec::new();
+    let mut skipping = false;
+    // Blank and comment lines met inside a dropped table, kept if no key follows.
+    let mut held: Vec<&str> = Vec::new();
     for line in content.lines() {
         if let Some(h) = header_of(line) {
-            let h = h.to_string();
-            skipping_table = h
-                .rsplit_once('.')
-                .is_some_and(|(parent, last)| is_dep_table(parent) && (last == name || last == quoted));
-            if skipping_table {
+            out.append(&mut held);
+            skipping = dep_named_by(&h) == Some(name);
+            header = h;
+            if skipping {
                 removed += 1;
-            }
-            table = Some(h);
-            if skipping_table {
                 continue;
             }
-        } else if skipping_table {
+        } else if starts_table(line) {
+            out.append(&mut held);
+            skipping = false;
+            header.clear();
+        } else if skipping {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                held.push(line);
+            } else {
+                held.clear();
+            }
             continue;
-        } else if table.as_deref().is_some_and(is_dep_table) && names_it(line) {
-            removed += 1;
-            continue;
+        } else if let Some(key) = key_of(line) {
+            let full: Vec<String> = header.iter().cloned().chain(key).collect();
+            if dep_named_by(&full) == Some(name) {
+                removed += 1;
+                continue;
+            }
         }
         out.push(line);
     }
-    (out.join("\n") + "\n", removed)
+    out.append(&mut held);
+    (out.join(nl) + nl, removed)
 }
 
 #[cfg(test)]
@@ -214,24 +352,58 @@ mod tests {
 
     const BASE: &str = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\nhttp = { registry = \"^2\" }  # keep me\n\n# trailing comment\n[features.ssl]\ndefault = true\n";
 
+    fn path(s: &str) -> Vec<String> {
+        s.split('.').map(str::to_string).collect()
+    }
+
+    fn add(existing: &str, name: &str, version: Option<&str>) -> Result<Added, String> {
+        plan_add(Some(existing), "dir", name, version, false, None, None)
+    }
+
+    fn deps_of(text: &str) -> Vec<rask_ast::decl::DepDecl> {
+        let pkg = rask_manifest::load_text(text).unwrap_or_else(|e| panic!("doesn't load: {e}\n{text}"));
+        pkg.deps.into_iter().chain(pkg.features.into_iter().flat_map(|f| f.deps)).collect()
+    }
+
+    fn dep<'a>(deps: &'a [rask_ast::decl::DepDecl], name: &str) -> &'a rask_ast::decl::DepDecl {
+        deps.iter().find(|d| d.name == name).unwrap_or_else(|| panic!("no dep {name}"))
+    }
+
+    // ─── Line editing ───────────────────────────────────────────────
+
     #[test]
     fn insert_goes_after_the_last_key_and_keeps_comments() {
-        let out = insert_entry(BASE, "dependencies", "json = { registry = \"^1\" }");
+        let out = insert_entry(BASE, &path("dependencies"), "json = { registry = \"^1\" }");
         assert!(out.contains("http = { registry = \"^2\" }  # keep me\njson = { registry = \"^1\" }\n\n# trailing comment"), "{out}");
     }
 
     #[test]
     fn insert_creates_a_missing_table() {
-        let out = insert_entry(BASE, "dev-dependencies", "mock = { path = \"../mock\" }");
+        let out = insert_entry(BASE, &path("dev-dependencies"), "mock = { path = \"../mock\" }");
         assert!(out.ends_with("\n\n[dev-dependencies]\nmock = { path = \"../mock\" }\n"), "{out}");
+    }
+
+    #[test]
+    fn insert_finds_a_header_however_it_is_spelled() {
+        let text = "[ features . \"ssl\" . dependencies ]  # tls\nopenssl = { registry = \"^3\" }\n";
+        let out = insert_entry(text, &path("features.ssl.dependencies"), "x = { path = \"x\" }");
+        assert_eq!(out, "[ features . \"ssl\" . dependencies ]  # tls\nopenssl = { registry = \"^3\" }\nx = { path = \"x\" }\n");
+    }
+
+    #[test]
+    fn insert_keeps_crlf_line_endings() {
+        let text = "[dependencies]\r\nhttp = { registry = \"^2\" }\r\n\r\n[package]\r\n";
+        let out = insert_entry(text, &path("dependencies"), "json = { registry = \"^1\" }");
+        assert_eq!(out, "[dependencies]\r\nhttp = { registry = \"^2\" }\r\njson = { registry = \"^1\" }\r\n\r\n[package]\r\n");
+        let out = insert_entry(text, &path("dev-dependencies"), "m = { path = \"m\" }");
+        assert!(out.ends_with("[package]\r\n\r\n[dev-dependencies]\r\nm = { path = \"m\" }\r\n"), "{out:?}");
     }
 
     #[test]
     fn remove_takes_the_line_and_nothing_else() {
         let (out, n) = remove_entry(BASE, "http");
         assert_eq!(n, 1);
-        assert!(!out.contains("http"));
-        assert!(out.contains("# trailing comment"));
+        assert_eq!(out, BASE.replace("http = { registry = \"^2\" }  # keep me\n", ""));
         let (_, none) = remove_entry(BASE, "name");
         assert_eq!(none, 0, "`name` under [package] is not a dependency");
     }
@@ -242,5 +414,211 @@ mod tests {
         let (out, n) = remove_entry(text, "tls");
         assert_eq!(n, 1);
         assert_eq!(out.trim(), "[features.x]");
+    }
+
+    #[test]
+    fn remove_keeps_the_comment_that_introduces_the_next_table() {
+        let text = "[dependencies.tls]\n# pinned\ngit = \"u\"\nrev = \"a\"\n\n# SSL support\n[features.ssl]\ndefault = true\n";
+        let (out, n) = remove_entry(text, "tls");
+        assert_eq!(n, 1);
+        assert_eq!(out, "\n# SSL support\n[features.ssl]\ndefault = true\n");
+    }
+
+    #[test]
+    fn remove_reads_quoted_and_dotted_keys() {
+        let text = "[dependencies]\n\"my.pkg\" = { path = \"p\" }\nhttp.registry = \"^2\"\n\n[dependencies.'a.b']\npath = \"q\"\n";
+        let (out, n) = remove_entry(text, "my.pkg");
+        assert_eq!((out.as_str(), n), ("[dependencies]\nhttp.registry = \"^2\"\n\n[dependencies.'a.b']\npath = \"q\"\n", 1));
+        let (out, n) = remove_entry(text, "http");
+        assert_eq!(n, 1);
+        assert!(!out.contains("http"), "{out}");
+        let (out, n) = remove_entry(text, "a.b");
+        assert_eq!(n, 1);
+        assert_eq!(out, "[dependencies]\n\"my.pkg\" = { path = \"p\" }\nhttp.registry = \"^2\"\n\n");
+        // `my` alone is not `my.pkg`.
+        assert_eq!(remove_entry(text, "my").1, 0);
+    }
+
+    #[test]
+    fn remove_reaches_dependency_tables_written_as_dotted_keys() {
+        let text = "[features.ssl]\ndefault = true\ndependencies.openssl = { registry = \"^3\" }\n";
+        let (out, n) = remove_entry(text, "openssl");
+        assert_eq!((out.as_str(), n), ("[features.ssl]\ndefault = true\n", 1));
+    }
+
+    #[test]
+    fn remove_keeps_crlf_line_endings() {
+        let text = "[dependencies]\r\na = { path = \"a\" }\r\nb = { path = \"b\" }\r\n";
+        assert_eq!(remove_entry(text, "a").0, "[dependencies]\r\nb = { path = \"b\" }\r\n");
+    }
+
+    #[test]
+    fn a_multiline_array_row_is_not_a_header() {
+        assert_eq!(header_of("  [\"a\", \"b\"],"), None);
+        assert_eq!(header_of("[dependencies] # c"), Some(path("dependencies")));
+        assert_eq!(header_of("[[bin]]"), None);
+        assert!(starts_table("[[bin]]"));
+    }
+
+    // ─── rask add, through the loader ───────────────────────────────
+
+    #[test]
+    fn add_registry_version_lands_in_dependencies() {
+        let added = add(BASE, "json", Some("^1.5")).unwrap();
+        assert_eq!(added.entry, "json = { registry = \"^1.5\" }");
+        assert_eq!(added.table, "dependencies");
+        let deps = deps_of(&added.content);
+        let json = dep(&deps, "json");
+        assert_eq!(json.version.as_deref(), Some("^1.5"));
+        assert_eq!(json.scope, None);
+        assert_eq!(json.feature, None);
+    }
+
+    #[test]
+    fn add_without_a_version_takes_any() {
+        let added = add(BASE, "json", None).unwrap();
+        assert_eq!(dep(&deps_of(&added.content), "json").version.as_deref(), Some("*"));
+        // A quoted version from the shell loses its quotes.
+        let added = add(BASE, "json", Some("\"^1\"")).unwrap();
+        assert_eq!(added.entry, "json = { registry = \"^1\" }");
+    }
+
+    #[test]
+    fn add_path_dependency() {
+        let added = plan_add(Some(BASE), "dir", "shared", None, false, None, Some("../my \"shared\"")).unwrap();
+        assert_eq!(dep(&deps_of(&added.content), "shared").path.as_deref(), Some("../my \"shared\""));
+    }
+
+    #[test]
+    fn add_refuses_both_a_version_and_a_path() {
+        let err = plan_add(Some(BASE), "dir", "x", Some("1.0"), false, None, Some("../x")).unwrap_err();
+        assert!(err.contains("one source"), "{err}");
+    }
+
+    #[test]
+    fn add_dev_dependency_creates_the_table() {
+        let added = plan_add(Some(BASE), "dir", "mock", Some("^2.0"), true, None, None).unwrap();
+        assert_eq!(added.table, "dev-dependencies");
+        assert!(added.content.starts_with(BASE.trim_end()), "{}", added.content);
+        assert_eq!(dep(&deps_of(&added.content), "mock").scope.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn add_to_a_feature() {
+        let added = plan_add(Some(BASE), "dir", "openssl", Some("^3"), false, Some("ssl"), None).unwrap();
+        assert_eq!(added.table, "features.ssl.dependencies");
+        let pkg = rask_manifest::load_text(&added.content).unwrap();
+        let ssl = pkg.features.iter().find(|f| f.name == "ssl").unwrap();
+        assert!(ssl.on_by_default, "the existing [features.ssl] keeps its keys");
+        assert_eq!(ssl.deps.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["openssl"]);
+
+        let added = plan_add(Some(BASE), "dir", "bench", None, true, Some("perf tools"), None).unwrap();
+        assert_eq!(added.table, "features.\"perf tools\".dev-dependencies");
+        let pkg = rask_manifest::load_text(&added.content).unwrap();
+        let f = pkg.features.iter().find(|f| f.name == "perf tools").unwrap();
+        assert_eq!(f.deps[0].scope.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn add_next_to_a_table_form_dependency() {
+        let text = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[dependencies.tls]\ngit = \"https://x/tls\"\nbranch = \"main\"\n";
+        let added = add(text, "json", Some("^1")).unwrap();
+        let deps = deps_of(&added.content);
+        assert_eq!(dep(&deps, "tls").branch.as_deref(), Some("main"));
+        assert_eq!(dep(&deps, "json").version.as_deref(), Some("^1"));
+    }
+
+    #[test]
+    fn add_keeps_every_other_line() {
+        let text = "schema = \"rask-package@1\"   # schema\n\n# The package\n[package]\nname    = \"a\"\nversion = \"1.0.0\"\n\n[dependencies]\n# web\nhttp   = { registry = \"^2.0\", allow = [\"net\"] }\ntls    = { git = \"https://x/tls\", rev = \"a1b2c3\" }\n# end of deps\n\n[dev-dependencies]\nmock = { path = \"../mock\" }\n";
+        let added = add(text, "json", Some("^1")).unwrap();
+        let expected = text.replace(
+            "rev = \"a1b2c3\" }\n",
+            "rev = \"a1b2c3\" }\njson = { registry = \"^1\" }\n",
+        );
+        assert_eq!(added.content, expected);
+    }
+
+    #[test]
+    fn add_refuses_a_name_already_declared_anywhere() {
+        let text = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[build-dependencies]\ngen = { git = \"u\", rev = \"r\" }\n\n[features.ssl.dev-dependencies]\nmock = { path = \"m\" }\n";
+        for name in ["gen", "mock"] {
+            let err = add(text, name, None).unwrap_err();
+            assert!(err.contains("already in rask.toml") && err.contains(&format!("rask update {name}")), "{err}");
+        }
+        let err = add(BASE, "http", Some("^3")).unwrap_err();
+        assert!(err.contains("already"), "{err}");
+    }
+
+    #[test]
+    fn add_quotes_a_name_toml_would_misread() {
+        let added = add(BASE, "my.pkg", Some("^1")).unwrap();
+        assert_eq!(added.entry, "\"my.pkg\" = { registry = \"^1\" }");
+        let deps = deps_of(&added.content);
+        assert_eq!(dep(&deps, "my.pkg").version.as_deref(), Some("^1"));
+        assert!(!deps.iter().any(|d| d.name == "my"), "a bare my.pkg would be a table `my`");
+    }
+
+    #[test]
+    fn add_refuses_an_edit_that_would_not_load() {
+        let err = add(BASE, "json", Some("two")).unwrap_err();
+        assert!(err.contains("wouldn't be written") || err.contains("wasn't written"), "{err}");
+        assert!(err.contains("dependencies.json.registry"), "names the problem: {err}");
+    }
+
+    #[test]
+    fn add_refuses_a_manifest_that_already_does_not_load() {
+        let broken = BASE.replace("version = \"0.1.0\"", "version = \"one\"");
+        let err = add(&broken, "json", Some("^1")).unwrap_err();
+        assert!(err.contains("doesn't load, so nothing was added") && err.contains("package.version"), "{err}");
+    }
+
+    #[test]
+    fn add_starts_a_manifest_when_there_is_none() {
+        let added = plan_add(None, "my \"app\"", "http", Some("^2"), false, None, None).unwrap();
+        let pkg = rask_manifest::load_text(&added.content).unwrap();
+        assert_eq!(pkg.name, "my \"app\"");
+        assert_eq!(pkg.version, "0.1.0");
+        let schema = rask_manifest::schema_line().unwrap();
+        assert!(added.content.starts_with(&format!("schema = \"{schema}\"\n")), "{}", added.content);
+        assert_eq!(dep(&deps_of(&added.content), "http").version.as_deref(), Some("^2"));
+    }
+
+    // ─── rask remove, through the loader ────────────────────────────
+
+    const EVERY_TABLE: &str = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[dependencies]\nhttp = { registry = \"^2\" }  # web\njson = { registry = \"^1\" }\n\n[dev-dependencies]\nmock = { path = \"../mock\" }\n\n[build-dependencies]\ngen = { git = \"https://x/gen\", branch = \"main\" }\n\n[dependencies.tls]\ngit = \"https://x/tls\"\nrev = \"a1b2c3\"\nwith = [\"ring\"]\n\n# optional TLS\n[features.ssl]\ndefault = true\n\n[features.ssl.dependencies]\nopenssl = { registry = \"^3\", allow = [\"ffi\"] }\n";
+
+    #[test]
+    fn remove_from_each_table() {
+        for name in ["http", "json", "mock", "gen", "tls", "openssl"] {
+            let out = plan_remove(EVERY_TABLE, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let left: Vec<String> = deps_of(&out).into_iter().map(|d| d.name).collect();
+            assert!(!left.contains(&name.to_string()), "{name} still there:\n{out}");
+            assert_eq!(left.len(), 5, "{name} took others with it:\n{out}");
+            assert!(out.contains("# optional TLS"), "{name} dropped a comment:\n{out}");
+            assert!(name == "http" || out.contains("http = { registry = \"^2\" }  # web"), "{out}");
+        }
+    }
+
+    #[test]
+    fn remove_a_name_that_is_not_there() {
+        let err = plan_remove(EVERY_TABLE, "nope").unwrap_err();
+        assert_eq!(err, "\"nope\" isn't a dependency in rask.toml");
+        let err = plan_remove(EVERY_TABLE, "ssl").unwrap_err();
+        assert!(err.contains("isn't a dependency"), "a feature is not a dependency: {err}");
+    }
+
+    #[test]
+    fn remove_says_when_it_cannot_edit_the_form() {
+        let text = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[features.ssl]\ndependencies = { openssl = { registry = \"^3\" } }\n";
+        let err = plan_remove(text, "openssl").unwrap_err();
+        assert!(err.contains("can't edit line by line"), "{err}");
+    }
+
+    #[test]
+    fn remove_refuses_a_manifest_that_does_not_load() {
+        let broken = EVERY_TABLE.replace("version = \"1.0.0\"", "version = \"one\"");
+        let err = plan_remove(&broken, "http").unwrap_err();
+        assert!(err.contains("doesn't load, so nothing was removed") && err.contains("package.version"), "{err}");
     }
 }

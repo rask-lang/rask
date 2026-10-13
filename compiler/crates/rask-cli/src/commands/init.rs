@@ -20,7 +20,12 @@ pub fn cmd_init(name: Option<&str>) {
                 eprintln!("{}: directory '{}' already exists", output::error_label(), n);
                 process::exit(1);
             }
-            (dir.to_path_buf(), n.to_string())
+            // The package is named after the directory, not the path to it.
+            let name = dir
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| n.to_string());
+            (dir.to_path_buf(), name)
         }
         None => {
             let dir = std::env::current_dir().unwrap_or_else(|e| {
@@ -57,12 +62,7 @@ pub fn cmd_init(name: Option<&str>) {
         eprintln!("{}: {}", output::error_label(), e);
         process::exit(1);
     });
-    let manifest_content = format!(
-        "schema = \"{}\"\n\n[package]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"A Rask project\"\nlicense = \"MIT\"\n",
-        schema,
-        toml_escape(&project_name),
-    );
-    write_file(&manifest, &manifest_content);
+    write_file(&manifest, &manifest_text(&project_name, &schema));
     println!("  {} {}", "Created".green(), rask_resolve::package::MANIFEST_FILE);
 
     // Write main.rk if it doesn't exist
@@ -109,7 +109,7 @@ pub fn cmd_init(name: Option<&str>) {
         println!("  {} {}", "Project".green().bold(), project_dir.display());
         println!();
         println!("  Run with:");
-        println!("    {} {}", "cd".dimmed(), project_name);
+        println!("    {} {}", "cd".dimmed(), project_dir.display());
         println!("    {} {} {}", output::command("rask"), output::command("run"), "main.rk");
     } else {
         println!("  {} in {}", "Initialized".green().bold(), project_dir.display());
@@ -117,6 +117,14 @@ pub fn cmd_init(name: Option<&str>) {
         println!("  Run with:");
         println!("    {} {} {}", output::command("rask"), output::command("run"), "main.rk");
     }
+}
+
+fn manifest_text(project_name: &str, schema: &str) -> String {
+    format!(
+        "schema = \"{}\"\n\n[package]\nname = \"{}\"\nversion = \"0.1.0\"\ndescription = \"A Rask project\"\nlicense = \"MIT\"\n",
+        schema,
+        toml_escape(project_name),
+    )
 }
 
 /// The inside of a TOML basic string.
@@ -133,7 +141,8 @@ fn write_file(path: &Path, content: &str) {
 
 /// Check if any parent directory has a .git directory.
 fn find_parent_git(dir: &Path) -> bool {
-    let mut current = dir.to_path_buf();
+    // A relative path runs out of parents at the working directory.
+    let mut current = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     loop {
         if current.join(".git").exists() {
             return true;
@@ -144,5 +153,28 @@ fn find_parent_git(dir: &Path) -> bool {
             }
             _ => return false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_new_manifest_loads_and_names_the_current_schema() {
+        let schema = rask_manifest::schema_line().unwrap();
+        assert!(schema.starts_with("rask-package@"), "{schema}");
+        let text = manifest_text("hello", &schema);
+        assert!(text.starts_with(&format!("schema = \"{schema}\"\n")), "{text}");
+        let pkg = rask_manifest::load_text(&text).unwrap();
+        assert_eq!((pkg.name.as_str(), pkg.version.as_str()), ("hello", "0.1.0"));
+        assert!(pkg.deps.is_empty());
+    }
+
+    #[test]
+    fn a_directory_name_toml_would_misread_is_escaped() {
+        let schema = rask_manifest::schema_line().unwrap();
+        let pkg = rask_manifest::load_text(&manifest_text("my \"app\" \\ x", &schema)).unwrap();
+        assert_eq!(pkg.name, "my \"app\" \\ x");
     }
 }
