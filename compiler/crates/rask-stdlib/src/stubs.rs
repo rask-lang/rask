@@ -187,6 +187,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("path.rk", include_str!("../../../../stdlib/path.rk")),
     ("math.rk", include_str!("../../../../stdlib/math.rk")),
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
+    ("float.rk", include_str!("../../../../stdlib/float.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),

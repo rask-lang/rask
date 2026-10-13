@@ -27,6 +27,12 @@ struct Header {
     tag: [2]u8
 }
 
+@binary
+struct Reading {
+    temp: f32be
+    scale: f64le
+}
+
 test "type.binary/G1 — build then parse gives every field back" {
     let p = Packet(magic: 0x1234, id: 0xDEADBEEF)
     let bytes = p.build()
@@ -98,6 +104,30 @@ test "type.binary/G4 — SIZE rounds up to whole bytes" {
     assert Packet.SIZE_BITS == 48
     assert Header.SIZE_BITS == 72
     assert Header.SIZE == 9
+}
+
+test "type.binary — floats go on the wire as their bits, NaN as one pattern" {
+    let r = Reading(temp: 1.5, scale: -2.25)
+    let bytes = r.build()
+    assert bytes.len() == Reading.SIZE
+    // 1.5f32 is 0x3fc00000, most significant byte first.
+    assert bytes[0] == 0x3f
+    assert bytes[1] == 0xc0
+    assert bytes[2] == 0
+    // -2.25 is 0xc002000000000000, least significant byte first.
+    assert bytes[4] == 0
+    assert bytes[10] == 0x02
+    assert bytes[11] == 0xc0
+    let back = Reading.parse(bytes) catch e => {
+        assert false
+        return
+    }
+    assert back.0.temp == 1.5
+    assert back.0.scale == -2.25
+    let nan: f32 = 0.0 / 0.0
+    let wire = Reading(temp: nan, scale: 0.0).build()
+    assert wire[0] == 0x7f
+    assert wire[1] == 0xc0
 }
 
 func main() {}

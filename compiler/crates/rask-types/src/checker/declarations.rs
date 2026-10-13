@@ -2769,7 +2769,7 @@ fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
 fn parse_binary_struct_fields(
     fields: &[rask_ast::decl::Field],
 ) -> Result<Vec<(String, Type)>, Vec<TypeError>> {
-    use rask_ast::binary::{field_spec, Held};
+    use rask_ast::binary::field_spec;
     let mut errors = Vec::new();
     let mut typed_fields = Vec::new();
     let mut bit_offset: u32 = 0;
@@ -2783,17 +2783,6 @@ fn parse_binary_struct_fields(
                         format!(
                             "[type.binary/F3] endian type '{}' not byte-aligned: starts at bit {}, not a byte boundary",
                             field.ty, bit_offset
-                        ),
-                        field.name_span,
-                    ));
-                }
-                // A float's bit pattern has no primitive to come from yet, so
-                // `build` and `parse` can't be written for one (#1539).
-                if matches!(spec.held, Held::Float(_)) {
-                    errors.push(TypeError::GenericError(
-                        format!(
-                            "[type.binary] `{}` fields aren't supported yet: nothing gives a float's bit pattern to put on the wire (#1539)",
-                            field.ty
                         ),
                         field.name_span,
                     ));

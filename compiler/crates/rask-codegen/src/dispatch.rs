@@ -1631,6 +1631,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("char_len_utf8", "rask_char_len_utf8", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_eq", "rask_char_eq", &[types::I32, types::I32], Some(types::I64), false),
 
+        // ── Float bit patterns (std.bits/B4, stdlib/float.rk) ─────
+        // Reinterpret, so a real call (memcpy) rather than an instruction: a
+        // cast would convert the value. NaN comes out canonical.
+        StdlibEntry::simple("f32_to_bits", "rask_f32_to_bits", &[types::F32], Some(types::I32), false),
+        StdlibEntry::simple("f32_from_bits", "rask_f32_from_bits", &[types::I32], Some(types::F32), false),
+        StdlibEntry::simple("f64_to_bits", "rask_f64_to_bits", &[types::F64], Some(types::I64), false),
+        StdlibEntry::simple("f64_from_bits", "rask_f64_from_bits", &[types::I64], Some(types::F64), false),
+
         // ── Path operations ──────────────────────────────────
         // Path = RaskStr. Constructors/conversions use StringOutParam.
         // Option-returning methods return NULL (None) or &thread_local (Some).
@@ -1706,11 +1714,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             // primitives' to_string entries.
             FloatSig::ToString => continue,
             // No C symbol, so unreachable — the `else` above skipped them.
-            // Reinterprets its argument, so it needs a real (memcpy) call
-            // rather than an instruction — Cast would convert the value.
-            FloatSig::ToBits => {
-                StdlibEntry::simple(mir_name, c_symbol, &[types::F64], Some(types::I64), false)
-            }
             FloatSig::Comparison | FloatSig::Compare | FloatSig::ToInt => continue,
         };
         entries.push(entry);

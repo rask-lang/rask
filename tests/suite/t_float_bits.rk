@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.bits/B4: a float's bit pattern at its own width, and back. `to_bits`
+// used to answer `u64` for an `f32` too, the pattern of the value widened to
+// f64, so an f32's own 32 bits weren't reachable at all.
+
+test "an f32's bits are its own 32" {
+    let x: f32 = 1.5
+    assert x.to_bits() == 0x3fc00000
+    let z: f32 = -0.0
+    assert z.to_bits() == 0x80000000
+}
+
+test "an f64's bits are its 64" {
+    let x: f64 = 1.5
+    assert x.to_bits() == 0x3ff8000000000000
+}
+
+test "from_bits goes back" {
+    assert f32.from_bits(0x40490fdbu32) == 3.1415927
+    assert f64.from_bits(0x400921fb54442d18u64) == 3.141592653589793
+    let x: f64 = -123.25
+    assert f64.from_bits(x.to_bits()) == x
+}
+
+test "every NaN is one pattern" {
+    let a: f64 = 0.0 / 0.0
+    assert a.to_bits() == 0x7ff8000000000000
+    let b: f32 = 0.0 / 0.0
+    assert b.to_bits() == 0x7fc00000
+    let odd = f64.from_bits(0x7ff0000000000001u64)
+    assert odd.is_nan()
+    assert odd.to_bits() == 0x7ff8000000000000
+}
+
+func main() {}

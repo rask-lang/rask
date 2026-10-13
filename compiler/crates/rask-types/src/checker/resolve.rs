@@ -4293,6 +4293,20 @@ impl TypeChecker {
             method: method.to_string(),
             span,
         };
+        // Methods declared in stdlib/float.rk, at the receiver's own width
+        // (`to_bits` is `u32` on an `f32`).
+        let width = if matches!(ty, Type::F32) { "f32" } else { "f64" };
+        if let Some(method_def) = rask_stdlib::lookup_method(width, method) {
+            if args.len() != method_def.params.len() {
+                return Err(TypeError::ArityMismatch {
+                    expected: method_def.params.len(),
+                    found: args.len(),
+                    span,
+                });
+            }
+            let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty));
+            return self.unify(ret, &ret_ty, span);
+        }
         let entry = rask_stdlib::float_methods::lookup(method).ok_or_else(no_such)?;
 
         // Arity comes from the signature shape; a call with the wrong count
@@ -4353,8 +4367,6 @@ impl TypeChecker {
             }
             FloatSig::ToString => self.unify(ret, &Type::String, span),
             FloatSig::ToInt => self.unify(ret, &Type::I64, span),
-            // u64 at both widths — see the note on FloatSig::ToBits.
-            FloatSig::ToBits => self.unify(ret, &Type::U64, span),
         }
     }
 

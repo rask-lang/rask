@@ -40,6 +40,21 @@ let p1 = u16.from_be_bytes([0x1F, 0x90])  // 8080
 
 Network byte order is big-endian — use `x.to_be()` / `u16.from_be(x)` directly for network code. No separate `hton`/`ntoh` aliases.
 
+## Float Bit Patterns
+
+| Rule | Description |
+|------|-------------|
+| **B4: Float bits** | `x.to_bits()` is a float's IEEE 754 pattern at its own width: `u32` for `f32`, `u64` for `f64`. `f32.from_bits(u32)` and `f64.from_bits(u64)` go back. Every NaN is one quiet NaN in both directions (`0x7fc00000`, `0x7ff8000000000000`) |
+
+<!-- test: skip -->
+```rask
+let x: f32 = 1.5
+x.to_bits()                     // 0x3fc00000
+f64.from_bits(0x400921fb54442d18) // 3.141592653589793
+```
+
+I canonicalize NaN because a payload is whatever the hardware left in it. A program that keys a map on the bits, or puts them on the wire, would otherwise get a different answer per machine, and nothing a program can do with a NaN depends on which one it is.
+
 ## Binary Parsing
 
 | Rule | Description |

@@ -38,11 +38,6 @@ fn wire(s: &StructDecl) -> Option<Vec<Wire<'_>>> {
     let mut out = Vec::new();
     for field in &s.fields {
         let spec = field_spec(&field.ty).ok()?;
-        // A float's bit pattern has no primitive to come from yet; the
-        // checker says so at the field.
-        if matches!(spec.held, Held::Float(_)) {
-            return None;
-        }
         out.push(Wire { name: &field.name, spec, at });
         at += spec.bits;
     }
@@ -151,7 +146,12 @@ fn build(fields: &[Wire], size: u32) -> String {
             Held::Int(_) => {
                 let _ = writeln!(body, "        let __f{k}: u64 = self.{}.wrap<u64>()", f.name);
             }
-            Held::Float(_) | Held::Bytes(_) => {}
+            // The bit pattern at the field's own width, NaN canonical
+            // (stdlib/float.rk), so a build is the same bytes everywhere.
+            Held::Float(_) => {
+                let _ = writeln!(body, "        let __f{k}: u64 = self.{}.to_bits()", f.name);
+            }
+            Held::Bytes(_) => {}
         }
     }
     for byte in 0..size {
@@ -202,7 +202,7 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
                 let bytes: Vec<String> = (0..n).map(|i| format!("data[{}]", first as usize + i)).collect();
                 format!("[{}]", bytes.join(", "))
             }
-            (Held::Int(held), endian) => {
+            (Held::Int(held) | Held::Float(held), endian) => {
                 let parts: Vec<String> = (first..last)
                     .map(|byte| {
                         let (from, to) = overlap(f, byte).expect("the field covers this byte");
@@ -216,9 +216,13 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
                     })
                     .collect();
                 let _ = writeln!(body, "        let __f{k}: u64 = {}", parts.join(" | "));
-                if held == "u64" { format!("__f{k}") } else { format!("__f{k}.wrap<{held}>()") }
+                match (f.spec.held, held) {
+                    (Held::Float(_), "f32") => format!("f32.from_bits(__f{k}.wrap<u32>())"),
+                    (Held::Float(_), _) => format!("f64.from_bits(__f{k})"),
+                    (_, "u64") => format!("__f{k}"),
+                    _ => format!("__f{k}.wrap<{held}>()"),
+                }
             }
-            (Held::Float(_), _) => unreachable!("floats are refused before this"),
         };
         inits.push(format!("{}: {value}", f.name));
     }

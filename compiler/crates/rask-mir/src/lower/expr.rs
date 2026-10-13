@@ -7625,8 +7625,11 @@ impl<'a> MirLowerer<'a> {
                 let names_a_type = self.ctx.find_struct(type_name).is_some()
                     || self.ctx.find_enum(type_name).is_some()
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(type_name);
+                // A scalar names a type, never a module: `f64.INFINITY.neg()`
+                // is a method on a constant, not `INFINITY_neg` in module f64.
                 if !self.locals.contains_key(module_name)
                     && !is_enum_variant
+                    && !rask_ast::primitives::is_scalar(module_name)
                     && (is_type_constructor_name(module_name) || names_a_type)
                 {
                     let func_name = format!("{}_{}", type_name, method);

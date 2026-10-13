@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A float's bit pattern, at its own width (std.bits/B4).
+//
+// The pattern is deterministic: every NaN comes out as one quiet NaN, so the
+// same value gives the same bits on every backend and machine. NaN payloads
+// are whatever the hardware left there, and that isn't something a program
+// should be able to see, key a map on, or put on the wire.
+
+extend f32 {
+    /// The IEEE 754 bits, with every NaN as `0x7fc00000`.
+    @native("rask_f32_to_bits")
+    public func to_bits(self) -> u32 {}
+
+    /// The value with these bits. Any NaN pattern gives the one NaN.
+    @native("rask_f32_from_bits")
+    public func from_bits(bits: u32) -> f32 {}
+}
+
+extend f64 {
+    /// The IEEE 754 bits, with every NaN as `0x7ff8000000000000`.
+    @native("rask_f64_to_bits")
+    public func to_bits(self) -> u64 {}
+
+    /// The value with these bits. Any NaN pattern gives the one NaN.
+    @native("rask_f64_from_bits")
+    public func from_bits(bits: u64) -> f64 {}
+}

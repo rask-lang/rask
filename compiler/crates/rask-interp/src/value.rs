@@ -538,6 +538,8 @@ pub enum TypeConstructorKind {
     Mutex,
     Atomic,
     Ordering,
+    F32,
+    F64,
 }
 
 impl TypeConstructorKind {
@@ -554,6 +556,8 @@ impl TypeConstructorKind {
             "Mutex" => Self::Mutex,
             "Atomic" => Self::Atomic,
             "Ordering" => Self::Ordering,
+            "f32" => Self::F32,
+            "f64" => Self::F64,
             _ => return None,
         })
     }
@@ -1693,6 +1697,8 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Mutex => "Mutex",
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
+                    TypeConstructorKind::F32 => "f32",
+                    TypeConstructorKind::F64 => "f64",
                 };
                 write!(f, "{}", base_name)
             },

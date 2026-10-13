@@ -78,7 +78,7 @@ struct IpHeader {
 | **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` (not built yet, #1539) |
 | **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
 
-`parse` and `build` are ordinary methods the compiler writes from the field specifiers, so they behave the same on every backend. Float fields aren't supported yet (#1539).
+`parse` and `build` are ordinary methods the compiler writes from the field specifiers, so they behave the same on every backend. A float field goes on the wire as its bit pattern (`std.bits/B4`), so a NaN is always the same bytes.
 
 <!-- test: skip -->
 ```rask

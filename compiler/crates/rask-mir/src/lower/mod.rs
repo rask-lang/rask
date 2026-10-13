@@ -1557,10 +1557,20 @@ impl<'a> MirContext<'a> {
             return Self::conformance_prefix(&target.recv, self.type_names);
         }
         match self.call_targets.get(&node)? {
-            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
+            rask_types::Callee::Method { recv, method, .. } => Self::type_prefix(recv, self.type_names)
+                .or_else(|| Self::declared_width_prefix(recv, method))
                 .or_else(|| builtin_method_prefix(recv).map(str::to_string)),
             rask_types::Callee::Free(_) => None,
         }
+    }
+
+    /// A primitive method a stdlib file declares at one width — `f32.to_bits`
+    /// in float.rk — is filed under that width. The builtin prefixes collapse
+    /// `f32` onto `f64`, which is right for a libm call and wrong here:
+    /// `f32.to_bits()` is the f32's own 32 bits.
+    fn declared_width_prefix(recv: &Type, method: &str) -> Option<String> {
+        let name = rask_types::primitive_spelling(recv)?;
+        rask_stdlib::lookup_method(name, method).map(|_| name.to_string())
     }
 
     /// Extract type prefix from a field type string (e.g. "Vec<string>" → "Vec").
@@ -6076,7 +6086,6 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
                 FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
                 FloatSig::ToString => MirType::String,
                 FloatSig::ToInt => MirType::I64,
-                FloatSig::ToBits => MirType::U64,
                 // Ordering is an enum; leave it to the caller's own typing.
                 FloatSig::Compare => MirType::I64,
             });

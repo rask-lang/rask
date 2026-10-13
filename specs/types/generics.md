@@ -473,7 +473,7 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | **HA3c: Map keys** | A `Map` buckets a key by its type's `hash` and finds it by its type's `eq`, derived or overridden. Never by the key's bytes: a struct holding a string has a pointer in them |
 | **HA3a: What a scalar's hash is** | `x.hash()` on an integer, a `bool`, a `char` or a `string` is FNV-1a over the value's little-endian bytes at its own width — the same function an int-keyed Map buckets with, so a value and the same value used as a key agree. Unseeded: a hash is as stable as `==`. The width counts, so `5u32` and `5u64` don't hash alike |
 | **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract). So `Map<f64, V>` is a compile error — including nested, as in `Vec<Map<f64, V>>`. A float *value* is fine; only the key position is excluded |
-| **HA5: Bits as the hatch** | `x.to_bits() -> u64` reinterprets a float's bit pattern, so a caller who wants a float-keyed Map spells out what "the same key" means. u64 at both widths. Distinct values get distinct keys, and unlike a float key a NaN can be looked up again |
+| **HA5: Bits as the hatch** | `x.to_bits()` reinterprets a float's bit pattern (`u32` for an `f32`, `u64` for an `f64`, `std.bits/B4`), so a caller who wants a float-keyed Map spells out what "the same key" means. Distinct values get distinct keys, and every NaN is one key that can be looked up again |
 
 | Type | Hashable Status |
 |------|-----------------|

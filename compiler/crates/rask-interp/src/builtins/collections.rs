@@ -1098,6 +1098,20 @@ impl Interpreter {
                     )),
                 }
             }
+            // The value with these bits; any NaN pattern gives the one NaN
+            // (stdlib/float.rk).
+            (TypeConstructorKind::F32, "from_bits") => {
+                let bits = self.expect_int(&args, 0)? as u32;
+                let f = f32::from_bits(bits);
+                let f = if f.is_nan() { f32::NAN } else { f };
+                Ok(Value::Float(f as f64, FloatKind::F32))
+            }
+            (TypeConstructorKind::F64, "from_bits") => {
+                let bits = self.expect_int(&args, 0)? as u64;
+                let f = f64::from_bits(bits);
+                let f = if f.is_nan() { f64::NAN } else { f };
+                Ok(Value::Float(f, FloatKind::F64))
+            }
             (TypeConstructorKind::String, "new") => {
                 Ok(Value::String(Arc::new(Mutex::new(String::new()))))
             }
