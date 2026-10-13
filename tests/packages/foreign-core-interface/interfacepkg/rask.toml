@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "interfacepkg"
+version = "0.1.0"
+description = "Owns both the type and the interface"
+license = "MIT OR Apache-2.0"

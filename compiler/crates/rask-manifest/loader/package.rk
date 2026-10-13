@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Step 5 of loading: the checked tree onto Rask types. The tree already
+// passed the shape check, so a missing or mistyped value here is a bug in
+// this file, not in the manifest.
+//
+// Written by hand for the prototype. It restates the shape in
+// package_schema.rk; if the schema were written as Rask types, this half
+// would come for free.
+
+public struct Package {
+    public name: string
+    public version: string
+    public description: string?
+    public license: string?
+    public repository: string?
+    public members: Vec<string>
+    public sandbox: bool
+    public vendor_dir: string?
+    public dependencies: Vec<Dep>
+    public dev_dependencies: Vec<Dep>
+    public build_dependencies: Vec<Dep>
+    public features: Vec<Feature>
+    public exclusive_features: Vec<ExclusiveFeature>
+    public profiles: Vec<Profile>
+}
+
+public enum DepSource {
+    Registry(string)
+    Path(string)
+    Git { url: string, rev: string?, branch: string? }
+}
+
+public struct Dep {
+    public name: string
+    public source: DepSource
+    public target: string?
+    public with: Vec<string>
+    public allow: Vec<string>
+    // Exclusive feature choices made for this dependency: group, option.
+    public select: Vec<(string, string)>
+    // Also gated by this feature of ours.
+    public feature: string?
+}
+
+public struct Feature {
+    public name: string
+    public on_by_default: bool
+    public enables: Vec<string>
+    public dependencies: Vec<Dep>
+    public dev_dependencies: Vec<Dep>
+    public build_dependencies: Vec<Dep>
+}
+
+public struct ExclusiveFeature {
+    public name: string
+    public default: string
+    public options: Vec<FeatureOption>
+}
+
+public struct FeatureOption {
+    public name: string
+    public dependencies: Vec<Dep>
+}
+
+public struct Profile {
+    public name: string
+    public inherits: string?
+    public opt_level: string?
+    public debug_info: bool?
+    public overflow_checks: bool?
+    public lto: string?
+    public codegen_units: i64?
+    public strip: bool?
+    public panic: string?
+}
+
+public func load_package(text: string) -> Package or LoadError {
+    let tree = try load(text, package_schema())
+    let pkg = table_at(tree, "package")
+    return Package {
+        name: str_at(pkg, "name") ?? "",
+        version: str_at(pkg, "version") ?? "",
+        description: str_at(pkg, "description"),
+        license: str_at(pkg, "license"),
+        repository: str_at(pkg, "repository"),
+        members: strs_at(pkg, "members"),
+        sandbox: bool_at(pkg, "sandbox") ?? false,
+        vendor_dir: str_at(pkg, "vendor-dir"),
+        dependencies: deps_at(tree, "dependencies"),
+        dev_dependencies: deps_at(tree, "dev-dependencies"),
+        build_dependencies: deps_at(tree, "build-dependencies"),
+        features: features_at(tree),
+        exclusive_features: exclusive_at(tree),
+        profiles: profiles_at(tree),
+    }
+}
+
+func table_at(entries: Vec<Entry>, key: string) -> Vec<Entry> {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Table(inner) {
+            return inner.clone()
+        }
+    }
+    return Vec.new()
+}
+
+func str_at(entries: Vec<Entry>, key: string) -> string? {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Str(s) {
+            return s
+        }
+    }
+    return none
+}
+
+func bool_at(entries: Vec<Entry>, key: string) -> bool? {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Bool(b) {
+            return b
+        }
+    }
+    return none
+}
+
+func int_at(entries: Vec<Entry>, key: string) -> i64? {
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Int(n) {
+            return n
+        }
+    }
+    return none
+}
+
+func pairs_at(entries: Vec<Entry>, key: string) -> Vec<(string, string)> {
+    mut out = Vec<(string, string)>.new()
+    for e in table_at(entries, key) {
+        if e.value is Str(s) {
+            out.push((e.key, s))
+        }
+    }
+    return out
+}
+
+func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
+    mut out = Vec<ExclusiveFeature>.new()
+    for e in table_at(tree, "exclusive-features") {
+        if e.value is Table(g) {
+            mut options = Vec<FeatureOption>.new()
+            for o in table_at(g, "options") {
+                if o.value is Table(deps) {
+                    mut list = Vec<Dep>.new()
+                    for d in deps {
+                        if d.value is Table(spec) {
+                            list.push(dep_from(d.key, spec))
+                        }
+                    }
+                    options.push(FeatureOption { name: o.key, dependencies: list })
+                }
+            }
+            out.push(ExclusiveFeature { name: e.key, default: str_at(g, "default") ?? "", options })
+        }
+    }
+    return out
+}
+
+func strs_at(entries: Vec<Entry>, key: string) -> Vec<string> {
+    mut out = Vec<string>.new()
+    if find_entry(entries, key)? as i {
+        if entries[i].value is Array(items) {
+            for item in items {
+                if item is Str(s) {
+                    out.push(s)
+                }
+            }
+        }
+    }
+    return out
+}
+
+func deps_at(entries: Vec<Entry>, key: string) -> Vec<Dep> {
+    mut out = Vec<Dep>.new()
+    for e in table_at(entries, key) {
+        if e.value is Table(spec) {
+            out.push(dep_from(e.key, spec))
+        }
+    }
+    return out
+}
+
+func dep_from(name: string, spec: Vec<Entry>) -> Dep {
+    mut source = DepSource.Path("")
+    if str_at(spec, "registry")? as req {
+        source = DepSource.Registry(req)
+    } else if str_at(spec, "path")? as p {
+        source = DepSource.Path(p)
+    } else if str_at(spec, "git")? as url {
+        source = DepSource.Git { url, rev: str_at(spec, "rev"), branch: str_at(spec, "branch") }
+    }
+    return Dep {
+        name,
+        source,
+        target: str_at(spec, "target"),
+        with: strs_at(spec, "with"),
+        allow: strs_at(spec, "allow"),
+        select: pairs_at(spec, "select"),
+        feature: str_at(spec, "feature"),
+    }
+}
+
+func features_at(tree: Vec<Entry>) -> Vec<Feature> {
+    mut out = Vec<Feature>.new()
+    for e in table_at(tree, "features") {
+        if e.value is Table(f) {
+            out.push(Feature {
+                name: e.key,
+                on_by_default: bool_at(f, "default") ?? false,
+                enables: strs_at(f, "enables"),
+                dependencies: deps_at(f, "dependencies"),
+                dev_dependencies: deps_at(f, "dev-dependencies"),
+                build_dependencies: deps_at(f, "build-dependencies"),
+            })
+        }
+    }
+    return out
+}
+
+func profiles_at(tree: Vec<Entry>) -> Vec<Profile> {
+    mut out = Vec<Profile>.new()
+    for e in table_at(tree, "profiles") {
+        if e.value is Table(p) {
+            out.push(Profile {
+                name: e.key,
+                inherits: str_at(p, "inherits"),
+                opt_level: str_at(p, "opt-level"),
+                debug_info: bool_at(p, "debug-info"),
+                overflow_checks: bool_at(p, "overflow-checks"),
+                lto: str_at(p, "lto"),
+                codegen_units: int_at(p, "codegen-units"),
+                strip: bool_at(p, "strip"),
+                panic: str_at(p, "panic"),
+            })
+        }
+    }
+    return out
+}
+
+extend DepSource {
+    public func describe(self) -> string {
+        return match self {
+            DepSource.Registry(req) => "registry {req}",
+            DepSource.Path(p) => "path {p}",
+            DepSource.Git { url, rev, branch } => {
+                mut s = "git {url}"
+                if rev? as r {
+                    s = "{s} rev {r}"
+                }
+                if branch? as b {
+                    s = "{s} branch {b}"
+                }
+                s
+            }
+        }
+    }
+}

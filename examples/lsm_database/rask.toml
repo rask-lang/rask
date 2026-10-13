@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "lsm-database"
+version = "0.1.0"
+description = "LSM-tree key-value store stress test"
+license = "MIT OR Apache-2.0"

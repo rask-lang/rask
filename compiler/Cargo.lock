@@ -1363,6 +1363,7 @@ dependencies = [
  "rask-interp",
  "rask-lexer",
  "rask-lint",
+ "rask-manifest",
  "rask-mir",
  "rask-miri",
  "rask-mono",
@@ -1527,6 +1528,7 @@ dependencies = [
  "rask-effects",
  "rask-fmt",
  "rask-lexer",
+ "rask-manifest",
  "rask-ownership",
  "rask-parser",
  "rask-resolve",
@@ -1536,6 +1538,19 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-lsp",
+]
+
+[[package]]
+name = "rask-manifest"
+version = "0.5.0"
+dependencies = [
+ "rask-ast",
+ "rask-compiler",
+ "rask-comptime",
+ "rask-interp",
+ "rask-resolve",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

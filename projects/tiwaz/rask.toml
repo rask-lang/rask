@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "tiwaz"
+version = "0.0.0"
+description = "Tiwaz is a HTTP Proxy"
+license = "MIT OR Apache-2.0"

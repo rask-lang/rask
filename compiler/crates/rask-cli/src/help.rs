@@ -35,9 +35,11 @@ pub fn print_usage() {
     println!("  {} {}     Create a new Rask project", output::command("init"), output::arg("[name]"));
     println!("  {} {}     Resolve and validate dependencies", output::command("fetch"), output::arg("[dir]"));
     println!("  {} {}    Regenerate rask.lock", output::command("update"), output::arg("[dir]"));
+    println!("  {} {} Check rask.toml, or print its JSON Schema", output::command("manifest"), output::arg("check | json-schema"));
+    println!("  {} {}  Rewrite rask.toml for another schema version", output::command("migrate"), output::arg("--to <N>"));
     println!();
     println!("{}", output::section_header("Dependencies:"));
-    println!("  {} {}       Add a dependency to build.rk", output::command("add"), output::arg("<pkg>"));
+    println!("  {} {}       Add a dependency to rask.toml", output::command("add"), output::arg("<pkg>"));
     println!("  {} {}    Remove a dependency", output::command("remove"), output::arg("<pkg>"));
     println!("  {} {}   Copy deps to vendor/ for offline builds", output::command("vendor"), output::arg("[dir]"));
     println!("  {} {}    Check deps for known vulnerabilities", output::command("audit"), output::arg("[dir]"));
@@ -247,7 +249,7 @@ pub fn print_clean_help() {
 pub fn print_add_help() {
     println!("{}", output::section_header("Add"));
     println!();
-    println!("Add a dependency to build.rk.");
+    println!("Add a dependency to rask.toml.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -255,7 +257,7 @@ pub fn print_add_help() {
         output::arg("<package> [version] [--dev] [--feature <name>] [--path <dir>]"));
     println!();
     println!("{}", output::section_header("Options:"));
-    println!("  {}          Add to scope \"dev\" (test dependencies)", output::arg("--dev"));
+    println!("  {}          Add to [dev-dependencies] (test dependencies)", output::arg("--dev"));
     println!("  {} {} Add to a feature block", output::arg("--feature"), output::arg("<name>"));
     println!("  {} {}    Local path dependency", output::arg("--path"), output::arg("<dir>"));
     println!();
@@ -279,7 +281,7 @@ pub fn print_add_help() {
 pub fn print_remove_help() {
     println!("{}", output::section_header("Remove"));
     println!();
-    println!("Remove a dependency from build.rk.");
+    println!("Remove a dependency from rask.toml.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -290,7 +292,7 @@ pub fn print_remove_help() {
 pub fn print_watch_help() {
     println!("{}", output::section_header("Watch"));
     println!();
-    println!("Watch .rk files and build.rk for changes, re-running a command.");
+    println!("Watch .rk files and rask.toml for changes, re-running a command.");
     println!("Default: runs `rask check` (type-check only, fastest feedback).");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
@@ -678,7 +680,7 @@ pub fn print_mir_help() {
 pub fn print_init_help() {
     println!("{}", output::section_header("Init"));
     println!();
-    println!("Create a new Rask project with build.rk, main.rk, and .gitignore.");
+    println!("Create a new Rask project with rask.toml, main.rk, and .gitignore.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -701,7 +703,7 @@ pub fn print_init_help() {
 pub fn print_fetch_help() {
     println!("{}", output::section_header("Fetch"));
     println!();
-    println!("Resolve and validate all dependencies declared in build.rk.");
+    println!("Resolve and validate all dependencies declared in rask.toml.");
     println!("Checks version constraints, validates path deps exist,");
     println!("infers capabilities, and updates rask.lock.");
     println!();
@@ -723,6 +725,25 @@ pub fn print_fetch_help() {
         output::arg("-v"));
 }
 
+pub fn print_manifest_help() {
+    println!("{}", output::section_header("Manifest"));
+    println!();
+    println!("Check rask.toml against the rask-package schema, or print that schema");
+    println!("as JSON Schema for editors (Taplo and the plugins built on it).");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("manifest"), output::arg("check [dir]"));
+    println!("       {} {} {}", output::command("rask"), output::command("manifest"), output::arg("json-schema"));
+}
+
+pub fn print_migrate_help() {
+    println!("{}", output::section_header("Migrate"));
+    println!();
+    println!("Rewrite rask.toml for another version of the rask-package schema, newer");
+    println!("or older. A downgrade that would lose information is refused.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("migrate"), output::arg("--to <N> [dir]"));
+}
+
 pub fn print_vendor_help() {
     println!("{}", output::section_header("Vendor"));
     println!();
@@ -737,7 +758,7 @@ pub fn print_vendor_help() {
     println!("{}", output::section_header("Options:"));
     println!("  {} {} Verbose output", output::arg("-v"), output::arg("--verbose"));
     println!();
-    println!("After vendoring, add `vendor_dir: \"vendor\"` to build.rk");
+    println!("After vendoring, add `vendor-dir = \"vendor\"` under [package] in rask.toml");
     println!("to resolve dependencies from the vendor directory.");
 }
 
@@ -757,7 +778,7 @@ pub fn print_publish_help() {
     println!("  {} {} Verbose output", output::arg("-v"), output::arg("--verbose"));
     println!();
     println!("{}", output::section_header("Requirements:"));
-    println!("  build.rk must have `description` and `license` metadata.");
+    println!("  rask.toml must have `description` and `license` under [package].");
     println!("  Packages with path dependencies cannot be published.");
     println!("  Auth token via RASK_REGISTRY_TOKEN or ~/.rask/credentials.");
 }

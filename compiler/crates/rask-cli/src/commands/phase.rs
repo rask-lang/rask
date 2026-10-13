@@ -136,7 +136,9 @@ pub fn cmd_resolve(path: &str, format: Format) {
     }
 
     // Use package resolution if in a multi-file context
-    let resolve_result = if let Some(mut pkg_ctx) = rask_compiler::detect_package(path) {
+    // This file already parsed; a sibling that doesn't is reported by `check`.
+    // Here it falls back to resolving the file on its own.
+    let resolve_result = if let Ok(Some(mut pkg_ctx)) = rask_compiler::detect_package(path) {
         let dep_annotations = pkg_ctx.dependency_annotations();
         rask_desugar::desugar_package(
             &mut pkg_ctx.all_decls,

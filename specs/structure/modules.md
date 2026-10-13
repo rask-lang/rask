@@ -228,7 +228,7 @@ ERROR [struct.modules/PS3]: mutable global
 
 **BI2 (fixed built-in set):** Predictability. Reading any Rask file, you always know what's in scope. Go has no extension mechanism either — IDE auto-import handles repetition.
 
-**IM7 (unused imports warn, not error):** Originally a Go-style hard error, which contradicted `tool.warnings/W1` and the severity boundary (SB1: errors are for broken code). An unused import is untidy, not unsafe — and a hard error bites exactly when you comment out a call to isolate a bug. The warning is default-on; teams that want Go's strictness get it back with `@deny(unused_import)` in `build.rk` or `--deny-warnings` in CI.
+**IM7 (unused imports warn, not error):** Originally a Go-style hard error, which contradicted `tool.warnings/W1` and the severity boundary (SB1: errors are for broken code). An unused import is untidy, not unsafe — and a hard error bites exactly when you comment out a call to isolate a bug. The warning is default-on; teams that want Go's strictness get it back with `@deny(unused_import)` or `--deny-warnings` in CI.
 
 **RE2 (origin-based identity):** `std.Vec` (re-export of `core.Vec`) and `collections.Vec` (also `core.Vec`) are the same type. Preserves composability across re-export chains.
 
@@ -294,7 +294,7 @@ struct Node {
 2. Each visibility level must earn its existence by preventing real mistakes. `internal` would prevent nothing — it's a semantic distinction with no technical consequence for unpublished packages.
 3. Three visibility levels (private, package-default, public) is already on the edge for a simplicity-focused language. Go and Zig thrive with two.
 
-If multi-package published libraries become common, revisit with a package-level `internal: true` flag in `build.rk` (import restriction, not item-level visibility). The *package* is internal, not individual items.
+If multi-package published libraries become common, revisit with a package-level `internal = true` key in `rask.toml` (import restriction, not item-level visibility). The *package* is internal, not individual items.
 
 ### Rejected: File-Level Package Granularity
 

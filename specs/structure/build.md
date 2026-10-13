@@ -1,77 +1,89 @@
 <!-- id: struct.build -->
 <!-- status: decided -->
-<!-- summary: build.rk manifest + build script; dependency permissions, features, CLI, cross-compilation -->
-<!-- depends: structure/modules.md, structure/packages.md -->
+<!-- summary: rask.toml manifest contents, build.rk build scripts; dependency permissions, features, CLI, cross-compilation -->
+<!-- depends: structure/manifest.md, structure/modules.md, structure/packages.md -->
 
 # Build System
 
-`build.rk` is the single source of truth — both manifest and build script. A `package` block declares metadata, dependencies, features, and profiles. An optional `build()` function handles code generation and native compilation.
+A package declares what it is in `rask.toml`: metadata, dependencies, features and profiles, as data. How the file is read and checked (the schema line, unknown keys, typed strings, version history) is [struct.manifest](manifest.md). This spec covers what goes in it. Code generation and native compilation go in an optional `func build()` in `build.rk`, which most packages don't have.
 
-## Package Block
+## Manifest
 
 | Rule | Description |
 |------|-------------|
-| **PK1: Single file** | `build.rk` in package root; one `package` block per file |
-| **PK2: Declarative** | Package block is purely declarative — no `comptime if`, no code execution |
-| **PK3: Independent parsing** | Parser extracts `package` block independently of build logic — dep resolution works even if `func build()` has syntax errors |
-| **PK4: Optional** | No `build.rk` needed for zero-dependency packages — name from directory, version 0.0.0 |
-| **PK5: Auto-import** | Build module auto-imported — `BuildContext`, `CompileOptions`, etc. available without `import` |
+| **PK1: One file** | `rask.toml` in the package root, checked against the `rask-package` schema (`struct.manifest/MF1`) |
+| **PK2: Data only** | The manifest holds values. No conditionals, no code; a build that needs code writes `func build()` (BL1) |
+| **PK3: Independent of the script** | The manifest loads without `build.rk`, so dependency resolution works even when `func build()` doesn't compile. Outside tools read it with any TOML parser |
+| **PK4: Optional** | No `rask.toml` needed for a zero-dependency package: name from the directory, version 0.0.0 |
 
-```rask
-package "my-app" "1.0.0" {
-    dep "http" "^2.0"
-    dep "json" "^1.5"
-}
+```toml
+schema = "rask-package@1"
+
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[dependencies]
+http = { registry = "^2.0" }
+json = { registry = "^1.5" }
 ```
 
-### Keywords
+### Tables
 
-All keywords inside `package` follow: `keyword "name" ["version"] [{ key: value }]`
+| Table | Purpose |
+|-------|---------|
+| `[package]` | Identity and metadata (required) |
+| `[dependencies]` | Ordinary dependencies |
+| `[dev-dependencies]` | Dependencies of `test` blocks (D4) |
+| `[build-dependencies]` | Dependencies of `func build()` (D4) |
+| `[features.<name>]` | Feature flag, with the dependencies it gates (F1) |
+| `[exclusive-features.<name>]` | Pick-one feature group (FG1) |
+| `[profiles.<name>]` | Custom build profile (PR2) |
 
-| Keyword | Purpose | Example |
-|---------|---------|---------|
-| `dep` | Dependency | `dep "http" "^2.0"` |
-| `feature` | Feature group/flag | `feature "ssl" { dep "openssl" "^3.0" }` |
-| `scope` | Dependency scope | `scope "dev" { dep "mock" "^2.0" }` |
-| `profile` | Custom build profile | `profile "embedded" { opt_level: "z" }` |
-
-### Metadata Keys
+### Package Keys
 
 | Key | Type | Purpose |
 |-----|------|---------|
+| `name` | string | Package name (required) |
+| `version` | version | `"1.0.0"` (required) |
 | `description` | string | Package description (for publishing) |
 | `license` | string | SPDX license identifier |
 | `repository` | string | Source repository URL |
 | `members` | list | Workspace member directories |
 | `sandbox` | bool | Sandbox root build script (default: `false`). Deps always sandboxed (SB1) |
+| `vendor-dir` | string | Resolve dependencies from this directory first (VD3) |
 
 ## Dependencies
 
 | Rule | Description |
 |------|-------------|
 | **D1: Semver ranges** | Version strings use semver: `"^2.0"` (compatible), `">=1.5"` (minimum), `"=1.0.0"` (exact) |
-| **D2: Sub-block properties** | Extended config via sub-block: `dep "name" { target: "linux" }` |
-| **D3: No duplicates** | Same dep declared twice at same level is a compile error |
-| **D4: Scopes** | `scope "dev"` for test deps, `scope "build"` for build script deps. Any other name is a parse error |
-| **D4a: A dev dep goes where the test blocks go** | A release build strips `test` blocks (`std.testing/T1`), so it links no `scope "dev"` dep and drops the now-dead imports with them. Every other build keeps the test blocks and links the deps they need. A use that survives the strip — ordinary code reaching a dev dep — names the scope and fails |
+| **D2: One source** | A dependency names exactly one of `registry`, `path` or `git` (`struct.manifest/MF5`). `rev` and `branch` belong to `git` |
+| **D3: No duplicates** | The same name twice in one table is an error (`struct.manifest/WF4`) |
+| **D4: Scopes** | `dev-dependencies` for test deps, `build-dependencies` for build script deps. Any other table is an error (`struct.manifest/MF3`) |
+| **D4a: A dev dep goes where the test blocks go** | A release build strips `test` blocks (`std.testing/T1`), so it links no dev dependency and drops the now-dead imports with them. Every other build keeps the test blocks and links the deps they need. A use that survives the strip — ordinary code reaching a dev dep — names the scope and fails |
 | **D4b: Scopes don't inherit** | Only the root's scoped deps are linked. A dependency's own dev deps belong to its own test run; pulling them in would link half the tree to run one test |
 
-```rask
-dep "http" "^2.0"
-dep "epoll" "^1.0" { target: "linux" }
-dep "shared" { path: "../shared" }
-dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
+```toml
+[dependencies]
+http   = { registry = "^2.0" }
+epoll  = { registry = "^1.0", target = "linux" }
+shared = { path = "../shared" }
+tls    = { git = "https://github.com/x/tls", branch = "main" }
+tokio  = { registry = "^1.0", with = ["rt-multi-thread", "net"] }
 ```
 
 | Key | Type | Purpose |
 |-----|------|---------|
-| `target` | string | Platform filter |
+| `registry` | version range | From the registry |
 | `path` | string | Local path dependency |
 | `git` | string | Git repository URL |
-| `branch` | string | Git branch (requires `git`) |
+| `rev` | string | Git revision (with `git`) |
+| `branch` | string | Git branch (with `git`) |
+| `target` | string | Platform filter |
 | `with` | list | Enable features of the dependency |
 | `allow` | list | Permitted capabilities (PM3) |
-| `scope` | string | Scope override inside a `feature` block |
+| `select` | table | Exclusive feature choices (FG5) |
 | `feature` | string | Additional feature gate |
 
 ## Dependency Permissions
@@ -82,7 +94,7 @@ I chose compile-time capability inference over author annotations — the compil
 |------|-------------|
 | **PM1: Inferred** | Capabilities are inferred from stdlib imports and `unsafe` blocks, not declared by package authors |
 | **PM2: Root unrestricted** | Root package has no capability restrictions — only dependencies are gated |
-| **PM3: Consumer consent** | `allow: ["net", "read"]` on dep declarations — explicit opt-in |
+| **PM3: Consumer consent** | `allow = ["net", "read"]` on the dependency — explicit opt-in |
 | **PM4: Build enforcement** | `rask build` errors if a dep uses capabilities not covered by `allow` |
 | **PM5: Lock file tracking** | `rask.lock` records inferred capabilities per package (struct.packages/LK5) |
 | **PM6: Update detection** | `rask update` warns if a dependency's capabilities changed |
@@ -99,92 +111,81 @@ I chose compile-time capability inference over author annotations — the compil
 | `unsafe` blocks, `extern` declarations | `ffi` |
 | `exec()` / `exec_output()` in `func build()` | `build_exec` |
 
-```rask
-dep "http-client" "^2.0" {
-    allow: ["net"]
-}
-dep "parser" "^1.0"              // no capabilities needed — silent
-dep "native-lib" "^3.0" {
-    allow: ["ffi", "read"]       // uses extern + file reading
-}
-dep "protobuf-gen" "^2.0" {
-    allow: ["build_exec"]        // build script calls protoc via exec()
-}
+```toml
+[dependencies]
+http-client  = { registry = "^2.0", allow = ["net"] }
+parser       = { registry = "^1.0" }                          # no capabilities needed — silent
+native-lib   = { registry = "^3.0", allow = ["ffi", "read"] } # uses extern + file reading
+protobuf-gen = { registry = "^2.0", allow = ["build_exec"] }  # build script calls protoc via exec()
 ```
 
 ```
 ERROR [struct.build/PM4]: capability violation
    dependency 'sketchy-lib' uses network access (io.net, http) but is not allowed
-   add `allow: ["net"]` to the dep declaration in build.rk
+   add `allow = ["net"]` to sketchy-lib in rask.toml
 ```
 
 ```
 ERROR [struct.build/PM9]: build_exec capability required
    dependency 'protobuf-gen' build script calls exec("protoc") but is not allowed
-   add `allow: ["build_exec"]` to the dep declaration in build.rk
+   add `allow = ["build_exec"]` to protobuf-gen in rask.toml
 ```
 
 ## Features
 
 | Rule | Description |
 |------|-------------|
-| **F1: Optional deps** | Deps inside a feature block are gated by that feature |
+| **F1: Optional deps** | Deps in a feature's tables are gated by that feature |
 | **F2: Code-only features** | Features without deps are flags for `comptime if` |
-| **F3: Default features** | `default: true` — users disable with `--no-default-features` |
-| **F4: No cross-nesting** | `scope` inside `feature` or vice versa is a compile error — use sub-block tags |
-| **F5: No duplicates** | Same dep in multiple feature blocks is an error — use `{ feature: "other" }` tag |
+| **F3: Default features** | `default = true` — users disable with `--no-default-features` |
+| **F4: Scopes nest** | A feature's dev and build deps go in its own `dev-dependencies` and `build-dependencies` tables |
+| **F5: No duplicates** | Same dep in multiple features is an error — gate it on the other with `feature = "other"` |
 | **F6: No circular enables** | Circular `enables` references are a compile error |
 
-```rask
-feature "ssl" {
-    dep "openssl" "^3.0"
-    dep "ring" "^0.17" { feature: "crypto" }
-}
-feature "full" { enables: ["ssl", "logging"] }
-feature "verbose"  // code-only flag
+```toml
+[features.ssl.dependencies]
+openssl = { registry = "^3.0" }
+ring    = { registry = "^0.17", feature = "crypto" }
+
+[features.full]
+enables = ["ssl", "logging"]
+
+[features.verbose]   # code-only flag
 ```
 
 ### Exclusive Feature Groups
 
 | Rule | Description |
 |------|-------------|
-| **FG1: Mutual exclusion** | `feature "name" exclusive { ... }` — exactly one option selected |
-| **FG2: Required default** | Exclusive features must declare `default: "option_name"` |
-| **FG3: Named blocks** | Each string-named block has its own dependency set |
+| **FG1: Mutual exclusion** | `[exclusive-features.<name>]` — exactly one option selected |
+| **FG2: Required default** | Every group names its `default` option |
+| **FG3: Named options** | Each `options.<name>` table holds that option's dependencies |
 | **FG4: Selector agreement** | If multiple deps select different options, resolution fails with a conflict error showing both sources |
-| **FG5: Consumer selection** | Consumers select via dep sub-block: `dep "lib" { runtime: "tokio" }` |
+| **FG5: Consumer selection** | Consumers select through `select` on the dependency: `select = { runtime = "tokio" }` |
 | **FG6: Root wins** | Root package's selection overrides transitive selections |
 
-<!-- test: skip -->
-```rask
-feature "runtime" exclusive {
-    "tokio" {
-        dep "tokio" "^1.0"
-    }
-    "async-std" {
-        dep "async-std" "^1.12"
-    }
-    default: "tokio"
-}
+```toml
+[exclusive-features.runtime]
+default = "tokio"
+options.tokio     = { tokio     = { registry = "^1.0" } }
+options.async-std = { async-std = { registry = "^1.12" } }
 ```
 
 Consumer selects which option:
 
-<!-- test: skip -->
-```rask
-dep "my-server" "^2.0" {
-    runtime: "tokio"
-}
+```toml
+[dependencies]
+my-server = { registry = "^2.0", select = { runtime = "tokio" } }
 ```
 
 ```
 ERROR [struct.build/FG4]: exclusive feature conflict
   "runtime" for my-db:
-    dep-a selects "tokio"     (via dep "my-db" { runtime: "tokio" })
-    dep-b selects "async-std" (via dep "my-db" { runtime: "async-std" })
+    dep-a selects "tokio"     (via my-db = { ..., select = { runtime = "tokio" } })
+    dep-b selects "async-std" (via my-db = { ..., select = { runtime = "async-std" } })
 
-FIX: Override in root build.rk:
-  dep "my-db" "^1.0" { runtime: "tokio" }
+FIX: Override in the root rask.toml:
+  my-db = { registry = "^1.0", select = { runtime = "tokio" } }
 ```
 
 ## Profiles
@@ -194,22 +195,21 @@ FIX: Override in root build.rk:
 | **PR1: Built-in** | `debug` and `release` are built-in profiles |
 | **PR2: Inheritance** | Custom profiles inherit from another via `inherits` |
 
-```rask
-profile "embedded" {
-    inherits: "release"
-    opt_level: "z"
-    panic: "abort"
-}
+```toml
+[profiles.embedded]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
 ```
 
 | Key | Type | Values |
 |-----|------|--------|
 | `inherits` | string | Profile name |
-| `opt_level` | int/string | 0-3, `"s"`, `"z"` |
-| `debug_info` | bool | Include debug symbols |
-| `overflow_checks` | bool | Runtime integer overflow checks |
-| `lto` | bool/string | false, true, `"thin"`, `"fat"` |
-| `codegen_units` | int | 1-256 |
+| `opt-level` | string | `"0"`-`"3"`, `"s"`, `"z"` |
+| `debug-info` | bool | Include debug symbols |
+| `overflow-checks` | bool | Runtime integer overflow checks |
+| `lto` | string | `"off"`, `"thin"`, `"fat"` |
+| `codegen-units` | int | 1-256 |
 | `strip` | bool | Strip debug symbols |
 | `panic` | string | `"unwind"`, `"abort"` |
 
@@ -220,6 +220,7 @@ profile "embedded" {
 | **BL1: Separate unit** | `build.rk` is compiled before the main package |
 | **BL2: Full language** | Build scripts have full Rask available (I/O, pools, concurrency, C interop) |
 | **BL3: No self-import** | Can't import the package being built — circular dependency error |
+| **BL4: Auto-import** | Build module auto-imported — `BuildContext`, `CompileOptions`, etc. available without `import` |
 
 ```rask
 func build(ctx: BuildContext) -> void or Error {
@@ -306,7 +307,7 @@ Your code is trusted. Their code is sandboxed. Dependency build scripts run in a
 | **SB2: Filesystem scope** | Read: package source dir, declared inputs, system lib paths. Write: `build/`, `.rk-gen/` only |
 | **SB3: No network** | Build scripts cannot access the network. Downloads belong in dependency resolution, not build scripts |
 | **SB4: Env whitelist** | Build scripts see `PATH`, `HOME`, `CC`, `CXX`, `PKG_CONFIG_PATH`, `RASK_*`. All others hidden |
-| **SB5: Root not sandboxed** | Root package build scripts are not sandboxed by default. Opt in with `sandbox: true` in package block |
+| **SB5: Root not sandboxed** | Root package build scripts are not sandboxed by default. Opt in with `sandbox = true` under `[package]` |
 | **SB6: Structured APIs exempt** | `compile_c`, `compile_rust`, `pkg_config`, `link_library`, `write_source` work inside the sandbox without extra capabilities |
 | **SB7: Platform implementation** | Sandbox uses OS-native isolation — spec defines behavior, not mechanism |
 
@@ -324,19 +325,18 @@ ERROR [struct.build/SB4]: sandbox violation
 
 Root package opt-in (for CI with untrusted PRs):
 
-<!-- test: skip -->
-```rask
-package "my-app" "1.0.0" {
-    sandbox: true     // sandbox own build script too — deps are always sandboxed regardless
-    dep "http" "^2.0" { allow: ["net"] }
-}
+```toml
+[package]
+name = "my-app"
+version = "1.0.0"
+sandbox = true     # sandbox own build script too — deps are always sandboxed regardless
 ```
 
 ## Build Pipeline
 
 | Rule | Description |
 |------|-------------|
-| **LC1: Order** | Parse package → resolve deps → compile build deps → run `func build()` → compile main package → link |
+| **LC1: Order** | Load `rask.toml` → resolve deps → compile build deps → run `func build()` → compile main package → link |
 | **LC2: Caching** | Build script only re-runs when `build.rk` or declared dependencies change |
 | **PP1: Package parallelism** | Independent packages compile in parallel (up to CPU count) |
 | **PP2: Pipeline parallelism** | Package B's parsing can start while package A is still in codegen |
@@ -351,8 +351,8 @@ needs. Parallelism has to come back inside that, not as a second pass beside it.
 
 ```
 rask build
-  ├─ 1. Find build.rk (or use defaults)
-  ├─ 2. Parse package block (PK3)
+  ├─ 1. Find rask.toml (or use defaults)
+  ├─ 2. Load the manifest (PK3, struct.manifest/LD1)
   ├─ 3. Resolve dependencies (maximal compatible)
   ├─ 4. Check rask.lock + verify capabilities (PM4) + verify signatures (SG4)
   ├─ 5. Download missing deps
@@ -387,7 +387,7 @@ rask build
 
 | Rule | Description |
 |------|-------------|
-| **CC1: comptime if** | Use `comptime if cfg.field` in regular code (not package block) |
+| **CC1: comptime if** | Use `comptime if cfg.field` in regular code (the manifest has no conditionals, PK2) |
 | **CC2: cfg fields** | `os`, `arch`, `env`, `profile`, `features` |
 
 ```rask
@@ -415,8 +415,9 @@ All commands live under the `rask` binary. No separate tools.
 | `rask bench [filter]` | Build and run benchmarks |
 | `rask check` | Type-check without codegen |
 | `rask watch [command]` | File watch + auto-rebuild |
-| `rask add <pkg> [version]` | Add dependency to build.rk |
-| `rask remove <pkg>` | Remove dependency from build.rk |
+| `rask add <pkg> [version]` | Add dependency to rask.toml |
+| `rask remove <pkg>` | Remove dependency from rask.toml |
+| `rask migrate --to <N>` | Rewrite rask.toml for schema version N (`struct.manifest/MG1`) |
 | `rask fetch` | Download dependencies |
 | `rask update [pkg]` | Update to latest compatible versions |
 | `rask publish` | Publish to registry |
@@ -427,7 +428,7 @@ All commands live under the `rask` binary. No separate tools.
 
 | Rule | Description |
 |------|-------------|
-| **CL1: Zero-config default** | `rask build` works with no flags, no build.rk, no config |
+| **CL1: Zero-config default** | `rask build` works with no flags, no rask.toml, no config |
 | **CL2: Consistent flags** | `--release`, `--target`, `--verbose` work on all build commands |
 | **CL3: Machine-readable output** | `--format json` on all commands for CI integration |
 | **CL4: Exit codes** | 0 = success, 1 = build error, 2 = usage error |
@@ -437,20 +438,20 @@ All commands live under the `rask` binary. No separate tools.
 | Rule | Description |
 |------|-------------|
 | **AD1: Registry lookup** | Fetches latest compatible version from registry |
-| **AD2: Preserves formatting** | Inserts dep line without reformatting existing content |
+| **AD2: Preserves formatting** | Inserts the dependency with a comment- and format-preserving TOML edit; nothing else in the file changes |
 | **AD3: Dedup check** | Error if dep already exists (suggest `rask update <pkg>`) |
 | **AD4: Lock update** | Runs resolution and updates `rask.lock` after adding |
-| **AD5: Capability prompt** | Prompts if dep requires capabilities — auto-generates `allow:` |
+| **AD5: Capability prompt** | Prompts if dep requires capabilities — auto-generates `allow` |
 
 ```
 $ rask add http
-  Added dep "http" "^2.1.0" { allow: ["net"] }
+  Added http = { registry = "^2.1.0", allow = ["net"] }
 
 $ rask add openssl --feature ssl
-  Added dep "openssl" "^3.1.0" to feature "ssl"
+  Added openssl = { registry = "^3.1.0" } to [features.ssl.dependencies]
 
 $ rask add mock-server --dev
-  Added dep "mock-server" "^2.0.0" to scope "dev"
+  Added mock-server = { registry = "^2.0.0" } to [dev-dependencies]
 ```
 
 ### rask remove
@@ -464,7 +465,7 @@ $ rask add mock-server --dev
 
 ```
 myproject/
-  build.rk
+  rask.toml
   main.rk
   .rk-gen/                      # Generated source files (build script output)
   build/
@@ -485,7 +486,7 @@ myproject/
 | **OD1: Default location** | `build/` in project root. Override with `RASK_BUILD_DIR` |
 | **OD2: Profile directories** | `build/<profile>/` — `debug`, `release`, or custom profile name |
 | **OD3: Target directories** | `build/<target-triple>/<profile>/` for cross-compilation |
-| **OD4: Binary naming** | Binary name = package name from `build.rk` (or directory name if no build.rk) |
+| **OD4: Binary naming** | Binary name = package name from `rask.toml` (or directory name if no rask.toml) |
 | **OD5: .gitignore** | `rask build` auto-creates `build/.gitignore` with `*` on first run |
 | **OD6: Clean** | `rask clean` removes `build/` entirely. `rask clean --all` also removes `~/.rask/cache/` entries for this project |
 | **OD7: Workspace binaries** | `rask build` builds all workspace executable members. `rask run --member <name>` selects which to run |
@@ -512,7 +513,7 @@ Format: `<arch>-<os>` or `<arch>-<os>-<env>`
 | **XT4: cfg access** | `comptime if cfg.os`, `comptime if cfg.arch` resolve to target, not host |
 | **XT5: Build script runs on host** | `func build()` always executes on the host machine |
 | **XT6: Target in BuildContext** | `ctx.target.arch`, `ctx.target.os`, `ctx.target.env` available in build scripts |
-| **XT7: Platform-specific deps** | `dep "epoll" "^1.0" { target: "linux" }` — only included when targeting linux |
+| **XT7: Platform-specific deps** | `epoll = { registry = "^1.0", target = "linux" }` — only included when targeting linux |
 | **XT8: Multi-target** | Multiple `--target` flags build for all specified targets |
 | **XT9: Target list** | `rask targets` lists all available targets with tier info |
 
@@ -537,7 +538,7 @@ so `aarch64-macos` produced an ELF object with nothing said about it.
 | **WA1: Default command** | `rask watch` → runs `rask check` on change (type-check only, no codegen — fastest feedback) |
 | **WA2: Custom command** | `rask watch build`, `rask watch test`, `rask watch run` — any rask subcommand |
 | **WA3: Debounce** | 100ms debounce — multiple rapid saves trigger one rebuild |
-| **WA4: Scope** | Watches `.rk` files, `build.rk`, and declared build step inputs |
+| **WA4: Scope** | Watches `.rk` files, `rask.toml`, `build.rk`, and declared build step inputs |
 | **WA5: Clear output** | Clears terminal on each rebuild (disable with `--no-clear`) |
 | **WA6: Error persistence** | Errors stay on screen until fixed (no scrolling away) |
 | **WA7: Process management** | `rask watch run` kills the previous process before starting new one |
@@ -637,7 +638,7 @@ ERROR [struct.build/SG4]: signature verification failed
 |------|-------------|
 | **VD1: Copy** | `rask vendor` copies all resolved dependencies to `vendor/` |
 | **VD2: Checksum preserved** | Vendored packages include their checksums for integrity |
-| **VD3: vendor_dir config** | `vendor_dir: "vendor"` in package block enables vendor resolution |
+| **VD3: vendor-dir config** | `vendor-dir = "vendor"` under `[package]` enables vendor resolution |
 | **VD4: Priority** | Vendor dir takes priority over registry. Lock file still required |
 | **VD5: Offline** | With vendored deps, `rask build` works without network access |
 
@@ -646,7 +647,7 @@ ERROR [struct.build/SG4]: signature verification failed
 | Rule | Description |
 |------|-------------|
 | **AU1: Advisory database** | Fetches from `https://advisories.rask-lang.dev` |
-| **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `build.rk` |
+| **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `rask.toml` |
 | **AU3: Exit code** | Returns non-zero if vulnerabilities found (for CI gates) |
 | **AU4: Ignore list** | `rask audit --ignore CVE-2024-1234` for acknowledged risks |
 | **AU5: Offline mode** | `rask audit --db ./advisory-db.json` for air-gapped environments |
@@ -654,10 +655,7 @@ ERROR [struct.build/SG4]: signature verification failed
 ## Error Messages
 
 ```
-ERROR [struct.build/D3]: duplicate dependency
-   |
-5  |  dep "http" "^2.0"
-   |  ^^^^^^^^^^ "http" already declared at line 3
+rask.toml: line 5: duplicate key `dependencies.http`
 ```
 
 ```
@@ -671,12 +669,12 @@ ERROR [struct.build/BL3]: circular dependency
 
 | Case | Rule | Handling |
 |------|------|----------|
-| No `build.rk` | PK4 | Name from directory, version 0.0.0, no deps |
-| Empty package block | PK1 | Valid — declares identity only |
-| `package` in regular `.rk` file | PK1 | Compile error |
+| No `rask.toml` | PK4 | Name from directory, version 0.0.0, no deps |
+| Only `[package]` | PK1 | Valid — declares identity only |
+| Misspelled key | PK1 | Error naming the nearest valid key (`struct.manifest/MF3`) |
 | Build script imports main package | BL3 | Compile error |
 | Generated file conflicts with source | BL1 | Compile error: duplicate file |
-| Dep with both `path` and `git` | D2 | Compile error: conflicting sources |
+| Dep with both `path` and `git` | D2 | Error: pick exactly one source |
 | Circular `enables` | F6 | Compile error |
 | Dep needs capabilities but no `allow` | PM4 | Build error with fix suggestion |
 | Build script reads outside source dir | SB2 | Sandbox error with path shown |
@@ -692,17 +690,17 @@ ERROR [struct.build/BL3]: circular dependency
 
 ### Rationale
 
-**PK2 (declarative package block):** I chose Rask-native syntax over TOML because it eliminates a second language, enables type-checked metadata, and keeps everything in one file. The `package` block is purely declarative — no code execution. This lets the parser extract dependency information independently of build logic.
+**PK1 (rask.toml):** This was a `package` block in `build.rk`, in Rask syntax, for one language and one file. It cost more than it bought: every tool that wanted a dependency list (Renovate, a registry indexer, an editor plugin) had to parse Rask, and `rask add` needed a Rask-aware editor to keep formatting. A manifest is shallow data, which is where TOML is strongest, and the type checking the Rask block gave comes back through the schema (`struct.manifest`). Code stays in `build.rk`, which most packages don't need.
 
 **BL2 (full language):** Build scripts need I/O, external tool execution, and sometimes concurrency. Restricting them to a subset creates artificial limitations. Full language access makes complex build scenarios (protoc, cbindgen, code generation) straightforward.
 
-**PM1 (import-inferred permissions):** I could have gone with author-declared capabilities (like npm's `engines` field) or process-level permissions (like Deno's `--allow-net`). Author declarations are trust-based — a malicious package just lies. Process-level permissions work but check at runtime, not compile time. Import-inferred capabilities are verifiable (the compiler traces the import graph), catch issues before any code runs, and don't add annotation burden to package authors. The tradeoff: `unsafe`/FFI is the escape hatch — a package with `allow: ["ffi"]` can do anything through C calls. But `ffi` is a loud, visible capability, and if a JSON parser needs it, that's a red flag.
+**PM1 (import-inferred permissions):** I could have gone with author-declared capabilities (like npm's `engines` field) or process-level permissions (like Deno's `--allow-net`). Author declarations are trust-based — a malicious package just lies. Process-level permissions work but check at runtime, not compile time. Import-inferred capabilities are verifiable (the compiler traces the import graph), catch issues before any code runs, and don't add annotation burden to package authors. The tradeoff: `unsafe`/FFI is the escape hatch — a package with `allow = ["ffi"]` can do anything through C calls. But `ffi` is a loud, visible capability, and if a JSON parser needs it, that's a red flag.
 
-**FG1-FG6 (exclusive features):** Cargo features are additive-only — you can't express "pick exactly one backend." This causes real bugs: sqlx with both tokio and async-std enabled, openssl with conflicting vendoring options. Exclusive groups solve this with one keyword modifier. Additive features keep set-union resolution. Exclusive groups require all selectors to agree, with clear conflict errors showing both sources. Root override is the escape hatch.
+**FG1-FG6 (exclusive features):** Cargo features are additive-only — you can't express "pick exactly one backend." This causes real bugs: sqlx with both tokio and async-std enabled, openssl with conflicting vendoring options. Exclusive groups solve this with a table of their own, `[exclusive-features]`. Additive features keep set-union resolution. Exclusive groups require all selectors to agree, with clear conflict errors showing both sources. Root override is the escape hatch.
 
-**SB1 (default sandbox):** I chose to always sandbox dependency build scripts because the threat model is supply chain attacks — you can't trust a package to opt into its own restrictions. Root package build scripts are unsandboxed by default because the threat model doesn't include your own code. For CI with untrusted PRs, `sandbox: true` opts in. Structured APIs (`compile_c`, `pkg_config`, etc.) cover most build needs without sandbox escape.
+**SB1 (default sandbox):** I chose to always sandbox dependency build scripts because the threat model is supply chain attacks — you can't trust a package to opt into its own restrictions. Root package build scripts are unsandboxed by default because the threat model doesn't include your own code. For CI with untrusted PRs, `sandbox = true` opts in. Structured APIs (`compile_c`, `pkg_config`, etc.) cover most build needs without sandbox escape.
 
-**PM9 (build_exec as separate capability):** I separated `build_exec` from runtime `exec` because they're different trust decisions. A git library that shells out to `git` at runtime (`allow: ["exec"]`) is different from a library whose build script calls `protoc` (`allow: ["build_exec"]`). Most deps with build scripts only use structured APIs and need zero special permissions — that's the design goal.
+**PM9 (build_exec as separate capability):** I separated `build_exec` from runtime `exec` because they're different trust decisions. A git library that shells out to `git` at runtime (`allow = ["exec"]`) is different from a library whose build script calls `protoc` (`allow = ["build_exec"]`). Most deps with build scripts only use structured APIs and need zero special permissions — that's the design goal.
 
 **SG1 (package signing):** Checksums (LK3) verify integrity — the bits you got match what was published. Signing verifies provenance — the bits were published by someone who holds the key. TOFU is pragmatic: a full PKI adds complexity most users won't engage with. The first publish establishes the key binding; the common attack (compromised registry serving modified packages) is caught without a trust hierarchy. Ed25519 because it's fast, small keys/signatures, widely implemented.
 
@@ -754,27 +752,39 @@ Run with: `rask test build.rk`
 
 ### Full Example
 
+```toml
+schema = "rask-package@1"
+
+[package]
+name = "my-api"
+version = "1.0.0"
+description = "REST API server"
+license = "MIT"
+
+[dependencies]
+http          = { registry = "^2.0", allow = ["net"] }
+json          = { registry = "^1.5" }
+epoll         = { registry = "^1.0", target = "linux" }
+protobuf-rask = { registry = "^0.9", allow = ["build_exec"] }
+
+[dev-dependencies]
+mock-server = { registry = "^2.0" }
+
+[features.ssl.dependencies]
+openssl            = { registry = "^3.0", target = "linux", allow = ["ffi"] }
+security-framework = { registry = "^2.0", target = "macos" }
+
+[features.full]
+enables = ["ssl", "logging"]
+
+[profiles.staging]
+inherits = "release"
+debug-info = true
+```
+
+And `build.rk`, because this package generates code:
+
 ```rask
-package "my-api" "1.0.0" {
-    description: "REST API server"
-    license: "MIT"
-
-    dep "http" "^2.0" { allow: ["net"] }
-    dep "json" "^1.5"
-    dep "epoll" "^1.0" { target: "linux" }
-    dep "protobuf-rask" "^0.9" { allow: ["build_exec"] }
-
-    scope "dev" { dep "mock-server" "^2.0" }
-
-    feature "ssl" {
-        dep "openssl" "^3.0" { target: "linux", allow: ["ffi"] }
-        dep "security-framework" "^2.0" { target: "macos" }
-    }
-    feature "full" { enables: ["ssl", "logging"] }
-
-    profile "staging" { inherits: "release", debug_info: true }
-}
-
 func build(ctx: BuildContext) -> void or Error {
     try ctx.step("protobuf", inputs: ["api.proto"], || {
         try ctx.exec("protoc", ["--rask_out=.rk-gen/", "api.proto"])
@@ -786,6 +796,7 @@ func build(ctx: BuildContext) -> void or Error {
 
 | Feature | Status |
 |---------|--------|
+| Manifest in `rask.toml` (PK1-PK4) | Implemented (`struct.manifest`) |
 | `rask build` end-to-end pipeline | Implemented |
 | Output directories (OD1-OD5) | Implemented |
 | Build scripts via interpreter (BL1-BL3) | Implemented |
@@ -815,6 +826,7 @@ func build(ctx: BuildContext) -> void or Error {
 
 ### See Also
 
+- `struct.manifest` — how `rask.toml` is read, checked and migrated
 - `struct.modules` — module system, imports, visibility
 - `struct.packages` — versioning, dependency resolution, lock files
 - `ctrl.comptime` — compile-time execution

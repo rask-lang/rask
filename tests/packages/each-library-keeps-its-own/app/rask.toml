@@ -1,0 +1,12 @@
+schema = "rask-package@1"
+
+[package]
+name = "app"
+version = "0.1.0"
+description = "Pulls in two packages that both conform the same pair"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+interfacepkg = { path = "../interfacepkg" }
+liba         = { path = "../liba" }
+libb         = { path = "../libb" }

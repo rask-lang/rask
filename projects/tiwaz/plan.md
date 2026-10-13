@@ -17,7 +17,7 @@ Goal: listen on `:8080`, forward everything to one backend, return the response.
 
 ### Step 1: Scaffold the package
 
-Create `examples/tiwaz/build.rk` — copy the pattern from `lsm_database/build.rk`.
+Create `examples/tiwaz/rask.toml` — copy the pattern from `lsm_database/rask.toml`.
 
 ### Step 2: Write the accept loop (`main.rk`)
 

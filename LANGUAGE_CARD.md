@@ -397,7 +397,7 @@ No I/O (`@embed_file` excepted), no racks/concurrency/`any Interface` at comptim
 - Package = directory; all files in it share visibility. Default is package-visible; `public` exports; `private` (fields/methods) restricts to `extend` blocks. Struct with any private field → construct via factory function.
 - `import http` then `http.get(...)` — qualified by default; `import mylib.{Parser, Lexer}` for unqualified names.
 - **Nothing comes pre-imported.** Only primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none` are in scope on their own. Everything else in the stdlib needs asking for: `import string.StringBuilder`, `import sync.{Shared, Mutex}`, `import memory.{Rack, Link, Heap}`, `import fs.File`, `import time.Duration`, `import thread.Thread`. There is no prelude — a name you didn't import is a name the compiler leaves free for you to declare yourself.
-- `build.rk` declares the package in Rask syntax (deps, features, profiles) and can contain a `func build(ctx)` script. Capabilities (fs/net/ffi) are inferred from imports and gated by `allow:` (`struct.build`).
+- `rask.toml` declares the package (deps, features, profiles), checked against a versioned schema; an optional `build.rk` holds a `func build(ctx)` script. Capabilities (fs/net/ffi) are inferred from imports and gated by `allow = [...]` on the dependency (`struct.build`, `struct.manifest`).
 - C interop and raw pointers live in `unsafe` blocks only (`mem.unsafe`). Cross-platform: `comptime if cfg.os`.
 - Testing: `test "name" { assert x == y }` blocks; `rask test`.
 

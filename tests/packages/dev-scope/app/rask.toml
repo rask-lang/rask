@@ -1,0 +1,13 @@
+schema = "rask-package@1"
+
+[package]
+name = "app"
+version = "0.1.0"
+description = "Uses a dev-scoped dep from a test block only"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+libpkg = { path = "../libpkg" }
+
+[dev-dependencies]
+testkit = { path = "../testkit" }

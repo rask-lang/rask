@@ -1,6 +1,6 @@
 # Multi-package fixtures
 
-Nothing in the repo declared a dependency until these existed. `grep -rn 'dep "'`
+Nothing in the repo declared a dependency until these existed. A grep for dependency declarations
 across `projects/`, `examples/` and `tests/` found no hits, so every multi-package
 build was untested — which is how #1112 reached the tree: a library that exports a
 function returning its own struct can't be consumed at all, and *any* consumer

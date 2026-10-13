@@ -111,18 +111,8 @@ enum RawToken {
     Catch,
     #[token("or")]
     Or,
-    #[token("package")]
-    Package,
     #[token("private")]
     Private,
-    #[token("scope")]
-    Scope,
-    #[token("feature")]
-    Feature,
-    #[token("exclusive")]
-    Exclusive,
-    #[token("profile")]
-    Profile,
     #[token("union")]
     Union,
     #[token("discard")]
@@ -677,12 +667,7 @@ impl<'a> Lexer<'a> {
             RawToken::Try => TokenKind::Try,
             RawToken::Catch => TokenKind::Catch,
             RawToken::Or => TokenKind::Or,
-            RawToken::Package => TokenKind::Package,
             RawToken::Private => TokenKind::Private,
-            RawToken::Scope => TokenKind::Scope,
-            RawToken::Feature => TokenKind::Feature,
-            RawToken::Exclusive => TokenKind::Exclusive,
-            RawToken::Profile => TokenKind::Profile,
             RawToken::Union => TokenKind::Union,
             RawToken::Discard => TokenKind::Discard,
             RawToken::Void => TokenKind::Void,

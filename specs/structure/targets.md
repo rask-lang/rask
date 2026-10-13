@@ -81,7 +81,7 @@ public func main(args: Args) {
 
 ```
 mylib/
-  build.rk            # members: ["mylib", "cli"]
+  rask.toml           # members = ["mylib", "cli"]
   mylib/
     parser.rk          # public API — library
     format.rk
@@ -93,7 +93,7 @@ Multiple binaries:
 
 ```
 myproject/
-  build.rk            # members: ["core", "client", "server"]
+  rask.toml           # members = ["core", "client", "server"]
   core/
     protocol.rk        # shared library
   client/
@@ -163,7 +163,7 @@ public func new(method: string, path: string) -> Request { ... }
 **Library + CLI (workspace):**
 ```
 mylib/
-  build.rk          // members: ["mylib", "cli"]
+  rask.toml         // members = ["mylib", "cli"]
   mylib/
     core.rk
   cli/

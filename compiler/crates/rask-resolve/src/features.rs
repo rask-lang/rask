@@ -79,15 +79,13 @@ pub fn resolve_features(
         }
         visited.insert(name.clone());
 
+        // `enables` follows chains (F6). It used to read each dep's `target`
+        // as a feature name, so a dep filtered to "linux" turned on a feature
+        // called "linux" and `enables` itself did nothing.
         if let Some(feat) = feature_map.get(name.as_str()) {
-            // Check for enables chains
-            for dep in &feat.deps {
-                // If dep has a feature field, that feature is also enabled
-                if let Some(ref feat_name) = dep.target {
-                    // Reusing target field for feature gating in nested context
-                    if !visited.contains(feat_name) {
-                        to_enable.push(feat_name.clone());
-                    }
+            for next in &feat.enables {
+                if !visited.contains(next) {
+                    to_enable.push(next.clone());
                 }
             }
         }
@@ -158,22 +156,62 @@ pub fn resolve_features(
                 }
             }
         } else if result.enabled.contains(&feat.name) {
-            // Additive feature — all deps activated (F1)
-            result.activated_deps.extend(feat.deps.clone());
+            // Additive feature — its deps are activated (F1), except one also
+            // gated on a feature that isn't on (F5)
+            result.activated_deps.extend(
+                feat.deps
+                    .iter()
+                    .filter(|d| d.feature.as_ref().map_or(true, |f| result.enabled.contains(f)))
+                    .cloned(),
+            );
         }
     }
 
     result
 }
 
-/// Check for circular enables references (F6).
+/// Circular `enables` references (F6), one message per cycle found, and
+/// `enables` naming a feature that doesn't exist.
 pub fn check_enables_cycles(features: &[FeatureDecl]) -> Vec<String> {
-    // Build adjacency: feature → features it enables
-    // (parsed from metadata — for now, enables is implicit via dep feature fields)
-    let _ = features;
-    // The enables chain is validated during resolve_features via visited set.
-    // Explicit cycle detection can be added when `enables` syntax is fully parsed.
-    Vec::new()
+    let by_name: HashMap<&str, &FeatureDecl> =
+        features.iter().map(|f| (f.name.as_str(), f)).collect();
+    let mut errors = Vec::new();
+    for f in features {
+        for next in &f.enables {
+            if !by_name.contains_key(next.as_str()) {
+                errors.push(format!("feature '{}' enables '{}', which isn't declared", f.name, next));
+            }
+        }
+    }
+    // Depth-first walk; a feature met again on the current path closes a cycle.
+    fn walk<'a>(
+        name: &'a str,
+        by_name: &HashMap<&'a str, &'a FeatureDecl>,
+        path: &mut Vec<&'a str>,
+        done: &mut HashSet<&'a str>,
+        errors: &mut Vec<String>,
+    ) {
+        if let Some(start) = path.iter().position(|p| *p == name) {
+            let mut cycle: Vec<&str> = path[start..].to_vec();
+            cycle.push(name);
+            errors.push(format!("features enable each other in a circle: {}", cycle.join(" -> ")));
+            return;
+        }
+        if !done.insert(name) {
+            return;
+        }
+        let Some(f) = by_name.get(name) else { return };
+        path.push(name);
+        for next in &f.enables {
+            walk(next, by_name, path, done, errors);
+        }
+        path.pop();
+    }
+    let mut done = HashSet::new();
+    for f in features {
+        walk(&f.name, &by_name, &mut Vec::new(), &mut done, &mut errors);
+    }
+    errors
 }
 
 #[cfg(test)]
@@ -188,6 +226,7 @@ mod tests {
             options: vec![],
             default: None,
             on_by_default: false,
+            enables: vec![],
         }
     }
 
@@ -201,6 +240,7 @@ mod tests {
             }).collect(),
             default: Some(default.into()),
             on_by_default: false,
+            enables: vec![],
         }
     }
 
@@ -211,11 +251,13 @@ mod tests {
             path: None,
             git: None,
             branch: None,
+            rev: None,
             with_features: vec![],
             target: None,
             allow: vec![],
             exclusive_selections: vec![],
             scope: None,
+            feature: None,
         }
     }
 
@@ -300,5 +342,53 @@ mod tests {
         assert_eq!(result.exclusive_selections.get("runtime"), Some(&"async-std".to_string()));
         assert_eq!(result.activated_deps.len(), 1);
         assert_eq!(result.activated_deps[0].name, "async-std");
+    }
+
+    /// F6: `enables` turns the named features on, through chains.
+    #[test]
+    fn enables_follows_chains() {
+        let mut full = make_additive("full", vec![]);
+        full.enables = vec!["ssl".into()];
+        let mut ssl = make_additive("ssl", vec![make_dep("openssl")]);
+        ssl.enables = vec!["crypto".into()];
+        let crypto = make_additive("crypto", vec![make_dep("ring")]);
+        let result = resolve_features(&[full, ssl, crypto], &["full".into()], false, &[]);
+        assert!(result.enabled.contains("ssl") && result.enabled.contains("crypto"));
+        assert_eq!(result.activated_deps.len(), 2);
+    }
+
+    /// A dep's platform filter is not a feature name.
+    #[test]
+    fn target_is_not_read_as_a_feature() {
+        let mut dep = make_dep("epoll");
+        dep.target = Some("linux".into());
+        let net = make_additive("net", vec![dep]);
+        let linux = make_additive("linux", vec![make_dep("other")]);
+        let result = resolve_features(&[net, linux], &["net".into()], false, &[]);
+        assert!(!result.enabled.contains("linux"));
+    }
+
+    /// F5: a dep gated on a second feature waits for that one too.
+    #[test]
+    fn feature_gate_on_a_dep() {
+        let mut ring = make_dep("ring");
+        ring.feature = Some("crypto".into());
+        let ssl = make_additive("ssl", vec![make_dep("openssl"), ring]);
+        let crypto = make_additive("crypto", vec![]);
+        let only_ssl = resolve_features(&[ssl.clone(), crypto.clone()], &["ssl".into()], false, &[]);
+        assert_eq!(only_ssl.activated_deps.len(), 1);
+        let both = resolve_features(&[ssl, crypto], &["ssl".into(), "crypto".into()], false, &[]);
+        assert_eq!(both.activated_deps.len(), 2);
+    }
+
+    #[test]
+    fn enables_cycle_and_unknown_name_are_reported() {
+        let mut a = make_additive("a", vec![]);
+        a.enables = vec!["b".into()];
+        let mut b = make_additive("b", vec![]);
+        b.enables = vec!["a".into(), "ghost".into()];
+        let errors = check_enables_cycles(&[a, b]);
+        assert!(errors.iter().any(|e| e.contains("a -> b -> a")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("'ghost'")), "{errors:?}");
     }
 }

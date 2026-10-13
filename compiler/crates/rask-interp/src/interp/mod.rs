@@ -1277,6 +1277,38 @@ impl Interpreter {
         }
     }
 
+    /// Call one function of a Rask program as a library: `name(args...)`,
+    /// where every parameter is a `string` and so is the result. How the
+    /// toolchain runs Rask code it ships, like the manifest loader, with no
+    /// `main` and no process boundary between them.
+    pub fn call_string_function(
+        &mut self,
+        decls: &[Decl],
+        name: &str,
+        args: &[&str],
+    ) -> Result<String, RuntimeDiagnostic> {
+        self.register_declarations(decls)
+            .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;
+        let func = self.functions.get(name).cloned().ok_or_else(|| {
+            RuntimeDiagnostic::new(
+                RuntimeError::Generic(format!("no function `{name}` to call")),
+                Span::new(0, 0),
+            )
+        })?;
+        let args: Vec<Value> = args
+            .iter()
+            .map(|a| Value::String(Arc::new(Mutex::new(a.to_string()))))
+            .collect();
+        let value = crate::on_interp_stack(|| self.call_function(&func, args, None))?;
+        match value {
+            Value::String(s) => Ok(s.lock().unwrap().clone()),
+            other => Err(RuntimeDiagnostic::new(
+                RuntimeError::Generic(format!("`{name}` returned {}, not a string", other.type_name())),
+                func.span,
+            )),
+        }
+    }
+
     /// The error `main` returned, if it returned one. `ret_ty` is main's
     /// declared return type — without a `T or E` there's no error branch and
     /// every value is a success.

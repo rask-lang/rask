@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "libpkg"
+version = "0.1.0"
+description = "Ordinary dependency, linked by every build"
+license = "MIT OR Apache-2.0"

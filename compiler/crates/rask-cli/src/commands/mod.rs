@@ -12,6 +12,7 @@ pub mod link;
 pub mod tools;
 pub mod specs;
 pub mod deps;
+pub mod manifest;
 pub mod watch;
 pub mod cache;
 pub mod init;

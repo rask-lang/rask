@@ -136,15 +136,15 @@ pub fn cmd_vendor(path: &str, verbose: bool) {
         if vendored == 1 { "" } else { "s" },
     );
 
-    // Check if vendor_dir is configured in build.rk (VD3)
-    let build_rk = root.join("build.rk");
-    if build_rk.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&build_rk) {
-            if !content.contains("vendor_dir") {
-                println!("  {} add `vendor_dir: \"vendor\"` to build.rk to use vendored deps",
-                    "Hint:".cyan());
-            }
-        }
+    // Is vendor-dir configured? (VD3) Asked of the loaded manifest, not
+    // the file's text, so a comment mentioning it doesn't count.
+    let manifest = root.join(rask_resolve::package::MANIFEST_FILE);
+    let configured = rask_manifest::load(&manifest)
+        .map(|m| m.meta("vendor_dir").is_some())
+        .unwrap_or(false);
+    if !configured {
+        println!("  {} add `vendor-dir = \"vendor\"` under [package] in rask.toml to use vendored deps",
+            "Hint:".cyan());
     }
 }
 

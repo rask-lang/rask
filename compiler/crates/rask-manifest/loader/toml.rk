@@ -1,0 +1,672 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// The TOML a manifest needs, read into a tree with no schema involved.
+//
+// Supported: comments, bare/quoted/dotted keys, [table] headers, basic and
+// literal strings, integers, booleans, arrays, inline tables. Rejected with
+// a message: floats, dates, multi-line strings, [[array-of-tables]]. A
+// manifest has no use for them, and saying so beats half-reading them.
+//
+// Well-formedness, checked here because no schema can see it later:
+// quoted keys must be NFC, raw bidi controls are rejected anywhere in the
+// file, duplicate keys are an error, depth and size have fixed limits.
+
+import string.StringBuilder
+
+const MAX_BYTES: usize = 1048576
+const MAX_DEPTH: usize = 32
+
+const TAB: u8 = 9
+const LF: u8 = 10
+const CR: u8 = 13
+const SPACE: u8 = 32
+const DQUOTE: u8 = 34
+const HASH: u8 = 35
+const SQUOTE: u8 = 39
+const COMMA: u8 = 44
+const MINUS: u8 = 45
+const DOT: u8 = 46
+const EQUALS: u8 = 61
+const LBRACKET: u8 = 91
+const BACKSLASH: u8 = 92
+const RBRACKET: u8 = 93
+const LBRACE: u8 = 123
+const RBRACE: u8 = 125
+const PLUS: u8 = 43
+const UNDERSCORE: u8 = 95
+
+public enum Value {
+    Str(string)
+    Int(i64)
+    Bool(bool)
+    Array(Vec<Value>)
+    Table(Vec<Entry>)
+}
+
+// Tables keep their keys in file order, so a rewrite keeps the order too.
+public struct Entry {
+    public key: string
+    public value: Value
+}
+
+public struct TomlError {
+    public line: i64
+    public what: string
+}
+
+extend TomlError {
+    public func message(self) -> string {
+        return "line {self.line}: {self.what}"
+    }
+}
+
+// One `key = value` or `[header]`, with its full dotted path.
+struct Assign {
+    path: Vec<string>
+    value: Value
+    header: bool
+    line: i64
+}
+
+struct Reader {
+    input: string
+    pos: usize
+    len: usize
+    line: i64
+}
+
+public func parse_toml(input: string) -> Vec<Entry> or TomlError {
+    if input.len() > MAX_BYTES {
+        return TomlError { line: 0, what: "file is larger than {MAX_BYTES} bytes" }
+    }
+    try check_bidi(input)
+    mut r = Reader { input, pos: 0, len: input.len(), line: 1 }
+    mut assigns = Vec<Assign>.new()
+    mut prefix = Vec<string>.new()
+
+    loop {
+        r.skip_blank_lines()
+        if r.at_end() {
+            break
+        }
+        let line = r.line
+        if r.peek() == LBRACKET {
+            r.pos = r.pos + 1
+            if r.peek() == LBRACKET {
+                return r.error("[[array of tables]] is not supported in a manifest; use a table of tables")
+            }
+            r.skip_spaces()
+            let path = try r.parse_key()
+            r.skip_spaces()
+            if r.peek() != RBRACKET {
+                return r.error("expected `]` to close the table header")
+            }
+            r.pos = r.pos + 1
+            try r.end_of_line()
+            prefix = path.clone()
+            assigns.push(Assign { path, value: Value.Table(Vec.new()), header: true, line })
+            continue
+        }
+        let key = try r.parse_key()
+        r.skip_spaces()
+        if r.peek() != EQUALS {
+            return r.error("expected `=` after the key")
+        }
+        r.pos = r.pos + 1
+        r.skip_spaces()
+        let value = try r.parse_value(0)
+        try r.end_of_line()
+        mut path = prefix.clone()
+        for k in key {
+            path.push(k)
+        }
+        if path.len() > MAX_DEPTH {
+            return TomlError { line, what: "keys nest deeper than {MAX_DEPTH} levels" }
+        }
+        assigns.push(Assign { path, value, header: false, line })
+    }
+
+    mut all = Vec<usize>.new()
+    mut i: usize = 0
+    while i < assigns.len() {
+        all.push(i)
+        i = i + 1
+    }
+    return build_table(assigns, all, 0)
+}
+
+// Group assignments by their next path segment, in first-seen order.
+// Duplicates and a value reused as a table are caught here, where both
+// lines are in hand.
+func build_table(assigns: Vec<Assign>, idx: Vec<usize>, depth: usize) -> Vec<Entry> or TomlError {
+    mut keys = Vec<string>.new()
+    for i in idx {
+        let k = assigns[i].path[depth].clone()
+        if !keys.contains(k) {
+            keys.push(k)
+        }
+    }
+    mut out = Vec<Entry>.new()
+    for k in keys {
+        mut leaf: usize? = none
+        mut header_seen = false
+        mut children = Vec<usize>.new()
+        for i in idx {
+            if assigns[i].path[depth] != k {
+                continue
+            }
+            if assigns[i].path.len() == depth + 1 {
+                if assigns[i].header {
+                    if header_seen {
+                        return TomlError { line: assigns[i].line, what: "table [{assigns[i].path.join(".")}] is defined twice" }
+                    }
+                    header_seen = true
+                } else {
+                    if leaf? {
+                        return TomlError { line: assigns[i].line, what: "duplicate key `{assigns[i].path.join(".")}`" }
+                    }
+                    leaf = i
+                }
+            } else {
+                children.push(i)
+            }
+        }
+        if leaf? as li {
+            if header_seen || !children.is_empty() {
+                return TomlError { line: assigns[li].line, what: "`{assigns[li].path.join(".")}` is a value here and a table elsewhere" }
+            }
+            out.push(Entry { key: k, value: assigns[li].value.clone() })
+        } else {
+            let inner = try build_table(assigns, children, depth + 1)
+            out.push(Entry { key: k, value: Value.Table(inner) })
+        }
+    }
+    return out
+}
+
+// Raw bidi controls can make text read differently from how it parses.
+// They're rejected everywhere; a string that needs one writes it escaped.
+func check_bidi(input: string) -> void or TomlError {
+    mut line: i64 = 1
+    mut i: usize = 0
+    let n = input.len()
+    while i < n {
+        let b = input.byte_at(i) ?? 0
+        if b == LF {
+            line = line + 1
+        }
+        if b == 226 && i + 2 < n {
+            let b1 = input.byte_at(i + 1) ?? 0
+            let b2 = input.byte_at(i + 2) ?? 0
+            let marks = b1 == 128 && (b2 == 142 || b2 == 143)
+            let embeds = b1 == 128 && b2 >= 170 && b2 <= 174
+            let isolates = b1 == 129 && b2 >= 166 && b2 <= 169
+            if marks || embeds || isolates {
+                return TomlError { line, what: "raw bidirectional control character; write it as a \\u escape inside a string" }
+            }
+        }
+        i = i + 1
+    }
+    return
+}
+
+func is_bare_key_byte(b: u8) -> bool {
+    return (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == UNDERSCORE || b == MINUS
+}
+
+func is_digit(b: u8) -> bool {
+    return b >= 48 && b <= 57
+}
+
+extend Reader {
+    func at_end(self) -> bool {
+        return self.pos >= self.len
+    }
+
+    func peek(self) -> u8 {
+        if self.pos >= self.len {
+            return 0
+        }
+        return self.input.byte_at(self.pos) ?? 0
+    }
+
+    func error(self, message: string) -> TomlError {
+        return TomlError { line: self.line, what: message }
+    }
+
+    func skip_spaces(mutate self) {
+        while self.peek() == SPACE || self.peek() == TAB {
+            self.pos = self.pos + 1
+        }
+    }
+
+    func skip_comment(mutate self) {
+        if self.peek() == HASH {
+            while !self.at_end() && self.peek() != LF {
+                self.pos = self.pos + 1
+            }
+        }
+    }
+
+    func newline(mutate self) {
+        if self.peek() == CR {
+            self.pos = self.pos + 1
+        }
+        if self.peek() == LF {
+            self.pos = self.pos + 1
+            self.line = self.line + 1
+        }
+    }
+
+    func skip_blank_lines(mutate self) {
+        loop {
+            self.skip_spaces()
+            self.skip_comment()
+            if self.peek() == LF || self.peek() == CR {
+                self.newline()
+                continue
+            }
+            return
+        }
+    }
+
+    // Spaces, comments and newlines, as allowed between array elements.
+    func skip_ws_multiline(mutate self) {
+        self.skip_blank_lines()
+    }
+
+    func end_of_line(mutate self) -> void or TomlError {
+        self.skip_spaces()
+        self.skip_comment()
+        if self.at_end() {
+            return
+        }
+        if self.peek() == LF || self.peek() == CR {
+            self.newline()
+            return
+        }
+        return self.error("unexpected text after the value; one key per line")
+    }
+
+    // `a.b."c d"` — one or more segments joined by dots.
+    func parse_key(mutate self) -> Vec<string> or TomlError {
+        mut segs = Vec<string>.new()
+        loop {
+            self.skip_spaces()
+            let seg = try self.parse_key_segment()
+            segs.push(seg)
+            self.skip_spaces()
+            if self.peek() == DOT {
+                self.pos = self.pos + 1
+                continue
+            }
+            return segs
+        }
+    }
+
+    func parse_key_segment(mutate self) -> string or TomlError {
+        let b = self.peek()
+        if b == DQUOTE || b == SQUOTE {
+            let s = try self.parse_string()
+            if s.normalized() != s {
+                return self.error("quoted key \"{s}\" is not in NFC form; two spellings of one key would be two keys")
+            }
+            return s
+        }
+        let start = self.pos
+        while is_bare_key_byte(self.peek()) {
+            self.pos = self.pos + 1
+        }
+        if self.pos == start {
+            return self.error("expected a key")
+        }
+        return self.input[start..self.pos].to_string()
+    }
+
+    func parse_value(mutate self, depth: usize) -> Value or TomlError {
+        if depth > MAX_DEPTH {
+            return self.error("values nest deeper than {MAX_DEPTH} levels")
+        }
+        let b = self.peek()
+        if b == DQUOTE || b == SQUOTE {
+            let s = try self.parse_string()
+            return Value.Str(s)
+        }
+        if b == LBRACKET {
+            return self.parse_array(depth)
+        }
+        if b == LBRACE {
+            return self.parse_inline_table(depth)
+        }
+        if self.input[self.pos..].starts_with("true") {
+            self.pos = self.pos + 4
+            return Value.Bool(true)
+        }
+        if self.input[self.pos..].starts_with("false") {
+            self.pos = self.pos + 5
+            return Value.Bool(false)
+        }
+        if is_digit(b) || b == MINUS || b == PLUS {
+            return self.parse_integer()
+        }
+        return self.error("expected a value: a string, integer, boolean, array or inline table")
+    }
+
+    func parse_integer(mutate self) -> Value or TomlError {
+        mut negative = false
+        if self.peek() == MINUS || self.peek() == PLUS {
+            negative = self.peek() == MINUS
+            self.pos = self.pos + 1
+        }
+        if !is_digit(self.peek()) {
+            return self.error("expected a digit")
+        }
+        mut n: i64 = 0
+        while is_digit(self.peek()) || self.peek() == UNDERSCORE {
+            let d = self.peek()
+            self.pos = self.pos + 1
+            if d == UNDERSCORE {
+                continue
+            }
+            n = n * 10 + (d - 48).wrap<i64>()
+        }
+        let next = self.peek()
+        if next == DOT || next == 101 || next == 69 || next == 58 || next == MINUS {
+            return self.error("floats and dates are not supported in a manifest")
+        }
+        if negative {
+            return Value.Int(0 - n)
+        }
+        return Value.Int(n)
+    }
+
+    func parse_array(mutate self, depth: usize) -> Value or TomlError {
+        self.pos = self.pos + 1
+        mut items = Vec<Value>.new()
+        loop {
+            self.skip_ws_multiline()
+            if self.peek() == RBRACKET {
+                self.pos = self.pos + 1
+                return Value.Array(items)
+            }
+            let v = try self.parse_value(depth + 1)
+            items.push(v)
+            self.skip_ws_multiline()
+            if self.peek() == COMMA {
+                self.pos = self.pos + 1
+                continue
+            }
+            if self.peek() == RBRACKET {
+                self.pos = self.pos + 1
+                return Value.Array(items)
+            }
+            return self.error("expected `,` or `]` in the array")
+        }
+    }
+
+    // `{ a = 1, b.c = "x" }` — one line, no trailing comma, as TOML has it.
+    func parse_inline_table(mutate self, depth: usize) -> Value or TomlError {
+        let line = self.line
+        self.pos = self.pos + 1
+        mut assigns = Vec<Assign>.new()
+        self.skip_spaces()
+        if self.peek() == RBRACE {
+            self.pos = self.pos + 1
+            return Value.Table(Vec.new())
+        }
+        loop {
+            self.skip_spaces()
+            let path = try self.parse_key()
+            self.skip_spaces()
+            if self.peek() != EQUALS {
+                return self.error("expected `=` after the key")
+            }
+            self.pos = self.pos + 1
+            self.skip_spaces()
+            let value = try self.parse_value(depth + 1)
+            assigns.push(Assign { path, value, header: false, line })
+            self.skip_spaces()
+            if self.peek() == COMMA {
+                self.pos = self.pos + 1
+                continue
+            }
+            if self.peek() == RBRACE {
+                self.pos = self.pos + 1
+                break
+            }
+            return self.error("expected `,` or `}` in the inline table")
+        }
+        mut all = Vec<usize>.new()
+        mut i: usize = 0
+        while i < assigns.len() {
+            all.push(i)
+            i = i + 1
+        }
+        let entries = try build_table(assigns, all, 0)
+        return Value.Table(entries)
+    }
+
+    func parse_string(mutate self) -> string or TomlError {
+        let quote = self.peek()
+        if self.input[self.pos..].starts_with("\"\"\"") || self.input[self.pos..].starts_with("'''") {
+            return self.error("multi-line strings are not supported in a manifest")
+        }
+        self.pos = self.pos + 1
+        mut out = StringBuilder.new()
+        mut run_start = self.pos
+        loop {
+            if self.at_end() || self.peek() == LF {
+                return self.error("unterminated string")
+            }
+            let b = self.peek()
+            if b == quote {
+                out.push(self.input[run_start..self.pos].to_string())
+                self.pos = self.pos + 1
+                return out.build()
+            }
+            if b == BACKSLASH && quote == DQUOTE {
+                out.push(self.input[run_start..self.pos].to_string())
+                self.pos = self.pos + 1
+                let esc = self.peek()
+                self.pos = self.pos + 1
+                if esc == DQUOTE {
+                    out.push_char('"')
+                } else if esc == BACKSLASH {
+                    out.push_char('\\')
+                } else if esc == 110 {
+                    out.push_char('\n')
+                } else if esc == 116 {
+                    out.push_char('\t')
+                } else if esc == 114 {
+                    out.push_char('\r')
+                } else if esc == 117 {
+                    let c = try self.parse_hex_escape(4)
+                    out.push_char(c)
+                } else if esc == 85 {
+                    let c = try self.parse_hex_escape(8)
+                    out.push_char(c)
+                } else {
+                    return self.error("unknown escape in string")
+                }
+                run_start = self.pos
+                continue
+            }
+            self.pos = self.pos + 1
+        }
+    }
+
+    func parse_hex_escape(mutate self, digits: usize) -> char or TomlError {
+        mut cp: u32 = 0
+        mut i: usize = 0
+        while i < digits {
+            let b = self.peek()
+            self.pos = self.pos + 1
+            mut d: u32 = 0
+            if b >= 48 && b <= 57 {
+                d = (b - 48).wrap<u32>()
+            } else if b >= 97 && b <= 102 {
+                d = (b - 87).wrap<u32>()
+            } else if b >= 65 && b <= 70 {
+                d = (b - 55).wrap<u32>()
+            } else {
+                return self.error("bad hex digit in \\u escape")
+            }
+            cp = cp * 16 + d
+            i = i + 1
+        }
+        if char.from_u32(cp)? as c {
+            return c
+        }
+        return self.error("\\u escape is not a valid code point")
+    }
+}
+
+// ─── Tree access ────────────────────────────────────────────────
+
+extend Value {
+    public func kind(self) -> string {
+        return match self {
+            Value.Str(_) => "a string",
+            Value.Int(_) => "an integer",
+            Value.Bool(_) => "a boolean",
+            Value.Array(_) => "an array",
+            Value.Table(_) => "a table",
+        }
+    }
+
+    public func eq(self, other: Value) -> bool {
+        return render_value(self) == render_value(other)
+    }
+}
+
+public func find_entry(entries: Vec<Entry>, key: string) -> usize? {
+    mut i: usize = 0
+    while i < entries.len() {
+        if entries[i].key == key {
+            return i
+        }
+        i = i + 1
+    }
+    return none
+}
+
+// ─── Writing ─────────────────────────────────────────────────────
+// Not format-preserving: comments and layout are lost. The real `rask add`
+// and `rask migrate` need an editor that keeps them; this is enough to show
+// what a migration produces.
+
+public func render_value(v: Value) -> string {
+    match v {
+        Value.Str(s) => return quote_string(s),
+        Value.Int(n) => return "{n}",
+        Value.Bool(b) => return if b: "true" else: "false",
+        Value.Array(items) => {
+            mut parts = Vec<string>.new()
+            for item in items {
+                parts.push(render_value(item))
+            }
+            return "[{parts.join(", ")}]"
+        }
+        Value.Table(entries) => {
+            if entries.is_empty() {
+                return "{{}}"
+            }
+            mut parts = Vec<string>.new()
+            for e in entries {
+                parts.push("{render_key(e.key)} = {render_value(e.value)}")
+            }
+            return "{{ {parts.join(", ")} }}"
+        }
+    }
+}
+
+func render_key(k: string) -> string {
+    if k.is_empty() {
+        return "\"\""
+    }
+    mut i: usize = 0
+    while i < k.len() {
+        if !is_bare_key_byte(k.byte_at(i) ?? 0) {
+            return quote_string(k)
+        }
+        i = i + 1
+    }
+    return k
+}
+
+func quote_string(s: string) -> string {
+    mut out = StringBuilder.new()
+    out.push_char('"')
+    for c in s.chars() {
+        if c == '"' {
+            out.push("\\\"")
+        } else if c == '\\' {
+            out.push("\\\\")
+        } else if c == '\n' {
+            out.push("\\n")
+        } else if c == '\t' {
+            out.push("\\t")
+        } else {
+            out.push_char(c)
+        }
+    }
+    out.push_char('"')
+    return out.build()
+}
+
+// Top-level scalars first, then one [section] per table. A table whose
+// entries are all tables (like [dependencies]) stays one section of inline
+// tables, which is how a person writes it.
+public func render_document(entries: Vec<Entry>) -> string {
+    mut out = StringBuilder.new()
+    for e in entries {
+        if e.value is Table(_) {
+            continue
+        }
+        out.push("{render_key(e.key)} = {render_value(e.value)}\n")
+    }
+    for e in entries {
+        if e.value is Table(inner) {
+            render_section(mutate out, vec_of(render_key(e.key)), inner)
+        }
+    }
+    return out.build()
+}
+
+func vec_of(s: string) -> Vec<string> {
+    mut v = Vec<string>.new()
+    v.push(s)
+    return v
+}
+
+func render_section(mutate out: StringBuilder, path: Vec<string>, entries: Vec<Entry>) {
+    out.push("\n[{path.join(".")}]\n")
+    mut nested = Vec<usize>.new()
+    mut i: usize = 0
+    for e in entries {
+        // A table that itself holds tables gets its own header; a leaf
+        // table goes inline.
+        if e.value is Table(inner) && has_table(inner) {
+            nested.push(i)
+        } else {
+            out.push("{render_key(e.key)} = {render_value(e.value)}\n")
+        }
+        i = i + 1
+    }
+    for j in nested {
+        if entries[j].value is Table(inner) {
+            mut sub = path.clone()
+            sub.push(render_key(entries[j].key))
+            render_section(mutate out, sub, inner)
+        }
+    }
+}
+
+func has_table(entries: Vec<Entry>) -> bool {
+    for e in entries {
+        if e.value is Table(_) {
+            return true
+        }
+    }
+    return false
+}

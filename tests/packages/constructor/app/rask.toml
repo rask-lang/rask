@@ -1,0 +1,10 @@
+schema = "rask-package@1"
+
+[package]
+name = "app"
+version = "0.1.0"
+description = "Consumes a library that exports a constructor"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+libpkg = { path = "../libpkg" }

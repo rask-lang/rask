@@ -7,7 +7,7 @@ with type checking. No full AST. Memory is O(declarations), not O(program size).
 
 ```
 raido/
-  build.rk         # Package declaration
+  rask.toml        # Package declaration
   value.rk         # 8-byte values, 32.32 fixed-point Number
   bytes.rk         # Byte encoding helpers (read/write u8, u16, u32, i64)
   arena.rk         # Byte-buffer arena with bump allocation

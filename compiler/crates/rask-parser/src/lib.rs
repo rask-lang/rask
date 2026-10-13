@@ -560,16 +560,12 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
 
+    /// `package` was a keyword only for the manifest block, which moved to
+    /// rask.toml. It's an ordinary name now.
     #[test]
-    fn dep_still_works_in_package() {
-        let result = parse("package \"myapp\" \"0.1.0\" {\n    dep \"serde\" \"1.0\"\n}");
+    fn package_is_an_ordinary_name() {
+        let result = parse("func main() {\n    let package = 1\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
-        if let DeclKind::Package(ref p) = result.decls[0].kind {
-            assert_eq!(p.deps.len(), 1);
-            assert_eq!(p.deps[0].name, "serde");
-        } else {
-            panic!("Expected package declaration");
-        }
     }
 
     // ================================================================

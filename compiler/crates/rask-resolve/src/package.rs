@@ -20,7 +20,7 @@ pub struct PackageId(pub u32);
 pub struct Package {
     /// Unique identifier for this package.
     pub id: PackageId,
-    /// Package name (from build.rk or directory name).
+    /// Package name (from rask.toml or directory name).
     pub name: String,
     /// Full package path (e.g., ["pkg", "sub"] for `pkg.sub`).
     pub path: Vec<String>,
@@ -30,7 +30,7 @@ pub struct Package {
     pub files: Vec<SourceFile>,
     /// Packages this package imports (populated during resolution).
     pub imports: Vec<PackageId>,
-    /// Package metadata from build.rk (if present).
+    /// Package metadata from rask.toml (if present).
     pub manifest: Option<PackageDecl>,
     /// Declarations from build.rk (for running func build()).
     pub build_decls: Vec<Decl>,
@@ -117,6 +117,9 @@ pub enum PackageError {
     /// More source files than the `file_id` space can name. Past this every
     /// diagnostic would be attributed to the wrong file.
     TooManyFiles { limit: u16 },
+    /// `rask.toml` didn't load: every problem the manifest loader found,
+    /// one per line.
+    Manifest { file: PathBuf, message: String },
     /// Multiple errors across files.
     Multiple(Vec<PackageError>),
 }
@@ -152,6 +155,9 @@ impl std::fmt::Display for PackageError {
                      stdlib's own sources. Split it into several packages.",
                     limit
                 )
+            }
+            PackageError::Manifest { file, message } => {
+                write!(f, "{}:\n{}", file.display(), message)
             }
             PackageError::Multiple(errors) => {
                 for (i, e) in errors.iter().enumerate() {
@@ -293,8 +299,57 @@ fn parse_rk_files(
     Ok(source_files)
 }
 
-/// Parse build.rk and extract the package block (PK3: independent parsing).
-fn parse_build_rk(path: &Path) -> Result<(Option<PackageDecl>, Vec<Decl>), PackageError> {
+/// The manifest file a package declares itself in (struct.manifest).
+pub const MANIFEST_FILE: &str = "rask.toml";
+
+/// Is `dir` the root of a package? A manifest makes it one, and so does a
+/// build script on its own (struct.build/PK4: no manifest needed when there
+/// are no dependencies).
+pub fn is_package_root(dir: &Path) -> bool {
+    dir.join(MANIFEST_FILE).is_file() || dir.join("build.rk").is_file()
+}
+
+/// Reads `rask.toml`. The loader is Rask code the toolchain runs on its
+/// interpreter (rask-manifest), which sits above this crate, so the binary
+/// hands it in at startup with `set_manifest_loader`.
+pub type ManifestLoader = fn(&Path) -> Result<PackageDecl, String>;
+
+static MANIFEST_LOADER: std::sync::OnceLock<ManifestLoader> = std::sync::OnceLock::new();
+
+/// Install the function that reads `rask.toml`. The first call wins.
+pub fn set_manifest_loader(loader: ManifestLoader) {
+    let _ = MANIFEST_LOADER.set(loader);
+}
+
+fn load_manifest(path: &Path) -> Result<PackageDecl, PackageError> {
+    let Some(loader) = MANIFEST_LOADER.get() else {
+        return Err(PackageError::Manifest {
+            file: path.to_path_buf(),
+            message: "this tool was built without the manifest loader, so it can't read rask.toml \
+                      (a binary installs it with rask_manifest::install())"
+                .to_string(),
+        });
+    };
+    loader(path).map_err(|message| PackageError::Manifest { file: path.to_path_buf(), message })
+}
+
+/// Read what a package directory declares: the manifest from `rask.toml`,
+/// and the declarations of `build.rk` for running `func build()`. Either
+/// file may be missing (PK4).
+fn read_package_dir(dir: &Path) -> Result<(Option<PackageDecl>, Vec<Decl>), PackageError> {
+    let manifest_path = dir.join(MANIFEST_FILE);
+    let manifest = if manifest_path.is_file() {
+        Some(load_manifest(&manifest_path)?)
+    } else {
+        None
+    };
+    let build_rk = dir.join("build.rk");
+    let build_decls = if build_rk.is_file() { parse_build_rk(&build_rk)? } else { Vec::new() };
+    Ok((manifest, build_decls))
+}
+
+/// Parse build.rk, the build script.
+fn parse_build_rk(path: &Path) -> Result<Vec<Decl>, PackageError> {
     let source = fs::read_to_string(path)
         .map_err(|e| PackageError::Io(e, path.to_path_buf()))?;
 
@@ -317,21 +372,12 @@ fn parse_build_rk(path: &Path) -> Result<(Option<PackageDecl>, Vec<Decl>), Packa
             errors: parse_result.errors,
         });
     }
-
-    let mut manifest = None;
-    for decl in &parse_result.decls {
-        if let DeclKind::Package(pkg) = &decl.kind {
-            manifest = Some(pkg.clone());
-            break;
-        }
-    }
-
-    Ok((manifest, parse_result.decls))
+    Ok(parse_result.decls)
 }
 
 /// Path dependencies a build with these scopes active links.
 ///
-/// A dep with no scope is linked by everything. A `scope "dev"` dep is linked
+/// A dep with no scope is linked by everything. A `[dev-dependencies]` dep is linked
 /// only when `"dev"` is active, and likewise `"build"` — which is the whole
 /// point of writing one (`struct.build/D4`).
 fn path_deps(
@@ -367,7 +413,7 @@ impl PackageRegistry {
     ///
     /// Done here rather than at each consumer so nothing can see a program
     /// the build is not actually compiling — and because it's what makes
-    /// `scope "dev"` enforceable: with the test blocks gone, a release build
+    /// `[dev-dependencies]` enforceable: with the test blocks gone, a release build
     /// has no honest reason to reach a dev dependency, so refusing to link
     /// one can't break working code.
     pub fn strip_test_blocks(&mut self) {
@@ -414,18 +460,18 @@ impl PackageRegistry {
 
     /// Discover a workspace root, returning IDs for all member packages (WS1-WS3).
     ///
-    /// If the root build.rk has `members: [...]`, discovers each member as a
+    /// If the root rask.toml has `members = [...]`, discovers each member as a
     /// separate root package. Otherwise falls back to regular `discover()`.
     /// All members share a single lock file (WS2) and can reference each
     /// other via path dependencies (WS3).
     pub fn discover_workspace(&mut self, root: &Path) -> Result<Vec<PackageId>, PackageError> {
-        let build_rk = root.join("build.rk");
-        if !build_rk.is_file() {
+        let manifest_path = root.join(MANIFEST_FILE);
+        if !manifest_path.is_file() {
             let id = self.discover(root)?;
             return Ok(vec![id]);
         }
 
-        let (manifest, _) = parse_build_rk(&build_rk)?;
+        let manifest = Some(load_manifest(&manifest_path)?);
         let members = manifest.as_ref()
             .and_then(|m| m.members())
             .cloned()
@@ -510,15 +556,10 @@ impl PackageRegistry {
             return Ok(id);
         }
 
-        // Parse build.rk if present (PK1)
-        let build_rk_path = dir.join("build.rk");
-        let (manifest, build_decls) = if build_rk_path.is_file() {
-            parse_build_rk(&build_rk_path)?
-        } else {
-            (None, Vec::new())
-        };
+        // The manifest and the build script, either of which may be missing
+        let (manifest, build_decls) = read_package_dir(dir)?;
 
-        // Name from build.rk or directory (display name only — path stays as directory)
+        // Name from rask.toml or directory (display name only — path stays as directory)
         let pkg_name = manifest.as_ref()
             .map(|m| m.name.clone())
             .unwrap_or_else(|| pkg_path.last().cloned().unwrap_or_else(|| "main".to_string()));
@@ -577,13 +618,8 @@ impl PackageRegistry {
             ));
         }
 
-        // Parse build.rk if present
-        let build_rk_path = canonical.join("build.rk");
-        let (manifest, build_decls) = if build_rk_path.is_file() {
-            parse_build_rk(&build_rk_path)?
-        } else {
-            (None, Vec::new())
-        };
+        // The manifest and the build script, either of which may be missing
+        let (manifest, build_decls) = read_package_dir(&canonical)?;
 
         let pkg_name = manifest.as_ref()
             .map(|m| m.name.clone())
@@ -674,13 +710,8 @@ impl PackageRegistry {
             return Ok(id);
         }
 
-        // Parse build.rk if present
-        let build_rk_path = cache_dir.join("build.rk");
-        let (manifest, build_decls) = if build_rk_path.is_file() {
-            parse_build_rk(&build_rk_path)?
-        } else {
-            (None, Vec::new())
-        };
+        // The manifest and the build script, either of which may be missing
+        let (manifest, build_decls) = read_package_dir(cache_dir)?;
 
         let pkg_name = manifest.as_ref()
             .map(|m| m.name.clone())
@@ -691,7 +722,7 @@ impl PackageRegistry {
             parse_rk_files(&mut self.next_node_id, &mut self.next_file_id, files)?;
         let pkg_path = vec![pkg_name.clone()];
 
-        // Build a manifest with the correct version if build.rk doesn't have one
+        // Build a manifest with the correct version if the package has none
         let manifest = manifest.or_else(|| {
             Some(rask_ast::decl::PackageDecl {
                 name: pkg_name.clone(),
@@ -853,51 +884,20 @@ mod tests {
         assert_eq!(sub_pkg.path, vec!["project", "sub"]);
     }
 
+    /// Reading rask.toml takes the loader the binary installs
+    /// (rask_manifest::install). Without it the error says so instead of
+    /// treating the package as having no manifest. Discovery through the
+    /// real loader is tested in rask-manifest.
     #[test]
-    fn test_discover_with_build_rk() {
+    fn a_manifest_without_the_loader_is_an_error() {
         let tmp = TempDir::new().unwrap();
         let pkg_dir = tmp.path().join("mydir");
-
         create_test_package(&pkg_dir, &[
-            ("build.rk", "package \"myapp\" \"1.0.0\" { }"),
+            ("rask.toml", "schema = \"rask-package@1\"\n"),
             ("main.rk", "func main() { }"),
         ]);
-
-        let mut registry = PackageRegistry::new();
-        let id = registry.discover(&pkg_dir).unwrap();
-
-        let pkg = registry.get(id).unwrap();
-        assert_eq!(pkg.name, "myapp");
-        assert!(pkg.manifest.is_some());
-        assert_eq!(pkg.manifest.as_ref().unwrap().version, "1.0.0");
-        // build.rk excluded from source files
-        assert_eq!(pkg.files.len(), 1);
-    }
-
-    #[test]
-    fn test_discover_path_dep() {
-        let tmp = TempDir::new().unwrap();
-        let app_dir = tmp.path().join("app");
-        let lib_dir = tmp.path().join("shared");
-
-        create_test_package(&app_dir, &[
-            ("build.rk", "package \"app\" \"1.0.0\" {\n    dep \"shared\" { path: \"../shared\" }\n}"),
-            ("main.rk", "func main() { }"),
-        ]);
-        create_test_package(&lib_dir, &[
-            ("lib.rk", "public func greet() { }"),
-        ]);
-
-        let mut registry = PackageRegistry::new();
-        let id = registry.discover(&app_dir).unwrap();
-
-        let pkg = registry.get(id).unwrap();
-        assert_eq!(pkg.imports.len(), 1);
-
-        let dep_id = pkg.imports[0];
-        let dep_pkg = registry.get(dep_id).unwrap();
-        assert_eq!(dep_pkg.name, "shared");
-        assert!(dep_pkg.is_external);
+        let err = PackageRegistry::new().discover(&pkg_dir).unwrap_err();
+        assert!(err.to_string().contains("manifest loader"), "{err}");
     }
 
     #[test]

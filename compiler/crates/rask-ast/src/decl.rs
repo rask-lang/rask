@@ -40,8 +40,6 @@ pub enum DeclKind {
     Union(UnionDecl),
     /// External function declaration
     Extern(ExternDecl),
-    /// Package block declaration (build.rk only)
-    Package(PackageDecl),
     /// Type alias declaration
     TypeAlias(TypeAliasDecl),
     /// C header import: `import c "header.h"`
@@ -598,16 +596,9 @@ pub struct ExportItem {
     pub alias: Option<String>,
 }
 
-/// A package block declaration (struct.build/PK1-PK5).
-///
-/// Only valid in `build.rk`. Declares package metadata and dependencies.
-///
-/// ```rask
-/// package "my-app" "1.0.0" {
-///     dep "http" "^2.0"
-///     dep "shared" { path: "../shared" }
-/// }
-/// ```
+/// A package's manifest, as `rask.toml` declares it (struct.manifest,
+/// struct.build/PK1-PK4). Filled in by the manifest loader (rask-manifest),
+/// not the parser.
 #[derive(Debug, Clone)]
 pub struct PackageDecl {
     pub name: String,
@@ -636,7 +627,7 @@ impl PackageDecl {
     }
 }
 
-/// A feature declaration inside a package block.
+/// A feature from the manifest's `[features]` or `[exclusive-features]`.
 ///
 /// Additive: `feature "ssl" { dep "openssl" "^3.0" }`
 /// Exclusive: `feature "runtime" exclusive { option "tokio" { dep "tokio" "^1.0" } }`
@@ -653,6 +644,8 @@ pub struct FeatureDecl {
     /// F3: `default: true` — an additive feature that is on unless the build
     /// says `--no-default-features`.
     pub on_by_default: bool,
+    /// Other features this one turns on (F6).
+    pub enables: Vec<String>,
 }
 
 /// An option inside an exclusive feature group.
@@ -662,7 +655,7 @@ pub struct FeatureOption {
     pub deps: Vec<DepDecl>,
 }
 
-/// A build profile declaration inside a package block.
+/// A build profile from the manifest's `[profiles]`.
 ///
 /// ```rask
 /// profile "embedded" {
@@ -677,7 +670,7 @@ pub struct ProfileDecl {
     pub settings: Vec<(String, String)>,
 }
 
-/// A dependency declaration inside a package block.
+/// A dependency from one of the manifest's dependency tables.
 #[derive(Debug, Clone)]
 pub struct DepDecl {
     pub name: String,
@@ -689,6 +682,8 @@ pub struct DepDecl {
     pub git: Option<String>,
     /// Git branch.
     pub branch: Option<String>,
+    /// Git revision.
+    pub rev: Option<String>,
     /// Features to enable.
     pub with_features: Vec<String>,
     /// Target platform filter.
@@ -700,4 +695,6 @@ pub struct DepDecl {
     /// Dependency scope (struct.build/D4): `"dev"`, `"build"`, or `None` for
     /// an ordinary dependency that every build links.
     pub scope: Option<String>,
+    /// A further feature of ours this dep is gated on (F5).
+    pub feature: Option<String>,
 }
