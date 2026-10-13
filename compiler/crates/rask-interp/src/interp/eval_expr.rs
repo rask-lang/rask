@@ -717,14 +717,6 @@ impl Interpreter {
                         }
                     }
                 }
-                // G4: @binary SIZE and SIZE_BITS constants
-                if let Some(meta) = self.binary_structs.get(&type_name) {
-                    match field {
-                        "SIZE" => return Ok(Value::int(meta.size_bytes as i64)),
-                        "SIZE_BITS" => return Ok(Value::int(meta.total_bits as i64)),
-                        _ => {}
-                    }
-                }
                 Err(RuntimeDiagnostic::new(
                     RuntimeError::TypeError(format!(
                         "type '{}' has no field '{}'",
@@ -1331,17 +1323,6 @@ impl Interpreter {
                                 fields: arg_vals,
                                 variant_index: vidx as u32, origin: None,
                             });
-                        }
-                    }
-
-                    // @binary static methods (e.g. IpHeader.parse(data))
-                    if self.binary_structs.contains_key(name) {
-                        let arg_vals: Vec<Value> = args
-                            .iter()
-                            .map(|a| self.eval_expr(&a.expr))
-                            .collect::<Result<_, _>>()?;
-                        if let Some(result) = self.try_binary_static_method(name, method, arg_vals, expr.span) {
-                            return result;
                         }
                     }
 

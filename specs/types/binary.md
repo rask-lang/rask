@@ -73,15 +73,17 @@ struct IpHeader {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Parse** | `.parse(data)` returns `(T, Vec<u8>) or ParseError` |
+| **G1: Parse** | `.parse(data)` returns `(T, Vec<u8>) or bits.BinaryParseError` — the struct and the bytes after it. Fewer than `T.SIZE` bytes is `UnexpectedEnd` |
 | **G2: Build** | `.build()` returns `Vec<u8>` |
-| **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` |
+| **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` (not built yet, #1539) |
 | **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
+
+`parse` and `build` are ordinary methods the compiler writes from the field specifiers, so they behave the same on every backend. Float fields aren't supported yet (#1539).
 
 <!-- test: skip -->
 ```rask
 extend T {
-    func parse(data: Vec<u8>) -> (T, Vec<u8>) or ParseError
+    func parse(data: Vec<u8>) -> (T, Vec<u8>) or bits.BinaryParseError
     func build(self) -> Vec<u8>
     func build_into(self, buffer: Vec<u8>) -> usize or BuildError
     let SIZE: usize

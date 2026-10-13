@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// type.binary: a `@binary` struct's field order is its wire layout (B1),
+// packed with no padding (B2), most significant bit first (B3). `build()`
+// writes it (G2), `T.parse(bytes)` reads it back with whatever follows (G1),
+// and `T.SIZE`/`T.SIZE_BITS` say how big it is (G4).
+//
+// These used to be Rust inside the interpreter, and native had neither, so a
+// program that built a packet only ran on the interpreter.
+import bits
+
+@binary
+struct Packet {
+    magic: u16be
+    id: u32be
+}
+
+@binary
+struct Header {
+    version: 4
+    ihl: 4
+    flags: 3
+    offset: 13
+    ttl: u8
+    port: u16le
+    delta: i8
+    tag: [2]u8
+}
+
+test "type.binary/G1 — build then parse gives every field back" {
+    let p = Packet(magic: 0x1234, id: 0xDEADBEEF)
+    let bytes = p.build()
+    assert bytes.len() == 6
+    let got = Packet.parse(bytes) catch e => {
+        assert false
+        return
+    }
+    assert got.0.magic == 0x1234
+    assert got.0.id == 0xDEADBEEF
+    assert got.1.len() == 0
+}
+
+test "type.binary/B3 — a big-endian field goes most significant byte first" {
+    let bytes = Packet(magic: 0x1234, id: 0).build()
+    assert bytes[0] == 0x12
+    assert bytes[1] == 0x34
+}
+
+test "type.binary/B2 — bit fields pack with no padding, little-endian is low byte first" {
+    let h = Header(version: 4, ihl: 5, flags: 2, offset: 0x1abc, ttl: 64, port: 0x1f90, delta: -3, tag: [7u8, 9u8])
+    let bytes = h.build()
+    assert bytes.len() == Header.SIZE
+    assert bytes[0] == 0x45
+    // flags 010 then the top five bits of offset 1 1010 1011 1100.
+    assert bytes[1] == 0x5a
+    assert bytes[2] == 0xbc
+    assert bytes[3] == 64
+    assert bytes[4] == 0x90
+    assert bytes[5] == 0x1f
+    assert bytes[6] == 0xfd
+    assert bytes[7] == 7
+    assert bytes[8] == 9
+    let back = Header.parse(bytes) catch e => {
+        assert false
+        return
+    }
+    let g = back.0
+    assert g.version == 4
+    assert g.ihl == 5
+    assert g.flags == 2
+    assert g.offset == 0x1abc
+    assert g.ttl == 64
+    assert g.port == 0x1f90
+    assert g.delta == -3
+    assert g.tag[1] == 9
+}
+
+test "type.binary/G1 — what follows the struct comes back as the rest" {
+    mut bytes = Packet(magic: 1, id: 2).build()
+    bytes.push(0xaa)
+    bytes.push(0xbb)
+    let got = Packet.parse(bytes) catch e => {
+        assert false
+        return
+    }
+    assert got.1.len() == 2
+    assert got.1[0] == 0xaa
+}
+
+test "type.binary/G1 — too few bytes is an error, not a short read" {
+    let short: Vec<u8> = [1u8, 2u8, 3u8]
+    let r = Packet.parse(short)
+    assert r is bits.BinaryParseError
+}
+
+test "type.binary/G4 — SIZE rounds up to whole bytes" {
+    assert Packet.SIZE == 6
+    assert Packet.SIZE_BITS == 48
+    assert Header.SIZE_BITS == 72
+    assert Header.SIZE == 9
+}
+
+func main() {}

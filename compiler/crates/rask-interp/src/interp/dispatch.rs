@@ -505,20 +505,6 @@ impl Interpreter {
                     "f32x8 has no method '{}'", method
                 ))),
             },
-            // @binary struct instance methods (build, build_into)
-            Value::Struct(ref s) => {
-                let name = s.lock().unwrap().name.clone();
-                if self.binary_structs.contains_key(&name)
-                    && matches!(method, "build" | "build_into")
-                {
-                    let span = rask_ast::Span::new(0, 0);
-                    if let Some(result) = self.try_binary_instance_method(&receiver, &name, method, args, span) {
-                        return result.map_err(|d| d.error);
-                    }
-                    unreachable!();
-                }
-                self.call_builtin_method(receiver, method, args, generics)
-            }
             // `Shared<T, Local>` — the strategy that takes no lock. `read` and
             // `write` are the same operation here; the verb is intent the
             // reader can see, not a different call (conc.sync/SH5).

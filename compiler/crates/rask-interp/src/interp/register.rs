@@ -233,12 +233,6 @@ impl Interpreter {
                 }
                 DeclKind::Struct(s) => {
                     let base_name = s.name.clone();
-                    // Register @binary struct metadata
-                    if s.attrs.iter().any(|a| a.is("binary")) {
-                        if let Some(meta) = super::binary::BinaryStructMeta::from_decl(&s.name, &s.fields) {
-                            self.binary_structs.insert(base_name.clone(), meta);
-                        }
-                    }
                     self.struct_decls.insert(base_name.clone(), s.clone());
                     if !s.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();

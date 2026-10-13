@@ -346,37 +346,6 @@ pub struct ModuleMethodSig {
     pub param_type_params: Vec<Option<String>>,
 }
 
-/// Endianness for multi-byte binary fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endian {
-    Big,
-    Little,
-}
-
-/// A single field's binary layout specifier.
-#[derive(Debug, Clone)]
-pub struct BinaryFieldSpec {
-    pub name: String,
-    pub bits: u32,
-    pub endian: Option<Endian>,
-    pub runtime_type: Type,
-    /// Byte offset within the struct where this field's bits start
-    pub bit_offset: u32,
-    /// Whether this is a fixed byte array ([N]u8)
-    pub is_byte_array: bool,
-    pub byte_array_len: usize,
-}
-
-/// Metadata for a @binary struct.
-#[derive(Debug, Clone)]
-pub struct BinaryStructInfo {
-    pub name: String,
-    pub fields: Vec<BinaryFieldSpec>,
-    pub total_bits: u32,
-    /// SIZE in bytes (rounded up)
-    pub size_bytes: u32,
-}
-
 /// One type parameter and what a call site settled it to.
 ///
 /// The name is the point. Monomorphization has to know which parameter an

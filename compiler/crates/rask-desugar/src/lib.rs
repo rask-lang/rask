@@ -13,6 +13,7 @@
 //! These passes run before type checking.
 
 mod annotation_defaults;
+mod binary_methods;
 mod construct;
 mod defaults;
 mod generalize;
@@ -65,7 +66,7 @@ pub const STDLIB_DEFAULT_ARGS_ID_BASE: u32 = 50_000_000;
 /// arguments and struct field defaults, so `Config {}` type-checked as a
 /// missing-fields error under `rask test` while `rask build` accepted it
 /// (#549).
-pub fn desugar(decls: &mut [Decl]) -> DesugarOutput {
+pub fn desugar(decls: &mut Vec<Decl>) -> DesugarOutput {
     desugar_with_diagnostics(decls)
 }
 
@@ -77,14 +78,14 @@ pub fn desugar(decls: &mut [Decl]) -> DesugarOutput {
 /// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
 /// parsed and then unusable (#1276). This crate can't read the registry
 /// itself: `rask-stdlib` already depends on it.
-pub fn desugar_with_stdlib(decls: &mut [Decl], stdlib: &[Decl]) -> DesugarOutput {
+pub fn desugar_with_stdlib(decls: &mut Vec<Decl>, stdlib: &[Decl]) -> DesugarOutput {
     desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar the stdlib's own declarations, in their own NodeId bands.
 ///
 /// See [`STDLIB_DESUGAR_ID_BASE`].
-pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
+pub fn desugar_stdlib(decls: &mut Vec<Decl>) -> DesugarOutput {
     desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
 }
 
@@ -94,7 +95,7 @@ pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
 /// here, before name resolution, so a dependency's declarations can't be looked
 /// up later — they have to be handed in (type.annotations/AN3).
 pub fn desugar_package(
-    decls: &mut [Decl],
+    decls: &mut Vec<Decl>,
     stdlib: &[Decl],
 ) -> DesugarOutput {
     desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
@@ -126,29 +127,36 @@ pub struct DesugarOutput {
 }
 
 /// Desugar phase, returning any ER26 coverage errors.
-pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> DesugarOutput {
+pub fn desugar_with_diagnostics(decls: &mut Vec<Decl>) -> DesugarOutput {
     desugar_inner(decls)
 }
 
-fn desugar_inner(decls: &mut [Decl]) -> DesugarOutput {
+fn desugar_inner(decls: &mut Vec<Decl>) -> DesugarOutput {
     desugar_inner_from(decls, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 fn desugar_inner_from(
-    decls: &mut [Decl],
+    decls: &mut Vec<Decl>,
     stdlib: &[Decl],
     id_base: u32,
     default_args_id_base: u32,
 ) -> DesugarOutput {
     // Values are written in parentheses, so a construction parses as a call.
     // First, so everything after sees the struct literal it always has.
+    // type.binary: `build` and `parse` as Rask methods, so both backends run
+    // the same code. Before the construct pass, which turns the `Packet(…)`
+    // they build into a struct literal. Pushes an import onto the end.
+    let mut injected = interface_defaults::Injected::new();
+    binary_methods::inject(decls, &mut injected);
     let construct_errors = construct::resolve_constructions(decls, stdlib);
 
     // TD2: an interface method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
     // sees a `message()` an interface supplied by default.
-    let mut injected = interface_defaults::inject(decls);
+    for (index, positions) in interface_defaults::inject(decls) {
+        injected.entry(index).or_default().extend(positions);
+    }
     ordering_operators::inject(decls, &mut injected);
 
 
@@ -158,6 +166,7 @@ fn desugar_inner_from(
     generalize::generalize_inferred_params(decls);
 
     let mut desugarer = Desugarer::new(id_base);
+    desugarer.binary_sizes = binary_methods::sizes(decls);
     desugarer.scan_error_message_types(decls);
     for (index, decl) in decls.iter_mut().enumerate() {
         desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
@@ -218,6 +227,9 @@ struct Desugarer {
     /// is the override, so generating one alongside it would shadow the prose
     /// the author wrote.
     hand_written_message: std::collections::HashSet<String>,
+    /// Each `@binary` struct's size in bits: `T.SIZE` and `T.SIZE_BITS` are
+    /// these numbers (type.binary/G4).
+    binary_sizes: std::collections::HashMap<String, u32>,
 }
 
 impl Desugarer {
@@ -230,6 +242,7 @@ impl Desugarer {
             operator_calls: std::collections::HashSet::new(),
             error_message_types: std::collections::HashSet::new(),
             hand_written_message: std::collections::HashSet::new(),
+            binary_sizes: std::collections::HashMap::new(),
         }
     }
 
@@ -344,9 +357,12 @@ impl Desugarer {
     fn desugar_struct(&mut self, s: &mut StructDecl) {
         let defaults: Vec<FnDecl> = s.fields.iter().filter_map(|f| self.decode_default_method(f)).collect();
         s.methods.extend(defaults);
-        for method in &mut s.methods {
+        let injected = std::mem::take(&mut self.injected_methods);
+        for (index, method) in s.methods.iter_mut().enumerate() {
+            self.renumber = injected.contains(&index);
             self.desugar_fn(method);
         }
+        self.renumber = false;
     }
 
     /// `func __decode_default_n() -> i64 { return 2 + 3 }` for a field whose
@@ -693,6 +709,21 @@ impl Desugarer {
         // rewrite desugars the argument expressions itself (std.fmt/CM2, CM5).
         if self.desugar_format_call(expr) {
             return;
+        }
+
+        // G4: `T.SIZE` and `T.SIZE_BITS` on a `@binary` struct are numbers the
+        // layout already decided.
+        if let ExprKind::Field { object, field } = &expr.kind {
+            let bits = object.name().and_then(|n| self.binary_sizes.get(n).copied());
+            let value = match (bits, field.as_str()) {
+                (Some(bits), "SIZE") => Some(bits.div_ceil(8)),
+                (Some(bits), "SIZE_BITS") => Some(bits),
+                _ => None,
+            };
+            if let Some(value) = value {
+                expr.kind = ExprKind::Int(value as i128, Some(rask_ast::token::IntSuffix::Usize));
+                return;
+            }
         }
 
         // First, recursively desugar child expressions
