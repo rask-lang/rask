@@ -58,12 +58,134 @@ impl std::fmt::Debug for Run {
     }
 }
 
+// ─── A local registry ───────────────────────────────────────────────
+// `rask add` asks a registry for versions and capabilities, and the lock
+// update downloads what it names. Tests get a registry of their own: an
+// HTTP server on a loopback port serving index.json files and tarballs from
+// a directory, the way the real one serves them (struct.packages/RG1).
+
+/// One published version: name, version, capabilities, deps as (name, range).
+struct Published {
+    name: &'static str,
+    version: &'static str,
+    capabilities: &'static [&'static str],
+    deps: &'static [(&'static str, &'static str)],
+}
+
+const PUBLISHED: &[Published] = &[
+    Published { name: "http", version: "2.0.0", capabilities: &["net"], deps: &[] },
+    Published { name: "http", version: "2.1.0", capabilities: &["net"], deps: &[("json", "^1.0")] },
+    Published { name: "http", version: "3.0.0-beta.1", capabilities: &["net"], deps: &[] },
+    Published { name: "json", version: "1.0.0", capabilities: &[], deps: &[] },
+    Published { name: "json", version: "1.5.2", capabilities: &[], deps: &[] },
+    Published { name: "mock-server", version: "2.0.0", capabilities: &[], deps: &[] },
+    Published { name: "openssl", version: "3.0.1", capabilities: &[], deps: &[] },
+    Published { name: "bench", version: "0.4.1", capabilities: &[], deps: &[] },
+    Published { name: "my.pkg", version: "1.0.0", capabilities: &[], deps: &[] },
+    Published { name: "sockets", version: "1.2.0", capabilities: &["net", "ffi"], deps: &[] },
+];
+
+struct LocalRegistry {
+    url: String,
+    /// The cache every test shares. Packages are immutable once published, so
+    /// sharing it is safe and saves the downloads.
+    cache: PathBuf,
+}
+
+fn registry() -> &'static LocalRegistry {
+    static REGISTRY: std::sync::OnceLock<LocalRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let root = std::env::temp_dir().join(format!("rask_registry_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let served = root.join("served");
+        let mut indexes: std::collections::BTreeMap<&str, serde_json::Map<String, serde_json::Value>> = Default::default();
+        for p in PUBLISHED {
+            // The package's source, as its author would have it.
+            let src = root.join("src").join(format!("{}-{}", p.name, p.version));
+            fs::create_dir_all(&src).unwrap();
+            let mut manifest = format!(
+                "schema = \"rask-package@1\"\n\n[package]\nname = \"{}\"\nversion = \"{}\"\n",
+                p.name, p.version
+            );
+            if !p.deps.is_empty() {
+                manifest.push_str("\n[dependencies]\n");
+                for (d, r) in p.deps {
+                    manifest.push_str(&format!("{d} = {{ registry = \"{r}\" }}\n"));
+                }
+            }
+            fs::write(src.join("rask.toml"), manifest).unwrap();
+            fs::write(src.join("lib.rk"), "public func version() -> i64 {\n    return 1\n}\n").unwrap();
+
+            let dir = served.join("pkg").join(p.name);
+            fs::create_dir_all(&dir).unwrap();
+            rask_resolve::tarball::create_reproducible_tarball(&src, &dir.join(format!("{}.tar.gz", p.version))).unwrap();
+            let deps: Vec<serde_json::Value> =
+                p.deps.iter().map(|(d, r)| serde_json::json!({ "name": d, "version": r })).collect();
+            indexes.entry(p.name).or_default().insert(
+                p.version.to_string(),
+                serde_json::json!({
+                    "checksum": rask_resolve::lockfile::compute_checksum(&src),
+                    "deps": deps,
+                    "capabilities": p.capabilities,
+                }),
+            );
+        }
+        for (name, versions) in indexes {
+            let index = serde_json::json!({ "name": name, "versions": versions });
+            fs::write(served.join("pkg").join(name).join("index.json"), index.to_string()).unwrap();
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let served = served.clone();
+                std::thread::spawn(move || serve(stream, &served));
+            }
+        });
+        LocalRegistry { url, cache: root.join("cache") }
+    })
+}
+
+/// Answer one GET with the file under `root`, or a 404.
+fn serve(mut stream: std::net::TcpStream, root: &Path) {
+    use std::io::{BufRead, BufReader, Write};
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut request = String::new();
+    if reader.read_line(&mut request).is_err() {
+        return;
+    }
+    loop {
+        let mut header = String::new();
+        if reader.read_line(&mut header).is_err() || header == "\r\n" || header.is_empty() {
+            break;
+        }
+    }
+    let path = request.split_whitespace().nth(1).unwrap_or("/").trim_start_matches('/');
+    let reply = match fs::read(root.join(path)) {
+        Ok(body) => {
+            let mut r = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+            r.extend(body);
+            r
+        }
+        Err(_) => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(),
+    };
+    let _ = stream.write_all(&reply);
+}
+
 fn rask(dir: &Path, args: &[&str]) -> Run {
+    let reg = registry();
     let out: Output = Command::new(env!("CARGO_BIN_EXE_rask"))
         .args(args)
         .current_dir(dir)
         .env("NO_COLOR", "1")
         .env("CLICOLOR_FORCE", "0")
+        .env("RASK_REGISTRY", &reg.url)
+        .env("RASK_CACHE", &reg.cache)
+        // Bypasses any agent proxy for the loopback registry.
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
+        .stdin(std::process::Stdio::null())
         .output()
         .expect("failed to run rask");
     Run {
@@ -83,6 +205,13 @@ fn fails(dir: &Path, args: &[&str]) -> Run {
     let run = rask(dir, args);
     assert_eq!(run.code, 1, "rask {} should fail: {:?}", args.join(" "), run);
     run
+}
+
+/// A minimal package at `dir`, so a path dependency on it resolves.
+fn write_package(dir: &Path, name: &str) {
+    fs::create_dir_all(dir).unwrap();
+    fs::write(dir.join("rask.toml"), format!("schema = \"rask-package@1\"\n\n[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n")).unwrap();
+    fs::write(dir.join("lib.rk"), "public func f() -> i64 {\n    return 1\n}\n").unwrap();
 }
 
 /// `rask manifest check` passes on the directory's rask.toml.
@@ -117,8 +246,9 @@ fn add_each_form_keeps_the_rest_of_the_file() {
     dir.write("rask.toml", BASE);
     let p = dir.path();
 
+    write_package(&p.join("../my \"shared\""), "shared");
     let run = ok(p, &["add", "json", "^1.5"]);
-    assert_eq!(run.stdout, "  Added json = { registry = \"^1.5\" } to [dependencies]\n");
+    assert!(run.stdout.starts_with("  Added json = { registry = \"^1.5\" } to [dependencies]\n  Updated rask.lock"), "{:?}", run);
     ok(p, &["add", "--dev", "mock-server", "^2.0"]);
     ok(p, &["add", "openssl", "^3.0", "--feature", "ssl"]);
     ok(p, &["add", "shared", "--path", "../my \"shared\""]);
@@ -152,7 +282,7 @@ mock-server = { registry = \"^2.0\" }
 openssl = { registry = \"^3.0\" }
 
 [features.perf.dev-dependencies]
-bench = { registry = \"*\" }
+bench = { registry = \"^0.4.1\" }
 ";
     assert_eq!(dir.read("rask.toml"), expected);
     assert_loads(p);
@@ -161,12 +291,12 @@ bench = { registry = \"*\" }
 #[test]
 fn add_without_a_manifest_starts_one_named_after_the_directory() {
     let dir = TempDir::new("fresh-app");
-    let run = ok(dir.path(), &["add", "http", "^2"]);
+    let run = ok(dir.path(), &["add", "http", "^2", "--allow", "net"]);
     assert!(run.stdout.contains("Created rask.toml") && run.stdout.contains("Added http"), "{:?}", run);
     let text = dir.read("rask.toml");
     assert!(text.starts_with("schema = \"rask-package@"), "{text}");
     assert!(text.contains("[package]\nname = \"fresh-app\"\nversion = \"0.1.0\"\n"), "{text}");
-    assert!(text.ends_with("\n\n[dependencies]\nhttp = { registry = \"^2\" }\n"), "{text}");
+    assert!(text.ends_with("\n\n[dependencies]\nhttp = { registry = \"^2\", allow = [\"net\"] }\n"), "{text}");
     assert_loads(dir.path());
 }
 
@@ -257,8 +387,9 @@ fn remove_from_each_table_keeps_everything_else() {
     for (name, lines) in cases {
         let dir = TempDir::new("app");
         dir.write("rask.toml", EVERY_TABLE);
+        write_package(&dir.path().join("../mock"), "mock");
         let run = ok(dir.path(), &["remove", name]);
-        assert_eq!(run.stdout, format!("  Removed \"{name}\"\n"));
+        assert!(run.stdout.starts_with(&format!("  Removed \"{name}\"\n")), "{:?}", run);
         assert_eq!(dir.read("rask.toml"), EVERY_TABLE.replacen(lines, "", 1), "removing {name}");
         assert_loads(dir.path());
     }
@@ -294,6 +425,132 @@ fn add_then_remove_is_a_round_trip() {
     ok(dir.path(), &["remove", "openssl"]);
     // The emptied table header stays; every original line is untouched.
     assert_eq!(dir.read("rask.toml"), format!("{BASE}\n[features.ssl.dependencies]\n"));
+}
+
+// ─── Registry lookup, capabilities and the lock ─────────────────────
+
+const PLAIN: &str = "schema = \"rask-package@1\"\n\n[package]\nname = \"app\"\nversion = \"1.0.0\"\n";
+
+#[test]
+fn add_without_a_version_writes_the_newest_stable_release() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    let run = ok(dir.path(), &["add", "json"]);
+    assert!(run.stdout.contains("Added json = { registry = \"^1.5.2\" }"), "{:?}", run);
+    // 3.0.0-beta.1 is newer, but a pre-release is only ever named exactly.
+    let run = ok(dir.path(), &["add", "http", "--allow", "net"]);
+    assert!(run.stdout.contains("Added http = { registry = \"^2.1.0\", allow = [\"net\"] }"), "{:?}", run);
+    assert_loads(dir.path());
+}
+
+#[test]
+fn add_asks_for_capabilities_and_without_a_terminal_wants_them_named() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    let run = fails(dir.path(), &["add", "sockets"]);
+    assert!(run.stderr.contains("\"sockets\" uses net (") && run.stderr.contains("pass `--allow net,ffi` to grant it"), "{:?}", run);
+    assert_eq!(dir.read("rask.toml"), PLAIN);
+    assert!(!dir.path().join("rask.lock").exists());
+
+    let run = ok(dir.path(), &["add", "sockets", "--allow", "net,ffi"]);
+    assert!(run.stdout.contains("sockets = { registry = \"^1.2.0\", allow = [\"net\", \"ffi\"] }"), "{:?}", run);
+}
+
+#[test]
+fn add_and_remove_keep_the_lock_up_to_date() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    ok(dir.path(), &["add", "json", "^1.0"]);
+    let lock = dir.read("rask.lock");
+    assert!(lock.contains("name = \"json\"\nversion = \"1.5.2\""), "{lock}");
+    assert!(lock.contains("checksum = \"sha256:"), "{lock}");
+
+    let run = ok(dir.path(), &["remove", "json"]);
+    assert!(run.stdout.contains("Removed rask.lock (no dependencies left)"), "{:?}", run);
+    assert!(!dir.path().join("rask.lock").exists());
+}
+
+#[test]
+fn remove_notes_a_dependency_something_else_still_needs() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    ok(dir.path(), &["add", "http", "^2", "--allow", "net"]);
+    ok(dir.path(), &["add", "json", "^1"]);
+    let run = ok(dir.path(), &["remove", "json"]);
+    assert!(run.stdout.contains("Note: \"json\" stays in rask.lock: http still depends on it"), "{:?}", run);
+    assert!(dir.read("rask.lock").contains("name = \"json\""));
+}
+
+#[test]
+fn add_puts_the_manifest_back_when_the_lock_cannot_be_updated() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    let run = fails(dir.path(), &["add", "ghost", "--path", "../ghost"]);
+    assert!(run.stderr.contains("couldn't update rask.lock, so rask.toml is unchanged"), "{:?}", run);
+    assert!(run.stderr.contains("dep \"ghost\": path not found"), "{:?}", run);
+    assert_eq!(dir.read("rask.toml"), PLAIN);
+
+    // Without a rask.toml to start from, there's none afterwards either.
+    let fresh = TempDir::new("fresh");
+    fails(fresh.path(), &["add", "ghost", "--path", "../ghost"]);
+    assert!(!fresh.path().join("rask.toml").exists());
+}
+
+#[test]
+fn add_names_a_package_the_registry_does_not_have() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    let run = fails(dir.path(), &["add", "nothing-here"]);
+    assert!(run.stderr.contains("can't look up \"nothing-here\""), "{:?}", run);
+    assert_eq!(dir.read("rask.toml"), PLAIN);
+}
+
+#[test]
+fn update_keeps_registry_packages_and_dev_dependencies_in_the_lock() {
+    let dir = TempDir::new("app");
+    write_package(&dir.path().join("../mock"), "mock");
+    dir.write("rask.toml", &format!("{PLAIN}\n[dependencies]\njson = {{ registry = \"^1\" }}\n\n[dev-dependencies]\nmock = {{ path = \"../mock\" }}\n"));
+    ok(dir.path(), &["update"]);
+    let lock = dir.read("rask.lock");
+    assert!(lock.contains("name = \"json\""), "{lock}");
+    assert!(lock.contains("name = \"mock\"\nversion = \"0.1.0\"\nsource = \"path+../mock\"\n"), "no checksum on a path entry: {lock}");
+}
+
+#[test]
+fn a_release_build_writes_a_lock_with_the_dev_dependencies_it_skips() {
+    let dir = TempDir::new("app");
+    write_package(&dir.path().join("../mock"), "mock");
+    dir.write("rask.toml", &format!("{PLAIN}\n[dev-dependencies]\nmock = {{ path = \"../mock\" }}\n"));
+    dir.write("main.rk", "func main() {\n    println(\"hi\")\n}\n");
+    ok(dir.path(), &["build", "--release"]);
+    assert!(dir.read("rask.lock").contains("name = \"mock\""));
+    // And the next release build, which doesn't link mock, still accepts it.
+    ok(dir.path(), &["build", "--release"]);
+}
+
+#[test]
+fn a_program_imports_a_registry_dependency() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    dir.write("main.rk", "import json\n\nfunc main() {\n    println(\"json {json.version()}\")\n}\n");
+    ok(dir.path(), &["add", "json", "^1"]);
+    let run = ok(dir.path(), &["run", "."]);
+    assert!(run.stdout.contains("json 1"), "{:?}", run);
+}
+
+#[test]
+fn a_build_refuses_a_lock_entry_nothing_depends_on() {
+    let dir = TempDir::new("app");
+    write_package(&dir.path().join("../mock"), "mock");
+    dir.write("rask.toml", &format!("{PLAIN}\n[dependencies]\nmock = {{ path = \"../mock\" }}\n"));
+    dir.write("main.rk", "func main() {\n    println(\"hi\")\n}\n");
+    ok(dir.path(), &["update"]);
+    let lock = dir.read("rask.lock");
+    dir.write("rask.lock", &format!("{lock}\n[[package]]\nname = \"gone\"\nversion = \"1.0.0\"\nsource = \"path+../gone\"\n"));
+    let run = fails(dir.path(), &["build"]);
+    assert!(run.stderr.contains("rask.lock pins 'gone', which nothing depends on any more — run `rask update`"), "{:?}", run);
+    ok(dir.path(), &["update"]);
+    ok(dir.path(), &["build"]);
 }
 
 #[test]

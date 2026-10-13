@@ -1,45 +1,160 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Dependency management commands — struct.build/AD1-AD4, RM1-RM2.
+//! Dependency management commands — struct.build/AD1-AD5, RM1-RM2.
 //!
 //! Edits are line-based, so comments and layout stay as the author left them
 //! (AD2). Each edited file goes through the manifest loader before it's
 //! written: an edit that would leave the manifest invalid is refused, and the
-//! file is untouched.
+//! file is untouched. After the edit, rask.lock is brought up to date with
+//! the same resolution `rask fetch` runs; if that fails, rask.toml goes back
+//! to what it was.
 
 use colored::Colorize;
 use std::fs;
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process;
 
 use rask_resolve::package::MANIFEST_FILE;
 
+use super::fetch::{resolve_and_lock, Pins, Resolved};
 use crate::output;
 
 const DEP_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
 
-/// Add a dependency to rask.toml (AD1-AD4).
-pub fn cmd_add(
-    name: &str,
-    version: Option<&str>,
-    dev: bool,
-    feature: Option<&str>,
-    local_path: Option<&str>,
-) {
+/// Where a dependency comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Source {
+    /// A version range, or None for "look up the newest" (AD1).
+    Registry(Option<String>),
+    Path(String),
+    Git { url: String, rev: Option<String>, branch: Option<String> },
+}
+
+/// One `rask add`, parsed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AddRequest {
+    pub name: String,
+    pub source: Source,
+    /// "dependencies", "dev-dependencies" or "build-dependencies".
+    pub table: &'static str,
+    pub feature: Option<String>,
+    pub with: Vec<String>,
+    /// None when no `--allow` was given: the registry's answer decides (AD5).
+    pub allow: Option<Vec<String>>,
+    pub target: Option<String>,
+}
+
+impl AddRequest {
+    pub fn registry(name: &str, version: Option<&str>) -> Self {
+        AddRequest {
+            name: name.to_string(),
+            source: Source::Registry(version.map(str::to_string)),
+            table: "dependencies",
+            feature: None,
+            with: Vec::new(),
+            allow: None,
+            target: None,
+        }
+    }
+}
+
+const ADD_VALUE_FLAGS: [&str; 8] =
+    ["--feature", "--path", "--git", "--rev", "--branch", "--with", "--allow", "--target"];
+
+/// `rask add <name> [version] [flags]`, from the words after `add`.
+pub fn parse_add_args(args: &[&str]) -> Result<AddRequest, String> {
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut values: Vec<(&str, &str)> = Vec::new();
+    let (mut dev, mut build) = (false, false);
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if ADD_VALUE_FLAGS.contains(&a) {
+            let v = args.get(i + 1).ok_or_else(|| format!("{} needs a value", a))?;
+            values.push((a, v));
+            i += 2;
+            continue;
+        }
+        match a {
+            "--dev" => dev = true,
+            "--build" => build = true,
+            _ if a.starts_with('-') => return Err(format!("unknown flag `{}`; see `rask add --help`", a)),
+            _ => positionals.push(a),
+        }
+        i += 1;
+    }
+    let value = |flag: &str| values.iter().rev().find(|(f, _)| *f == flag).map(|(_, v)| v.to_string());
+    let list = |flag: &str| {
+        value(flag).map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+    };
+    let name = match positionals.as_slice() {
+        [] => return Err("missing package name".into()),
+        [name] | [name, _] => name.to_string(),
+        _ => return Err(format!("too many arguments: {}", positionals[2..].join(" "))),
+    };
+    let version = positionals.get(1).map(|v| v.trim_matches('"').to_string());
+    let path = value("--path");
+    let git = value("--git");
+    let one_source = [version.is_some(), path.is_some(), git.is_some()];
+    if one_source.iter().filter(|b| **b).count() > 1 {
+        return Err("a dependency has one source: a version, `--path` or `--git`".into());
+    }
+    if git.is_none() && (value("--rev").is_some() || value("--branch").is_some()) {
+        return Err("`--rev` and `--branch` go with `--git`".into());
+    }
+    let source = match (path, git) {
+        (Some(p), _) => Source::Path(p),
+        (_, Some(url)) => Source::Git { url, rev: value("--rev"), branch: value("--branch") },
+        _ => Source::Registry(version),
+    };
+    let table = match (dev, build) {
+        (true, true) => return Err("pick one of `--dev` and `--build`".into()),
+        (true, false) => "dev-dependencies",
+        (false, true) => "build-dependencies",
+        (false, false) => "dependencies",
+    };
+    Ok(AddRequest {
+        name,
+        source,
+        table,
+        feature: value("--feature"),
+        with: list("--with").unwrap_or_default(),
+        allow: list("--allow"),
+        target: value("--target"),
+    })
+}
+
+/// Add a dependency to rask.toml (AD1-AD5).
+pub fn cmd_add(args: &[&str]) {
+    let mut req = parse_add_args(args).unwrap_or_else(|e| fail(&e));
     let manifest_path = Path::new(MANIFEST_FILE);
     let existing = manifest_path.exists().then(|| read_manifest(manifest_path));
+    // Refuse a duplicate or a broken manifest before asking the registry.
+    if let Some(text) = &existing {
+        check_can_add(text, &req.name).unwrap_or_else(|e| fail(&e));
+    }
+    // A range the manifest wouldn't take is named by the loader, with its key,
+    // before the registry is asked about it.
+    plan_add(existing.as_deref(), "dir", &req).unwrap_or_else(|e| fail(&e));
+    if let Source::Registry(version) = &req.source {
+        let (range, capabilities) = look_up(&req.name, version.as_deref()).unwrap_or_else(|e| fail(&e));
+        req.source = Source::Registry(Some(range));
+        if req.allow.is_none() && !capabilities.is_empty() {
+            req.allow = Some(grant(&req.name, &capabilities).unwrap_or_else(|e| fail(&e)));
+        }
+    }
+
     let dir_name = std::env::current_dir()
         .ok()
         .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
         .unwrap_or_else(|| "my-package".to_string());
-    let added = plan_add(existing.as_deref(), &dir_name, name, version, dev, feature, local_path)
-        .unwrap_or_else(|e| fail(&e));
-    if let Err(e) = fs::write(manifest_path, &added.content) {
-        fail(&format!("writing {}: {}", MANIFEST_FILE, e));
-    }
+    let added = plan_add(existing.as_deref(), &dir_name, &req).unwrap_or_else(|e| fail(&e));
+    let resolved = write_and_lock(manifest_path, existing.as_deref(), &added.content);
     if existing.is_none() {
         println!("  {} {}", "Created".green(), MANIFEST_FILE);
     }
     println!("  {} {} to [{}]", "Added".green(), added.entry, added.table);
+    report_lock(&resolved);
 }
 
 /// Remove a dependency from rask.toml (RM1-RM2).
@@ -50,10 +165,109 @@ pub fn cmd_remove(name: &str) {
     }
     let content = read_manifest(manifest_path);
     let new_content = plan_remove(&content, name).unwrap_or_else(|e| fail(&e));
-    if let Err(e) = fs::write(manifest_path, &new_content) {
+    let resolved = write_and_lock(manifest_path, Some(&content), &new_content);
+    println!("  {} \"{}\"", "Removed".green(), name);
+    // RM1: still pinned means something else still needs it.
+    let users = still_needed_by(&resolved, name);
+    if !users.is_empty() {
+        println!(
+            "  {} \"{}\" stays in rask.lock: {} still depend{} on it",
+            "Note:".yellow(),
+            name,
+            users.join(", "),
+            if users.len() == 1 { "s" } else { "" },
+        );
+    }
+    report_lock(&resolved);
+}
+
+/// Write `content`, then bring rask.lock up to date (AD4, RM2). If that
+/// fails, rask.toml goes back to `before` and nothing has changed.
+fn write_and_lock(manifest_path: &Path, before: Option<&str>, content: &str) -> Resolved {
+    if let Err(e) = fs::write(manifest_path, content) {
         fail(&format!("writing {}: {}", MANIFEST_FILE, e));
     }
-    println!("  {} \"{}\"", "Removed".green(), name);
+    let root = manifest_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    match resolve_and_lock(&root, Pins::Keep, false) {
+        Ok(r) => r,
+        Err(errors) => {
+            let restored = match before {
+                Some(text) => fs::write(manifest_path, text),
+                None => fs::remove_file(manifest_path),
+            };
+            let note = match restored {
+                Ok(()) => format!("{} is unchanged", MANIFEST_FILE),
+                Err(e) => format!("putting {} back failed too: {}", MANIFEST_FILE, e),
+            };
+            fail(&format!("couldn't update rask.lock, so {}:\n{}", note, errors.join("\n")))
+        }
+    }
+}
+
+fn report_lock(r: &Resolved) {
+    match (&r.lock, r.lock_changed) {
+        (Some(lock), true) => println!("  {} rask.lock ({} package{})", "Updated".green(), lock.packages.len(),
+            if lock.packages.len() == 1 { "" } else { "s" }),
+        (None, true) => println!("  {} rask.lock (no dependencies left)", "Removed".green()),
+        _ => {}
+    }
+}
+
+/// The packages whose manifests still name `name` as a dependency.
+fn still_needed_by(r: &Resolved, name: &str) -> Vec<String> {
+    let mut users: Vec<String> = r
+        .registry
+        .packages()
+        .iter()
+        .filter(|p| p.manifest.as_ref().is_some_and(|m| super::fetch::all_deps(m).any(|d| d.name == name)))
+        .map(|p| p.name.clone())
+        .collect();
+    users.sort();
+    users.dedup();
+    users
+}
+
+/// AD1: the range to write for a registry dependency, and what the version it
+/// picks uses. Without a range, the newest stable version, as `^` of it.
+fn look_up(name: &str, range: Option<&str>) -> Result<(String, Vec<String>), String> {
+    let config = rask_resolve::registry::RegistryConfig::from_env();
+    let index = config
+        .fetch_index(name)
+        .map_err(|e| format!("can't look up \"{}\" in {}: {}", name, config.url, e))?;
+    let constraint = match range {
+        Some(r) => rask_resolve::semver::Constraint::parse(r).map_err(|e| format!("\"{}\": {}", r, e))?,
+        None => rask_resolve::semver::Constraint::Any,
+    };
+    let version = super::fetch::resolve_from_index(&index, &[constraint], name)?;
+    let caps = index.versions.get(&version.to_string()).map(|m| m.capabilities.clone()).unwrap_or_default();
+    Ok((range.map(str::to_string).unwrap_or_else(|| format!("^{}", version)), caps))
+}
+
+/// AD5: ask before granting what a package says it uses. Without a
+/// terminal to ask on, `--allow` has to say it.
+fn grant(name: &str, capabilities: &[String]) -> Result<Vec<String>, String> {
+    let described: Vec<String> = capabilities
+        .iter()
+        .map(|c| format!("{} ({})", c, rask_resolve::capabilities::capability_description(c)))
+        .collect();
+    if !std::io::stdin().is_terminal() {
+        return Err(format!(
+            "\"{}\" uses {}; pass `--allow {}` to grant it",
+            name,
+            described.join(", "),
+            capabilities.join(",")
+        ));
+    }
+    print!("  \"{}\" uses {}. Allow? [y/N] ", name, described.join(", "));
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    let _ = std::io::stdin().lock().read_line(&mut answer);
+    if matches!(answer.trim(), "y" | "Y" | "yes") {
+        Ok(capabilities.to_vec())
+    } else {
+        Err(format!("nothing added; \"{}\" needs {} to work", name, capabilities.join(", ")))
+    }
 }
 
 fn fail(msg: &str) -> ! {
@@ -73,51 +287,67 @@ struct Added {
     table: String,
 }
 
-/// The manifest after adding `name`. `existing` is None when there is no
-/// rask.toml yet; one is started, named after `dir_name`.
-fn plan_add(
-    existing: Option<&str>,
-    dir_name: &str,
-    name: &str,
-    version: Option<&str>,
-    dev: bool,
-    feature: Option<&str>,
-    local_path: Option<&str>,
-) -> Result<Added, String> {
-    let spec = match (local_path, version) {
-        (Some(_), Some(v)) => {
-            return Err(format!(
-                "a dependency has one source: version `{}` or `--path`, not both",
-                v
-            ))
+fn quoted_list(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|s| format!("\"{}\"", toml_escape(s))).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+/// The inline table for one dependency entry.
+fn entry_spec(req: &AddRequest) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    match &req.source {
+        Source::Registry(v) => parts.push(format!("registry = \"{}\"", toml_escape(v.as_deref().unwrap_or("*")))),
+        Source::Path(p) => parts.push(format!("path = \"{}\"", toml_escape(p))),
+        Source::Git { url, rev, branch } => {
+            parts.push(format!("git = \"{}\"", toml_escape(url)));
+            if let Some(r) = rev {
+                parts.push(format!("rev = \"{}\"", toml_escape(r)));
+            }
+            if let Some(b) = branch {
+                parts.push(format!("branch = \"{}\"", toml_escape(b)));
+            }
         }
-        (Some(p), None) => format!("{{ path = \"{}\" }}", toml_escape(p)),
-        (None, v) => {
-            let ver = v.unwrap_or("*").trim_matches('"');
-            format!("{{ registry = \"{}\" }}", toml_escape(ver))
-        }
-    };
-    let entry = format!("{} = {}", toml_key(name), spec);
-    let scope = if dev { "dev-dependencies" } else { "dependencies" };
-    let table: Vec<String> = match feature {
-        Some(f) => vec!["features".into(), f.into(), scope.into()],
-        None => vec![scope.into()],
+    }
+    if !req.with.is_empty() {
+        parts.push(format!("with = {}", quoted_list(&req.with)));
+    }
+    if let Some(allow) = req.allow.as_ref().filter(|a| !a.is_empty()) {
+        parts.push(format!("allow = {}", quoted_list(allow)));
+    }
+    if let Some(t) = &req.target {
+        parts.push(format!("target = \"{}\"", toml_escape(t)));
+    }
+    format!("{{ {} }}", parts.join(", "))
+}
+
+/// AD3: one name, one dependency, across every table. Asked of the loader,
+/// which has already parsed every spelling of the file.
+fn check_can_add(text: &str, name: &str) -> Result<(), String> {
+    let pkg = rask_manifest::load_text(text)
+        .map_err(|e| format!("{} doesn't load, so nothing was added:\n{}", MANIFEST_FILE, e))?;
+    if declares(&pkg, name) {
+        return Err(format!(
+            "\"{}\" is already in {}. Use `rask update` to move it to a newer version",
+            name, MANIFEST_FILE
+        ));
+    }
+    Ok(())
+}
+
+/// The manifest after adding the dependency. `existing` is None when there
+/// is no rask.toml yet; one is started, named after `dir_name`.
+fn plan_add(existing: Option<&str>, dir_name: &str, req: &AddRequest) -> Result<Added, String> {
+    let name = req.name.as_str();
+    let entry = format!("{} = {}", toml_key(name), entry_spec(req));
+    let table: Vec<String> = match &req.feature {
+        Some(f) => vec!["features".into(), f.clone(), req.table.into()],
+        None => vec![req.table.into()],
     };
     let table_text = render_key(&table);
 
     let content = match existing {
         Some(text) => {
-            // AD3: one name, one dependency, across every table. Asked of the
-            // loader, which has already parsed every spelling of the file.
-            let pkg = rask_manifest::load_text(text).map_err(|e| {
-                format!("{} doesn't load, so nothing was added:\n{}", MANIFEST_FILE, e)
-            })?;
-            if declares(&pkg, name) {
-                return Err(format!(
-                    "\"{}\" is already in {}. Use `rask update {}` to change its version",
-                    name, MANIFEST_FILE, name
-                ));
-            }
+            check_can_add(text, name)?;
             text.to_string()
         }
         None => format!(
@@ -361,7 +591,12 @@ mod tests {
     }
 
     fn add(existing: &str, name: &str, version: Option<&str>) -> Result<Added, String> {
-        plan_add(Some(existing), "dir", name, version, false, None, None)
+        plan_add(Some(existing), "dir", &AddRequest::registry(name, version))
+    }
+
+    /// `rask add <args>` planned against `existing`, without the registry.
+    fn planned(existing: Option<&str>, args: &[&str]) -> Result<Added, String> {
+        plan_add(existing, "dir", &parse_add_args(args)?)
     }
 
     fn deps_of(text: &str) -> Vec<rask_ast::decl::DepDecl> {
@@ -483,25 +718,25 @@ mod tests {
         let added = add(BASE, "json", None).unwrap();
         assert_eq!(dep(&deps_of(&added.content), "json").version.as_deref(), Some("*"));
         // A quoted version from the shell loses its quotes.
-        let added = add(BASE, "json", Some("\"^1\"")).unwrap();
+        let added = planned(Some(BASE), &["json", "\"^1\""]).unwrap();
         assert_eq!(added.entry, "json = { registry = \"^1\" }");
     }
 
     #[test]
     fn add_path_dependency() {
-        let added = plan_add(Some(BASE), "dir", "shared", None, false, None, Some("../my \"shared\"")).unwrap();
+        let added = planned(Some(BASE), &["shared", "--path", "../my \"shared\""]).unwrap();
         assert_eq!(dep(&deps_of(&added.content), "shared").path.as_deref(), Some("../my \"shared\""));
     }
 
     #[test]
     fn add_refuses_both_a_version_and_a_path() {
-        let err = plan_add(Some(BASE), "dir", "x", Some("1.0"), false, None, Some("../x")).unwrap_err();
+        let err = planned(Some(BASE), &["x", "1.0", "--path", "../x"]).unwrap_err();
         assert!(err.contains("one source"), "{err}");
     }
 
     #[test]
     fn add_dev_dependency_creates_the_table() {
-        let added = plan_add(Some(BASE), "dir", "mock", Some("^2.0"), true, None, None).unwrap();
+        let added = planned(Some(BASE), &["mock", "^2.0", "--dev"]).unwrap();
         assert_eq!(added.table, "dev-dependencies");
         assert!(added.content.starts_with(BASE.trim_end()), "{}", added.content);
         assert_eq!(dep(&deps_of(&added.content), "mock").scope.as_deref(), Some("dev"));
@@ -509,14 +744,14 @@ mod tests {
 
     #[test]
     fn add_to_a_feature() {
-        let added = plan_add(Some(BASE), "dir", "openssl", Some("^3"), false, Some("ssl"), None).unwrap();
+        let added = planned(Some(BASE), &["openssl", "^3", "--feature", "ssl"]).unwrap();
         assert_eq!(added.table, "features.ssl.dependencies");
         let pkg = rask_manifest::load_text(&added.content).unwrap();
         let ssl = pkg.features.iter().find(|f| f.name == "ssl").unwrap();
         assert!(ssl.on_by_default, "the existing [features.ssl] keeps its keys");
         assert_eq!(ssl.deps.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["openssl"]);
 
-        let added = plan_add(Some(BASE), "dir", "bench", None, true, Some("perf tools"), None).unwrap();
+        let added = planned(Some(BASE), &["bench", "--dev", "--feature", "perf tools"]).unwrap();
         assert_eq!(added.table, "features.\"perf tools\".dev-dependencies");
         let pkg = rask_manifest::load_text(&added.content).unwrap();
         let f = pkg.features.iter().find(|f| f.name == "perf tools").unwrap();
@@ -548,7 +783,8 @@ mod tests {
         let text = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n\n[build-dependencies]\ngen = { git = \"u\", rev = \"r\" }\n\n[features.ssl.dev-dependencies]\nmock = { path = \"m\" }\n";
         for name in ["gen", "mock"] {
             let err = add(text, name, None).unwrap_err();
-            assert!(err.contains("already in rask.toml") && err.contains(&format!("rask update {name}")), "{err}");
+            // `rask update` takes a directory, not a package, so that's what it names.
+            assert!(err.contains(&format!("\"{name}\" is already in rask.toml. Use `rask update`")), "{err}");
         }
         let err = add(BASE, "http", Some("^3")).unwrap_err();
         assert!(err.contains("already"), "{err}");
@@ -579,7 +815,7 @@ mod tests {
 
     #[test]
     fn add_starts_a_manifest_when_there_is_none() {
-        let added = plan_add(None, "my \"app\"", "http", Some("^2"), false, None, None).unwrap();
+        let added = plan_add(None, "my \"app\"", &AddRequest::registry("http", Some("^2"))).unwrap();
         let pkg = rask_manifest::load_text(&added.content).unwrap();
         assert_eq!(pkg.name, "my \"app\"");
         assert_eq!(pkg.version, "0.1.0");
@@ -630,7 +866,7 @@ mod tests {
 
     #[test]
     fn add_refuses_a_name_an_exclusive_option_declares() {
-        let err = plan_add(Some(GROUPS), "a", "tokio", Some("^1"), false, None, None).unwrap_err();
+        let err = add(GROUPS, "tokio", Some("^1")).unwrap_err();
         assert!(err.contains("\"tokio\" is already in rask.toml"), "{err}");
     }
 
@@ -647,6 +883,57 @@ mod tests {
         let text = "schema = \"rask-package@1\"\n\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[exclusive-features.rt]\ndefault = \"tokio\"\noptions.tokio = { tokio = { registry = \"^1\" } }\n";
         let err = plan_remove(text, "tokio").unwrap_err();
         assert!(err.contains("can't edit line by line"), "{err}");
+    }
+
+
+    // ─── Arguments ──────────────────────────────────────────────────
+
+    #[test]
+    fn every_flag_reaches_the_entry() {
+        let added = planned(Some(BASE), &["tls", "--git", "https://x/tls", "--rev", "a1b2", "--with", "rustls, alpn", "--allow", "net,ffi", "--target", "linux", "--build"]).unwrap();
+        assert_eq!(added.table, "build-dependencies");
+        assert_eq!(
+            added.entry,
+            "tls = { git = \"https://x/tls\", rev = \"a1b2\", with = [\"rustls\", \"alpn\"], allow = [\"net\", \"ffi\"], target = \"linux\" }"
+        );
+        let deps = deps_of(&added.content);
+        let tls = dep(&deps, "tls");
+        assert_eq!((tls.git.as_deref(), tls.rev.as_deref(), tls.scope.as_deref()), (Some("https://x/tls"), Some("a1b2"), Some("build")));
+        assert_eq!(tls.with_features, ["rustls", "alpn"]);
+        assert_eq!(tls.allow, ["net", "ffi"]);
+        assert_eq!(tls.target.as_deref(), Some("linux"));
+    }
+
+    #[test]
+    fn a_git_branch_is_written_too() {
+        let added = planned(Some(BASE), &["tls", "--git", "https://x/tls", "--branch", "main"]).unwrap();
+        assert_eq!(added.entry, "tls = { git = \"https://x/tls\", branch = \"main\" }");
+    }
+
+    #[test]
+    fn argument_mistakes_are_named() {
+        let err = |args: &[&str]| parse_add_args(args).unwrap_err();
+        assert_eq!(err(&[]), "missing package name");
+        assert!(err(&["a", "1", "2"]).contains("too many arguments: 2"));
+        assert!(err(&["a", "--git", "u", "--path", "p"]).contains("one source"));
+        assert!(err(&["a", "--rev", "x"]).contains("go with `--git`"));
+        assert!(err(&["a", "--dev", "--build"]).contains("pick one"));
+        assert!(err(&["a", "--feature"]).contains("--feature needs a value"));
+        assert!(err(&["a", "--frobnicate"]).contains("unknown flag `--frobnicate`"));
+    }
+
+    #[test]
+    fn flags_may_come_before_the_name() {
+        let req = parse_add_args(&["--dev", "--feature", "x", "mock", "^2"]).unwrap();
+        assert_eq!((req.name.as_str(), req.table, req.feature.as_deref()), ("mock", "dev-dependencies", Some("x")));
+        assert_eq!(req.source, Source::Registry(Some("^2".into())));
+    }
+
+    #[test]
+    fn an_empty_allow_writes_nothing() {
+        let mut req = AddRequest::registry("json", Some("^1"));
+        req.allow = Some(Vec::new());
+        assert_eq!(entry_spec(&req), "{ registry = \"^1\" }");
     }
 
 }

@@ -650,53 +650,21 @@ fn main() {
         }
         "update" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
-                println!("Regenerate rask.lock from current dependency state.\n");
+                println!("Re-resolve dependencies and rewrite rask.lock.\n");
                 println!("Usage: rask update [path]\n");
-                println!("Re-discovers packages and writes a fresh lock file.");
+                println!("Every registry dependency moves to the newest version its range allows;");
+                println!("`rask fetch` keeps the versions rask.lock already pins.");
                 return;
             }
             let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
-            commands::build::cmd_update(path);
+            commands::fetch::cmd_update(path);
         }
         "add" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_add_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing package name", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("add"), output::arg("<package> [version]"));
-                process::exit(1);
-            }
-            // `--dev` takes no value, so it must not be in the skip-next
-            // list — listing it there also swallowed the argument after it,
-            // and reading the name off position 2 made `rask add --dev pkg`
-            // add a dependency literally called `--dev`.
-            let value_flags = ["--feature", "--path"];
-            let positionals: Vec<&str> = {
-                let mut out = Vec::new();
-                let mut skip_next = false;
-                for arg in cmd_args.iter().skip(2) {
-                    if skip_next {
-                        skip_next = false;
-                    } else if value_flags.contains(arg) {
-                        skip_next = true;
-                    } else if !arg.starts_with('-') {
-                        out.push(*arg);
-                    }
-                }
-                out
-            };
-            let Some(pkg_name) = positionals.first().copied() else {
-                eprintln!("{}: missing package name", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("add"), output::arg("<package> [version]"));
-                process::exit(1);
-            };
-            let version = positionals.get(1).copied();
-            let dev = cmd_args.contains(&"--dev");
-            let feature = extract_flag_value(&cmd_args, "--feature");
-            let local_path = extract_flag_value(&cmd_args, "--path");
-            commands::deps::cmd_add(pkg_name, version, dev, feature.as_deref(), local_path.as_deref());
+            commands::deps::cmd_add(&cmd_args[2..]);
         }
         "remove" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

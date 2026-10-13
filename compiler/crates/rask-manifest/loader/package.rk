@@ -109,7 +109,7 @@ public func load_package(text: string) -> Package or LoadError {
 func rule_errors(p: Package) -> Vec<string> {
     mut errors = Vec<string>.new()
     check_enables(p, mutate errors)
-    check_one_feature_per_dep(p.features, mutate errors)
+    check_one_entry_per_dep(p, mutate errors)
     for g in p.exclusive_features {
         mut names = Vec<string>.new()
         for o in g.options {
@@ -184,28 +184,40 @@ func walk_enables(name: string, features: Vec<Feature>, mutate path: Vec<string>
     }
 }
 
-// F5: a dependency is gated by one feature. A second gate goes through
-// `feature = "other"` on the one entry.
-func check_one_feature_per_dep(features: Vec<Feature>, mutate errors: Vec<string>) {
-    mut seen = Vec<(string, string)>.new()
-    for f in features {
-        for scope in ["dependencies", "dev-dependencies", "build-dependencies"] {
-            let deps = if scope == "dependencies": f.dependencies.clone()
-                else if scope == "dev-dependencies": f.dev_dependencies.clone()
-                else: f.build_dependencies.clone()
-            for d in deps {
-                let key = "{scope}.{d.name}"
-                mut first = ""
-                for (k, owner) in seen {
-                    if k == key {
-                        first = owner
-                    }
+// D3 and F5: a name gets one entry across every dependency table in the
+// file, whatever its scope. `import x` has to lead to one package, and two
+// entries are either redundant (a [dependencies] entry is already there in
+// tests) or two different packages under one name. A second feature gate
+// goes through `feature = "other"` on the one entry. An exclusive group's
+// options are alternatives, only one of them ever on, so each may name it.
+func check_one_entry_per_dep(p: Package, mutate errors: Vec<string>) {
+    // (name, where it was first declared, the feature it belongs to or "")
+    mut seen = Vec<(string, string, string)>.new()
+    mut tables = Vec<(string, string, Vec<Dep>)>.new()
+    tables.push(("dependencies", "", p.dependencies.clone()))
+    tables.push(("dev-dependencies", "", p.dev_dependencies.clone()))
+    tables.push(("build-dependencies", "", p.build_dependencies.clone()))
+    for f in p.features {
+        tables.push(("features.{f.name}.dependencies", f.name, f.dependencies.clone()))
+        tables.push(("features.{f.name}.dev-dependencies", f.name, f.dev_dependencies.clone()))
+        tables.push(("features.{f.name}.build-dependencies", f.name, f.build_dependencies.clone()))
+    }
+    for (place, feature, deps) in tables {
+        for d in deps {
+            mut first = ""
+            mut first_feature = ""
+            for (name, at, owner) in seen {
+                if name == d.name && first.is_empty() {
+                    first = at
+                    first_feature = owner
                 }
-                if first.is_empty() {
-                    seen.push((key, f.name))
-                } else {
-                    errors.push("features.{f.name}.{scope}.{d.name}: `{d.name}` is already gated by feature `{first}`; gate this one on it with `feature = \"{first}\"` instead")
-                }
+            }
+            if first.is_empty() {
+                seen.push((d.name, place, feature))
+            } else if !feature.is_empty() && !first_feature.is_empty() && feature != first_feature {
+                errors.push("{place}.{d.name}: `{d.name}` is already gated by feature `{first_feature}`; gate this one on it with `feature = \"{first_feature}\"` instead")
+            } else {
+                errors.push("{place}.{d.name}: `{d.name}` is already declared in [{first}]; a name gets one entry")
             }
         }
     }
