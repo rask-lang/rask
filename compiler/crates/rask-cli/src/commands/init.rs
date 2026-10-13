@@ -68,10 +68,7 @@ pub fn cmd_init(name: Option<&str>) {
     // Write main.rk if it doesn't exist
     let main_rk = project_dir.join("main.rk");
     if !main_rk.exists() {
-        let main_content = format!(
-            "// {}\n\nfunc main() {{\n    println(\"Hello from {}!\")\n}}\n",
-            project_name, project_name,
-        );
+        let main_content = main_text(&project_name);
         write_file(&main_rk, &main_content);
         println!("  {} {}", "Created".green(), "main.rk");
     } else {
@@ -117,6 +114,22 @@ pub fn cmd_init(name: Option<&str>) {
         println!("  Run with:");
         println!("    {} {} {}", output::command("rask"), output::command("run"), "main.rk");
     }
+}
+
+/// The starter `main.rk`. The name lands inside a Rask string, where `{`
+/// starts an interpolation, so it's escaped like any other text there.
+fn main_text(name: &str) -> String {
+    let mut quoted = String::new();
+    for c in name.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '{' => quoted.push_str("{{"),
+            '}' => quoted.push_str("}}"),
+            c => quoted.push(c),
+        }
+    }
+    format!("func main() {{\n    println(\"Hello from {quoted}!\")\n}}\n")
 }
 
 fn manifest_text(project_name: &str, schema: &str) -> String {
@@ -176,5 +189,18 @@ mod tests {
         let schema = rask_manifest::schema_line().unwrap();
         let pkg = rask_manifest::load_text(&manifest_text("my \"app\" \\ x", &schema)).unwrap();
         assert_eq!(pkg.name, "my \"app\" \\ x");
+    }
+
+    #[test]
+    fn the_starter_program_prints_any_name_as_written() {
+        let name = "we{ird} \"app\" \\ x";
+        let lexed = rask_lexer::Lexer::new(&main_text(name)).tokenize();
+        assert!(lexed.is_ok(), "{:?}", lexed.errors);
+        let mut parsed = rask_parser::Parser::new(lexed.tokens).parse();
+        assert!(parsed.is_ok(), "{:?}", parsed.errors);
+        rask_desugar::desugar_with_stdlib(&mut parsed.decls, rask_stdlib::StubRegistry::defaulted_signatures());
+        let (mut interp, out) = rask_interp::Interpreter::with_captured_output();
+        interp.run(&parsed.decls).unwrap();
+        assert_eq!(out.lock().unwrap().trim_end(), format!("Hello from {name}!"));
     }
 }

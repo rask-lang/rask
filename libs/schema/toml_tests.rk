@@ -498,7 +498,15 @@ test "render_document gives tables of tables their own headers" {
 
 test "render_document quotes keys in headers" {
     let t = tree("[\"x y\".\"a.b\".c]\nd = 1\n")
-    assert render_document(t) == "\n[\"x y\"]\n\n[\"x y\".\"a.b\"]\nc = {{ d = 1 }}\n"
+    assert render_document(t) == "\n[\"x y\".\"a.b\"]\nc = {{ d = 1 }}\n"
+}
+
+test "render_document leaves out a header with nothing under it" {
+    // `[features]` holding only `[features.ssl]`: the sub-header is enough.
+    let t = tree("[features.ssl]\ndefault = true\n[features.ssl.dependencies]\ntls = {{ registry = \"^1\" }}\n")
+    assert render_document(t) == "\n[features.ssl]\ndefault = true\n\n[features.ssl.dependencies]\ntls = {{ registry = \"^1\" }}\n"
+    // An empty table has nothing else to define it.
+    assert render_document(tree("[a]\n")) == "\n[a]\n"
 }
 
 test "an empty tree is an empty document" {

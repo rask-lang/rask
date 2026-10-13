@@ -868,18 +868,26 @@ func vec_of(s: string) -> Vec<string> {
 }
 
 func render_section(mutate out: StringBuilder, path: Vec<string>, entries: Vec<Entry>) {
-    out.push("\n[{path.join(".")}]\n")
+    // A table that itself holds tables gets its own header; a leaf table
+    // goes inline.
     mut nested = Vec<usize>.new()
+    mut inline = Vec<usize>.new()
     mut i: usize = 0
     for e in entries {
-        // A table that itself holds tables gets its own header; a leaf
-        // table goes inline.
         if e.value is Table(inner) && has_table(inner) {
             nested.push(i)
         } else {
-            out.push("{render_key(e.key)} = {render_value(e.value)}\n")
+            inline.push(i)
         }
         i = i + 1
+    }
+    // The sub-headers define this table too, so a header with nothing under
+    // it is noise. An empty table still needs its header to exist at all.
+    if !inline.is_empty() || entries.is_empty() {
+        out.push("\n[{path.join(".")}]\n")
+    }
+    for j in inline {
+        out.push("{render_key(entries[j].key)} = {render_value(entries[j].value)}\n")
     }
     for j in nested {
         if entries[j].value is Table(inner) {
