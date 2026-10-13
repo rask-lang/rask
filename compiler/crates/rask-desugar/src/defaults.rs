@@ -620,9 +620,14 @@ mod tests {
             _ => panic!("expected provided int 60"),
         }
         assert_eq!(resolved[2].name.as_deref(), Some("port"));
-        match &resolved[2].expr.kind {
-            ExprKind::Int(v, _) => assert_eq!(*v, 8080),
-            _ => panic!("expected default int 8080"),
+        // A default is a compile-time constant, filled in as a `comptime`
+        // block around the declared value.
+        let ExprKind::Comptime { body } = &resolved[2].expr.kind else {
+            panic!("expected the default in a comptime block")
+        };
+        match body.as_slice() {
+            [Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Int(8080, _), .. }), .. }] => {}
+            other => panic!("expected default int 8080, got {other:?}"),
         }
     }
 
