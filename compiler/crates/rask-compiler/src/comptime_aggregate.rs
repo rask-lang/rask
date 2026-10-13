@@ -22,26 +22,12 @@ pub(crate) enum NoBytes {
 }
 
 /// `val` as const bytes, and the layout they're in.
-///
-/// `checked` is the name of the struct or enum the checker typed the folded
-/// expression as. The evaluator doesn't model every conversion: for
-/// `Marker(v: 0) as any Opaque` it hands back the `Marker`, and those bytes
-/// in a slot that holds an interface value crashed the first read. The value
-/// has to be the type the program expects, or it has no bytes here.
 pub(crate) fn aggregate_const(
     val: &ComptimeValue,
-    checked: Option<&str>,
     mono: &MonoProgram,
 ) -> Result<(SerializedConst, ConstAggregate), NoBytes> {
     let mut out = Writer { mono, bytes: Vec::new(), relocs: Vec::new() };
     let agg = out.aggregate(val, 0)?;
-    let built = match agg {
-        ConstAggregate::Struct(i) => &mono.struct_layouts[i].name,
-        ConstAggregate::Enum(i) => &mono.enum_layouts[i].name,
-    };
-    if checked != Some(built.as_str()) {
-        return Err(NoBytes::Gap);
-    }
     Ok((SerializedConst { bytes: out.bytes, string_relocs: out.relocs }, agg))
 }
 

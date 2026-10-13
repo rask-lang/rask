@@ -2281,44 +2281,10 @@ impl<'a> MirLowerer<'a> {
                 // A folded comptime value: a module-level const, or a local in
                 // this function (which is keyed by the function too — see
                 // `comptime_local_key`).
-                //
-                // A string is the value itself rather than an address: the
-                // fold produced the exact characters, and a string literal
-                // is already emitted as const data with a sentinel
-                // refcount. Going through a data section instead would mean
-                // teaching this path the `RaskStr` layout and a relocation
-                // for the non-SSO case, for the same bytes (#1074).
-                if meta.type_prefix == "string" {
-                    if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
-                        return Ok((
-                            MirOperand::Constant(MirConst::String(text)),
-                            MirType::String,
-                        ));
-                    }
-                }
-                if let Some(agg) = meta.aggregate {
-                    return Ok(self.load_comptime_aggregate(&key, agg));
-                }
-                let global_local = self.builder.alloc_temp(MirType::Ptr);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                    dst: global_local,
-                    name: key,
-                }));
-
-                if let Some(built) = self.build_comptime_collection(global_local, meta) {
+                if matches!(meta.type_prefix.as_str(), "Vec" | "Map") {
                     self.meta_mut(&name).type_prefix = Some(meta.type_prefix.clone());
-                    built
-                } else {
-                    // Scalar global: load value from the data pointer
-                    let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
-                        .unwrap_or(MirType::I64);
-                    let result_local = self.builder.alloc_temp(mir_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Deref(MirOperand::Local(global_local)),
-                    }));
-                    Ok((MirOperand::Local(result_local), mir_ty))
                 }
+                self.load_comptime_value(&key, meta)
             } else if let Some(fnval) = self
                 .ctx
                 .call_rewrites

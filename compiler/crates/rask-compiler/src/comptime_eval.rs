@@ -89,13 +89,13 @@ pub fn evaluate_comptime_globals(
             // functions each with a `let v = f()` collided, and one silently
             // read the other's value (#825).
             DeclKind::Fn(f) => {
-                for (name, init) in comptime_lets(&f.body, decls) {
+                for (name, init, declared) in comptime_lets(&f.body, decls) {
                     comptime_consts.push((
                         rask_mir::lower::comptime_local_key(&f.name, name),
                         name.clone(),
                         init,
                         None,
-                        None,
+                        declared,
                     ));
                 }
             }
@@ -105,13 +105,13 @@ pub fn evaluate_comptime_globals(
             // default lives now (type.structs/FD1).
             DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_) => {
                 for (owner, m) in methods_of(decl) {
-                    for (name, init) in comptime_lets(&m.body, decls) {
+                    for (name, init, declared) in comptime_lets(&m.body, decls) {
                         comptime_consts.push((
                             rask_mir::lower::comptime_local_key(&format!("{owner}_{}", m.name), name),
                             name.clone(),
                             init,
                             None,
-                            None,
+                            declared,
                         ));
                         if rask_ast::decl::field_attrs::field_of_default_method(&m.name).is_some() {
                             field_defaults.insert(init.id);
@@ -125,13 +125,13 @@ pub fn evaluate_comptime_globals(
             // and the other doesn't. The key here is never looked up: check
             // throws the folded globals away and keeps the diagnostics.
             DeclKind::Test(t) => {
-                for (name, init) in comptime_lets(&t.body, decls) {
+                for (name, init, declared) in comptime_lets(&t.body, decls) {
                     comptime_consts.push((
                         rask_mir::lower::comptime_local_key(&format!("test${}", t.name), name),
                         name.clone(),
                         init,
                         None,
-                        None,
+                        declared,
                     ));
                 }
             }
@@ -174,7 +174,7 @@ pub fn evaluate_comptime_globals(
                     fit_to_declared(&mut meta, declared);
                     globals.insert(key, meta);
                 }
-                None => match crate::comptime_aggregate::aggregate_const(&val, checked_name(typed, init).as_deref(), mono) {
+                None => match crate::comptime_aggregate::aggregate_const(&val, mono) {
                     Ok((ser, agg)) => {
                         globals.insert(key, ComptimeGlobalMeta {
                             bytes: ser.bytes,
@@ -206,14 +206,6 @@ pub fn evaluate_comptime_globals(
     check_comptime_field_names(decls, &mut comptime_interp, &mut diags);
 
     (globals, diags)
-}
-
-/// The struct or enum the checker typed `init` as, by name.
-fn checked_name(typed: &TypedProgram, init: &rask_ast::expr::Expr) -> Option<String> {
-    match typed.node_types.get(&init.id)? {
-        rask_types::Type::Named(id) => Some(typed.types.type_name(*id)),
-        _ => None,
-    }
 }
 
 /// A folded integer at the width the const declares.
@@ -309,13 +301,14 @@ pub(crate) fn methods_of(decl: &Decl) -> Vec<(String, &FnDecl)> {
     methods.iter().map(|m| (owner.clone(), m)).collect()
 }
 
+/// Each `let … = comptime` in a body: its name, initializer and written type.
 fn comptime_lets<'a>(
     body: &'a [Stmt],
     decls: &[Decl],
-) -> Vec<(&'a String, &'a rask_ast::expr::Expr)> {
+) -> Vec<(&'a String, &'a rask_ast::expr::Expr, Option<&'a rask_ast::ty::TypeExpr>)> {
     body.iter()
         .filter_map(|stmt| match &stmt.kind {
-            StmtKind::Let { name, init, .. } if is_comptime_init(init, decls) => Some((name, init)),
+            StmtKind::Let { name, init, ty, .. } if is_comptime_init(init, decls) => Some((name, init, ty.as_ref())),
             _ => None,
         })
         .collect()

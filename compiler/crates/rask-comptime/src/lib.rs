@@ -1748,8 +1748,36 @@ impl ComptimeInterpreter {
                     (ComptimeValue::U64(n), "i64") => ComptimeValue::I64(*n as i64),
                     (ComptimeValue::U8(n), "u32") => ComptimeValue::U32(*n as u32),
                     (ComptimeValue::I32(n), "i16") => ComptimeValue::I16(*n as i16),
-                    // Identity / pass-through
-                    _ => val,
+                    // Already the type asked for.
+                    _ if val.type_name() == ty.bare_name().unwrap_or("") => val,
+                    // Any integer to any integer width, `usize` included. The
+                    // checker lets `as` only widen (type.primitives/CV3), so the
+                    // value carries over whole. Listed pair by pair, `3u32 as
+                    // u64` wasn't a pair and came back still a `u32`.
+                    (_, target) if val.as_int().is_some() && CtInt::from_name(target).is_some() => {
+                        let kind = CtInt::from_name(target).expect("checked above");
+                        match val.as_int().expect("checked above").0 {
+                            CtNum::Signed(n) => kind.make(n),
+                            CtNum::Big(n) => kind.make_u128(n),
+                        }
+                    }
+                    (ComptimeValue::F32(f), "f64") => ComptimeValue::F64(*f as f64),
+                    (ComptimeValue::F64(f), "f32") => ComptimeValue::F32(*f as f32),
+                    // Anything else is a conversion this evaluator doesn't
+                    // model, and the value can't stand in for its result:
+                    // handed back unchanged, `Marker(v: 0) as any Opaque`
+                    // came out a `Marker`, and its bytes went where an
+                    // interface value belongs.
+                    _ => {
+                        let from = match &val {
+                            ComptimeValue::Struct { name, .. } | ComptimeValue::Enum { name, .. } => name.as_str(),
+                            other => other.type_name(),
+                        };
+                        return Err(ComptimeError::NotSupported(format!(
+                            "converting a `{from}` with `as {}`",
+                            ty.source()
+                        )));
+                    }
                 }
             }
 

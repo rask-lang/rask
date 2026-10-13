@@ -2359,6 +2359,46 @@ impl<'a> MirLowerer<'a> {
         self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
     }
 
+    /// A folded comptime value as a MIR value of its own type.
+    ///
+    /// - A string is the value itself rather than an address: the fold
+    ///   produced the exact characters, and a string literal is already
+    ///   emitted as const data with a sentinel refcount (#1074).
+    /// - A struct or enum is copied out of its bytes.
+    /// - A list or a map is built from its elements into a collection the
+    ///   caller owns.
+    /// - A scalar is loaded at the width the folded value has, not one a
+    ///   use guesses: an `i64` default read 8 of a `u128`'s 16 bytes (#824).
+    pub(crate) fn load_comptime_value(
+        &mut self,
+        key: &str,
+        meta: &ComptimeGlobalMeta,
+    ) -> Result<(MirOperand, MirType), LoweringError> {
+        if meta.type_prefix == "string" {
+            if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
+                return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
+            }
+        }
+        if let Some(agg) = meta.aggregate {
+            return Ok(self.load_comptime_aggregate(key, agg));
+        }
+        let data = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+            dst: data,
+            name: key.to_string(),
+        }));
+        if let Some(built) = self.build_comptime_collection(data, meta) {
+            return built;
+        }
+        let ty = Self::comptime_global_mir_type(&meta.type_prefix).unwrap_or(MirType::I64);
+        let value = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Deref(MirOperand::Local(data)),
+        }));
+        Ok((MirOperand::Local(value), ty))
+    }
+
     /// A folded `Vec` or `Map` constant built into a real collection from the
     /// bytes at `data`. `None` when the constant is neither.
     ///

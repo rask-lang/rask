@@ -449,79 +449,26 @@ impl<'a> MirLowerer<'a> {
                     Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
                     _ => { self.comptime_strings.remove(name); }
                 }
-                // If this const was evaluated at compile time, emit a global reference
+                // Folded at compile time: the value is constant data, and the
+                // binding is an ordinary one — an annotated type is a coercion
+                // site here like anywhere else, so `let p: Point? = comptime
+                // { Point(…) }` wraps the folded struct.
                 if let Some((key, meta)) = self.comptime_global_for(name) {
-                    // A folded string is its characters, not a `RaskStr`, so it
-                    // binds as the literal it is. Read through the data slot
-                    // like a scalar, `let v: string = comptime { "ab" }` handed
-                    // the characters' bytes back as a string header and
-                    // crashed on first use. A use of the name already did
-                    // this (#1074); the binding didn't.
-                    let folded_text = (meta.type_prefix == "string")
-                        .then(|| String::from_utf8(meta.bytes.clone()).ok())
-                        .flatten();
-                    if let Some(text) = folded_text {
-                        let local_id = self.builder.alloc_local(name.to_string(), MirType::String);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(text))),
-                        }));
-                        self.locals.insert(name.to_string(), (local_id, MirType::String));
-                        self.meta_mut(name).type_prefix = Some("string".to_string());
-                        return Ok(());
-                    }
-                    if let Some(agg) = meta.aggregate {
-                        let (value, mir_ty) = self.load_comptime_aggregate(&key, agg);
-                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Use(value),
-                        }));
-                        self.locals.insert(name.to_string(), (local_id, mir_ty));
-                        return Ok(());
-                    }
-                    // A list or a map is built here, once, into the
-                    // collection the binding owns. Bound as the bare data
-                    // address instead, a use that went through the local —
-                    // `return v`, `v.len()` — read the elements as a vector
-                    // header and crashed.
-                    let data = self.builder.alloc_temp(MirType::Ptr);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                        dst: data,
-                        name: key.clone(),
+                    let (value, value_ty) = self.load_comptime_value(&key, meta)?;
+                    let var_ty = match ty.as_ref() {
+                        Some(written) => self.ctx.resolve_type_expr(written),
+                        None => value_ty.clone(),
+                    };
+                    let value = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::AnnotatedBinding,
+                        value, &value_ty, &var_ty,
+                    );
+                    let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local_id,
+                        rvalue: MirRValue::Use(value),
                     }));
-                    if let Some(built) = self.build_comptime_collection(data, meta) {
-                        let (value, _) = built?;
-                        let mir_ty = match ty.as_ref() {
-                            Some(written) => self.ctx.resolve_type_expr(written),
-                            None => MirType::Ptr,
-                        };
-                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Use(value),
-                        }));
-                        self.locals.insert(name.to_string(), (local_id, mir_ty));
-                    } else {
-                        // Scalar: load the data pointer, then deref to get the value
-                        //
-                        // The folded value's own width decides this, not the
-                        // binding's annotation — an unannotated `let v = f()` on a
-                        // comptime `u128` used to default to `i64` and the deref
-                        // read 8 of the 16 bytes, so the answer came back mod 2^64
-                        // (#824).
-                        let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
-                            .unwrap_or_else(|| match ty.as_ref() {
-                                Some(written) => self.ctx.resolve_type_expr(written),
-                                None => MirType::I64,
-                            });
-                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Deref(MirOperand::Local(data)),
-                        }));
-                        self.locals.insert(name.to_string(), (local_id, mir_ty));
-                    }
+                    self.locals.insert(name.to_string(), (local_id, var_ty));
                     // The tracked prefix is what later method calls on this
                     // binding dispatch through, and a scalar's dispatch prefix
                     // isn't its type name — narrow widths ride the 64-bit symbols.
