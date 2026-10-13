@@ -174,7 +174,8 @@ go down.
 | [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
-| [resource_leak.rk](resource_leak.rk) | Resource type not consumed |
+| [resource_leak.rk](resource_leak.rk) | A `File` never closed, closed after other work, closed on one branch, closed twice (E0881, E0882, E0821, E0800). `File` was a plain struct until this file was rewritten, and the old version was only rejected for stale syntax |
+| [responder_mistakes.rk](responder_mistakes.rk) | An HTTP `Responder` that some path never answers, or answers twice (E0882, E0805, E0800, std.http/S2). The fixes name `respond(…)`, not a `.close()` it doesn't have |
 | [result_match_by_variant.rk](result_match_by_variant.rk) | A `T or E` match covers `E` with an arm per variant; a fieldless variant arm is not a catch-all |
 | [optional_resource.rk](optional_resource.rk) | A `@resource` inside an optional is still linear — the binding, the `? as` payload, and a `none` that gets filled (E0805, mem.linear/L1, #827) |
 | [resource_field_debts.rk](resource_field_debts.rk) | A holder owes each resource field separately — closing one leaves the others, reported by field path (E0805, mem.linear/L1, #828) |

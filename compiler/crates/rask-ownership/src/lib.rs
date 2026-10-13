@@ -2939,14 +2939,27 @@ impl<'a> OwnershipChecker<'a> {
                 let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
                 let saved_parts = self.borrowed_parts.clone();
                 let lender = self.borrowed_source(scrutinee);
+                let resources_before = self.resource_bindings.clone();
                 self.register_pattern_bindings_typed(
                     pattern,
                     scrutinee_ty.as_ref(),
                     scrutinee.span,
                     lender.as_deref(),
                 );
+                // A resource the pattern binds lives in the then-branch only, as
+                // an `if x? as c` binding does. Left registered past the branch,
+                // `if m is Conn as c { return c }` reported `c` as leaked at the
+                // function's last line.
+                let pattern_bound: Vec<String> = self
+                    .resource_bindings
+                    .difference(&resources_before)
+                    .cloned()
+                    .collect();
                 self.check_expr(then_branch);
                 self.borrowed_parts = saved_parts;
+                for binding in &pattern_bound {
+                    self.check_present_binding_consumed(binding, then_branch.span);
+                }
                 let then_terminal = Self::is_terminal_expr(then_branch);
                 if let Some(else_branch) = else_branch {
                     let after_then = self.bindings.clone();
@@ -4597,6 +4610,11 @@ impl<'a> OwnershipChecker<'a> {
             return MoveReason::LinkDeleted;
         }
         let type_name = format!("{}", self.program.types.resolve_type_names(ty));
+        // Before size: a resource moves because it's linear, and blaming the
+        // copy threshold suggested `.clone()` on a value that has none.
+        if self.type_is_resource(ty) {
+            return MoveReason::Resource { type_name };
+        }
         match ty {
             // String is Copy (S1) — this branch shouldn't be reached
             Type::String => MoveReason::Unknown,
@@ -6096,6 +6114,28 @@ impl<'a> OwnershipChecker<'a> {
             .retain(|c| !(c.block == block_id && c.dies_after <= index));
     }
 
+    /// The call that consumes resource `name`, spelled for a fix: `drop(frame)`
+    /// for a `Heap` box, `file.close()` when the type has a `close`, else its
+    /// first `take self` method with `…` standing in for any arguments
+    /// (`responder.respond(…)`).
+    fn consume_call(&self, name: &str) -> Option<String> {
+        if self.owned_bindings.contains(name) {
+            return Some(format!("drop({})", name));
+        }
+        let id = self.named_type_id(self.binding_types.get(name)?)?;
+        let methods = match self.program.types.get(id)? {
+            rask_types::TypeDef::Struct { methods, .. } | rask_types::TypeDef::Enum { methods, .. } => methods,
+            _ => return None,
+        };
+        let mut takes = methods.iter().filter(|m| m.self_param == rask_types::SelfParam::Take);
+        let m = methods
+            .iter()
+            .find(|m| m.name == "close" && m.self_param == rask_types::SelfParam::Take)
+            .or_else(|| takes.next())?;
+        let args = if m.params.is_empty() { "" } else { "…" };
+        Some(format!("{}.{}({})", name, m.name, args))
+    }
+
     /// Check if a method call uses `take self`.
     fn is_take_self_method(&self, object: &Expr, method_name: &str) -> bool {
         self.self_param_of(object, method_name) == Some(rask_types::SelfParam::Take)
@@ -6109,20 +6149,10 @@ impl<'a> OwnershipChecker<'a> {
     /// How a method takes its receiver, looked up from the receiver's type.
     fn self_param_of(&self, object: &Expr, method_name: &str) -> Option<rask_types::SelfParam> {
         if let Some(ty) = self.node_ty(&object.id) {
-            let type_id = match ty {
-                Type::Named(id) => Some(*id),
-                Type::Generic { base, .. } => Some(*base),
-                // A stdlib type arrives here as its own *name* when the call
-                // that produced it went through the module-function path — a
-                // stub's return type is parsed before the type table exists, so
-                // `io.stdout()` gives back `UnresolvedNamed("Stdout")`. Method
-                // resolution already looks those up by name; this didn't, so
-                // `out.close()` discharged nothing and every program that
-                // acquired a standard stream was told it leaked the handle it had
-                // just closed (#859).
-                Type::UnresolvedNamed(name) => self.program.types.get_type_id(name),
-                _ => None,
-            };
+            // By id: a stdlib type arrives as its own *name* when the call that
+            // produced it went through the module-function path, so
+            // `io.stdout()` gives back `UnresolvedNamed("Stdout")` (#859).
+            let type_id = self.named_type_id(ty);
             if let Some(id) = type_id {
                 if let Some(def) = self.program.types.get(id) {
                     let methods = match def {
@@ -6231,8 +6261,9 @@ impl<'a> OwnershipChecker<'a> {
             if !self.exit_reported.insert(format!("try:{}", name)) {
                 continue;
             }
+            let consume = self.consume_call(&name);
             self.errors.push(OwnershipError {
-                kind: OwnershipErrorKind::ResourceLeaksOnTry { name, acquired_at },
+                kind: OwnershipErrorKind::ResourceLeaksOnTry { name, acquired_at, consume },
                 span,
             });
         }
@@ -6354,10 +6385,11 @@ impl<'a> OwnershipChecker<'a> {
                 .unwrap_or(stmt.span);
             // An `ensure` here was meant to be the commit. Saying "move the
             // ensure up" would point at the line already in the right place.
+            let consume = self.consume_call(name);
             let kind = if matches!(stmt.kind, StmtKind::Ensure { .. }) {
-                OwnershipErrorKind::EnsureConsumesNothing { name: name.clone(), acquired_at }
+                OwnershipErrorKind::EnsureConsumesNothing { name: name.clone(), acquired_at, consume }
             } else {
-                OwnershipErrorKind::ResourceCommitDeferred { name: name.clone(), acquired_at }
+                OwnershipErrorKind::ResourceCommitDeferred { name: name.clone(), acquired_at, consume }
             };
             self.errors.push(OwnershipError { kind, span: stmt.span });
         }
@@ -6414,7 +6446,10 @@ impl<'a> OwnershipChecker<'a> {
                         || self.ensure_registered.contains(&name);
                 if !consumed {
                     self.errors.push(OwnershipError {
-                        kind: OwnershipErrorKind::ResourceNotConsumed { name: name.clone() },
+                        kind: OwnershipErrorKind::ResourceNotConsumed {
+                            consume: self.consume_call(&name),
+                            name: name.clone(),
+                        },
                         span,
                     });
                 }
@@ -6835,10 +6870,12 @@ impl<'a> OwnershipChecker<'a> {
                 return Some(Self::container_shape(base));
             }
         }
-        let (id, args) = match ty {
-            Type::Named(id) => (*id, Vec::new()),
-            Type::Generic { base, args } => (*base, args.clone()),
-            _ => return Some("a type the checker does not recognise".to_string()),
+        let args = match ty {
+            Type::Generic { args, .. } => args.clone(),
+            _ => Vec::new(),
+        };
+        let Some(id) = self.named_type_id(ty) else {
+            return Some("a type the checker does not recognise".to_string());
         };
         let name = self.program.types.type_name(id);
         let base = name.as_str().to_string();
@@ -6864,11 +6901,9 @@ impl<'a> OwnershipChecker<'a> {
 
     /// The type carries `@resource` itself, as opposed to merely containing one.
     fn is_directly_resource(&self, ty: &Type) -> bool {
-        let id = match ty {
-            Type::Named(id) => *id,
-            Type::Generic { base, .. } => *base,
-            _ => return false,
-        };
+        // By id, not by matching `Named`: the checker hands some types down by
+        // name, and a stdlib call's `File` arrives as `UnresolvedNamed("File")`.
+        let Some(id) = self.named_type_id(ty) else { return false };
         matches!(
             self.program.types.get(id),
             Some(rask_types::TypeDef::Struct { is_resource: true, .. })
@@ -7264,7 +7299,10 @@ impl<'a> OwnershipChecker<'a> {
             || self.ensure_registered.contains(name);
         if !consumed {
             self.errors.push(OwnershipError {
-                kind: OwnershipErrorKind::ResourceNotConsumed { name: name.to_string() },
+                kind: OwnershipErrorKind::ResourceNotConsumed {
+                    name: name.to_string(),
+                    consume: self.consume_call(name),
+                },
                 span,
             });
         }
@@ -7282,6 +7320,7 @@ impl<'a> OwnershipChecker<'a> {
     fn register_resource_binding(&mut self, name: &str, ty: Option<&Type>) {
         self.resource_bindings.insert(name.to_string());
         let Some(ty) = ty else { return };
+        self.binding_types.entry(name.to_string()).or_insert_with(|| ty.clone());
         let paths = self.resource_field_paths(ty, 0);
         if !paths.is_empty() {
             self.resource_field_debts.insert(name.to_string(), paths);
@@ -7489,7 +7528,7 @@ impl<'a> OwnershipChecker<'a> {
                     paths.sort();
                     for path in paths {
                         self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ResourceNotConsumed { name: path },
+                            kind: OwnershipErrorKind::ResourceNotConsumed { name: path, consume: None },
                             span,
                         });
                     }
@@ -7503,7 +7542,8 @@ impl<'a> OwnershipChecker<'a> {
                     // stopped it is what keeps that from reading like a bug.
                     OwnershipErrorKind::ResourceNotConsumedOpaque { name, where_ }
                 } else {
-                    OwnershipErrorKind::ResourceNotConsumed { name }
+                    let consume = self.consume_call(&name);
+                    OwnershipErrorKind::ResourceNotConsumed { name, consume }
                 };
                 self.errors.push(OwnershipError { kind, span });
             }

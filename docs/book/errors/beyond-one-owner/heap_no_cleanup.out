@@ -6,7 +6,7 @@ error[E0882]: `frame` has no cleanup committed yet
    ...
  14 |     println("{(*frame).label}")
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this runs while `frame` has nothing scheduled to close it
-    = fix: move `ensure frame.<consuming method>()` up to directly after `frame`
-          is acquired
+    = fix: add `ensure drop(frame)` on the line after it's acquired, then use
+          `frame` freely
     = why: a panic here would leak it — nothing is scheduled to clean it up, and
           there are no destructors to fall back on

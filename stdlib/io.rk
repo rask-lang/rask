@@ -550,11 +550,6 @@ Buffer implements Seeker {
 public struct File { }
 
 extend File {
-    /// True when the handle is NULL — a failed `fopen`. `fs.open` uses it to
-    /// tell success from failure, since the runtime can't build an `IoError`.
-    @native("rask_file_is_null")
-    func is_null(self) -> bool {}
-
     /// The two halves of `Seeker`, as the backends see them: a position or -1.
     /// The interface methods below turn -1 into an `IoError` and take the
     /// `SeekFrom` apart, which is work neither backend should be doing.

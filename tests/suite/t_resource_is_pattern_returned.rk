@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A resource bound by `if x is T as c` lives in the then-branch, the same as
+// one bound by `if x? as c` (mem.linear/L1).
+//
+// The ownership pass left the `is` binding registered after the branch, so
+// returning it from inside reported `c` as leaked at the function's last line.
+// `fs.open` is written this way, which is how it surfaced.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+func maybe_conn(n: i64) -> Conn? {
+    if n > 0 {
+        return Conn { id: n }
+    }
+    return none
+}
+
+func first_or(n: i64, fallback: i64) -> Conn {
+    if maybe_conn(n) is Conn as c {
+        return c
+    }
+    return Conn { id: fallback }
+}
+
+test "mem.linear — a resource bound by an is-pattern can be returned from the branch" {
+    assert first_or(3, 9).close() == 3
+    assert first_or(0, 9).close() == 9
+}
