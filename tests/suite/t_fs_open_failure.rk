@@ -25,6 +25,7 @@ func open_result(path: string) -> string {
     mut f = fs.open(path) catch e => {
         return "{e}"
     }
+    ensure f.close()
     let t = f.read_text()
     f.close()
     if t is string as s {
@@ -38,6 +39,7 @@ func create_result(path: string) -> string {
     mut f = fs.create_file(path) catch e => {
         return "{e}"
     }
+    ensure f.close()
     let _ = f.write_text("hello\n")
     f.close()
     return "created"

@@ -84,6 +84,7 @@ test "std.io/K1 — a file seeks the same way" {
         assert false
         return
     }
+    ensure f.close()
     assert f.position()! == 0
     assert f.seek(SeekFrom.Start(6))! == 6
     assert f.position()! == 6
@@ -100,6 +101,7 @@ test "std.io/K1 — a file rejects a negative absolute position too" {
         assert false
         return
     }
+    ensure f.close()
     let r = f.seek(SeekFrom.Start(-4))
     if r is IoError as e {
         assert e.message() == "seek to a negative position"
