@@ -788,8 +788,22 @@ test "enables may name an exclusive group" {
 test "one dependency in two features is an error naming the first" {
     let e = package_error("{HEAD}[features.a.dependencies]\nring = {{ registry = \"^1\" }}\n[features.b.dependencies]\nring = {{ registry = \"^1\" }}\n")
     assert e.contains("features.b.dependencies.ring: `ring` is already gated by feature `a`; gate this one on it with `feature = \"a\"` instead")
-    // A different scope is a different dependency.
-    assert package_error("{HEAD}[features.a.dependencies]\nring = {{ registry = \"^1\" }}\n[features.b.dev-dependencies]\nring = {{ registry = \"^1\" }}\n") == ""
+    // Another scope is still the same name.
+    assert package_error("{HEAD}[features.a.dependencies]\nring = {{ registry = \"^1\" }}\n[features.b.dev-dependencies]\nring = {{ registry = \"^1\" }}\n").contains("already gated by feature `a`")
+}
+
+test "a name gets one entry across the top-level tables" {
+    let e = package_error("{HEAD}[dependencies]\nx = {{ registry = \"^1\" }}\n[dev-dependencies]\nx = {{ registry = \"^2\" }}\n")
+    assert e == "dev-dependencies.x: `x` is already declared in [dependencies]; a name gets one entry"
+    let e = package_error("{HEAD}[build-dependencies]\nx = {{ path = \"../x\" }}\n[features.ssl.dependencies]\nx = {{ path = \"../x\" }}\n")
+    assert e.contains("features.ssl.dependencies.x: `x` is already declared in [build-dependencies]")
+    let e = package_error("{HEAD}[features.a.dependencies]\nx = {{ registry = \"^1\" }}\n[features.a.dev-dependencies]\nx = {{ registry = \"^1\" }}\n")
+    assert e.contains("features.a.dev-dependencies.x: `x` is already declared in [features.a.dependencies]")
+}
+
+test "exclusive options may each name the same dependency" {
+    let text = "{HEAD}[exclusive-features.tls]\ndefault = \"fast\"\n[exclusive-features.tls.options.fast]\nring = {{ registry = \"^1\" }}\n[exclusive-features.tls.options.small]\nring = {{ registry = \"^2\" }}\n"
+    assert package_error(text) == ""
 }
 
 test "an exclusive group's default must be one of its options" {

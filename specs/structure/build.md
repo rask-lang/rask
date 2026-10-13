@@ -59,7 +59,7 @@ json = { registry = "^1.5" }
 |------|-------------|
 | **D1: Semver ranges** | Version strings use semver: `"^2.0"` (compatible), `">=1.5"` (minimum), `"=1.0.0"` (exact) |
 | **D2: One source** | A dependency names exactly one of `registry`, `path` or `git` (`struct.manifest/MF5`). `rev` and `branch` belong to `git` |
-| **D3: No duplicates** | The same name twice in one table is an error (`struct.manifest/WF4`) |
+| **D3: No duplicates** | A name gets one entry across every dependency table, top-level and feature alike: `import x` has to lead to one package. An exclusive group's options are alternatives, so each may name it |
 | **D4: Scopes** | `dev-dependencies` for test deps, `build-dependencies` for build script deps. Any other table is an error (`struct.manifest/MF3`) |
 | **D4a: A dev dep goes where the test blocks go** | A release build strips `test` blocks (`std.testing/T1`), so it links no dev dependency and drops the now-dead imports with them. Every other build keeps the test blocks and links the deps they need. A use that survives the strip — ordinary code reaching a dev dep — names the scope and fails |
 | **D4b: Scopes don't inherit** | Only the root's scoped deps are linked. A dependency's own dev deps belong to its own test run; pulling them in would link half the tree to run one test |
