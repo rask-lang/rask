@@ -29,9 +29,9 @@ struct Node {
 func main() {
     mut rack: Rack<Node> = Rack.new()
 
-    let holder = rack.insert(Node { id: 0, target: none })
-    let first = rack.insert(Node { id: 1, target: none })
-    let second = rack.insert(Node { id: 2, target: none })
+    let holder = rack.insert(Node(id: 0, target: none))
+    let first = rack.insert(Node(id: 1, target: none))
+    let second = rack.insert(Node(id: 2, target: none))
 
     holder.target = first
     holder.target = second
@@ -49,7 +49,7 @@ func main() {
     // delete below visits one holder, not REWRITES of them.
     mut i = 0
     while i < REWRITES {
-        let scratch = rack.insert(Node { id: 100 + i, target: none })
+        let scratch = rack.insert(Node(id: 100 + i, target: none))
         holder.target = scratch
         i += 1
     }

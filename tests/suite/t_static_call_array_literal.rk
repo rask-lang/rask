@@ -52,6 +52,6 @@ extend Sink {
 }
 
 test "an instance method's parameter shapes the literal too" {
-    let s = Sink { seen: 0 }
+    let s = Sink(seen: 0)
     assert s.feed([1, 2, 3]) == 3
 }

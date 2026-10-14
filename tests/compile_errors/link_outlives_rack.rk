@@ -20,21 +20,21 @@ struct Holder {
 // Out through a return.
 func returned() -> Link<Node> {
     mut s: Rack<Node> = Rack.new()
-    let n = s.insert(Node { value: 1 })
+    let n = s.insert(Node(value: 1))
     return n                        // ERROR: `s` dies here
 }
 
 // Out inside a struct — the same dangle with a wrapper on it.
 func wrapped() -> Holder {
     mut s: Rack<Node> = Rack.new()
-    let n = s.insert(Node { value: 2 })
-    return Holder { link: n }       // ERROR: still `s`
+    let n = s.insert(Node(value: 2))
+    return Holder(link: n)       // ERROR: still `s`
 }
 
 // Out through a tuple.
 func tupled() -> (Link<Node>, i32) {
     mut s: Rack<Node> = Rack.new()
-    let n = s.insert(Node { value: 3 })
+    let n = s.insert(Node(value: 3))
     return (n, 7)                   // ERROR: still `s`
 }
 
@@ -43,7 +43,7 @@ func assigned() {
     mut escaped: Link<Node>? = none
     {
         mut s: Rack<Node> = Rack.new()
-        let n = s.insert(Node { value: 4 })
+        let n = s.insert(Node(value: 4))
         escaped = n                 // ERROR: `escaped` outlives `s`
     }
     if escaped? as e { println("{e.value}") }
@@ -58,13 +58,13 @@ func assigned() {
 
 // The rack belongs to the caller, so it outlives the call. An ordinary accessor.
 func from_a_parameter(mutate s: Rack<Node>) -> Link<Node> {
-    return s.insert(Node { value: 5 })
+    return s.insert(Node(value: 5))
 }
 
 // Same scope, no escape.
 func same_scope() -> i32 {
     mut s: Rack<Node> = Rack.new()
-    let n = s.insert(Node { value: 6 })
+    let n = s.insert(Node(value: 6))
     return n.value
 }
 

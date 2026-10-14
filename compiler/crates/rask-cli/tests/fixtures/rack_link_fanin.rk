@@ -24,11 +24,11 @@ struct Node {
 func main() {
     mut rack: Rack<Node> = Rack.new()
 
-    let hub = rack.insert(Node { id: 0, hub: none })
+    let hub = rack.insert(Node(id: 0, hub: none))
 
     mut i = 1
     while i <= FANIN {
-        let n = rack.insert(Node { id: i, hub: none })
+        let n = rack.insert(Node(id: i, hub: none))
         n.hub = hub
         i += 1
     }

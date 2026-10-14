@@ -25,3 +25,6 @@ unicode-width = "0.2"
 # (conc.async/CN3) instead of the wait checking for one on a timer.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+rask-desugar = { path = "../rask-desugar" }

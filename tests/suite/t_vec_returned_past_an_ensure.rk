@@ -28,7 +28,7 @@ extend Conn {
 }
 
 func collect(id: i64) -> Vec<i64> {
-    let c = Conn { id }
+    let c = Conn(id)
     ensure c.close()
     if id < 0 {
         return Vec.new()

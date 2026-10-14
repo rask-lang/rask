@@ -21,9 +21,9 @@
 |------|-------------|
 | **S1: Grammar** | `{[arg_id][:[[fill]align][0][width][.precision][type]]}` |
 | **S2: Align** | `<` left, `>` right, `^` center. Fill defaults to space; a lone `0` before the width fills with zeros and right-aligns. With no align given, numbers go right, text goes left |
-| **S3: Types** | `debug`, `x`/`X` hex, `b` binary, `o` octal, `e` scientific |
+| **S3: Types** | `debug`, `x`/`X` hex, `b` binary, `o` octal, `e` scientific. Hex, binary and octal show the bit pattern at the value's own width: an `i8` of -1 is `ff`, an `i32` of -255 is `ffffff01` |
 | **S4: Width is columns** | Width counts **display columns**, not bytes and not scalars — `s.width()` (`std.strings/U2`). A CJK character is two columns, a combining mark is zero. This is what makes a padded table align |
-| **S5: Precision truncates text** | On text, `.n` cuts to at most `n` display columns without splitting a grapheme — `s.truncate(n)`. On floats it's decimal places, as before |
+| **S5: Precision truncates text** | On text, `.n` cuts to at most `n` display columns without splitting a grapheme — `s.truncate(n)`. On floats it's decimal places, as before; under `e` it's the mantissa's (`type.primitives/F6`) |
 | **S6: Width and precision can be runtime** | Both slots take either a decimal literal or an identifier captured from scope: `{:<w}` pads to the value of `w`. Same capture rule as `{name}` (I1) — digits are a literal, a name is a variable |
 
 | Specifier | Example | Result |
@@ -36,6 +36,8 @@
 | `{:>10}` | `format("{:>10}", "hi")` | `"        hi"` |
 | `{:0>10}` | `format("{:0>10}", 42)` | `"0000000042"` |
 | `{:.3}` | `format("{:.3}", 3.14159)` | `"3.142"` |
+| `{:e}` | `format("{:e}", 1500.0)` | `"1.5e3"` — shortest digits, bare exponent (`type.primitives/F6`) |
+| `{:.2e}` | `format("{:.2e}", 1.5)` | `"1.50e0"` |
 | `{:.6}` | `format("{:.6}", "internationalization")` | `"intern"` |
 | `{:<w}` | `format("{:<w}", name)` | pads to the runtime value of `w` |
 
@@ -115,7 +117,7 @@ enum AppError {
 extend AppError {
     func message(self) -> string {
         match self {
-            NotFound(p) => format("not found: {}", p),
+            NotFound(path: p) => format("not found: {}", p),
             Timeout => "timed out",
         }
     }
@@ -130,10 +132,11 @@ extend AppError {
 | Rule | Description |
 |------|-------------|
 | **G1: Interface** | `interface Debug { func debug(self) -> string }` |
-| **G2: Auto-derive** | All types auto-derive `Debug` by default |
+| **G2: Auto-derive** | All types auto-derive `Debug` by default. A struct or variant renders the way it's built: `Point(x: 1, y: 2)`, `Shape.Rect(w: 3, h: 4)`, `Shape.Circle(1.5)` |
 | **G3: Override** | Auto-derived `Debug` can be overridden via `Type implements Debug` |
 | **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
+| **G6: Wrappers** | A `T?` renders as `Option.Some(v)` or `Option.None`, a `T or E` as `Result.Ok(v)` or `Result.Err(e)`, with the payload in its own debug form; a union error renders as the member it holds. A `Link<T>` renders as the node it names |
 
 The verb matches the interface and the specifier — `Debug`, `{:debug}`, `debug()`.
 
@@ -142,12 +145,12 @@ and seeded per process (`std.collections`, `determinism/D7`), so printing the
 table's order would print something different on every run. The renderer picks
 one instead, and sorted-by-key is the one a reader expects.
 
-<!-- test: run | Point { x: 1, y: 2 } -->
+<!-- test: run | Point(x: 1, y: 2) -->
 ```rask
 struct Point { x: f64, y: f64 }
 
-let p = Point { x: 1.0, y: 2.0 }
-println(format("{:debug}", p))    // Point { x: 1, y: 2 }
+let p = Point(x: 1.0, y: 2.0)
+println(format("{:debug}", p))    // Point(x: 1, y: 2)
 ```
 
 ## println / print Interpolation
@@ -157,13 +160,14 @@ println(format("{:debug}", p))    // Point { x: 1, y: 2 }
 | **I1: Variable capture** | `println("Hello, {name}!")` interpolates `name` from scope |
 | **I2: Field access** | `{point.x}` works for dotted field access |
 | **I3: No expressions** | `{x + y}` is an error — use `format()` for expressions |
+| **I4: No constants** | `{0}`, `{true}`, `{"x"}` are errors. A constant goes in the text as written; a hole is for a value only known when the string is built. `{0}` is `format`'s positional placeholder (F2) and means nothing outside it |
 
 <!-- test: skip -->
 ```rask
 let name = "world"
 println("Hello, {name}!")              // Hello, world!
 
-let point = Point { x: 1.0, y: 2.0 }
+let point = Point(x: 1.0, y: 2.0)
 println("Position: {point.x}, {point.y}")
 ```
 

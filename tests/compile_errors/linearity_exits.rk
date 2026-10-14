@@ -46,14 +46,14 @@ extend MyError {
 
 func try_open(n: i32) -> Conn or MyError {
     if n < 0 {
-        return MyError { why: "bad" }
+        return MyError(why: "bad")
     }
-    return Conn { id: n }
+    return Conn(id: n)
 }
 
 func may_fail(n: i32) -> i32 or MyError {
     if n < 0 {
-        return MyError { why: "bad" }
+        return MyError(why: "bad")
     }
     return n
 }
@@ -62,7 +62,7 @@ func may_fail(n: i32) -> i32 or MyError {
 func bad_break() {
     mut i = 0
     while i < 3 {
-        let c = Conn { id: i }
+        let c = Conn(id: i)
         if i == 1 {
             // ERROR: `c` is still owed where control leaves the loop [E0805]
             break
@@ -76,7 +76,7 @@ func bad_break() {
 func bad_continue() {
     mut i = 0
     while i < 3 {
-        let c = Conn { id: i }
+        let c = Conn(id: i)
         i = i + 1
         if i == 1 {
             // ERROR: `c` is still owed where control leaves the body [E0805]
@@ -92,7 +92,7 @@ func bad_continue() {
 // points at is looked up by name, and it was not cleared between bodies — so
 // this error cited `bad_break`'s `let` as where *this* `c` came from.
 func bad_try(n: i32) -> i32 or MyError {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     // ERROR: `c` would leak if this fails [E0881]
     let v = try may_fail(n)
     c.close()
@@ -113,7 +113,7 @@ func bad_catch() {
 //
 // `ensure` covers every exit, `try` included, and the explicit close cancels it.
 func good_ensure(n: i32) -> i32 or MyError {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     ensure c.close()
     let v = try may_fail(n)
     return v
@@ -123,7 +123,7 @@ func good_ensure(n: i32) -> i32 or MyError {
 // is not its problem, and reporting it there is what a whole-scope check would
 // have done.
 func good_break_outer() {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     mut i = 0
     while i < 3 {
         if i == 1 {
@@ -138,7 +138,7 @@ func good_break_outer() {
 func good_loop() {
     mut i = 0
     while i < 3 {
-        let c = Conn { id: i }
+        let c = Conn(id: i)
         c.close()
         i = i + 1
     }
@@ -164,7 +164,7 @@ func twice(f: func()) {
 }
 
 func bad_closure_consumes_borrow() {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     twice(|| {
         // ERROR: a closure can't give away what it captured [E0891]
         c.close()
@@ -177,7 +177,7 @@ func bad_closure_consumes_borrow() {
 // closure carried it; it no longer is, whatever the closure does with it
 // (mem.closures/CM4) — closure_consumes_capture.rk has those.
 func run_once(take f: func(take Conn)) {
-    f(Conn { id: 2 })
+    f(Conn(id: 2))
 }
 
 func good_take_parameter() {

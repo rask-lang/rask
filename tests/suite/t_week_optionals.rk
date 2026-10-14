@@ -139,11 +139,11 @@ test "type.optionals — ?? return exits where it is written" {
 }
 
 test "type.optionals — ?. projects through a chain" {
-    let u = User { name: "ada", profile: Profile { nickname: "a" } }
+    let u = User(name: "ada", profile: Profile(nickname: "a"))
     assert u.profile?.nickname! == "a"
     assert !(u.profile?.nickname is none)
     // Absent at the first step short-circuits the whole chain.
-    let bare = User { name: "bo", profile: none }
+    let bare = User(name: "bo", profile: none)
     assert bare.profile?.nickname is none
     assert (bare.profile?.nickname ?? "fallback") == "fallback"
 }

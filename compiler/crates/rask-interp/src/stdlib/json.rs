@@ -104,7 +104,19 @@ impl Interpreter {
             Ok(v) => v,
             Err(e) => return Ok(make_result_err(JsonErrKind::Parse, &e)),
         };
-        match json_to_typed(&parsed, ty, "", &self.struct_decls) {
+        // The struct declarations are lent to the decode while the defaults
+        // it runs borrow the interpreter, and put back after.
+        let decls = std::mem::take(&mut self.struct_decls);
+        let mut failed = None;
+        let decoded = {
+            let mut cx = Decode { decls: &decls, interp: self, failed: &mut failed };
+            json_to_typed(&parsed, ty, "", &mut cx)
+        };
+        self.struct_decls = decls;
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        match decoded {
             Ok(value) => Ok(make_result_ok(value)),
             Err(e) => Ok(make_result_err(e.kind, &e.message)),
         }
@@ -786,7 +798,7 @@ fn value_to_json(
         Value::Enum { name, variant, fields, .. } => {
             let enum_decl = enums.get(name);
             let variant_decl = enum_decl.and_then(|d| d.variants.iter().find(|v| &v.name == variant));
-            let variant_attrs: &[String] = variant_decl.map(|v| v.attrs.as_slice()).unwrap_or(&[]);
+            let variant_attrs: &[rask_ast::attr::Attr] = variant_decl.map(|v| v.attrs.as_slice()).unwrap_or(&[]);
             let serial_name = field_attrs::serial_name(variant_attrs, variant);
             let tag_field = enum_decl.and_then(|d| field_attrs::tag_field(&d.attrs));
 
@@ -806,9 +818,9 @@ fn value_to_json(
                 variant_decl
                     .and_then(|v| v.fields.get(i))
                     .map(|f| f.name.clone())
-                    .unwrap_or_else(|| format!("_{}", i))
+                    .unwrap_or_else(|| rask_ast::decl::positional_field_name(i))
             };
-            let is_single_unnamed = fields.len() == 1 && field_name(0) == "_0";
+            let is_single_unnamed = fields.len() == 1 && rask_ast::decl::is_positional_field_name(&field_name(0));
 
             if is_single_unnamed && tag_field.is_none() {
                 // E23: the payload goes directly under the variant name.
@@ -1006,20 +1018,45 @@ fn child_path(path: &str, name: &str) -> String {
     }
 }
 
+/// What a typed decode needs besides the input: the struct declarations, and
+/// the interpreter to run a field's default on.
+struct Decode<'a> {
+    decls: &'a HashMap<String, StructDecl>,
+    interp: &'a mut Interpreter,
+    /// A default that failed at runtime. That's the program's failure, not
+    /// the input's, so it ends the decode and comes back as the error itself.
+    failed: &'a mut Option<RuntimeError>,
+}
+
+impl Decode<'_> {
+    /// The value of a field the input doesn't supply: its default, run by
+    /// calling the method desugar wrote for it (E20, type.structs/FD6).
+    fn default_of(&mut self, ty: &str, field: &rask_ast::decl::Field) -> Result<Value, JsonErr> {
+        let method = field_attrs::decode_default_method(&field.name);
+        self.interp.call_rask_static(ty, &method, Vec::new()).map_err(|e| {
+            *self.failed = Some(e);
+            JsonErr {
+                kind: JsonErrKind::Missing,
+                message: format!("the default for field \"{}\" failed", field.name),
+            }
+        })
+    }
+}
+
 /// Convert a parsed JsonValue into a typed Rask value. `ty` is the target as
 /// written — the same types struct declarations carry.
 fn json_to_typed(
     json: &Value,
     ty: &TypeExpr,
     path: &str,
-    struct_decls: &HashMap<String, StructDecl>,
+    cx: &mut Decode<'_>,
 ) -> Result<Value, JsonErr> {
     // `T?` — null or absent becomes none, anything else Some(T).
     if let TypeExpr::Optional(inner) = ty {
         if is_json_null(json) {
             return Ok(option_none());
         }
-        return Ok(option_some(json_to_typed(json, inner, path, struct_decls)?));
+        return Ok(option_some(json_to_typed(json, inner, path, cx)?));
     }
 
     // The untyped tree, handed back as-is.
@@ -1038,7 +1075,7 @@ fn json_to_typed(
             let mut out = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
                 let base = if path.is_empty() { "the list" } else { path };
-                out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), struct_decls)?);
+                out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), cx)?);
             }
             return Ok(Value::vec(out));
         }
@@ -1055,7 +1092,7 @@ fn json_to_typed(
             let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
             let mut pairs = MapData::with_capacity(entries.len());
             for (k, v) in entries {
-                let value = json_to_typed(&v, value_ty, &child_path(path, &k), struct_decls)?;
+                let value = json_to_typed(&v, value_ty, &child_path(path, &k), cx)?;
                 pairs.insert(MapKey::string(k), value);
             }
             return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
@@ -1073,20 +1110,17 @@ fn json_to_typed(
             extract_int(raw, int_kind(name)).map_err(|_| type_err(path, "an integer", json))
         }
         _ => {
-            let decl = struct_decls.get(name).ok_or_else(|| JsonErr {
+            let decl = cx.decls.get(name).ok_or_else(|| JsonErr {
                 kind: JsonErrKind::Type,
                 message: format!("`{}` isn't a type json.decode knows how to build", ty.source()),
             })?;
             let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
             let mut fields = IndexMap::new();
             for field in &decl.fields {
-                // `@skip` fields aren't in the serialized form (E19) — they take
-                // their `@default`, or the type's empty value.
+                // `@no_serialize` fields aren't in the serialized form (E19), so
+                // they always take their default. E13a makes sure there is one.
                 if field_attrs::is_skipped(&field.attrs) {
-                    fields.insert(
-                        field.name.clone(),
-                        default_value(field, struct_decls),
-                    );
+                    fields.insert(field.name.clone(), cx.default_of(name, field)?);
                     continue;
                 }
                 let key = field_attrs::serial_name(&field.attrs, &field.name);
@@ -1096,23 +1130,20 @@ fn json_to_typed(
                             v,
                             &field.ty,
                             &child_path(path, &key),
-                            struct_decls,
+                            cx,
                         )?;
                         fields.insert(field.name.clone(), value);
-                    }
-                    // A `T?` field takes `none`; anything else has to be there (J9).
-                    None if matches!(field.ty, TypeExpr::Optional(_)) => {
-                        fields.insert(field.name.clone(), option_none());
                     }
                     // `@default` covers a missing key, and so does a declared
                     // default — a field the input leaves out takes it
                     // (E20, type.structs/FD6). Only `@default` counted, so
                     // `tag: string = "fallback"` failed the decode (#853).
-                    None if decode_default(field).is_some() => {
-                        fields.insert(
-                            field.name.clone(),
-                            default_value(field, struct_decls),
-                        );
+                    None if field_attrs::decode_default(field).is_some() => {
+                        fields.insert(field.name.clone(), cx.default_of(name, field)?);
+                    }
+                    // A `T?` field takes `none`; anything else has to be there (J9).
+                    None if matches!(field.ty, TypeExpr::Optional(_)) => {
+                        fields.insert(field.name.clone(), option_none());
                     }
                     None => {
                         return Err(JsonErr {
@@ -1125,95 +1156,6 @@ fn json_to_typed(
             // Keys the struct doesn't declare are skipped (J10).
             Ok(Value::new_struct(name.to_string(), fields, None))
         }
-    }
-}
-
-/// The literal a field the input didn't supply falls back to: the
-/// `@default(…)` override first, then the declared default.
-///
-/// `@default` wins because it exists precisely to differ from the declared one
-/// on decode (type.structs/FD6). Mirrors `decode_default` in the MIR decoder,
-/// down to the literal's text form, so the two backends fill the same value.
-fn decode_default(field: &rask_ast::decl::Field) -> Option<String> {
-    field_attrs::default_literal(&field.attrs)
-        .map(str::to_string)
-        .or_else(|| field.default.as_ref().and_then(declared_literal_text))
-}
-
-/// A declared default's literal text. `None` for anything that isn't a plain
-/// literal, which stays construction-only rather than being guessed at.
-fn declared_literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
-    use rask_ast::expr::{ExprKind, UnaryOp};
-    match &e.kind {
-        ExprKind::Int(n, _) => Some(n.to_string()),
-        ExprKind::Float(f, _) => Some(f.to_string()),
-        ExprKind::Bool(b) => Some(b.to_string()),
-        ExprKind::String(s) => Some(format!("{:?}", s)),
-        ExprKind::Char(c) => Some(format!("'{}'", c)),
-        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
-            declared_literal_text(operand).map(|t| format!("-{t}"))
-        }
-        _ => None,
-    }
-}
-
-/// The value a field that isn't read from the input starts at: its default
-/// literal when it has one, otherwise the type's empty value.
-fn default_value(
-    field: &rask_ast::decl::Field,
-    struct_decls: &HashMap<String, StructDecl>,
-) -> Value {
-    if let Some(literal) = decode_default(field) {
-        if let Some(v) = literal_value(literal.trim(), &field.ty) {
-            return v;
-        }
-    }
-    empty_value(&field.ty, struct_decls)
-}
-
-fn literal_value(literal: &str, ty: &TypeExpr) -> Option<Value> {
-    let ty = ty.bare_name()?;
-    match ty {
-        "string" => field_attrs::string_literal(literal)
-            .map(|s| Value::String(Arc::new(Mutex::new(s)))),
-        "bool" => match literal {
-            "true" => Some(Value::Bool(true)),
-            "false" => Some(Value::Bool(false)),
-            _ => None,
-        },
-        "f32" | "f64" | "float" => literal.parse::<f64>().ok().map(|f| { let k = FloatKind::from_name(ty).unwrap_or(FloatKind::F64); Value::Float(k.round(f), k) }),
-        _ => literal.parse::<i64>().ok().map(|n| Value::Int(n, int_kind(ty))),
-    }
-}
-
-fn empty_value(ty: &TypeExpr, struct_decls: &HashMap<String, StructDecl>) -> Value {
-    if matches!(ty, TypeExpr::Optional(_)) {
-        return option_none();
-    }
-    match ty.name().as_deref() {
-        Some("Vec") if !ty.args().is_empty() => return Value::vec(Vec::new()),
-        Some("Map") if !ty.args().is_empty() => {
-            return Value::Map(Arc::new(Mutex::new(MapData::new())));
-        }
-        _ => {}
-    }
-    let name = ty.bare_name().unwrap_or_default();
-    match name {
-        "string" => Value::String(Arc::new(Mutex::new(String::new()))),
-        "bool" => Value::Bool(false),
-        "f32" | "f64" | "float" => Value::Float(0.0, FloatKind::Untyped),
-        _ if rask_ast::primitives::is_machine_integer(name)
-            || rask_ast::primitives::INT_ALIASES.contains(&name) => Value::Int(0, int_kind(name)),
-        _ => match struct_decls.get(name) {
-            Some(decl) => {
-                let mut fields = IndexMap::new();
-                for f in &decl.fields {
-                    fields.insert(f.name.clone(), empty_value(&f.ty, struct_decls));
-                }
-                Value::new_struct(name.to_string(), fields, None)
-            }
-            None => Value::Unit,
-        },
     }
 }
 

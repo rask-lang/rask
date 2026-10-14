@@ -32,7 +32,7 @@ func main() {
     v.push(1)
     discard v                    // no warning — a Vec owns its buffer
 
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     discard p                    // no warning
 
     println("done")

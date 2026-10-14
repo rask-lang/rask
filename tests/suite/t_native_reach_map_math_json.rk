@@ -68,8 +68,8 @@ test "map with_capacity" {
 // the capacity spelling follows it.
 test "map with_capacity on link keys" {
     mut rack: Rack<Node> = Rack.new()
-    let first = rack.insert(Node { v: 1 })
-    let second = rack.insert(Node { v: 2 })
+    let first = rack.insert(Node(v: 1))
+    let second = rack.insert(Node(v: 2))
 
     mut m: Map<Link<Node>, string> = Map.with_capacity(8)
     m.insert(first, "first")
@@ -97,7 +97,7 @@ test "every math function reaches an implementation" {
 }
 
 test "json encode_pretty" {
-    let p = Point { x: 1, label: "x" }
+    let p = Point(x: 1, label: "x")
     assert(json.encode(p).contains("\"label\":\"x\""))
     assert(json.encode_pretty(p).contains("\n"))
 }

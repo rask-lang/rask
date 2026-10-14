@@ -44,10 +44,10 @@ func cascade(deleting scene: Scene, take n: Link<Node>) {
 }
 
 func main() {
-    mut scene = Scene { nodes: Rack.new() }
+    mut scene = Scene(nodes: Rack.new())
 
-    let parent = scene.nodes.insert(Node { name: "parent", kids: Vec.new() })
-    let kid = scene.nodes.insert(Node { name: "kid", kids: Vec.new() })
+    let parent = scene.nodes.insert(Node(name: "parent", kids: Vec.new()))
+    let kid = scene.nodes.insert(Node(name: "kid", kids: Vec.new()))
     parent.kids.push(kid)
 
     cascade(deleting scene, parent)

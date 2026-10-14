@@ -66,7 +66,7 @@ func process_config(path: string) -> Config or ConfigError {
         settings.insert(parts[0].trim().to_string(), parts[1].trim().to_string())
     }
 
-    return Config { settings: settings }
+    return Config(settings: settings)
 }
 ```
 

@@ -93,25 +93,25 @@ Meters implements Convert<string> {
 }
 
 test "a struct-body method returns the struct's parameter, not os.Output" {
-    let h = Holder { v: 3 }
+    let h = Holder(v: 3)
     assert h.get() == 3
-    let s = Holder { v: "held" }
+    let s = Holder(v: "held")
     assert s.get() == "held"
 }
 
 test "a method's own parameter sits beside its owner's" {
-    let h = Holder { v: 3 }
+    let h = Holder(v: 3)
     assert h.swap("b") == "b"
 }
 
 test "an extend block's parameters named Duration and Buffer" {
-    let p = Pair { a: 3, b: "hi" }
+    let p = Pair(a: 3, b: "hi")
     assert p.first() == 3
     assert p.second() == "hi"
 }
 
 test "a conformance block's parameter, with a where bound" {
-    let s = Shown { v: 7 }
+    let s = Shown(v: 7)
     assert s.to_string() == "Shown(7)"
     assert "{s}" == "Shown(7)"
 }
@@ -124,7 +124,7 @@ test "an enum's parameters in its payloads and its extend block" {
 }
 
 test "an interface's parameter named Output" {
-    assert Meters { v: 4 }.convert() == "4m"
+    assert Meters(v: 4).convert() == "4m"
 }
 
 func main() {}

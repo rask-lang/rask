@@ -62,9 +62,9 @@ test "the loop's order is to_vec's" {
 
 test "a struct set walks its values" {
     mut s: Set<Point> = Set.new()
-    s.insert(Point { x: 1, y: 2, z: 3 })
-    s.insert(Point { x: 4, y: 5, z: 6 })
-    s.insert(Point { x: 1, y: 2, z: 3 })
+    s.insert(Point(x: 1, y: 2, z: 3))
+    s.insert(Point(x: 4, y: 5, z: 6))
+    s.insert(Point(x: 1, y: 2, z: 3))
     mut sum = 0
     for p in s {
         sum += p.x + p.y + p.z
@@ -73,7 +73,7 @@ test "a struct set walks its values" {
 }
 
 test "a set reached through a field" {
-    mut r = Registry { names: Set.new() }
+    mut r = Registry(names: Set.new())
     r.names.insert("abcdefghijklmnopqrstuvwxyz-one")
     r.names.insert("abcdefghijklmnopqrstuvwxyz-two")
     mut n = 0

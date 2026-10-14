@@ -28,11 +28,11 @@ func eat(take v: Vec<i64>) -> u64 {
 }
 
 func copied_into_literal(src: Bag) -> Bag {
-    return Bag { items: src.items.clone() }
+    return Bag(items: src.items.clone())
 }
 
 func copied_after_let(src: Bag) -> Bag {
-    mut out = Bag { items: [] }
+    mut out = Bag(items: [])
     let tmp = src.items.clone()
     out.items = tmp
     return out
@@ -61,7 +61,7 @@ func depth(c: Chain) -> i64 {
 }
 
 test "a copy stored in a literal leaves the caller's Vec alone" {
-    let b = Bag { items: [1, 2, 3] }
+    let b = Bag(items: [1, 2, 3])
     mut r = copied_into_literal(b)
     r.items.push(4)
     assert r.items.len() == 4
@@ -69,26 +69,26 @@ test "a copy stored in a literal leaves the caller's Vec alone" {
 }
 
 test "a copy bound by let, then stored" {
-    let b = Bag { items: [1, 2, 3] }
+    let b = Bag(items: [1, 2, 3])
     let r = copied_after_let(b)
     assert r.items.len() == 3
     assert b.items.len() == 3
 }
 
 test "a copy pushed" {
-    let b = Bag { items: [7] }
+    let b = Bag(items: [7])
     let out = copied_into_push(b)
     assert out[0][0] == 7
     assert b.items[0] == 7
 }
 
 test "a view read in place" {
-    let b = Bag { items: [1, 2] }
+    let b = Bag(items: [1, 2])
     assert view_read(b) == 4
 }
 
 test "a new value built out of the place it replaces" {
-    mut s = Stack { chain: Chain.End }
+    mut s = Stack(chain: Chain.End)
     push_front(mutate s, 1)
     push_front(mutate s, 2)
     push_front(mutate s, 3)

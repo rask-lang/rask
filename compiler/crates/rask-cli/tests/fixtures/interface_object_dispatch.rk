@@ -24,7 +24,7 @@ struct Circle {
 
 Square implements Shape {
     func duplicate(self) -> Square {
-        return Square { side: self.side }
+        return Square(side: self.side)
     }
     func area(self) -> i64 {
         return self.side * self.side
@@ -36,7 +36,7 @@ Square implements Shape {
 
 Circle implements Shape {
     func duplicate(self) -> Circle {
-        return Circle { radius: self.radius }
+        return Circle(radius: self.radius)
     }
     func area(self) -> i64 {
         return 3 * self.radius * self.radius
@@ -51,8 +51,8 @@ func describe(s: any Shape) -> string {
 }
 
 func main() {
-    let sq = Square { side: 4 }
-    let ci = Circle { radius: 5 }
+    let sq = Square(side: 4)
+    let ci = Circle(radius: 5)
     println(describe(sq as any Shape))
     println(describe(ci as any Shape))
 }

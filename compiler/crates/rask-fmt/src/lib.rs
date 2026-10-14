@@ -70,6 +70,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keeps_a_newtype_parameters_bounds() {
+        let input = "public type Wrapping<T: Integer> = T\n";
+        assert_eq!(format_source(input), input);
+    }
+
+    #[test]
     fn formats_messy_spacing() {
         let input = "func    main(   ) {\nlet x=42\n}";
         let output = format_source(input);
@@ -708,16 +714,6 @@ func main() {
         let once = format_source(input);
         assert!(once.contains("let a = 4  // about a"), "stays put:\n{}", once);
         assert_eq!(once, format_source(&once), "and stays put on a second pass:\n{}", once);
-    }
-
-    #[test]
-    fn keeps_parens_around_a_condition_ending_in_a_struct_literal() {
-        // Without them the `{` of the body attaches to the literal.
-        keeps(
-            "func main() {\n    if (c == Shape.Circle { r: 4 }) {\n        println(\"y\")\n    }\n}\n",
-            "if (c == Shape.Circle { r: 4 }) {",
-            "the condition",
-        );
     }
 
     // The other half of the same rule: a comment alone on its line is a

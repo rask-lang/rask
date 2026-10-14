@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a field default that overflows the field's own type
+//
+// Spec: type.structs (FD1), std.encoding (E21), type.overflow (CT1)
+//
+// A default is folded while compiling, at the width of the field it fills, so
+// an overflow is a compile error rather than a panic on whichever decode
+// first leaves the field out.
+
+struct Packet {
+    public id: u32
+
+    // ERROR: 200 + 100 doesn't fit a u8 [R0018]
+    @default(200 + 100)
+    public ttl: u8 = 64
+}
+
+func main() {
+    let p = Packet(id: 1)
+    println("{p.ttl}")
+}

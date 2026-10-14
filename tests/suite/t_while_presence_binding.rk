@@ -58,7 +58,7 @@ extend Reader {
             return none
         }
         let t = self.lines[self.at]
-        return Word { text: t, len: t.len() }
+        return Word(text: t, len: t.len())
     }
 }
 
@@ -101,7 +101,7 @@ func words() -> Vec<string> {
 // --- scalar payload ---
 
 func sum_positions(limit: i64) -> i64 {
-    mut c = Cursor { pos: 0, limit: limit }
+    mut c = Cursor(pos: 0, limit: limit)
     mut total = 0
     while c.peek()? as p {
         total = total + p
@@ -113,7 +113,7 @@ func sum_positions(limit: i64) -> i64 {
 // --- aggregate payloads ---
 
 func join_lines() -> string {
-    mut r = Reader { lines: words(), at: 0 }
+    mut r = Reader(lines: words(), at: 0)
     mut out = ""
     while r.next()? as line {
         out = "{out}[{line}]"
@@ -123,7 +123,7 @@ func join_lines() -> string {
 }
 
 func total_word_len() -> u64 {
-    mut r = Reader { lines: words(), at: 0 }
+    mut r = Reader(lines: words(), at: 0)
     mut n: u64 = 0
     while r.word()? as w {
         n = n + w.len
@@ -150,7 +150,7 @@ func drain_sum() -> i64 {
 //     tests what's left ---
 
 func read_all(broken: bool) -> string or IoError {
-    mut s = Stream { lines: words(), at: 0, broken: broken }
+    mut s = Stream(lines: words(), at: 0, broken: broken)
     mut out = ""
     while (try s.read_line())? as line {
         out = "{out}<{line}>"
@@ -162,7 +162,7 @@ func read_all(broken: bool) -> string or IoError {
 // --- labels, break, continue ---
 
 func first_over(limit: i64, floor: i64) -> i64 {
-    mut c = Cursor { pos: 0, limit: limit }
+    mut c = Cursor(pos: 0, limit: limit)
     mut found = -1
     outer: while c.peek()? as p {
         c.pos = c.pos + 1
@@ -178,10 +178,10 @@ func first_over(limit: i64, floor: i64) -> i64 {
 // --- nesting: two live bindings at once ---
 
 func nested(limit: i64) -> i64 {
-    mut a = Cursor { pos: 0, limit: limit }
+    mut a = Cursor(pos: 0, limit: limit)
     mut total = 0
     while a.peek()? as outer {
-        mut b = Cursor { pos: 0, limit: 2 }
+        mut b = Cursor(pos: 0, limit: 2)
         while b.peek()? as inner {
             total = total + outer * 10 + inner
             b.pos = b.pos + 1
@@ -194,7 +194,7 @@ func nested(limit: i64) -> i64 {
 // --- shadowing: `as` may reuse the scrutinee's own name ---
 
 func shadowed(limit: i64) -> i64 {
-    mut c = Cursor { pos: 0, limit: limit }
+    mut c = Cursor(pos: 0, limit: limit)
     mut total = 0
     while c.peek()? as peek {
         total = total + peek
@@ -206,7 +206,7 @@ func shadowed(limit: i64) -> i64 {
 // --- no binder: the plain presence test, unchanged ---
 
 func count_until_absent(limit: i64) -> i64 {
-    mut c = Cursor { pos: 0, limit: limit }
+    mut c = Cursor(pos: 0, limit: limit)
     mut n = 0
     while c.peek()? {
         n = n + 1
@@ -218,7 +218,7 @@ func count_until_absent(limit: i64) -> i64 {
 // --- a return out of the body still returns (see t_return_from_loop_body) ---
 
 func first_position(limit: i64) -> i64 {
-    mut c = Cursor { pos: 0, limit: limit }
+    mut c = Cursor(pos: 0, limit: limit)
     while c.peek()? as p {
         return p + 100
     }

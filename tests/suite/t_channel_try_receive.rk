@@ -15,7 +15,7 @@ struct Reading {
 
 test "concurrency.channels — try_receive narrows to the element on a hit" {
     let (tx, rx) = Channel<Reading>.buffered(16)
-    tx.send(Reading { sensor_id: 7, value: 2.5, timestamp_ns: 100 })
+    tx.send(Reading(sensor_id: 7, value: 2.5, timestamp_ns: 100))
     if rx.try_receive() is Reading as r {
         assert r.sensor_id == 7
         assert r.value == 2.5
@@ -39,9 +39,9 @@ test "concurrency.channels — try_receive on an empty channel doesn't narrow" {
 // until the channel is empty, so it always takes the miss branch last.
 test "concurrency.channels — a drain loop stops when the channel empties" {
     let (tx, rx) = Channel<Reading>.buffered(16)
-    tx.send(Reading { sensor_id: 1, value: 1.0, timestamp_ns: 10 })
-    tx.send(Reading { sensor_id: 2, value: 2.0, timestamp_ns: 20 })
-    tx.send(Reading { sensor_id: 3, value: 3.0, timestamp_ns: 30 })
+    tx.send(Reading(sensor_id: 1, value: 1.0, timestamp_ns: 10))
+    tx.send(Reading(sensor_id: 2, value: 2.0, timestamp_ns: 20))
+    tx.send(Reading(sensor_id: 3, value: 3.0, timestamp_ns: 30))
 
     mut seen: i64 = 0
     mut id_sum: i64 = 0

@@ -39,6 +39,7 @@ mod tests {
         bs.iter().map(|b| b.ty.to_string()).collect()
     }
 
+    use rask_ast::expr::Literal;
     use rask_ast::decl::DeclKind;
     use rask_ast::expr::{BinOp, ExprKind, UnaryOp};
     use rask_ast::stmt::StmtKind;
@@ -820,19 +821,15 @@ mod tests {
     }
 
     #[test]
-    fn generic_struct_literal() {
-        let stmts = parse_body("let p = Point<f64> { x: 1.0, y: 2.0 }");
+    fn generic_construction_parses_as_a_call() {
+        // The parser can't tell building a value from calling a function:
+        // desugar decides from the declarations, so this stays a call here.
+        let stmts = parse_body("let p = Point<f64>(x: 1.0, y: 2.0)");
         assert_eq!(stmts.len(), 1);
-        if let StmtKind::Let { ref init, .. } = stmts[0].kind {
-            if let ExprKind::StructLit { ref name, ref type_args, .. } = init.kind {
-                assert_eq!(name, "Point");
-                assert_eq!(type_args, &vec![rask_ast::ty::TypeExpr::named("f64")]);
-            } else {
-                panic!("expected struct literal, got {:?}", init.kind);
-            }
-        } else {
-            panic!("expected let");
-        }
+        let StmtKind::Let { ref init, .. } = stmts[0].kind else { panic!("expected let") };
+        let ExprKind::Call { ref func, ref args } = init.kind else { panic!("expected a call, got {:?}", init.kind) };
+        assert!(matches!(&func.kind, ExprKind::GenericName { name, .. } if name == "Point"));
+        assert_eq!(args.iter().map(|a| a.name.as_deref()).collect::<Vec<_>>(), vec![Some("x"), Some("y")]);
     }
 
     #[test]
@@ -1664,7 +1661,7 @@ mod tests {
         }
     }
 
-    // E18-E20: field annotations parse into Field.attrs, verbatim.
+    // E18-E20: field annotations parse into Field.attrs: a name and arguments.
     #[test]
     fn struct_field_annotations() {
         let result = parse(
@@ -1673,12 +1670,60 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Struct(ref s) => {
-                assert_eq!(s.fields[0].attrs, vec!["rename(\"user_name\")".to_string()]);
-                assert_eq!(s.fields[1].attrs, vec!["skip".to_string()]);
-                assert_eq!(s.fields[2].attrs, vec!["default(0)".to_string()]);
+                let shown: Vec<Vec<String>> = s
+                    .fields
+                    .iter()
+                    .map(|f| f.attrs.iter().map(|a| a.to_string()).collect())
+                    .collect();
+                assert_eq!(shown, vec![
+                    vec!["rename(\"user_name\")".to_string()],
+                    vec!["skip".to_string()],
+                    vec!["default(0)".to_string()],
+                ]);
+                let rename = s.fields[0].attrs[0].positional().and_then(|v| v.string());
+                let rename = rename.as_deref();
+                assert_eq!(rename, Some("user_name"));
+                assert!(s.fields[1].attrs[0].args.is_none());
             }
             _ => panic!("expected struct"),
         }
+    }
+
+    // AN5: a user annotation named through its package, with labelled
+    // arguments. Brackets and strings keep their commas.
+    #[test]
+    fn a_package_qualified_attachment() {
+        let result = parse(
+            "struct Form {\n@liba.validate(max: 3, names: [\"a, b\", \"c\"])\ncode: i64 }",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
+        let attr = &s.fields[0].attrs[0];
+        assert_eq!(attr.path, vec!["liba".to_string(), "validate".to_string()]);
+        assert_eq!(attr.arg("max").and_then(|v| v.literal()), Some(Literal::Int(3)));
+        assert_eq!(attr.arg("names").map(|v| v.to_string()).as_deref(), Some("[\"a, b\", \"c\"]"));
+        assert!(!attr.is("validate"));
+    }
+
+    // A value is an expression; only `@allow` and friends take rule names,
+    // whose `/` and `-` are part of the name. A string reads the way it does
+    // anywhere: `{0}` is an interpolation, `{{` an escaped brace.
+    #[test]
+    fn attribute_values_are_expressions() {
+        let result = parse(
+            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {id}\")\nc: i64\n@rename(\"{{x}}\")\nd: i64 }",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
+        assert_eq!(s.attrs[0].positional().and_then(|v| v.rule_name()), Some("idiom/duck-interface"));
+        let a = s.fields[0].attrs[0].positional().unwrap();
+        assert_eq!(a.literal(), Some(Literal::Float(-1.5)));
+        let b = s.fields[1].attrs[0].positional().unwrap();
+        assert!(matches!(b.expr().map(|e| &e.kind), Some(rask_ast::expr::ExprKind::Field { .. })));
+        let c = s.fields[2].attrs[0].positional().unwrap();
+        assert!(matches!(c.expr().map(|e| &e.kind), Some(rask_ast::expr::ExprKind::StringInterp(_))));
+        let d = s.fields[3].attrs[0].positional().and_then(|v| v.string());
+        assert_eq!(d.as_deref(), Some("{x}"));
     }
 
     // CC2: `Ring<T> implements Show where T: Show` captures the condition.

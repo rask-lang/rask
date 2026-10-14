@@ -59,9 +59,9 @@ struct Store {
 extend Store {
     func new() -> Store {
         mut v = Vec.new()
-        v.push(View { id: 1, title: "one" })
-        v.push(View { id: 2, title: "two" })
-        return Store { views: v }
+        v.push(View(id: 1, title: "one"))
+        v.push(View(id: 2, title: "two"))
+        return Store(views: v)
     }
 
     func view(self, id: u64) -> View or StoreError {

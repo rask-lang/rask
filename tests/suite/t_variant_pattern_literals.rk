@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A literal or range inside a variant's pattern has to match too (#1532).
+// Natively a `match` on an enum switched on the tag alone, so `Sq(0)` took
+// every `Sq` and the arms below it for that variant never ran. `is` had the
+// same gap, and on a named variant it tested against tag 0 whatever the
+// variant was, so `s is Rect(w, h)` was only right when `Rect` came first.
+
+enum Shape {
+    Sq(i64)
+    Rect(w: i64, h: i64)
+}
+
+func describe(s: Shape) -> string {
+    match s {
+        Sq(0) => return "zero square"
+        Sq(n) if n > 100 => return "big square"
+        Sq(n) => return "square {n}"
+        Rect(w, h: 0) => return "flat {w}"
+        Rect(w: 1..=3, h) => return "narrow {h}"
+        Rect(w, h) => return "rect {w}x{h}"
+    }
+}
+
+func narrow_nine(s: Shape) -> bool {
+    return s is Rect(w: 1..=3, h: 9)
+}
+
+test "a literal in a variant pattern is tested in a match" {
+    assert describe(Shape.Sq(3)) == "square 3"
+    assert describe(Shape.Sq(0)) == "zero square"
+    assert describe(Shape.Sq(500)) == "big square"
+    assert describe(Shape.Rect(w: 4, h: 5)) == "rect 4x5"
+    assert describe(Shape.Rect(w: 4, h: 0)) == "flat 4"
+    assert describe(Shape.Rect(w: 2, h: 9)) == "narrow 9"
+}
+
+test "and in an `is` test" {
+    assert !(Shape.Sq(7) is Sq(0))
+    assert Shape.Sq(0) is Sq(0)
+    assert narrow_nine(Shape.Rect(w: 2, h: 9))
+    assert !narrow_nine(Shape.Rect(w: 2, h: 8))
+    assert !narrow_nine(Shape.Rect(w: 5, h: 9))
+    assert !narrow_nine(Shape.Sq(9))
+}
+
+test "a named variant that isn't first is tested by its own tag" {
+    let r = Shape.Rect(w: 1, h: 2)
+    if r is Rect(w, h) {
+        assert w + h == 3
+    } else {
+        assert false
+    }
+    assert !(Shape.Sq(1) is Rect(w, h))
+}
+
+func main() {}

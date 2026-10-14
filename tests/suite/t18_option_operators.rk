@@ -60,8 +60,8 @@ struct User {
 
 func get_user(has_profile: bool) -> User? {
     if has_profile {
-        let p: Profile? = Profile { name: "Alice", age: 30 }
-        return User { profile: p }
+        let p: Profile? = Profile(name: "Alice", age: 30)
+        return User(profile: p)
     }
     return none
 }
@@ -81,7 +81,7 @@ test "optional chaining absent short-circuits" {
 
 test "optional chaining on none field" {
     let p: Profile? = none
-    let user: User? = User { profile: p }
+    let user: User? = User(profile: p)
     let name = user?.profile?.name
     assert name is none
 }

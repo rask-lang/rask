@@ -38,9 +38,9 @@ const JSHAPE_F32: i64 = 9;
 const JSHAPE_F64: i64 = 10;
 const JSHAPE_STRING: i64 = 11;
 
-/// Shape field flags — must match the decoder's reading of them in json.c.
-/// A missing key is fine for this field; whatever is already there stands.
-const FIELD_OPTIONAL: i64 = 1;
+/// Shape field flags — must match RASK_JFIELD_* in runtime/rask_runtime.h.
+/// `@no_serialize`: never read from the input, always filled from its default.
+const FIELD_NOT_SERIALIZED: i64 = 1;
 
 /// Status codes from `rask_json_decode_into`, in JsonError variant order.
 const ERR_PARSE: i64 = 1;
@@ -114,14 +114,6 @@ impl<'a> MirLowerer<'a> {
             ],
         }));
 
-        // `@skip` and `@default` fields aren't read from the input, so their
-        // values go in before the decoder runs. Zeroed bytes aren't a safe
-        // stand-in — an all-zero RaskStr reads as fifteen NUL bytes, and a null
-        // Vec pointer isn't an empty Vec.
-        if !scalar_dst {
-            self.emit_prefilled_fields(dst, 0, target);
-        }
-
         let status = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(status),
@@ -180,6 +172,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(payload),
             store_size: Some(target_mir.size()),
+            field: None,
         }));
         self.builder
             .terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -194,6 +187,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(err_val),
             store_size: Some(err_ty.size()),
+            field: None,
         }));
         self.builder
             .terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -212,6 +206,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(tag)),
             store_size: Some(8),
+            field: None,
         }));
         for offset in [
             crate::types::RESULT_ORIGIN_FILE_OFFSET,
@@ -222,6 +217,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: MirOperand::Constant(MirConst::Int(0)),
                 store_size: Some(8),
+                field: None,
             }));
         }
     }
@@ -257,6 +253,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Local(msg),
                 store_size: Some(16),
+                field: None,
             }));
             return err_val;
         }
@@ -282,12 +279,14 @@ impl<'a> MirLowerer<'a> {
                 offset: tag_offset,
                 value: MirOperand::Constant(MirConst::Int(*tag as i64)),
                 store_size: Some(8),
+                field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: err_val,
                 offset: *payload_offset,
                 value: MirOperand::Local(msg),
                 store_size: Some(16),
+                field: None,
             }));
             self.builder
                 .terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: join }));
@@ -331,9 +330,11 @@ impl<'a> MirLowerer<'a> {
         if let Some(elem) = self.collection_arg(ty, "Vec", 0) {
             let elem_shape = self.emit_shape(&elem)?;
             let slot = self.slot_size_for_type(&elem).unwrap_or(8);
+            let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&elem));
             return Some(self.emit_shape_call("json_shape_vec", vec![
                 MirOperand::Local(elem_shape),
                 MirOperand::Constant(MirConst::Int(slot)),
+                owned,
             ]));
         }
 
@@ -346,9 +347,11 @@ impl<'a> MirLowerer<'a> {
             let val = self.collection_arg(ty, "Map", 1)?;
             let val_shape = self.emit_shape(&val)?;
             let slot = self.slot_size_for_type(&val).unwrap_or(8);
+            let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&val));
             return Some(self.emit_shape_call("json_shape_map", vec![
                 MirOperand::Local(val_shape),
                 MirOperand::Constant(MirConst::Int(slot)),
+                owned,
             ]));
         }
 
@@ -361,22 +364,16 @@ impl<'a> MirLowerer<'a> {
             MirConst::Int(layout.size as i64),
         )]);
         for field in &layout.fields {
-            // `@skip` fields aren't in the serialized form at all (E19), so the
-            // decoder never looks for them.
-            if field_attrs::is_skipped(&field.attrs) {
-                continue;
-            }
-            let field_shape = self.emit_shape(&field.ty)?;
-            // A field with `@default` tolerates a missing key (E20) — the value
-            // is already in place, so the decoder leaves it alone. A *declared*
-            // default is the same question with a different spelling: a field
-            // the input leaves out takes it (type.structs/FD6). Only `@default`
-            // counted, so `tag: string = "fallback"` failed the decode with
-            // "missing field" (#853).
-            let flags = if Self::decode_default(field).is_some() {
-                FIELD_OPTIONAL
+            // A `@no_serialize` field isn't in the serialized form at all (E19):
+            // the decoder never looks for it and always runs its default.
+            let skipped = field_attrs::is_skipped(&field.attrs);
+            let fill = self.decode_default_fill(&layout.name, field);
+            let (field_shape, flags) = if skipped {
+                // E13a rejects a decode of a type with nothing to fill this.
+                fill.as_ref()?;
+                (MirOperand::Constant(MirConst::Int(0)), FIELD_NOT_SERIALIZED)
             } else {
-                0
+                (MirOperand::Local(self.emit_shape(&field.ty)?), 0)
             };
             let key = field_attrs::serial_name(&field.attrs, &field.name);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -386,141 +383,67 @@ impl<'a> MirLowerer<'a> {
                     MirOperand::Local(shape),
                     MirOperand::Constant(MirConst::String(key)),
                     MirOperand::Constant(MirConst::Int(field.offset as i64)),
-                    MirOperand::Local(field_shape),
+                    field_shape,
                     MirOperand::Constant(MirConst::Int(flags)),
+                    fill.unwrap_or(MirOperand::Constant(MirConst::Int(0))),
                 ],
             }));
         }
         Some(shape)
     }
 
-    /// The literal a missing field falls back to: the `@default(…)` override
-    /// first, then the declared default.
+    /// `void (*)(void *slot)` that writes a field's default into its slot, for
+    /// the decoder to call when the input leaves the field out. The default
+    /// itself is the method desugar wrote (`__decode_default_<field>`), which
+    /// monomorphization queued for this decode; `None` when the field has none.
     ///
-    /// `@default` wins because it exists precisely to differ from the declared
-    /// one on decode (type.structs/FD6).
-    fn decode_default(field: &rask_mono::FieldLayout) -> Option<String> {
-        field_attrs::default_literal(&field.attrs)
-            .map(str::to_string)
-            .or_else(|| field.declared_default.clone())
-    }
-
-    /// Write the values the decoder won't: `@default` literals, and a usable
-    /// empty value for every `@skip` field. Recurses into nested structs so a
-    /// skipped struct's own strings and collections come out valid too.
-    fn emit_prefilled_fields(&mut self, dst: crate::LocalId, base: u32, ty: &Type) {
-        let Some(layout) = self.struct_layout_of(ty) else {
-            return;
-        };
-        for field in &layout.fields {
-            let at = base + field.offset;
-            let skipped = field_attrs::is_skipped(&field.attrs);
-            let default = Self::decode_default(field);
-            if !skipped && default.is_none() {
-                // Not prefilled itself, but a nested struct may hold fields that are.
-                self.emit_prefilled_fields(dst, at, &field.ty);
-                continue;
-            }
-            if let Some(literal) = default {
-                if self.emit_literal_store(dst, at, &field.ty, &literal) {
-                    continue;
-                }
-            }
-            self.emit_zero_value(dst, at, &field.ty);
-        }
-    }
-
-    /// Store a `@default(…)` literal into a field. False when the literal and
-    /// the field type don't go together — the caller falls back to the empty
-    /// value rather than writing nonsense.
-    fn emit_literal_store(
+    /// Running the default as code is what lets it be anything a default can
+    /// be. The decoder used to copy in a literal and zero everything else, so
+    /// `@default(2 + 3)` made the field required and `st: Status =
+    /// Status.Closed` decoded as `Open` (#1528).
+    fn decode_default_fill(
         &mut self,
-        dst: crate::LocalId,
-        offset: u32,
-        ty: &Type,
-        literal: &str,
-    ) -> bool {
-        let literal = literal.trim();
-        let (value, size) = match prim_shape_kind(ty) {
-            Some(JSHAPE_STRING) => match field_attrs::string_literal(literal) {
-                Some(text) => (MirConst::String(text), 16u32),
-                None => return false,
-            },
-            Some(JSHAPE_BOOL) => match literal {
-                "true" => (MirConst::Int(1), 1),
-                "false" => (MirConst::Int(0), 1),
-                _ => return false,
-            },
-            Some(JSHAPE_F32) | Some(JSHAPE_F64) => match literal.parse::<f64>() {
-                Ok(f) => (MirConst::Float(f), self.ctx.type_to_mir(ty).size()),
-                Err(_) => return false,
-            },
-            Some(_) => match literal.parse::<i64>() {
-                Ok(n) => (MirConst::Int(n), self.ctx.type_to_mir(ty).size()),
-                Err(_) => return false,
-            },
-            None => return false,
-        };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: dst,
-            offset,
-            value: MirOperand::Constant(value),
-            store_size: Some(size),
+        struct_name: &str,
+        field: &rask_mono::FieldLayout,
+    ) -> Option<MirOperand> {
+        let method = self
+            .ctx
+            .decode_defaults
+            .get(&(struct_name.to_string(), field.name.clone()))?
+            .clone();
+        let name = format!("{}__decode_fill_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let field_ty = self.ctx.type_to_mir(&field.ty);
+        let mut wb = crate::builder::BlockBuilder::new(name.clone(), MirType::Void);
+        let slot = wb.add_param("__slot".to_string(), MirType::Ptr);
+        let value = wb.alloc_temp(field_ty.clone());
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(value),
+            func: FunctionRef::internal(method),
+            args: vec![],
         }));
-        true
-    }
-
-    /// The empty value for a type, written in place: `""`, an empty Vec or Map,
-    /// `none`, a struct of the same. Numbers and bools are already zero.
-    fn emit_zero_value(&mut self, dst: crate::LocalId, offset: u32, ty: &Type) {
-        if matches!(prim_shape_kind(ty), Some(JSHAPE_STRING)) {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: dst,
-                offset,
-                value: MirOperand::Constant(MirConst::String(String::new())),
-                store_size: Some(16),
-            }));
-            return;
-        }
-        if let Type::Result { err, .. } = ty {
-            if **err == Type::None {
-                // tag 1 = none; the payload stays zero and is never read.
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: dst,
-                    offset,
-                    value: MirOperand::Constant(MirConst::Int(1)),
-                    store_size: Some(8),
-                }));
-                return;
-            }
-        }
-        let ctor = if self.collection_arg(ty, "Vec", 0).is_some() {
-            Some("Vec_new")
-        } else if self.is_map_type(ty) {
-            Some("Map_new_string_keys")
-        } else {
-            None
-        };
-        if let Some(ctor) = ctor {
-            let empty = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(empty),
-                func: FunctionRef::internal(ctor.to_string()),
-                args: vec![],
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: dst,
-                offset,
-                value: MirOperand::Local(empty),
-                store_size: Some(8),
-            }));
-            return;
-        }
-        if let Some(layout) = self.struct_layout_of(ty) {
-            for field in &layout.fields {
-                self.emit_zero_value(dst, offset + field.offset, &field.ty.clone());
-            }
-        }
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: 0,
+            value: MirOperand::Local(value),
+            store_size: Some(field.size),
+            field: None,
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        self.func_sigs.insert(name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        let addr = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(name),
+        }));
+        Some(MirOperand::Local(addr))
     }
 
     fn emit_shape_call(&mut self, name: &str, args: Vec<MirOperand>) -> crate::LocalId {
@@ -624,6 +547,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Local(value),
                 store_size: Some(8),
+                field: None,
             }));
             buf
         };

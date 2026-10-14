@@ -267,7 +267,7 @@ extend Player {
 
     // Private: self mode inferred as take (self consumed)
     func into_stats(self) -> Stats {
-        Stats { health: self.health, name: self.name }
+        Stats(health: self.health, name: self.name)
     }
     // IDE ghost text: func into_stats(take self) -> Stats
 

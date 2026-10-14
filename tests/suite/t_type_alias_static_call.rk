@@ -23,7 +23,7 @@ struct Budget {
 
 extend Budget {
     func make(v: i64) -> Budget {
-        return Budget { n: v }
+        return Budget(n: v)
     }
 
     func get(self) -> i64 {

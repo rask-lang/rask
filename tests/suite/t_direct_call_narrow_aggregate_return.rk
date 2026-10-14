@@ -19,11 +19,11 @@ struct Triple {
 }
 
 func make_pair() -> Pair8 {
-    return Pair8 { a: 1, b: 2 }
+    return Pair8(a: 1, b: 2)
 }
 
 func make_triple() -> Triple {
-    return Triple { a: 5, b: 6, c: 7 }
+    return Triple(a: 5, b: 6, c: 7)
 }
 
 test "a struct narrower than a word survives a direct call" {

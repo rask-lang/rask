@@ -196,7 +196,7 @@ deferred constraint now, `OptionalChain`, settled once the field's type is; same
 `Index` constraint beside it and for the same reason (#938). #917 went green with it.
 
 The E0308 that used to result suggested `try` and talked about "the error" — on an optional,
-where there is no error (#939). An optional *is* `Result { ok: T, err: None }` underneath, so
+where there is no error (#939). An optional *is* `Result(ok: T, err: None)` underneath, so
 the Result branch of the diagnostic caught it too. It now says what an absent value can do,
 as code:
 
@@ -225,10 +225,10 @@ on both backends for two unrelated reasons, and both were one missing case.
 - Native built the switch case from the arm's *position* whenever it couldn't resolve a tag,
   and `resolve_pattern_tag` only answers for a qualified `Enum.Variant` — which is never how
   a match arm is written. The positional-payload arm right above it has had the
-  scrutinee-based fallback all along, which is exactly why `N(i64)` worked and `N { v }` did
+  scrutinee-based fallback all along, which is exactly why `N(i64)` worked and `N(v)` did
   not (#911).
-- The interpreter built `A4.N { v: 5 }` as a *struct* named `A4.N`, because a named payload
-  shares the struct literal's syntax. Every `N { v }` arm then compared a struct name against
+- The interpreter built `A4.N(v: 5)` as a *struct* named `A4.N`, because a named payload
+  shares the struct literal's syntax. Every `N(v)` arm then compared a struct name against
   a variant name and fell through to the wildcard (#910). It builds a `Value::Enum` with the
   payload in declaration order now, so the value is the right kind everywhere and not just
   inside `match`.

@@ -12,11 +12,11 @@ struct Sq {
 }
 
 func area(x: f64) -> Sq {
-    return Sq { v: x * x }
+    return Sq(v: x * x)
 }
 
 test "a local named like a function" {
-    let area = Sq { v: 1.0 }
+    let area = Sq(v: 1.0)
     assert area.v == 1.0
 }
 
@@ -26,7 +26,7 @@ test "the function is still the function in the next test" {
 }
 
 test "a mut local, same thing" {
-    mut area = Sq { v: 5.0 }
+    mut area = Sq(v: 5.0)
     area.v = 6.0
     assert area.v == 6.0
 }

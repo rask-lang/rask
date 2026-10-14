@@ -55,7 +55,7 @@ test "type.optionals — a Vec element takes the payload's width" {
 
 test "type.optionals — a struct field takes the payload's width" {
     let _ = dirty()
-    mut s = Slots { n: none, f: none }
+    mut s = Slots(n: none, f: none)
     s.n = 7
     s.f = 2.5
     assert (s.n ?? 0 - 1) == 7

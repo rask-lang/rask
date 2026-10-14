@@ -21,8 +21,8 @@ func print_fields(value: T) {
 }
 
 func main() {
-    print_fields(Point { x: 1.0, y: 2.0 })
-    print_fields(Label { text: "hi" })
+    print_fields(Point(x: 1.0, y: 2.0))
+    print_fields(Label(text: "hi"))
 
     // The two calls above are also the leak check: a frame that outlived its
     // call would make the second one print Point's fields again.

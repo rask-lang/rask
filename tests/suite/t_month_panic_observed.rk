@@ -31,8 +31,8 @@ struct Tally9 {
     misses: i64
 }
 
-const SHELF: Shared<Tally9, Mutex> = Shared.mutex(Tally9 { hits: 0, misses: 0 })
-const LATER: Shared<Tally9, Mutex> = Shared.mutex(Tally9 { hits: 7, misses: 0 })
+const SHELF: Shared<Tally9, Mutex> = Shared.mutex(Tally9(hits: 0, misses: 0))
+const LATER: Shared<Tally9, Mutex> = Shared.mutex(Tally9(hits: 7, misses: 0))
 
 // 1 = returned a value, 2 = panicked.
 const RETURNED: i64 = 1

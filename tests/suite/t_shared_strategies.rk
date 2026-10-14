@@ -78,10 +78,10 @@ test "the bare spelling and the written default are one type" {
 }
 
 test "a struct field carries its strategy" {
-    let c = Counters {
-        hits: Shared.local(0),
-        total: Shared.mutex(0),
-    }
+    let c = Counters(
+        hits: Shared.local(0)
+        total: Shared.mutex(0)
+    )
     with c.hits.write() as h {
         h = h + 5
     }

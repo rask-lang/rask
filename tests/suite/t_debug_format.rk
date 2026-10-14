@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// `{:debug}` on a type that never opted into Displayable (#1032).
+// `{:debug}` on a type that never opted into Displayable (#1032). It prints
+// a value the way the program builds one: `Point(x: 1, y: 2)`.
 //
 // std.fmt/G2 says every type auto-derives Debug and D3 makes that the free
 // half of the split: user-facing output is opt-in, developer-facing output
@@ -29,20 +30,25 @@ enum Shape {
     Nothing
     Circle(f64)
     Rect(f64, f64)
+    Box(w: f64, h: f64)
 }
 
 test "a struct with no Displayable renders its fields" {
-    let p = Point { x: 1.0, y: 2.0 }
-    assert format("{:debug}", p) == "Point {{ x: 1, y: 2 }}"
+    let p = Point(x: 1.0, y: 2.0)
+    assert format("{:debug}", p) == "Point(x: 1, y: 2)"
+}
+
+test "a value renders the way it's built, field names included" {
+    assert format("{:debug}", Shape.Box(w: 2.0, h: 3.0)) == "Shape.Box(w: 2, h: 3)"
 }
 
 test "an empty struct renders as its name" {
-    assert format("{:debug}", Empty { }) == "Empty {{}}"
+    assert format("{:debug}", Empty()) == "Empty()"
 }
 
 test "a nested struct recurses, and a string field is quoted" {
-    let n = Named { label: "hi", at: Point { x: 1.0, y: 2.0 } }
-    assert format("{:debug}", n) == "Named {{ label: \"hi\", at: Point {{ x: 1, y: 2 }} }}"
+    let n = Named(label: "hi", at: Point(x: 1.0, y: 2.0))
+    assert format("{:debug}", n) == "Named(label: \"hi\", at: Point(x: 1, y: 2))"
 }
 
 test "an enum renders its variant, with a payload when it has one" {
@@ -66,6 +72,6 @@ test "a char is quoted too" {
 }
 
 test "an interpolation spec reaches the same renderer" {
-    let p = Point { x: 1.0, y: 2.0 }
-    assert "{p:debug}" == "Point {{ x: 1, y: 2 }}"
+    let p = Point(x: 1.0, y: 2.0)
+    assert "{p:debug}" == "Point(x: 1, y: 2)"
 }

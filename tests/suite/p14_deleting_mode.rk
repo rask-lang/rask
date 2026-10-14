@@ -53,8 +53,8 @@ func main() {}
 
 test "a named delete leaves other links alone" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { id: 1, peer: none })
-    let b = s.insert(Node { id: 2, peer: none })
+    let a = s.insert(Node(id: 1, peer: none))
+    let b = s.insert(Node(id: 2, peer: none))
 
     drop_one(mutate s, b)
 
@@ -65,8 +65,8 @@ test "a named delete leaves other links alone" {
 
 test "a deleting call revokes the caller's links" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { id: 1, peer: none })
-    let b = s.insert(Node { id: 2, peer: none })
+    let a = s.insert(Node(id: 1, peer: none))
+    let b = s.insert(Node(id: 2, peer: none))
     a.peer = b
     // Read what is needed before the call: after it, no link into `s` is usable.
     let before = a.id
@@ -80,9 +80,9 @@ test "a deleting call revokes the caller's links" {
 }
 
 test "deleting on a method receiver works the same way" {
-    mut sc = Scene { nodes: Rack.new() }
-    let _a = sc.nodes.insert(Node { id: 1, peer: none })
-    let _b = sc.nodes.insert(Node { id: 2, peer: none })
+    mut sc = Scene(nodes: Rack.new())
+    let _a = sc.nodes.insert(Node(id: 1, peer: none))
+    let _b = sc.nodes.insert(Node(id: 2, peer: none))
     assert sc.count() == 2
 
     assert sc.purge() == 2

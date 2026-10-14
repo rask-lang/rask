@@ -21,7 +21,7 @@ struct Token {
 // The source is heap-sized (>15 bytes, so no SSO) and dies at the return.
 func make_token() -> Token {
     let src = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaXXbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    return Token { text: src[30..32].view() }
+    return Token(text: src[30..32].view())
 }
 
 test "std.strings/V5 — view of a whole string and of a slice" {
@@ -68,10 +68,10 @@ test "std.strings/V1 — a stored view outlives the binding it came from" {
 test "std.strings/V5 — the spec's parse_header shares one buffer" {
     let line = "Content-Type: text/html"
     let colon = line.index_of(":") ?? 0
-    let h = Header {
-        name: line[0..colon].trim().view(),
-        value: line[colon + 1..].trim().view(),
-    }
+    let h = Header(
+        name: line[0..colon].trim().view()
+        value: line[colon + 1..].trim().view()
+    )
     assert h.name.to_string() == "Content-Type"
     assert h.value.to_string() == "text/html"
 }

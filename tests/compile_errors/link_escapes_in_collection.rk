@@ -25,7 +25,7 @@ struct Node {
 
 func smuggle() -> Vec<Link<Node>> {
     mut s: Rack<Node> = Rack.new()
-    let n = s.insert(Node { value: 5 })
+    let n = s.insert(Node(value: 5))
     mut v: Vec<Link<Node>> = Vec.new()
     v.push(n)
     return v
@@ -34,7 +34,7 @@ func smuggle() -> Vec<Link<Node>> {
 // A literal carrying a link is the same escape with fewer statements.
 func from_literal() -> Vec<Link<Node>> {
     mut s: Rack<Node> = Rack.new()
-    let n = s.insert(Node { value: 1 })
+    let n = s.insert(Node(value: 1))
     let v: Vec<Link<Node>> = [n]
     return v
 }

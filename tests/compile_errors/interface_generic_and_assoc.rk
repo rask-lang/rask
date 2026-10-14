@@ -22,7 +22,7 @@ interface Mul<Rhs> {
 // ERROR: the header leaves `Rhs` unbound, and `Scale` declares no default for it
 Meters implements Scale {
     func scale(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -32,7 +32,7 @@ struct Feet { v: f64 }
 // ERROR: signature answers a different question
 Feet implements Scale<f64> {
     func scale(self, k: i64) -> Feet {
-        return Feet { v: self.v }
+        return Feet(v: self.v)
     }
 }
 
@@ -41,7 +41,7 @@ struct Yards { v: f64 }
 // ERROR: nothing says what `Out` is, and `Mul` gives it no default
 Yards implements Mul<f64> {
     func mul(self, k: f64) -> Yards {
-        return Yards { v: self.v * k }
+        return Yards(v: self.v * k)
     }
 }
 
@@ -51,7 +51,7 @@ Chains implements Mul<f64> {
     // ERROR: `Ouput` is not a member `Mul` declares
     type Ouput = Chains
     func mul(self, k: f64) -> Chains {
-        return Chains { v: self.v * k }
+        return Chains(v: self.v * k)
     }
 }
 
@@ -69,7 +69,7 @@ interface Ordered<Rhs> {
 Meters implements Mul<f64> {
     type Out = Meters
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -85,7 +85,7 @@ Meters implements Ordered<f64> {
     // ERROR: `Blob` isn't Comparable, and `Ordered` requires its `Out` to be
     type Out = Blob
     func pick(self, k: f64) -> Blob {
-        return Blob { bytes: Vec.new() }
+        return Blob(bytes: Vec.new())
     }
 }
 
@@ -93,7 +93,7 @@ struct Feet { v: f64 }
 
 extend Feet {
     func mul(self, k: f64) -> Feet {
-        return Feet { v: self.v * k }
+        return Feet(v: self.v * k)
     }
 }
 

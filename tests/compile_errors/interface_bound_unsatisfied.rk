@@ -14,5 +14,5 @@ func announce(g: T) -> string where T: Greeter {
 
 func main() {
     // Fish has no `Fish implements Greeter`, so it can't satisfy `T: Greeter`.
-    println("{announce(Fish { name: \"Nemo\" })}")
+    println("{announce(Fish(name: \"Nemo\"))}")
 }

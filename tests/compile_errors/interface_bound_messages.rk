@@ -50,7 +50,7 @@ func main() {
     let bad: Marker = needs_int(1)
 
     // ERROR: ordinary generic bound — the fix is the conformance or another type
-    let s = Silent { tag: 1 }
+    let s = Silent(tag: 1)
     let n = needs_greeter(s)
 
     // ERROR: `as any Interface` on a type without the methods

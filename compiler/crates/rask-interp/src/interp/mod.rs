@@ -33,7 +33,6 @@ use crate::env::Environment;
 use crate::resource::ResourceTracker;
 use crate::value::{GenericFrame, Value};
 
-pub(crate) mod binary;
 
 /// A `Range<T>` value: the stdlib struct `stdlib/range.rk` declares, which is
 /// also what native builds for a range literal.
@@ -186,8 +185,6 @@ pub struct Interpreter {
     pub(crate) build_state: Option<crate::build_context::BuildState>,
     /// Source info for error origin tracking (ER15): file name + line map.
     pub(crate) source_info: Option<SourceInfo>,
-    /// B1–G4: binary struct metadata for @binary parse/build.
-    pub(crate) binary_structs: HashMap<String, binary::BinaryStructMeta>,
     /// Static expression types from the checker, keyed by NodeId. Used to
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
@@ -471,7 +468,6 @@ impl Interpreter {
             cli_args: vec![],
             build_state: None,
             source_info: None,
-            binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
@@ -513,7 +509,6 @@ impl Interpreter {
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
-            binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
@@ -561,7 +556,6 @@ impl Interpreter {
             cli_args: vec![],
             build_state: None,
             source_info: None,
-            binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
@@ -1076,7 +1070,7 @@ impl Interpreter {
         }
         self.struct_decls
             .get(name)
-            .map(|s| s.attrs.iter().any(|a| a == "resource"))
+            .map(|s| s.attrs.iter().any(|a| a.is("resource")))
             .unwrap_or(false)
     }
 

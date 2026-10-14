@@ -354,6 +354,10 @@ impl TypeChecker {
                                 }
                             })
                         }
+                        TypeDef::NominalAlias { type_params, underlying, .. } if field == "value" => {
+                            let subst = Self::build_type_param_subst(type_params, args);
+                            Some(Self::substitute_type_params(underlying, &subst))
+                        }
                         _ => None,
                     }
                 });
@@ -1053,7 +1057,7 @@ impl TypeChecker {
                 };
 
                 if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
-                    let args = self.fill_default_args(call_node, method_sig, args.clone());
+                    let args = self.place_method_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1354,10 +1358,9 @@ impl TypeChecker {
             }
             Type::Generic { base, args: generic_args } => {
                 let (methods, type_params) = match self.types.get(*base) {
-                    Some(TypeDef::Struct { methods, type_params, .. }) => {
-                        (methods.clone(), type_params.clone())
-                    }
-                    Some(TypeDef::Enum { methods, type_params, .. }) => {
+                    Some(TypeDef::Struct { methods, type_params, .. })
+                    | Some(TypeDef::Enum { methods, type_params, .. })
+                    | Some(TypeDef::NominalAlias { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
                     _ => {
@@ -1392,7 +1395,7 @@ impl TypeChecker {
                 }
 
                 if let Some(method_sig) = found {
-                    let args = self.fill_default_args(call_node, method_sig, args.clone());
+                    let args = self.place_method_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1537,7 +1540,7 @@ impl TypeChecker {
 
                     // The interface's own default: the call dispatches through
                     // the vtable, so the declaration is all there is to go by.
-                    let args = self.fill_default_args(call_node, method_sig, args.clone());
+                    let args = self.place_method_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1797,7 +1800,7 @@ impl TypeChecker {
         // The bound's default: which type `T` turns out to be isn't known in
         // this body, and the bound's declaration is what the call was written
         // against.
-        let args = self.fill_default_args(call_node, &sig, args);
+        let args = self.place_method_args(call_node, &sig, args);
         if sig.params.len() != args.len() {
             return Err(TypeError::ArityMismatch {
                 expected: sig.params.len(),
@@ -4290,6 +4293,20 @@ impl TypeChecker {
             method: method.to_string(),
             span,
         };
+        // Methods declared in stdlib/float.rk, at the receiver's own width
+        // (`to_bits` is `u32` on an `f32`).
+        let width = if matches!(ty, Type::F32) { "f32" } else { "f64" };
+        if let Some(method_def) = rask_stdlib::lookup_method(width, method) {
+            if args.len() != method_def.params.len() {
+                return Err(TypeError::ArityMismatch {
+                    expected: method_def.params.len(),
+                    found: args.len(),
+                    span,
+                });
+            }
+            let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty));
+            return self.unify(ret, &ret_ty, span);
+        }
         let entry = rask_stdlib::float_methods::lookup(method).ok_or_else(no_such)?;
 
         // Arity comes from the signature shape; a call with the wrong count
@@ -4350,8 +4367,6 @@ impl TypeChecker {
             }
             FloatSig::ToString => self.unify(ret, &Type::String, span),
             FloatSig::ToInt => self.unify(ret, &Type::I64, span),
-            // u64 at both widths — see the note on FloatSig::ToBits.
-            FloatSig::ToBits => self.unify(ret, &Type::U64, span),
         }
     }
 

@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A label puts its argument on the parameter it names, written in any order
+// (SYNTAX.md, named arguments). The arguments still run in the order they're
+// written (type.operators/EO1).
+//
+// Labels used to be checked against the parameter in their own position, so
+// `digits(b: 2, a: 1)` was an error. A struct's fields went in any order and
+// a call's didn't, which is one more thing to remember for nothing.
+
+struct Num {
+    n: i64
+}
+
+extend Num {
+    func pair(self, a: i64, b: i64) -> i64 {
+        return self.n + a * 10 + b
+    }
+
+    func make(a: i64, b: i64) -> i64 {
+        return a * 10 + b
+    }
+
+    func scaled(self, by: i64, plus: i64 = 0) -> i64 {
+        return self.n * by + plus
+    }
+}
+
+func digits(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
+
+func connect(host: string, timeout: i64, port: i64 = 80) -> string {
+    return "{host}:{port}/{timeout}"
+}
+
+func record(mutate log: Vec<string>, s: string, v: i64) -> i64 {
+    log.push(s)
+    return v
+}
+
+test "a free function" {
+    assert digits(b: 2, a: 1) == 12
+    assert digits(1, b: 2) == 12
+}
+
+test "a defaulted parameter left out between named ones" {
+    assert connect(timeout: 5, host: "h") == "h:80/5"
+    assert connect(port: 8, timeout: 5, host: "h") == "h:8/5"
+}
+
+test "a method, a static method and a stdlib method" {
+    let x = Num(n: 100)
+    assert x.pair(b: 2, a: 1) == 112
+    assert Num.make(b: 2, a: 1) == 12
+    assert x.scaled(plus: 3, by: 2) == 203
+    mut v: Vec<i64> = [1, 2]
+    v.insert(value: 9, index: 0)
+    assert v[0] == 9
+}
+
+test "arguments run in the order written" {
+    mut log: Vec<string> = Vec.new()
+    let r = digits(b: record(mutate log, "b", 2), a: record(mutate log, "a", 1))
+    assert r == 12
+    let x = Num(n: 100)
+    assert x.pair(b: record(mutate log, "pb", 2), a: record(mutate log, "pa", 1)) == 112
+    mut v: Vec<i64> = [5]
+    v.insert(value: record(mutate log, "value", 9), index: record(mutate log, "index", 0))
+    assert v[0] == 9
+    assert digits(a: record(mutate log, "a2", 1), b: record(mutate log, "b2", 2)) == 12
+    assert log.len() == 8
+    assert log[0] == "b"
+    assert log[1] == "a"
+    assert log[2] == "pb"
+    assert log[3] == "pa"
+    assert log[4] == "value"
+    assert log[5] == "index"
+    assert log[6] == "a2"
+    assert log[7] == "b2"
+}
+
+func main() {}

@@ -16,7 +16,7 @@ test "std.fs — metadata on a missing path is an IoError, not a zero-sized file
     mut size_if_ok: u64 = 0
     let m = fs.metadata(missing) catch e => {
         reported = e.message()
-        Metadata { size: 0, modified: 0, accessed: 0 }
+        Metadata(size: 0, modified: 0, accessed: 0)
     }
     size_if_ok = m.size
 

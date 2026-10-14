@@ -23,13 +23,13 @@ struct Node {
 func main() {
     mut rack: Rack<Node> = Rack.new()
 
-    let victim = rack.insert(Node { id: -1, peer: none })
-    let pointer = rack.insert(Node { id: -2, peer: none })
+    let victim = rack.insert(Node(id: -1, peer: none))
+    let pointer = rack.insert(Node(id: -2, peer: none))
     pointer.peer = victim
 
     mut i = 0
     while i < FILLER {
-        let _n = rack.insert(Node { id: i, peer: none })
+        let _n = rack.insert(Node(id: i, peer: none))
         i += 1
     }
 

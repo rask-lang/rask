@@ -75,7 +75,7 @@ func swap_them(take a: T, take b: T) -> (T, T) {
 
 // Two parameters.
 func make_pair(take a: T, take b: U) -> Pair<T, U> {
-    return Pair { first: a, second: b }
+    return Pair(first: a, second: b)
 }
 
 // Explicit list with descriptive names. Deliberately *not* named `Output`: a
@@ -140,16 +140,16 @@ test "type.generics — an explicit parameter list" {
 // pattern and a string segfaults (#916). Field reads are fine at every type, so
 // those cover the rest here.
 test "type.generics — a generic struct at several instantiations" {
-    let a: Wrapper<i32> = Wrapper { value: 1 }
+    let a: Wrapper<i32> = Wrapper(value: 1)
     assert a.get() == 1
-    let b: Wrapper<i64> = Wrapper { value: 2 }
+    let b: Wrapper<i64> = Wrapper(value: 2)
     assert b.get() == 2
-    let c: Wrapper<bool> = Wrapper { value: true }
+    let c: Wrapper<bool> = Wrapper(value: true)
     assert c.get()
     // Reading the field directly works at any type.
-    let d: Wrapper<f64> = Wrapper { value: 0.5 }
+    let d: Wrapper<f64> = Wrapper(value: 0.5)
     assert d.value == 0.5
-    let e: Wrapper<string> = Wrapper { value: "s" }
+    let e: Wrapper<string> = Wrapper(value: "s")
     assert e.value == "s"
 }
 
@@ -160,7 +160,7 @@ test "type.generics — a generic type with named parameters" {
     mut vs: Vec<i32> = Vec.new()
     vs.push(1)
     vs.push(2)
-    let c = Cache { keys: ks, values: vs }
+    let c = Cache(keys: ks, values: vs)
     assert c.count() == 2
 }
 
@@ -170,20 +170,20 @@ test "type.generics — a generic enum" {
 }
 
 test "type.generics — a where bound" {
-    let lines: Vec<Line> = [Line { len: 3 }, Line { len: 4 }]
+    let lines: Vec<Line> = [Line(len: 3), Line(len: 4)]
     assert total_length(lines) == 7
     mut empty: Vec<Line> = Vec.new()
     assert total_length(empty) == 0
 }
 
 test "type.generics — one instantiation nested inside another" {
-    let inner: Wrapper<i32> = Wrapper { value: 5 }
-    let outer: Wrapper<Wrapper<i32>> = Wrapper { value: inner }
+    let inner: Wrapper<i32> = Wrapper(value: 5)
+    let outer: Wrapper<Wrapper<i32>> = Wrapper(value: inner)
     assert outer.value.value == 5
 }
 
 test "type.generics — a generic struct inside a collection" {
-    let ws: Vec<Wrapper<i32>> = [Wrapper { value: 1 }, Wrapper { value: 2 }]
+    let ws: Vec<Wrapper<i32>> = [Wrapper(value: 1), Wrapper(value: 2)]
     mut total = 0
     for w in ws {
         total = total + w.get()

@@ -17,7 +17,7 @@ interface Mul<Rhs> {
 Meters implements Mul<f64> {
     type Out = Meters
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 ```

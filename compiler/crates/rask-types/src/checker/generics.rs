@@ -53,25 +53,14 @@ impl TypeChecker {
         }
 
         // Check if the struct/enum has type params
-        let has_type_params = self.types.get(type_id).map_or(false, |def| {
-            match def {
-                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
-                    !type_params.is_empty()
-                }
-                _ => false,
-            }
-        });
+        let has_type_params = self.types.get(type_id).is_some_and(|def| !def.type_params().is_empty());
 
         if has_type_params {
             // Build generic args from the struct's type params
-            let args = self.types.get(type_id).and_then(|def| {
-                let type_params = match def {
-                    TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => type_params,
-                    _ => return None,
-                };
-                Some(type_params.iter().map(|p| {
+            let args = self.types.get(type_id).map(|def| {
+                def.type_params().iter().map(|p| {
                     GenericArg::Type(Box::new(Type::UnresolvedNamed(p.clone())))
-                }).collect::<Vec<_>>())
+                }).collect::<Vec<_>>()
             }).unwrap_or_default();
             Some(Type::Generic { base: type_id, args })
         } else {
@@ -110,14 +99,10 @@ impl TypeChecker {
         }
     }
 
-    /// Declared type parameter names of a struct or an enum; empty for anything
-    /// that has none.
+    /// Declared type parameter names of a struct, an enum or a newtype; empty
+    /// for anything that has none.
     pub(super) fn declared_type_params(&self, id: crate::types::TypeId) -> Vec<String> {
-        match self.types.get(id) {
-            Some(TypeDef::Struct { type_params, .. })
-            | Some(TypeDef::Enum { type_params, .. }) => type_params.clone(),
-            _ => Vec::new(),
-        }
+        self.types.get(id).map(|d| d.type_params().to_vec()).unwrap_or_default()
     }
 
     pub(super) fn resolve_named(&self, ty: &Type) -> Type {

@@ -33,7 +33,7 @@ extend Wrapper {
 }
 
 func make(take a: T, take b: U) -> Pair<T, U> {
-    return Pair { first: a, second: b }
+    return Pair(first: a, second: b)
 }
 
 func take_wrapped(w: Wrapper<i32>) -> i32 {
@@ -41,17 +41,17 @@ func take_wrapped(w: Wrapper<i32>) -> i32 {
 }
 
 test "type.generics — the inferred form works, which is the control" {
-    let a = Wrapper { value: 1 }
+    let a = Wrapper(value: 1)
     assert a.get() == 1
-    let p = Pair { first: 1, second: "one" }
+    let p = Pair(first: 1, second: "one")
     assert p.first == 1
     assert p.second == "one"
 }
 
 test "type.generics — an implicit-param struct can be annotated" {
-    let a: Wrapper<i32> = Wrapper { value: 2 }
+    let a: Wrapper<i32> = Wrapper(value: 2)
     assert a.get() == 2
-    let p: Pair<i32, string> = Pair { first: 3, second: "three" }
+    let p: Pair<i32, string> = Pair(first: 3, second: "three")
     assert p.first == 3
 }
 
@@ -62,12 +62,12 @@ test "type.generics — an implicit-param struct can be returned" {
 }
 
 test "type.generics — an implicit-param struct can be passed at an instantiation" {
-    let a = Wrapper { value: 5 }
+    let a = Wrapper(value: 5)
     assert take_wrapped(a) == 5
 }
 
 test "type.generics — an implicit-param struct can be a collection element" {
-    let ws: Vec<Wrapper<i32>> = [Wrapper { value: 1 }, Wrapper { value: 2 }]
+    let ws: Vec<Wrapper<i32>> = [Wrapper(value: 1), Wrapper(value: 2)]
     mut total = 0
     for w in ws {
         total = total + w.get()

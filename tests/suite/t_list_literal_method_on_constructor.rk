@@ -15,7 +15,7 @@ struct Bytes {
 
 extend Bytes {
     func new() -> Bytes {
-        return Bytes { data: Vec.new() }
+        return Bytes(data: Vec.new())
     }
 
     func add(take self, more: Vec<u8>) -> Bytes {
@@ -33,11 +33,11 @@ struct Grid {
 
 extend Grid {
     func new() -> Grid {
-        return Grid { rows: Vec.new() }
+        return Grid(rows: Vec.new())
     }
 
     func with(take self, rows: Vec<Vec<i64>>) -> Grid {
-        return Grid { rows: rows.clone() }
+        return Grid(rows: rows.clone())
     }
 }
 
@@ -47,7 +47,7 @@ struct Opt {
 
 extend Opt {
     func new() -> Opt {
-        return Opt { xs: Vec.new() }
+        return Opt(xs: Vec.new())
     }
 
     func with(take self, xs: Vec<i64?>) -> Opt {
@@ -65,11 +65,11 @@ struct Sum {
 
 extend Sum {
     func new() -> Sum {
-        return Sum { n: 0 }
+        return Sum(n: 0)
     }
 
     func last_of(take self, a: [i64; 3]) -> Sum {
-        return Sum { n: self.n + a[2] }
+        return Sum(n: self.n + a[2])
     }
 }
 

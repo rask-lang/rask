@@ -18,6 +18,7 @@ use rask_mir::ComptimeGlobalMeta;
 use rask_mono::MonoProgram;
 use rask_types::TypedProgram;
 
+use crate::comptime_aggregate::NoBytes;
 use crate::{is_comptime_init, CfgConfig};
 
 /// Evaluate every comptime-initialized const. Returns the folded globals plus
@@ -55,14 +56,21 @@ pub fn evaluate_comptime_globals(
     // Only a top-level const can carry `@comptime_quota`: a `let … = comptime`
     // inside a body has nowhere to write an attribute.
     let mut comptime_consts: Vec<(String, String, &rask_ast::expr::Expr, Option<usize>, Option<&rask_ast::ty::TypeExpr>)> = Vec::new();
+    // A field's default, folded in the method desugaring writes for it. When
+    // the value has no constant form it's built where it's used, which is
+    // what the field asked for, so there is nothing to warn about: the
+    // warnings name a binding nobody wrote. A hard failure still reports.
+    let mut field_defaults: std::collections::HashSet<NodeId> = std::collections::HashSet::new();
     for decl in decls {
         match &decl.kind {
             DeclKind::Const(c) => {
                 if is_comptime_init(&c.init, decls) {
                     let mut quota = None;
                     if let Some(arg) = c.comptime_quota_arg() {
-                        match arg.replace('_', "").parse::<usize>() {
-                            Ok(n) if n > 0 => quota = Some(n),
+                        match arg.literal() {
+                            Some(rask_ast::expr::Literal::Int(n)) if n > 0 => {
+                                quota = Some(usize::try_from(n).unwrap_or(usize::MAX))
+                            }
                             _ => diags.push(
                                 Diagnostic::error(format!(
                                     "`@comptime_quota` wants a positive number of branches, found `{arg}`"
@@ -81,14 +89,34 @@ pub fn evaluate_comptime_globals(
             // functions each with a `let v = f()` collided, and one silently
             // read the other's value (#825).
             DeclKind::Fn(f) => {
-                for (name, init) in comptime_lets(&f.body, decls) {
+                for (name, init, declared) in comptime_lets(&f.body, decls) {
                     comptime_consts.push((
                         rask_mir::lower::comptime_local_key(&f.name, name),
                         name.clone(),
                         init,
                         None,
-                        None,
+                        declared,
                     ));
+                }
+            }
+            // A method's lets are keyed by the name its body is compiled under,
+            // `Type_method`. None were folded at all, so a `comptime` let in a
+            // method ran at run time with no check — which is where a field's
+            // default lives now (type.structs/FD1).
+            DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_) => {
+                for (owner, m) in methods_of(decl) {
+                    for (name, init, declared) in comptime_lets(&m.body, decls) {
+                        comptime_consts.push((
+                            rask_mir::lower::comptime_local_key(&format!("{owner}_{}", m.name), name),
+                            name.clone(),
+                            init,
+                            None,
+                            declared,
+                        ));
+                        if rask_ast::decl::field_attrs::field_of_default_method(&m.name).is_some() {
+                            field_defaults.insert(init.id);
+                        }
+                    }
                 }
             }
             // A `test` block is a function by the time the compile path folds
@@ -97,13 +125,13 @@ pub fn evaluate_comptime_globals(
             // and the other doesn't. The key here is never looked up: check
             // throws the folded globals away and keeps the diagnostics.
             DeclKind::Test(t) => {
-                for (name, init) in comptime_lets(&t.body, decls) {
+                for (name, init, declared) in comptime_lets(&t.body, decls) {
                     comptime_consts.push((
                         rask_mir::lower::comptime_local_key(&format!("test${}", t.name), name),
                         name.clone(),
                         init,
                         None,
-                        None,
+                        declared,
                     ));
                 }
             }
@@ -141,17 +169,36 @@ pub fn evaluate_comptime_globals(
                         map_types: val
                             .map_types()
                             .map(|(k, v)| (k.to_string(), v.to_string())),
+                        aggregate: None,
                     };
                     fit_to_declared(&mut meta, declared);
                     globals.insert(key, meta);
                 }
-                // Folded, but the value has no constant representation — a
-                // gap like any other, and the const runs at runtime.
-                None => diags.push(no_constant_form(&name, val.type_name(), init.span)),
+                None => match crate::comptime_aggregate::aggregate_const(&val, mono) {
+                    Ok((ser, agg)) => {
+                        globals.insert(key, ComptimeGlobalMeta {
+                            bytes: ser.bytes,
+                            string_relocs: ser.string_relocs,
+                            elem_count: 0,
+                            type_prefix: val.type_prefix().to_string(),
+                            elem_type: None,
+                            map_types: None,
+                            aggregate: Some(agg),
+                        });
+                    }
+                    Err(NoBytes::Overflow(why)) => diags.push(
+                        comptime_diagnostic(&why, ("R0018", "comptime overflow is a compile error (type.overflow/CT1)"), init.span),
+                    ),
+                    // Folded, but the value has no constant representation — a
+                    // gap like any other, and the const runs at runtime.
+                    Err(NoBytes::Gap) if field_defaults.contains(&init.id) => {}
+                    Err(NoBytes::Gap) => diags.push(no_constant_form(&name, val.type_name(), init.span)),
+                },
             },
             Err(e) if e.is_hard() => {
                 diags.push(comptime_diagnostic(&e.to_string(), comptime_code(&e), init.span));
             }
+            Err(_) if field_defaults.contains(&init.id) => {}
             Err(e) => diags.push(fallback_warning(&name, &e, init.span)),
         }
     }
@@ -240,13 +287,28 @@ fn check_comptime_field_names(
 }
 
 /// Every `let x = comptime …` directly in a body, as (name, initializer).
+/// The methods a type declaration carries, with the type they're filed under.
+pub(crate) fn methods_of(decl: &Decl) -> Vec<(String, &FnDecl)> {
+    let (owner, methods) = match &decl.kind {
+        DeclKind::Struct(s) => (s.name.clone(), &s.methods),
+        DeclKind::Enum(e) => (e.name.clone(), &e.methods),
+        DeclKind::Impl(i) => match i.target_ty.name() {
+            Some(name) => (name, &i.methods),
+            None => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+    methods.iter().map(|m| (owner.clone(), m)).collect()
+}
+
+/// Each `let … = comptime` in a body: its name, initializer and written type.
 fn comptime_lets<'a>(
     body: &'a [Stmt],
     decls: &[Decl],
-) -> Vec<(&'a String, &'a rask_ast::expr::Expr)> {
+) -> Vec<(&'a String, &'a rask_ast::expr::Expr, Option<&'a rask_ast::ty::TypeExpr>)> {
     body.iter()
         .filter_map(|stmt| match &stmt.kind {
-            StmtKind::Let { name, init, .. } if is_comptime_init(init, decls) => Some((name, init)),
+            StmtKind::Let { name, init, ty, .. } if is_comptime_init(init, decls) => Some((name, init, ty.as_ref())),
             _ => None,
         })
         .collect()
@@ -544,5 +606,6 @@ fn try_eval_comptime_mir(
         // map: `MiriValue` has no map at all.
         string_relocs: Vec::new(),
         map_types: None,
+        aggregate: None,
     })
 }

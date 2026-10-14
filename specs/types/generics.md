@@ -62,7 +62,7 @@ interface Scale<Rhs> {
 
 Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 ```
@@ -447,8 +447,8 @@ struct Point {
 }
 
 // No extend block needed — Point is Equal because i32 is Equal
-let a = Point { x: 1, y: 2 }
-let b = Point { x: 1, y: 2 }
+let a = Point(x: 1, y: 2)
+let b = Point(x: 1, y: 2)
 // a == b → true (field-wise comparison)
 ```
 
@@ -473,7 +473,7 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | **HA3c: Map keys** | A `Map` buckets a key by its type's `hash` and finds it by its type's `eq`, derived or overridden. Never by the key's bytes: a struct holding a string has a pointer in them |
 | **HA3a: What a scalar's hash is** | `x.hash()` on an integer, a `bool`, a `char` or a `string` is FNV-1a over the value's little-endian bytes at its own width — the same function an int-keyed Map buckets with, so a value and the same value used as a key agree. Unseeded: a hash is as stable as `==`. The width counts, so `5u32` and `5u64` don't hash alike |
 | **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract). So `Map<f64, V>` is a compile error — including nested, as in `Vec<Map<f64, V>>`. A float *value* is fine; only the key position is excluded |
-| **HA5: Bits as the hatch** | `x.to_bits() -> u64` reinterprets a float's bit pattern, so a caller who wants a float-keyed Map spells out what "the same key" means. u64 at both widths. Distinct values get distinct keys, and unlike a float key a NaN can be looked up again |
+| **HA5: Bits as the hatch** | `x.to_bits()` reinterprets a float's bit pattern (`u32` for an `f32`, `u64` for an `f64`, `std.bits/B4`), so a caller who wants a float-keyed Map spells out what "the same key" means. Distinct values get distinct keys, and every NaN is one key that can be looked up again |
 
 | Type | Hashable Status |
 |------|-----------------|
@@ -523,15 +523,15 @@ struct Version {
 
 // No extend block needed — Version is Comparable because u32 is Comparable
 // Compares major first, then minor, then patch (lexicographic)
-let a = Version { major: 1, minor: 2, patch: 0 }
-let b = Version { major: 1, minor: 3, patch: 0 }
+let a = Version(major: 1, minor: 2, patch: 0)
+let b = Version(major: 1, minor: 3, patch: 0)
 // a < b → true (minor field differs)
 // a.compare(b) → Ordering.Less
 ```
 
 ## No Default Interface
 
-There is no `Default` interface and no `.default()` method. Declared field defaults (`type.structs`) are the mechanism: a field with a declared default may be omitted at construction, and a struct whose fields all have defaults constructs with zero fields — `Config {}` *is* the default value. A struct with any defaultless field has no empty construction; the compiler names the missing field instead of inventing `""`/`0`. Universal zero-defaults were rejected as Go zero-values by another name.
+There is no `Default` interface and no `.default()` method. Declared field defaults (`type.structs`) are the mechanism: a field with a declared default may be omitted at construction, and a struct whose fields all have defaults constructs with zero fields — `Config()` *is* the default value. A struct with any defaultless field has no empty construction; the compiler names the missing field instead of inventing `""`/`0`. Universal zero-defaults were rejected as Go zero-values by another name.
 
 ## Comptime Generics
 
@@ -634,7 +634,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **OP1 (operators stay authored):** The flip's hazard — being *matched* against a contract you never claimed — requires a bound satisfied by accident. Concrete operator use has no bound; it calls a method someone deliberately wrote. The generic path was already nominal. Watch-item: if public generic code over-constrains through `Numeric` when it only needs `add`, split Numeric from usage evidence — not preemptively.
 
-**Default (removed):** Zero corpus usage, and DF-style universal zeros were Go zero-values by another name — a back door around Rask's all-fields-required construction. Declared field defaults replaced the interface; `Config {}` is the default value when every field declares one. No spec API used `T: Default` as a bound at removal time; a constructible-empty bound can return from usage evidence if ever needed.
+**Default (removed):** Zero corpus usage, and DF-style universal zeros were Go zero-values by another name — a back door around Rask's all-fields-required construction. Declared field defaults replaced the interface; `Config()` is the default value when every field declares one. No spec API used `T: Default` as a bound at removal time; a constructible-empty bound can return from usage evidence if ever needed.
 
 **G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the interface system handles dispatch.
 

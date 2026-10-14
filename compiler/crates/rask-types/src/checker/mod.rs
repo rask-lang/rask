@@ -34,11 +34,11 @@ mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
+pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::resolve_type_expr;
 pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
@@ -523,9 +523,15 @@ pub struct TypeChecker {
     /// Bare names in patterns read as a type test (`r is ParseError`), by the
     /// span `check_pattern` was handed. See `TypedProgram::type_test_patterns`.
     pub(super) type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
-    /// Defaults filled into method calls (`fill_default_args`): call → (position,
-    /// argument, its type).
-    pub(super) default_fills: HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr, Type)>>,
+    /// Bare `Pair(a, b)` patterns that matched a struct. See
+    /// `TypedProgram::struct_shorthand_patterns`.
+    pub(super) struct_shorthand_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
+    /// Calls whose labels or defaults moved their arguments: call → where each
+    /// parameter's argument comes from (`arg_labels`).
+    pub(super) arg_places: HashMap<NodeId, Vec<arg_labels::Placement>>,
+    /// Placed calls whose arguments are bound to temporaries first
+    /// (`arg_labels::plan_hoist`).
+    pub(super) arg_hoists: HashMap<NodeId, arg_labels::ArgHoist>,
     /// ER3/ER4: `T or E` sites in type declarations (struct/enum/union/alias),
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
@@ -699,7 +705,9 @@ impl TypeChecker {
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
-            default_fills: HashMap::new(),
+            struct_shorthand_patterns: std::collections::HashSet::new(),
+            arg_places: HashMap::new(),
+            arg_hoists: HashMap::new(),
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
         }
@@ -916,6 +924,7 @@ impl TypeChecker {
         //
         // `RASK_TRACE_OPEN_NODES=1` counts and shapes them, which is how you
         // find the inference gaps behind them rather than assuming.
+        self.type_hoisted_args();
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
@@ -1128,10 +1137,28 @@ impl TypeChecker {
             mutate_self_fns: self.mutate_self_fns,
             channel_send_sites: self.channel_send_sites,
             type_test_patterns: self.type_test_patterns,
-            default_fills: self
-                .default_fills
+            struct_shorthand_patterns: self.struct_shorthand_patterns,
+            arg_hoists: self
+                .arg_hoists
                 .into_iter()
-                .map(|(call, fills)| (call, fills.into_iter().map(|(at, e, _)| (at, e)).collect()))
+                .map(|(call, h)| {
+                    let binds = h.binds.into_iter().map(|b| (b.arg, b.let_id, b.ident)).collect();
+                    (call, type_defs::ArgHoist { block: h.block, binds })
+                })
+                .collect(),
+            arg_places: self
+                .arg_places
+                .into_iter()
+                .map(|(call, placed)| {
+                    let placed = placed
+                        .into_iter()
+                        .map(|p| match p {
+                            arg_labels::Placement::Written(i) => PlacedArg::Written(i),
+                            arg_labels::Placement::Default(e, _) => PlacedArg::Default(e),
+                        })
+                        .collect();
+                    (call, placed)
+                })
                 .collect(),
             inferred_fn_ret,
             inferred_fn_params,

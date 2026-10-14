@@ -67,7 +67,45 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, St
     }
 
     qualify::qualify_in_place(decls, &map);
+    // An attachment of the package's own annotation names it too. Only those:
+    // `@rename` must stay `@rename` whatever the package calls a function.
+    let annotations: HashMap<String, String> = map
+        .iter()
+        .filter(|(_, q)| decls.iter().any(|d| matches!(&d.kind, DeclKind::Annotation(a) if &a.name == *q)))
+        .map(|(n, q)| (n.clone(), q.clone()))
+        .collect();
+    rename_attachments(decls, &annotations);
     map
+}
+
+/// The qualified names of every annotation in `decls`, for the two
+/// reference rewrites below: an attachment is renamed only when what it names
+/// is an annotation.
+pub fn annotation_names(decls: &[Decl]) -> std::collections::HashSet<String> {
+    decls
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Annotation(a) => Some(a.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Rename single-segment attachments by `map`.
+fn rename_attachments(decls: &mut [Decl], map: &HashMap<String, String>) {
+    struct Renamer<'a>(&'a HashMap<String, String>);
+    impl Rewrite for Renamer<'_> {
+        fn attr(&mut self, a: &mut rask_ast::attr::Attr) {
+            if let [name] = a.path.as_slice() {
+                if let Some(q) = self.0.get(name) {
+                    a.path = vec![q.clone()];
+                }
+            }
+        }
+    }
+    if !map.is_empty() {
+        rewrite::rewrite_decls(decls, &mut Renamer(map));
+    }
 }
 
 /// Point the program's own references at a dependency's qualified names.
@@ -80,14 +118,18 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, St
 /// `exports` is what each package binding makes available: the binding as the
 /// program writes it (`libpkg`, or the alias from `import libpkg as l`) against
 /// the original-to-qualified map of that package.
+///
+/// `@libpkg.validate(…)` is the attachment spelling of the same thing, and is
+/// rewritten when `validate` is one of `annotations`.
 pub fn qualify_references(
     decls: &mut [Decl],
     exports: &HashMap<String, HashMap<String, String>>,
+    annotations: &std::collections::HashSet<String>,
 ) {
     if exports.is_empty() {
         return;
     }
-    let mut r = ReferenceQualifier { exports };
+    let mut r = ReferenceQualifier { exports, annotations };
     rewrite::rewrite_decls(decls, &mut r);
 }
 
@@ -147,6 +189,59 @@ pub fn unqualified_imports(
     (out, clashes)
 }
 
+/// A bare `@name` that means a dependency's annotation the package never
+/// imported by name. Under modules/IM1 `import liba` binds `liba`, not the
+/// names in it, so `@validate` there names nothing — and an unknown attachment
+/// is otherwise just data nobody reads, which made it a silent no-op.
+pub struct UnimportedAnnotation {
+    pub name: String,
+    /// The binding that reaches it: the package, or its alias.
+    pub binding: String,
+    pub at: rask_ast::Span,
+}
+
+/// Every attachment in `decls` that is still a bare name nothing declares, but
+/// that a visible package exports as an annotation. Run after the rewrites, so
+/// an imported or package-qualified one is already gone from the list.
+pub fn unimported_annotations(
+    decls: &mut [Decl],
+    exports: &HashMap<String, HashMap<String, String>>,
+    annotations: &std::collections::HashSet<String>,
+) -> Vec<UnimportedAnnotation> {
+    let local: std::collections::HashSet<String> = annotation_names(decls);
+    struct Finder<'a> {
+        exports: &'a HashMap<String, HashMap<String, String>>,
+        annotations: &'a std::collections::HashSet<String>,
+        local: std::collections::HashSet<String>,
+        found: Vec<UnimportedAnnotation>,
+    }
+    impl Rewrite for Finder<'_> {
+        fn attr(&mut self, a: &mut rask_ast::attr::Attr) {
+            let [name] = a.path.as_slice() else { return };
+            if self.local.contains(name) || self.annotations.contains(name) {
+                return;
+            }
+            let mut bindings: Vec<&String> = self
+                .exports
+                .iter()
+                .filter(|(_, map)| map.get(name).is_some_and(|q| self.annotations.contains(q)))
+                .map(|(binding, _)| binding)
+                .collect();
+            bindings.sort();
+            if let Some(binding) = bindings.first() {
+                self.found.push(UnimportedAnnotation {
+                    name: name.clone(),
+                    binding: (*binding).clone(),
+                    at: a.span,
+                });
+            }
+        }
+    }
+    let mut finder = Finder { exports, annotations, local, found: Vec::new() };
+    rewrite::rewrite_decls(decls, &mut finder);
+    finder.found
+}
+
 /// An unqualified import of a name the importing package declares itself.
 pub struct ShadowedImport {
     /// The bare name both want.
@@ -159,15 +254,29 @@ pub struct ShadowedImport {
 }
 
 /// Rewrite bare names in the program that an unqualified import bound.
-pub fn qualify_imported_names(decls: &mut [Decl], imported: &HashMap<String, String>) {
+///
+/// `import libpkg.validate` brings an annotation in the same way, and `@validate`
+/// then means it.
+pub fn qualify_imported_names(
+    decls: &mut [Decl],
+    imported: &HashMap<String, String>,
+    annotations: &std::collections::HashSet<String>,
+) {
     if imported.is_empty() {
         return;
     }
     qualify::rewrite_references(decls, imported);
+    let imported_annotations: HashMap<String, String> = imported
+        .iter()
+        .filter(|(_, q)| annotations.contains(*q))
+        .map(|(n, q)| (n.clone(), q.clone()))
+        .collect();
+    rename_attachments(decls, &imported_annotations);
 }
 
 struct ReferenceQualifier<'a> {
     exports: &'a HashMap<String, HashMap<String, String>>,
+    annotations: &'a std::collections::HashSet<String>,
 }
 
 impl ReferenceQualifier<'_> {
@@ -177,6 +286,14 @@ impl ReferenceQualifier<'_> {
 }
 
 impl Rewrite for ReferenceQualifier<'_> {
+    fn attr(&mut self, a: &mut rask_ast::attr::Attr) {
+        if let [pkg, name] = a.path.as_slice() {
+            if let Some(q) = self.resolve(pkg, name).filter(|q| self.annotations.contains(*q)) {
+                a.path = vec![q.clone()];
+            }
+        }
+    }
+
     fn ty(&mut self, t: &mut TypeExpr) {
         // `libpkg.Cat`, anywhere inside a written type.
         *t = t.substitute_paths(&|path| match path {
@@ -206,27 +323,6 @@ impl Rewrite for ReferenceQualifier<'_> {
                 Some(pkg) => self.resolve(pkg, field).map(|q| ExprKind::Ident(q.clone())),
                 None => None,
             },
-            // `libpkg.Cat { … }` — the parser keeps the package in the name.
-            // `libpkg.Shape.Circle { … }` names a variant of the package's enum.
-            ExprKind::StructLit { name, type_args, fields, spread } => match name.split_once('.') {
-                Some((pkg, tail)) => {
-                    let (ty, variant) = match tail.split_once('.') {
-                        Some((ty, variant)) => (ty, Some(variant)),
-                        None => (tail, None),
-                    };
-                    self.resolve(pkg, ty).map(|q| match variant {
-                        Some(v) => format!("{q}.{v}"),
-                        None => q.clone(),
-                    })
-                }
-                None => None,
-            }
-            .map(|q| ExprKind::StructLit {
-                name: q,
-                type_args: type_args.clone(),
-                fields: fields.clone(),
-                spread: spread.clone(),
-            }),
             _ => None,
         };
         if let Some(kind) = replacement {

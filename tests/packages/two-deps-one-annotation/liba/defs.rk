@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `liba`'s `@validate` has a `max`. `libb`'s has a `min` and a `note`. They are
+// two annotations that happen to share a name (type.annotations/AN5).
+
+import std.reflect
+
+public annotation @validate {
+    max: i64 = 10
+}
+
+public struct Form {
+    @validate(max: 3)
+    public code: i64
+    @validate()
+    public count: i64
+    public free: i64
+}
+
+// The package reading its own attachments. The type argument and the
+// attachment both name `liba`'s annotation, and both have to be renamed to
+// the same thing for `has` to answer true here.
+public func limits() -> string {
+    mut out = "a:"
+    comptime for f in reflect.fields<Form>() {
+        comptime if f.has<validate>() {
+            out = "{out} {f.name}<={f.get<validate>().max}"
+        }
+    }
+    return out
+}

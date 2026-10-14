@@ -252,15 +252,16 @@ extend Conn {
 }
 
 func main() {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
 }
 ";
 
     fn run(src: &str, checks: bool) -> Result<(), RuntimeError> {
         let lexed = rask_lexer::Lexer::new(src).tokenize();
         assert!(lexed.errors.is_empty(), "{:?}", lexed.errors);
-        let parsed = rask_parser::Parser::new(lexed.tokens).parse();
+        let mut parsed = rask_parser::Parser::new(lexed.tokens).parse();
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        rask_desugar::desugar(&mut parsed.decls);
         let (mut interp, _out) = Interpreter::with_captured_output();
         interp.set_source_info("leak.rk", src);
         interp.set_runtime_checks(checks);
@@ -291,8 +292,8 @@ func main() {
     #[test]
     fn unwinding_scope_is_not_checked() {
         let src = LEAKS.replace(
-            "    let c = Conn { id: 1 }\n",
-            "    let c = Conn { id: 1 }\n    panic(\"boom\")\n",
+            "    let c = Conn(id: 1)\n",
+            "    let c = Conn(id: 1)\n    panic(\"boom\")\n",
         );
         match run(&src, true) {
             Err(RuntimeError::Panic(msg)) => {

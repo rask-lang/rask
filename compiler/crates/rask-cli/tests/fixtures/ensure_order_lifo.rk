@@ -22,15 +22,15 @@ struct Body { id: i64 }
 struct Log { id: i64 }
 
 func make_world() -> World {
-    return World { id: 1 }
+    return World(id: 1)
 }
 
 func make_body(w: World) -> Body {
-    return Body { id: w.id + 1 }
+    return Body(id: w.id + 1)
 }
 
 func make_log() -> Log {
-    return Log { id: 9 }
+    return Log(id: 9)
 }
 
 extend World {

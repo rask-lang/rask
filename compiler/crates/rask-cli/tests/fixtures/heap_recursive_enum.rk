@@ -17,7 +17,7 @@ enum Tree {
 func total(t: Tree) -> f64 {
     match t {
         Leaf(v) => return v,
-        Node(l, r) => {
+        Node(left: l, right: r) => {
             let a = total(l)
             let b = total(r)
             return a + b
@@ -28,7 +28,7 @@ func total(t: Tree) -> f64 {
 func depth(t: Tree) -> i64 {
     match t {
         Leaf(_v) => return 1,
-        Node(l, r) => {
+        Node(left: l, right: r) => {
             let a = depth(l)
             let b = depth(r)
             if a > b {
@@ -56,6 +56,6 @@ func main() {
     println("depth={depth(root)} (expect 3)")
 
     // A struct field declared Heap<T>, not just an enum payload.
-    let w = Wrap { inner: Heap(Tree.Leaf(5.0)) }
+    let w = Wrap(inner: Heap(Tree.Leaf(5.0)))
     println("wrapped={total(w.inner)} (expect 5)")
 }

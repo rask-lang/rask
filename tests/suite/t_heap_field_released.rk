@@ -75,17 +75,17 @@ func chain(n: i64) -> List {
 func main() {}
 
 test "a scalar payload in a field" {
-    let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+    let h = Holder(inner: Heap(Big(a: 1, b: 2, c: 3)))
     assert h.inner.b == 2
 }
 
 test "a payload with a string and a vector of its own" {
-    let d = Deep {
-        held: Heap(Record {
-            name: "a record name long enough to allocate",
-            marks: [1, 2, 3],
-        }),
-    }
+    let d = Deep(
+        held: Heap(Record(
+            name: "a record name long enough to allocate"
+            marks: [1, 2, 3]
+        ))
+    )
     assert d.held.name == "a record name long enough to allocate"
     assert d.held.marks.len() == 3
 }

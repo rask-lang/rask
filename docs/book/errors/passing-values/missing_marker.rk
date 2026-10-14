@@ -12,7 +12,7 @@ func deposit(mutate account: Account, amount: i64) {
 }
 
 func main() {
-    mut account = Account { owner: "Ada", balance: 100 }
+    mut account = Account(owner: "Ada", balance: 100)
     deposit(account, 50)
     println("{account.balance}")
 }

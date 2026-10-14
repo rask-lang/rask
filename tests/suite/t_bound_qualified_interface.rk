@@ -50,13 +50,13 @@ test "a qualified bound accepts the module's own type" {
 }
 
 test "and a program type conforming to it" {
-    let t = Tally { seen: 0 }
+    let t = Tally(seen: 0)
     assert send(t, "hi")
     assert !send(t, "")
 }
 
 test "in a where clause" {
-    let t = Tally { seen: 0 }
+    let t = Tally(seen: 0)
     assert send_all(t, ["a", "b", "c"]) == 3
     assert send_all(t, ["a", ""]) == -1
 }

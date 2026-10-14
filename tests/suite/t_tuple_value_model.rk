@@ -65,7 +65,7 @@ test "a tuple works as a Map key" {
 }
 
 test "a tuple holding a struct" {
-    let t = (Reading { sensor: "north", value: 3 }, 1)
+    let t = (Reading(sensor: "north", value: 3), 1)
     assert t.0.sensor == "north"
     assert t.1 == 1
 }

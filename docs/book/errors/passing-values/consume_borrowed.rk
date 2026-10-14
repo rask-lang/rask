@@ -16,6 +16,6 @@ func describe(account: Account) -> i64 {
 }
 
 func main() {
-    let account = Account { owner: "Ada", balance: 100 }
+    let account = Account(owner: "Ada", balance: 100)
     println("{describe(account)}")
 }

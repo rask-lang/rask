@@ -183,7 +183,7 @@ pub enum ExprKind {
         end: Option<Box<Expr>>,
         inclusive: bool,
     },
-    /// Struct literal (Point { x: 1, y: 2 })
+    /// Struct literal `Point(x: 1, y: 2)`
     StructLit {
         name: String,
         /// `Ring<i64> { … }` writes them; empty otherwise.
@@ -323,6 +323,9 @@ pub enum ArgMode {
     /// is a `mutate` parameter that may also delete, so the call site says the
     /// more specific word (analysis.fourth-option).
     Deleting,
+    /// `..base` — the rest of the fields come from `base`. Only building a
+    /// value takes one: `Point(x: 1, ..p)` (type.structs).
+    Spread,
 }
 
 /// A function call argument with optional name label and mode annotation.
@@ -527,7 +530,7 @@ pub enum Pattern {
         name: String,
         fields: Vec<Pattern>,
     },
-    /// Struct pattern `Name { field: pattern, ... }`
+    /// Struct or named-variant pattern `Name(field: pattern, ..)`
     Struct {
         name: String,
         fields: Vec<(String, Pattern)>,
@@ -701,5 +704,46 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Loop { .. } => "Loop",
         ExprKind::Assert { .. } => "Assert",
         ExprKind::Check { .. } => "Check",
+    }
+}
+
+/// A constant written as a literal: what an attribute's value or a field's
+/// declared default reduces to for the readers that splice it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Literal {
+    Int(i128),
+    Float(f64),
+    Bool(bool),
+    Str(String),
+    Char(char),
+}
+
+impl Expr {
+    /// This expression as a literal, with a leading `-` folded into a number.
+    pub fn as_literal(&self) -> Option<Literal> {
+        Some(match &self.kind {
+            ExprKind::Int(n, _) => Literal::Int(*n),
+            ExprKind::Float(f, _) => Literal::Float(*f),
+            ExprKind::Bool(b) => Literal::Bool(*b),
+            ExprKind::String(s) => Literal::Str(s.clone()),
+            // `"{{x}}"` arrives as segments, all of them text.
+            ExprKind::StringInterp(segments) => {
+                let mut text = String::new();
+                for seg in segments {
+                    match seg {
+                        StringSegment::Literal(t) => text.push_str(t),
+                        StringSegment::Expr(..) => return None,
+                    }
+                }
+                Literal::Str(text)
+            }
+            ExprKind::Char(c) => Literal::Char(*c),
+            ExprKind::Unary { op: UnaryOp::Neg, operand } => match operand.as_literal()? {
+                Literal::Int(n) => Literal::Int(-n),
+                Literal::Float(f) => Literal::Float(-f),
+                _ => return None,
+            },
+            _ => return None,
+        })
     }
 }

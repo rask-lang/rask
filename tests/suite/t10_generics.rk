@@ -19,7 +19,7 @@ struct Pair<A, B> {
 extend Pair<A, B> {
     // take self: moves fields out, caller loses the original
     func swap(take self) -> Pair<B, A> {
-        return Pair { first: self.second, second: self.first }
+        return Pair(first: self.second, second: self.first)
     }
 }
 
@@ -33,23 +33,23 @@ func max(a: i32, b: i32) -> i32 {
 }
 
 test "generic struct with int" {
-    let b = Box { value: 42 }
+    let b = Box(value: 42)
     assert b.get() == 42
 }
 
 test "generic struct with string" {
-    let b = Box { value: "hello" }
+    let b = Box(value: "hello")
     assert b.get() == "hello"
 }
 
 test "two type params" {
-    let p = Pair { first: 1, second: "two" }
+    let p = Pair(first: 1, second: "two")
     assert p.first == 1
     assert p.second == "two"
 }
 
 test "generic swap" {
-    let p = Pair { first: 1, second: "two" }
+    let p = Pair(first: 1, second: "two")
     let s = p.swap()
     assert s.first == "two"
     assert s.second == 1

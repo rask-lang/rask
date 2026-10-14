@@ -18,7 +18,7 @@ struct Meters {
 
 Meters implements Mul {
     func mul(self, o: Meters) -> Meters {
-        return Meters { v: self.v * o.v }
+        return Meters(v: self.v * o.v)
     }
 }
 
@@ -31,11 +31,11 @@ func squared_by_name<T: Mul>(x: T) -> T {
 }
 
 test "the operator spelling" {
-    assert squared(Meters { v: 3.0 }).v == 9.0
+    assert squared(Meters(v: 3.0)).v == 9.0
 }
 
 test "the method spelling" {
-    assert squared_by_name(Meters { v: 4.0 }).v == 16.0
+    assert squared_by_name(Meters(v: 4.0)).v == 16.0
 }
 
 test "a primitive through the same bound" {
@@ -44,5 +44,5 @@ test "a primitive through the same bound" {
 }
 
 func main() {
-    println("{squared(Meters { v: 3.0 }).v}")
+    println("{squared(Meters(v: 3.0)).v}")
 }

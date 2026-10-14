@@ -11,7 +11,7 @@ extend LoadError {
 
 func load(fail: bool) -> i32 or LoadError {
     if fail {
-        return LoadError { detail: "no" }
+        return LoadError(detail: "no")
     }
     return 7
 }

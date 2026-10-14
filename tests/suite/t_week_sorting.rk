@@ -87,9 +87,9 @@ test "std.collections — sort_by descending flips the operands" {
 
 test "std.collections — sort_by on a struct field" {
     mut v: Vec<Person> = [
-        Person { name: "cy", age: 30 },
-        Person { name: "ada", age: 20 },
-        Person { name: "bo", age: 25 },
+        Person(name: "cy", age: 30)
+        Person(name: "ada", age: 20)
+        Person(name: "bo", age: 25)
     ]
     v.sort_by(|a, b| a.age.compare(b.age))
     assert ages(v) == "20,25,30"
@@ -98,9 +98,9 @@ test "std.collections — sort_by on a struct field" {
 
 test "std.collections — sort_by on a struct field, descending" {
     mut v: Vec<Person> = [
-        Person { name: "ada", age: 20 },
-        Person { name: "cy", age: 30 },
-        Person { name: "bo", age: 25 },
+        Person(name: "ada", age: 20)
+        Person(name: "cy", age: 30)
+        Person(name: "bo", age: 25)
     ]
     v.sort_by(|a, b| b.age.compare(a.age))
     assert ages(v) == "30,25,20"
@@ -108,9 +108,9 @@ test "std.collections — sort_by on a struct field, descending" {
 
 test "std.collections — sort_by on a string field" {
     mut v: Vec<Person> = [
-        Person { name: "cy", age: 1 },
-        Person { name: "ada", age: 2 },
-        Person { name: "bo", age: 3 },
+        Person(name: "cy", age: 1)
+        Person(name: "ada", age: 2)
+        Person(name: "bo", age: 3)
     ]
     v.sort_by(|a, b| a.name.compare(b.name))
     assert names(v) == "ada,bo,cy"
@@ -120,9 +120,9 @@ test "std.collections — sort_by on a string field" {
 // 20-year-olds keep their input order.
 test "std.collections — equal keys keep their input order" {
     mut v: Vec<Person> = [
-        Person { name: "first", age: 20 },
-        Person { name: "second", age: 20 },
-        Person { name: "third", age: 10 },
+        Person(name: "first", age: 20)
+        Person(name: "second", age: 20)
+        Person(name: "third", age: 10)
     ]
     v.sort_by(|a, b| a.age.compare(b.age))
     assert ages(v) == "10,20,20"

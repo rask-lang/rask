@@ -41,6 +41,6 @@ func main() {
 
     // A struct node is what a rack is for.
     mut d = Rack<Node>.new()
-    let _ = d.insert(Node { value: 1, next: none })
+    let _ = d.insert(Node(value: 1, next: none))
     println("{count(d)}")
 }

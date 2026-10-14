@@ -62,7 +62,7 @@ struct Holder {
     inner: Heap<Big>
 }
 
-let h = Holder { inner: Heap(Big { a: 1, b: 2, c: 3 }) }
+let h = Holder(inner: Heap(Big(a: 1, b: 2, c: 3)))
 assert h.inner.b == 2
 // drop(h.inner)              // error: `h` gives it back already
 // nothing here — `h` going out of scope frees the block
@@ -76,7 +76,7 @@ func process(take ptr: Heap<Data>) {
     // ptr consumed when function takes ownership
 }
 
-let ptr = Heap(Data { value: 42 })
+let ptr = Heap(Data(value: 42))
 process(ptr)                  // Consumed by move
 // ptr no longer valid here
 ```
@@ -87,7 +87,7 @@ Dereferencing borrows the inner value without consuming the `Heap<T>`. Borrow ru
 
 <!-- test: parse -->
 ```rask
-let ptr = Heap(Point { x: 1, y: 2 })
+let ptr = Heap(Point(x: 1, y: 2))
 
 let x = (*ptr).x               // Borrow for read
 (*ptr).x = 10                    // Borrow for mutate
@@ -205,7 +205,7 @@ If `T: Cloneable`, then `Heap<T>: Cloneable`. Cloning allocates a new heap value
 
 <!-- test: parse -->
 ```rask
-let ptr1 = Heap(Point { x: 1, y: 2 })
+let ptr1 = Heap(Point(x: 1, y: 2))
 let ptr2 = ptr1.clone()            // New allocation, deep copy
 
 drop(ptr1)

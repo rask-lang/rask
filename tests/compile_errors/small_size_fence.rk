@@ -34,17 +34,17 @@ struct Pair<T> {
 }
 
 func main() {
-    let big = TooBig { a: 1, b: 2, c: 3 }
+    let big = TooBig(a: 1, b: 2, c: 3)
     println("{big.a}")
 
-    let names = WideNames { first: "ada", last: "lovelace" }
+    let names = WideNames(first: "ada", last: "lovelace")
     println("{names.first}")
 
     // Fine — 16 bytes exactly.
-    let ok = Pair<i64> { a: 1, b: 2 }
+    let ok = Pair<i64>(a: 1, b: 2)
     println("{ok.a}")
 
     // Not fine — 32 bytes, and the annotation promised otherwise.
-    let wide = Pair<string> { a: "x", b: "y" }
+    let wide = Pair<string>(a: "x", b: "y")
     println("{wide.a}")
 }

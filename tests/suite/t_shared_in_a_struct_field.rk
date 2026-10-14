@@ -40,7 +40,7 @@ struct ReadMostly {
 }
 
 func fresh_counter(name: string) -> Counter {
-    return Counter { name: name, hits: Shared.local(0) }
+    return Counter(name: name, hits: Shared.local(0))
 }
 
 test "mem.shared-rack-heap — a `Local` Shared in a field" {
@@ -55,7 +55,7 @@ test "mem.shared-rack-heap — a `Local` Shared in a field" {
 }
 
 test "mem.shared-rack-heap — a `Mutex` Shared in a field" {
-    let g = Guarded { total: Shared.mutex(10) }
+    let g = Guarded(total: Shared.mutex(10))
     with g.total.write() as t {
         t = t * 2
     }
@@ -65,7 +65,7 @@ test "mem.shared-rack-heap — a `Mutex` Shared in a field" {
 }
 
 test "mem.shared-rack-heap — a `Readers` Shared in a field" {
-    let r = ReadMostly { config: Shared.new(7) }
+    let r = ReadMostly(config: Shared.new(7))
     with r.config.read() as v {
         assert v == 7
     }
@@ -75,8 +75,8 @@ test "mem.shared-rack-heap — a `Readers` Shared in a field" {
 // runtime objects would read a cell as a lock.
 test "mem.shared-rack-heap — the three strategies side by side" {
     let c = fresh_counter("mixed")
-    let g = Guarded { total: Shared.mutex(1) }
-    let r = ReadMostly { config: Shared.new(2) }
+    let g = Guarded(total: Shared.mutex(1))
+    let r = ReadMostly(config: Shared.new(2))
     with c.hits.write() as n {
         n = 4
     }

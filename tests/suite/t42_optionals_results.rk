@@ -38,14 +38,14 @@ test "optional operators ? ! ?? is none (OPT9/OPT13/OPT11/OPT15)" {
 }
 
 test "optional chain ?. short-circuits (OPT10)" {
-    let u: User? = User { name: "ok" }
+    let u: User? = User(name: "ok")
     let missing: User? = none
     assert (u?.name ?? "no") == "ok"
     assert (missing?.name ?? "no") == "no"
 }
 
 test "if x? as v narrows and binds (OPT19)" {
-    let u: User? = User { name: "bo" }
+    let u: User? = User(name: "bo")
     mut got = ""
     if u? as v { got = v.name }
     assert got == "bo"

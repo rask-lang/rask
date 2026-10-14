@@ -8,7 +8,7 @@ struct Point {
 }
 
 func main() {
-    mut p = Heap(Point { x: 1, y: 2 })
+    mut p = Heap(Point(x: 1, y: 2))
     // And it has to be consumed exactly once (mem.linear/L1, #819), committed
     // here so nothing can panic while the box has no cleanup scheduled (L7).
     ensure drop(p)

@@ -49,17 +49,17 @@ test "recursive enum compares by value" {
 }
 
 test "field type declared below" {
-    let o = Outer { inner: Inner { n: 1 }, tag: "x" }
-    let p = Outer { inner: Inner { n: 1 }, tag: "x" }
-    let q = Outer { inner: Inner { n: 2 }, tag: "x" }
+    let o = Outer(inner: Inner(n: 1), tag: "x")
+    let p = Outer(inner: Inner(n: 1), tag: "x")
+    let q = Outer(inner: Inner(n: 2), tag: "x")
     assert o == p
     assert o != q
 }
 
 test "cycle through a struct declared below" {
-    let a = Expr.Neg(Wrapped { items: [Expr.Num(4)] })
-    let b = Expr.Neg(Wrapped { items: [Expr.Num(4)] })
-    let c = Expr.Neg(Wrapped { items: [Expr.Num(5)] })
+    let a = Expr.Neg(Wrapped(items: [Expr.Num(4)]))
+    let b = Expr.Neg(Wrapped(items: [Expr.Num(4)]))
+    let c = Expr.Neg(Wrapped(items: [Expr.Num(5)]))
     assert a == b
     assert a != c
 }
@@ -74,11 +74,11 @@ test "hash of a recursive enum is a map key" {
 }
 
 test "compare and hash through a field declared below" {
-    let a = Later { key: Key { rank: 1, name: "b" } }
-    let b = Later { key: Key { rank: 2, name: "a" } }
+    let a = Later(key: Key(rank: 1, name: "b"))
+    let b = Later(key: Key(rank: 2, name: "a"))
     assert a < b
     assert b > a
     mut m: Map<Later, string> = Map.new()
     m.insert(a, "first")
-    assert m.get(Later { key: Key { rank: 1, name: "b" } }) == "first"
+    assert m.get(Later(key: Key(rank: 1, name: "b"))) == "first"
 }

@@ -224,8 +224,8 @@ func main() -> void or Error {
 <!-- test: skip -->
 ```rask
 http.serve(
-    addr: string,
-    handler: func(Request) -> Response,
+    addr: string
+    handler: func(Request) -> Response
 ) -> void or HttpError
 ```
 

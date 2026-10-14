@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Values are written in parentheses whatever they are (SYNTAX.md, Brackets).
+// A struct and a named variant are filled by name, in any order, with a bare
+// name short for `name: name` and `..base` for the rest (type.structs/S1b).
+// A positional variant and a function are filled by position. Patterns read
+// the way values are built. Inside `( )` and `[ ]` a newline separates items.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Pair<T> {
+    first: T
+    second: T
+}
+
+enum Shape {
+    Circle(f64)
+    Rect(w: i64, h: i64)
+}
+
+func area(s: Shape) -> i64 {
+    match s {
+        Circle(_) => return 0
+        Rect(w, h) => return w * h
+    }
+}
+
+struct Tag {
+    name: string
+    level: i64
+}
+
+func sum3(a: i64, b: i64, c: i64) -> i64 {
+    return a + b + c
+}
+
+test "type.structs/S1b — by name, any order, shorthand, spread" {
+    let x = 1
+    let p = Point(y: 2, x)
+    assert p.x == 1
+    assert p.y == 2
+    let q = Point(y: 9, ..p)
+    assert q.x == 1
+    assert q.y == 9
+}
+
+test "type.structs/S1b — a generic struct takes its arguments on the name" {
+    let p = Pair<i64>(first: 1, second: 2)
+    assert p.first + p.second == 3
+}
+
+test "type.enums/E13 — a named variant is built and matched by name" {
+    assert area(Shape.Rect(h: 3, w: 4)) == 12
+    assert area(Shape.Circle(1.0)) == 0
+}
+
+test "type.structs/S1b — a pattern takes a value apart the way it was built" {
+    let Point(x, y) = Point(x: 5, y: 6)
+    assert x + y == 11
+    let p = Point(x: 0, y: 7)
+    if p is Point(x: 0, y) {
+        assert y == 7
+    } else {
+        assert false
+    }
+    assert !(p is Point(x: 1, y))
+}
+
+test "type.structs/S1b — a struct `is` test binds for the rest of an && chain" {
+    let t = Tag(name: "hot", level: 3)
+    mut hits = 0
+    if t is Tag(name, level: 3) && name.len() == 3 {
+        hits = hits + 1
+    }
+    if t is Tag(name, level: 4) && name.len() == 3 {
+        hits = hits + 10
+    }
+    assert hits == 1
+}
+
+test "SYNTAX Lists — a newline separates items" {
+    let p = Point(
+        x: 3
+        y: 4
+    )
+    assert p.x + p.y == 7
+    let total = sum3(
+        1
+        2
+        3
+    )
+    assert total == 6
+    let xs = [
+        10
+        20
+    ]
+    assert xs.len() == 2
+}
+
+test "SYNTAX Lists — an item continues across a line the usual ways" {
+    let total = sum3(
+        1 +
+            1
+        p_x()
+            .abs()
+        3
+    )
+    assert total == 6
+}
+
+func p_x() -> i64 {
+    return 0 - 1
+}

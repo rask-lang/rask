@@ -104,11 +104,11 @@ struct Lexer {
 
 extend Lexer {
     func new(source: string) -> Lexer {
-        return Lexer {
-            source: source,
-            pos: 0,
-            line: 1,
-        }
+        return Lexer(
+            source: source
+            pos: 0
+            line: 1
+        )
     }
 
     // Look at the current character without consuming it.

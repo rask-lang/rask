@@ -8,10 +8,10 @@ func parse_wind(metar: string) -> Wind {
     // cheaper `metar[0..3].view()` works too, bound as a `StringView`.
     let dir_str = metar[0..3].to_string()
     let spd_str = metar[3..5].to_string()
-    return Wind {
-        direction: dir_str.parse<i32>()!,
-        speed: spd_str.parse<i32>()!,
-    }
+    return Wind(
+        direction: dir_str.parse<i32>()!
+        speed: spd_str.parse<i32>()!
+    )
 }
 
 func format_flight_plan(departure: string, arrival: string, waypoints: Vec<string>) -> string {

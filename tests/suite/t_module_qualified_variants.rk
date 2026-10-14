@@ -111,13 +111,13 @@ test "a method on a variant value is not a module path" {
 // until a map in a struct field started being freed, and then the free was
 // handed that.
 test "a struct literal through its module" {
-    let r = http.Response { status: 201, headers: http.Headers.new(), body: "made" }
+    let r = http.Response(status: 201, headers: http.Headers.new(), body: "made")
     assert r.status == 201
     assert r.body == "made"
 }
 
 test "and through an alias" {
-    let r = h.Response { status: 202, headers: h.Headers.new(), body: "aliased" }
+    let r = h.Response(status: 202, headers: h.Headers.new(), body: "aliased")
     assert r.status == 202
     assert r.body == "aliased"
 }
@@ -127,7 +127,7 @@ struct Crate {
 }
 
 test "an unqualified literal is unaffected" {
-    let c = Crate { n: 5 }
+    let c = Crate(n: 5)
     assert c.n == 5
 }
 
@@ -150,12 +150,12 @@ test "a dotted name in a condition still starts the body" {
 // called `bits`: the interpreter built a struct nobody declares, native a
 // pointer with no layout.
 test "a struct-like variant through its module" {
-    let e = bits.BinaryParseError.UnexpectedEnd { expected: 4, actual: 2 }
+    let e = bits.BinaryParseError.UnexpectedEnd(expected: 4, actual: 2)
     assert e.message() == "unexpected end: expected 4 bytes, got 2"
-    let f = bt.BinaryParseError.InvalidData { message: "bad tag" }
+    let f = bt.BinaryParseError.InvalidData(message: "bad tag")
     assert f.message() == "invalid data: bad tag"
     match e {
-        BinaryParseError.UnexpectedEnd { expected, actual } => assert expected - actual == 2
+        BinaryParseError.UnexpectedEnd(expected, actual) => assert expected - actual == 2
         _ => assert false
     }
 }

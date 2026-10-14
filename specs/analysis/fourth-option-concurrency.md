@@ -182,8 +182,8 @@ generalizes it.
 <!-- test: skip -->
 ```rask
 world.stage(|w| {
-    let e = w.insert(Entity { name: "drone", health: 20 })
-    let b = w.bodies.insert(Body { x: 0.0, y: 0.0 })
+    let e = w.insert(Entity(name: "drone", health: 20))
+    let b = w.bodies.insert(Body(x: 0.0, y: 0.0))
     e.body = b          // mutual references inside the batch
     b.owner = e
 })                       // constraints checked, then applied — or rejected whole

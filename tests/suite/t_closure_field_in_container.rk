@@ -27,14 +27,14 @@ struct Nested {
 
 test "a struct element holding a closure" {
     mut fs: Vec<Handler> = []
-    fs.push(Handler { run: |x| x + 1 })
+    fs.push(Handler(run: |x| x + 1))
     assert fs.len() == 1
     assert (fs[0].run)(5) == 6
 }
 
 test "never called, still released" {
     mut fs: Vec<Handler> = []
-    fs.push(Handler { run: |x| x + 1 })
+    fs.push(Handler(run: |x| x + 1))
     assert fs.len() == 1
 }
 
@@ -42,8 +42,8 @@ test "never called, still released" {
 // count on it is what keeps one free from being two.
 test "a clone of that container" {
     mut fs: Vec<Handler> = []
-    fs.push(Handler { run: |x| x + 1 })
-    fs.push(Handler { run: |x| x + 2 })
+    fs.push(Handler(run: |x| x + 1))
+    fs.push(Handler(run: |x| x + 2))
     let copy = fs.clone()
     assert copy.len() == 2
     assert (copy[0].run)(5) == 6
@@ -51,13 +51,13 @@ test "a clone of that container" {
 
 test "one level further out" {
     mut ns: Vec<Nested> = []
-    ns.push(Nested { inner: Handler { run: |x| x * 3 } })
+    ns.push(Nested(inner: Handler(run: |x| x * 3)))
     assert (ns[0].inner.run)(4) == 12
 }
 
 test "a map value holding one" {
     mut m: Map<string, Handler> = Map.new()
-    m.insert("k", Handler { run: |x| x + 10 })
+    m.insert("k", Handler(run: |x| x + 10))
     assert m.len() == 1
 }
 

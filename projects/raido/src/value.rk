@@ -27,7 +27,7 @@ const FRAC_SCALE: i64 = 0x100000000
 extend Number {
     func from_int(n: i64) -> Number {
         // Create a Number from an integer (e.g., 42 → 42.0 in fixed-point)
-        return Number { raw: n << FRAC_BITS }
+        return Number(raw: n << FRAC_BITS)
     }
 
     func to_int(self) -> i64 {
@@ -38,9 +38,9 @@ extend Number {
     func modulo(self, other: Number) -> Number {
         // Modulo
         if other.raw == 0 {
-            return Number { raw: 0 }
+            return Number(raw: 0)
         }
-        return Number { raw: self.raw % other.raw }
+        return Number(raw: self.raw % other.raw)
     }
 
     func eq(self, other: Number) -> bool {
@@ -101,14 +101,14 @@ extend Number {
 Number implements Add {
     func add(self, other: Number) -> Number {
         // Addition: just add the raw values
-        return Number { raw: self.raw + other.raw }
+        return Number(raw: self.raw + other.raw)
     }
 }
 
 Number implements Sub {
     func sub(self, other: Number) -> Number {
         // Subtraction: just subtract
-        return Number { raw: self.raw - other.raw }
+        return Number(raw: self.raw - other.raw)
     }
 }
 
@@ -126,11 +126,11 @@ Number implements Mul {
         }
 
         let result = (a.abs() * b.abs()) >> FRAC_BITS
-        return Number { raw: if sign < 0 {
+        return Number(raw: if sign < 0 {
             (-result).wrap<i64>()
         } else {
             result.wrap<i64>()
-        } }
+        })
     }
 }
 
@@ -140,11 +140,11 @@ Number implements Div {
         // Same split trick as multiplication
         if other.raw == 0 {
             // Caller should check for this — but saturate rather than crash
-            return Number { raw: if self.raw >= 0 {
+            return Number(raw: if self.raw >= 0 {
                 0x7FFFFFFFFFFFFFFF
             } else {
                 -0x7FFFFFFFFFFFFFFF
-            } }
+            })
         }
 
         let a = self.raw as i128
@@ -156,18 +156,18 @@ Number implements Div {
         }
 
         let result = (a.abs() << FRAC_BITS) / b.abs()
-        return Number { raw: if sign < 0 {
+        return Number(raw: if sign < 0 {
             (-result).wrap<i64>()
         } else {
             result.wrap<i64>()
-        } }
+        })
     }
 }
 
 Number implements Neg {
     func neg(self) -> Number {
         // Negation
-        return Number { raw: -self.raw }
+        return Number(raw: -self.raw)
     }
 }
 

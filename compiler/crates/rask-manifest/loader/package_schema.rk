@@ -9,46 +9,46 @@
 import schema.{Schema, Ty, Field, Case, Step, Release, Change, Value, required, optional, defaulted, list_of, map_of, root}
 
 public func package_schema() -> Schema {
-    return Schema {
-        name: "rask-package",
-        shape: Ty.Record(top_fields()),
-        history: package_history(),
-    }
+    return Schema(
+        name: "rask-package"
+        shape: Ty.Record(top_fields())
+        history: package_history()
+    )
 }
 
 public func package_history() -> Vec<Release> {
     mut adds = Vec<Change>.new()
     mut fields = top_fields()
     for f in fields.take_all() {
-        adds.push(Change.Add { at: root(), field: f })
+        adds.push(Change.Add(at: root(), field: f))
     }
     mut h = Vec<Release>.new()
-    h.push(Release { version: 1, changes: adds })
+    h.push(Release(version: 1, changes: adds))
     return h
 }
 
 func top_fields() -> Vec<Field> {
     return Vec<Field>.from([
-        required("package", package_ty()),
-        optional("dependencies", map_of(dep_ty())),
-        optional("dev-dependencies", map_of(dep_ty())),
-        optional("build-dependencies", map_of(dep_ty())),
-        optional("features", map_of(feature_ty())),
-        optional("exclusive-features", map_of(exclusive_ty())),
-        optional("profiles", map_of(profile_ty())),
+        required("package", package_ty())
+        optional("dependencies", map_of(dep_ty()))
+        optional("dev-dependencies", map_of(dep_ty()))
+        optional("build-dependencies", map_of(dep_ty()))
+        optional("features", map_of(feature_ty()))
+        optional("exclusive-features", map_of(exclusive_ty()))
+        optional("profiles", map_of(profile_ty()))
     ])
 }
 
 func package_ty() -> Ty {
     return Ty.Record(Vec<Field>.from([
-        required("name", Ty.Str),
-        required("version", Ty.Version),
-        optional("description", Ty.Str),
-        optional("license", Ty.Str),
-        optional("repository", Ty.Str),
-        optional("members", list_of(Ty.Str)),
-        defaulted("sandbox", Ty.Bool, Value.Bool(false)),
-        optional("vendor-dir", Ty.Str),
+        required("name", Ty.Str)
+        required("version", Ty.Version)
+        optional("description", Ty.Str)
+        optional("license", Ty.Str)
+        optional("repository", Ty.Str)
+        optional("members", list_of(Ty.Str))
+        defaulted("sandbox", Ty.Bool, Value.Bool(false))
+        optional("vendor-dir", Ty.Str)
     ]))
 }
 
@@ -57,27 +57,27 @@ func package_ty() -> Ty {
 //   shared = { path = "../shared" }
 //   tls    = { git = "https://github.com/x/tls", rev = "a1b2c3" }
 public func dep_ty() -> Ty {
-    return Ty.Variant {
+    return Ty.Variant(
         cases: Vec<Case>.from([
-            Case { name: "registry", payload: Ty.VersionReq, fields: Vec.new() },
-            Case { name: "path", payload: Ty.Str, fields: Vec.new() },
-            Case {
-                name: "git",
-                payload: Ty.Str,
+            Case(name: "registry", payload: Ty.VersionReq, fields: Vec.new())
+            Case(name: "path", payload: Ty.Str, fields: Vec.new())
+            Case(
+                name: "git"
+                payload: Ty.Str
                 fields: Vec<Field>.from([
-                    optional("rev", Ty.Str),
-                    optional("branch", Ty.Str),
-                ]),
-            },
-        ]),
+                    optional("rev", Ty.Str)
+                    optional("branch", Ty.Str)
+                ])
+            )
+        ])
         shared: Vec<Field>.from([
-            optional("target", Ty.Str),
-            optional("with", list_of(Ty.Str)),
-            optional("allow", list_of(Ty.OneOf(capabilities()))),
-            optional("select", map_of(Ty.Str)),
-            optional("feature", Ty.Str),
-        ]),
-    }
+            optional("target", Ty.Str)
+            optional("with", list_of(Ty.Str))
+            optional("allow", list_of(Ty.OneOf(capabilities())))
+            optional("select", map_of(Ty.Str))
+            optional("feature", Ty.Str)
+        ])
+    )
 }
 
 func capabilities() -> Vec<string> {
@@ -88,11 +88,11 @@ func capabilities() -> Vec<string> {
 // deps sit under its own dev-dependencies table.
 func feature_ty() -> Ty {
     return Ty.Record(Vec<Field>.from([
-        defaulted("default", Ty.Bool, Value.Bool(false)),
-        optional("enables", list_of(Ty.Str)),
-        optional("dependencies", map_of(dep_ty())),
-        optional("dev-dependencies", map_of(dep_ty())),
-        optional("build-dependencies", map_of(dep_ty())),
+        defaulted("default", Ty.Bool, Value.Bool(false))
+        optional("enables", list_of(Ty.Str))
+        optional("dependencies", map_of(dep_ty()))
+        optional("dev-dependencies", map_of(dep_ty()))
+        optional("build-dependencies", map_of(dep_ty()))
     ]))
 }
 
@@ -101,21 +101,21 @@ func feature_ty() -> Ty {
 // options.tokio = { tokio = { registry = "^1.0" } }
 func exclusive_ty() -> Ty {
     return Ty.Record(Vec<Field>.from([
-        required("default", Ty.Str),
-        required("options", map_of(map_of(dep_ty()))),
+        required("default", Ty.Str)
+        required("options", map_of(map_of(dep_ty())))
     ]))
 }
 
 func profile_ty() -> Ty {
     return Ty.Record(Vec<Field>.from([
-        optional("inherits", Ty.Str),
-        optional("opt-level", Ty.OneOf(Vec<string>.from(["0", "1", "2", "3", "s", "z"]))),
-        optional("debug-info", Ty.Bool),
-        optional("overflow-checks", Ty.Bool),
-        optional("lto", Ty.OneOf(Vec<string>.from(["off", "thin", "fat"]))),
-        optional("codegen-units", Ty.Int),
-        optional("strip", Ty.Bool),
-        optional("panic", Ty.OneOf(Vec<string>.from(["unwind", "abort"]))),
+        optional("inherits", Ty.Str)
+        optional("opt-level", Ty.OneOf(Vec<string>.from(["0", "1", "2", "3", "s", "z"])))
+        optional("debug-info", Ty.Bool)
+        optional("overflow-checks", Ty.Bool)
+        optional("lto", Ty.OneOf(Vec<string>.from(["off", "thin", "fat"])))
+        optional("codegen-units", Ty.Int)
+        optional("strip", Ty.Bool)
+        optional("panic", Ty.OneOf(Vec<string>.from(["unwind", "abort"])))
     ]))
 }
 

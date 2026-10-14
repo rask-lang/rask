@@ -46,14 +46,14 @@ let token = match c {
 | **CF7: Omitted else** | Omitting `else` produces `()` (statement context only) |
 | **CF7b: No bare struct literal in a condition** | A `{` in an `if`/`while` condition starts the body. To write a struct literal there, parenthesize it |
 
-The `{` after a condition belongs to the block, so `Shape.Circle { r: 4 }` in
+The `{` after a condition belongs to the block, so `Shape.Circle(r: 4)` in
 condition position has nowhere to go. Parens settle it — inside them a `{` can
 only be a literal:
 
 ```rask
 if s == Shape.Dot { ... }                      // fine — unit variant, no braces
-if (c == Shape.Circle { r: 4 }) { ... }        // literal needs parens
-let want = Shape.Circle { r: 4 }             // or bind it first
+if (c == Shape.Circle(r: 4)) { ... }        // literal needs parens
+let want = Shape.Circle(r: 4)             // or bind it first
 if c == want { ... }
 ```
 

@@ -52,7 +52,7 @@ func named_big(items: Sequence<i64>) -> i64 or Big {
 func either(items: Sequence<i64>) -> i64 or (Big | Small) {
     for x in items {
         if x < 0 {
-            return Small { at: x }
+            return Small(at: x)
         }
         if x > 5 {
             return Big.Found(x)

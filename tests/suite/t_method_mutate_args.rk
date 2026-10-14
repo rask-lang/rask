@@ -41,7 +41,7 @@ extend Light {
 
 extend Counter {
     func replace(mutate self) {
-        self = Counter { step: 99 }
+        self = Counter(step: 99)
     }
 }
 
@@ -53,7 +53,7 @@ test "a static method's mutate argument writes back" {
 
 test "an instance method's mutate argument writes back" {
     mut n: i64 = 1
-    let c = Counter { step: 10 }
+    let c = Counter(step: 10)
     c.advance(mutate n)
     assert n == 11
 }
@@ -61,7 +61,7 @@ test "an instance method's mutate argument writes back" {
 test "each mutate argument lands on its own place" {
     mut a: i64 = 0
     mut b: i64 = 0
-    let c = Counter { step: 3 }
+    let c = Counter(step: 3)
     c.advance_both(mutate a, mutate b)
     assert a == 3
     assert b == -3
@@ -71,7 +71,7 @@ test "replacing all of a mutate self reaches the receiver" {
     mut l = Light.Red
     l.flip()
     assert l == Light.Green
-    mut c = Counter { step: 1 }
+    mut c = Counter(step: 1)
     c.replace()
     assert c.step == 99
 }

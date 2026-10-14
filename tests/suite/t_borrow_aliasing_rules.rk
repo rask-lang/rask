@@ -40,7 +40,7 @@ func bump_and_read(mutate a: i32, b: i32) -> i32 {
 }
 
 test "disjoint fields of one value can go into one call" {
-    mut p = Player { health: 50, score: 10 }
+    mut p = Player(health: 50, score: 10)
     let seen = bump_and_read(mutate p.health, p.score)
     assert seen == 10
     assert p.health == 51
@@ -58,7 +58,7 @@ test "a field of an element comes out by chaining, not by binding" {
     mut rows: Vec<Row> = Vec.new()
     mut vals: Vec<i64> = Vec.new()
     vals.push(7)
-    rows.push(Row { key: "a", values: vals })
+    rows.push(Row(key: "a", values: vals))
     // `let r = rows[0]` would be E0871 — `Row` holds a Vec, so the binding
     // would share its buffer.
     assert rows[0].key == "a"
@@ -82,13 +82,13 @@ test "a take receiver hands the field over, a borrow hands over a copy" {
     mut a: Vec<i64> = Vec.new()
     a.push(1)
     a.push(2)
-    let owner = Row { key: "k", values: a }
+    let owner = Row(key: "k", values: a)
     let moved = owner.into_values()
     assert moved.len() == 2
 
     mut b: Vec<i64> = Vec.new()
     b.push(3)
-    mut lender = Row { key: "k", values: b }
+    mut lender = Row(key: "k", values: b)
     mut copied = lender.values_copy()
     copied.push(4)
     assert copied.len() == 2
@@ -99,7 +99,7 @@ test "a take receiver hands the field over, a borrow hands over a copy" {
 // S5: there is no second name to make. The field is reachable where it lives,
 // and `mut escaped = h.data` would only be another way to say `h.data`.
 test "a field is written where it lives" {
-    mut h = Holder { data: Vec<i64>.new() }
+    mut h = Holder(data: Vec<i64>.new())
     h.data.push(10)
     h.data.push(99)
     assert h.data.len() == 2
@@ -110,7 +110,7 @@ test "a field is written where it lives" {
 // separate — clone elision used to drop this one, because the temp holding the
 // field read dies at the call and that read as a last use of the Vec.
 test "cloning a field gives a value the source doesn't share" {
-    mut h = Holder { data: Vec<i64>.new() }
+    mut h = Holder(data: Vec<i64>.new())
     h.data.push(1)
     mut copy = h.data.clone()
     copy.push(2)
@@ -119,17 +119,17 @@ test "cloning a field gives a value the source doesn't share" {
 }
 
 test "and a read of the same field is still just a read" {
-    mut h = Holder { data: Vec<i64>.new() }
+    mut h = Holder(data: Vec<i64>.new())
     h.data.push(5)
     let n = h.data.len()
-    let holder = Holder { data: Vec<i64>.new() }
+    let holder = Holder(data: Vec<i64>.new())
     assert n == 1
     assert holder.data.len() == 0
     assert h.first() == 5
 }
 
 func main() {
-    mut p = Player { health: 1, score: 2 }
+    mut p = Player(health: 1, score: 2)
     let seen = bump_and_read(mutate p.health, p.score)
     println("borrow aliasing rules ok: {p.health} {seen}")
     return

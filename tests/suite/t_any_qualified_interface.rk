@@ -91,17 +91,17 @@ func pick(take g: any Greeter) -> any Greeter {
 }
 
 test "the file compiles, which is what the qualified signatures assert" {
-    let l = Loud { name: "rask" }
+    let l = Loud(name: "rask")
     assert hail(l) == "HI rask"
 }
 
 test "and a bare one still round-trips" {
-    let l = Loud { name: "there" }
+    let l = Loud(name: "there")
     assert pick(l).greet() == "HI there"
 }
 
 test "a qualified conformance header satisfies the module's interface" {
-    let t = Tally { seen: 2 }
+    let t = Tally(seen: 2)
     assert send(t, "hello")
     assert !send(t, "")
     let n = t.write([1u8, 2u8, 3u8]) catch _ => -1
@@ -111,9 +111,9 @@ test "a qualified conformance header satisfies the module's interface" {
 test "a call through `any io.Writer`" {
     mut buf = io.Buffer.new()
     assert sink(buf, "hello")
-    assert sink(Tally { seen: 0 }, "hi")
-    assert !sink(Tally { seen: 0 }, "")
+    assert sink(Tally(seen: 0), "hi")
+    assert !sink(Tally(seen: 0), "")
     mut ws: Vec<any io.Writer> = Vec.new()
-    ws.push(Tally { seen: 0 })
+    ws.push(Tally(seen: 0))
     assert any_writers(ws)
 }

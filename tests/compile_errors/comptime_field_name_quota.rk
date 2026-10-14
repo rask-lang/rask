@@ -36,6 +36,6 @@ func fine(b: Budget10) -> i64 {
 }
 
 func main() {
-    let b = Budget10 { spent: 3, limit: 10 }
+    let b = Budget10(spent: 3, limit: 10)
     println("{fine(b)}")
 }

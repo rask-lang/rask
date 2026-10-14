@@ -28,7 +28,7 @@ func read_file(path: string) -> string or IoError {
 // This function returns ParseError
 func parse_config(content: string) -> Config or ParseError {
     // ... parsing logic
-    return Config { value: 0 }
+    return Config(value: 0)
 }
 
 // COMPILE ERROR: Incompatible error types

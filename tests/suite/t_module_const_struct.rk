@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A module const holding a struct or an enum, read every way a value is read.
+// Natively the thunk that fills the const's slot copied it a word at a time
+// through field 0, so `ORIGIN` came back `1 1`. And a field or method read
+// straight off the name took the const for a type: `ORIGIN.y` was a variant
+// tag (0), `"{ORIGIN.x}"` called `x_to_string`, `CFG.name.len()` called
+// `name_len`.
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+extend Point {
+    func sum(self) -> i64 {
+        return self.x + self.y
+    }
+}
+
+struct Config {
+    public port: u16
+    public name: string
+    public origin: Point
+}
+
+enum Mode {
+    Off
+    On(level: i32)
+}
+
+const ORIGIN: Point = Point(x: 1, y: 6)
+const CFG: Config = Config(port: 8080, name: "a long server name here", origin: Point(x: 4, y: 5))
+const MODE: Mode = Mode.On(level: 7)
+
+func show(p: Point) -> string {
+    return "({p.x}, {p.y})"
+}
+
+test "a struct const reads back whole" {
+    let o = ORIGIN
+    assert o.x == 1
+    assert o.y == 6
+    let c = CFG.clone()
+    assert c.port == 8080
+    assert c.name == "a long server name here"
+    assert c.origin.y == 5
+}
+
+test "fields and methods straight off the name" {
+    assert ORIGIN.y == 6
+    assert "{ORIGIN.x} {ORIGIN.y}" == "1 6"
+    assert ORIGIN.sum() == 7
+    assert CFG.name.len() == 23
+    assert CFG.origin.x == 4
+    assert show(ORIGIN) == "(1, 6)"
+    assert show(CFG.origin) == "(4, 5)"
+}
+
+test "a string in a struct const survives every read" {
+    for _ in 0..3 {
+        let c = CFG.clone()
+        assert c.name == "a long server name here"
+    }
+    assert CFG.name == "a long server name here"
+}
+
+test "an enum const matches" {
+    let level = match MODE {
+        Mode.On(level) => level
+        Mode.Off => 0
+    }
+    assert level == 7
+}
+
+func main() {}

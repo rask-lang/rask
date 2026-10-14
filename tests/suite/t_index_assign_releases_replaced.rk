@@ -36,8 +36,8 @@ test "assigning an element to itself or a sibling keeps both alive" {
 }
 
 test "assigning a struct element releases its strings" {
-    mut lines: Vec<Line> = [Line { text: heap("one"), n: 1 }]
-    lines[0] = Line { text: heap("two"), n: 2 }
+    mut lines: Vec<Line> = [Line(text: heap("one"), n: 1)]
+    lines[0] = Line(text: heap("two"), n: 2)
     lines[0].text = heap("three")
     assert lines[0].text == heap("three")
     assert lines[0].n == 2

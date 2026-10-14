@@ -57,9 +57,9 @@ test "ORD1 — equality against a variant holds for every receiver kind" {
 // run — it passed roughly half the time.
 test "stdlib.collections — a comparator closure returning Ordering sorts deterministically" {
     mut rows = Vec.new()
-    rows.push(Row { rank: 3, name: "c" })
-    rows.push(Row { rank: 1, name: "a" })
-    rows.push(Row { rank: 2, name: "b" })
+    rows.push(Row(rank: 3, name: "c"))
+    rows.push(Row(rank: 1, name: "a"))
+    rows.push(Row(rank: 2, name: "b"))
 
     // Tail-expression form.
     rows.sort_by(|x, y| x.rank.compare(y.rank))

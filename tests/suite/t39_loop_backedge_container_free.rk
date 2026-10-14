@@ -139,7 +139,7 @@ struct Bag {
 }
 
 test "a vector in a field, iterated inside a loop" {
-    let b = Bag { items: [2, 3] }
+    let b = Bag(items: [2, 3])
     mut total = 0
     mut r = 0
     while r < 3 {

@@ -47,7 +47,7 @@ func parse(text: string) -> i64 or ParseError {
     if text == "7" {
         return 7
     }
-    return ParseError { at: 0 }
+    return ParseError(at: 0)
 }
 
 // Two different concrete error types, one boxed error out. This is the whole

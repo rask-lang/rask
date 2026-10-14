@@ -25,8 +25,8 @@ func struct_roundtrip() -> string or ReceiveError {
         let ch = Channel<Msg>.buffered(4)
         let tx = ch.0
         let rx = ch.1
-        tx.send(Msg { id: 1, text: "first" })
-        tx.send(Msg { id: 2, text: "second" })
+        tx.send(Msg(id: 1, text: "first"))
+        tx.send(Msg(id: 2, text: "second"))
         let a = try rx.receive()
         let b = try rx.receive()
         return "{a.id}/{a.text} {b.id}/{b.text}"

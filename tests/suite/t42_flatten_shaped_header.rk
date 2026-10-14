@@ -142,7 +142,7 @@ test "a user header whose argument is generic" {
     mut rows = Vec<Vec<i64>>.new()
     rows.push(r1)
     rows.push(r2)
-    let l = Layers<Vec<i64>> { rows: rows }
+    let l = Layers<Vec<i64>>(rows: rows)
     assert l.total() == 4u64
 }
 
@@ -157,14 +157,14 @@ test "a struct literal whose type argument is itself generic" {
     mut rows = Vec<Vec<i64>>.new()
     let r: Vec<i64> = [1, 2]
     rows.push(r)
-    let l = Layers<Vec<i64>> { rows: rows }
+    let l = Layers<Vec<i64>>(rows: rows)
     assert l.rows.len() == 1
     assert l.total() == 2u64
 }
 
 test "three levels of brackets" {
     let deep = Vec<Vec<Vec<i64>>>.new()
-    let l = Layers<Vec<Vec<i64>>> { rows: deep }
+    let l = Layers<Vec<Vec<i64>>>(rows: deep)
     assert l.rows.len() == 0
 }
 
@@ -175,7 +175,7 @@ struct Pair<A, B> {
 
 test "two type arguments, the second one nested" {
     let v: Vec<i64> = [1]
-    let p = Pair<i64, Vec<i64>> { a: 5, b: v }
+    let p = Pair<i64, Vec<i64>>(a: 5, b: v)
     assert p.a == 5
     assert p.b.len() == 1
 }
@@ -187,13 +187,13 @@ struct Holder<T> {
 }
 
 test "a function type as the argument" {
-    let h = Holder<func(i64) -> bool> { v: |x| x > 0 }
+    let h = Holder<func(i64) -> bool>(v: |x| x > 0)
     let f = h.v
     assert f(3)
 }
 
 test "a tuple type as the argument" {
-    let t = Holder<(i64, string)> { v: (1, "a") }
+    let t = Holder<(i64, string)>(v: (1, "a"))
     assert t.v.0 == 1
 }
 
@@ -208,7 +208,7 @@ test "a tuple type as the argument" {
 // optional over an aggregate — `Holder<Vec<i64>?>` — reads back as `none`, and
 // a 24-byte struct payload kills the binary (#1081).
 test "an optional as the argument" {
-    let h = Holder<i64?> { v: 5 }
+    let h = Holder<i64?>(v: 5)
     assert h.v! == 5
 }
 

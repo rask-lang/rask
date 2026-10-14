@@ -6,7 +6,7 @@ struct Session {
 
 extend Session {
     func open(id: i32) -> Session {
-        return Session { number: id }
+        return Session(number: id)
     }
 
     func id(self) -> i32 {

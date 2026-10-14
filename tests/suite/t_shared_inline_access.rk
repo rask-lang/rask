@@ -20,19 +20,19 @@ test "get copies the whole value out" {
 }
 
 test "a chained read takes one field" {
-    let c = Shared.new(Config { timeout: 30, retries: 3 })
+    let c = Shared.new(Config(timeout: 30, retries: 3))
     assert c.read().timeout == 30
     assert c.read().timeout + c.read().retries == 33
 }
 
 test "a chained write sets one field" {
-    let c = Shared.new(Config { timeout: 30, retries: 3 })
+    let c = Shared.new(Config(timeout: 30, retries: 3))
     c.write().timeout = 60
     assert c.read().timeout == 60
 }
 
 test "with holds the lock across statements" {
-    let c = Shared.new(Config { timeout: 30, retries: 3 })
+    let c = Shared.new(Config(timeout: 30, retries: 3))
     with c.write() as v {
         v.timeout = 45
         v.retries = v.retries + 1

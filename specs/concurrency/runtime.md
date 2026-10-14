@@ -1731,7 +1731,7 @@ spawn {  // captures move in — the task outlives this frame
 }
 
 // Illegal: capture a link
-let e = world.insert(Entity { hp: 100 })
+let e = world.insert(Entity(hp: 100))
 spawn {
     e.hp -= 10  // ERROR: a link is an address; it means nothing over there
 }

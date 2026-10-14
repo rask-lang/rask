@@ -35,7 +35,7 @@ extend Shape {
 
 func main() {
     // Structs: indexed.
-    let ps = [Pt { x: 1, y: 2 }, Pt { x: 3, y: 4 }, Pt { x: 5, y: 6 }]
+    let ps = [Pt(x: 1, y: 2), Pt(x: 3, y: 4), Pt(x: 5, y: 6)]
     println("ps[0]=({ps[0].x},{ps[0].y}) ps[2]=({ps[2].x},{ps[2].y})")
 
     // Structs: iterated.

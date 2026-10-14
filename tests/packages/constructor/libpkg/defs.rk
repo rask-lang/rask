@@ -20,5 +20,5 @@ public func twice(n: i64) -> i64 {
 }
 
 public func make() -> Dog {
-    return Dog { age: 7 }
+    return Dog(age: 7)
 }

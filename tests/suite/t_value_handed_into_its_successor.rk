@@ -79,16 +79,16 @@ enum Chain {
 // The same handover where what moves carries a string, so a double free would
 // be reported rather than silently reusing bytes that still read right.
 func names(n: i64) -> Chain {
-    mut out = Chain.More(Node {
-        name: "a name long enough to live on the heap",
-        next: Heap(Chain.End),
-    })
+    mut out = Chain.More(Node(
+        name: "a name long enough to live on the heap"
+        next: Heap(Chain.End)
+    ))
     mut i = 1
     while i < n {
-        out = Chain.More(Node {
-            name: "another name long enough to live on the heap",
-            next: Heap(out),
-        })
+        out = Chain.More(Node(
+            name: "another name long enough to live on the heap"
+            next: Heap(out)
+        ))
         i = i + 1
     }
     return out

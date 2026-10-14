@@ -41,9 +41,9 @@ test "sort_by over u128 above the low word" {
 
 test "an i128 key and an i128 field" {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { weight: 18446744073709551616, name: "big" })
-    items.push(Item { weight: -1, name: "neg" })
-    items.push(Item { weight: 3, name: "small" })
+    items.push(Item(weight: 18446744073709551616, name: "big"))
+    items.push(Item(weight: -1, name: "neg"))
+    items.push(Item(weight: 3, name: "small"))
     items.sort_by_key(|it| it.weight)
     assert items[0].name == "neg"
     assert items[1].name == "small"

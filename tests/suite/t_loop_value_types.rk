@@ -36,7 +36,7 @@ test "a float keeps its bits" {
 }
 
 test "a struct comes out whole" {
-    let p = Point { x: 3, y: 4 }
+    let p = Point(x: 3, y: 4)
     let got = loop {
         break p
     }

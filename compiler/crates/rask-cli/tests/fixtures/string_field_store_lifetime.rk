@@ -14,7 +14,7 @@ extend Store {
     }
 }
 
-const store = Shared.mutex(Store { last: "" })
+const store = Shared.mutex(Store(last: ""))
 
 func main() {
     let id = store.write().put("verify the milestone")

@@ -67,7 +67,7 @@ test "reassign in loop body is not use-after-move" {
 
 test "resource consumed in both branches" {
     mut result = 0
-    let g = Guard { id: 7 }
+    let g = Guard(id: 7)
     if true {
         result = g.release()
     } else {

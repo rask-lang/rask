@@ -33,7 +33,7 @@ extend Store {
 }
 
 test "struct payload" {
-    let m = Shared.mutex(Counter { n: 0 })
+    let m = Shared.mutex(Counter(n: 0))
     with m.write() as c {
         c.bump()
         c.bump()
@@ -67,7 +67,7 @@ test "scalar payload" {
 }
 
 test "a mutex in a struct field" {
-    let s = Store { entries: Shared.mutex(Map.new()) }
+    let s = Store(entries: Shared.mutex(Map.new()))
     s.put("a", 1)
     s.put("b", 2)
     assert s.size() == 2

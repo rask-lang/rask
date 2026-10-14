@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Reads through a cast pointer take the pointee's width and sign, on both
+// backends.
+//
+// Native read every narrow pointee through a helper that copied the bytes into
+// a zeroed word, so a signed one came back zero-extended: an `*i16` holding -2
+// read as 65534, an `*i8` as 254. The interpreter ignored `cast` entirely and
+// read the whole element, so `*p.cast<u8>()` on 300 was 300 where native says
+// 44, its low byte (#1012).
+
+test "a signed narrow read keeps its sign" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(-2)
+    unsafe {
+        let p = v.as_ptr()
+        assert *p.cast<i8>() == -2
+        assert *p.cast<i16>() == -2
+        assert *p.cast<i32>() == -2
+        assert p.cast<i32>().read() == -2
+        assert *p.cast<i32>() + 1 == -1
+        assert *p.cast<u16>() == 65534
+    }
+}
+
+test "a cast to a byte reads the low byte" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(300)
+    unsafe {
+        let p = v.as_ptr()
+        let q: *u8 = p.cast<u8>()
+        assert *q == 44
+        assert *q.offset(1) == 1
+        assert *p == 300
+    }
+}
+
+test "stepping a byte pointer walks into the next element" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(258)
+    unsafe {
+        let b = v.as_ptr().cast<u8>()
+        assert *b == 1
+        assert *b.offset(8) == 2
+        assert *b.offset(9) == 1
+        assert *v.as_ptr().offset(1).cast<u8>() == 2
+    }
+}
+
+test "a write through a narrow view changes only its bytes" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(256)
+    unsafe {
+        let b = v.as_mut_ptr().cast<u8>()
+        b.write(7)
+        assert v[0] == 263
+    }
+}

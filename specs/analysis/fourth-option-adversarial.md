@@ -77,7 +77,7 @@ Two findings out of that think-through, both adopted:
 
 ## A3 — Node literals in flight: an edge into a stack value
 
-`w.entities.insert(Entity { target: w.player, ... })` — the literal exists on
+`w.entities.insert(Entity(target: w.player, ...))` — the literal exists on
 the *stack* before insert. Register the backlink at literal creation and it
 points at a stack address that's about to move into the arena; don't register
 it and a delete between literal creation and insert leaves a dangling raw
@@ -250,7 +250,7 @@ targets, and it's the one the foreign-key mechanism expresses *least*
 naturally.
 
 **Ownership mostly shouldn't be an edge at all.** A node can hold a plain
-value: `Entity { body: Body }` composes by value, and deleting the entity
+value: `Entity(body: Body)` composes by value, and deleting the entity
 deletes the body with zero policy, zero annotation, and zero fixups. The only
 reason to make an owned thing a separate node is that others must reference
 it, or it lives in its own graph for layout reasons (the ECS motivation).

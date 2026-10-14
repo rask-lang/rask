@@ -730,10 +730,10 @@ Rust crates exporting C ABI functions can be compiled and linked via `compile_ru
 <!-- test: skip -->
 ```rask
 func build(ctx: BuildContext) -> void or Error {
-    try ctx.compile_rust(RustCrateOptions {
-        path: "vendor/fast-hash",
-        cbindgen: true,
-    })
+    try ctx.compile_rust(RustCrateOptions(
+        path: "vendor/fast-hash"
+        cbindgen: true
+    ))
 }
 ```
 

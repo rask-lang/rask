@@ -12,7 +12,7 @@ struct SquareMeters { v: f64 }
 
 Meters implements Mul<f64> {
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -21,12 +21,12 @@ f64 implements Mul<Meters> {
     type Out = Meters
 
     func mul(self, m: Meters) -> Meters {
-        return Meters { v: self * m.v }
+        return Meters(v: self * m.v)
     }
 }
 
 test "OR1 — the left operand no longer decides on its own" {
-    let d = Meters { v: 3.0 }
+    let d = Meters(v: 3.0)
     let scaled = d * 2.0
     assert scaled.v == 6.0
     let flipped = 2.0 * d
@@ -34,7 +34,7 @@ test "OR1 — the left operand no longer decides on its own" {
 }
 
 test "OR1 — the same pair through the method spelling" {
-    let d = Meters { v: 4.0 }
+    let d = Meters(v: 4.0)
     assert d.mul(0.5).v == 2.0
     assert 0.5.mul(d).v == 2.0
 }
@@ -47,13 +47,13 @@ Meters implements Mul<Meters> {
     type Out = SquareMeters
 
     func mul(self, other: Meters) -> SquareMeters {
-        return SquareMeters { v: self.v * other.v }
+        return SquareMeters(v: self.v * other.v)
     }
 }
 
 test "OR4 — two conformances of one operator on one type" {
-    let a = Meters { v: 3.0 }
-    let b = Meters { v: 4.0 }
+    let a = Meters(v: 3.0)
+    let b = Meters(v: 4.0)
     let area: SquareMeters = a * b
     assert area.v == 12.0
     // The other conformance is still reachable from the same receiver.
@@ -64,13 +64,13 @@ test "OR4 — two conformances of one operator on one type" {
 // in `Meters`.
 Meters implements Add {
     func add(self, other: Meters) -> Meters {
-        return Meters { v: self.v + other.v }
+        return Meters(v: self.v + other.v)
     }
 }
 
 test "OR3 — a bare header means the homogeneous pair" {
-    let a = Meters { v: 1.5 }
-    let b = Meters { v: 2.5 }
+    let a = Meters(v: 1.5)
+    let b = Meters(v: 2.5)
     assert (a + b).v == 4.0
 }
 
@@ -79,13 +79,13 @@ SquareMeters implements Div<Meters> {
     type Out = Meters
 
     func div(self, m: Meters) -> Meters {
-        return Meters { v: self.v / m.v }
+        return Meters(v: self.v / m.v)
     }
 }
 
 test "OR5 — Out is read off the conformance" {
-    let area = SquareMeters { v: 12.0 }
-    let side = Meters { v: 3.0 }
+    let area = SquareMeters(v: 12.0)
+    let side = Meters(v: 3.0)
     let other: Meters = area / side
     assert other.v == 4.0
 }
@@ -125,10 +125,10 @@ extend Scaler {
 }
 
 test "OR1 — through a generic bound" {
-    let m = Meters { v: 4.5 }
+    let m = Meters(v: 4.5)
     assert doubled(m).v == 9.0
-    let a: SquareMeters = scaled_by(m, Meters { v: 2.0 })
+    let a: SquareMeters = scaled_by(m, Meters(v: 2.0))
     assert a.v == 9.0
-    let s = Scaler { k: 3.0 }
-    assert s.apply(Meters { v: 1.5 }).v == 4.5
+    let s = Scaler(k: 3.0)
+    assert s.apply(Meters(v: 1.5)).v == 4.5
 }

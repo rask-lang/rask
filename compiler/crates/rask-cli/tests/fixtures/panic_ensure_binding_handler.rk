@@ -17,12 +17,12 @@ extend CloseErr9 {
 struct Sink9 { id: i32 }
 extend Sink9 {
     func close(self) -> i32 or CloseErr9 {
-        return CloseErr9 { why: "device gone" }
+        return CloseErr9(why: "device gone")
     }
 }
 
 func main() {
-    let s = Sink9 { id: 3 }
+    let s = Sink9(id: 3)
     ensure {
         let n = s.close()
     } else |e| {

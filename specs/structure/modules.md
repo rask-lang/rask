@@ -257,7 +257,7 @@ public struct Request {
 
 extend Request {
     public func new(method: string, path: string) -> Request {
-        Request { method, path, id: next_id() }   // OK: inside extend block
+        Request(method, path, id: next_id())   // OK: inside extend block
     }
 }
 ```

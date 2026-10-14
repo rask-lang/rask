@@ -13,6 +13,8 @@ Named product types with value semantics, structural Copy, `extend` blocks for m
 | Rule | Description |
 |------|-------------|
 | **S1: Named fields** | All fields MUST have names (no tuple structs) |
+| **S1a: Capitalised name** | A type's name starts with a capital letter (E0417). Building a value is written like a call, `Point(x: 1)`, so the first letter is what tells it from `point(1)`. A struct with no fields is a namespace and exempt (`struct net { }`), as is a C struct named by its header |
+| **S1b: Built by name** | A struct is built by naming its fields, in any order: `Point(x: 1, y: 2)`. A bare name is short for `name: name`; `..base` fills the rest from another value. A value given by position is E0416 — only a function, a positional variant, and a nominal type (`type.aliases/T7`) take values by position. Patterns read the same way: `Point(x, y: 0)` |
 | **S2: Explicit types** | All fields MUST have explicit types (no inference) |
 | **S3: Field ordering** | Default layout (`@layout(Rask)`): compiler reorders fields for optimal alignment. `@layout(C)`: declaration order preserved. Field *access* is always by name — reordering doesn't change semantics |
 | **S4: Visibility** | Default: package-visible. `private` restricts to `extend` blocks only. `public` for external. Visibility governs code access only — the one place it carries a second meaning is serialization, where `private` means "off the wire" (`std.encoding/E13`) |
@@ -58,7 +60,7 @@ r.method                                      // OK: public
 r.id                                          // ERROR: package-only
 
 match r {
-    Request { method, path, .. } => ...       // OK: public fields only
+    Request(method, path, ..) => ...       // OK: public fields only
 }
 ```
 
@@ -99,7 +101,7 @@ struct Handler {
     public run: func(i64) -> i64
 }
 
-let h = Handler { run: |x| x + 1 }
+let h = Handler(run: |x| x + 1)
 h.run(5)          // error[E0405]: `run` is a field on `Handler`, not a method
 let f = h.run     // fine
 f(5)              // 6
@@ -148,7 +150,7 @@ extend Point {
     }
 
     func origin() -> Point {
-        Point { x: 0, y: 0 }
+        Point(x: 0, y: 0)
     }
 }
 ```
@@ -162,7 +164,7 @@ struct Config {
 
 extend Config {
     func new() -> Config {                      // Static: no self
-        Config { values: Map.new() }
+        Config(values: Map.new())
     }
 
     func from_file(path: string) -> Config or Error {
@@ -183,7 +185,7 @@ public struct Point {
     public y: i32
 }
 
-let p = Point { x: 10, y: 20 }   // OK: all fields public
+let p = Point(x: 10, y: 20)   // OK: all fields public
 ```
 
 **Field shorthand.** When a local already has the field's name, the colon and the
@@ -199,11 +201,11 @@ public struct Config {
 }
 
 func rebind(base: Config, host: string, port: i32) -> Config {
-    return Config { host, port, retries: 3 }
+    return Config(host, port, retries: 3)
 }
 
 func move_port(base: Config, port: i32) -> Config {
-    return Config { port, ..base }
+    return Config(port, ..base)
 }
 ```
 
@@ -221,7 +223,7 @@ public struct Connection {
 extend Connection {
     public func new(addr: string) -> Connection or Error {
         let socket = try connect(addr)
-        return Connection { socket, state: State.Connected }  // OK: inside extend block
+        return Connection(socket, state: State.Connected)  // OK: inside extend block
     }
 }
 ```
@@ -229,7 +231,7 @@ extend Connection {
 **Update syntax (functional update):**
 <!-- test: parse -->
 ```rask
-let p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
+let p2 = Point(x: 5, ..p1)    // OK: all fields public, copy p1, override x
 ```
 
 | Syntax | Requirement |
@@ -243,11 +245,11 @@ let p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 
 | Rule | Description |
 |------|-------------|
-| **FD1: Declared defaults** | A field may declare a default: `port: i32 = 8080`. Compile-time constants only — same rule as default arguments |
+| **FD1: Declared defaults** | A field may declare a default: `port: i32 = 8080`. A compile-time constant, worked out once while compiling: a default that reaches I/O, or overflows its field's type, is a compile error at the default. The folded value is what every construction and decode gets, carried as constant data (`ctrl.comptime/CT58`) |
 | **FD2: Omittable at construction** | Defaulted fields may be omitted in a struct literal; the declared value fills in |
-| **FD3: Zero-field construction** | If every field has a default, `Config {}` constructs the default value. There is no `Default` interface and no `.default()` method — this is it |
+| **FD3: Zero-field construction** | If every field has a default, `Config()` constructs the default value. There is no `Default` interface and no `.default()` method — this is it |
 | **FD4: Missing field is an error** | A field with no default and no value is a compile error naming the field. Never silently zero |
-| **FD5: Spread wins** | `Config { x: v, ..base }` — explicit fields, then spread, then defaults for anything neither covers |
+| **FD5: Spread wins** | `Config(x: v, ..base)` — explicit fields, then spread, then defaults for anything neither covers |
 | **FD6: Decode unification** | The declared default is the decode-missing-field default (`std.encoding/E20`); `@default(expr)` remains for decode-only overrides. It is also the value a field excluded from the wire form takes on decode (`std.encoding/E13a`) — a `private` or `@no_serialize` field with no default means the type is not auto-`Decode` |
 
 <!-- test: skip -->
@@ -258,8 +260,8 @@ struct Config {
     verbose: bool = false
 }
 
-let c = Config { host: "localhost" }       // port=8080, verbose=false
-let d = Config { host: "x", ..c }          // spread beats defaults
+let c = Config(host: "localhost")       // port=8080, verbose=false
+let d = Config(host: "x", ..c)          // spread beats defaults
 ```
 
 ## Generics
@@ -271,7 +273,7 @@ struct Pair<T, U> {
     public second: U
 }
 
-let p: Pair<i32, string> = Pair { first: 1, second: "hello" }
+let p: Pair<i32, string> = Pair(first: 1, second: "hello")
 ```
 
 <!-- test: parse -->
@@ -339,9 +341,9 @@ struct Point {
 
 func describe(point: Point) -> string {
     match point {
-        Point { x: 0, y } => return "on y-axis at {y}"
-        Point { x, y: 0 } => return "on x-axis at {x}"
-        Point { x, y } => return "at ({x}, {y})"
+        Point(x: 0, y) => return "on y-axis at {y}"
+        Point(x, y: 0) => return "on x-axis at {x}"
+        Point(x, y) => return "at ({x}, {y})"
     }
 }
 ```
@@ -364,7 +366,7 @@ struct Vertex {
 
 func flat(v: Vertex) -> i32 {
     match v {
-        Vertex { x, .. } => return x
+        Vertex(x, ..) => return x
     }
 }
 ```
@@ -382,9 +384,9 @@ struct Point {
 }
 
 func shifted(p: Point) -> i32 {
-    mut Point { x, .. } = p    // Bind the fields named, ignore the rest
+    mut Point(x, ..) = p    // Bind the fields named, ignore the rest
     x = x + 1
-    let Point { x: px, y: py } = p    // Rename while binding
+    let Point(x: px, y: py) = p    // Rename while binding
     return x + px + py
 }
 ```
@@ -437,7 +439,7 @@ public struct Counter {
 
 extend Counter {
     public func new() -> Counter {
-        Counter { value: 0 }       // OK: inside extend block
+        Counter(value: 0)       // OK: inside extend block
     }
 
     public func increment(self) {
@@ -463,7 +465,7 @@ extend FileHandle {
     func open(path: string) -> FileHandle or Error {
         let fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
         if fd < 0 { return Error.io() }
-        return FileHandle { fd }
+        return FileHandle(fd)
     }
 
     func close(take self) -> void or Error {

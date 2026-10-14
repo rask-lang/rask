@@ -35,6 +35,33 @@ struct Wide {
     public overridden: i64 = 1
 }
 
+// `@default` values are parsed expressions now, not text, so each literal
+// kind has to come through the parser and both decoders intact. A string's
+// braces read as they do anywhere, so a literal brace is written `{{`.
+struct Overrides {
+    public name: string
+    @default(-1.5)
+    public f: f64 = 0.0
+    @default(false)
+    public b: bool = true
+    @default("{{x}}")
+    public s: string = ""
+    @default(3)
+    public whole: f64 = 0.0
+}
+
+test "std.encoding — every literal kind an `@default` can be" {
+    let r = json.decode<Overrides>("{{\"name\": \"bo\"}}")
+    if r is Overrides as v {
+        assert v.f == -1.5
+        assert(!v.b)
+        assert v.s == "{{x}}"
+        assert v.whole == 3.0
+    } else as e {
+        assert "decode failed: {e}" == ""
+    }
+}
+
 test "std.encoding — a declared default fills a missing key" {
     let r = json.decode<Rec>("{{\"name\": \"bo\"}}")
     if r is Rec as v {
@@ -82,14 +109,14 @@ test "std.encoding — a value in the input still wins over the default" {
 }
 
 test "std.encoding — a `@no_serialize` field stays off the wire" {
-    let r = Rec { name: "bo", secret: 1, tag: "t" }
+    let r = Rec(name: "bo", secret: 1, tag: "t")
     assert json.encode(r) == "{{\"name\":\"bo\",\"tag\":\"t\"}}"
 }
 
 // Construction is the other half of the same rule and was never broken —
 // here so a change to one is checked against the other.
 test "type.structs — a declared default fills an omitted field at construction" {
-    let r = Rec { name: "x" }
+    let r = Rec(name: "x")
     assert r.secret == 99
     assert r.tag == "fallback"
 }

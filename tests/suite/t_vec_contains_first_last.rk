@@ -36,9 +36,9 @@ test "contains on floats and structs" {
     let f = Vec.from([1.5, 2.5])
     assert f.contains(2.5)
     assert f.contains(9.0) == false
-    let s = Vec.from([Point { x: 1, y: 2 }, Point { x: 3, y: 4 }])
-    assert s.contains(Point { x: 3, y: 4 })
-    assert s.contains(Point { x: 9, y: 9 }) == false
+    let s = Vec.from([Point(x: 1, y: 2), Point(x: 3, y: 4)])
+    assert s.contains(Point(x: 3, y: 4))
+    assert s.contains(Point(x: 9, y: 9)) == false
 }
 
 test "contains on an empty vec" {

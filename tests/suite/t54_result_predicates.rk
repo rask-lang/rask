@@ -10,7 +10,7 @@ extend MyErr {
 }
 
 func load(fail: bool) -> i32 or MyErr {
-    if fail { return MyErr { detail: "no" } }
+    if fail { return MyErr(detail: "no") }
     return 7
 }
 

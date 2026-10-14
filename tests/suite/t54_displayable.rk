@@ -18,7 +18,7 @@ enum AppError {
 extend AppError {
     public func message(self) -> string {
         match self {
-            AppError.NotFound(p) => return "not found: {p}",
+            AppError.NotFound(path: p) => return "not found: {p}",
             AppError.Timeout => return "timed out",
         }
     }
@@ -39,14 +39,14 @@ extend Tally {
 }
 
 test "std.fmt/D3 — an inherent to_string is the conformance" {
-    let t = Tally { hits: 3 }
+    let t = Tally(hits: 3)
     assert "{t}" == "3 hits"
     assert t.to_string() == "3 hits"
     assert format("{}", t) == "3 hits"
 }
 
 test "std.fmt/D3 — a struct that opts in renders through its own to_string" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     assert "{p}" == "(1, 2)"
     assert format("{}", p) == "(1, 2)"
     assert p.to_string() == "(1, 2)"
@@ -60,7 +60,7 @@ test "std.fmt/D5 — an error type renders through message()" {
 }
 
 test "std.fmt/S2 — a spec applies to an opted-in type too" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     assert "{p:>10}|" == "    (1, 2)|"
     assert "{p:<10}|" == "(1, 2)    |"
     let timeout = AppError.Timeout

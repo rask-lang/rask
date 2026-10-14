@@ -79,7 +79,7 @@ struct DbConn {
 
 extend DbConn {
     func open(path: string) -> DbConn or Error {
-        return DbConn { handle: 1 }
+        return DbConn(handle: 1)
     }
 
     func read_text(self) -> string or Error {
@@ -109,7 +109,7 @@ struct DbConn {
 
 extend DbConn {
     func open(path: string) -> DbConn or Error {
-        return DbConn { handle: 1 }
+        return DbConn(handle: 1)
     }
 
     func close(take self) -> void or Error {
@@ -195,13 +195,13 @@ When the caller needs the resource for recovery/retry, return it in the error ty
 <!-- test: skip -->
 ```rask
 enum FileError {
-    ReadFailed { file: File, reason: string },
-    WriteFailed { file: File, reason: string },
+    ReadFailed(file: File, reason: string),
+    WriteFailed(file: File, reason: string),
 }
 
 func read_config(file: File) -> Config or FileError {
     let data = if file.read_text() ? as d { d } else as reason {
-        return FileError.ReadFailed { file, reason }
+        return FileError.ReadFailed(file, reason)
     }
 
     let config = try parse(data)
@@ -399,11 +399,11 @@ Resource types are "visible RAII" — you see it, the compiler guarantees it.
 extend FileError {
     func close_and_convert(take self) -> Error or Error {
         match self {
-            FileError.ReadFailed { file, reason } => {
+            FileError.ReadFailed(file, reason) => {
                 try file.close()
                 return Error.Read(reason)
             }
-            FileError.WriteFailed { file, reason } => {
+            FileError.WriteFailed(file, reason) => {
                 try file.close()
                 return Error.Write(reason)
             }

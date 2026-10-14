@@ -34,7 +34,7 @@ func main() {
     println("Array length: {arrlen}")
 
     // Struct instantiation
-    let p = Point { x: 100, y: 200 }
+    let p = Point(x: 100, y: 200)
     let px = p.x
     let py = p.y
     println("Point: x={px}, y={py}")

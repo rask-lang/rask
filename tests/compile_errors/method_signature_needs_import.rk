@@ -60,6 +60,6 @@ Wall implements Clocked {
 func main() {
     // ERROR: `Shared` is not in scope
     let f = |s: Shared<i64, Local>| 1
-    let c = Clock { n: 2 }
+    let c = Clock(n: 2)
     println(c.n)
 }

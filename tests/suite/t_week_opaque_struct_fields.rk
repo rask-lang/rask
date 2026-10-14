@@ -54,30 +54,30 @@ struct HasBuilder {
 }
 
 test "std.time — a Duration as the only field" {
-    let a = JustDuration { took: Duration.millis(30) }
+    let a = JustDuration(took: Duration.millis(30))
     assert a.took.as_millis() == 30
 }
 
 test "std.time — a Duration after a string field" {
-    let b = AfterString { label: "build", took: Duration.millis(30) }
+    let b = AfterString(label: "build", took: Duration.millis(30))
     assert b.label == "build"
     assert b.took.as_millis() == 30
 }
 
 test "std.time — a Duration after an integer field" {
-    let c = AfterInt { n: 7, took: Duration.millis(30) }
+    let c = AfterInt(n: 7, took: Duration.millis(30))
     assert c.n == 7
     assert c.took.as_millis() == 30
 }
 
 test "std.time — an Instant as a struct field" {
-    let h = HoldsInstant { at: Instant.now() }
+    let h = HoldsInstant(at: Instant.now())
     assert h.at.elapsed().as_millis() >= 0
 }
 
 test "std.time — a Duration field built from a binding" {
     let d = Duration.millis(45)
-    let a = JustDuration { took: d }
+    let a = JustDuration(took: d)
     assert a.took.as_millis() == 45
 }
 
@@ -91,7 +91,7 @@ test "std.time — a Duration in a local binding is the control" {
 
 // These two opaque handles are on layout.rs's list, so they work today.
 test "std.random — Random as a struct field is the other control" {
-    mut h = HasRandom { n: 7, r: Random.from_seed(5) }
+    mut h = HasRandom(n: 7, r: Random.from_seed(5))
     assert h.n == 7
     let a = h.r.i64()
     let b = h.r.i64()
@@ -99,7 +99,7 @@ test "std.random — Random as a struct field is the other control" {
 }
 
 test "std.string — StringBuilder as a struct field is the other control" {
-    mut h = HasBuilder { n: 7, b: StringBuilder.new() }
+    mut h = HasBuilder(n: 7, b: StringBuilder.new())
     assert h.n == 7
     h.b.push("hi")
     assert h.b.build() == "hi"

@@ -26,8 +26,8 @@ extend IoError {
 }
 
 func main() {
-  let e = JsonError { detail: "boom" }
+  let e = JsonError(detail: "boom")
   println(e.message())
-  let f = IoError { path: "/tmp/x" }
+  let f = IoError(path: "/tmp/x")
   println(f.message())
 }

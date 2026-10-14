@@ -48,13 +48,13 @@ func kind_from(s: string) -> Kind? {
 
 // The enum arrives via an optional unwrap, so it lives in this frame.
 func make_msg(s: string) -> Msg {
-    let k = if kind_from(s)? as m { m } else { return Msg { kind: Kind.A, path: "-" } }
-    return Msg { kind: k, path: "/health" }
+    let k = if kind_from(s)? as m { m } else { return Msg(kind: Kind.A, path: "-") }
+    return Msg(kind: k, path: "/health")
 }
 
 func make_outer() -> Outer {
-    let i = Inner { n: 42 }
-    return Outer { inner: i, tag: "/x" }
+    let i = Inner(n: 42)
+    return Outer(inner: i, tag: "/x")
 }
 
 // Burn a frame the same size-ish as the builder's, so a stale pointer reads
@@ -63,7 +63,7 @@ func churn() -> i64 {
     mut total = 0
     mut i = 0
     while i < 8 {
-        let scratch = Msg { kind: Kind.A, path: "scratch" }
+        let scratch = Msg(kind: Kind.A, path: "scratch")
         total += scratch.path.len().wrap<i64>()
         i += 1
     }

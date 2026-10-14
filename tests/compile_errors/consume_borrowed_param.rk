@@ -58,11 +58,11 @@ func store_properly(mutate s: Slot, take next: Bag) {
 }
 
 func main() {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     handle(c)
     c.close()
 
     mut v: Vec<i64> = Vec.new()
     v.push(1)
-    println("{proper(Bag { items: v })}")
+    println("{proper(Bag(items: v))}")
 }

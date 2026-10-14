@@ -197,7 +197,10 @@ impl TypeTable {
                     // a union name got parsed with type arguments, which
                     // shouldn't happen.
                     Some(crate::TypeDef::Union { .. }) => Move,
-                    Some(crate::TypeDef::NominalAlias { underlying, .. }) => verdict(underlying),
+                    Some(crate::TypeDef::NominalAlias { type_params, underlying, .. }) => {
+                        let subst = Self::generic_field_subst(type_params, args);
+                        verdict(&Self::substitute_generic_field(underlying, &subst))
+                    }
                 }
             }
 
@@ -285,6 +288,10 @@ impl TypeTable {
                         crate::TypeDef::Struct { type_params, fields, .. } => {
                             let subst = Self::generic_field_subst(type_params, args);
                             fields.iter().map(|(_, t)| self.value_size(&Self::substitute_generic_field(t, &subst))).sum()
+                        }
+                        crate::TypeDef::NominalAlias { type_params, underlying, .. } => {
+                            let subst = Self::generic_field_subst(type_params, args);
+                            self.value_size(&Self::substitute_generic_field(underlying, &subst))
                         }
                         crate::TypeDef::Enum { type_params, variants, .. } => {
                             let subst = Self::generic_field_subst(type_params, args);

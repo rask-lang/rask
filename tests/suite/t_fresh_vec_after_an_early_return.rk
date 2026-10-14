@@ -51,7 +51,7 @@ func make_vec(n: i64) -> Vec<i64> {
 }
 
 func run(n: i64) -> i64 {
-    let c = Closer { closed: 0 }
+    let c = Closer(closed: 0)
     ensure c.close()
     mut i = 0
     while i < n {

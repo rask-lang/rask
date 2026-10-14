@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a result that can fail with more errors than its slot allows
+//
+// An error union never narrows (type.errors/ER11, ER31). This used to type-check:
+// `unify` asks "is this single error a member of that union" with the slot on
+// the left, so a `Fault` slot passed a `Fault | Other` value. Then the
+// interpreter kept the `Other` in a slot typed `i64 or Fault`, and native read
+// the union's member index where the enum's tag belongs and printed
+// `Fault.Bad` (#1520).
+
+enum Fault {
+    Bad
+}
+
+extend Fault {
+    func message(self) -> string {
+        return "fault"
+    }
+}
+
+enum Other {
+    Odd
+}
+
+extend Other {
+    func message(self) -> string {
+        return "other"
+    }
+}
+
+func wide() -> i64 or Fault | Other {
+    return Other.Odd
+}
+
+func narrow_arg(r: i64 or Fault) -> bool {
+    return r is Fault
+}
+
+func main() {
+    let narrow: i64 or Fault = wide()  // ERROR: can fail with `Other`
+    mut v: Vec<i64 or Fault> = Vec.new()
+    v.push(wide())  // ERROR: can fail with `Other`
+    let ok = narrow_arg(wide())  // ERROR: can fail with `Other`
+    println("{narrow is Fault} {v.len()} {ok}")
+}

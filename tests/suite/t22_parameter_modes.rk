@@ -21,7 +21,7 @@ func distance_sq(p: Point) -> i32 {
 }
 
 test "borrow mode reads without consuming" {
-    let p = Point { x: 3, y: 4 }
+    let p = Point(x: 3, y: 4)
     let d = distance_sq(p)
     assert d == 25
     // p still valid after borrow
@@ -36,7 +36,7 @@ func increment(mutate p: Point) {
 }
 
 test "mutate mode modifies caller value" {
-    mut p = Point { x: 1, y: 2 }
+    mut p = Point(x: 1, y: 2)
     increment(mutate p)
     assert p.x == 2
     assert p.y == 3
@@ -62,11 +62,11 @@ test "mutate mode on vec" {
 // --- mutate allows full reassignment ---
 
 func reset(mutate p: Point) {
-    p = Point { x: 0, y: 0 }
+    p = Point(x: 0, y: 0)
 }
 
 test "mutate allows reassignment" {
-    mut p = Point { x: 99, y: 99 }
+    mut p = Point(x: 99, y: 99)
     reset(mutate p)
     assert p.x == 0
     assert p.y == 0
@@ -83,7 +83,7 @@ func consume(take data: LargeData) -> u64 {
 }
 
 test "take mode transfers ownership" {
-    let data = LargeData { values: Vec.new() }
+    let data = LargeData(values: Vec.new())
     data.values.push(1)
     data.values.push(2)
     let len = consume(data)
@@ -112,21 +112,21 @@ extend Point {
 }
 
 test "self borrow" {
-    let p = Point { x: 3, y: 4 }
+    let p = Point(x: 3, y: 4)
     assert p.magnitude_sq() == 25
     // p still valid
     assert p.x == 3
 }
 
 test "mutate self" {
-    mut p = Point { x: 1, y: 2 }
+    mut p = Point(x: 1, y: 2)
     p.translate(10, 20)
     assert p.x == 11
     assert p.y == 22
 }
 
 test "take self" {
-    let p = Point { x: 5, y: 10 }
+    let p = Point(x: 5, y: 10)
     let (a, b) = p.into_tuple()
     assert a == 5
     assert b == 10
@@ -158,7 +158,7 @@ func swap_fields(mutate x: i32, mutate y: i32) {
 }
 
 test "disjoint field mutate" {
-    mut p = Point { x: 1, y: 2 }
+    mut p = Point(x: 1, y: 2)
     swap_fields(mutate p.x, mutate p.y)
     assert p.x == 2
     assert p.y == 1

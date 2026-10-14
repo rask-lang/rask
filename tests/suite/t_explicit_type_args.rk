@@ -74,11 +74,11 @@ test "field names come from the written type" {
 }
 
 test "an inferred type argument still works" {
-    let p = Point { x: 1, y: 2, z: 3 }
+    let p = Point(x: 1, y: 2, z: 3)
     assert inferred_name(p) == "Point"
 }
 
 test "written and inferred together" {
-    let d = Doc { title: "t", body: "b" }
+    let d = Doc(title: "t", body: "b")
     assert both<Point>(d) == "Point/Doc"
 }

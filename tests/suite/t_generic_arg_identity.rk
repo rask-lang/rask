@@ -36,20 +36,20 @@ test "type.generics — a nominal key works with either spelling" {
 
 test "type.generics — a struct key works with either spelling" {
     mut on_ctor = Map<Key, string>.new()
-    on_ctor.insert(Key { n: 7 }, "seven")
-    assert (on_ctor.get(Key { n: 7 }) ?? "?") == "seven"
+    on_ctor.insert(Key(n: 7), "seven")
+    assert (on_ctor.get(Key(n: 7)) ?? "?") == "seven"
 
     mut on_binding: Map<Key, string> = Map.new()
-    on_binding.insert(Key { n: 7 }, "seven")
-    assert (on_binding.get(Key { n: 7 }) ?? "?") == "seven"
+    on_binding.insert(Key(n: 7), "seven")
+    assert (on_binding.get(Key(n: 7)) ?? "?") == "seven"
 }
 
 // A user type in the *value* position, which is the same substitution one slot
 // over.
 test "type.generics — a user type as the value" {
     mut m = Map<string, Key>.new()
-    m.insert("a", Key { n: 3 })
-    let got = m.get("a") ?? Key { n: 0 }
+    m.insert("a", Key(n: 3))
+    let got = m.get("a") ?? Key(n: 0)
     assert got.n == 3
 }
 

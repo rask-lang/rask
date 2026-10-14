@@ -34,6 +34,12 @@ impl TypeChecker {
     /// result, so that's the one kept — plus the two things `check_stmt` would
     /// have done afterwards for an expression statement.
     pub(super) fn check_block_body(&mut self, body: &[Stmt]) -> Type {
+        self.check_block_body_expecting(body, None)
+    }
+
+    /// A block whose value fills a slot of a known type: the tail is checked
+    /// against it, the way a bare expression in that slot would be.
+    pub(super) fn check_block_body_expecting(&mut self, body: &[Stmt], expected: Option<&Type>) -> Type {
         let value_stmt_idx = match body.last() {
             Some(last) if matches!(last.kind, StmtKind::Expr(_)) => Some(body.len() - 1),
             _ => None,
@@ -48,7 +54,10 @@ impl TypeChecker {
         match body.last() {
             Some(last) => match &last.kind {
                 StmtKind::Expr(e) => {
-                    let ty = self.infer_expr(e);
+                    let ty = match expected {
+                        Some(want) => self.infer_expr_expecting(e, want),
+                        None => self.infer_expr(e),
+                    };
                     self.check_bare_sync_access(e);
                     self.clear_expression_borrows();
                     self.solve_constraints();
@@ -82,6 +91,16 @@ impl TypeChecker {
             }
         }
         match &expr.kind {
+            // `comptime { [1, 2] }` in a `Vec<i64>` slot is the literal in that
+            // slot: the block's value is what's being asked for. A field's
+            // default is spliced in as one, so a `Vec` default written as a
+            // list came out `[string; 2]` against its own field (type.structs/FD1).
+            ExprKind::Comptime { body } => {
+                let ty = self.check_block_body_expecting(body, Some(expected));
+                self.node_types.insert(expr.id, ty.clone());
+                self.note_node_origin(expr);
+                return ty;
+            }
             // An unsuffixed literal takes the slot's type, including the two
             // magnitude bands that only rule types out. Taking the expectation
             // is what turns `let a: i128 = <too big>` into "this literal is out
@@ -1028,15 +1047,20 @@ impl TypeChecker {
                     });
                 }
 
-                // Check pattern and extract bindings
-                // Note: Bindings are NOT added to scope here - they're added by the stmt handler
-                // We just return them via the expression type mechanism
-                //
                 // A bare type test is checked as the `as` form it means, so
                 // its binding carries the narrowed type.
                 let as_bound = self.guard_type_test_as_binding(pattern, &value_ty);
                 let bindings =
                     self.check_pattern(as_bound.as_ref().unwrap_or(pattern), &value_ty, expr.span);
+                // The pattern's own names live past the guard, like the `let`'s:
+                // `let p = r is Point as q else { … }` binds both. Only the
+                // `let`'s name was ever given a type — the statement handler
+                // defines that one — so `q` reached the rest of the function as
+                // a name the resolver knew and the checker had nothing for, and
+                // `q.x` was an open type all the way to MIR (#1026).
+                for (name, ty) in &bindings {
+                    self.define_local_bound(name.clone(), ty.clone(), super::BoundFrom::Payload);
+                }
 
                 // For a guard pattern like `const v = opt is Some else { return }`,
                 // the expression itself evaluates to the inner type
@@ -2729,7 +2753,24 @@ impl TypeChecker {
 
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         let written = func.name().unwrap_or("this function").to_string();
+        self.check_argument_lending(&written, None, args);
         self.note_arg_labels(call_id, written, args, span);
+        // A declared function the desugarer couldn't place (one from the
+        // stdlib or another package): its arguments in parameter order.
+        let placed;
+        let args = match self
+            .resolved
+            .resolutions
+            .get(&func.id)
+            .and_then(|sym| self.function_param_names(*sym))
+            .and_then(|names| self.place_free_call(call_id, &names, args))
+        {
+            Some(v) => {
+                placed = v;
+                &placed[..]
+            }
+            None => args,
+        };
         if let Some((module, function)) = self.imported_module_function(func) {
             return self.check_imported_module_function(
                 call_id, &module, &function, func.written_type_args(), args, span,
@@ -2797,8 +2838,8 @@ impl TypeChecker {
 
             // Nominal type constructor: UserId(42)
             if let Some(type_id) = self.types.get_type_id(name) {
-                if let Some(TypeDef::NominalAlias { underlying, .. }) = self.types.get(type_id) {
-                    let underlying = underlying.clone();
+                if let Some(TypeDef::NominalAlias { underlying, type_params, .. }) = self.types.get(type_id) {
+                    let (underlying, type_params) = (underlying.clone(), type_params.clone());
                     if args.len() != 1 {
                         self.errors.push(TypeError::ArityMismatch {
                             expected: 1,
@@ -2808,13 +2849,26 @@ impl TypeChecker {
                         for arg in args { self.infer_expr(&arg.expr); }
                         return Type::Error;
                     }
+                    // A generic one gets a fresh variable per parameter, which
+                    // the value then settles: `Wrapping(255u8)` is a
+                    // `Wrapping<u8>`.
+                    let fresh: Vec<Type> = type_params.iter().map(|_| self.ctx.fresh_var()).collect();
+                    let subst: std::collections::HashMap<&str, Type> =
+                        type_params.iter().map(String::as_str).zip(fresh.iter().cloned()).collect();
+                    let underlying = Self::substitute_type_params(&underlying, &subst);
                     let arg_ty = self.infer_expr_expecting(&args[0].expr, &underlying);
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         underlying,
                         arg_ty,
                         span,
                     ));
-                    return Type::Named(type_id);
+                    if fresh.is_empty() {
+                        return Type::Named(type_id);
+                    }
+                    return Type::Generic {
+                        base: type_id,
+                        args: fresh.into_iter().map(|t| crate::types::GenericArg::Type(Box::new(t))).collect(),
+                    };
                 }
             }
         }
@@ -3017,7 +3071,9 @@ impl TypeChecker {
                     .iter()
                     .map(|a| FnParam {
                         mode: match a.mode {
-                            rask_ast::expr::ArgMode::Default => ParamMode::Borrow,
+                            // A spread never reaches here: desugar makes it a
+                            // struct literal's base or reports it.
+                            rask_ast::expr::ArgMode::Default | rask_ast::expr::ArgMode::Spread => ParamMode::Borrow,
                             rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting => {
                                 ParamMode::Mutate
                             }
@@ -3094,6 +3150,7 @@ impl TypeChecker {
                     ArgMode::Default => "",
                     ArgMode::Mutate => "mutate ",
                     ArgMode::Deleting => "deleting ",
+                    ArgMode::Spread => "..",
                 };
                 let label = a.name.as_ref().map(|n| format!("{}: ", n)).unwrap_or_default();
                 let text = match &a.expr.kind {
@@ -3406,7 +3463,7 @@ impl TypeChecker {
     /// `["p", "pos", "x"]`. `None` for anything that isn't a place — a literal,
     /// a call, an index (the subscript decides which element at run time, so two
     /// index expressions can't be told apart here).
-    fn access_path(expr: &Expr) -> Option<Vec<String>> {
+    pub(super) fn access_path(expr: &Expr) -> Option<Vec<String>> {
         match &expr.kind {
             ExprKind::Ident(name) => Some(vec![name.clone()]),
             ExprKind::Field { object, field } => {
@@ -3780,6 +3837,7 @@ impl TypeChecker {
             Some(o) => format!("{o}.{method}"),
             None => method.to_string(),
         };
+        self.check_argument_lending(&written, Some(object), args);
         self.note_arg_labels(call_id, written, args, span);
         self.note_method_call(call_id, span);
 
@@ -5024,14 +5082,6 @@ impl TypeChecker {
         if let Some(name) = object.name() {
             if let Some(ty) = Self::primitive_type_constant(name, field) {
                 return ty;
-            }
-            // G4: @binary struct SIZE/SIZE_BITS constants
-            if matches!(field, "SIZE" | "SIZE_BITS") {
-                if let Some(type_id) = self.types.get_type_id(name) {
-                    if self.types.is_binary_type_by_id(type_id) {
-                        return Type::U64;
-                    }
-                }
             }
 
             // `io.IoError` — a type reached through the module that exports
@@ -6609,30 +6659,26 @@ impl TypeChecker {
             // Still open, a generic parameter, or already errored — the body
             // pins these, and an error here would land on working code.
             Type::Var(_) | Type::Error | Type::Never => ContainerElem::Deferred,
-            // An adapted range (`(0..5).rev()`) still resolves to a bare `Range`,
-            // which carries no element type, so the body's arithmetic pins the
-            // width there.
+            // A name with no arguments carries no element type; the body pins it.
             Type::UnresolvedNamed(_) => ContainerElem::Deferred,
             Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                // Each of these yields its first argument, and each arrives in
+                // either spelling: written (`UnresolvedGeneric`) or resolved to
+                // the stdlib declaration's id (`Generic`). Matching the written
+                // one only is how `for i in (0..n).step(2)` left `i` open — a
+                // range literal is spelled out, but what `step` and `rev`
+                // return, or a range held in a variable, is the declared
+                // `Range<T>` (#1026).
+                //
                 // `Iterator<T>` is what every `.iter().map(…)` chain resolves
-                // to, so this is the common case, not an edge one.
-                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Iterator") {
-                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
-                }
-                // ctrl.ranges: a range's bounds share the loop variable's type.
-                // The old bare `Range` carried none, so `for i in 1..6` left `i`
-                // free — and `mut v = Vec.new()` filled by `v.push(i)` then had
-                // no element type either, all the way down to `v[0]` (#620).
-                if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Range") {
-                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
-                }
-                // A `Sequence<T>` yields `T`. MIR has known this since #1046 —
-                // the checker never did, so `for w in v.as_sequence()` left `w`
-                // with a free variable and `w.len()` died in lowering with no
-                // receiver type. Nominal, so match on either spelling.
+                // to. A range's bounds share the loop variable's type
+                // (ctrl.ranges), and without it `mut v = Vec.new()` filled by
+                // `v.push(i)` had no element type all the way down to `v[0]`
+                // (#620). A `Sequence<T>` yields `T`, which MIR has known since
+                // #1046.
                 if matches!(
                     self.generic_name_of(ty).as_deref(),
-                    Some("Sequence") | Some("SequenceMut")
+                    Some("Iterator") | Some("Range") | Some("Sequence") | Some("SequenceMut")
                 ) {
                     return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
                 }
@@ -7153,7 +7199,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
 
 /// Two access paths reach the same storage when one is a prefix of the other.
 /// `p` contains `p.health`; `p.health` and `p.score` are disjoint (F2).
-fn paths_overlap(a: &[String], b: &[String]) -> bool {
+pub(super) fn paths_overlap(a: &[String], b: &[String]) -> bool {
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }
 

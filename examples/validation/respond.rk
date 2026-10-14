@@ -15,7 +15,7 @@ func json_response(status: u16, body: string) -> Response {
 }
 
 func error_response(e: ApiError) -> Response {
-    let payload = ErrorBody { error: e.message(), code: error_code(e) }
+    let payload = ErrorBody(error: e.message(), code: error_code(e))
     return json_response(e.status(), json.encode(payload))
 }
 
@@ -26,17 +26,17 @@ func error_code(e: ApiError) -> string {
         Store(inner) => return store_code(inner)
         Auth(_) => return "unauthorized"
         System(_) => return "system_error"
-        BadRequest(_) => return "bad_request"
-        RateLimited(_) => return "rate_limited"
-        Internal(_) => return "internal"
+        BadRequest(reason: _) => return "bad_request"
+        RateLimited(seconds: _) => return "rate_limited"
+        Internal(reason: _) => return "internal"
     }
 }
 
 func store_code(e: StoreError) -> string {
     match e {
-        NotFound(_) => return "not_found"
-        Duplicate(_) => return "duplicate"
-        TxConflict(_) => return "tx_conflict"
-        CapacityFull(_) => return "capacity_full"
+        NotFound(id: _) => return "not_found"
+        Duplicate(id: _) => return "duplicate"
+        TxConflict(reason: _) => return "tx_conflict"
+        CapacityFull(limit: _) => return "capacity_full"
     }
 }

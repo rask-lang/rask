@@ -24,8 +24,8 @@ func main() {}
 
 test "a scalar edge becomes none at its target's delete" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { id: 1, hits: 0, peer: none })
-    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    let a = s.insert(Node(id: 1, hits: 0, peer: none))
+    let b = s.insert(Node(id: 2, hits: 0, peer: none))
     a.peer = b
     b.peer = a
     assert s.len() == 2
@@ -42,8 +42,8 @@ test "a scalar edge becomes none at its target's delete" {
 
 test "a link is the node's address, so writes through it are shared" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { id: 1, hits: 0, peer: none })
-    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    let a = s.insert(Node(id: 1, hits: 0, peer: none))
+    let b = s.insert(Node(id: 2, hits: 0, peer: none))
     b.peer = a
 
     // Writing through b's edge and writing through `a` hit the same node: the
@@ -55,8 +55,8 @@ test "a link is the node's address, so writes through it are shared" {
 
 test "link equality is node identity" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { id: 1, hits: 0, peer: none })
-    let b = s.insert(Node { id: 2, hits: 0, peer: none })
+    let a = s.insert(Node(id: 1, hits: 0, peer: none))
+    let b = s.insert(Node(id: 2, hits: 0, peer: none))
     assert a == a
     assert a != b
 
@@ -70,8 +70,8 @@ test "link equality is node identity" {
 }
 
 test "a root edge — a link beside the rack — is fixed too" {
-    mut w = World { rack: Rack.new(), focus: none }
-    let n = w.rack.insert(Node { id: 7, hits: 0, peer: none })
+    mut w = World(rack: Rack.new(), focus: none)
+    let n = w.rack.insert(Node(id: 7, hits: 0, peer: none))
     w.focus = n
     if w.focus? as f {
         assert f.id == 7
@@ -90,9 +90,9 @@ test "a root edge — a link beside the rack — is fixed too" {
 
 test "re-pointing an edge forgets its old target" {
     mut s: Rack<Node> = Rack.new()
-    let holder = s.insert(Node { id: 0, hits: 0, peer: none })
-    let first = s.insert(Node { id: 1, hits: 0, peer: none })
-    let second = s.insert(Node { id: 2, hits: 0, peer: none })
+    let holder = s.insert(Node(id: 0, hits: 0, peer: none))
+    let first = s.insert(Node(id: 1, hits: 0, peer: none))
+    let second = s.insert(Node(id: 2, hits: 0, peer: none))
 
     holder.peer = first
     holder.peer = second
@@ -115,10 +115,10 @@ test "re-pointing an edge forgets its old target" {
 
 test "a node inserted with edges already in its fields is registered" {
     mut s: Rack<Node> = Rack.new()
-    let head = s.insert(Node { id: 1, hits: 0, peer: none })
+    let head = s.insert(Node(id: 1, hits: 0, peer: none))
     // The edge exists in the literal before the node has an identity; `insert`
     // is where it gets recorded.
-    let tail = s.insert(Node { id: 2, hits: 0, peer: head })
+    let tail = s.insert(Node(id: 2, hits: 0, peer: head))
 
     s.delete(head)
 
@@ -132,9 +132,9 @@ test "iteration and the structural ops" {
     assert s.is_empty()
     assert s.len() == 0
 
-    let a = s.insert(Node { id: 1, hits: 0, peer: none })
-    let b = s.insert(Node { id: 2, hits: 0, peer: none })
-    let c = s.insert(Node { id: 3, hits: 0, peer: none })
+    let a = s.insert(Node(id: 1, hits: 0, peer: none))
+    let b = s.insert(Node(id: 2, hits: 0, peer: none))
+    let c = s.insert(Node(id: 3, hits: 0, peer: none))
 
     mut sum = 0
     for n in s.nodes() { sum += n.id }
@@ -161,9 +161,9 @@ test "iteration and the structural ops" {
 }
 
 test "clear nulls edges, it does not just empty the rack" {
-    mut w = World { rack: Rack.new(), focus: none }
-    let a = w.rack.insert(Node { id: 1, hits: 0, peer: none })
-    let b = w.rack.insert(Node { id: 2, hits: 0, peer: none })
+    mut w = World(rack: Rack.new(), focus: none)
+    let a = w.rack.insert(Node(id: 1, hits: 0, peer: none))
+    let b = w.rack.insert(Node(id: 2, hits: 0, peer: none))
     a.peer = b
     w.focus = a
     let _ = b
@@ -181,14 +181,14 @@ test "clear nulls edges, it does not just empty the rack" {
 
 test "inserting never moves a node, so a link stays valid across growth" {
     mut s: Rack<Node> = Rack.new()
-    let first = s.insert(Node { id: 1, hits: 0, peer: none })
+    let first = s.insert(Node(id: 1, hits: 0, peer: none))
 
     // A Vec element or a Pool slot can move out from under you; a link can't.
     // It points at the node itself, so growing the rack cannot relocate what
     // it points at — which is why a link needs no `with` ceremony to be held.
     mut i = 0
     while i < 2000 {
-        let _ = s.insert(Node { id: 99, hits: 0, peer: none })
+        let _ = s.insert(Node(id: 99, hits: 0, peer: none))
         i += 1
     }
 
@@ -201,8 +201,8 @@ test "inserting never moves a node, so a link stays valid across growth" {
 test "a delete in one rack leaves another rack's edges alone" {
     mut left: Rack<Node> = Rack.new()
     mut right: Rack<Node> = Rack.new()
-    let l = left.insert(Node { id: 1, hits: 0, peer: none })
-    let r = right.insert(Node { id: 2, hits: 0, peer: none })
+    let l = left.insert(Node(id: 1, hits: 0, peer: none))
+    let r = right.insert(Node(id: 2, hits: 0, peer: none))
 
     // A cross-rack edge. Deleting the target still fixes it — the fixup keys on
     // the node, and the edge is found through the target's own backlink list

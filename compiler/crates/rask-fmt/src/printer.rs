@@ -513,7 +513,7 @@ impl<'a> Printer<'a> {
             if i > 0 {
                 self.emit_indent();
             }
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
         }
 
@@ -654,7 +654,7 @@ impl<'a> Printer<'a> {
         self.emit_indent();
 
         for attr in &s.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -690,8 +690,7 @@ impl<'a> Printer<'a> {
                     self.emit(", ");
                 }
                 for attr in &field.attrs {
-                    self.emit("@");
-                    self.emit(attr);
+                    self.emit_attr(attr);
                     self.emit(" ");
                 }
                 match field.visibility {
@@ -729,8 +728,7 @@ impl<'a> Printer<'a> {
                 self.emit_standalone_comments_before(field.name_span.start);
                 for attr in &field.attrs {
                     self.emit_indent();
-                    self.emit("@");
-                    self.emit(attr);
+                    self.emit_attr(attr);
                     self.emit_newline();
                 }
                 self.emit_indent();
@@ -868,7 +866,7 @@ impl<'a> Printer<'a> {
         // `@message` disappeared and the derived `message()` went with it — the
         // formatted file then failed to check on a call the source made (#805).
         for attr in &e.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -924,7 +922,7 @@ impl<'a> Printer<'a> {
                 // A per-variant `@message("…")` is what the derived message
                 // actually reads.
                 for attr in &variant.attrs {
-                    self.emit(&format!("@{attr}"));
+                    self.emit_attr(attr);
                     self.emit_newline();
                     self.emit_indent();
                 }
@@ -945,7 +943,7 @@ impl<'a> Printer<'a> {
                         }
                         self.emit(")");
                     } else {
-                        self.emit(" { ");
+                        self.emit("(");
                         for (i, field) in variant.fields.iter().enumerate() {
                             if i > 0 {
                                 self.emit(", ");
@@ -955,7 +953,7 @@ impl<'a> Printer<'a> {
                             let ty = self.format_type(&field.ty);
                             self.emit(&ty);
                         }
-                        self.emit(" }");
+                        self.emit(")");
                     }
                 }
                 self.try_emit_trailing_comment_before(next_member);
@@ -994,7 +992,7 @@ impl<'a> Printer<'a> {
         // shape and a plain one has to be declared, so the conformance the
         // source relied on stopped existing (#805).
         for attr in &t.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1188,7 +1186,9 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
-                self.emit(&tp.name);
+                // The bounds too: `type Wrapping<T: Integer>` came out as
+                // `type Wrapping<T>`.
+                self.format_type_param(tp);
             }
             self.emit(">");
         }
@@ -1207,7 +1207,7 @@ impl<'a> Printer<'a> {
     fn format_const_decl(&mut self, c: &ConstDecl) {
         self.emit_indent();
         for attr in &c.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1227,7 +1227,7 @@ impl<'a> Printer<'a> {
     fn format_test_decl(&mut self, t: &TestDecl) {
         self.emit_indent();
         for attr in &t.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1249,7 +1249,7 @@ impl<'a> Printer<'a> {
     fn format_benchmark_decl(&mut self, b: &BenchmarkDecl) {
         self.emit_indent();
         for attr in &b.attrs {
-            self.emit(&format!("@{attr}"));
+            self.emit_attr(attr);
             self.emit_newline();
             self.emit_indent();
         }
@@ -1433,7 +1433,7 @@ impl<'a> Printer<'a> {
                     self.emit(": ");
                 }
                 self.emit("while ");
-                self.format_condition(cond);
+                self.format_expr(cond);
                 self.emit(" {");
                 self.emit_newline();
                 self.indent += 1;
@@ -1643,9 +1643,75 @@ impl<'a> Printer<'a> {
         match arg.mode {
             ArgMode::Mutate => self.emit("mutate "),
             ArgMode::Deleting => self.emit("deleting "),
+            ArgMode::Spread => self.emit(".."),
             ArgMode::Default => {}
         }
         self.format_expr(&arg.expr);
+    }
+
+    /// Was this list written one item per line? Its first item starts a line,
+    /// or a newline sits between two items. A newline inside an item (a
+    /// closure body) doesn't count.
+    fn written_one_per_line(&self, spans: &[Span]) -> bool {
+        let Some(first) = spans.first() else { return false };
+        if first.end <= first.start {
+            return false;
+        }
+        let before = self.source[..first.start].trim_end_matches([' ', '\t']);
+        if before.ends_with('\n') {
+            return true;
+        }
+        spans.windows(2).any(|w| w[0].end <= w[1].start && self.source[w[0].end..w[1].start].contains('\n'))
+    }
+
+    /// `(a, b)`, or one item per line when the source had it that way —
+    /// a newline separates items, so no commas then.
+    fn emit_list<T>(&mut self, items: &[T], span_of: impl Fn(&T) -> Span, mut each: impl FnMut(&mut Self, &T)) {
+        let spans: Vec<Span> = items.iter().map(&span_of).collect();
+        if !self.written_one_per_line(&spans) {
+            self.emit("(");
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
+                }
+                each(self, item);
+            }
+            self.emit(")");
+            return;
+        }
+        self.emit("(");
+        self.emit_newline();
+        self.indent += 1;
+        for item in items {
+            self.emit_indent();
+            each(self, item);
+            self.emit_newline();
+        }
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit(")");
+    }
+
+    /// `@name(label: value, …)`, values printed like any other expression.
+    fn emit_attr(&mut self, attr: &rask_ast::attr::Attr) {
+        self.emit("@");
+        self.emit(&attr.name());
+        let Some(args) = &attr.args else { return };
+        self.emit("(");
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                self.emit(", ");
+            }
+            if let Some(label) = &arg.label {
+                self.emit(label);
+                self.emit(": ");
+            }
+            match &arg.value {
+                rask_ast::attr::AttrValue::Expr(e) => self.format_expr(e),
+                rask_ast::attr::AttrValue::RuleName(n) => self.emit(n),
+            }
+        }
+        self.emit(")");
     }
 
     fn format_expr(&mut self, expr: &Expr) {
@@ -1653,13 +1719,13 @@ impl<'a> Printer<'a> {
         if expr.span.end > 0 {
             self.block_end = expr.span.end;
         }
-        // A method chain or a struct literal written across lines, with a comment
+        // A method chain or a call written across lines, with a comment
         // beside one of them, is left exactly as written. Reflowing it deletes the
         // line the comment annotated, and the comment then lands wherever the
         // cursor happens to flush — `.filter(|n| n % 2 == 0)  // Keep evens` came
         // out as a bare `// Keep evens` above the whole chain (#805). Keeping the
         // comment attached is worth more than normalizing the layout.
-        if matches!(expr.kind, ExprKind::MethodCall { .. } | ExprKind::StructLit { .. })
+        if matches!(expr.kind, ExprKind::MethodCall { .. } | ExprKind::Call { .. })
             && self.comments_within(expr.span)
             && self.source_text(expr.span).contains('\n')
         {
@@ -1770,14 +1836,7 @@ impl<'a> Printer<'a> {
                 if callee_needs_parens {
                     self.emit(")");
                 }
-                self.emit("(");
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.emit(", ");
-                    }
-                    self.format_call_arg(arg);
-                }
-                self.emit(")");
+                self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
             }
             ExprKind::MethodCall { object, method, type_args, args } => {
                 self.format_postfix_receiver(object);
@@ -1789,14 +1848,7 @@ impl<'a> Printer<'a> {
                     self.emit(&spelled.join(", "));
                     self.emit(">");
                 }
-                self.emit("(");
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        self.emit(", ");
-                    }
-                    self.format_call_arg(arg);
-                }
-                self.emit(")");
+                self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
             }
             ExprKind::Field { object, field } => {
                 self.format_postfix_receiver(object);
@@ -1873,7 +1925,7 @@ impl<'a> Printer<'a> {
                 if !source_is_multiline && all_arms_simple && arms.len() <= 4 {
                     // Inline style: match x { 1 => "one", 2 => "two" }
                     self.emit("match ");
-                    self.format_match_scrutinee(scrutinee);
+                    self.format_expr(scrutinee);
                     self.emit(" { ");
                     for (i, arm) in arms.iter().enumerate() {
                         if i > 0 {
@@ -1900,7 +1952,7 @@ impl<'a> Printer<'a> {
                 } else {
                     // Multi-line style: no commas
                     self.emit("match ");
-                    self.format_match_scrutinee(scrutinee);
+                    self.format_expr(scrutinee);
                     self.emit(" {");
                     self.emit_newline();
                     self.indent += 1;
@@ -2016,38 +2068,21 @@ impl<'a> Printer<'a> {
                         self.emit_type_args(type_args);
                     }
                 }
-                let source_is_multiline = self.source_text(expr.span).contains('\n');
-                if fields.is_empty() && spread.is_none() {
-                    self.emit(" {}");
-                } else if !source_is_multiline && spread.is_none() && self.fields_fit_one_line(fields) {
-                    self.emit(" { ");
-                    for (i, field) in fields.iter().enumerate() {
-                        if i > 0 {
-                            self.emit(", ");
-                        }
-                        self.format_field_init(field);
+                self.emit("(");
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.emit(", ");
                     }
-                    self.emit(" }");
-                } else {
-                    self.emit(" {");
-                    self.emit_newline();
-                    self.indent += 1;
-                    for field in fields {
-                        self.emit_indent();
-                        self.format_field_init(field);
-                        self.emit(",");
-                        self.emit_newline();
-                    }
-                    if let Some(ref spread) = spread {
-                        self.emit_indent();
-                        self.emit("..");
-                        self.format_expr(spread);
-                        self.emit_newline();
-                    }
-                    self.indent -= 1;
-                    self.emit_indent();
-                    self.emit("}");
+                    self.format_field_init(field);
                 }
+                if let Some(spread) = spread {
+                    if !fields.is_empty() {
+                        self.emit(", ");
+                    }
+                    self.emit("..");
+                    self.format_expr(spread);
+                }
+                self.emit(")");
             }
             ExprKind::Array(elems) => {
                 self.emit("[");
@@ -2314,35 +2349,6 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// A condition sits directly in front of a `{`, so a struct literal at its
-    /// tail makes the brace ambiguous — `if c == Shape.Circle { r: 4 } {` reads
-    /// as an `if` whose body starts at `{ r: 4 }`. Wrapping the condition is what
-    /// the source has to do, and the printer has to keep doing it (#805).
-    fn format_condition(&mut self, cond: &Expr) {
-        if Self::ends_in_struct_literal(cond) {
-            self.emit("(");
-            self.format_expr(cond);
-            self.emit(")");
-        } else {
-            self.format_expr(cond);
-        }
-    }
-
-    /// Whether the last thing a condition prints is a `}` that a following `{`
-    /// could attach to.
-    fn ends_in_struct_literal(expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::StructLit { .. } => true,
-            ExprKind::Binary { right, .. } => Self::ends_in_struct_literal(right),
-            ExprKind::Unary { operand, .. } => Self::ends_in_struct_literal(operand),
-            ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
-                Self::ends_in_struct_literal(inner)
-            }
-            ExprKind::NullCoalesce { default, .. } => Self::ends_in_struct_literal(default),
-            _ => false,
-        }
-    }
-
     fn format_if_expr(
         &mut self,
         cond: &Expr,
@@ -2351,7 +2357,7 @@ impl<'a> Printer<'a> {
         else_binding: Option<&str>,
     ) {
         self.emit("if ");
-        self.format_condition(cond);
+        self.format_expr(cond);
 
         if !matches!(then_branch.kind, ExprKind::Block(_)) {
             self.emit(": ");
@@ -2579,11 +2585,6 @@ impl<'a> Printer<'a> {
         self.format_expr(&field.value);
     }
 
-    fn fields_fit_one_line(&self, fields: &[FieldInit]) -> bool {
-        let est: usize = fields.iter().map(|f| f.name.len() + 4 + 10).sum();
-        est < 60
-    }
-
     /// Format match arm body, detecting inline vs block form from source.
     fn format_match_arm_body(&mut self, body: &Expr) {
         if let ExprKind::Block(ref stmts) = body.kind {
@@ -2602,37 +2603,6 @@ impl<'a> Printer<'a> {
     }
 
     // --- Patterns ---
-
-    /// A match scrutinee, parenthesised when it starts with a struct literal.
-    ///
-    /// The `{` after a scrutinee opens the arms, so a leading struct literal has
-    /// to say where it ends. Re-emitting `match (Point { x: 0 }).x` without the
-    /// parens produced `match Point { x: 0 }.x`, which doesn't parse — the
-    /// round-trip gate caught it the same day the parser rule landed (#884).
-    fn format_match_scrutinee(&mut self, scrutinee: &Expr) {
-        if Self::starts_with_struct_literal(scrutinee) {
-            self.emit("(");
-            self.format_expr(scrutinee);
-            self.emit(")");
-        } else {
-            self.format_expr(scrutinee);
-        }
-    }
-
-    /// Is a struct literal the leftmost thing in this expression? Only the
-    /// leftmost matters: anything further right is already inside brackets or
-    /// behind an operator by the time the arms' `{` could be confused with it.
-    fn starts_with_struct_literal(e: &Expr) -> bool {
-        match &e.kind {
-            ExprKind::StructLit { .. } => true,
-            ExprKind::Field { object, .. } => Self::starts_with_struct_literal(object),
-            ExprKind::MethodCall { object, .. } => Self::starts_with_struct_literal(object),
-            ExprKind::Index { object, .. } => Self::starts_with_struct_literal(object),
-            ExprKind::Binary { left, .. } => Self::starts_with_struct_literal(left),
-            ExprKind::Cast { expr, .. } => Self::starts_with_struct_literal(expr),
-            _ => false,
-        }
-    }
 
     fn format_pattern(&mut self, pattern: &Pattern) {
         match pattern {
@@ -2654,7 +2624,7 @@ impl<'a> Printer<'a> {
             }
             Pattern::Struct { name, fields, rest } => {
                 self.emit(name);
-                self.emit(" { ");
+                self.emit("(");
                 for (i, (fname, fpat)) in fields.iter().enumerate() {
                     if i > 0 {
                         self.emit(", ");
@@ -2671,7 +2641,7 @@ impl<'a> Printer<'a> {
                     }
                     self.emit("..");
                 }
-                self.emit(" }");
+                self.emit(")");
             }
             Pattern::Tuple(elems) => {
                 self.emit("(");

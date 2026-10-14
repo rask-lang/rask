@@ -9,8 +9,8 @@ import schema.{Schema, Ty, Field, Release, Change, Value, required, defaulted, r
 
 func config_fields() -> Vec<Field> {
     return Vec<Field>.from([
-        required("name", Ty.Str),
-        defaulted("timeout", Ty.Duration, Value.Str("30s")),
+        required("name", Ty.Str)
+        defaulted("timeout", Ty.Duration, Value.Str("30s"))
     ])
 }
 
@@ -19,13 +19,13 @@ func config_schema() -> Schema {
     mut adds = Vec<Change>.new()
     mut fields = config_fields()
     for f in fields.take_all() {
-        adds.push(Change.Add { at: root(), field: f })
+        adds.push(Change.Add(at: root(), field: f))
     }
-    return Schema {
-        name: "myapp-config",
-        shape: Ty.Record(config_fields()),
-        history: Vec<Release>.from([Release { version: 1, changes: adds }]),
-    }
+    return Schema(
+        name: "myapp-config"
+        shape: Ty.Record(config_fields())
+        history: Vec<Release>.from([Release(version: 1, changes: adds)])
+    )
 }
 
 func main() {

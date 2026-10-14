@@ -43,7 +43,7 @@ func flat(n: i64) -> string? or Oops {
 func flat_struct(n: i64) -> Point? or Oops {
     if n < 0 { return Oops.Bad("negative") }
     if n == 0 { return none }
-    return Point { x: n, y: n * 2 }
+    return Point(x: n, y: n * 2)
 }
 
 // Plain `T or E` — here the drop genuinely does add the optional layer.

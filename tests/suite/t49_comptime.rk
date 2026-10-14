@@ -260,7 +260,7 @@ test "ctrl.comptime/CT22 — comptime while loop" {
 struct Point { x: i64, y: i64 }
 
 comptime func manhattan() -> i64 {
-    let p = Point { x: 3, y: 5 }
+    let p = Point(x: 3, y: 5)
     return p.x + p.y
 }
 

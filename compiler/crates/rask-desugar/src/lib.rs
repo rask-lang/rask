@@ -13,6 +13,8 @@
 //! These passes run before type checking.
 
 mod annotation_defaults;
+mod binary_methods;
+mod construct;
 mod defaults;
 mod generalize;
 mod interface_defaults;
@@ -64,27 +66,27 @@ pub const STDLIB_DEFAULT_ARGS_ID_BASE: u32 = 50_000_000;
 /// arguments and struct field defaults, so `Config {}` type-checked as a
 /// missing-fields error under `rask test` while `rask build` accepted it
 /// (#549).
-pub fn desugar(decls: &mut [Decl]) -> DesugarOutput {
+pub fn desugar(decls: &mut Vec<Decl>) -> DesugarOutput {
     desugar_with_diagnostics(decls)
 }
 
 /// Desugar a single file that can call the stdlib.
 ///
 /// `stdlib` is the stdlib's defaulted signatures
-/// (`StubRegistry::defaulted_signatures`). Filling an omitted argument needs
+/// (`StubRegistry::desugar_declarations`). Filling an omitted argument needs
 /// the declaration it was omitted from, and the stdlib's declarations aren't
 /// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
 /// parsed and then unusable (#1276). This crate can't read the registry
 /// itself: `rask-stdlib` already depends on it.
-pub fn desugar_with_stdlib(decls: &mut [Decl], stdlib: &[Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, &[], stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+pub fn desugar_with_stdlib(decls: &mut Vec<Decl>, stdlib: &[Decl]) -> DesugarOutput {
+    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar the stdlib's own declarations, in their own NodeId bands.
 ///
 /// See [`STDLIB_DESUGAR_ID_BASE`].
-pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, &[], &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
+pub fn desugar_stdlib(decls: &mut Vec<Decl>) -> DesugarOutput {
+    desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar a package whose dependencies are known.
@@ -93,18 +95,20 @@ pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
 /// here, before name resolution, so a dependency's declarations can't be looked
 /// up later — they have to be handed in (type.annotations/AN3).
 pub fn desugar_package(
-    decls: &mut [Decl],
-    dep_annotations: &[(String, Decl)],
+    decls: &mut Vec<Decl>,
     stdlib: &[Decl],
 ) -> DesugarOutput {
-    desugar_inner_from(decls, dep_annotations, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
-/// ER26 coverage error from @message desugaring.
+/// Something desugaring found wrong with the program.
 #[derive(Debug, Clone)]
 pub struct DesugarError {
     pub message: String,
     pub span: Span,
+    pub code: &'static str,
+    /// What the primary span points at.
+    pub label: String,
 }
 
 /// What desugaring leaves for the passes after it.
@@ -123,26 +127,36 @@ pub struct DesugarOutput {
 }
 
 /// Desugar phase, returning any ER26 coverage errors.
-pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> DesugarOutput {
-    desugar_inner(decls, &[])
+pub fn desugar_with_diagnostics(decls: &mut Vec<Decl>) -> DesugarOutput {
+    desugar_inner(decls)
 }
 
-fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> DesugarOutput {
-    desugar_inner_from(decls, dep_annotations, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+fn desugar_inner(decls: &mut Vec<Decl>) -> DesugarOutput {
+    desugar_inner_from(decls, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 fn desugar_inner_from(
-    decls: &mut [Decl],
-    dep_annotations: &[(String, Decl)],
+    decls: &mut Vec<Decl>,
     stdlib: &[Decl],
     id_base: u32,
     default_args_id_base: u32,
 ) -> DesugarOutput {
+    // Values are written in parentheses, so a construction parses as a call.
+    // First, so everything after sees the struct literal it always has.
+    // type.binary: `build` and `parse` as Rask methods, so both backends run
+    // the same code. Before the construct pass, which turns the `Packet(…)`
+    // they build into a struct literal. Pushes an import onto the end.
+    let mut injected = interface_defaults::Injected::new();
+    binary_methods::inject(decls, &mut injected);
+    let construct_errors = construct::resolve_constructions(decls, stdlib);
+
     // TD2: an interface method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
     // sees a `message()` an interface supplied by default.
-    let mut injected = interface_defaults::inject(decls);
+    for (index, positions) in interface_defaults::inject(decls) {
+        injected.entry(index).or_default().extend(positions);
+    }
     ordering_operators::inject(decls, &mut injected);
 
 
@@ -152,13 +166,16 @@ fn desugar_inner_from(
     generalize::generalize_inferred_params(decls);
 
     let mut desugarer = Desugarer::new(id_base);
+    desugarer.binary_sizes = binary_methods::sizes(decls);
     desugarer.scan_error_message_types(decls);
     for (index, decl) in decls.iter_mut().enumerate() {
         desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
         desugarer.desugar_decl(decl);
     }
+    let mut errors = construct_errors;
+    errors.append(&mut desugarer.errors);
     let output = DesugarOutput {
-        errors: std::mem::take(&mut desugarer.errors),
+        errors,
         operator_calls: std::mem::take(&mut desugarer.operator_calls),
     };
 
@@ -168,7 +185,7 @@ fn desugar_inner_from(
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.
-    annotation_defaults::fill_annotation_defaults(decls, dep_annotations);
+    annotation_defaults::fill_annotation_defaults(decls);
 
     output
 }
@@ -210,6 +227,9 @@ struct Desugarer {
     /// is the override, so generating one alongside it would shadow the prose
     /// the author wrote.
     hand_written_message: std::collections::HashSet<String>,
+    /// Each `@binary` struct's size in bits: `T.SIZE` and `T.SIZE_BITS` are
+    /// these numbers (type.binary/G4).
+    binary_sizes: std::collections::HashMap<String, u32>,
 }
 
 impl Desugarer {
@@ -222,6 +242,7 @@ impl Desugarer {
             operator_calls: std::collections::HashSet::new(),
             error_message_types: std::collections::HashSet::new(),
             hand_written_message: std::collections::HashSet::new(),
+            binary_sizes: std::collections::HashMap::new(),
         }
     }
 
@@ -328,14 +349,102 @@ impl Desugarer {
     }
 
     fn desugar_fn(&mut self, f: &mut FnDecl) {
+        // A default is copied into each call that leaves it out, after this
+        // pass. Left as written, `n: i64 = 2 * 3` reached every call with a
+        // raw `*` in it, which nothing past desugar has to understand.
+        for p in &mut f.params {
+            if let Some(d) = &mut p.default {
+                self.desugar_expr(d);
+            }
+        }
         for stmt in &mut f.body {
             self.desugar_stmt(stmt);
         }
     }
 
     fn desugar_struct(&mut self, s: &mut StructDecl) {
-        for method in &mut s.methods {
+        let defaults: Vec<FnDecl> = s.fields.iter().flat_map(|f| self.default_methods(f)).collect();
+        s.methods.extend(defaults);
+        // Same for a field's default, copied into each construction that
+        // leaves the field out.
+        for f in &mut s.fields {
+            if let Some(d) = &mut f.default {
+                self.desugar_expr(d);
+            }
+        }
+        let injected = std::mem::take(&mut self.injected_methods);
+        for (index, method) in s.methods.iter_mut().enumerate() {
+            self.renumber = injected.contains(&index);
             self.desugar_fn(method);
+        }
+        self.renumber = false;
+    }
+
+    /// A field's defaults as `comptime func`s: `__decode_default_n` for what a
+    /// decode fills a missing field with (std.encoding/E20, type.structs/FD6),
+    /// and `__default_n` for the declared default when `@default` overrides it
+    /// on decode, so that one is held to the same rule.
+    ///
+    /// A default is a compile-time constant (FD1, E21). As a `comptime func`
+    /// it can't reach I/O, transitively (CT60). Its value is folded at compile
+    /// time like any `let … = comptime`, so an overflow is a compile error at
+    /// the field's own width (CT1) and native carries the value as constant
+    /// data: a scalar, a string, a list, or a struct or enum built of those.
+    ///
+    /// Methods rather than copies, so a decode can call one: the decoders used
+    /// to read a default as a literal, and `@default(2 + 3)` made the field
+    /// required (#1528).
+    fn default_methods(&mut self, field: &rask_ast::decl::Field) -> Vec<FnDecl> {
+        use rask_ast::decl::field_attrs;
+        let mut out = Vec::new();
+        if let Some(value) = field_attrs::decode_default(field) {
+            out.push(self.default_method(field_attrs::decode_default_method(&field.name), &field.ty, value));
+        }
+        if let (Some(_), Some(declared)) = (field_attrs::default_value(&field.attrs), &field.default) {
+            out.push(self.default_method(field_attrs::declared_default_method(&field.name), &field.ty, declared));
+        }
+        out
+    }
+
+    fn default_method(&mut self, name: String, ty: &TypeExpr, value: &Expr) -> FnDecl {
+        let mut value = value.clone();
+        rask_ast::rewrite::rewrite_expr(&mut value, &mut FreshIds(&mut self.next_id));
+        let sp = value.span;
+        let folded = Expr {
+            id: self.fresh_id(),
+            kind: ExprKind::Comptime {
+                body: vec![Stmt { id: self.fresh_id(), kind: StmtKind::Expr(value), span: sp }],
+            },
+            span: sp,
+        };
+        let binding = "__default".to_string();
+        let body = vec![
+            Stmt {
+                id: self.fresh_id(),
+                kind: StmtKind::Let { name: binding.clone(), name_span: sp, ty: Some(ty.clone()), init: folded },
+                span: sp,
+            },
+            Stmt {
+                id: self.fresh_id(),
+                kind: StmtKind::Return(Some(Expr { id: self.fresh_id(), kind: ExprKind::Ident(binding), span: sp })),
+                span: sp,
+            },
+        ];
+        FnDecl {
+            name,
+            type_params: vec![],
+            params: vec![],
+            ret_ty: Some(ty.clone()),
+            body,
+            is_pub: false,
+            is_private: false,
+            is_comptime: true,
+            is_unsafe: false,
+            abi: None,
+            attrs: vec![],
+            doc: None,
+            span: sp,
+            decl_start: sp.start,
         }
     }
 
@@ -379,7 +488,7 @@ impl Desugarer {
             };
 
             let body_expr = match template {
-                MessageTemplate::Format(tmpl) => self.template_expr(tmpl, sp),
+                MessageTemplate::Format(expr) => expr,
                 MessageTemplate::Delegate(binding) => {
                     // e.message() — delegate to inner error
                     Expr {
@@ -455,12 +564,18 @@ impl Desugarer {
     ///   2. single payload implementing `Error` → delegate to `inner.message()`,
     ///   3. ER6 fallback: humanized variant name, with payloads interpolated.
     /// Every variant resolves — there is no uncovered case.
-    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
+    fn extract_message_template(&mut self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
         // ER36: explicit @message("template") on the variant wins.
-        for attr in &variant.attrs {
-            if let Some(tmpl) = extract_message_attr_template(attr) {
-                return MessageTemplate::Format(translate_positional_refs(&tmpl));
-            }
+        if let Some(written) = rask_ast::attr::find(&variant.attrs, "message")
+            .and_then(|a| a.positional())
+            .and_then(|v| v.expr())
+        {
+            // An ordinary string, interpolated where the variant's named
+            // payloads are bound (ER36). A copy, so it gets ids of its own:
+            // the attribute keeps its expression.
+            let mut expr = written.clone();
+            rask_ast::rewrite::rewrite_expr(&mut expr, &mut FreshIds(&mut self.next_id));
+            return MessageTemplate::Format(expr);
         }
         // ER37: single payload that implements Error delegates to it. The
         // `ends_with("Error")` check keeps cross-module error types working when
@@ -474,7 +589,7 @@ impl Desugarer {
             }
         }
         // ER6: humanized variant name, interpolating any payload fields.
-        MessageTemplate::Format(humanize_variant(&variant.name, &variant.fields))
+        MessageTemplate::Format(self.humanize_variant(&variant.name, &variant.fields))
     }
 
     fn desugar_interface(&mut self, t: &mut InterfaceDecl) {
@@ -496,6 +611,7 @@ impl Desugarer {
         if self.renumber {
             stmt.id = self.fresh_id();
         }
+        self.bind_compound_place_once(stmt);
         match &mut stmt.kind {
             StmtKind::Expr(e) => self.desugar_expr(e),
             StmtKind::Mut { init, .. } => self.desugar_expr(init),
@@ -559,6 +675,84 @@ impl Desugarer {
         }
     }
 
+    /// `v[i()] += x()` runs `i()` once (type.operators/EO4).
+    ///
+    /// The parser spells a compound assignment as `t = t op rhs` with `t`
+    /// cloned, so every call inside an index ran twice — once to read, once to
+    /// write — on both backends (#1524). Each index that could do something is
+    /// bound to a temporary first, left to right, and both copies of the place
+    /// read the temporary:
+    ///
+    /// ```text
+    /// v[i()] += x()   →   { let __place_N = i(); v[__place_N] = v[__place_N] + x() }
+    /// ```
+    ///
+    /// Only indices move. The container itself stays a place: binding it would
+    /// write to a copy.
+    fn bind_compound_place_once(&mut self, stmt: &mut Stmt) {
+        let StmtKind::Assign { target, value, op: Some(_) } = &mut stmt.kind else {
+            return;
+        };
+        let mut lets = Vec::new();
+        self.bind_indices(target, &mut lets);
+        if lets.is_empty() {
+            return;
+        }
+        // `value` is `t op rhs`, and its `t` is the parser's copy of the target.
+        if let ExprKind::Binary { left, .. } = &mut value.kind {
+            **left = target.clone();
+        }
+        let span = stmt.span;
+        let assign = Stmt {
+            id: self.fresh_id(),
+            kind: std::mem::replace(&mut stmt.kind, StmtKind::Continue(None)),
+            span,
+        };
+        lets.push(assign);
+        stmt.kind = StmtKind::Expr(Expr {
+            id: self.fresh_id(),
+            kind: ExprKind::Block(lets),
+            span,
+        });
+    }
+
+    fn bind_indices(&mut self, place: &mut Expr, lets: &mut Vec<Stmt>) {
+        match &mut place.kind {
+            ExprKind::Index { object, index } => {
+                self.bind_indices(object, lets);
+                if !Self::reads_without_effect(index) {
+                    let id = self.fresh_id();
+                    let name = format!("__place_{}", id.0);
+                    let span = index.span;
+                    let ident = Expr { id: self.fresh_id(), kind: ExprKind::Ident(name.clone()), span };
+                    let init = std::mem::replace(index.as_mut(), ident);
+                    lets.push(Stmt {
+                        id,
+                        kind: StmtKind::Let { name, name_span: span, ty: None, init },
+                        span,
+                    });
+                }
+            }
+            ExprKind::Field { object, .. } => self.bind_indices(object, lets),
+            _ => {}
+        }
+    }
+
+    /// A name, a literal, or a field of one: reading it twice reads the same
+    /// thing and runs nothing.
+    fn reads_without_effect(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(_)
+            | ExprKind::Int(..)
+            | ExprKind::Float(..)
+            | ExprKind::String(_)
+            | ExprKind::Char(_)
+            | ExprKind::Bool(_) => true,
+            ExprKind::Field { object, .. } => Self::reads_without_effect(object),
+            _ => false,
+        }
+    }
+
     fn desugar_expr(&mut self, expr: &mut Expr) {
         if self.renumber {
             expr.id = self.fresh_id();
@@ -569,6 +763,21 @@ impl Desugarer {
         // rewrite desugars the argument expressions itself (std.fmt/CM2, CM5).
         if self.desugar_format_call(expr) {
             return;
+        }
+
+        // G4: `T.SIZE` and `T.SIZE_BITS` on a `@binary` struct are numbers the
+        // layout already decided.
+        if let ExprKind::Field { object, field } = &expr.kind {
+            let bits = object.name().and_then(|n| self.binary_sizes.get(n).copied());
+            let value = match (bits, field.as_str()) {
+                (Some(bits), "SIZE") => Some(bits.div_ceil(8)),
+                (Some(bits), "SIZE_BITS") => Some(bits),
+                _ => None,
+            };
+            if let Some(value) = value {
+                expr.kind = ExprKind::Int(value as i128, Some(rask_ast::token::IntSuffix::Usize));
+                return;
+            }
         }
 
         // First, recursively desugar child expressions
@@ -894,6 +1103,8 @@ impl Desugarer {
                 TemplatePiece::Positional(idx, spec) => {
                     let Some(arg) = value_args.get(idx) else {
                         self.errors.push(DesugarError {
+                            code: "E0338",
+                            label: "in this format template".to_string(),
                             message: format!(
                                 "format template wants argument {} but only {} were passed",
                                 idx,
@@ -965,6 +1176,8 @@ impl Desugarer {
                     }
                     if depth != 0 {
                         self.errors.push(DesugarError {
+                            code: "E0338",
+                            label: "in this format template".to_string(),
                             message: "unclosed `{` in format template — write `{{` for a literal brace".to_string(),
                             span,
                         });
@@ -982,6 +1195,8 @@ impl Desugarer {
                             Some(s) => Some(s),
                             None => {
                                 self.errors.push(DesugarError {
+                                    code: "E0338",
+                                    label: "in this format template".to_string(),
                                     message: format!("`{}` is not a format spec", text),
                                     span,
                                 });
@@ -1022,6 +1237,8 @@ impl Desugarer {
 
         if saw_auto && saw_explicit {
             self.errors.push(DesugarError {
+                code: "E0338",
+                label: "in this format template".to_string(),
                 message: "format template mixes `{}` with `{0}` — pick one and use it throughout"
                     .to_string(),
                 span,
@@ -1030,6 +1247,8 @@ impl Desugarer {
         }
         if saw_auto && next_auto > arg_count {
             self.errors.push(DesugarError {
+                code: "E0338",
+                label: "in this format template".to_string(),
                 message: format!(
                     "format template has {} placeholders but {} arguments were passed",
                     next_auto, arg_count
@@ -1050,6 +1269,8 @@ impl Desugarer {
         let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
         if !lex.errors.is_empty() {
             self.errors.push(DesugarError {
+                code: "E0338",
+                label: "in this format template".to_string(),
                 message: format!("`{{{}}}` in the format template isn't an expression", text),
                 span,
             });
@@ -1064,6 +1285,8 @@ impl Desugarer {
             }
             Err(_) => {
                 self.errors.push(DesugarError {
+                    code: "E0338",
+                    label: "in this format template".to_string(),
                     message: format!("`{{{}}}` in the format template isn't an expression", text),
                     span,
                 });
@@ -1252,54 +1475,36 @@ impl Desugarer {
     /// A piece that doesn't parse stays literal text: `@message` templates come
     /// from an attribute the author wrote, and an error pointing into a method
     /// nobody can see is worse than the braces surviving into the message.
-    fn template_expr(&mut self, tmpl: String, span: rask_ast::Span) -> Expr {
-        let Some(pieces) = parse_interpolation_segments(&tmpl) else {
-            return Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span };
-        };
-        let mut segments = Vec::new();
-        for piece in &pieces {
-            match piece {
-                InterpSegment::Literal(text) => {
-                    segments.push(rask_ast::expr::StringSegment::Literal(text.clone()));
-                }
-                InterpSegment::Expr(text) => {
-                    // `{p}` or `{p:debug}`, split the same way the parser does.
-                    // Dropping the spec here is what made a derived `message()`
-                    // demand `Displayable` of a struct payload: the generator
-                    // wrote `{p:debug}`, the expression read `p` and stopped,
-                    // and the `:debug` went nowhere.
-                    let (expr_text, spec) = match rask_ast::fmt_spec::split_spec(text) {
-                        Some(pos) => (
-                            &text[..pos],
-                            rask_ast::fmt_spec::parse_spec(&text[pos + 1..]),
-                        ),
-                        None => (text.as_str(), None),
-                    };
-                    match self.parse_fragment(expr_text, span) {
-                        Some(parsed) => {
-                            segments.push(rask_ast::expr::StringSegment::Expr(Box::new(parsed), spec))
-                        }
-                        None => {
-                            return Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span }
-                        }
-                    }
-                }
+    /// ER6: `NotFound(id)` says `"not found: {id}"`. Built as segments
+    /// directly; there's no template text to parse.
+    fn humanize_variant(&mut self, name: &str, fields: &[rask_ast::decl::Field]) -> Expr {
+        let span = Span::new(0, 0);
+        let mut base = String::new();
+        for (i, c) in name.char_indices() {
+            if c.is_ascii_uppercase() && i > 0 {
+                base.push(' ');
             }
+            base.push(c.to_ascii_lowercase());
+        }
+        if fields.is_empty() {
+            return Expr { id: self.fresh_id(), kind: ExprKind::String(base), span };
+        }
+        let mut segments = vec![rask_ast::expr::StringSegment::Literal(format!("{}: ", base))];
+        for (i, f) in fields.iter().enumerate() {
+            if i > 0 {
+                segments.push(rask_ast::expr::StringSegment::Literal(", ".to_string()));
+            }
+            // Anything without `to_string` goes through `:debug`, which every
+            // type has (std.fmt/G2).
+            let spec = if f.ty.bare_name().is_some_and(renders_as_display) {
+                None
+            } else {
+                rask_ast::fmt_spec::parse_spec("debug")
+            };
+            let payload = Expr { id: self.fresh_id(), kind: ExprKind::Ident(f.name.clone()), span };
+            segments.push(rask_ast::expr::StringSegment::Expr(Box::new(payload), spec));
         }
         Expr { id: self.fresh_id(), kind: ExprKind::StringInterp(segments), span }
-    }
-
-    /// Parse a snippet of expression text that isn't in any source file.
-    fn parse_fragment(&self, text: &str, span: rask_ast::Span) -> Option<Expr> {
-        let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
-        if !lex.errors.is_empty() {
-            return None;
-        }
-        let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
-        let mut parsed = parser.parse_expr().ok()?;
-        // The fragment's spans start at 0; point them at the template instead.
-        offset_expr_spans(&mut parsed, span.start);
-        Some(parsed)
     }
 
     fn desugar_match_arm(&mut self, arm: &mut MatchArm) {
@@ -1312,8 +1517,8 @@ impl Desugarer {
 
 /// What a variant's @message resolves to.
 enum MessageTemplate {
-    /// Format string with interpolation: `"error: {name}"`
-    Format(String),
+    /// The string the message is, interpolation and all: `"error: {name}"`
+    Format(Expr),
     /// Delegate to inner value: `inner.message()`
     Delegate(String),
 }
@@ -1327,30 +1532,6 @@ fn is_error_type_name(ty: &str) -> bool {
 /// ER6 fallback message: humanize the variant name (`NotFound` → "not found")
 /// and interpolate any payload fields. `UnexpectedEnd(ctx)` → "unexpected end: {ctx}";
 /// a positional payload interpolates as `{_0}`.
-fn humanize_variant(name: &str, fields: &[rask_ast::decl::Field]) -> String {
-    let mut base = String::new();
-    for (i, c) in name.char_indices() {
-        if c.is_ascii_uppercase() && i > 0 {
-            base.push(' ');
-        }
-        base.push(c.to_ascii_lowercase());
-    }
-    if fields.is_empty() {
-        return base;
-    }
-    let parts: Vec<String> = fields
-        .iter()
-        .map(|f| {
-            if f.ty.bare_name().is_some_and(renders_as_display) {
-                format!("{{{}}}", f.name)
-            } else {
-                format!("{{{}:debug}}", f.name)
-            }
-        })
-        .collect();
-    format!("{}: {}", base, parts.join(", "))
-}
-
 /// Can a payload of this declared type go straight into `{…}`?
 ///
 /// Only if it has `to_string`, and desugaring runs before there is a type table
@@ -1376,49 +1557,14 @@ fn renders_as_display(ty: &str) -> bool {
     )
 }
 
-/// ER36: positional payload refs `{0}`/`{1}` name the auto-generated tuple
-/// fields, which the parser binds as `_0`/`_1`. Rewrite `{N}` → `{_N}` so the
-/// string-interpolation pass resolves them to those bindings instead of the
-/// integer literal `N`. Named refs (`{ctx}`) and escaped braces pass through.
-fn translate_positional_refs(tmpl: &str) -> String {
-    let mut out = String::with_capacity(tmpl.len());
-    let mut chars = tmpl.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            // Collect the run of digits directly inside the braces.
-            let mut digits = String::new();
-            while let Some(&d) = chars.peek() {
-                if d.is_ascii_digit() {
-                    digits.push(d);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            if !digits.is_empty() && chars.peek() == Some(&'}') {
-                out.push('{');
-                out.push('_');
-                out.push_str(&digits);
-            } else {
-                out.push('{');
-                out.push_str(&digits);
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
+/// Gives every expression it walks a fresh id.
+struct FreshIds<'a>(&'a mut u32);
 
-/// Extract the template from a `message("template")` attribute string.
-fn extract_message_attr_template(attr: &str) -> Option<String> {
-    let stripped = attr.strip_prefix("message(")?;
-    let stripped = stripped.strip_suffix(')')?;
-    // Remove surrounding quotes
-    let stripped = stripped.trim();
-    let stripped = stripped.strip_prefix('"')?;
-    let stripped = stripped.strip_suffix('"')?;
-    Some(stripped.to_string())
+impl rask_ast::rewrite::Rewrite for FreshIds<'_> {
+    fn expr(&mut self, e: &mut Expr) {
+        e.id = NodeId(*self.0);
+        *self.0 += 1;
+    }
 }
 
 /// Map binary operators to method names (if they should be desugared).
@@ -1476,82 +1622,6 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
         }
         // Leaf nodes and complex variants unlikely in interpolation — no nested Exprs to fix
         _ => {}
-    }
-}
-
-/// Segment of an interpolated string.
-enum InterpSegment {
-    Literal(String),
-    /// The text between the braces, spec and all.
-    Expr(String),
-}
-
-/// Parse a string containing `{expr}` interpolation into segments.
-///
-/// Returns `None` if no interpolation is found.
-fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
-    let mut segments = Vec::new();
-    let mut literal = String::new();
-    let mut chars = s.chars().peekable();
-    let mut has_interp = false;
-
-    while let Some(c) = chars.next() {
-        // fmt/F4: `{{` and `}}` are literal braces, not an interpolation.
-        if (c == '{' || c == '}') && chars.peek() == Some(&c) {
-            chars.next();
-            literal.push(c);
-            has_interp = true;
-            continue;
-        }
-        if c == '{' {
-            has_interp = true;
-            if !literal.is_empty() {
-                segments.push(InterpSegment::Literal(std::mem::take(&mut literal)));
-            }
-            let mut expr_str = String::new();
-            let mut depth = 1;
-            for ch in chars.by_ref() {
-                if ch == '{' {
-                    depth += 1;
-                } else if ch == '}' {
-                    depth -= 1;
-                    if depth == 0 { break; }
-                }
-                expr_str.push(ch);
-            }
-            segments.push(InterpSegment::Expr(expr_str));
-        } else {
-            literal.push(c);
-        }
-    }
-    if !literal.is_empty() {
-        segments.push(InterpSegment::Literal(literal));
-    }
-
-    if has_interp { Some(segments) } else { None }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_interpolation_segments() {
-        let segs = parse_interpolation_segments("hello {name}").unwrap();
-        assert_eq!(segs.len(), 2);
-        assert!(matches!(&segs[0], InterpSegment::Literal(s) if s == "hello "));
-        assert!(matches!(&segs[1], InterpSegment::Expr(s) if s == "name"));
-    }
-
-    #[test]
-    fn test_no_interpolation() {
-        assert!(parse_interpolation_segments("hello world").is_none());
-    }
-
-    #[test]
-    fn test_multiple_segments() {
-        let segs = parse_interpolation_segments("a {x} b {y} c").unwrap();
-        assert_eq!(segs.len(), 5);
     }
 }
 

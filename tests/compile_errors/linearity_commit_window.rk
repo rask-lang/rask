@@ -39,11 +39,11 @@ extend Body {
 }
 
 func make_world() -> World {
-    return World { id: 1 }
+    return World(id: 1)
 }
 
 func make_body(w: World) -> Body {
-    return Body { id: w.id + 1 }
+    return Body(id: w.id + 1)
 }
 
 // --- an ordinary statement in the window ---

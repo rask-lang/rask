@@ -841,7 +841,24 @@ fn declared_prefix_of(base: &str) -> Option<&'static StdlibMethodMeta> {
 
 /// What an internal spelling stands for, by the name MIR uses.
 fn internal_spelling(base: &str) -> Option<Internal> {
-    INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
+    INTERNAL_SPELLINGS
+        .iter()
+        .find(|(n, _)| *n == base)
+        .map(|(_, i)| *i)
+        .or_else(|| float_table_spelling(base))
+}
+
+/// A float method from `float_methods::FLOAT_METHODS`, or one of the
+/// renderings formatting lowers to (`{x}`, `{x:debug}`, `{x:e}`, `{x:.2}`). A
+/// float is a scalar, so there's nothing to borrow or keep, and a `to_string`
+/// hands back a fresh string. Read off the table rather than listed here, so
+/// a method added there is accounted for without a second line.
+fn float_table_spelling(base: &str) -> Option<Internal> {
+    let (head, method) = base.split_once('_')?;
+    let known = matches!(head, "f32" | "f64")
+        && (crate::float_methods::lookup(method).is_some()
+            || matches!(method, "to_string" | "debug" | "to_exp" | "to_precision"));
+    known.then_some(Internal::FreshFromReceiver)
 }
 
 /// For a write-back, the position of the value it hands to the slot:

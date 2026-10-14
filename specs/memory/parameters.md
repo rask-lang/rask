@@ -67,7 +67,7 @@ func zero_all(mutate n: Link<Node>) {
     if n.child? as c { c.value = 0 }
 }
 
-let a = rack.insert(Node { value: 5, child: none })
+let a = rack.insert(Node(value: 5, child: none))
 zero_all(mutate a)              // `let a` — see PM10
 ```
 

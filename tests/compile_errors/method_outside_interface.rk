@@ -24,6 +24,6 @@ LogSource implements Reader {
 }
 
 func main() {
-    mut src = LogSource { pos: 0 }
+    mut src = LogSource(pos: 0)
     println("{src.read()}")
 }

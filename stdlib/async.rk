@@ -82,7 +82,7 @@ enum HandleList<T> {
 
 extend Handles<T> {
     public func new() -> Handles<T> {
-        return Handles { list: HandleList.Empty }
+        return Handles(list: HandleList.Empty)
     }
 
     public func add(mutate self, take h: Handle<T>) -> void {

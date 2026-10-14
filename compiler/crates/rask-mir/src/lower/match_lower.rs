@@ -605,6 +605,9 @@ impl<'a> MirLowerer<'a> {
         let result_local = self.builder.alloc_temp(MirType::I64);
         for (i, arm) in arms.iter().enumerate() {
             self.builder.switch_to_block(arm_blocks[i]);
+            // A literal or range inside the arm's variant pattern: the field's
+            // value and what it has to match. The switch only tested the tag.
+            let mut field_tests: Vec<(MirOperand, Pattern)> = Vec::new();
 
             if has_tag {
                 if let Pattern::Constructor { name, fields } = &arm.pattern {
@@ -653,7 +656,12 @@ impl<'a> MirLowerer<'a> {
                         });
 
                     for (j, field_pat) in fields.iter().enumerate() {
-                        if let Pattern::Ident(binding) = field_pat {
+                        let tested = matches!(field_pat, Pattern::Literal(_) | Pattern::Range { .. });
+                        let binding = match field_pat {
+                            Pattern::Ident(b) => Some(b),
+                            _ => None,
+                        };
+                        if binding.is_some() || tested {
                             // For a user enum, pass the exact payload offset + size so codegen
                             // doesn't guess the variant (mixed variants share field indices).
                             let (field_ty, field_loc) = if let Some(ref vf) = variant_fields {
@@ -673,9 +681,10 @@ impl<'a> MirLowerer<'a> {
                                     "lower/match_lower:ok_err_binding"));
                                 (ty, None)
                             };
-                            let payload_local = self.builder.alloc_local(
-                                binding.clone(), field_ty.clone(),
-                            );
+                            let payload_local = match binding {
+                                Some(b) => self.builder.alloc_local(b.clone(), field_ty.clone()),
+                                None => self.builder.alloc_temp(field_ty.clone()),
+                            };
                             let rvalue = if is_niche {
                                 MirRValue::Use(scrutinee_op.clone())
                             } else {
@@ -692,6 +701,10 @@ impl<'a> MirLowerer<'a> {
                                 dst: payload_local,
                                 rvalue,
                             }));
+                            let Some(binding) = binding else {
+                                field_tests.push((MirOperand::Local(payload_local), field_pat.clone()));
+                                continue;
+                            };
                             let prefix = self.mir_type_name(&field_ty)
                                 .or_else(|| {
                                     enum_layout_id.and_then(|idx| {
@@ -742,15 +755,21 @@ impl<'a> MirLowerer<'a> {
                         if let Some(layout) = self.ctx.enum_layouts.get(idx as usize) {
                             if let Some(variant) = layout.variants.iter().find(|v| v.name == variant_name) {
                                 for (field_name, field_pat) in fields {
-                                    if let Pattern::Ident(binding) = field_pat {
+                                    let tested = matches!(field_pat, Pattern::Literal(_) | Pattern::Range { .. });
+                                    let binding = match field_pat {
+                                        Pattern::Ident(b) => Some(b),
+                                        _ => None,
+                                    };
+                                    if binding.is_some() || tested {
                                         if let Some((field_idx, field_layout)) = variant.fields.iter()
                                             .enumerate()
                                             .find(|(_, f)| f.name == *field_name)
                                         {
                                             let field_ty = self.ctx.type_to_mir(&field_layout.ty);
-                                            let payload_local = self.builder.alloc_local(
-                                                binding.clone(), field_ty.clone(),
-                                            );
+                                            let payload_local = match binding {
+                                                Some(b) => self.builder.alloc_local(b.clone(), field_ty.clone()),
+                                                None => self.builder.alloc_temp(field_ty.clone()),
+                                            };
                                             // Exact offset/size so codegen doesn't guess the variant.
                                             let rvalue = MirRValue::Field {
                                                 base: payload_base.clone(),
@@ -762,6 +781,10 @@ impl<'a> MirLowerer<'a> {
                                                 dst: payload_local,
                                                 rvalue,
                                             }));
+                                            let Some(binding) = binding else {
+                                                field_tests.push((MirOperand::Local(payload_local), field_pat.clone()));
+                                                continue;
+                                            };
                                             if let Some(p) = self.mir_type_name(&field_ty)
                                                 .or_else(|| super::MirContext::type_prefix(&field_layout.ty, self.ctx.type_names))
                                             {
@@ -783,7 +806,7 @@ impl<'a> MirLowerer<'a> {
                         // A union-member arm binds the *member*, which sits past
                         // the member index inside the union — not the union
                         // itself. Binding the union meant `e.code` read the index
-                        // where the field belonged, so `BErr { code: 42 }` came
+                        // where the field belonged, so `BErr(code: 42)` came
                         // back as `code=1` (#1013).
                         let member = err_variant_tags[i].and_then(|idx| {
                             let MirType::Union(members) = err_payload_ty.as_ref()? else {
@@ -884,34 +907,37 @@ impl<'a> MirLowerer<'a> {
 
             self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
 
-            if let Some(guard_expr) = &arm.guard {
-                let (guard_val, _) = self.lower_expr(guard_expr)?;
-                // A failed guard hands the value to the arms below this one,
-                // in order: the first of them whose pattern takes it. One
-                // switch can't say that, so the failure dispatches again over
-                // what's left.
-                //
-                //   match s {
-                //       Circle(r) if r > 10 => "big circle"
-                //       Circle(r) => "circle"
-                //       Square(w) => "square"
-                //   }
-                //
-                // Handing it to the next arm's body ran that arm whether its
-                // pattern matched or not (#875). Handing it to the next
-                // catch-all skipped `Circle(r)`, and with none below, native
-                // left the match with no result at all.
-                //
-                // A `T or E` match switches twice (error variants inside the
-                // Err branch), which a single re-dispatch can't repeat; there
-                // the next catch-all still takes it.
+            // Where the value goes when this arm turns out not to take it
+            // after all: a literal in its variant pattern didn't match, or its
+            // guard failed. The arms below it, in order: the first of them
+            // whose pattern takes it. One switch can't say that, so the
+            // failure dispatches again over what's left.
+            //
+            //   match s {
+            //       Circle(r) if r > 10 => "big circle"
+            //       Circle(0) => "dot"
+            //       Circle(r) => "circle"
+            //       Square(w) => "square"
+            //   }
+            //
+            // Handing it to the next arm's body ran that arm whether its
+            // pattern matched or not (#875). Handing it to the next catch-all
+            // skipped `Circle(r)`, and with none below, native left the match
+            // with no result at all. A literal in the pattern was never tested
+            // at all, so `Circle(0)` took every circle (#1532).
+            //
+            // A `T or E` match switches twice (error variants inside the Err
+            // branch), which a single re-dispatch can't repeat; there the next
+            // catch-all still takes it.
+            let needs_fallthrough = !field_tests.is_empty() || arm.guard.is_some();
+            let fall_through = if needs_fallthrough {
                 let below = (i + 1)..arms.len();
                 let next_catch_all = below
                     .clone()
                     .find(|&j| catch_all[j])
                     .map(|j| arm_blocks[j])
                     .unwrap_or(no_match);
-                let guard_fail_block = if two_level {
+                if two_level {
                     next_catch_all
                 } else {
                     let below_blocks: Vec<BlockId> = below.map(|j| arm_blocks[j]).collect();
@@ -928,7 +954,20 @@ impl<'a> MirLowerer<'a> {
                     }));
                     self.builder.switch_to_block(here);
                     redispatch
-                };
+                }
+            } else {
+                no_match
+            };
+
+            for (value, pattern) in &field_tests {
+                let pass = self.builder.create_block();
+                self.emit_pattern_test(value, pattern, pass, fall_through)?;
+                self.builder.switch_to_block(pass);
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let guard_fail_block = fall_through;
                 let guard_pass_block = self.builder.create_block();
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: guard_val,
@@ -1337,7 +1376,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Chain lowering for scalar (int/char) matches that include range patterns.
     /// Each arm becomes a boolean test branching to the body or the next arm.
-    /// `match p { Point { x: 0, y } => …, Point { x, y } => … }`.
+    /// `match p { Point(x: 0, y) => …, Point(x, y) => … }`.
     ///
     /// Arms are tried in order. An arm matches when every field pattern that
     /// tests a value agrees; field patterns that only bind always agree, and are
@@ -1495,6 +1534,103 @@ impl<'a> MirLowerer<'a> {
         // was not.
         self.builder.set_local_type(result_local, result_ty.clone());
         Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// `p is Point(x: 0, y)` on a plain struct, as a bool: read each field the
+    /// pattern names, test the ones that can fail, bind the rest. The
+    /// bindings stay in scope past the test — an `&&` chain reads them — so
+    /// on the failed path a string binding is emptied, the way
+    /// `lower_is_pattern_binding` does, and releasing it is harmless.
+    pub(super) fn lower_struct_is(
+        &mut self,
+        scrutinee: &Expr,
+        val: MirOperand,
+        val_ty: MirType,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::Pattern;
+        let Pattern::Struct { fields, .. } = pattern else {
+            unreachable!("lower_struct_is takes a struct pattern");
+        };
+        let result = self.builder.alloc_temp(MirType::Bool);
+        let mut reads: Vec<(crate::LocalId, MirType, &Pattern)> = Vec::new();
+        for (field_name, field_pat) in fields {
+            let Some((field_idx, field_layout)) = self.struct_field(&val_ty, field_name) else {
+                continue;
+            };
+            let field_ty = self.ctx.type_to_mir(&field_layout.ty);
+            let local_name = match field_pat {
+                Pattern::Ident(binding) => binding.clone(),
+                _ => format!("__is_{}", field_name),
+            };
+            let local = self.builder.alloc_local(local_name, field_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: val.clone(),
+                    field_index: field_idx as u32,
+                    byte_offset: Some(field_layout.offset),
+                    access: FieldAccess::for_field(&field_ty, field_layout.size),
+                },
+            }));
+            reads.push((local, field_ty, field_pat));
+        }
+
+        let pass_block = self.builder.create_block();
+        let fail_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        let tests: Vec<(crate::LocalId, &Pattern)> = reads
+            .iter()
+            .filter(|(_, _, pat)| !matches!(pat, Pattern::Ident(_) | Pattern::Wildcard))
+            .map(|(local, _, pat)| (*local, *pat))
+            .collect();
+        if tests.is_empty() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: pass_block }));
+        } else {
+            let n = tests.len();
+            for (j, (local, pat)) in tests.into_iter().enumerate() {
+                let pass = if j + 1 == n { pass_block } else { self.builder.create_block() };
+                self.emit_pattern_test(&MirOperand::Local(local), pat, pass, fail_block)?;
+                if j + 1 != n {
+                    self.builder.switch_to_block(pass);
+                }
+            }
+        }
+
+        for (local, field_ty, pat) in &reads {
+            if let Pattern::Ident(binding) = pat {
+                if let Some(p) = self.mir_type_name(field_ty) {
+                    self.meta_mut(binding.as_str()).type_prefix = Some(p);
+                }
+                self.locals.insert(binding.clone(), (*local, field_ty.clone()));
+            }
+        }
+
+        self.builder.switch_to_block(pass_block);
+        self.retain_pattern_copies(pattern, scrutinee, &val_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(fail_block);
+        for (local, field_ty, pat) in &reads {
+            if matches!(pat, Pattern::Ident(_)) && *field_ty == MirType::String {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: *local,
+                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
+                }));
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result), MirType::Bool))
     }
 
     /// A struct field's index and layout by name.

@@ -86,22 +86,22 @@ public struct SystemTime {
 extend SystemTime {
     /// Capture the current wall-clock time.
     public func now() -> SystemTime {
-        return SystemTime { nanos: time.wall_clock_nanos() }
+        return SystemTime(nanos: time.wall_clock_nanos())
     }
 
     /// The UNIX epoch: 1970-01-01 00:00:00 UTC.
     public func unix_epoch() -> SystemTime {
-        return SystemTime { nanos: 0 }
+        return SystemTime(nanos: 0)
     }
 
     /// Reconstruct from a stored seconds-since-epoch timestamp.
     public func from_unix_seconds(seconds: i64) -> SystemTime {
-        return SystemTime { nanos: seconds * 1000000000 }
+        return SystemTime(nanos: seconds * 1000000000)
     }
 
     /// Reconstruct from a stored millis-since-epoch timestamp.
     public func from_unix_millis(millis: i64) -> SystemTime {
-        return SystemTime { nanos: millis * 1000000 }
+        return SystemTime(nanos: millis * 1000000)
     }
 
     /// Whole seconds since the UNIX epoch (negative before 1970).
@@ -270,7 +270,7 @@ SystemTime implements Add<Duration> {
     type Out = SystemTime
 
     public func add(self, span: Duration) -> SystemTime {
-        return SystemTime { nanos: self.nanos + span.as_nanos().wrap<i64>() }
+        return SystemTime(nanos: self.nanos + span.as_nanos().wrap<i64>())
     }
 }
 
@@ -278,7 +278,7 @@ SystemTime implements Sub<Duration> {
     type Out = SystemTime
 
     public func sub(self, span: Duration) -> SystemTime {
-        return SystemTime { nanos: self.nanos - span.as_nanos().wrap<i64>() }
+        return SystemTime(nanos: self.nanos - span.as_nanos().wrap<i64>())
     }
 }
 

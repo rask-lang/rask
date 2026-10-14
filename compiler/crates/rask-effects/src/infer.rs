@@ -146,7 +146,7 @@ impl<'t> InferPass<'t> {
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
     }
 
-    fn collect_body(&mut self, qname: &str, body: &[Stmt], attrs: &[String], is_pub: bool) {
+    fn collect_body(&mut self, qname: &str, body: &[Stmt], attrs: &[rask_ast::attr::Attr], is_pub: bool) {
         // PU2 says a `comptime func` is pure and that "effect inference
         // confirms this". It used to *assert* it: stamp `Effects::default()`
         // on anything wearing the keyword and skip the body, so the map could
@@ -162,7 +162,7 @@ impl<'t> InferPass<'t> {
         classify_body(body, &mut direct, &mut callees, self.targets);
 
         // @no_io suppresses conservative IO marking
-        let has_no_io = attrs.iter().any(|a| a == "no_io");
+        let has_no_io = attrs.iter().any(|a| a.is("no_io"));
         if has_no_io {
             direct.io = false;
         }

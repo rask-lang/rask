@@ -19,6 +19,6 @@ extend Counter {
 }
 
 func main() {
-    let c = Counter { value: Shared.mutex(42) }
+    let c = Counter(value: Shared.mutex(42))
     println(c.snapshot().to_string())
 }

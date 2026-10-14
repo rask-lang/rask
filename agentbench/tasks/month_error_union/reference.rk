@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 enum ReadError {
     Empty
-    TooShort { saw: i64 }
+    TooShort(saw: i64)
 }
 
 enum ParseError {
-    NotANumber { text: string }
+    NotANumber(text: string)
 }
 
 ReadError implements Error {

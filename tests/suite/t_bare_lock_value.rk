@@ -14,7 +14,7 @@ import sync.Mutex
 
 struct Counter { public n: i64 }
 extend Counter {
-    func new() -> Counter { return Counter { n: 7 } }
+    func new() -> Counter { return Counter(n: 7) }
     func get(self) -> i64 { return self.n }
 }
 
@@ -26,11 +26,11 @@ struct Holder {
 
 extend Holder {
     func new() -> Holder {
-        return Holder {
-            n: Shared.mutex(3),
-            v: Shared.mutex(Vec.new()),
-            c: Shared.mutex(Counter.new()),
-        }
+        return Holder(
+            n: Shared.mutex(3)
+            v: Shared.mutex(Vec.new())
+            c: Shared.mutex(Counter.new())
+        )
     }
 
     // Bare: the guard's value is the result.

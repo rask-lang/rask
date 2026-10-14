@@ -289,10 +289,25 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // above and they are not. Measured both ways on #1050.
 ];
 
-/// `(leading sizes, element descriptions)` for a container constructor, by the name MIR
-/// calls it — monomorphization's `$` suffix and any module path stripped.
+/// Calls that take element descriptions and hand back no container. A JSON
+/// decode shape records what a list's elements or a map's values own, so the
+/// container the decoder builds from it frees them.
+pub const DESCRIBERS: &[(&str, u8, u8)] = &[
+    ("json_shape_vec", 2, 1),
+    ("json_shape_map", 2, 1),
+];
+
+/// `(leading sizes, element descriptions)` for a call that takes element
+/// descriptions — a container constructor or one of `DESCRIBERS` — by the name
+/// MIR calls it, monomorphization's `$` suffix and any module path stripped.
 pub fn ctor_shape(name: &str) -> Option<(usize, usize)> {
-    entry(name).map(|(_, l, t, _)| (*l as usize, *t as usize))
+    entry(name).map(|(_, l, t, _)| (*l as usize, *t as usize)).or_else(|| {
+        let base = base_name(name);
+        DESCRIBERS
+            .iter()
+            .find(|(n, _, _)| *n == base)
+            .map(|(_, l, t)| (*l as usize, *t as usize))
+    })
 }
 
 /// What frees the container this call handed back, or `None` if it isn't one.
@@ -329,7 +344,11 @@ pub fn wrapped_free_fn(name: &str) -> Option<&'static str> {
 }
 
 fn entry(name: &str) -> Option<&'static (&'static str, u8, u8, &'static str)> {
-    let head = name.rsplit("::").next().unwrap_or(name);
-    let base = head.split('$').next().unwrap_or(head);
+    let base = base_name(name);
     CTORS.iter().find(|(n, _, _, _)| *n == base)
+}
+
+fn base_name(name: &str) -> &str {
+    let head = name.rsplit("::").next().unwrap_or(name);
+    head.split('$').next().unwrap_or(head)
 }

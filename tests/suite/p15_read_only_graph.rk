@@ -50,9 +50,9 @@ func combat_round(mutate w: World) {
 }
 
 func build() -> World {
-    mut w = World { nodes: Rack.new() }
-    let a = w.nodes.insert(Entity { name: "a", health: 100, damage: 10, target: none })
-    let b = w.nodes.insert(Entity { name: "b", health: 80, damage: 7, target: none })
+    mut w = World(nodes: Rack.new())
+    let a = w.nodes.insert(Entity(name: "a", health: 100, damage: 10, target: none))
+    let b = w.nodes.insert(Entity(name: "b", health: 80, damage: 7, target: none))
     a.target = b
     b.target = a
     return w

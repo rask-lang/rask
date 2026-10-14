@@ -199,6 +199,54 @@ impl TypeChecker {
         format!("{}.{}", self.types.type_name(id), name)
     }
 
+    /// `Pair(a, b)` on a `Pair` value, where some enum also has a `Pair`
+    /// variant: the struct's fields, by shorthand. The desugarer couldn't
+    /// tell which `Pair` the pattern means and left it for the matched type
+    /// to say. `None` when the value isn't that struct.
+    fn check_struct_shorthand(
+        &mut self,
+        name: &str,
+        fields: &[Pattern],
+        scrutinee_ty: &Type,
+        span: Span,
+    ) -> Option<Vec<(String, Type)>> {
+        if name.contains('.') {
+            return None;
+        }
+        let id = match normalize_type(&self.ctx.apply(scrutinee_ty), &self.types) {
+            Type::Named(id) => id,
+            _ => return None,
+        };
+        let Some(TypeDef::Struct { name: struct_name, fields: declared, .. }) = self.types.get(id) else {
+            return None;
+        };
+        if struct_name != name {
+            return None;
+        }
+        let declared = declared.clone();
+        let mut bindings = Vec::new();
+        for field in fields {
+            let Pattern::Ident(n) = field else {
+                self.errors.push(TypeError::StructPatternByPosition {
+                    name: name.to_string(),
+                    fields: declared.iter().map(|(f, _)| f.clone()).collect(),
+                    span,
+                });
+                return Some(bindings);
+            };
+            match declared.iter().find(|(f, _)| f == n) {
+                Some((_, ty)) => bindings.push((n.clone(), ty.clone())),
+                None => self.errors.push(TypeError::NoSuchField {
+                    ty: Type::Named(id),
+                    field: n.clone(),
+                    span,
+                }),
+            }
+        }
+        self.struct_shorthand_patterns.insert((span, name.to_string()));
+        Some(bindings)
+    }
+
     /// `name` as a variant of the enum the scrutinee already is, qualified,
     /// with how many payload fields it carries. `None` when the scrutinee
     /// isn't known to be that enum: a bare name is then a binding, and a
@@ -414,6 +462,9 @@ impl TypeChecker {
                         });
                         return vec![];
                     }
+                }
+                if let Some(bindings) = self.check_struct_shorthand(name, fields, scrutinee_ty, span) {
+                    return bindings;
                 }
                 self.check_constructor_pattern(name, fields, scrutinee_ty, span)
             }
@@ -882,11 +933,13 @@ impl TypeChecker {
         // nothing ever solved. The value came out right anyway because MIR's
         // fallback guesses a machine word, which is what an `i64` payload is —
         // a `string` or `f64` payload in the same position would not have been.
-        // `Heap<List>` arrives spelled, not registered — the declared field type
-        // of a recursive enum never went through the type table. Normalizing
-        // first turns it into `Generic { base: Heap, args: [Named(List)] }`, so
-        // both the lookup below and the box case further down can read it.
-        let resolved_scrutinee = normalize_type(&resolved_scrutinee, &self.types);
+        // A box is what it holds to a pattern (mem.heap/HP5): `List.Cons(x, _)`
+        // against a `Heap<List>` matches the `List`. `Heap` is never a
+        // registered type — `parse_type` always leaves it spelled — so it has
+        // to come off before the enum is looked up, or the lookup finds no
+        // enum and every field binds to a variable nothing solves (#1026).
+        let resolved_scrutinee =
+            normalize_type(resolved_scrutinee.peel_heap(), &self.types);
         let (base_id, type_args) = match &resolved_scrutinee {
             Type::Named(id) => (Some(*id), Vec::new()),
             Type::Generic { base, args } => (
@@ -977,56 +1030,6 @@ impl TypeChecker {
                     bindings.extend(self.check_pattern(pat, &field_ty, span));
                 }
                 return bindings;
-            }
-        }
-
-        // The enum inside a box. `Heap<List>` is a `List` to a pattern —
-        // mem.heap/HP5 lets the box stand for what it holds — but the lookup
-        // above asked `Heap` for a `Cons` variant, got nothing, and bound every
-        // field to a fresh variable instead (#1026). Only the enum the pattern
-        // itself names, and only when the box really holds it.
-        if let Some((enum_id, type_params)) = self.enum_id_from_pattern_name(name) {
-            let held = type_args.iter().any(|a| {
-                let a = normalize_type(&self.ctx.apply(a), &self.types);
-                matches!(a, Type::Named(id) | Type::Generic { base: id, .. } if id == enum_id)
-            });
-            if held {
-                let variant_field_types = self.types.get(enum_id).and_then(|def| {
-                    let TypeDef::Enum { variants, .. } = def else { return None };
-                    variants
-                        .iter()
-                        .find(|(n, _)| n == variant_lookup_name)
-                        .map(|(_, f)| f.clone())
-                });
-                if let Some(variant_field_types) = variant_field_types {
-                    if fields.len() != variant_field_types.len() {
-                        self.errors.push(TypeError::ArityMismatch {
-                            expected: variant_field_types.len(),
-                            found: fields.len(),
-                            span,
-                        });
-                        return vec![];
-                    }
-                    // A generic enum reached through a box has no arguments
-                    // here; a fresh variable per parameter is honest about that.
-                    let fresh: Vec<Type> =
-                        type_params.iter().map(|_| self.ctx.fresh_var()).collect();
-                    let subst: HashMap<&str, Type> = type_params
-                        .iter()
-                        .map(|p| p.as_str())
-                        .zip(fresh.into_iter())
-                        .collect();
-                    let mut bindings = vec![];
-                    for (pat, field_ty) in fields.iter().zip(variant_field_types.iter()) {
-                        let field_ty = if subst.is_empty() {
-                            field_ty.clone()
-                        } else {
-                            Self::substitute_type_params(field_ty, &subst)
-                        };
-                        bindings.extend(self.check_pattern(pat, &field_ty, span));
-                    }
-                    return bindings;
-                }
             }
         }
 

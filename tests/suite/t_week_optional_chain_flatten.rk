@@ -43,34 +43,34 @@ func nickname_of(a: Account) -> string? {
 }
 
 test "type.optionals — the chain takes a plain default through ??" {
-    let a = Account { profile: Profile { nickname: none } }
+    let a = Account(profile: Profile(nickname: none))
     assert (a.profile?.nickname ?? "guest") == "guest"
-    let b = Account { profile: Profile { nickname: "ada" } }
+    let b = Account(profile: Profile(nickname: "ada"))
     assert (b.profile?.nickname ?? "guest") == "ada"
 }
 
 test "type.optionals — an absent receiver reaches the same default" {
-    let a = Account { profile: none }
+    let a = Account(profile: none)
     assert (a.profile?.nickname ?? "guest") == "guest"
 }
 
 test "type.optionals — the chain names its own type" {
-    let a = Account { profile: Profile { nickname: "ada" } }
+    let a = Account(profile: Profile(nickname: "ada"))
     let name: string? = a.profile?.nickname
     assert name! == "ada"
 }
 
 test "type.optionals — the chain passes to a T? parameter" {
-    let a = Account { profile: Profile { nickname: "ada" } }
+    let a = Account(profile: Profile(nickname: "ada"))
     assert greet(a.profile?.nickname) == "ada"
-    let b = Account { profile: Profile { nickname: none } }
+    let b = Account(profile: Profile(nickname: none))
     assert greet(b.profile?.nickname) == "guest"
 }
 
 test "type.optionals — the chain returns from a T? function" {
-    let a = Account { profile: Profile { nickname: "ada" } }
+    let a = Account(profile: Profile(nickname: "ada"))
     assert nickname_of(a)! == "ada"
-    let b = Account { profile: none }
+    let b = Account(profile: none)
     assert nickname_of(b) is none
 }
 

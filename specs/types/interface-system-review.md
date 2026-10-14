@@ -244,10 +244,10 @@ Question: the core five were Equal, Hashable, Comparable, Cloneable, Default —
 
 **Default is eliminated (decided).** Zero corpus usage, and DF4's universal zeros ("0 for ints, false for bool") are Go zero-values by another name. Declared field defaults (#311) replace the whole interface:
 
-- A field with a declared default may be omitted at construction: `Config { host: "x" }` fills the rest.
-- All fields defaulted → zero-field construction: `Config {}`. That *is* the default value — no `.default()` method, no interface.
+- A field with a declared default may be omitted at construction: `Config(host: "x")` fills the rest.
+- All fields defaulted → zero-field construction: `Config()`. That *is* the default value — no `.default()` method, no interface.
 - A struct with any defaultless field has no empty construction — the compiler names the missing field instead of inventing `""`/`0`.
-- DF1–DF4 die at fold-in; the core five become the **core four** (Equal, Hashable, Comparable, Cloneable); the #312 carve-out shrinks accordingly; stdlib examples using `.default()` (e.g. `Shared.new(AppConfig.default())`) become `Shared.new(AppConfig {})`.
+- DF1–DF4 die at fold-in; the core five become the **core four** (Equal, Hashable, Comparable, Cloneable); the #312 carve-out shrinks accordingly; stdlib examples using `.default()` (e.g. `Shared.new(AppConfig.default())`) become `Shared.new(AppConfig())`.
 
 One mechanism now feeds construction, decode-missing-fields (`@default`), and "give me a fresh one" — previously three systems. No spec API used `T: Default` as a generic bound (verified), so nothing is lost; if a generic constructible-empty bound is ever needed, it can return as its own decision, from usage.
 
@@ -285,7 +285,7 @@ All findings ruled on. Accepted: **MN1–MN3** (single namespace, a newtype for 
 
 Also accepted: **CD1–CD3** (one interface per block, the block is the contract, one condition per block).
 
-Also accepted: **auto-derived `Error` for enums**, overridable (corpus survey; thiserror cross-check), and the **elimination of `Default`** — declared field defaults (#311) make omitted-field and zero-field construction (`Config {}`) the mechanism; core five → core four.
+Also accepted: **auto-derived `Error` for enums**, overridable (corpus survey; thiserror cross-check), and the **elimination of `Default`** — declared field defaults (#311) make omitted-field and zero-field construction (`Config()`) the mechanism; core five → core four.
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
 - ~~Renaming `structural`~~ — **decided: `duck interface`**, and the stdlib ships zero of them: `Reader`/`Writer`/`Error` go nominal (ER4/ER6 rewrite at fold-in). One block per interface (CD1); a type with five conformances writes five blocks, and each block is one contract.

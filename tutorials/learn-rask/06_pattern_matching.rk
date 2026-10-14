@@ -112,9 +112,9 @@ enum Signal {
 
 // Return what the train driver should do:
 //   Red                → "stop"
-//   Yellow(limit)      → "slow to {limit} km/h"
+//   Yellow(speed_limit: limit)      → "slow to {limit} km/h"
 //   Green              → "proceed"
-//   Flashing(msg)      → "caution: {msg}"
+//   Flashing(message: msg)      → "caution: {msg}"
 func driver_action(s: Signal) -> string {
     todo()
 }
@@ -168,8 +168,8 @@ test "distance to meters" {
 test "driver action" {
     assert driver_action(Signal.Red) == "stop"
     assert driver_action(Signal.Green) == "proceed"
-    assert driver_action(Signal.Yellow(80)) == "slow to 80 km/h"
-    assert driver_action(Signal.Flashing("bridge ahead")) == "caution: bridge ahead"
+    assert driver_action(Signal.Yellow(speed_limit: 80)) == "slow to 80 km/h"
+    assert driver_action(Signal.Flashing(message: "bridge ahead")) == "caution: bridge ahead"
 }
 
 test "terminal assignment" {

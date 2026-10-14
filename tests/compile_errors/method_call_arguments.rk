@@ -67,7 +67,7 @@ struct Pair {
 }
 
 func no_arithmetic_on_the_payload() {
-    let a = Atomic<Pair>.new(Pair { a: 1, b: 2 })
+    let a = Atomic<Pair>.new(Pair(a: 1, b: 2))
     // ERROR: `fetch_add` needs a payload it can add, and `Pair` isn't one
     println(a.fetch_add(1, Ordering.SeqCst).a)
     return

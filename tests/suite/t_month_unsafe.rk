@@ -112,7 +112,7 @@ test "mem.unsafe — a pointer survives a function boundary and a struct field" 
         // Through a call.
         assert third_byte(s.as_ptr()) == 121
         // And back out of a field.
-        let view = ByteView9 { data: s.as_ptr(), len: s.len() }
+        let view = ByteView9(data: s.as_ptr(), len: s.len())
         assert *view.data == 119
         assert *view.data.offset(3) == 122
     }

@@ -135,7 +135,7 @@ test "a method hands back a sequence over its receiver" {
     mut v = Vec<i32>.new()
     v.push(4)
     v.push(5)
-    let bag = Bag { items: v }
+    let bag = Bag(items: v)
     mut total = 0
     for x in bag.walk() {
         total = total + x

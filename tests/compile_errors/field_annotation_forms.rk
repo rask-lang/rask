@@ -41,12 +41,12 @@ struct Config {
 }
 
 func decode_config(raw: string) -> Config {
-    return json.decode<Config>(raw) catch _ => Config { host: "", token: "" }
+    return json.decode<Config>(raw) catch _ => Config(host: "", token: "")
 }
 
 func main() {
-    let s = Session { id: 1, token: "t" }
-    let b = Bare { name: "ada" }
-    let n = Numbered { name: "ada" }
+    let s = Session(id: 1, token: "t")
+    let b = Bare(name: "ada")
+    let n = Numbered(name: "ada")
     println("{s.id} {b.name} {n.name} {decode_config("").host}")
 }

@@ -67,7 +67,7 @@ test "std.json — the error side of the same wrapper" {
 test "stdlib.encoding — a Map field survives being handed to the encoder" {
     mut counts = Map<string, i64>.new()
     counts.insert("a key long enough to need a buffer", 7)
-    let t = Tagged { name: "a name long enough to need one too", counts: counts }
+    let t = Tagged(name: "a name long enough to need one too", counts: counts)
     let out = json.encode(t)
     assert out.contains("\"a key long enough to need a buffer\":7")
     assert out.contains("\"a name long enough to need one too\"")

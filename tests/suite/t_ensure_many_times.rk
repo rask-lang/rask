@@ -24,7 +24,7 @@ struct Conn {
 
 extend Conn {
     func open(id: i64) -> Conn {
-        return Conn { id: id }
+        return Conn(id: id)
     }
 
     func close(take self) -> i64 {

@@ -79,20 +79,20 @@ func scribbled<W: Writer>(w: W) -> i64 {
 }
 
 test "a qualified header conforms to the stdlib's Writer" {
-    assert through_any(Tally { seen: 3 }) == 5
-    assert through_bound(Tally { seen: 3 }) == 4
+    assert through_any(Tally(seen: 3)) == 5
+    assert through_bound(Tally(seen: 3)) == 4
 }
 
 test "the bare name is still the program's" {
-    assert scribbled(Tally { seen: 3 }) == 30
+    assert scribbled(Tally(seen: 3)) == 30
 }
 
 test "through an import alias" {
-    assert through_alias(Pad { n: 7 }) == 7
-    assert through_bound(Pad { n: 8 }) == 8
-    assert through_any(Pad { n: 9 }) == 9
-    assert through_any_alias(Pad { n: 10 }) == 10
-    assert through_any_alias(Tally { seen: 1 }) == 4
+    assert through_alias(Pad(n: 7)) == 7
+    assert through_bound(Pad(n: 8)) == 8
+    assert through_any(Pad(n: 9)) == 9
+    assert through_any_alias(Pad(n: 10)) == 10
+    assert through_any_alias(Tally(seen: 1)) == 4
     mut b = i.Buffer.new()
     assert through_any_alias(b) == 3
 }

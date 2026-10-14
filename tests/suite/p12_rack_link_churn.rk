@@ -24,21 +24,21 @@ struct Holder {
 }
 
 func fresh() -> Holder {
-    return Holder {
-        rack: Rack.new(),
-        list: Vec.new(),
-        other: Vec.new(),
-        nested: Vec.new(),
-        index: Map.new(),
-    }
+    return Holder(
+        rack: Rack.new()
+        list: Vec.new()
+        other: Vec.new()
+        nested: Vec.new()
+        index: Map.new()
+    )
 }
 
 func main() {}
 
 test "an entry popped before the delete leaves the survivors alone" {
     mut h = fresh()
-    let a = h.rack.insert(Node { id: 1, peer: none })
-    let b = h.rack.insert(Node { id: 2, peer: none })
+    let a = h.rack.insert(Node(id: 1, peer: none))
+    let b = h.rack.insert(Node(id: 2, peer: none))
     h.list.push(a)
     h.list.push(b)
 
@@ -61,7 +61,7 @@ test "an entry popped before the delete leaves the survivors alone" {
 
 test "the same target twice in one list loses both entries" {
     mut h = fresh()
-    let c = h.rack.insert(Node { id: 3, peer: none })
+    let c = h.rack.insert(Node(id: 3, peer: none))
     h.list.push(c)
     h.list.push(c)
     assert h.list.len() == 2
@@ -74,7 +74,7 @@ test "the same target twice in one list loses both entries" {
 
 test "one target in two lists is fixed in both" {
     mut h = fresh()
-    let d = h.rack.insert(Node { id: 4, peer: none })
+    let d = h.rack.insert(Node(id: 4, peer: none))
     h.list.push(d)
     h.other.push(d)
 
@@ -86,7 +86,7 @@ test "one target in two lists is fixed in both" {
 
 test "a cleared list before the delete is harmless" {
     mut h = fresh()
-    let e = h.rack.insert(Node { id: 5, peer: none })
+    let e = h.rack.insert(Node(id: 5, peer: none))
     h.list.push(e)
     h.list.clear()
 
@@ -97,8 +97,8 @@ test "a cleared list before the delete is harmless" {
 
 test "a list replaced by filter has its new entries registered" {
     mut h = fresh()
-    let f = h.rack.insert(Node { id: 6, peer: none })
-    let g = h.rack.insert(Node { id: 7, peer: none })
+    let f = h.rack.insert(Node(id: 6, peer: none))
+    let g = h.rack.insert(Node(id: 7, peer: none))
     h.other.push(f)
     h.other.push(g)
 
@@ -114,7 +114,7 @@ test "a list replaced by filter has its new entries registered" {
 
 test "an edge two containers deep is still found" {
     mut h = fresh()
-    let i1 = h.rack.insert(Node { id: 8, peer: none })
+    let i1 = h.rack.insert(Node(id: 8, peer: none))
     mut inner: Vec<Link<Node>> = Vec.new()
     inner.push(i1)
     h.nested.push(inner)
@@ -130,7 +130,7 @@ test "an edge two containers deep is still found" {
 
 test "an index drops the deleted node's entry" {
     mut h = fresh()
-    let k = h.rack.insert(Node { id: 9, peer: none })
+    let k = h.rack.insert(Node(id: 9, peer: none))
     h.index.insert("k", k)
     assert h.index.len() == 1
 
@@ -146,8 +146,8 @@ test "an index drops the deleted node's entry" {
 
 test "overwriting an index key unlinks only the displaced target" {
     mut h = fresh()
-    let k1 = h.rack.insert(Node { id: 9, peer: none })
-    let k2 = h.rack.insert(Node { id: 10, peer: none })
+    let k1 = h.rack.insert(Node(id: 9, peer: none))
+    let k2 = h.rack.insert(Node(id: 10, peer: none))
     h.index.insert("slot", k1)
     h.index.insert("slot", k2)          // k1 displaced
 

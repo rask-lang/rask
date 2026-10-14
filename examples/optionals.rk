@@ -57,8 +57,8 @@ func email_or(p: Profile?, fallback: string) -> string {
 // ANCHOR_END: chain
 
 func main() {
-    let ada = Profile { name: "ada", email: "ada@example.com" }
-    let anon = Profile { name: "anon", email: none }
+    let ada = Profile(name: "ada", email: "ada@example.com")
+    let anon = Profile(name: "anon", email: none)
 
     println(greet(ada))
     println(greet(none))

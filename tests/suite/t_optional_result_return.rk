@@ -31,7 +31,7 @@ func absent() -> Row? or Fault {
 }
 
 func present(id: i64) -> Row? or Fault {
-    return Row { id: id }
+    return Row(id: id)
 }
 
 func failing() -> Row? or Fault {

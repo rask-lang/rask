@@ -18,7 +18,7 @@ extend Fail {
 }
 
 func route(path: string) -> Body {
-    return Body { error: "no route for {path}", code: "not_found" }
+    return Body(error: "no route for {path}", code: "not_found")
 }
 
 func encoded(n: i64) -> string or Fail {
@@ -34,7 +34,7 @@ test "interpolated field of a returned struct" {
 
 test "interpolated field built in place" {
     let path = "/nope"
-    let b = Body { error: "no route for {path}", code: "not_found" }
+    let b = Body(error: "no route for {path}", code: "not_found")
     assert b.error == "no route for /nope"
 }
 

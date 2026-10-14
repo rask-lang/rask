@@ -25,7 +25,7 @@ extend ParseError {
 // --- force unwrap (ER15) ---
 
 func safe_div(a: i32, b: i32) -> i32 or DivError {
-    if b == 0 { return DivError {} }
+    if b == 0 { return DivError() }
     return a / b
 }
 
@@ -78,7 +78,7 @@ test "try propagates error" {
 
 func parse_number(s: string) -> i32 or ParseError {
     if s == "42" { return 42 }
-    return ParseError { detail: "not a number" }
+    return ParseError(detail: "not a number")
 }
 
 func parse_and_double(s: string) -> i32 or ParseError {
@@ -104,7 +104,7 @@ extend ContextError {
 }
 
 func load_value(s: string) -> i32 or ContextError {
-    let n = parse_number(s) catch e => return ContextError { source: e.message() }
+    let n = parse_number(s) catch e => return ContextError(source: e.message())
     return n
 }
 

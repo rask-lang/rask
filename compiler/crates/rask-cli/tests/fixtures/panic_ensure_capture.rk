@@ -10,7 +10,7 @@ extend Counter {
     }
 }
 func main() {
-    mut c = Counter { n: 1 }
+    mut c = Counter(n: 1)
     ensure c.show()
     c.n = 42
     panic("boom")

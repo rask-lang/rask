@@ -27,7 +27,7 @@ func parse_dep(entry: JsonValue) -> Dep? {
         let name = str_field(d, "name") ?? ""
         let constraint = str_field(d, "constraint") ?? ""
         if name.is_empty() || constraint.is_empty() { return none }
-        return Dep { name, constraint }
+        return Dep(name, constraint)
     }
     return none
 }

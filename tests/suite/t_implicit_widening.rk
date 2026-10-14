@@ -32,7 +32,7 @@ test "type.primitives — u32 widens to i64 at every position" {
     assert takes_i64(big) == 3000000000
     assert returns_i64_from_u32(big) == 3000000000
 
-    let h = Holder { wide: big, unsigned: big }
+    let h = Holder(wide: big, unsigned: big)
     assert h.wide == 3000000000
     assert h.unsigned == 3000000000
 }
@@ -98,9 +98,9 @@ func returns_result(x: u32) -> i64 or Bad {
 
 test "type.primitives — a widened value reaches a struct field, both ways in" {
     let big: u32 = 3000000000
-    let lit = Assignable { wide: big }
+    let lit = Assignable(wide: big)
     assert lit.wide == 3000000000
-    mut asg = Assignable { wide: 0 }
+    mut asg = Assignable(wide: 0)
     asg.wide = big
     assert asg.wide == 3000000000
 }

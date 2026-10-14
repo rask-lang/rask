@@ -58,17 +58,17 @@ extend Slot<T> {
 }
 
 test "a struct's bound reaches its extend block" {
-    let h = Holder { item: Dog { n: "rex" } }
+    let h = Holder(item: Dog(n: "rex"))
     assert h.label() == "<rex>"
 }
 
 test "the header may rename the parameter" {
-    let p = Pair { key: 1, item: Dog { n: "a" } }
+    let p = Pair(key: 1, item: Dog(n: "a"))
     assert p.label() == "a"
 }
 
 test "an enum's bound reaches its extend block" {
-    let s: Slot<Dog> = Slot.Full(Dog { n: "b" })
+    let s: Slot<Dog> = Slot.Full(Dog(n: "b"))
     assert s.label() == "b"
     let e: Slot<Dog> = Slot.Empty
     assert e.label() == "-"

@@ -53,7 +53,7 @@ test "remove_where with nothing and everything matching" {
 test "remove_where on structs holding strings" {
     mut recs: Vec<Rec> = Vec.new()
     for i in 0..8 {
-        recs.push(Rec { name: "record-name-long-enough-{i}", tag: "t{i}", n: i })
+        recs.push(Rec(name: "record-name-long-enough-{i}", tag: "t{i}", n: i))
     }
     assert recs.remove_where(|r| r.n % 3 == 0) == 3
     assert recs.len() == 5
@@ -99,7 +99,7 @@ test "take_where on nested vectors and structs" {
 
     mut recs: Vec<Rec> = Vec.new()
     for i in 0..4 {
-        recs.push(Rec { name: "record-name-long-enough-{i}", tag: "t{i}", n: i })
+        recs.push(Rec(name: "record-name-long-enough-{i}", tag: "t{i}", n: i))
     }
     let nothing = recs.take_where(|r| r.n > 10)
     assert nothing.is_empty()

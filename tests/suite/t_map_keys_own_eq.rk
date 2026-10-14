@@ -43,7 +43,7 @@ struct Row {
 }
 
 func long_name(s: string) -> Name {
-    return Name { first: s.to_lowercase(), n: 1 }
+    return Name(first: s.to_lowercase(), n: 1)
 }
 
 test "a struct holding a heap string is found by an equal one" {
@@ -58,11 +58,11 @@ test "a struct holding a heap string is found by an equal one" {
 
 test "a type's own Equal and Hashable decide what the same key is" {
     mut m: Map<Version, string> = Map.new()
-    m.insert(Version { major: 1, minor: 0 }, "one")
-    assert m.contains(Version { major: 1, minor: 9 })
-    m.insert(Version { major: 1, minor: 4 }, "uno")
+    m.insert(Version(major: 1, minor: 0), "one")
+    assert m.contains(Version(major: 1, minor: 9))
+    m.insert(Version(major: 1, minor: 4), "uno")
     assert m.len() == 1
-    assert m.get(Version { major: 1, minor: 2 }) ?? "" == "uno"
+    assert m.get(Version(major: 1, minor: 2)) ?? "" == "uno"
 }
 
 test "an enum key with a string payload" {
@@ -87,16 +87,16 @@ test "Map.from builds with the key's own functions" {
 }
 
 test "Vec equality goes through the element's own eq" {
-    let a: Vec<Version> = [Version { major: 1, minor: 0 }]
-    let b: Vec<Version> = [Version { major: 1, minor: 5 }]
+    let a: Vec<Version> = [Version(major: 1, minor: 0)]
+    let b: Vec<Version> = [Version(major: 1, minor: 5)]
     assert a == b
     assert a.hash() == b.hash()
 }
 
 test "a struct with a Vec and an optional field" {
-    let a = Row { cells: [1, 2], note: none }
-    let b = Row { cells: [1, 2], note: none }
-    let c = Row { cells: [1, 2], note: "x" }
+    let a = Row(cells: [1, 2], note: none)
+    let b = Row(cells: [1, 2], note: none)
+    let c = Row(cells: [1, 2], note: "x")
     assert a == b
     assert a != c
     assert a.hash() == b.hash()
@@ -104,11 +104,11 @@ test "a struct with a Vec and an optional field" {
 }
 
 test "a tuple and an optional compare through their parts' own eq" {
-    let a = (Version { major: 1, minor: 0 }, 2)
-    let b = (Version { major: 1, minor: 5 }, 2)
+    let a = (Version(major: 1, minor: 0), 2)
+    let b = (Version(major: 1, minor: 5), 2)
     assert a == b
-    let c: Version? = Version { major: 1, minor: 0 }
-    let d: Version? = Version { major: 1, minor: 5 }
+    let c: Version? = Version(major: 1, minor: 0)
+    let d: Version? = Version(major: 1, minor: 5)
     assert c == d
     let x: (Vec<i64>, i64) = ([1], 2)
     let y: (Vec<i64>, i64) = ([1], 2)
@@ -126,27 +126,27 @@ test "a tuple key holding a heap string" {
 
 test "a tuple key holding a type with its own Equal" {
     mut m: Map<(Version, i64), string> = Map.new()
-    m.insert((Version { major: 2, minor: 0 }, 1), "x")
-    assert m.get((Version { major: 2, minor: 7 }, 1)) ?? "" == "x"
+    m.insert((Version(major: 2, minor: 0), 1), "x")
+    assert m.get((Version(major: 2, minor: 7), 1)) ?? "" == "x"
 }
 
 test "an optional compares with a bare value through the payload's own eq" {
-    let c: Version? = Version { major: 1, minor: 0 }
-    assert c == Version { major: 1, minor: 5 }
-    assert !(c == Version { major: 2, minor: 0 })
+    let c: Version? = Version(major: 1, minor: 0)
+    assert c == Version(major: 1, minor: 5)
+    assert !(c == Version(major: 2, minor: 0))
     let n: Version? = none
-    assert !(n == Version { major: 1, minor: 0 })
+    assert !(n == Version(major: 1, minor: 0))
     let p: Vec<i64>? = [1, 2]
     let w: Vec<i64> = [1, 2]
     assert p == w
 }
 
 test "a bare value on the left compares the same way" {
-    let c: Version? = Version { major: 1, minor: 0 }
-    assert Version { major: 1, minor: 5 } == c
-    assert Version { major: 2, minor: 0 } != c
+    let c: Version? = Version(major: 1, minor: 0)
+    assert Version(major: 1, minor: 5) == c
+    assert Version(major: 2, minor: 0) != c
     let n: Version? = none
-    assert !(Version { major: 1, minor: 0 } == n)
+    assert !(Version(major: 1, minor: 0) == n)
     let i: i64? = 3
     assert 3 == i
     let s: string? = "abc".to_uppercase()

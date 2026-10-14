@@ -85,7 +85,7 @@ Every temporary in the chain that the borrow transitively depends on is extended
 <!-- test: compile-fail: unbuilt -->
 ```rask
 struct Point { x: i64, y: i64 }
-func get_point() -> Point { return Point { x: 1, y: 2 } }
+func get_point() -> Point { return Point(x: 1, y: 2) }
 
 func main() {
     let x = {
@@ -234,11 +234,11 @@ struct Item { count: i64 }
 
 func main() {
     mut vec: Vec<Item> = Vec.new()
-    vec.push(Item { count: 0 })
+    vec.push(Item(count: 0))
     let i = 0
     with vec[i] as item {
         item.count += 1
-        vec.push(Item { count: 9 })   // ERROR: structural mutation inside with block
+        vec.push(Item(count: 9))   // ERROR: structural mutation inside with block
     }
 }
 ```
@@ -592,7 +592,7 @@ func tokenize(input: string) -> Vec<Token> {
     mut tokens = Vec.new()
     // scan() returns positions — views allocate nothing per token
     for (start, end, kind) in scan(input) {
-        tokens.push(Token { kind, text: input[start..end].view() })
+        tokens.push(Token(kind, text: input[start..end].view()))
     }
     return tokens
 }

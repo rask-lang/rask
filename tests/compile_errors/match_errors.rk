@@ -29,7 +29,7 @@ extend GuardError {
 }
 
 func open_file() -> File or GuardError {
-    return File { fd: 1 }
+    return File(fd: 1)
 }
 
 func test_wildcard_linear() {
@@ -102,7 +102,7 @@ func test_match_consume_is_fine() {
 }
 
 func test_conditional_consume(cond: bool) {
-    let f = File { fd: 1 }
+    let f = File(fd: 1)
     // ERROR: `f` isn't consumed when cond is false [E0805]
     if cond {
         f.close()

@@ -8,7 +8,7 @@ func main() {
     x = 10                       // reassignment widening
     if x? as v { print(v) } else { print(-1) }
 
-    mut s = Box { v: none }
+    mut s = Box(v: none)
     s.v = 42                     // field-store widening
     if s.v? as w { print(w) } else { print(-1) }
 }

@@ -446,8 +446,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // closure-callback path, which currently segfaults natively (#441) —
         // see docs/working/native-wide.md — so they run under the interpreter only.
         StdlibEntry::simple("Vec_wide", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Wide_to_vec", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Wide_sum", "rask_wide_sum", &[types::I64], Some(types::I64), false),
 
         // ── String operations ──────────────────────────────────
         StdlibEntry::simple("string_free", "rask_string_free", &[types::I64], None, false),
@@ -780,7 +778,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // of it: a base conversion first, then `string_pad` for width/align.
         StdlibEntry {
             mir_name: "i64_to_base", c_name: "rask_i64_to_base",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -795,7 +793,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "f64_to_exp", c_name: "rask_f64_to_exp",
-            params: &[types::I64, types::F64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::F64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -1171,6 +1169,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        StdlibEntry::simple("os_signal_forward", "rask_os_signal_forward", &[types::I64, types::I64], Some(types::I64), false),
         // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
         // ensures. Declared `@native` in stdlib/os.rk with no entry here, so
         // `os.exit(1)` reached codegen as "Function not found: os_exit" while
@@ -1321,11 +1320,23 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // type, then hands it to the decoder (json.c).
         StdlibEntry::simple("json_shape_prim", "rask_json_shape_prim", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_struct", "rask_json_shape_struct", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_shape_vec", "rask_json_shape_vec", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_shape_map", "rask_json_shape_map", &[types::I64, types::I64], Some(types::I64), false),
+        // A list or map shape carries what its elements own, as a container
+        // constructor would: the container the decoder builds frees it.
+        StdlibEntry {
+            mir_name: "json_shape_vec", c_name: "rask_json_shape_vec",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "json_shape_map", c_name: "rask_json_shape_map",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("json_shape_opt", "rask_json_shape_opt", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_field", "rask_json_shape_field",
-            &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
+            &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_shape_free", "rask_json_shape_free", &[types::I64], None, false),
         StdlibEntry::simple("json_decode_into", "rask_json_decode_into",
             &[types::I64, types::I64, types::I64], Some(types::I64), false),
@@ -1620,6 +1631,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("char_len_utf8", "rask_char_len_utf8", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_eq", "rask_char_eq", &[types::I32, types::I32], Some(types::I64), false),
 
+        // ── Float bit patterns (std.bits/B4, stdlib/float.rk) ─────
+        // Reinterpret, so a real call (memcpy) rather than an instruction: a
+        // cast would convert the value. NaN comes out canonical.
+        StdlibEntry::simple("f32_to_bits", "rask_f32_to_bits", &[types::F32], Some(types::I32), false),
+        StdlibEntry::simple("f32_from_bits", "rask_f32_from_bits", &[types::I32], Some(types::F32), false),
+        StdlibEntry::simple("f64_to_bits", "rask_f64_to_bits", &[types::F64], Some(types::I64), false),
+        StdlibEntry::simple("f64_from_bits", "rask_f64_from_bits", &[types::I64], Some(types::F64), false),
+
         // ── Path operations ──────────────────────────────────
         // Path = RaskStr. Constructors/conversions use StringOutParam.
         // Option-returning methods return NULL (None) or &thread_local (Some).
@@ -1695,11 +1714,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             // primitives' to_string entries.
             FloatSig::ToString => continue,
             // No C symbol, so unreachable — the `else` above skipped them.
-            // Reinterprets its argument, so it needs a real (memcpy) call
-            // rather than an instruction — Cast would convert the value.
-            FloatSig::ToBits => {
-                StdlibEntry::simple(mir_name, c_symbol, &[types::F64], Some(types::I64), false)
-            }
             FloatSig::Comparison | FloatSig::Compare | FloatSig::ToInt => continue,
         };
         entries.push(entry);
@@ -1969,11 +1983,6 @@ mod tests {
     ("Vec.sort_by_key",           Ok_("t_native_reach_vec")),
     ("Vec.sum",                   Ok_("t_native_reach_vec")),
     ("Vec.zip",                   Ok_("t_native_reach_vec")),
-    ("Wide.map",                  Gap("#1287")),
-    ("Wide.max",                  Gap("#1287")),
-    ("Wide.min",                  Gap("#1287")),
-    ("Wide.reduce",               Gap("#1287")),
-    ("Wide.zip_with",             Gap("#1287")),
     ("json.decode",               Ok_("t_json_decode_qualified_value")),
     ("json.encode_pretty",        Ok_("t_native_reach_map_math_json")),
     ("math.acos",                 Ok_("t_native_reach_map_math_json")),
@@ -1990,7 +1999,6 @@ mod tests {
     ("math.tan",                  Ok_("t_native_reach_map_math_json")),
     ("math.to_degrees",           Ok_("t_native_reach_map_math_json")),
     ("math.to_radians",           Ok_("t_native_reach_map_math_json")),
-    ("os.signals",                Gap("#1289")),
     // `size_of`, `align_of` and `is_copy` refuse on BOTH backends with the
     // same message — the compiler has two size models that disagree (#791) —
     // so there is no probe. Agreeing to refuse is not a divergence, and the

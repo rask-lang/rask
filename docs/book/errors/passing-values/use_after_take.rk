@@ -12,7 +12,7 @@ func close_out(take account: Account) -> i64 {
 }
 
 func main() {
-    let account = Account { owner: "Ada", balance: 100 }
+    let account = Account(owner: "Ada", balance: 100)
     let n = close_out(account)
     println("{n} {account.balance}")
 }

@@ -26,8 +26,8 @@ struct Node {
 func count_in_a_task() -> i64 {
     let h = spawn {
         mut r: Rack<Node> = Rack.new()
-        let a = r.insert(Node { id: 1, peer: none })
-        let b = r.insert(Node { id: 2, peer: a })
+        let a = r.insert(Node(id: 1, peer: none))
+        let b = r.insert(Node(id: 2, peer: a))
         a.id += 10
         let c = Shared.local(0)
         with c.write() as v {
@@ -45,7 +45,7 @@ func count_in_a_task() -> i64 {
 
 func a_graph_crosses_whole() -> i64 {
     mut world: Rack<Node> = Rack.new()
-    let a = world.insert(Node { id: 5, peer: none })
+    let a = world.insert(Node(id: 5, peer: none))
     let bonus = a.id
     let frame = world.snapshot()
     let h = spawn {

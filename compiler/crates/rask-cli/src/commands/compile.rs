@@ -466,7 +466,7 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                         is_comptime: false,
                         is_unsafe: false,
                         abi: None,
-                        attrs: vec!["test_body".to_string()],
+                        attrs: vec![rask_ast::attr::Attr::synthetic("test_body", None)],
                         doc: None,
                         span: decl.span,
                         decl_start: decl.span.start,
@@ -475,7 +475,7 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                 });
             }
             // @test functions — include as tests, keep the original function too
-            DeclKind::Fn(f) if f.attrs.iter().any(|a| a == "test") && f.params.is_empty() => {
+            DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("test")) && f.params.is_empty() => {
                 if let Some(pat) = filter {
                     if !f.name.contains(pat) {
                         continue;

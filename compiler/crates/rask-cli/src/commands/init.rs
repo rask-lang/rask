@@ -198,7 +198,7 @@ mod tests {
         assert!(lexed.is_ok(), "{:?}", lexed.errors);
         let mut parsed = rask_parser::Parser::new(lexed.tokens).parse();
         assert!(parsed.is_ok(), "{:?}", parsed.errors);
-        rask_desugar::desugar_with_stdlib(&mut parsed.decls, rask_stdlib::StubRegistry::defaulted_signatures());
+        rask_desugar::desugar_with_stdlib(&mut parsed.decls, rask_stdlib::StubRegistry::desugar_declarations());
         let (mut interp, out) = rask_interp::Interpreter::with_captured_output();
         interp.run(&parsed.decls).unwrap();
         assert_eq!(out.lock().unwrap().trim_end(), format!("Hello from {name}!"));

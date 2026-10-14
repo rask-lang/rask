@@ -65,7 +65,14 @@ impl FieldAccess {
     /// fieldless enum is one byte, and loading that byte as a value handed
     /// codegen a tag where it expected a pointer (#561).
     pub fn for_field(ty: &MirType, size: u32) -> FieldAccess {
-        if ty.passed_by_address() {
+        // A niche option is one word — the link itself, or the null address
+        // for `none` — so it comes back loaded like a link, not addressed like
+        // the tagged option its type reads as. Handed back as an address, a
+        // `next: Link<Node>?` holding `none` looked present (#1397's debug
+        // rendering walked a stack address as a node).
+        if ty.niche_none().is_some() {
+            FieldAccess::InRegister(size.min(8))
+        } else if ty.passed_by_address() {
             FieldAccess::InPlace(size)
         } else {
             // Anything else is a scalar, and a scalar comes back loaded — the

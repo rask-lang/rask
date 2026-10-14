@@ -9,7 +9,7 @@ struct Big { a: i64, b: i64, c: i64 }
 
 func find(hit: bool) -> Big? {
     if hit {
-        return Big { a: 1, b: 2, c: 3 }
+        return Big(a: 1, b: 2, c: 3)
     }
     return none
 }

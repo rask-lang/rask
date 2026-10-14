@@ -49,8 +49,8 @@ func label_of<T: Sub>(x: T) -> string {
 }
 
 test "the program's Writer is its own" {
-    assert Mine { n: 1 }.tag() == "m1"
-    assert tag_of(Mine { n: 2 } as any Writer) == "m2"
+    assert Mine(n: 1).tag() == "m1"
+    assert tag_of(Mine(n: 2) as any Writer) == "m2"
 }
 
 test "the stdlib's Writer still works on its own types" {
@@ -60,7 +60,7 @@ test "the stdlib's Writer still works on its own types" {
 }
 
 test "a program Sub leaves subtraction alone" {
-    assert label_of(Mine { n: 3 }) == "sub3"
+    assert label_of(Mine(n: 3)) == "sub3"
     let a = 10
     assert a - 4 == 6
     let f = 2.5

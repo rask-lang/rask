@@ -122,7 +122,7 @@ test "the error side is copied too" {
 }
 
 test "a struct over both parameters" {
-    let p: Pair<Vec<string>, MyErr> = Pair { r: good(), tag: "t" }
+    let p: Pair<Vec<string>, MyErr> = Pair(r: good(), tag: "t")
     let c = p.clone()
     assert c.tag == "t"
     if c.r is Vec<string> as xs {
@@ -133,9 +133,9 @@ test "a struct over both parameters" {
 }
 
 test "an optional success side has three branches" {
-    let m: Maybe<string> = Maybe { r: here() }
+    let m: Maybe<string> = Maybe(r: here())
     assert shown(m.clone().r) == "here"
-    let n: Maybe<string> = Maybe { r: nothing() }
+    let n: Maybe<string> = Maybe(r: nothing())
     assert shown(n.clone().r) == "none"
 }
 

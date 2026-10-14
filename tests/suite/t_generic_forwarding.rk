@@ -50,18 +50,18 @@ func pair<A: Show, B: Show>(a: A, b: B) -> string {
 }
 
 test "a bound call one level down resolves" {
-    assert level3(Tag { v: 3 }) == "tag 3"
+    assert level3(Tag(v: 3)) == "tag 3"
 }
 
 test "forwarding through three generics resolves" {
-    assert level1(Tag { v: 3 }) == "tag 3"
-    assert level1(Note { s: "hi" }) == "note hi"
+    assert level1(Tag(v: 3)) == "tag 3"
+    assert level1(Note(s: "hi")) == "note hi"
 }
 
 test "two type parameters keep their own bindings" {
-    assert pair(Tag { v: 1 }, Note { s: "two" }) == "tag 1 + note two"
+    assert pair(Tag(v: 1), Note(s: "two")) == "tag 1 + note two"
 }
 
 test "the same generic serves both argument orders" {
-    assert pair(Note { s: "a" }, Tag { v: 2 }) == "note a + tag 2"
+    assert pair(Note(s: "a"), Tag(v: 2)) == "note a + tag 2"
 }

@@ -48,6 +48,9 @@ pub struct MonoProgram {
     /// Calls that build a `Map` whose key compares through its own `eq`/`hash`,
     /// and the functions that are (#1391).
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
+    /// (struct, field) → the method a `json.decode` calls for that field's
+    /// default when the input leaves it out (std.encoding/E20).
+    pub decode_defaults: HashMap<(String, String), String>,
     /// Types and dispatch targets for the nodes of instantiated generic bodies.
     ///
     /// Those nodes don't exist in the checker's output — they were created
@@ -1099,6 +1102,7 @@ fn monomorphize_inner(
         type_names: program.types.type_name_map(),
         call_rewrites: mono.call_rewrites,
         map_key_fns: mono.map_key_fns,
+        decode_defaults: mono.decode_defaults,
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_operator_targets: mono.instantiated_operator_targets,
@@ -1306,7 +1310,9 @@ mod tests {
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
-            default_fills: std::collections::HashMap::new(),
+            struct_shorthand_patterns: std::collections::HashSet::new(),
+            arg_places: std::collections::HashMap::new(),
+            arg_hoists: std::collections::HashMap::new(),
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
             derived_decls: Vec::new(),

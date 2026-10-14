@@ -30,17 +30,17 @@ struct Nest {
 }
 
 func make() -> Wrapper {
-    return Wrapper { conn: Conn { id: 3 }, label: "w" }
+    return Wrapper(conn: Conn(id: 3), label: "w")
 }
 
 func make_pair() -> Pair {
-    return Pair { a: Conn { id: 1 }, b: Conn { id: 2 } }
+    return Pair(a: Conn(id: 1), b: Conn(id: 2))
 }
 
 func main() {}
 
 test "a resource consumed in a test body is accepted" {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     assert c.close() == 1
 }
 
@@ -58,7 +58,7 @@ test "consuming through a field discharges the holder" {
 test "ensure still runs for a resource in a test body" {
     mut closed = 0
     {
-        let c = Conn { id: 9 }
+        let c = Conn(id: 9)
         closed = c.close()
     }
     assert closed == 9
@@ -75,7 +75,7 @@ test "a holder owes each resource field separately" {
 }
 
 test "obligations reach through nesting" {
-    let n = Nest { inner: make_pair(), tag: 7 }
+    let n = Nest(inner: make_pair(), tag: 7)
     ensure n.inner.a.close()
     ensure n.inner.b.close()
     assert n.tag == 7

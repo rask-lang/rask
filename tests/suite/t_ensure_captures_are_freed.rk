@@ -69,7 +69,7 @@ extend Missing {
 }
 
 func boxed(n: i64) -> Held or Missing {
-    return Held { text: "through the pipe, and out {n} the other side" }
+    return Held(text: "through the pipe, and out {n} the other side")
 }
 
 func main() {}

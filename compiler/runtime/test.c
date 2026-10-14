@@ -338,6 +338,7 @@ int rask_test_run(test_fn fn, const char *name) {
     if (!failed) {
         rask_await_detached_tasks();
         rask_const_free();
+        rask_signals_release();
         rask_leak_check();   // exits 97 when something is still held
     }
     _exit(failed);

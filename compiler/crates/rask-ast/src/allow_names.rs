@@ -77,9 +77,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-/// The name inside `allow(...)`, for an attribute stored verbatim.
-pub fn allowed_name(attr: &str) -> Option<&str> {
-    attr.strip_prefix("allow(")?.strip_suffix(')').map(str::trim)
+/// The name inside `@allow(...)`.
+pub fn allowed_name(attr: &crate::attr::Attr) -> Option<&str> {
+    if !attr.is("allow") {
+        return None;
+    }
+    attr.positional()?.rule_name()
 }
 
 #[cfg(test)]
@@ -107,8 +110,11 @@ mod tests {
     }
 
     #[test]
-    fn the_attribute_text_parses() {
-        assert_eq!(allowed_name("allow(naming/as)"), Some("naming/as"));
-        assert_eq!(allowed_name("resource"), None);
+    fn only_allow_names_a_rule() {
+        use crate::attr::{Attr, AttrArg};
+        let arg = AttrArg { label: None, value: crate::attr::AttrValue::RuleName("naming/as".to_string()) };
+        assert_eq!(allowed_name(&Attr::synthetic("allow", Some(vec![arg.clone()]))), Some("naming/as"));
+        assert_eq!(allowed_name(&Attr::synthetic("resource", None)), None);
+        assert_eq!(allowed_name(&Attr::synthetic("deny", Some(vec![arg]))), None);
     }
 }

@@ -40,6 +40,6 @@ func main() {
     let m: Missing = 5
     // ERROR: unknown type `Elsewhere`
     let v: Vec<Elsewhere> = Vec.new()
-    let h = Holder { v: 3 }
+    let h = Holder(v: 3)
     println(h.get())
 }

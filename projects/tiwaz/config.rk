@@ -3,19 +3,19 @@ struct Route {
     pool: BackendPool
 }
 
-const backend_pool = BackendPool { 
+const backend_pool = BackendPool( 
     backends: Vec<Backend>.from([
-        Backend { url: "localhost:8081" },
-        Backend { url: "localhost:8082" } 
-    ]), 
+        Backend(url: "localhost:8081")
+        Backend(url: "localhost:8082") 
+    ])
     index: Shared.mutex(0) 
-}
+)
 
 func routes() -> Vec<Route> {
     return Vec<Route>.from([
-        Route { 
-            prefix: "/", 
+        Route( 
+            prefix: "/"
             pool: backend_pool.clone()
-        }
+        )
     ])
 }

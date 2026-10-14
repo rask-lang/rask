@@ -25,7 +25,7 @@ func pick(n: i64) -> string {
 }
 
 func from_a_call() -> i64 {
-    let b = Budget { spent: 3, limit: 10 }
+    let b = Budget(spent: 3, limit: 10)
     let which = pick(1)
     return b.(which)
 }
@@ -33,7 +33,7 @@ func from_a_call() -> i64 {
 func from_a_mut() -> i64 {
     // A `mut` never qualifies however it was initialised — it can be
     // reassigned, so the name it holds at the access isn't decidable here.
-    let b = Budget { spent: 3, limit: 10 }
+    let b = Budget(spent: 3, limit: 10)
     mut which = "spent"
     which = "limit"
     return b.(which)

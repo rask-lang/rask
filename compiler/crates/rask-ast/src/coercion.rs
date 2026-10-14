@@ -41,7 +41,7 @@ pub enum CoercionSite {
     /// `AnnotatedBinding` because the target comes from the place's existing
     /// type rather than from an annotation, and the diagnostics differ.
     Assignment,
-    /// `S { field: v }` where the field is declared as a wrapper.
+    /// `S(field: v)` where the field is declared as a wrapper.
     StructField,
     /// The value handed back by a `catch` arm, when the expression it recovers
     /// keeps a wrapper shape (`let x: T? = f() catch _ => none`).

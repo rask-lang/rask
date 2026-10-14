@@ -98,7 +98,7 @@ extend Pairs<(K, V)> {
 }
 
 test "a method naming one of two header parameters still binds it" {
-    let p = Pairs<(i64, i64)> { items: [(1, 10), (2, 20), (3, 30)] }
+    let p = Pairs<(i64, i64)>(items: [(1, 10), (2, 20), (3, 30)])
     let ks = p.keys_only()
     assert ks.len() == 3
     assert ks[0] == 1
@@ -122,7 +122,7 @@ extend Ring<U> {
 }
 
 test "a header may rename the declaration's parameter" {
-    let r = Ring<i64> { items: [7, 8] }
+    let r = Ring<i64>(items: [7, 8])
     assert r.doubled_count() == 4u64
     assert r.first_item() == 7
 }
@@ -137,7 +137,7 @@ struct Cell<T> {
 
 extend Cell<T> {
     public func hold(take value: T) -> Cell<T> {
-        return Cell { value }
+        return Cell(value)
     }
 
     public func read(self) -> T {

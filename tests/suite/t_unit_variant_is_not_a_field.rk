@@ -53,7 +53,7 @@ func main() {}
 
 test "a non-Copy enum starts at its empty variant" {
     mut s = Shape.Empty
-    s = Shape.Filled(Big { a: 1, b: 2, c: 3 })
+    s = Shape.Filled(Big(a: 1, b: 2, c: 3))
     match s {
         Shape.Empty => assert false
         Shape.Filled(b) => assert b.a == 1
@@ -83,7 +83,7 @@ test "a real field view is still a view" {
     // The rule this didn't mean to catch. `h.items` is a projection of a value
     // `h` still holds, so `mut` on it is E0873 — `tests/compile_errors/` has
     // the rejection; here it is the shape that must keep working instead.
-    let h = Holder { items: ["a string long enough to live on the heap"] }
+    let h = Holder(items: ["a string long enough to live on the heap"])
     let borrowed = h.items
     assert borrowed.len() == 1
     assert h.items.len() == 1

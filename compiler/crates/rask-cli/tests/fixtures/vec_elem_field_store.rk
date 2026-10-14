@@ -5,8 +5,8 @@ struct Ent { hp: i32 }
 
 func main() {
     mut v = Vec.new()
-    v.push(Ent { hp: 10 })
-    v.push(Ent { hp: 20 })
+    v.push(Ent(hp: 10))
+    v.push(Ent(hp: 20))
     v[0].hp = 99
     v[1].hp += 5
     print(v[0].hp)

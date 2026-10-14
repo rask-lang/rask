@@ -37,7 +37,7 @@ extend Point {
 }
 
 func shift(p: Point) -> Point {
-    return Point { x: p.x + 1.0, y: p.y, z: p.z }
+    return Point(x: p.x + 1.0, y: p.y, z: p.z)
 }
 
 func claim(id: TicketId) -> i64 {
@@ -46,16 +46,16 @@ func claim(id: TicketId) -> i64 {
 
 func main() {
     // SM1: `p` is still usable after being passed — 12 bytes, so it copied.
-    let p = Point { x: 1.0, y: 2.0, z: 3.0 }
+    let p = Point(x: 1.0, y: 2.0, z: 3.0)
     let moved = shift(p)
     println("{p.sum()} {moved.sum()}")
 
     // SM4: the fence doesn't soften `@unique` — this one consumes.
-    let ticket = TicketId { raw: 42 }
+    let ticket = TicketId(raw: 42)
     println("{claim(ticket)}")
 
     // The generic fits at i64 (16 bytes) and at i32 (8).
-    let wide = Pair<i64> { a: 10, b: 20 }
-    let narrow = Pair<i32> { a: 1, b: 2 }
+    let wide = Pair<i64>(a: 10, b: 20)
+    let narrow = Pair<i32>(a: 1, b: 2)
     println("{wide.a + wide.b} {narrow.a + narrow.b}")
 }

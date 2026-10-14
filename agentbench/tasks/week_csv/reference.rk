@@ -16,7 +16,7 @@ func parse_csv(text: string) -> Vec<Row> {
         let score = fields[1].trim().to_string().parse<i64>() catch _ => {
             continue
         }
-        rows.push(Row { name: fields[0].trim().to_string(), score })
+        rows.push(Row(name: fields[0].trim().to_string(), score))
     }
     return rows
 }

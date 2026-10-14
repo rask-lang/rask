@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Who owns a Vec that came back through a closure kept in a struct field.
+//
+// Native decides per field. A call through `p.run` frees its result only when
+// every closure ever stored in `Plan.run` builds a new Vec. Before that, a
+// field's closure was "any closure the program stored anywhere", so one
+// closure handing back a shared vector in an unrelated struct made every
+// field call leak (#1526).
+//
+// The other half is the one that must not go wrong: a closure handing back a
+// vector it doesn't own, written into a field, keeps that field's results
+// from being freed — including when it was written through a nested field.
+
+const SHARED: Vec<i64> = [7, 8, 9]
+
+struct Plan {
+    run: func() -> Vec<i64>
+}
+
+struct Lookup {
+    get: func() -> Vec<i64>
+}
+
+struct Inner {
+    n: i64
+    run: func() -> Vec<i64>
+}
+
+struct Outer {
+    k: i64
+    inner: Inner
+}
+
+func shared() -> Vec<i64> {
+    return SHARED
+}
+
+func fresh() -> Vec<i64> {
+    let v: Vec<i64> = [1, 2, 3]
+    return v
+}
+
+func set_run(mutate o: Outer, f: func() -> Vec<i64>) {
+    o.inner.run = f
+}
+
+test "one struct's shared vector doesn't stop another's from being freed" {
+    let l = Lookup(get: || { return shared() })
+    let p = Plan(run: || { return fresh() })
+    let get = l.get
+    let run = p.run
+    let a = get()
+    let b = run()
+    assert a.len() == 3
+    assert b[0] == 1
+    assert shared()[0] == 7
+}
+
+test "a closure written through a nested field counts for that field" {
+    mut o = Outer(k: 1, inner: Inner(n: 2, run: || { return fresh() }))
+    set_run(mutate o, || { return shared() })
+    let r = o.inner.run
+    let v = r()
+    assert v.len() == 3
+    assert v[2] == 9
+    assert shared()[0] == 7
+}
+
+// Writing a new closure into a field gives back the one it replaces, the way
+// a string field's old value is given back. It leaked before; giving it back
+// then exposed the struct being released under its name from before the
+// write, which freed the replaced closure a second time.
+//
+// `Lookup.get`, not `Plan.run`: storing a closure that hands back the shared
+// vector into `Plan.run` would rightly stop the first test's result from being
+// freed.
+test "overwriting a field's closure releases the old one once" {
+    mut l = Lookup(get: || { return fresh() })
+    l.get = || { return shared() }
+    let get = l.get
+    assert get()[0] == 7
+}

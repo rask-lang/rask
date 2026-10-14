@@ -8,7 +8,7 @@ struct Job {
 }
 
 func make_job(count: Shared<i64, Local>) -> Job {
-    return Job { run: || { return with count.read() as c { c } } }
+    return Job(run: || { return with count.read() as c { c } })
 }
 
 func main() {

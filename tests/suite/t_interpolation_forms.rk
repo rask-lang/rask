@@ -13,7 +13,7 @@ test "interpolation forms that must keep working" {
     assert "{n}" == "7"
     assert "{n:debug}" == "7"
     assert "{s}" == "hi"
-    assert "{sum(Pt { x: 3, y: 4 })}" == "7"
+    assert "{sum(Pt(x: 3, y: 4))}" == "7"
     assert "{n} and {s}" == "7 and hi"
     // an empty placeholder is left alone
     assert "{}".len() == 2

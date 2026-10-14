@@ -16,13 +16,13 @@ func grow_while_borrowed(mutate c: Ctr) {
     c.n += 1
     mut i = 0
     while i < 64 {
-        shared.write().push(Ctr { n: 99 })
+        shared.write().push(Ctr(n: 99))
         i += 1
     }
 }
 
 func main() {
-    shared.write().push(Ctr { n: 0 })
+    shared.write().push(Ctr(n: 0))
     println("borrowing")
     grow_while_borrowed(mutate shared.write()[0])
     println("UNREACHABLE — the push above should have panicked")

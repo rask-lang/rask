@@ -53,7 +53,7 @@ func nested(n: usize, inner: string) -> string {
 }
 
 func entry(key: string, take value: Value) -> Entry {
-    return Entry { key, value }
+    return Entry(key, value)
 }
 
 // ─── Comments and keys ──────────────────────────────────────────
@@ -489,12 +489,12 @@ test "strings escape what the reader would refuse raw" {
 
 test "keys are quoted only when a bare key can't spell them" {
     let t = Vec<Entry>.from([
-        entry("plain-key_1", Value.Int(1)),
-        entry("", Value.Int(2)),
-        entry("a.b", Value.Int(3)),
-        entry("a b", Value.Int(4)),
-        entry("é", Value.Int(5)),
-        entry("q\"", Value.Int(6)),
+        entry("plain-key_1", Value.Int(1))
+        entry("", Value.Int(2))
+        entry("a.b", Value.Int(3))
+        entry("a b", Value.Int(4))
+        entry("é", Value.Int(5))
+        entry("q\"", Value.Int(6))
     ])
     assert render_value(Value.Table(t)) == "{{ plain-key_1 = 1, \"\" = 2, \"a.b\" = 3, \"a b\" = 4, \"é\" = 5, \"q\\\"\" = 6 }}"
 }
@@ -548,9 +548,9 @@ test "round trip: parse, render, parse gives the same tree" {
 
 test "round trip of hand-built values with awkward strings and keys" {
     let t = Vec<Entry>.from([
-        entry("s", Value.Str("\u{0}\u{1F}\u{7F}\u{200E}\u{2069}\"\\\n\t\r")),
-        entry("a.b", Value.Array(Vec<Value>.from([Value.Table(Vec.new())]))),
-        entry("", Value.Table(Vec<Entry>.from([entry("k\"", Value.Int(1))]))),
+        entry("s", Value.Str("\u{0}\u{1F}\u{7F}\u{200E}\u{2069}\"\\\n\t\r"))
+        entry("a.b", Value.Array(Vec<Value>.from([Value.Table(Vec.new())])))
+        entry("", Value.Table(Vec<Entry>.from([entry("k\"", Value.Int(1))])))
     ])
     let doc = render_document(t)
     let back = tree(doc)

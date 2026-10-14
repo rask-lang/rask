@@ -119,8 +119,8 @@ struct Step {
 }
 
 func main() {
-    let second = Heap(Step { label: "rinse", next: none })
-    let first = Heap(Step { label: "wash", next: second })
+    let second = Heap(Step(label: "rinse", next: none))
+    let first = Heap(Step(label: "wash", next: second))
     ensure drop(first)
 
     println("{(*first).label}")

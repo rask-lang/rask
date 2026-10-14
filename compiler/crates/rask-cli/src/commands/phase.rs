@@ -139,11 +139,9 @@ pub fn cmd_resolve(path: &str, format: Format) {
     // This file already parsed; a sibling that doesn't is reported by `check`.
     // Here it falls back to resolving the file on its own.
     let resolve_result = if let Ok(Some(mut pkg_ctx)) = rask_compiler::detect_package(path) {
-        let dep_annotations = pkg_ctx.dependency_annotations();
         rask_desugar::desugar_package(
             &mut pkg_ctx.all_decls,
-            &dep_annotations,
-            rask_stdlib::StubRegistry::defaulted_signatures(),
+            rask_stdlib::StubRegistry::desugar_declarations(),
         );
         rask_resolve::resolve_package(&pkg_ctx.all_decls, &pkg_ctx.registry, pkg_ctx.root_id)
     } else {

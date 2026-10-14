@@ -317,11 +317,11 @@ extend fs {
         }) != 0 {
             return IoError.last_os_error()
         }
-        return Metadata {
-            size: unsafe rask_stat_loaded_size(),
-            modified: unsafe rask_stat_loaded_mtime(),
-            accessed: unsafe rask_stat_loaded_atime(),
-        }
+        return Metadata(
+            size: unsafe rask_stat_loaded_size()
+            modified: unsafe rask_stat_loaded_mtime()
+            accessed: unsafe rask_stat_loaded_atime()
+        )
     }
 
     /// Current working directory.
@@ -382,7 +382,7 @@ func read_to_end(f: *u8) -> RawBytes or IoError {
                 return err
             }
             unsafe fclose(f)
-            return RawBytes { ptr: buf, len }
+            return RawBytes(ptr: buf, len)
         }
         len = len + n.wrap<i64>()
     }

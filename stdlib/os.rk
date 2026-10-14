@@ -46,9 +46,23 @@ extend os {
     @native
     public func arch() -> string {}
 
-    /// Register a signal handler. Returns a channel receiver for signals.
-    @native
-    public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError {}
+    /// Deliver each signal in `list` to the returned receiver instead of
+    /// taking its default action (SG2). Dropping the receiver puts the default
+    /// back (SG3).
+    public func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError {
+        // Signals that arrive faster than they are read past this are dropped,
+        // not queued without bound.
+        let (tx, rx) = Channel.buffered<Signal>(16)
+        if os.signal_forward(tx, list) != 0 {
+            return IoError.Other("could not start the signal reader")
+        }
+        return rx
+    }
+
+    /// Hand `tx` to the runtime's signal reader for every signal in `list`.
+    /// 0, or a negative errno if the reader couldn't start.
+    @native("rask_os_signal_forward")
+    func signal_forward(take tx: Sender<Signal>, list: Vec<Signal>) -> i64 {}
 
     /// Fork, exec, drain the pipes, wait. The child's exit status, or -1 if it
     /// couldn't be started at all. Not public: `Command.run` is the surface,
@@ -129,15 +143,15 @@ extend Command {
     /// Both output streams are captured by default — a `run()` whose output you
     /// can't read has little to offer — and stdin is inherited.
     public func new(program: string) -> Command {
-        return Command {
-            program,
-            argv: Vec.new(),
-            envs: Vec.new(),
-            dir: "",
-            stdin_cfg: Stdio.Inherit,
-            stdout_cfg: Stdio.Piped,
-            stderr_cfg: Stdio.Piped,
-        }
+        return Command(
+            program
+            argv: Vec.new()
+            envs: Vec.new()
+            dir: ""
+            stdin_cfg: Stdio.Inherit
+            stdout_cfg: Stdio.Piped
+            stderr_cfg: Stdio.Piped
+        )
     }
 
     /// Add a single argument.
@@ -209,11 +223,11 @@ extend Command {
             if status == -13 { return IoError.PermissionDenied(self.program) }
             return IoError.Other("could not start `{self.program}`")
         }
-        return Output {
-            status: status.clamp<i32>(),
-            stdout: os.process_stdout(),
-            stderr: os.process_stderr(),
-        }
+        return Output(
+            status: status.clamp<i32>()
+            stdout: os.process_stdout()
+            stderr: os.process_stderr()
+        )
     }
 
     /// Start the command in the background and hand back its handle (C3).
@@ -227,11 +241,11 @@ extend Command {
             if h == -13 { return IoError.PermissionDenied(self.program) }
             return IoError.Other("could not start `{self.program}`")
         }
-        return Process {
-            handle: h,
-            stdin_piped: is_piped(self.stdin_cfg),
-            stdout_piped: is_piped(self.stdout_cfg),
-        }
+        return Process(
+            handle: h
+            stdin_piped: is_piped(self.stdin_cfg)
+            stdout_piped: is_piped(self.stdout_cfg)
+        )
     }
 }
 
@@ -309,11 +323,11 @@ extend Process {
             os.process_release(self.handle)
             return IoError.Other("the child could not be waited for")
         }
-        let out = Output {
-            status: status.clamp<i32>(),
-            stdout: os.process_captured_stdout(self.handle),
-            stderr: os.process_captured_stderr(self.handle),
-        }
+        let out = Output(
+            status: status.clamp<i32>()
+            stdout: os.process_captured_stdout(self.handle)
+            stderr: os.process_captured_stderr(self.handle)
+        )
         os.process_release(self.handle)
         return out
     }
@@ -326,11 +340,11 @@ extend Process {
         if status < 0 {
             return none
         }
-        return Output {
-            status: status.clamp<i32>(),
-            stdout: os.process_captured_stdout(self.handle),
-            stderr: os.process_captured_stderr(self.handle),
-        }
+        return Output(
+            status: status.clamp<i32>()
+            stdout: os.process_captured_stdout(self.handle)
+            stderr: os.process_captured_stderr(self.handle)
+        )
     }
 
     /// The child's process id.

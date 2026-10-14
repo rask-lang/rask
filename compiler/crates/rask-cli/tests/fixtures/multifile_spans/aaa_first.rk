@@ -7,5 +7,5 @@ struct Config {
 }
 
 func make_config() -> Config {
-    return Config { port: 8080 }
+    return Config(port: 8080)
 }

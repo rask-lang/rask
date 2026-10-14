@@ -40,7 +40,7 @@ struct One {
 
 // The shape that leaked: the zip is the struct's last use.
 test "std.collections — a zip on a field, and nothing after it" {
-    let r = One { only: [1, 2, 3] }
+    let r = One(only: [1, 2, 3])
     let other: Vec<i64> = [9, 9]
     let pairs: Vec<(i64, i64)> = r.only.zip(other)
     assert pairs.len() == 2
@@ -50,7 +50,7 @@ test "std.collections — a zip on a field, and nothing after it" {
 
 // Both sides out of fields, so two field reads have to be accounted for.
 test "std.collections — both sides of a zip are fields" {
-    let r = Row { xs: [1, 2, 3], ys: [7, 8] }
+    let r = Row(xs: [1, 2, 3], ys: [7, 8])
     let pairs: Vec<(i64, i64)> = r.xs.zip(r.ys)
     assert pairs.len() == 2
     assert pairs[0].1 == 7
@@ -59,7 +59,7 @@ test "std.collections — both sides of a zip are fields" {
 
 // The field is the *argument*, not the receiver.
 test "std.collections — a field on the far side of a zip" {
-    let r = Row { xs: [1, 2, 3], ys: [7, 8] }
+    let r = Row(xs: [1, 2, 3], ys: [7, 8])
     let mine: Vec<i64> = [4, 5, 6]
     let pairs: Vec<(i64, i64)> = mine.zip(r.ys)
     assert pairs.len() == 2
@@ -69,7 +69,7 @@ test "std.collections — a field on the far side of a zip" {
 
 // An adapter before the zip, which is how this was found.
 test "std.collections — a filter on a field, then a zip" {
-    let r = Row { xs: [1, 2, 3], ys: [7, 8] }
+    let r = Row(xs: [1, 2, 3], ys: [7, 8])
     let pairs: Vec<(i64, i64)> = r.xs.filter(|x| x != 2).to_vec().zip(r.ys)
     assert pairs.len() == 2
     assert pairs[0].0 == 1
@@ -80,7 +80,7 @@ test "std.collections — a filter on a field, then a zip" {
 // does touch has to survive being read afterwards — the release goes on the
 // exit edge, so a later read would be a use-after-free if it went too early.
 test "std.collections — an untouched field, and a read after the chain" {
-    let r = Row { xs: [1, 2, 3], ys: [7, 8] }
+    let r = Row(xs: [1, 2, 3], ys: [7, 8])
     let other: Vec<i64> = [9, 9]
     let pairs: Vec<(i64, i64)> = r.xs.zip(other)
     assert pairs.len() == 2
@@ -94,7 +94,7 @@ test "std.collections — an untouched field, and a read after the chain" {
 test "std.collections — a fused loop per turn" {
     mut total: usize = 0
     for i in 1..4 {
-        let r = One { only: [i, i * 2, i * 3] }
+        let r = One(only: [i, i * 2, i * 3])
         let other: Vec<i64> = [1, 1]
         let pairs: Vec<(i64, i64)> = r.only.zip(other)
         total = total + pairs.len()
@@ -107,7 +107,7 @@ test "std.collections — a fused loop per turn" {
 test "std.collections — string elements through a field" {
     let n = 2
     let names: Vec<string> = ["name {n}, long enough to allocate", "another, also long enough"]
-    let r = Row { xs: [1, 2], ys: [7, 8] }
+    let r = Row(xs: [1, 2], ys: [7, 8])
     let pairs: Vec<(i64, string)> = r.xs.zip(names)
     assert pairs.len() == 2
     assert pairs[0].1 == "name 2, long enough to allocate"

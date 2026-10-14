@@ -79,9 +79,9 @@ test "type.sequence — a chain over a vector the frame made" {
 // survive the frame freeing the vector at the end.
 test "type.sequence — string elements through a chain" {
     let words: Vec<string> = [
-        "the first word is long enough",
-        "no",
-        "the third word is long enough",
+        "the first word is long enough"
+        "no"
+        "the third word is long enough"
     ]
     let long = words.filter(|w| w.len() > 15)
     assert long.count() == 2

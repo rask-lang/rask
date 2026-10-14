@@ -32,13 +32,13 @@ struct Named {
 }
 
 test "build one and read its fields" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     assert p.x == 1
     assert p.y == 2
 }
 
 test "fields can be written through a mut binding" {
-    mut p = Point { x: 1, y: 2 }
+    mut p = Point(x: 1, y: 2)
     p.x = 10
     assert p.x == 10
     assert p.y == 2
@@ -50,14 +50,14 @@ test "fields can be written through a mut binding" {
 test "field shorthand — a local with the field's name needs no colon" {
     let x = 3
     let y = 4
-    let p = Point { x, y }
+    let p = Point(x, y)
     assert p.x == 3
     assert p.y == 4
 }
 
 test "the update form copies the rest" {
-    let a = Point { x: 1, y: 2 }
-    let b = Point { x: 9, ..a }
+    let a = Point(x: 1, y: 2)
+    let b = Point(x: 9, ..a)
     assert b.x == 9
     assert b.y == 2
     // The source is untouched.
@@ -65,34 +65,34 @@ test "the update form copies the rest" {
 }
 
 test "field defaults can be omitted" {
-    let c = Config { host: "localhost" }
+    let c = Config(host: "localhost")
     assert c.host == "localhost"
     assert c.port == 8080
     assert !c.verbose
-    let c2 = Config { host: "x", port: 443 }
+    let c2 = Config(host: "x", port: 443)
     assert c2.port == 443
-    let c3 = Config { host: "x", port: 1, verbose: true }
+    let c3 = Config(host: "x", port: 1, verbose: true)
     assert c3.verbose
 }
 
 test "a struct whose every field has a default constructs empty" {
-    let d = AllDefaults {}
+    let d = AllDefaults()
     assert d.a == 1
     assert d.b == 2
-    let e = AllDefaults { a: 7 }
+    let e = AllDefaults(a: 7)
     assert e.a == 7
     assert e.b == 2
 }
 
 test "nested structs" {
-    let l = Line { from: Point { x: 0, y: 0 }, to: Point { x: 3, y: 4 } }
+    let l = Line(from: Point(x: 0, y: 0), to: Point(x: 3, y: 4))
     assert l.from.x == 0
     assert l.to.x == 3
     assert l.to.y == 4
 }
 
 test "writing through a nested field" {
-    mut l = Line { from: Point { x: 0, y: 0 }, to: Point { x: 1, y: 1 } }
+    mut l = Line(from: Point(x: 0, y: 0), to: Point(x: 1, y: 1))
     l.to.x = 9
     assert l.to.x == 9
     assert l.to.y == 1
@@ -100,7 +100,7 @@ test "writing through a nested field" {
 }
 
 test "a struct holding a string" {
-    let n = Named { name: "origin", p: Point { x: 0, y: 0 } }
+    let n = Named(name: "origin", p: Point(x: 0, y: 0))
     assert n.name == "origin"
     assert n.p.x == 0
     assert "{n.name} at {n.p.x},{n.p.y}" == "origin at 0,0"
@@ -108,8 +108,8 @@ test "a struct holding a string" {
 
 test "structs in a Vec" {
     mut v: Vec<Point> = Vec.new()
-    v.push(Point { x: 1, y: 1 })
-    v.push(Point { x: 2, y: 4 })
+    v.push(Point(x: 1, y: 1))
+    v.push(Point(x: 2, y: 4))
     assert v.len() == 2
     assert v[1].x == 2
     mut total = 0
@@ -120,15 +120,15 @@ test "structs in a Vec" {
 }
 
 test "two structs with the same fields are equal" {
-    let a = Point { x: 1, y: 2 }
-    let b = Point { x: 1, y: 2 }
-    let c = Point { x: 1, y: 3 }
+    let a = Point(x: 1, y: 2)
+    let b = Point(x: 1, y: 2)
+    let c = Point(x: 1, y: 3)
     assert a == b
     assert a != c
 }
 
 test "copying a small struct gives an independent value" {
-    let a = Point { x: 1, y: 2 }
+    let a = Point(x: 1, y: 2)
     mut b = a
     b.x = 99
     assert b.x == 99

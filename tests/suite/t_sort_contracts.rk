@@ -72,10 +72,10 @@ test "stdlib.collections — sorting a Vec<string> is lexicographic, not by byte
 // "greater", so every comparison asked for a swap.
 test "stdlib.collections — a comparator that answers Equal leaves the order alone" {
     mut v = Vec.new()
-    v.push(Tagged { key: 1, label: "a" })
-    v.push(Tagged { key: 1, label: "b" })
-    v.push(Tagged { key: 1, label: "c" })
-    v.push(Tagged { key: 1, label: "d" })
+    v.push(Tagged(key: 1, label: "a"))
+    v.push(Tagged(key: 1, label: "b"))
+    v.push(Tagged(key: 1, label: "c"))
+    v.push(Tagged(key: 1, label: "d"))
 
     v.sort_by(|x, y| x.key.compare(y.key))
 
@@ -137,7 +137,7 @@ test "std.collections/SO1 — equal elements keep their relative order" {
     mut v = Vec.new()
     mut i = 0
     while i < 60 {
-        v.push(Scored { score: i % 3, seq: i })
+        v.push(Scored(score: i % 3, seq: i))
         i = i + 1
     }
 
@@ -165,9 +165,9 @@ test "std.collections/SO1 — equal elements keep their relative order" {
 // says `rank`.
 test "std.collections/SO3 — sort() uses the type's own compare" {
     mut v = Vec.new()
-    v.push(Ranked { name: "aaa", rank: 3 })
-    v.push(Ranked { name: "bbb", rank: 2 })
-    v.push(Ranked { name: "ccc", rank: 1 })
+    v.push(Ranked(name: "aaa", rank: 3))
+    v.push(Ranked(name: "bbb", rank: 2))
+    v.push(Ranked(name: "ccc", rank: 1))
 
     v.sort()
 
@@ -196,9 +196,9 @@ struct Pair {
 
 test "type.enums/CO3 — sort() uses a derived compare, field by field" {
     mut v = Vec.new()
-    v.push(Pair { a: 2, b: 1 })
-    v.push(Pair { a: 1, b: 9 })
-    v.push(Pair { a: 1, b: 3 })
+    v.push(Pair(a: 2, b: 1))
+    v.push(Pair(a: 1, b: 9))
+    v.push(Pair(a: 1, b: 3))
 
     v.sort()
 

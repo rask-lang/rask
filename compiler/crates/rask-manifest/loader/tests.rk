@@ -51,14 +51,14 @@ func schema_v2() -> Schema {
     mut changes = Vec<Change>.new()
     mut sites = dep_sites()
     for site in sites.take_all() {
-        changes.push(Change.Rename { at: site, from: "with", to: "features" })
+        changes.push(Change.Rename(at: site, from: "with", to: "features"))
     }
-    changes.push(Change.Default { at: Vec<Step>.from([key("package")]), name: "sandbox", from: Value.Bool(false), to: Value.Bool(true) })
-    changes.push(Change.Add { at: Vec<Step>.from([key("package")]), field: defaulted("edition", Ty.Str, Value.Str("2026")) })
+    changes.push(Change.Default(at: Vec<Step>.from([key("package")]), name: "sandbox", from: Value.Bool(false), to: Value.Bool(true)))
+    changes.push(Change.Add(at: Vec<Step>.from([key("package")]), field: defaulted("edition", Ty.Str, Value.Str("2026"))))
     mut history = package_history()
-    history.push(Release { version: 2, changes })
+    history.push(Release(version: 2, changes))
     let shape = replay_shape(history) catch e => panic(e.message())
-    return Schema { name: "rask-package", shape, history }
+    return Schema(name: "rask-package", shape, history)
 }
 
 // ─── Release 1 ──────────────────────────────────────────────────
@@ -174,10 +174,10 @@ test "round trip: 1 to 2 and back gives a file that means the same" {
 
 test "a change the old shape can't take is refused" {
     mut s = package_schema()
-    s.history.push(Release {
-        version: 2,
-        changes: Vec<Change>.from([Change.Add { at: Vec<Step>.from([key("package")]), field: required("edition", Ty.Str) }]),
-    })
+    s.history.push(Release(
+        version: 2
+        changes: Vec<Change>.from([Change.Add(at: Vec<Step>.from([key("package")]), field: required("edition", Ty.Str))])
+    ))
     assert schema_error(s).contains("every older file would stop loading")
 }
 
@@ -455,7 +455,7 @@ test "every source form comes out as its DepSource" {
     assert dep_in(pkg.dependencies, "tracking").source.describe() == "git https://g/t branch main"
     assert dep_in(pkg.dependencies, "bare").source.describe() == "git https://g/b"
     match dep_in(pkg.dependencies, "tracking").source {
-        DepSource.Git { url, rev, branch } => {
+        DepSource.Git(url, rev, branch) => {
             assert url == "https://g/t"
             assert rev is none
             assert (branch ?? "") == "main"

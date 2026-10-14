@@ -67,7 +67,7 @@ func ty_map(t: Ty) -> Map<string, JsonValue> {
         Ty.List(item) => return obj2("type", JsonValue.String("array"), "items", ty_to_json(item[0].clone())),
         Ty.MapOf(value) => return obj2("type", JsonValue.String("object"), "additionalProperties", ty_to_json(value[0].clone())),
         Ty.Record(fields) => return closed_object(fields),
-        Ty.Variant { cases, shared } => {
+        Ty.Variant(cases, shared) => {
             mut options = Vec<JsonValue>.new()
             for c in cases {
                 mut fields = Vec<Field>.new()

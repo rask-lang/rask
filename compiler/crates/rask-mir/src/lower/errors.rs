@@ -264,12 +264,14 @@ impl<'a> MirLowerer<'a> {
                     offset: w.tag_offset,
                     value: MirOperand::Constant(MirConst::Int(w.tag)),
                     store_size: None,
+                    field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: wrapped,
                     offset: w.payload_offset,
                     value: MirOperand::Local(err_val),
                     store_size: err_store_size,
+                    field: None,
                 }));
                 let size = w.enum_ty.size();
                 (wrapped, if size > 8 { Some(size) } else { None })
@@ -376,6 +378,7 @@ impl<'a> MirLowerer<'a> {
                 offset: rask_mono::abi::OPTION_TAG_OFFSET,
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: None,
+                field: None,
             }));
             self.terminate_return(Some(MirOperand::Local(ret_none)));
             return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
@@ -397,6 +400,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         // Origin (ER15): copy from source Result, then set if not already set.
         // Err(...) construction zeros origin, so first try site wins.
@@ -454,12 +458,14 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
             value: MirOperand::Local(origin_line_local),
             store_size: None,
+            field: None,
         }));
         // Payload — use store_size for aggregates (strings are 16 bytes)
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -467,6 +473,7 @@ impl<'a> MirLowerer<'a> {
             offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(err_val),
             store_size: err_store_size,
+            field: None,
         }));
         self.terminate_return(Some(MirOperand::Local(ret_result)));
 
@@ -509,12 +516,14 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::UNION_MEMBER_OFFSET,
             value: MirOperand::Constant(MirConst::Int(index as i64)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
             offset: crate::types::UNION_PAYLOAD_OFFSET,
             value: MirOperand::Local(err_val),
             store_size: if member_size > 8 { Some(member_size) } else { err_store_size },
+            field: None,
         }));
         (slot, Some(union_ty.size()))
     }
@@ -882,6 +891,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         // Zero origin — map_err transforms don't set origin (preserves existing)
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -889,18 +899,21 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
             offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
             offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(new_err),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -956,18 +969,21 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(constructor_tag)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: wrapped,
             offset: 8,
             value: MirOperand::Local(err_payload),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)), // Err tag
             store_size: None,
+            field: None,
         }));
         // Zero origin — constructor wrapping doesn't set origin
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -975,18 +991,21 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
             offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: out,
             offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(wrapped),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1149,16 +1168,19 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local, offset: 8,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local, offset: 16,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         let payload_size = out_ok_ty.size().max(8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1166,6 +1188,7 @@ impl<'a> MirLowerer<'a> {
             offset: RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(mapped_local),
             store_size: Some(payload_size),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1282,12 +1305,14 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         let payload_size = in_ok_ty.size().max(8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local, offset: 8,
             value: MirOperand::Local(payload_local),
             store_size: Some(payload_size),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1297,6 +1322,7 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1373,12 +1399,14 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         let payload_size = out_ty.size().max(8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local, offset: 8,
             value: MirOperand::Local(mapped_local),
             store_size: Some(payload_size),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1388,6 +1416,7 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1478,6 +1507,7 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -1487,6 +1517,7 @@ impl<'a> MirLowerer<'a> {
             addr: result_local, offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 

@@ -26,13 +26,13 @@ struct Pair<T> {
 }
 
 func main() {
-    let h = Handler { run: |x| x + 1, name: "inc" }
+    let h = Handler(run: |x| x + 1, name: "inc")
 
     // ERROR: `run` is a field, not a method
     println("{h.run(5)}")
 
     // ERROR: the same through a generic struct
-    let p = Pair<i64> { make: |x| x * 3 }
+    let p = Pair<i64>(make: |x| x * 3)
     println("{p.make(4)}")
 
     // Reading the field is fine, and so is a field that isn't callable.

@@ -8,7 +8,7 @@ struct Point {
 
 extend Point {
     func new(x: i32, y: i32) -> Point {
-        return Point { x: x, y: y }
+        return Point(x: x, y: y)
     }
 
     func manhattan(self) -> i32 {
@@ -18,7 +18,7 @@ extend Point {
 
 Point implements Add {
     func add(self, other: Point) -> Point {
-        return Point { x: self.x + other.x, y: self.y + other.y }
+        return Point(x: self.x + other.x, y: self.y + other.y)
     }
 }
 
@@ -39,7 +39,7 @@ struct Nested {
 }
 
 test "struct construction and field access" {
-    let p = Point { x: 10, y: 20 }
+    let p = Point(x: 10, y: 20)
     assert p.x == 10
     assert p.y == 20
 }
@@ -58,37 +58,37 @@ test "struct method returning struct" {
 }
 
 test "struct with string field" {
-    let n = Named { name: "foo", value: 42 }
+    let n = Named(name: "foo", value: 42)
     assert n.name == "foo"
     assert n.value == 42
 }
 
 test "struct method using string field" {
-    let n = Named { name: "x", value: 10 }
+    let n = Named(name: "x", value: 10)
     assert n.describe() == "x=10"
 }
 
 test "multiple structs with string fields" {
-    let a = Named { name: "alice", value: 1 }
-    let b = Named { name: "bob", value: 2 }
+    let a = Named(name: "alice", value: 1)
+    let b = Named(name: "bob", value: 2)
     assert a.name == "alice"
     assert b.name == "bob"
     assert a.name != b.name
 }
 
 test "nested struct" {
-    let n = Nested {
-        inner: Point { x: 5, y: 10 },
-        label: "test",
-    }
+    let n = Nested(
+        inner: Point(x: 5, y: 10)
+        label: "test"
+    )
     assert n.inner.x == 5
     assert n.inner.y == 10
     assert n.label == "test"
 }
 
 test "struct update syntax" {
-    let p = Point { x: 1, y: 2 }
-    let q = Point { x: 10, ..p }
+    let p = Point(x: 1, y: 2)
+    let q = Point(x: 10, ..p)
     assert q.x == 10
     assert q.y == 2
 }

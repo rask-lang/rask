@@ -80,7 +80,7 @@ struct Booking {
 
 extend Booking {
     func new(id: i32) -> Booking {
-        return Booking { id: id, committed: false }
+        return Booking(id: id, committed: false)
     }
 
     func commit(mutate self) {

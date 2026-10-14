@@ -61,7 +61,7 @@ extend Pool2 {
 }
 
 func fresh() -> Pool2 {
-    return Pool2 { index: Shared.mutex(0), flag: Shared.mutex(0) }
+    return Pool2(index: Shared.mutex(0), flag: Shared.mutex(0))
 }
 
 test "mem.shared-rack-heap — a return past an inner `with` releases only the scopes it left" {

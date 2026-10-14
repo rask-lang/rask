@@ -99,8 +99,8 @@ struct Cell { n: i32 }
 
 test "rack nodes land in a Vec the caller owns" {
     mut r = Rack<Cell>.new()
-    let a = r.insert(Cell { n: 1 })
-    let b = r.insert(Cell { n: 2 })
+    let a = r.insert(Cell(n: 1))
+    let b = r.insert(Cell(n: 2))
     let ns = r.nodes()
     assert ns.len() == 2
 }
@@ -111,7 +111,7 @@ func nodes_of(r: Rack<Cell>) -> Vec<Link<Cell>> {
 
 test "a rack's nodes handed back to the caller are freed once" {
     mut r = Rack<Cell>.new()
-    let a = r.insert(Cell { n: 1 })
+    let a = r.insert(Cell(n: 1))
     let ns = nodes_of(r)
     assert ns.len() == 1
     assert r.len() == 1

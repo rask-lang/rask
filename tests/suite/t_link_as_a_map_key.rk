@@ -36,8 +36,8 @@ struct Node {
 
 test "a link keys a map by identity" {
     mut r: Rack<Node> = Rack.new()
-    let a = r.insert(Node { id: 1 })
-    let b = r.insert(Node { id: 2 })
+    let a = r.insert(Node(id: 1))
+    let b = r.insert(Node(id: 2))
     mut m: Map<Link<Node>, i32> = Map.new()
     m.insert(a, 7)
     m.insert(b, 9)
@@ -50,8 +50,8 @@ test "a link keys a map by identity" {
 // are two different keys.
 test "equal fields are still two keys" {
     mut r: Rack<Node> = Rack.new()
-    let a = r.insert(Node { id: 1 })
-    let b = r.insert(Node { id: 1 })
+    let a = r.insert(Node(id: 1))
+    let b = r.insert(Node(id: 1))
     mut seen: Map<Link<Node>, bool> = Map.new()
     seen.insert(a, true)
     assert seen.len() == 1
@@ -61,8 +61,8 @@ test "equal fields are still two keys" {
 
 test "hash agrees with ==" {
     mut r: Rack<Node> = Rack.new()
-    let a = r.insert(Node { id: 1 })
-    let b = r.insert(Node { id: 1 })
+    let a = r.insert(Node(id: 1))
+    let b = r.insert(Node(id: 1))
     let same = a
     assert a == same
     assert a.hash() == same.hash()

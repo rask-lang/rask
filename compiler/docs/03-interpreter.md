@@ -263,7 +263,7 @@ For method calls, dispatch order is:
 
 `Vec.new()`, `Map.new()`, `string.new()` work through `TypeConstructor` values.
 When the interpreter sees `Vec` as an identifier, it returns
-`Value::TypeConstructor { kind: TypeConstructorKind::Vec }`. When `.new()` is
+`Value::TypeConstructor(kind: TypeConstructorKind::Vec)`. When `.new()` is
 called on it, `dispatch.rs` creates a new empty `Vec` (or whatever type).
 
 This is how "static methods" work without a special static method concept—the

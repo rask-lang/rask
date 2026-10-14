@@ -19,7 +19,7 @@ struct Wrapper<T> {
 // Methods on generic types
 extend Wrapper<T> {
     func new(take value: T) -> Wrapper<T> {
-        return Wrapper { value }
+        return Wrapper(value)
     }
 
     func get(self) -> T {
@@ -29,10 +29,10 @@ extend Wrapper<T> {
 
 // Generic function that swaps a pair
 func swap(pair: Pair<T, U>) -> Pair<U, T> {
-    return Pair {
-        first: pair.second,
-        second: pair.first,
-    }
+    return Pair(
+        first: pair.second
+        second: pair.first
+    )
 }
 
 // Generic function that finds the larger of two values
@@ -46,7 +46,7 @@ func max_value(a: T, b: T, compare: func(T, T) -> bool) -> T {
 
 // Generic function with type inference
 func wrap<T>(take value: T) -> Wrapper<T> {
-    return Wrapper { value }
+    return Wrapper(value)
 }
 
 // Generic function that works with any type
@@ -56,7 +56,7 @@ func identity<T>(x: T) -> T {
 
 func main() {
     // Create pairs with different type combinations
-    let int_string = Pair { first: 42, second: "hello" }
+    let int_string = Pair(first: 42, second: "hello")
     print("Pair: (")
     print(int_string.first)
     print(", ")

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A function-local `let` bound to a list computed at compile time. The binding
+// held the address of the folded elements, not a vector: only a use that went
+// through the const's own path built one. `return v` handed the caller the
+// elements as if they were a vector header, and `v.len()` read garbage.
+
+func tags() -> Vec<string> {
+    let v: Vec<string> = comptime { ["a", "b"] }
+    return v
+}
+
+func nums() -> Vec<i64> {
+    let v: Vec<i64> = comptime { [1, 2, 3] }
+    return v
+}
+
+func count() -> usize {
+    let v = comptime { [4, 5, 6, 7] }
+    return v.len()
+}
+
+test "a folded list returned from a function" {
+    let t = tags()
+    assert t.len() == 2
+    assert t[1] == "b"
+    let n = nums()
+    assert n[2] == 3
+}
+
+test "a folded list used through its binding" {
+    assert count() == 4
+}
+
+func main() {}

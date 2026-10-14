@@ -17,7 +17,7 @@ func floating() { return 2.5 }
 
 func truthy() { return true }
 
-func aggregate() { return Wrapped { n: 7 } }
+func aggregate() { return Wrapped(n: 7) }
 
 func variant() { return Flag.On }
 

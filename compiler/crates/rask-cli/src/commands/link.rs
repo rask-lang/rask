@@ -125,12 +125,9 @@ impl TargetConfig {
             )),
         }
 
-        let is_native = target.is_none()
-            || target_triple == host_triple
-            || (target_os == host_os && target_arch == host_arch);
-
-        // Resolve C compiler
-        let (cc, cc_args) = resolve_cc(target_triple, target_os, target_arch, is_native)?;
+        // The compiler `import c` asked for this target's system headers.
+        let compiler = rask_c_parse::toolchain::c_compiler(target_arch, target_os)?;
+        let (cc, cc_args) = (compiler.program, compiler.args);
 
         // Select runtime sources
         let mut sources = portable_sources(runtime_dir)?;
@@ -166,105 +163,6 @@ impl TargetConfig {
         };
 
         Ok(TargetConfig { cc, cc_args, sources, link_flags, macho: target_os == "macos", sim })
-    }
-}
-
-/// Resolve the C compiler for a given target.
-///
-/// Resolution order:
-/// 1. CC environment variable
-/// 2. Native build → "cc"
-/// 3. zig cc (universal cross-compiler)
-/// 4. Platform-prefixed gcc (e.g. aarch64-linux-gnu-gcc)
-/// 5. macOS clang with -arch flag (x86_64 ↔ aarch64)
-fn resolve_cc(
-    target: &str,
-    target_os: &str,
-    target_arch: &str,
-    is_native: bool,
-) -> Result<(String, Vec<String>), String> {
-    // 1. CC env var always wins
-    if let Ok(cc) = std::env::var("CC") {
-        return Ok((cc, vec![]));
-    }
-
-    // 2. Native build
-    if is_native {
-        return Ok(("cc".into(), vec![]));
-    }
-
-    // 3. zig cc
-    if probe_cc("zig", &["cc", "--version"]) {
-        let zig_target = to_zig_target(target_arch, target_os);
-        return Ok(("zig".into(), vec!["cc".into(), format!("--target={}", zig_target)]));
-    }
-
-    // 4. Prefixed gcc
-    let prefix = gcc_prefix(target_arch, target_os);
-    if let Some(pfx) = &prefix {
-        let gcc = format!("{}-gcc", pfx);
-        if probe_cc(&gcc, &["--version"]) {
-            return Ok((gcc, vec![]));
-        }
-    }
-
-    // 5. macOS clang cross between x86_64 and aarch64
-    let host_os = std::env::consts::OS;
-    if host_os == "macos" && target_os == "macos" {
-        return Ok(("clang".into(), vec!["-arch".into(), clang_arch(target_arch).into()]));
-    }
-
-    // Nothing found
-    let mut msg = format!(
-        "cross-compilation to {} requires a C cross-compiler\n\nInstall one of:\n  - zig (recommended): https://ziglang.org/download/\n",
-        target,
-    );
-    if let Some(pfx) = &prefix {
-        msg.push_str(&format!("  - {}-gcc\n", pfx));
-    }
-    msg.push_str("  - set CC=<your-cross-compiler>");
-    Err(msg)
-}
-
-/// Check if a compiler is available by running it.
-fn probe_cc(cmd: &str, args: &[&str]) -> bool {
-    process::Command::new(cmd)
-        .args(args)
-        .stdout(process::Stdio::null())
-        .stderr(process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Map target to zig-style target triple.
-fn to_zig_target(arch: &str, os: &str) -> String {
-    let zig_os = match os {
-        "macos" => "macos",
-        "linux" => "linux-gnu",
-        _ => os,
-    };
-    format!("{}-{}", arch, zig_os)
-}
-
-/// Map target to gcc cross-compiler prefix.
-fn gcc_prefix(arch: &str, os: &str) -> Option<String> {
-    match (arch, os) {
-        ("aarch64", "linux") => Some("aarch64-linux-gnu".into()),
-        ("x86_64", "linux") => Some("x86_64-linux-gnu".into()),
-        ("aarch64", "windows") => Some("aarch64-w64-mingw32".into()),
-        ("x86_64", "windows") => Some("x86_64-w64-mingw32".into()),
-        ("riscv64", "linux") => Some("riscv64-linux-gnu".into()),
-        ("arm", _) => Some("arm-none-eabi".into()),
-        _ => None,
-    }
-}
-
-/// Map arch name to clang -arch value.
-fn clang_arch(arch: &str) -> &str {
-    match arch {
-        "aarch64" => "arm64",
-        other => other,
     }
 }
 

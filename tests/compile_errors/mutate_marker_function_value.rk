@@ -39,12 +39,12 @@ func apply(f: func(mutate Counter), mutate c: Counter) {
 }
 
 func main() {
-    mut b = Bag { items: Vec.new() }
-    b.items.push(Counter { n: 1 })
+    mut b = Bag(items: Vec.new())
+    b.items.push(Counter(n: 1))
     for mutate c in b.each_mut() {
         c.n += 1
     }
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     apply(bump, mutate c)
     println("{c.n}")
 }

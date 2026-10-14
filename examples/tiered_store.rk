@@ -17,16 +17,16 @@ import os
 
 @message
 enum DiskError {
-    @message("disk full ({0} blocks)")
-    Full(usize)
+    @message("disk full ({blocks} blocks)")
+    Full(blocks: usize)
 }
 
 @message
 enum ConfigError {
     @message("TIERED_DIR not set")
     NoEnv
-    @message("config file missing: {0}")
-    NoFile(string)
+    @message("config file missing: {path}")
+    NoFile(path: string)
 }
 
 // Hand-written message() — @message auto-delegation for the wrapped
@@ -60,7 +60,7 @@ extend Config {
         let dir = os.env("TIERED_DIR") ?? {
             return ConfigError.NoEnv
         }
-        return Config { dir, memtable_cap: 4 }
+        return Config(dir, memtable_cap: 4)
     }
 
     // No real file I/O in this example — stands in for a loader that can fail.
@@ -69,7 +69,7 @@ extend Config {
     }
 
     func default() -> Config {
-        return Config { dir: "/tmp/tiered", memtable_cap: 4 }
+        return Config(dir: "/tmp/tiered", memtable_cap: 4)
     }
 }
 
@@ -86,11 +86,11 @@ struct Disk {
 
 extend Disk {
     func new(cap: usize) -> Disk {
-        return Disk { blocks: Vec.new(), cap }
+        return Disk(blocks: Vec.new(), cap)
     }
 
     func write(mutate self, block: string) -> void or DiskError {
-        if self.blocks.len() >= self.cap { return DiskError.Full(self.cap) }
+        if self.blocks.len() >= self.cap { return DiskError.Full(blocks: self.cap) }
         self.blocks.push(block)
         return
     }
@@ -109,11 +109,11 @@ struct MemTable {
 
 extend MemTable {
     func new() -> MemTable {
-        return MemTable { entries: Vec.new() }
+        return MemTable(entries: Vec.new())
     }
 
     func put(mutate self, key: string, value: string) {
-        self.entries.push(Entry { key, value })
+        self.entries.push(Entry(key, value))
     }
 
     // Newest write wins, so scan from the end.
@@ -168,14 +168,14 @@ struct Tiered {
 
 extend Tiered {
     func new(cfg: Config) -> Tiered {
-        return Tiered {
-            active: MemTable.new(),
-            pending: none,
-            tables: Vec.new(),
-            disk: Disk.new(64),
-            cap: cfg.memtable_cap,
-            sealed: 0,
-        }
+        return Tiered(
+            active: MemTable.new()
+            pending: none
+            tables: Vec.new()
+            disk: Disk.new(64)
+            cap: cfg.memtable_cap
+            sealed: 0
+        )
     }
 
     func put(mutate self, key: string, value: string) -> void or StoreError {
@@ -196,7 +196,7 @@ extend Tiered {
         for e in self.active.entries {
             rows.push("{e.key}={e.value}")
         }
-        self.pending = SsTable { path: "L0-{self.sealed}", rows }
+        self.pending = SsTable(path: "L0-{self.sealed}", rows)
         self.sealed += 1
         self.active = MemTable.new()
     }

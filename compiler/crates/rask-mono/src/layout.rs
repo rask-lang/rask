@@ -36,18 +36,12 @@ pub struct FieldLayout {
     pub align: u32,
     /// Field annotations, verbatim (`rename("user_name")`, `no_serialize`, …).
     /// Serialization reads these — see `rask_ast::decl::field_attrs`.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<rask_ast::attr::Attr>,
     /// Whether the field has a declared default value (`x: T = v`). Separate
     /// from `@default(...)` in `attrs`, which is a decode-only override
     /// (`type.structs/FD6`) — `reflect.fields<T>()`'s `has_default` is true
     /// for either.
     pub has_declared_default: bool,
-    /// The declared default's literal text, when it is one (`port: i32 = 8080`
-    /// → `"8080"`). Same shape as the `@default(…)` argument in `attrs`, so the
-    /// decoder can treat the two the same: a field the input leaves out takes
-    /// its declared default (`type.structs/FD6`). `None` for a default that
-    /// isn't a plain literal, which stays construction-only.
-    pub declared_default: Option<String>,
     /// V5 visibility. Carried because `reflect.fields<T>()` reports it: without
     /// it the native side had nothing to read and answered `true` for every
     /// field, so a `private` one looked public there and not on the
@@ -89,7 +83,7 @@ pub struct EnumLayout {
     /// Enum-level annotations, verbatim (`tag("type")`, …). JSON encoding
     /// reads these for internal tagging (std.encoding/E24) — see
     /// `rask_ast::decl::field_attrs`.
-    pub attrs: Vec<String>,
+    pub attrs: Vec<rask_ast::attr::Attr>,
 }
 
 /// Variant layout within enum
@@ -102,7 +96,7 @@ pub struct VariantLayout {
     pub fields: Vec<FieldLayout>,
     /// Variant-level annotations, verbatim (`rename("...")`, …). JSON
     /// encoding reads these for variant rename (std.encoding/E25).
-    pub attrs: Vec<String>,
+    pub attrs: Vec<rask_ast::attr::Attr>,
 }
 
 /// The size and alignment of a scalar, by its type. Panics on anything else.
@@ -313,7 +307,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // type alias target like `type Counts = Map`) arrive here as a bare
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
-                        "Vec" | "Wide" | "Map"
+                        "Vec" | "Map"
                         | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
@@ -328,19 +322,22 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 }
             }
         }
+        // [member:8][member bytes] — the members are nominally distinct types
+        // with nothing in their bytes to tell them apart, so the index is
+        // stored (#776), the same layout `MirType::Union` sizes. Counting only
+        // the widest member here gave the slot eight bytes too few.
         Type::Union(variants) => {
             let mut max_size = 0u32;
-            let mut max_align = 1u32;
+            let mut max_align = 8u32;
             for v in variants {
                 let (s, a) = type_size_align(v, cache);
                 max_size = max_size.max(s);
                 max_align = max_align.max(a);
             }
-            if max_size == 0 {
-                (8, 8)
-            } else {
-                (max_size, max_align)
-            }
+            (
+                align_up(crate::abi::UNION_PAYLOAD_OFFSET + max_size, max_align),
+                max_align,
+            )
         }
         Type::SimdVector { elem, lanes } => {
             let (elem_size, _) = type_size_align(elem, cache);
@@ -395,6 +392,10 @@ pub fn field_type(ty: &TypeExpr) -> Type {
             Err(_) => Type::UnresolvedNamed(ty.to_string()),
         },
         TypeExpr::Tuple(elems) => Type::Tuple(elems.iter().map(field_type).collect()),
+        // An error union, `T or A | B`. It fell to the catch-all below and was
+        // sized as a name spelled `A#133|B`, one word, so a struct holding one
+        // got a slot too small for the value MIR stored in it (#1521).
+        TypeExpr::Union(members) => Type::Union(members.iter().map(field_type).collect()),
         TypeExpr::Func { params, ret } => Type::Fn {
             params: params
                 .iter()
@@ -540,7 +541,7 @@ pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&st
 pub(crate) fn generic_is_one_word(name: &str) -> bool {
     matches!(
         name,
-        "Link" | "Rack" | "Vec" | "Wide" | "Map" | "Random" | "Channel"
+        "Link" | "Rack" | "Vec" | "Map" | "Random" | "Channel"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
             | "Sender" | "Receiver" | "Handle"
     )
@@ -553,7 +554,7 @@ pub(crate) fn generic_is_one_word(name: &str) -> bool {
 fn is_opaque_container_name(name: &str) -> bool {
     matches!(
         name,
-        "Vec" | "Wide" | "Map" | "Set" | "Rack" | "Link"
+        "Vec" | "Map" | "Set" | "Rack" | "Link"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
             | "Sender" | "Receiver"
     )
@@ -576,30 +577,8 @@ pub fn arg_owns_storage(name: &str) -> bool {
 }
 
 /// Check whether a struct has `@layout(C)` attribute.
-fn has_c_layout(attrs: &[String]) -> bool {
-    attrs.iter().any(|a| a == "layout(C)")
-}
-
-/// A declared default's literal text, for the decoder.
-///
-/// `type.structs/FD1` limits a declared default to a compile-time constant, and
-/// the decoder needs it in the same shape `@default(…)` already arrives in:
-/// verbatim source text. Anything that isn't a plain literal answers `None` and
-/// stays construction-only rather than being guessed at.
-fn literal_text(e: &rask_ast::expr::Expr) -> Option<String> {
-    use rask_ast::expr::{ExprKind, UnaryOp};
-    match &e.kind {
-        ExprKind::Int(n, _) => Some(n.to_string()),
-        ExprKind::Float(f, _) => Some(f.to_string()),
-        ExprKind::Bool(b) => Some(b.to_string()),
-        ExprKind::String(s) => Some(format!("{:?}", s)),
-        ExprKind::Char(c) => Some(format!("'{}'", c)),
-        // `-1` is a negation over a literal by the time it gets here.
-        ExprKind::Unary { op: UnaryOp::Neg, operand } => {
-            literal_text(operand).map(|t| format!("-{t}"))
-        }
-        _ => None,
-    }
+fn has_c_layout(attrs: &[rask_ast::attr::Attr]) -> bool {
+    attrs.iter().any(|a| a.is("layout") && a.positional().and_then(|v| v.ident()) == Some("C"))
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
@@ -663,10 +642,10 @@ fn struct_layout(
     // The in-memory layout is the runtime type each one stands for; reading the
     // specifier as a type name gave every field a pointer-sized slot and a
     // warning per compile.
-    let is_binary = struct_decl.attrs.iter().any(|a| a == "binary");
+    let is_binary = struct_decl.attrs.iter().any(|a| a.is("binary"));
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<String>, bool, Option<String>, bool, bool, u32)> = struct_decl.fields.iter()
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, bool, bool, u32)> = struct_decl.fields.iter()
         .enumerate()
         .map(|(decl_index, field)| {
             let (field_ty, from_param) = if is_binary {
@@ -687,7 +666,6 @@ fn struct_layout(
                 field_align,
                 field.attrs.clone(),
                 field.default.is_some(),
-                field.default.as_ref().and_then(literal_text),
                 field.visibility.is_pub(),
                 from_param,
                 decl_index as u32,
@@ -706,7 +684,7 @@ fn struct_layout(
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    for (name, ty, size, align, attrs, has_declared_default, declared_default, is_public, is_type_param, decl_index) in resolved {
+    for (name, ty, size, align, attrs, has_declared_default, is_public, is_type_param, decl_index) in resolved {
         max_align = max_align.max(align);
         // S3: Align offset for this field
         offset = align_up(offset, align);
@@ -719,7 +697,6 @@ fn struct_layout(
             align,
             attrs,
             has_declared_default,
-            declared_default,
             is_public,
             decl_index,
             is_type_param,
@@ -736,7 +713,7 @@ fn struct_layout(
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_resource: struct_decl.attrs.iter().any(|a| a == "resource"),
+        is_resource: struct_decl.attrs.iter().any(|a| a.is("resource")),
     }
 }
 
@@ -769,7 +746,6 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             align: field_align,
             attrs: field.attrs.clone(),
             has_declared_default: field.default.is_some(),
-            declared_default: field.default.as_ref().and_then(literal_text),
             is_public: field.visibility.is_pub(),
             decl_index: decl_index as u32,
             is_type_param: false,
@@ -911,7 +887,6 @@ fn enum_layout(
                     align,
                     attrs: Vec::new(),
                     has_declared_default: field.default.is_some(),
-                    declared_default: field.default.as_ref().and_then(literal_text),
                     // A variant's payload has no visibility of its own.
                     is_public: true,
                     decl_index: decl_index as u32,
@@ -1345,7 +1320,7 @@ mod tests {
 
     // ── Field reordering (S1/L4) ──────────────────────────────────
 
-    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<&str>) -> Decl {
+    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<rask_ast::attr::Attr>) -> Decl {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Struct(StructDecl {
@@ -1365,7 +1340,7 @@ mod tests {
                     .collect(),
                 methods: vec![],
                 is_pub: false,
-                attrs: attrs.into_iter().map(|a| a.to_string()).collect(),
+                attrs,
                 doc: None,
             }),
             span: dummy_span(),
@@ -1439,7 +1414,13 @@ mod tests {
         let decl = make_struct_with_attrs(
             "CStruct",
             vec![("s", "Small"), ("b", "Big")],
-            vec!["layout(C)"],
+            vec![rask_ast::attr::Attr::synthetic(
+                "layout",
+                Some(vec![rask_ast::attr::AttrArg {
+                    label: None,
+                    value: rask_ast::attr::AttrValue::synthetic_name("C"),
+                }]),
+            )],
         );
         let layout = compute_struct_layout(&decl, &[], &cache);
 

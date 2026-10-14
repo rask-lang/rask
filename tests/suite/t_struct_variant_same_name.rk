@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct and a variant can share a name: the variant lives under its enum,
+// so `Pair(…)` in an expression is the struct and `Shape.Pair(…)` the
+// variant. In a pattern the enum can be left off, and then the matched value
+// decides (type.enums, pattern matching).
+//
+// The bare pattern used to be settled before types were known, in favour of
+// the variant: `match p { Pair(a, b) => … }` on a `Pair` struct was checked
+// against an unrelated enum's `Pair(x: i64)` and rejected.
+
+struct Pair {
+    a: i64
+    b: i64
+}
+
+enum Shape {
+    Pair(x: i64)
+    Dot
+}
+
+enum Raw {
+    Pair(i64, i64)
+    Empty
+}
+
+func on_struct(p: Pair) -> i64 {
+    match p {
+        Pair(a, b) => return a * 10 + b
+    }
+}
+
+func on_named(s: Shape) -> i64 {
+    match s {
+        Pair(x) => return x
+        Dot => return 0
+    }
+}
+
+func on_positional(r: Raw) -> i64 {
+    match r {
+        Pair(left, right) => return left - right
+        Empty => return 0
+    }
+}
+
+test "a struct value takes the struct apart" {
+    assert on_struct(Pair(a: 1, b: 2)) == 12
+    let p = Pair(a: 3, b: 4)
+    if p is Pair(a, b) {
+        assert a + b == 7
+    } else {
+        assert false
+    }
+    let Pair(a, b) = p
+    assert a * b == 12
+}
+
+test "an enum value takes its variant apart" {
+    assert on_named(Shape.Pair(x: 5)) == 5
+    assert on_positional(Raw.Pair(9, 4)) == 5
+}
+
+func main() {}

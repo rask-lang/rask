@@ -39,7 +39,7 @@ struct Node {
 func named(id: i32, name: string) -> Node {
     mut tags: Vec<string> = Vec.new()
     tags.push("a tag long enough to need a buffer")
-    return Node { id: id, name: name, tags: tags, peer: none }
+    return Node(id: id, name: name, tags: tags, peer: none)
 }
 
 test "mem.racks/RK1 — a node's string and vector go with the node" {

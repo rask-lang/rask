@@ -78,14 +78,14 @@ interface Scale<Rhs = Self> {
 
 Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
 // ERROR: both `scale`s want the type's one method name (E0889, MN3)
 Meters implements Scale<Meters> {
     func scale(self, o: Meters) -> Meters {
-        return Meters { v: self.v * o.v }
+        return Meters(v: self.v * o.v)
     }
 }
 
@@ -152,7 +152,7 @@ Tag implements Shouty {
 }
 
 func main() {
-    println(Note { n: 1 }.label())
-    println(Tag { n: 2 }.shout())
+    println(Note(n: 1).label())
+    println(Tag(n: 2).shout())
     return
 }

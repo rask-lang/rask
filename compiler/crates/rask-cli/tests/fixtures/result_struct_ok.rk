@@ -12,7 +12,7 @@ extend DivError {
 struct Big { a: i64, b: i64, c: i64 }
 
 func make() -> Big or DivError {
-    return Big { a: 111, b: 222, c: 333 }
+    return Big(a: 111, b: 222, c: 333)
 }
 
 func main() {

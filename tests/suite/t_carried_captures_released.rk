@@ -69,7 +69,7 @@ func make_bag(tag: string) -> Bag {
     items.push(heap("{tag}-two"))
     mut counts: Map<string, i64> = Map.new()
     counts.insert(heap("{tag}-k"), 3)
-    return Bag { name: heap(tag), items, counts }
+    return Bag(name: heap(tag), items, counts)
 }
 
 func bag_size(b: Bag) -> i64 {
@@ -80,7 +80,7 @@ func bag_size(b: Bag) -> i64 {
 // the frame that built it.
 func returns_over_a_struct(tag: string) -> func() -> i64 {
     let b = make_bag(tag)
-    let o = Outer { label: heap("outer"), inner: Inner { words: [heap("w1"), heap("w2")] } }
+    let o = Outer(label: heap("outer"), inner: Inner(words: [heap("w1"), heap("w2")]))
     mut pad = 0
     pad += 1
     pad += 2
@@ -109,7 +109,7 @@ func returns_over_containers() -> func() -> i64 {
 
 func keeper_over_a_struct(tag: string) -> Keeper {
     let b = make_bag(tag)
-    return Keeper { run: || bag_size(b) }
+    return Keeper(run: || bag_size(b))
 }
 
 func keeper_over_containers() -> Keeper {
@@ -117,11 +117,11 @@ func keeper_over_containers() -> Keeper {
     mut seen: Map<string, i64> = Map.new()
     seen.insert(heap("y"), 2)
     let s = heap("str")
-    return Keeper { run: || words.len().wrap<i64>() + seen.len().wrap<i64>() + s.len().wrap<i64>() }
+    return Keeper(run: || words.len().wrap<i64>() + seen.len().wrap<i64>() + s.len().wrap<i64>())
 }
 
 func returns_over_a_copy(l: Line) -> func() -> i64 {
-    let mine = Line { text: heap("own {l.text}") }
+    let mine = Line(text: heap("own {l.text}"))
     mut pad = 0
     pad += 1
     pad += 2
@@ -140,7 +140,7 @@ func pass_through(take f: func() -> i64) -> i64 {
 
 test "a struct carried into a spawned closure" {
     using Multitasking {
-        let held = Line { text: heap("captured") }
+        let held = Line(text: heap("captured"))
         let h = spawn {
             return held.text.len().wrap<i64>()
         }
@@ -160,7 +160,7 @@ test "a struct holding a Vec and a Map, carried into a task" {
 
 test "a nested struct, a Vec, a Map and a string, carried into a task" {
     using Multitasking {
-        let o = Outer { label: heap("o"), inner: Inner { words: [heap("p"), heap("q")] } }
+        let o = Outer(label: heap("o"), inner: Inner(words: [heap("p"), heap("q")]))
         let words: Vec<string> = [heap("v")]
         mut m: Map<string, i64> = Map.new()
         m.insert(heap("m"), 9)
@@ -177,7 +177,7 @@ test "one struct per turn, each carried into its own task" {
     using Multitasking {
         mut total = 0
         for i in 0..4 {
-            let line = Line { text: heap("turn {i}") }
+            let line = Line(text: heap("turn {i}"))
             let h = spawn {
                 return line.text.len().wrap<i64>()
             }
@@ -228,7 +228,7 @@ test "a returned closure handed on to a take parameter" {
 test "a carried struct whose body closes its channel field" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(4)
-        let w = Wire { label: heap("wire"), tx }
+        let w = Wire(label: heap("wire"), tx)
         let h = spawn {
             w.tx.send(7)
             let _ = w.tx.close()
@@ -261,7 +261,7 @@ test "a request carried into the task that answers it" {
 
 test "a Copy struct the frame reads after a detached task captured it" {
     using Multitasking {
-        let held = Line { text: heap("kept") }
+        let held = Line(text: heap("kept"))
         spawn {
             assert held.text.len() == 37
         }.detach()
@@ -271,7 +271,7 @@ test "a Copy struct the frame reads after a detached task captured it" {
 
 test "a Copy struct made once and carried into a task every turn" {
     using Multitasking {
-        let once = Line { text: heap("once") }
+        let once = Line(text: heap("once"))
         mut total = 0
         for i in 0..4 {
             let h = spawn {
@@ -285,7 +285,7 @@ test "a Copy struct made once and carried into a task every turn" {
 
 test "a Copy struct carried into a detached task every turn" {
     using Multitasking {
-        let once = Line { text: heap("detached") }
+        let once = Line(text: heap("detached"))
         for i in 0..3 {
             spawn {
                 assert once.text.len() == 41
@@ -295,7 +295,7 @@ test "a Copy struct carried into a detached task every turn" {
 }
 
 test "a Copy parameter and a Copy local carried by a returned closure" {
-    let l = Line { text: heap("param") }
+    let l = Line(text: heap("param"))
     let f = returns_over_a_copy(l)
     assert f() == 38 + 75
     assert l.text.len() == 38
@@ -303,7 +303,7 @@ test "a Copy parameter and a Copy local carried by a returned closure" {
 
 test "a Copy half of a struct carried while the frame keeps the rest" {
     using Multitasking {
-        let p = Pair { left: Line { text: heap("left") }, right: Line { text: heap("right") } }
+        let p = Pair(left: Line(text: heap("left")), right: Line(text: heap("right")))
         let half = p.left
         let h = spawn {
             return half.text.len().wrap<i64>()

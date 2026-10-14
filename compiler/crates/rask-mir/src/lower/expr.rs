@@ -239,22 +239,18 @@ fn vec_slot_type(ty: MirType) -> MirType {
     }
 }
 
-/// An annotation attachment's value text as a MIR constant
-/// (type.annotations/AN1, AN6). The declared type decides how the text reads —
+/// An annotation attachment's value as a MIR constant
+/// (type.annotations/AN1, AN6). The declared type decides how the value reads —
 /// `3` is an integer for `weight: i64` and a float for `scale: f64` — so this
-/// takes the checker's answer rather than guessing from the digits.
-fn annotation_const(value: &str, ty: &MirType) -> Option<MirConst> {
-    use rask_ast::decl::field_attrs;
-    let value = value.trim();
-    match ty {
-        MirType::Bool => match value {
-            "true" => Some(MirConst::Bool(true)),
-            "false" => Some(MirConst::Bool(false)),
-            _ => None,
-        },
-        MirType::F32 | MirType::F64 => value.parse::<f64>().ok().map(MirConst::Float),
-        MirType::String => field_attrs::string_literal(value).map(MirConst::String),
-        _ if ty.is_int_like() => value.parse::<i64>().ok().map(MirConst::Int),
+/// takes the declaration's answer rather than guessing from the literal.
+fn annotation_const(value: &rask_ast::attr::AttrValue, ty: &MirType) -> Option<MirConst> {
+    use rask_ast::expr::Literal;
+    match (value.literal()?, ty) {
+        (Literal::Bool(b), MirType::Bool) => Some(MirConst::Bool(b)),
+        (Literal::Float(f), MirType::F32 | MirType::F64) => Some(MirConst::Float(f)),
+        (Literal::Int(n), MirType::F32 | MirType::F64) => Some(MirConst::Float(n as f64)),
+        (Literal::Str(s), MirType::String) => Some(MirConst::String(s)),
+        (Literal::Int(n), _) if ty.is_int_like() => i64::try_from(n).ok().map(MirConst::Int),
         _ => None,
     }
 }
@@ -602,6 +598,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)), // tag = None
             store_size: None,
+            field: None,
         }));
         Ok((MirOperand::Local(result_local), option_ty))
     }
@@ -923,6 +920,7 @@ impl<'a> MirLowerer<'a> {
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(tag)),
             store_size: None,
+            field: None,
         }));
         Some((MirOperand::Local(result_local), enum_ty))
     }
@@ -1954,6 +1952,9 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_is_pattern(&mut self, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
             let (val, val_ty) = self.lower_expr(inner)?;
+            if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, Pattern::Struct { .. }) {
+                return self.lower_struct_is(inner, val, val_ty, pattern);
+            }
             let niche = self.option_niche(inner, &val_ty);
             let test = self.emit_is_test(&val, &val_ty, niche, pattern);
             Ok((MirOperand::Local(test.matches), MirType::Bool))
@@ -2053,6 +2054,7 @@ impl<'a> MirLowerer<'a> {
                         offset: i * elem_size,
                         value: val.clone(),
                         store_size: None,
+                        field: None,
                     }));
                 }
                 return Ok((MirOperand::Local(result_local), array_ty));
@@ -2279,74 +2281,10 @@ impl<'a> MirLowerer<'a> {
                 // A folded comptime value: a module-level const, or a local in
                 // this function (which is keyed by the function too — see
                 // `comptime_local_key`).
-                //
-                // A string is the value itself rather than an address: the
-                // fold produced the exact characters, and a string literal
-                // is already emitted as const data with a sentinel
-                // refcount. Going through a data section instead would mean
-                // teaching this path the `RaskStr` layout and a relocation
-                // for the non-SSO case, for the same bytes (#1074).
-                if meta.type_prefix == "string" {
-                    if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
-                        return Ok((
-                            MirOperand::Constant(MirConst::String(text)),
-                            MirType::String,
-                        ));
-                    }
+                if matches!(meta.type_prefix.as_str(), "Vec" | "Map") {
+                    self.meta_mut(&name).type_prefix = Some(meta.type_prefix.clone());
                 }
-                let global_local = self.builder.alloc_temp(MirType::Ptr);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                    dst: global_local,
-                    name: key,
-                }));
-
-                if meta.type_prefix == "Vec" {
-                    // Array global: wrap raw data into a Vec.
-                    //
-                    // Elements are machine words, except strings — a
-                    // `RaskStr` is sixteen bytes, and the vector has to be
-                    // told it holds strings so that what it hands out is
-                    // retained and released like one.
-                    let holds_strings = meta.elem_type.as_deref() == Some("string");
-                    let (elem_size, elem_desc) = if holds_strings {
-                        (16, MirType::String)
-                    } else {
-                        (8, MirType::I64)
-                    };
-                    let vec_local = self.builder.alloc_temp(MirType::I64);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(vec_local),
-                        func: FunctionRef::internal("rask_vec_from_static".to_string()),
-                        args: vec![
-                            MirOperand::Local(global_local),
-                            MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
-                            MirOperand::Constant(MirConst::Int(elem_size)),
-                            crate::elem_strs::elem(elem_desc),
-                        ],
-                    }));
-                    self.meta_mut(&name).type_prefix = Some("Vec".to_string());
-                    Ok((MirOperand::Local(vec_local), MirType::I64))
-                } else if meta.type_prefix == "Map" {
-                    // An empty map has no first entry to read the key and
-                    // value types off, and holds nothing that could tell
-                    // the difference, so any pair will do for one.
-                    let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
-                        ("i64".to_string(), "i64".to_string())
-                    });
-                    let entries = meta.elem_count;
-                    self.meta_mut(&name).type_prefix = Some("Map".to_string());
-                    self.build_comptime_map(global_local, entries, &k, &v)
-                } else {
-                    // Scalar global: load value from the data pointer
-                    let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
-                        .unwrap_or(MirType::I64);
-                    let result_local = self.builder.alloc_temp(mir_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Deref(MirOperand::Local(global_local)),
-                    }));
-                    Ok((MirOperand::Local(result_local), mir_ty))
-                }
+                self.load_comptime_value(&key, meta)
             } else if let Some(fnval) = self
                 .ctx
                 .call_rewrites
@@ -2381,6 +2319,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(tag)),
                         store_size: None,
+                        field: None,
                     }));
                     Ok((MirOperand::Local(result_local), ty))
                 } else {
@@ -2424,27 +2363,14 @@ impl<'a> MirLowerer<'a> {
                     let want = self.float_pointee(operand).expect("just checked");
                     return Ok(self.emit_float_load(operand_op, want));
                 }
-                // `*p` on a raw pointer reads exactly the pointee's width.
-                // Plain MIR Deref always took a full word, so `*p` on a
-                // `*u8` handed back four bytes of whatever followed —
-                // "hello" read as 1869376613 instead of the byte 101 —
-                // while `p.read()` next to it was right, because only the
-                // method path passed the pointee size (#696). Both go
-                // through the same call now.
-                UnaryOp::Deref if self.integral_pointee_size(operand).is_some() => {
-                    let elem_size = self.integral_pointee_size(operand).unwrap();
-                    let result_local = self.builder.alloc_temp(MirType::I64);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(result_local),
-                        func: FunctionRef::internal(
-                            rask_stdlib::ptr_methods::mir_name("read"),
-                        ),
-                        args: vec![
-                            operand_op,
-                            MirOperand::Constant(crate::operand::MirConst::Int(elem_size)),
-                        ],
-                    }));
-                    return Ok((MirOperand::Local(result_local), MirType::I64));
+                // `*p` on a raw pointer reads exactly the pointee: its width
+                // and its sign. A full-word load read "hello" through a
+                // `*u8` as 1869376613 instead of 101 (#696), and a zeroed
+                // word made an `*i16` holding -2 read as 65534. `p.read()`
+                // goes through the same load.
+                UnaryOp::Deref if self.integral_pointee(operand).is_some() => {
+                    let want = self.integral_pointee(operand).expect("just checked");
+                    return Ok(self.emit_int_load(operand_op, want));
                 }
                 // `*b` on a `Heap<T>` reads the block. An aggregate lives
                 // at an address anyway, so the block's address *is* the
@@ -2782,6 +2708,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(tag)),
                         store_size: None,
+                        field: None,
                     }));
                     if let Some(payload) = arg_operands.first() {
                         let payload_offset = if matches!(result_ty, MirType::Result { .. }) {
@@ -2796,12 +2723,14 @@ impl<'a> MirLowerer<'a> {
                                 offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
                                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
                                 store_size: None,
+                                field: None,
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: result_local,
                                 offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
                                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
                                 store_size: None,
+                                field: None,
                             }));
                         }
                         // Set store_size for aggregate payloads (strings are 16 bytes)
@@ -2815,6 +2744,7 @@ impl<'a> MirLowerer<'a> {
                             offset: payload_offset,
                             value: payload.clone(),
                             store_size: payload_store_size,
+                            field: None,
                         }));
                     }
                     return Ok((MirOperand::Local(result_local), result_ty));
@@ -2945,6 +2875,7 @@ impl<'a> MirLowerer<'a> {
                             offset: layout.tag_offset,
                             value: MirOperand::Constant(MirConst::Int(0)),
                             store_size: None,
+                            field: None,
                         }));
                         return Ok((MirOperand::Local(result_local), enum_ty));
                     }
@@ -2972,7 +2903,7 @@ impl<'a> MirLowerer<'a> {
             // is the middle segment naming an enum that has this variant,
             // with the head naming no local.
             if let ExprKind::Field { object: head, field: type_name } = &object.kind {
-                if matches!(&head.kind, ExprKind::Ident(n) if !self.locals.contains_key(n)) {
+                if matches!(&head.kind, ExprKind::Ident(n) if !self.name_holds_a_value(n)) {
                     if let Some(op) = self.lower_enum_variant_path(type_name, field) {
                         return Ok(op);
                     }
@@ -2982,8 +2913,12 @@ impl<'a> MirLowerer<'a> {
             // Enum variant access: Color.Red (no parens, fieldless variant).
             // `find_enum_written` so `Holder<i64>.Empty` resolves too — the
             // parser folds the written type arguments into the name (#782).
+            //
+            // A module const isn't a local either, and it holds a value:
+            // `ORIGIN.y` on `const ORIGIN: Point` read as a variant of a type
+            // named `ORIGIN`, came back as the tag stub, and printed 0.
             if let Some(name) = object.name() {
-                if !self.locals.contains_key(name) {
+                if !self.name_holds_a_value(name) {
                     if let Some(op) = self.lower_enum_variant_path(name, field) {
                         return Ok(op);
                     }
@@ -3424,6 +3359,7 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         None
                     },
+                    field: None,
                 }));
             }
             Ok((MirOperand::Local(result_local), array_ty))
@@ -3519,6 +3455,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: elem_op,
                     store_size: Some(elem_size),
+                    field: None,
                 }));
                 offset += elem_size;
             }
@@ -3526,7 +3463,7 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_struct_lit(&mut self, expr: &Expr, name: &str, fields: &[FieldInit], spread: Option<&Expr>) -> Result<TypedOperand, LoweringError> {
-            // A nominal newtype is transparent: `Id { value: 5 }` IS 5.
+            // A nominal newtype is transparent: `Id(5)` IS 5.
             // There's no layout to store into — treating it as an aggregate
             // stored through an uninitialised pointer (#445).
             if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
@@ -3590,21 +3527,15 @@ impl<'a> MirLowerer<'a> {
                     offset: tag_offset,
                     value: MirOperand::Constant(MirConst::Int(tag as i64)),
                     store_size: None,
+                    field: None,
                 }));
-                // Store fields at their offsets within the payload
                 for field in fields.iter() {
-                    let (val_op, _) = self.lower_expr(&field.value)?;
-                    let vf = variant_fields.iter()
-                        .find(|f| f.name == field.name);
-                    let offset = vf.map(|f| payload_offset + f.offset)
-                        .unwrap_or(payload_offset);
-                    let store_size = vf.map(|f| f.size);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset,
-                        value: val_op,
-                        store_size,
-                    }));
+                    let Some(i) = variant_fields.iter().position(|f| f.name == field.name) else {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "`{name}` has no field `{}`", field.name
+                        )));
+                    };
+                    self.store_variant_field(result_local, payload_offset, variant_fields, i, &field.value)?;
                 }
             } else {
             for field in fields.iter() {
@@ -3627,7 +3558,7 @@ impl<'a> MirLowerer<'a> {
                 // out with a word-sized placeholder per type parameter. An
                 // aggregate type argument is bigger than that, so the store
                 // runs past its own slot and the read comes back garbage —
-                // `One { only: Big { … } }` with a 24-byte Big segfaulted,
+                // `One(only: Big(…))` with a 24-byte Big segfaulted,
                 // silently (#781). Refuse instead, at the field whose two
                 // sizes disagree.
                 //
@@ -3713,10 +3644,11 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: val_op,
                     store_size,
+                    field: field_slot(&result_ty, layout, &field.name),
                 }));
 
                 // Propagate Vec element types from source var to struct field.
-                // If v has known elem type F64 and we're constructing State { data: v },
+                // If v has known elem type F64 and we're constructing State(data: v),
                 // record "self.data" so methods can look it up.
                 if let ExprKind::Ident(src_var) = &field.value.kind {
                     if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.clone())
@@ -3729,7 +3661,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // Struct update syntax: `Point { x: 10, ..p }`. Every field not
+            // Struct update syntax: `Point(x: 10, ..p)`. Every field not
             // given explicitly is copied from the spread base. Without this
             // the un-listed fields are left uninitialized and read garbage on
             // native (interp happens to zero-init).
@@ -3761,6 +3693,10 @@ impl<'a> MirLowerer<'a> {
                             offset,
                             value: MirOperand::Local(tmp),
                             store_size: Some(size),
+                            field: match &result_ty {
+                                MirType::Struct(sid) => Some(crate::FieldSlot { layout: sid.id, field: idx as u32 }),
+                                _ => None,
+                            },
                         }));
                     }
                 }
@@ -3769,8 +3705,62 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), result_ty))
         }
 
+    /// Store field `i` of a variant's payload, written by position or by name.
+    fn store_variant_field(
+        &mut self,
+        result_local: crate::LocalId,
+        payload_offset: u32,
+        fields: &[rask_mono::FieldLayout],
+        i: usize,
+        value: &Expr,
+    ) -> Result<(), LoweringError> {
+        let (val, val_ty) = self.lower_expr(value)?;
+        let (offset, field_size) = match fields.get(i) {
+            Some(f) => (payload_offset + f.offset, f.size),
+            None => (payload_offset + (i as u32 * 8), 8),
+        };
+        // A payload declared `Owned<T>` is a pointer slot, and the value
+        // arriving is a `T` — OW5 lets a `T` stand where `Owned<T>` is asked
+        // for. Put it on the heap and store the pointer. Storing the value
+        // instead wrote 16 bytes of enum into an 8-byte slot, clobbering the
+        // next payload, and the recursive read came back as a tag used for an
+        // address (#705).
+        let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
+            Some(_) => self.box_into_owned_slot(val, &val_ty),
+            None => val,
+        };
+        // Aggregate payloads (string = 16 bytes, embedded structs) must copy
+        // the full value. Without store_size a string constant stores only its
+        // 8-byte data pointer and the length word is left uninitialized (#387).
+        let store_size = if field_size > 8 { Some(field_size) } else { None };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result_local,
+            offset,
+            value: val,
+            store_size,
+            field: None,
+        }));
+        Ok(())
+    }
+
     fn lower_if_let(&mut self, expr: &Expr, pattern: &Pattern, then_branch: &Expr, else_branch: Option<&Expr>, else_binding: Option<&str>) -> Result<TypedOperand, LoweringError> {
             let (val, val_ty) = self.lower_expr(expr)?;
+
+            // `if p is Point(x: 0, y) { … }` on a plain struct tests fields,
+            // not a tag: it's the two-arm struct match `Point(…) => then,
+            // _ => else`, which has the per-field tests already.
+            if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, Pattern::Struct { .. }) {
+                let otherwise = else_branch.cloned().unwrap_or_else(|| Expr {
+                    id: then_branch.id,
+                    kind: ExprKind::Block(Vec::new()),
+                    span: then_branch.span,
+                });
+                let arms = [
+                    rask_ast::expr::MatchArm { pattern: pattern.clone(), guard: None, body: Box::new(then_branch.clone()) },
+                    rask_ast::expr::MatchArm { pattern: Pattern::Wildcard, guard: None, body: Box::new(otherwise) },
+                ];
+                return self.lower_struct_match(expr, val, val_ty, &arms);
+            }
             let niche = self.option_niche(expr, &val_ty);
             let is_niche = niche.is_some();
 
@@ -3946,6 +3936,7 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::OPTION_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.assign_and_goto(dst, MirOperand::Local(none), done_blk);
 
@@ -4097,6 +4088,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: MirOperand::Local(word),
                     store_size: Some(8),
+                    field: None,
                 }));
             }
         }
@@ -4171,6 +4163,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: None,
+                field: None,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: merge_block,
@@ -4349,6 +4342,7 @@ impl<'a> MirLowerer<'a> {
                     offset: *offset,
                     value,
                     store_size: Some(*size),
+                    field: None,
                 }));
             }
             Ok((MirOperand::Local(result_local), layout_ty))
@@ -4461,6 +4455,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     let value_size = field_size.unwrap_or(8);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -4468,6 +4463,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 8,
                         value: MirOperand::Local(field_local),
                         store_size: Some(value_size),
+                        field: None,
                     }));
                 }
             } else if is_niche {
@@ -4476,12 +4472,14 @@ impl<'a> MirLowerer<'a> {
                     offset: 0,
                     value: MirOperand::Constant(MirConst::Int(0)),
                     store_size: Some(8),
+                    field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: result_local,
                     offset: 8,
                     value: obj.clone(),
                     store_size: Some(field_ty.size()),
+                    field: None,
                 }));
             } else {
                 // Payload with no struct layout to find the field in. The
@@ -4515,12 +4513,14 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: result_local,
                         offset: 8,
                         value: MirOperand::Local(payload_local),
                         store_size: Some(payload_ty.size().max(1)),
+                        field: None,
                     }));
                 }
             }
@@ -4533,6 +4533,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Constant(MirConst::Int(1)),
                 store_size: Some(8),
+                field: None,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -4998,9 +4999,7 @@ impl<'a> MirLowerer<'a> {
             .rev()
             .find(|(name, _)| name == object_name)?
             .1;
-        let has = fc.attrs.iter().any(|attr| {
-            rask_ast::decl::field_attrs::attachment_name(attr) == annotation
-        });
+        let has = fc.attrs.iter().any(|attr| attr.is(annotation));
         Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
     }
 
@@ -5009,7 +5008,7 @@ impl<'a> MirLowerer<'a> {
     /// constant (type.annotations/AN6). Nothing of the annotation reaches
     /// MIR: there is no annotation value to build (AN8), only this projection.
     ///
-    /// Attachment text arrived complete — desugar filled the declared defaults
+    /// The attachment arrived complete — desugar filled the declared defaults
     /// (`annotation_defaults`) — so this reads what's written and never looks
     /// the declaration up. `Ok(None)` means "not this form", so the caller
     /// falls through to ordinary field-access lowering; `Err` means it *was*
@@ -5020,8 +5019,6 @@ impl<'a> MirLowerer<'a> {
         object: &Expr,
         field: &str,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        use rask_ast::decl::field_attrs;
-
         let ExprKind::MethodCall { object: recv, method, type_args, .. } = &object.kind else {
             return Ok(None);
         };
@@ -5037,26 +5034,19 @@ impl<'a> MirLowerer<'a> {
             return Ok(None);
         };
 
-        let Some(attr) = fc
-            .attrs
-            .iter()
-            .find(|a| field_attrs::attachment_name(a) == annotation)
-        else {
+        let Some(attr) = fc.attrs.iter().find(|a| a.is(annotation)) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
                 fc.name, annotation, field, binding, annotation
             )));
         };
-        let Some((_, value)) = field_attrs::attachment_args(attr)
-            .into_iter()
-            .find(|(name, _)| *name == field)
-        else {
+        let Some(value) = attr.arg(field) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "`@{}` on `{}` has no field `{}`",
                 annotation, fc.name, field
             )));
         };
-        // The attachment text says `3`, not whether that's an i64, a u8 or an
+        // The attachment says `3`, not whether that's an i64, a u8 or an
         // f64 — the declaration does. Not the checker's type for this node:
         // inference has nothing to pin `get<A>()`'s result to when the read
         // feeds an interpolation, and it stayed an open type variable there.
@@ -5519,6 +5509,7 @@ impl<'a> MirLowerer<'a> {
                 offset: i * 8,
                 value: MirOperand::Local(slot),
                 store_size: None,
+                field: None,
             }));
         }
         (MirOperand::Local(wide), 8)
@@ -5633,40 +5624,11 @@ impl<'a> MirLowerer<'a> {
                                 offset: tag_offset,
                                 value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
                                 store_size: None,
+                                field: None,
                             }));
 
-                            // Store payload fields
                             for (i, arg) in args.iter().enumerate() {
-                                let (val, val_ty) = self.lower_expr(&arg.expr)?;
-                                let (offset, field_size) = if i < fields.len() {
-                                    (payload_offset + fields[i].offset, fields[i].size)
-                                } else {
-                                    (payload_offset + (i as u32 * 8), 8)
-                                };
-                                // A payload declared `Owned<T>` is a pointer slot,
-                                // and the value arriving is a `T` — OW5 lets a `T`
-                                // stand where `Owned<T>` is asked for. Put it on the
-                                // heap and store the pointer. Storing the value
-                                // instead wrote 16 bytes of enum into an 8-byte slot,
-                                // clobbering the next payload, and the recursive read
-                                // came back as a tag used for an address (#705).
-                                let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
-                                    Some(_) => {
-                                        self.box_into_owned_slot(val, &val_ty)
-                                    }
-                                    None => val,
-                                };
-                                // Aggregate payloads (string = 16 bytes, embedded
-                                // structs) must copy the full value. Without store_size
-                                // a string constant stores only its 8-byte data pointer
-                                // and the length word is left uninitialized (#387).
-                                let store_size = if field_size > 8 { Some(field_size) } else { None };
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: result_local,
-                                    offset,
-                                    value: val,
-                                    store_size,
-                                }));
+                                self.store_variant_field(result_local, payload_offset, &fields, i, &arg.expr)?;
                             }
 
                             return Ok(Some((MirOperand::Local(result_local), enum_ty)));
@@ -5676,7 +5638,7 @@ impl<'a> MirLowerer<'a> {
                         if method == "variants" && args.is_empty() {
                             if let Some((_idx, layout)) = self.ctx.find_enum(name) {
                                 // Create a new Vec
-                                let vec_local = self.builder.alloc_temp(MirType::I64);
+                                let vec_local = self.builder.alloc_temp(MirType::Ptr);
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(vec_local),
                                     func: FunctionRef::internal("Vec_new".to_string()),
@@ -5693,7 +5655,7 @@ impl<'a> MirLowerer<'a> {
                                         ],
                                     }));
                                 }
-                                return Ok(Some((MirOperand::Local(vec_local), MirType::I64)));
+                                return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
                             }
                         }
 
@@ -6791,6 +6753,7 @@ impl<'a> MirLowerer<'a> {
                             offset: field.offset,
                             value: store_val,
                             store_size: if wide { Some(field.size) } else { None },
+                            field: None,
                         }));
                     }
                     return Ok((MirOperand::Local(result_local), obj_ty));
@@ -7079,24 +7042,28 @@ impl<'a> MirLowerer<'a> {
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(full_tag as i64)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: err_local,
             offset: payload_offset,
             value: value.clone(),
             store_size: if value_size > 8 { Some(value_size) } else { None },
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset: crate::types::RESULT_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset: crate::types::RESULT_PAYLOAD_OFFSET,
             value: MirOperand::Local(err_local),
             store_size: if err_size > 8 { Some(err_size) } else { None },
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -7115,6 +7082,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -7178,7 +7146,7 @@ impl<'a> MirLowerer<'a> {
         let Some(enum_name) = object.name() else {
             return Ok(None);
         };
-        if self.locals.contains_key(enum_name) {
+        if self.name_holds_a_value(enum_name) {
             return Ok(None);
         }
         let Some((layout_id, layout)) = self.ctx.find_enum(enum_name) else {
@@ -7216,12 +7184,14 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::OPTION_TAG_OFFSET,
             value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
             offset: rask_mono::abi::OPTION_PAYLOAD_OFFSET,
             value: n_op,
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: done_block,
@@ -7233,6 +7203,7 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::OPTION_TAG_OFFSET,
             value: MirOperand::Constant(crate::operand::MirConst::Int(1)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: done_block,
@@ -7540,7 +7511,7 @@ impl<'a> MirLowerer<'a> {
     fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
         let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
         let Some(head_name) = head.name() else { return None };
-        if self.locals.contains_key(head_name) {
+        if self.name_holds_a_value(head_name) {
             return None;
         }
         let head_owns_it = self
@@ -7585,8 +7556,13 @@ impl<'a> MirLowerer<'a> {
                 let names_a_type = self.ctx.find_struct(type_name).is_some()
                     || self.ctx.find_enum(type_name).is_some()
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(type_name);
-                if !self.locals.contains_key(module_name)
+                // A scalar names a type, never a module: `f64.INFINITY.neg()`
+                // is a method on a constant, not `INFINITY_neg` in module f64.
+                // A module const holds a value too: `CFG.name.len()` on
+                // `const CFG: Config` was `name_len` in a module `CFG`.
+                if !self.name_holds_a_value(module_name)
                     && !is_enum_variant
+                    && !rask_ast::primitives::is_scalar(module_name)
                     && (is_type_constructor_name(module_name) || names_a_type)
                 {
                     let func_name = format!("{}_{}", type_name, method);
@@ -7629,20 +7605,39 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Like `pointee_size`, but only for pointees that come back as a plain
-    /// integer — `RawPtr_read` returns an i64, so a float or a struct behind
-    /// the pointer would arrive as its bit pattern.
-    fn integral_pointee_size(&self, expr: &Expr) -> Option<i64> {
+    /// The pointee's own type, for a pointer to an integer or a bool.
+    fn integral_pointee(&self, expr: &Expr) -> Option<MirType> {
+        use rask_types::Type as T;
         match self.ctx.lookup_raw_type(expr.id)? {
-            rask_types::Type::RawPtr(inner) if matches!(
-                inner.as_ref(),
-                rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool
-                    | rask_types::Type::U16 | rask_types::Type::I16
-                    | rask_types::Type::U32 | rask_types::Type::I32
-                    | rask_types::Type::U64 | rask_types::Type::I64
-            ) => self.pointee_size(expr),
+            T::RawPtr(inner) => Some(match inner.as_ref() {
+                T::Bool => MirType::Bool,
+                T::U8 => MirType::U8,
+                T::I8 => MirType::I8,
+                T::U16 => MirType::U16,
+                T::I16 => MirType::I16,
+                T::U32 => MirType::U32,
+                T::I32 => MirType::I32,
+                T::U64 => MirType::U64,
+                T::I64 => MirType::I64,
+                _ => return None,
+            }),
             _ => None,
         }
+    }
+
+    /// Load an integer through a raw pointer at its own width and signedness.
+    ///
+    /// This went through `rask_ptr_read`, which copies the bytes into a zeroed
+    /// word, and the result was labelled `i64` whatever the pointee. So every
+    /// signed narrow read came back zero-extended: `*p` on an `*i16` holding -2
+    /// was 65534, and so was anything computed from it.
+    fn emit_int_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+        let value = self.builder.alloc_temp(want.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Deref(ptr),
+        }));
+        (MirOperand::Local(value), want)
     }
 
     /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
@@ -7753,6 +7748,11 @@ impl<'a> MirLowerer<'a> {
             // `p.read()` / `p.write(v)` on a float go through the same typed
             // load and store `*p` does — the C helpers move an `int64_t`, which
             // is the wrong register class for a float (#1091).
+            if method == "read" && args.is_empty() {
+                if let Some(want) = self.integral_pointee(object) {
+                    return Ok(Some(self.emit_int_load(obj_op.clone(), want)));
+                }
+            }
             if let Some(want) = self.float_pointee(object) {
                 if method == "read" && args.is_empty() {
                     return Ok(Some(self.emit_float_load(obj_op.clone(), want)));
@@ -7775,6 +7775,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: val,
                         store_size: None,
+                        field: None,
                     }));
                     return Ok(Some((MirOperand::Constant(MirConst::Int(0)), MirType::Void)));
                 }
@@ -8149,12 +8150,14 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Local(wrapped),
                 store_size: Some(value_size),
+                field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: pair,
                 offset: value_size,
                 value: MirOperand::Local(flag),
                 store_size: Some(MirType::Bool.size()),
+                field: None,
             }));
             return Ok(Some((MirOperand::Local(pair), pair_ty)));
         }
@@ -8186,12 +8189,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: MirOperand::Local(value),
             store_size: Some(obj_ty.size()),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -8203,6 +8208,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -8371,6 +8377,7 @@ impl<'a> MirLowerer<'a> {
             // asserts in a row passed in `main` and the third failed in a
             // `test` block, purely on what the stack happened to hold.
             store_size: None,
+            field: None,
         }));
         (MirOperand::Local(slot), ty)
     }
@@ -8414,7 +8421,105 @@ impl<'a> MirLowerer<'a> {
             return PatternTest { matches, flat_payload: Some((inner, payload_ty)) };
         }
         let expected = self.pattern_tag_in_type_context(pattern, val_ty);
-        PatternTest { matches: self.emit_eq_const(tag, expected), flat_payload: None }
+        let mut matches = self.emit_eq_const(tag, expected);
+        // A literal or range inside the variant's pattern has to match too:
+        // `s is Sq(0)` isn't true of every `Sq` (#1532). Reading a field of a
+        // variant the value doesn't hold reads payload bytes nobody uses, and
+        // the tag test already says no.
+        for (field, wanted) in self.tested_variant_fields(val, val_ty, pattern) {
+            if let Some(ok) = self.emit_value_matches(&field, &wanted) {
+                matches = self.emit_and(matches, ok);
+            }
+        }
+        PatternTest { matches, flat_payload: None }
+    }
+
+    /// The fields a variant pattern on a user enum tests with a literal or a
+    /// range, read out of `val`, with what each has to match.
+    fn tested_variant_fields(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Vec<(MirOperand, rask_ast::expr::Pattern)> {
+        use rask_ast::expr::Pattern;
+        let tested = |p: &Pattern| matches!(p, Pattern::Literal(_) | Pattern::Range { .. });
+        let (name, positional): (&str, Vec<Pattern>) = match pattern {
+            Pattern::Constructor { name, fields } if fields.iter().any(tested) => (name, fields.clone()),
+            Pattern::Struct { name, fields, .. } if fields.iter().any(|(_, p)| tested(p)) => {
+                let Some(names) = self.variant_field_names(val_ty, name) else { return Vec::new() };
+                let positional = names
+                    .iter()
+                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or(Pattern::Wildcard, |(_, p)| p.clone()))
+                    .collect();
+                (name, positional)
+            }
+            _ => return Vec::new(),
+        };
+        let Some(layout) = self.variant_field_types(val_ty, name) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (i, p) in positional.into_iter().enumerate() {
+            if !tested(&p) {
+                continue;
+            }
+            let Some((ty, offset, size)) = layout.get(i).cloned() else { continue };
+            let local = self.builder.alloc_temp(ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: val.clone(),
+                    field_index: i as u32,
+                    byte_offset: Some(offset),
+                    access: FieldAccess::for_field(&ty, size),
+                },
+            }));
+            out.push((MirOperand::Local(local), p));
+        }
+        out
+    }
+
+    /// Whether `value` matches a literal or range pattern, as a bool local.
+    fn emit_value_matches(
+        &mut self,
+        value: &MirOperand,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Option<crate::LocalId> {
+        use rask_ast::expr::Pattern;
+        let compare = |this: &mut Self, op: crate::operand::BinOp, right: MirOperand| {
+            let out = this.builder.alloc_temp(MirType::Bool);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: MirRValue::BinaryOp { op, left: value.clone(), right },
+            }));
+            out
+        };
+        match pattern {
+            Pattern::Literal(lit) => {
+                let (lit_op, _) = self.lower_expr(lit).ok()?;
+                Some(compare(self, crate::operand::BinOp::Eq, lit_op))
+            }
+            Pattern::Range { start, end } => {
+                let (lo, _) = self.lower_expr(start).ok()?;
+                let (hi, _) = self.lower_expr(end).ok()?;
+                let above = compare(self, crate::operand::BinOp::Ge, lo);
+                let below = compare(self, crate::operand::BinOp::Le, hi);
+                Some(self.emit_and(above, below))
+            }
+            _ => None,
+        }
+    }
+
+    fn emit_and(&mut self, a: crate::LocalId, b: crate::LocalId) -> crate::LocalId {
+        let out = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: out,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::And,
+                left: MirOperand::Local(a),
+                right: MirOperand::Local(b),
+            },
+        }));
+        out
     }
 
     /// The payload or `none` leaf of a flat `T? or E` that `pattern` names.
@@ -8896,7 +9001,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Derived `Debug` for a struct or enum: the layout, rendered.
     ///
-    /// `Point { x: 1, y: 2 }` for a struct, `Shape.Circle(1.5)` for an enum
+    /// `Point(x: 1, y: 2)` for a struct, `Shape.Circle(1.5)` for an enum
     /// variant with a payload, `Shape.Empty` for one without. Strings and chars
     /// come out quoted, which is the whole reason `{:debug}` exists next to
     /// `{}` (std.fmt/G2, G4).
@@ -8927,32 +9032,28 @@ impl<'a> MirLowerer<'a> {
                 // a symbol of its own; it prints as written.
                 let name = self.ctx.type_defs.written_name(&layout.name).to_string();
                 let mut parts: Vec<MirOperand> = Vec::new();
-                if layout.fields.is_empty() {
-                    parts.push(lit(self, &format!("{} {{}}", name)));
-                } else {
-                    parts.push(lit(self, &format!("{} {{ ", name)));
-                    for (i, f) in layout.fields.iter().enumerate() {
-                        if i > 0 {
-                            parts.push(lit(self, ", "));
-                        }
-                        parts.push(lit(self, &format!("{}: ", f.name)));
-                        let field_ty = self.ctx.type_to_mir(&f.ty);
-                        let field = self.builder.alloc_temp(field_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: field,
-                            rvalue: MirRValue::Field {
-                                base: obj_op.clone(),
-                                field_index: i as u32,
-                                byte_offset: Some(f.offset),
-                                access: FieldAccess::for_field(&field_ty, f.size),
-                            },
-                        }));
-                        parts.push(self.debug_render_value(
-                            &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
-                        )?);
+                parts.push(lit(self, &format!("{}(", name)));
+                for (i, f) in layout.fields.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(lit(self, ", "));
                     }
-                    parts.push(lit(self, " }"));
+                    parts.push(lit(self, &format!("{}: ", f.name)));
+                    let field_ty = self.ctx.type_to_mir(&f.ty);
+                    let field = self.builder.alloc_temp(field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: field,
+                        rvalue: MirRValue::Field {
+                            base: obj_op.clone(),
+                            field_index: i as u32,
+                            byte_offset: Some(f.offset),
+                            access: FieldAccess::for_field(&field_ty, f.size),
+                        },
+                    }));
+                    parts.push(self.debug_render_value(
+                        &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
+                    )?);
                 }
+                parts.push(lit(self, ")"));
                 Ok(Some(self.concat_all(parts)))
             }
             MirType::Enum(id) => {
@@ -9003,6 +9104,9 @@ impl<'a> MirLowerer<'a> {
                         for (fi, f) in variant.fields.iter().enumerate() {
                             if fi > 0 {
                                 parts.push(lit(self, ", "));
+                            }
+                            if !rask_ast::decl::is_positional_field_name(&f.name) {
+                                parts.push(lit(self, &format!("{}: ", f.name)));
                             }
                             let field_ty = self.ctx.type_to_mir(&f.ty);
                             let field = self.builder.alloc_temp(field_ty.clone());
@@ -9146,6 +9250,18 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             },
+            // A wrapper costs no depth: only a nominal type can contain itself,
+            // so the count is taken where a struct or enum is entered.
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.debug_render_wrapper(op, ty, decl, depth)
+            }
+            // A link is the node's address (mem.racks/RK2), so it renders as
+            // the node — what the interpreter prints. A cycle through `next`
+            // stops at the depth cap like a box that contains itself.
+            MirType::Link(sid) if depth + 1 < MAX_DEPTH => Ok(self
+                .lower_derived_debug(op, &MirType::Struct(*sid), depth + 1)?
+                .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string())))),
+            MirType::Link(_) => Ok(elided(self)),
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
                 Ok(call(self, "i64_to_string", vec![op.clone()]))
             }
@@ -9164,6 +9280,186 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// `Option.Some(2.5)`, `Option.None`, `Result.Ok(3)`, `Result.Err(Fault.Bad)`
+    /// — the interpreter's spelling for a wrapper. The tag picks a block and
+    /// each block renders its payload through `debug_render_value`, so a
+    /// struct, a Vec or another wrapper inside reads as it does anywhere else.
+    /// A union err side is the same shape one level down: the member index
+    /// picks the block.
+    ///
+    /// A niche option (`Link<T>?`) is one word with no tag: the null address
+    /// is `none`, and the link itself has no rendering.
+    fn debug_render_wrapper(
+        &mut self,
+        op: &MirOperand,
+        ty: &MirType,
+        decl: Option<&rask_types::Type>,
+        depth: u32,
+    ) -> Result<MirOperand, LoweringError> {
+        let lit = |text: &str| MirOperand::Constant(MirConst::String(text.to_string()));
+
+        if let MirType::Option(inner) = ty {
+            if let Some(none_word) = inner.niche_none() {
+                let is_none = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: is_none,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: op.clone(),
+                        right: MirOperand::Constant(MirConst::Int(none_word)),
+                    },
+                }));
+                let result = self.builder.alloc_temp(MirType::String);
+                let none_block = self.builder.create_block();
+                let some_block = self.builder.create_block();
+                let merge = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(is_none),
+                    then_block: none_block,
+                    else_block: some_block,
+                }));
+                self.builder.switch_to_block(none_block);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(lit("Option.None")),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+                self.builder.switch_to_block(some_block);
+                // Under the link's own type: codegen places a `Field` on an
+                // Option base relative to the payload, and this word has none.
+                let link = self.builder.alloc_temp((**inner).clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: link,
+                    rvalue: MirRValue::Use(op.clone()),
+                }));
+                let node = self.debug_render_value(&MirOperand::Local(link), inner, None, depth)?;
+                let text = self.concat_all(vec![lit("Option.Some("), node, lit(")")]);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result,
+                    rvalue: MirRValue::Use(text),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+                self.builder.switch_to_block(merge);
+                return Ok(MirOperand::Local(result));
+            }
+        }
+
+        // The checked payload types, when the checker's type for the wrapper
+        // is in hand: `T?` and `T or E` are both `Type::Result`.
+        let (decl_ok, decl_err) = match decl {
+            Some(rask_types::Type::Result { ok, err }) => (Some(ok.as_ref()), Some(err.as_ref())),
+            _ => (None, None),
+        };
+        let decl_member = |i: usize| match decl {
+            Some(rask_types::Type::Union(members)) => members.get(i),
+            _ => None,
+        };
+
+        // One arm per tag value: its opening text, and what sits in the
+        // payload slot when it does carry one.
+        type Arm<'t> = (u64, String, Option<(MirType, Option<&'t rask_types::Type>)>);
+        let (tag_offset, payload_offset, arms): (u32, u32, Vec<Arm>) = match ty {
+            MirType::Option(inner) => (
+                0,
+                8,
+                vec![
+                    (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
+                    (1, "Option.None".to_string(), None),
+                ],
+            ),
+            MirType::Result { ok, err } => (
+                crate::types::RESULT_TAG_OFFSET,
+                crate::types::RESULT_PAYLOAD_OFFSET,
+                vec![
+                    (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
+                    (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
+                ],
+            ),
+            MirType::Union(members) => (
+                crate::types::UNION_MEMBER_OFFSET,
+                crate::types::UNION_PAYLOAD_OFFSET,
+                members
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (i as u64, String::new(), Some((m.clone(), decl_member(i)))))
+                    .collect(),
+            ),
+            _ => unreachable!("debug_render_wrapper on a non-wrapper {ty:?}"),
+        };
+
+        // Codegen places a `Field` on an Option base relative to the payload,
+        // whatever offset is passed, so the tag goes through `EnumTag` the way
+        // a match reads it. A union has no tag: its member index is a word at
+        // the front, read as a plain field.
+        let tag = if matches!(ty, MirType::Union(_)) {
+            let member = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: op.clone(),
+                    field_index: 0,
+                    byte_offset: Some(tag_offset),
+                    access: FieldAccess::Sized(8),
+                },
+            }));
+            member
+        } else {
+            let tag = self.builder.alloc_temp(MirType::U16);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: tag,
+                rvalue: MirRValue::EnumTag { value: op.clone() },
+            }));
+            tag
+        };
+        let result = self.builder.alloc_temp(MirType::String);
+        let merge = self.builder.create_block();
+        let blocks: Vec<crate::BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let cases: Vec<(u64, crate::BlockId)> =
+            arms.iter().zip(&blocks).map(|((t, _, _), b)| (*t, *b)).collect();
+        let default = blocks.first().copied().unwrap_or(merge);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(tag),
+            cases,
+            default,
+        }));
+
+        for ((_, open, payload), block) in arms.into_iter().zip(blocks) {
+            self.builder.switch_to_block(block);
+            let text = match payload {
+                None => lit(&open),
+                Some((payload_ty, payload_decl)) => {
+                    // Index 0: an Option's or Result's fields are counted from
+                    // the payload, and the offset says where that is.
+                    let slot = self.builder.alloc_temp(payload_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: slot,
+                        rvalue: MirRValue::Field {
+                            base: op.clone(),
+                            field_index: 0,
+                            byte_offset: Some(payload_offset),
+                            access: FieldAccess::for_field(&payload_ty, payload_ty.size()),
+                        },
+                    }));
+                    let inner = self.debug_render_value(
+                        &MirOperand::Local(slot), &payload_ty, payload_decl, depth,
+                    )?;
+                    if open.is_empty() {
+                        inner
+                    } else {
+                        self.concat_all(vec![lit(&open), inner, lit(")")])
+                    }
+                }
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::Use(text),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+        }
+        self.builder.switch_to_block(merge);
+        Ok(MirOperand::Local(result))
+    }
+
     /// The checked element type of a `Vec<T>`, for handing down to the
     /// element's own rendering.
     fn vec_elem_decl(decl: &rask_types::Type) -> Option<&rask_types::Type> {
@@ -9178,7 +9474,7 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// `[Point { x: 1, y: 2 }, …]` — a Vec walked one element at a time.
+    /// `[Point(x: 1, y: 2), …]` — a Vec walked one element at a time.
     ///
     /// The runtime's `rask_vec_debug` reads a slot at a time and switches on a
     /// kind code, which covers the scalars and strings; there is no code for
@@ -9316,7 +9612,7 @@ impl<'a> MirLowerer<'a> {
     /// number of words so a sixteen-byte string never lands at a four-byte
     /// offset. `rask_vec_from_static` reads it as a Vec of those pairs, which
     /// is the same shape `Map_entries` hands back going the other way.
-    fn build_comptime_map(
+    pub(super) fn build_comptime_map(
         &mut self,
         blob: crate::LocalId,
         entries: usize,
@@ -9867,28 +10163,50 @@ impl<'a> MirLowerer<'a> {
         };
         let int_const = |n: i64| MirOperand::Constant(MirConst::Int(n));
 
+        // A radix spec shows the bit pattern at the value's own width, so a
+        // signed one says how wide it is: the call receives it sign-extended
+        // to a word. An unsigned value is zero-extended and needs no mask.
+        let radix = |this: &mut Self, base: i64, upper: bool| {
+            if is_unsigned {
+                call(this, "u64_to_base", vec![obj_op.clone(), int_const(base), int_const(upper as i64)])
+            } else {
+                let bits = obj_ty.size() as i64 * 8;
+                call(
+                    this,
+                    "i64_to_base",
+                    vec![obj_op.clone(), int_const(base), int_const(upper as i64), int_const(bits)],
+                )
+            }
+        };
+
         use rask_ast::fmt_spec::SpecType;
         let base: MirOperand = match spec.ty {
-            SpecType::Hex { upper } if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(16), int_const(upper as i64)])
+            SpecType::Hex { upper } if is_int => radix(self, 16, upper),
+            SpecType::Binary if is_int => radix(self, 2, false),
+            SpecType::Octal if is_int => radix(self, 8, false),
+            // An integer prints in scientific form too — `{n:e}` of 1500 is
+            // `1.5e3` — so it goes through the float renderer as a float.
+            SpecType::Exp if numeric => {
+                let prec = spec.precision.map(|p| p as i64).unwrap_or(-1);
+                let value = if is_int {
+                    let widened = self.builder.alloc_temp(MirType::F64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: widened,
+                        rvalue: MirRValue::Cast { value: obj_op.clone(), target_ty: MirType::F64 },
+                    }));
+                    MirOperand::Local(widened)
+                } else {
+                    obj_op.clone()
+                };
+                call(self, "f64_to_exp", vec![value, int_const(prec)])
             }
-            SpecType::Binary if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(2), int_const(0)])
-            }
-            SpecType::Octal if is_int => {
-                let name = if is_unsigned { "u64_to_base" } else { "i64_to_base" };
-                call(self, name, vec![obj_op.clone(), int_const(8), int_const(0)])
-            }
-            SpecType::Exp if is_float => call(self, "f64_to_exp", vec![obj_op.clone()]),
             // std.fmt/G2: every type derives Debug. A struct or enum has no
             // `to_string` unless it opted into Displayable, and falling through
             // to one it doesn't have is what made the spec's own example fail —
             // `{:debug}` was checked against Displayable and rejected (#1032).
             //
             // Built here rather than as a runtime call: lowering knows the
-            // layout, so `Point { x: 1, y: 2 }` is a concat chain of constants
+            // layout, so `Point(x: 1, y: 2)` is a concat chain of constants
             // and field renders, decided at compile time. Same shape the rest
             // of formatting already has.
             //
@@ -10195,6 +10513,7 @@ impl<'a> MirLowerer<'a> {
                     // address; a bool is one byte and a wider store would run
                     // over the field beside it.
                     store_size: Some(ty.size()),
+                    field: None,
                 }));
             }
         }
@@ -10327,6 +10646,7 @@ impl<'a> MirLowerer<'a> {
                     offset,
                     value: MirOperand::Local(w),
                     store_size: None,
+                    field: None,
                 }));
             }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result }));
@@ -10348,6 +10668,7 @@ impl<'a> MirLowerer<'a> {
                 offset: i * elem_size,
                 value: MirOperand::Local(slot),
                 store_size: Some(elem_size),
+                field: None,
             }));
         }
         (MirOperand::Local(result), kept_ty)
@@ -10566,6 +10887,9 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<TypedOperand, LoweringError> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
+        if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, rask_ast::expr::Pattern::Struct { .. }) {
+            return self.lower_struct_is(scrutinee, val, val_ty, pattern);
+        }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
         let test = self.emit_is_test(&val, &val_ty, niche, pattern);
@@ -10829,3 +11153,14 @@ impl<'a> MirLowerer<'a> {
         Ok((last_val, last_ty))
     }
 } // end impl MirLowerer
+
+/// The field a struct literal's store writes, named by its layout and position.
+fn field_slot(
+    result_ty: &MirType,
+    layout: Option<&rask_mono::StructLayout>,
+    name: &str,
+) -> Option<crate::FieldSlot> {
+    let MirType::Struct(sid) = result_ty else { return None };
+    let index = layout?.fields.iter().position(|f| f.name == name)?;
+    Some(crate::FieldSlot { layout: sid.id, field: index as u32 })
+}

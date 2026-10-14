@@ -41,7 +41,7 @@ extend Account {
 
 func main() {
     // ANCHOR: callsite
-    mut account = Account { owner: "Ada", balance: 100 }
+    mut account = Account(owner: "Ada", balance: 100)
 
     println(describe(account))         // borrow: no marker
     // ANCHOR: mutatecall

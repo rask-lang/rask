@@ -26,7 +26,7 @@ Probe implements Reporter {
 
     public func tags(self) -> Vec<Label> {
         mut out = Vec.new()
-        out.push(Label { text: "probe" })
+        out.push(Label(text: "probe"))
         return out
     }
 }
@@ -39,14 +39,14 @@ func level_name(l: Level) -> string {
 }
 
 test "a conformance doesn't depend on declaration order" {
-    let cold = Probe { hot: false }
+    let cold = Probe(hot: false)
     assert level_name(cold.status()) == "low"
-    let hot = Probe { hot: true }
+    let hot = Probe(hot: true)
     assert level_name(hot.status()) == "high"
 }
 
 test "a generic return type declared later also matches" {
-    let p = Probe { hot: false }
+    let p = Probe(hot: false)
     let tags = p.tags()
     assert tags.len() == 1
     assert tags[0].text == "probe"

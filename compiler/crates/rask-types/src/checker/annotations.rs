@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! User annotation validation (type.annotations/AN3-AN5).
 //!
-//! Attachments arrive as verbatim strings (`validate(max:100)`, same storage
-//! as the serialization annotations), so argument checking re-parses that
-//! text. Values are literals for now — the full "any comptime constant" form
-//! wants structured attr storage, tracked separately.
+//! An attachment arrives as an `Attr`: a name and labelled arguments, each
+//! value a parsed expression. A dependency's annotation, and every
+//! attachment naming it (`@validate` inside it, `@liba.validate` outside),
+//! carry the name package scoping gave the declaration, so attachments are
+//! matched to declarations by name alone.
 
+use rask_ast::attr::ShowConst;
+use rask_ast::expr::Literal;
 use rask_ast::decl::{AnnotationDecl, Decl, DeclKind};
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
@@ -25,22 +29,12 @@ const RESERVED_WHY: &str =
     "the compiler already acts on this name, so a user annotation would either be shadowed or silently change what the compiler does [type.annotations/AN5]";
 const CONST_WHY: &str =
     "attached values are embedded as constants and read identically in every instantiation, which only works for the comptime-constant types [type.annotations/AN1, ctrl.comptime/CT58]";
-const AMBIGUOUS_IMPORT_WHY: &str =
-    "an attachment records the annotation's name as written, not which package it resolved to — so two same-named annotations in scope can't be told apart [type.annotations/AN5]";
+const UNRESOLVED_WHY: &str =
+    "a user annotation is an ordinary name: `@pkg.name` reaches one a dependency declares `public`, the same way `pkg.Type` reaches a type [type.annotations/AN5, structure.modules/IM1]";
 const TYPE_POSITION_WHY: &str =
     "an annotation value cannot be constructed, so a slot typed as one could never be filled — annotations are read at comptime, never held [type.annotations/AN8]";
 
 use super::TypeChecker;
-
-/// Names the compiler consumes itself (AN5). A user annotation with one of
-/// these names would either be shadowed or silently change compiler behavior.
-const RESERVED: &[&str] = &[
-    "rename", "no_serialize", "skip", "default", "tag",
-    "resource", "unique", "binary", "message",
-    "entry", "no_alloc", "inline", "native", "unimplemented",
-    "allow", "test", "benchmark", "derive",
-    "call_text", "call_location", "comptime_quota", "embed_file", "comptime_print", "comptime_assert",
-];
 
 /// Field types an annotation may declare (AN1) — the const-representable set
 /// (ctrl.comptime/CT58): primitives, `string`, fixed arrays, and (assumed) enums.
@@ -64,7 +58,7 @@ fn int_type(ty: &str) -> bool {
     matches!(ty, "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize")
 }
 
-/// What kind of literal an argument value is, from its reconstructed text.
+/// What kind of constant an argument value is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lit {
     Int,
@@ -78,34 +72,30 @@ enum Lit {
     Other,
 }
 
-fn classify(value: &str) -> Lit {
-    let v = value.trim();
-    if v.is_empty() {
-        return Lit::Other;
+fn classify(expr: &Expr) -> Lit {
+    if let Some(lit) = expr.as_literal() {
+        return match lit {
+            Literal::Int(_) => Lit::Int,
+            Literal::Float(_) => Lit::Float,
+            Literal::Str(_) => Lit::Str,
+            Literal::Bool(_) => Lit::Bool,
+            Literal::Char(_) => Lit::Other,
+        };
     }
-    if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
-        return Lit::Str;
+    match &expr.kind {
+        ExprKind::Array(_) => Lit::Array,
+        _ if is_path(expr) => Lit::Path,
+        _ => Lit::Other,
     }
-    if v == "true" || v == "false" {
-        return Lit::Bool;
+}
+
+/// `Color` or `Color.Red`.
+fn is_path(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Field { object, .. } => is_path(object),
+        _ => false,
     }
-    if v.starts_with('[') && v.ends_with(']') {
-        return Lit::Array;
-    }
-    let num = v.strip_prefix('-').unwrap_or(v);
-    if !num.is_empty() && num.chars().next().unwrap().is_ascii_digit() {
-        if num.chars().all(|c| c.is_ascii_digit() || c == '_') {
-            return Lit::Int;
-        }
-        if num.chars().all(|c| c.is_ascii_digit() || c == '_' || c == '.') {
-            return Lit::Float;
-        }
-        return Lit::Other;
-    }
-    if v.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
-        return Lit::Path;
-    }
-    Lit::Other
 }
 
 fn lit_matches(lit: Lit, written: &TypeExpr) -> bool {
@@ -125,132 +115,7 @@ fn lit_matches(lit: Lit, written: &TypeExpr) -> bool {
     }
 }
 
-/// Split `name(args)` into the name and the raw argument text. Name
-/// extraction is the shared `field_attrs::attachment_name` — same answer the
-/// backends use for `has<A>()`.
-fn split_attr(attr: &str) -> (&str, Option<&str>) {
-    let attr = attr.trim();
-    let name = rask_ast::decl::field_attrs::attachment_name(attr);
-    let args = (name.len() < attr.len() && attr.ends_with(')'))
-        .then(|| &attr[name.len() + 1..attr.len() - 1]);
-    (name, args)
-}
-
-/// Split an argument list on top-level commas — commas inside strings and
-/// brackets belong to the value.
-fn split_args(text: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut depth = 0usize;
-    let mut in_str = false;
-    let mut start = 0;
-    for (i, c) in text.char_indices() {
-        match c {
-            '"' => in_str = !in_str,
-            '[' | '(' if !in_str => depth += 1,
-            ']' | ')' if !in_str => depth = depth.saturating_sub(1),
-            ',' if !in_str && depth == 0 => {
-                out.push(&text[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    if !text[start..].trim().is_empty() {
-        out.push(&text[start..]);
-    }
-    out
-}
-
-/// One argument: `name: value`. The colon split has to skip string contents.
-fn split_named(arg: &str) -> Option<(&str, &str)> {
-    let mut in_str = false;
-    for (i, c) in arg.char_indices() {
-        match c {
-            '"' => in_str = !in_str,
-            ':' if !in_str => return Some((arg[..i].trim(), arg[i + 1..].trim())),
-            _ => {}
-        }
-    }
-    None
-}
-
 impl TypeChecker {
-    /// Public annotations from the packages this file imports, registered into
-    /// the type table on the way through so `has`/`get` can name them.
-    ///
-    /// Without this the importer's checker didn't know the annotation existed:
-    /// `has<A>()` still answered (it matches attachment text, which travels
-    /// with the struct), but an attachment written here wasn't validated at all
-    /// — `@validate(bogus: 1)` was accepted with a field that doesn't exist —
-    /// and `get<A>().max` reached MIR with no declaration to read `max` from.
-    fn imported_annotations(&mut self, decls: &[Decl]) -> Vec<AnnotationDecl> {
-        let locally_declared: Vec<&str> = decls
-            .iter()
-            .filter_map(|d| match &d.kind {
-                DeclKind::Annotation(a) => Some(a.name.as_str()),
-                _ => None,
-            })
-            .collect();
-
-        let mut found: Vec<AnnotationDecl> = Vec::new();
-        let mut source_package: HashMap<String, String> = HashMap::new();
-        for decl in decls {
-            let DeclKind::Import(imp) = &decl.kind else { continue };
-            let Some(pkg) = imp.path.first() else { continue };
-            let Some(ext) = self.resolved.external_decls.get(pkg).cloned() else { continue };
-            // `import pkg.Member` names one member; `import pkg` takes the lot.
-            let wanted = (imp.path.len() > 1).then(|| imp.path[1].clone());
-            for ext_decl in &ext {
-                let DeclKind::Annotation(ann) = &ext_decl.kind else { continue };
-                if !ann.is_pub || wanted.as_deref().is_some_and(|w| w != ann.name) {
-                    continue;
-                }
-                match source_package.get(&ann.name) {
-                    // AN5: two packages, one name, and the written name can't
-                    // say which was meant. A local declaration of the same name
-                    // settles it, so only report when there isn't one.
-                    Some(other) if other != pkg && !locally_declared.contains(&ann.name.as_str()) => {
-                        self.errors.push(TypeError::BadAnnotation {
-                            name: ann.name.clone(),
-                            problem: format!(
-                                "imported from both `{}` and `{}`, so `@{}` here is ambiguous",
-                                other, pkg, ann.name
-                            ),
-                            fix: format!(
-                                "import only one of them, or declare `annotation @{}` in this package to settle it",
-                                ann.name
-                            ),
-                            why: AMBIGUOUS_IMPORT_WHY,
-                            span: decl.span,
-                        });
-                    }
-                    Some(_) => {}
-                    None => {
-                        source_package.insert(ann.name.clone(), pkg.clone());
-                        found.push(ann.clone());
-                    }
-                }
-            }
-        }
-        for ann in &found {
-            if self.annotation_types.contains(&ann.name) {
-                continue;
-            }
-            self.annotation_types.insert(ann.name.clone());
-            let s = rask_ast::decl::StructDecl {
-                name: ann.name.clone(),
-                type_params: vec![],
-                fields: ann.fields.clone(),
-                methods: vec![],
-                is_pub: true,
-                attrs: vec![],
-                doc: ann.doc.clone(),
-            };
-            self.register_struct(&s);
-        }
-        found
-    }
-
     /// AN8 at a binding's declared type. Declaration syntax is swept in
     /// `check_user_annotations`, but a `let`/`mut` annotation lives in a
     /// statement, and the sweep never gets there.
@@ -280,18 +145,11 @@ impl TypeChecker {
     /// collected; attachment sites are struct/enum/func decls and struct
     /// fields (variants and params carry no attrs yet).
     pub(super) fn check_user_annotations(&mut self, decls: &[Decl]) {
-        // An annotation a dependency declares `public` is one this package can
-        // attach and read, so it has to be in the table before either happens.
-        // Registering it here rather than with the other external types: that
-        // runs in a later pass, and both the attachment check below and
-        // `get<A>()`'s field lookup need it now.
-        let imported = self.imported_annotations(decls);
-
         // Collect declarations; duplicates and reserved names error here.
         let mut declared: HashMap<&str, &AnnotationDecl> = HashMap::new();
         for decl in decls {
             let DeclKind::Annotation(ann) = &decl.kind else { continue };
-            if RESERVED.contains(&ann.name.as_str()) {
+            if rask_ast::attr::compiler_attr(&ann.name).is_some() {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
                     problem: "this name is reserved for a compiler-known annotation".to_string(),
@@ -302,6 +160,23 @@ impl TypeChecker {
                 continue;
             }
             for field in &ann.fields {
+                // A default is checked here, once. Desugar copies it into
+                // every attachment that leaves the field out, and those copies
+                // are skipped at the attachment (`check_attachment_args`).
+                if let Some(default) = &field.default {
+                    if const_representable(&field.ty) && !lit_matches(classify(default), &field.ty) {
+                        self.errors.push(TypeError::BadAnnotation {
+                            name: ann.name.clone(),
+                            problem: format!(
+                                "default `{}` is not a `{}` for field `{}`",
+                                ShowConst(default), field.ty, field.name
+                            ),
+                            fix: "annotation values are comptime constants matching the declared field type".to_string(),
+                            why: CONST_WHY,
+                            span: default.span,
+                        });
+                    }
+                }
                 if !const_representable(&field.ty) {
                     let fix = "annotation fields are limited to primitives, string, enums, and fixed arrays of these".to_string();
                     self.errors.push(TypeError::BadAnnotation {
@@ -323,17 +198,6 @@ impl TypeChecker {
                 });
             }
         }
-        // A dependency's annotation fills in only where this package hasn't
-        // declared the name itself — a local declaration wins, and two
-        // *packages* sharing a name is a separate problem (see AN5's note).
-        for ann in &imported {
-            declared.entry(ann.name.as_str()).or_insert(ann);
-        }
-
-        if declared.is_empty() {
-            return;
-        }
-
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => {
@@ -342,13 +206,22 @@ impl TypeChecker {
                         self.check_attachment_site(&field.attrs, "field", field.name_span, &declared);
                         self.reject_annotation_type(&field.ty, "field type", field.name_span, &declared);
                     }
+                    for m in &s.methods {
+                        self.check_attachment_site(&m.attrs, "method", m.span, &declared);
+                        self.check_signature_types(m, &declared);
+                    }
                 }
                 DeclKind::Enum(e) => {
                     self.check_attachment_site(&e.attrs, "enum", decl.span, &declared);
                     for variant in &e.variants {
+                        self.check_attachment_site(&variant.attrs, "variant", variant.name_span, &declared);
                         for field in &variant.fields {
                             self.reject_annotation_type(&field.ty, "variant field type", variant.name_span, &declared);
                         }
+                    }
+                    for m in &e.methods {
+                        self.check_attachment_site(&m.attrs, "method", m.span, &declared);
+                        self.check_signature_types(m, &declared);
                     }
                 }
                 DeclKind::Fn(f) => {
@@ -357,6 +230,7 @@ impl TypeChecker {
                 }
                 DeclKind::Impl(i) => {
                     for m in &i.methods {
+                        self.check_attachment_site(&m.attrs, "method", m.span, &declared);
                         self.check_signature_types(m, &declared);
                     }
                 }
@@ -376,7 +250,7 @@ impl TypeChecker {
     /// (#1085). `rask_ast::allow_names` holds both lists, below both crates.
     pub(super) fn check_allow_names(&mut self, decls: &[Decl]) {
         for decl in decls {
-            let (attrs, span): (&[String], Span) = match &decl.kind {
+            let (attrs, span): (&[rask_ast::attr::Attr], Span) = match &decl.kind {
                 DeclKind::Fn(f) => (&f.attrs, f.span),
                 DeclKind::Struct(s) => (&s.attrs, decl.span),
                 DeclKind::Enum(e) => (&e.attrs, decl.span),
@@ -408,7 +282,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_allow_attrs(&mut self, attrs: &[String], span: Span) {
+    fn check_allow_attrs(&mut self, attrs: &[rask_ast::attr::Attr], span: Span) {
         for attr in attrs {
             let Some(name) = rask_ast::allow_names::allowed_name(attr) else { continue };
             if rask_ast::allow_names::is_known(name) {
@@ -477,14 +351,32 @@ impl TypeChecker {
     /// (Principle 5). A misplaced attachment is lint territory.
     fn check_attachment_site(
         &mut self,
-        attrs: &[String],
+        attrs: &[rask_ast::attr::Attr],
         site: &str,
         span: Span,
         declared: &HashMap<&str, &AnnotationDecl>,
     ) {
         let mut seen: Vec<&str> = Vec::new();
         for attr in attrs {
-            let (name, args) = split_attr(attr);
+            // A dotted name is always a user annotation reached through a
+            // package. Package scoping rewrites every one that names a public
+            // annotation, so one still dotted names nothing.
+            if attr.path.len() > 1 {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: attr.name(),
+                    problem: format!(
+                        "`@{}` names no annotation — `{}` is not an imported package with a public annotation `{}`",
+                        attr.name(),
+                        attr.path[..attr.path.len() - 1].join("."),
+                        attr.path[attr.path.len() - 1]
+                    ),
+                    fix: format!("import the package that declares it: `import {}`", attr.path[0]),
+                    why: UNRESOLVED_WHY,
+                    span: attr_span(attr, span),
+                });
+                continue;
+            }
+            let name = attr.path[0].as_str();
             let Some(ann) = declared.get(name) else { continue };
 
             // AN4: duplicates on one item are ambiguous for readers.
@@ -494,30 +386,27 @@ impl TypeChecker {
                     problem: format!("attached twice to the same {}", site),
                     fix: "one attachment per item — repetition wants an array field".to_string(),
                     why: DUPLICATE_WHY,
-                    span,
+                    span: attr_span(attr, span),
                 });
                 continue;
             }
             seen.push(name);
 
-            self.check_attachment_args(ann, args, span);
+            self.check_attachment_args(ann, attr, attr_span(attr, span));
         }
     }
 
     /// AN3: `@name(args)` checks like the struct literal `name { args }` —
     /// named form, every non-defaulted field present, names and literal kinds
     /// checked against the declaration.
-    fn check_attachment_args(&mut self, ann: &AnnotationDecl, args: Option<&str>, span: Span) {
+    fn check_attachment_args(&mut self, ann: &AnnotationDecl, attr: &rask_ast::attr::Attr, span: Span) {
         let mut given: Vec<&str> = Vec::new();
-        for arg in args.map(split_args).unwrap_or_default() {
-            let arg = arg.trim();
-            if arg.is_empty() {
-                continue;
-            }
-            let Some((arg_name, value)) = split_named(arg) else {
+        for arg in attr.args.iter().flatten() {
+            let value = &arg.value;
+            let Some(arg_name) = arg.label.as_deref() else {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
-                    problem: format!("argument `{}` is not named", arg),
+                    problem: format!("argument `{}` is not named", value),
                     why: CONSTRUCTION_WHY,
                     fix: format!("annotation arguments use field names, like a struct literal: @{}(field: value)", ann.name),
                     span,
@@ -549,11 +438,16 @@ impl TypeChecker {
             }
             given.push(&field.name);
 
-            let lit = classify(value);
-            if !lit_matches(lit, &field.ty) {
+            let Some(expr) = value.expr() else { continue };
+            // The declared default, copied in by desugar: already judged at
+            // the declaration.
+            if field.default.as_ref().is_some_and(|d| d.id == expr.id) {
+                continue;
+            }
+            if !lit_matches(classify(expr), &field.ty) {
                 self.errors.push(TypeError::BadAnnotation {
                     name: ann.name.clone(),
-                    problem: format!("`{}` is not a `{}` for field `{}`", value.trim(), field.ty, arg_name),
+                    problem: format!("`{}` is not a `{}` for field `{}`", value, field.ty, arg_name),
                     fix: "annotation values are comptime constants matching the declared field type".to_string(),
                     why: CONST_WHY,
                     span,
@@ -586,4 +480,10 @@ fn type_name_parts(ty: &TypeExpr) -> Vec<String> {
     let mut out = Vec::new();
     ty.walk_paths(&mut |path| out.push(path.join(".")));
     out
+}
+
+/// Where an attachment is, for its diagnostics: its own span when the parser
+/// gave it one, else the item it is on.
+fn attr_span(attr: &rask_ast::attr::Attr, item: Span) -> Span {
+    if attr.span.end > attr.span.start { attr.span } else { item }
 }

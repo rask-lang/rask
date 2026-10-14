@@ -1,31 +1,45 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `Wide<T>` — the data-parallel staging plan — runs on the interpreter and
-// has no native entry point for anything but `sum`.
+// `Wide<T>`, the data-parallel staging plan (conc.data-parallel), on both
+// backends.
 //
-// `v.wide()` and `.sum()` both lower fine; the five methods that make the
-// plan worth staging do not:
-//
-//     error: codegen 'main': Function not found: Wide_map
-//
-// Same sweep as the other t_native_reach_* files: these are entries from
-// `NATIVE_WITHOUT_A_DISPATCH_ROW` in rask-codegen/src/dispatch.rs that turned
-// out to have no implementation rather than a bespoke lowering.
+// Native used to lower `sum` and nothing else: `map`, `zip_with`, `min`, `max`
+// and `reduce` died at codegen with "Function not found", and `sum` read every
+// lane as an `i64`, so a `Wide<f64>` added up bit patterns (#1287). `Wide` is
+// written in Rask now (stdlib/collections.rk), and both backends run that copy.
 
-test "wide map and zip_with" {
+test "map and zip_with stage, and a terminal runs them" {
     let v: Vec<i64> = [1, 2, 3, 4]
     let u: Vec<i64> = [10, 20, 30, 40]
-    assert(v.wide().map(|x| { return x * 2 }).sum() == 20)
-    assert(v.wide().zip_with(u.wide(), |a, b| { return a + b }).sum() == 110)
+    assert v.wide().map(|x| { return x * 2 }).sum() == 20
+    assert v.wide().zip_with(u.wide(), |a, b| { return a + b }).sum() == 110
 }
 
-test "wide min, max and reduce" {
-    let v: Vec<i64> = [1, 2, 3, 4]
-    assert(v.wide().min() == 1)
-    assert(v.wide().max() == 4)
-    assert(v.wide().reduce(0, |a, b| { return a + b }) == 10)
+test "min, max and reduce" {
+    let v: Vec<i64> = [3, 1, 4, 2]
+    assert v.wide().min() == 1
+    assert v.wide().max() == 4
+    assert v.wide().reduce(0, |a, b| { return a + b }) == 10
 }
 
-test "wide sum is the one that lowers" {
-    let v: Vec<i64> = [1, 2, 3, 4]
-    assert(v.wide().sum() == 10)
+test "float lanes add up as floats" {
+    let v: Vec<f64> = [0.5, 1.25, 2.0]
+    assert v.wide().sum() == 3.75
+    assert v.wide().max() == 2.0
+    assert v.wide().map(|x| { return x * 2.0 }).sum() == 7.5
+}
+
+test "a map can change the lane type" {
+    let v: Vec<i64> = [1, 2, 3]
+    let halves = v.wide().map(|x| { return x.round<f64>() / 2.0 }).to_vec()
+    assert halves.len() == 3
+    assert halves[0] == 0.5
+    assert halves[2] == 1.5
+}
+
+test "the lanes are copied when the plan is staged" {
+    mut v: Vec<i64> = [1, 2, 3]
+    let plan = v.wide()
+    v.push(100)
+    assert plan.sum() == 6
+    assert plan.to_vec().len() == 3
 }

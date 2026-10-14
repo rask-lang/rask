@@ -86,7 +86,7 @@ func sum_shape(s: Shape) -> i32 {
 }
 
 test "enum variant with struct payload" {
-    assert sum_shape(Shape.Pos(Pt { x: 3, y: 4 })) == 7
+    assert sum_shape(Shape.Pos(Pt(x: 3, y: 4))) == 7
     assert sum_shape(Shape.Scalar(11)) == 11
 }
 

@@ -97,7 +97,7 @@ test "ctrl.comptime — nested comptime evaluation" {
 }
 
 test "ctrl.comptime — comptime for over a struct's fields" {
-    let p = Point { x: 3, y: 4 }
+    let p = Point(x: 3, y: 4)
     mut total = 0
     comptime for f in reflect.fields<Point>() {
         total = total + p.(f.name)

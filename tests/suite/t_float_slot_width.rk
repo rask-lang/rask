@@ -58,12 +58,12 @@ func through<T>(x: T) -> T {
 }
 
 test "a float keeps its value through a generic struct field" {
-    assert(Holder<f32> { v: 1.5 }.v == 1.5)
-    assert(Holder<f64> { v: 2.5 }.v == 2.5)
+    assert(Holder<f32>(v: 1.5).v == 1.5)
+    assert(Holder<f64>(v: 2.5).v == 2.5)
 }
 
 test "and through a concrete one" {
-    let f = Flat { a: 3.5, b: 4.5 }
+    let f = Flat(a: 3.5, b: 4.5)
     assert(f.a == 3.5)
     assert(f.b == 4.5)
 }
