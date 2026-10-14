@@ -46,7 +46,7 @@ Every expression has a stage: comptime (runs during compilation) or runtime (com
 | **CT55: Two stages** | Comptime code computes values and decides what runtime code exists. Runtime code is the residue left after all comptime evaluation |
 | **CT56: Comptime positions** | Comptime evaluation happens exactly at: `comptime` expressions, blocks, and variables; bodies of `comptime func`; `comptime` parameter arguments and array sizes; the iterable of `comptime for`; the condition of `comptime if`; the name in `value.(expr)` |
 | **CT57: Residual bodies** | The body of a `comptime for` and the branches of a `comptime if` in runtime position stay runtime code. Comptime control decides *which* runtime code exists (unrolls, selects) — it never evaluates that code. Calls inside these bodies are ordinary runtime calls; CT6 doesn't apply to them |
-| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, strings, `Vec`/`Map` of those, and structs and enums whose fields are const-representable and held in place. A struct or enum embeds as the bytes it has in memory, and each use copies it out. A field that owns a heap buffer, like a `Vec` inside a struct, has no static form; that value is built at startup instead (W0303). A `Map` embeds as its entries rather than as a table — a hash table seeds its layout per process, so there is nothing static to emit — and is built from them once. A `Vec`/`Map` crosses as it is; there is no freezing step (CT18) |
+| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, strings, `Vec`/`Map` of those, and structs and enums whose fields are const-representable and held in place. A struct or enum embeds as the bytes it has in memory, and each use copies it out. A value that points at memory the running program would own — a `Vec` inside a struct, an `any I` — has no static form, and is a compile error (CT69). A `Map` embeds as its entries rather than as a table — a hash table seeds its layout per process, so there is nothing static to emit — and is built from them once. A `Vec`/`Map` crosses as it is; there is no freezing step (CT18) |
 | **CT59: Discarded branches** | A branch discarded by a runtime-position `comptime if` is syntax-checked only — same treatment as an uninstantiated generic body (`type.generics/G2`). This is what lets platform-specific code compile on every target |
 
 <!-- test: skip -->
@@ -303,21 +303,20 @@ const TABLE = comptime {
 
 ### CT69: Failing to fold is a compile error
 
-A `comptime` const is a promise that the value exists before the program runs, so
-there's no runtime to retry on. Every failure in the table above — the quota, a
-panic, an index out of bounds, asking for I/O or a pool or a spawn — stops the
-build where the const is written.
+A `comptime` value is a promise that the value exists before the program runs,
+so there's no runtime to retry on. That holds for every compile-time position
+(CT56), not only a const: a `comptime` block in a function, a call to a
+`comptime func`, a default argument, a field's default. Every failure — the
+quota, a panic, an index out of bounds, asking for I/O or a pool or a spawn, a
+construct the evaluator doesn't cover, `todo()`, a value with no constant form
+(CT58) — stops the build at the `comptime` that asked for it.
 
-Two exceptions, and they're both about work that hasn't been done rather than
-work that failed:
-
-- **`todo()`** means the block isn't written yet. A program full of them still
-  has to compile; the const runs at startup instead, where the same `todo()`
-  panics.
-- **A construct the evaluator doesn't cover yet** (`Map.new` today) is the
-  compiler's gap, not the program's. The block runs at startup and the compiler
-  warns, naming what stopped it. It used to say nothing, which is how a const
-  could quietly stop being a constant.
+There's no fallback. An earlier version ran a block it couldn't fold at startup
+and warned, and ran a `comptime` block in a function body as ordinary code
+without a word. I removed both: a value that's sometimes computed while
+compiling and sometimes not is a value nobody can reason about, and `comptime`
+written on it means nothing. If it can't be computed while compiling, compute
+it at run time and drop the keyword.
 
 ## File Embedding
 

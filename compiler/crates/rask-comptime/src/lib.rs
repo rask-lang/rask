@@ -989,6 +989,84 @@ enum CtInt { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128 }
 #[derive(Clone, Copy)]
 pub(crate) enum CtOp { Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor }
 
+/// `wrapping_*` and `saturating_*` at `kind`'s width. `method` is one of
+/// those; the caller has checked.
+fn ct_hatch(method: &str, kind: CtInt, a: CtNum, b: CtNum) -> ComptimeValue {
+    let bits = kind.bits();
+    let mask: u128 = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+    let pattern = |n: CtNum| -> u128 {
+        match n {
+            CtNum::Signed(v) => v as u128,
+            CtNum::Big(v) => v,
+        }
+    };
+    // A bit pattern of `bits` bits as the value of `kind`.
+    let from_bits = |p: u128| -> ComptimeValue {
+        let p = p & mask;
+        if kind.signed() && bits < 128 && p >> (bits - 1) & 1 == 1 {
+            kind.make((p | !mask) as i128)
+        } else if kind.signed() {
+            kind.make(p as i128)
+        } else {
+            kind.make_u128(p)
+        }
+    };
+    let (pa, pb) = (pattern(a), pattern(b));
+    match method {
+        "wrapping_add" => from_bits(pa.wrapping_add(pb)),
+        "wrapping_sub" => from_bits(pa.wrapping_sub(pb)),
+        "wrapping_mul" => from_bits(pa.wrapping_mul(pb)),
+        "wrapping_shl" => from_bits(pa << (pb % bits as u128) as u32),
+        "wrapping_shr" => {
+            let n = (pb % bits as u128) as u32;
+            if kind.signed() {
+                // Sign-extend to the full word first, so the shift brings in
+                // copies of the sign bit.
+                let wide = if bits < 128 && pa >> (bits - 1) & 1 == 1 { pa | !mask } else { pa & mask };
+                from_bits(((wide as i128) >> n) as u128)
+            } else {
+                from_bits((pa & mask) >> n)
+            }
+        }
+        _ => {
+            // Saturating: the exact answer, pinned to the type's range.
+            let exact = |x: CtNum| -> Option<i128> {
+                match x {
+                    CtNum::Signed(v) => Some(v),
+                    CtNum::Big(v) => i128::try_from(v).ok(),
+                }
+            };
+            let (Some(x), Some(y)) = (exact(a), exact(b)) else {
+                // Only a `u128` past `i128::MAX` lands here.
+                let (ua, ub) = (pa, pb);
+                return kind.make_u128(match method {
+                    "saturating_add" => ua.saturating_add(ub),
+                    "saturating_sub" => ua.saturating_sub(ub),
+                    _ => ua.saturating_mul(ub),
+                });
+            };
+            let r = match method {
+                "saturating_add" => x.checked_add(y),
+                "saturating_sub" => x.checked_sub(y),
+                _ => x.checked_mul(y),
+            };
+            let high = match method {
+                "saturating_add" => y > 0,
+                "saturating_sub" => y < 0,
+                _ => (x < 0) == (y < 0),
+            };
+            match r {
+                Some(v) if v > kind.max() => kind.make(kind.max()),
+                Some(v) if v < kind.min() => kind.make(kind.min()),
+                Some(v) => kind.make(v),
+                None if kind == CtInt::U128 && high => kind.make_u128(u128::MAX),
+                None if high => kind.make(kind.max()),
+                None => kind.make(kind.min()),
+            }
+        }
+    }
+}
+
 /// A comptime integer operand.
 ///
 /// An `i128` carries every width exactly except the top half of `u128`. That half
@@ -1302,6 +1380,13 @@ impl ComptimeInterpreter {
     /// CT35: set the backwards-branch quota for the next evaluation.
     pub fn set_quota(&mut self, quota: usize) {
         self.env.set_quota(quota);
+    }
+
+    /// Bind a name every evaluation can see: a module const.
+    pub fn define_global(&mut self, name: String, value: ComptimeValue) {
+        if let Some(globals) = self.env.scopes.first_mut() {
+            globals.insert(name, value);
+        }
     }
 
     /// Inject the `cfg` build configuration into the comptime environment.
@@ -2915,6 +3000,23 @@ impl ComptimeInterpreter {
                     Ok(v) => Self::ct_some(v),
                     Err(_) => Self::ct_none(),
                 })
+            }
+            // The wrapping and saturating hatches (type.overflow): the same
+            // answers the run time gives, at the receiver's own width.
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "wrapping_shl" | "wrapping_shr"
+            | "saturating_add" | "saturating_sub" | "saturating_mul" => {
+                let (a, kind) = obj.as_int().ok_or_else(|| ComptimeError::TypeMismatch {
+                    expected: "integer".to_string(),
+                    found: obj.type_name().to_string(),
+                })?;
+                let (b, _) = args
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .ok_or_else(|| ComptimeError::TypeMismatch {
+                        expected: "integer".to_string(),
+                        found: "non-integer argument".to_string(),
+                    })?;
+                Ok(ct_hatch(method, kind, a, b))
             }
             "len" => {
                 match obj {

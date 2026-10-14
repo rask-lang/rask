@@ -212,52 +212,87 @@ enum WrapLayer {
     Result { err: MirType },
 }
 
-/// Metadata for a comptime-evaluated global constant.
+/// Every value the program computes at compile time, handed down from the
+/// fold (ctrl.comptime/CT2, CT56). A `comptime` position never reaches MIR as
+/// code to run: it reaches it as the value, or the program didn't compile.
+#[derive(Debug, Clone, Default)]
+pub struct Folded {
+    /// Each folded node — a `comptime` block, a call to a `comptime func` —
+    /// and where its value lives.
+    pub nodes: HashMap<NodeId, FoldedNode>,
+    /// Module consts whose value is folded, and the node holding it.
+    pub consts: HashMap<String, NodeId>,
+    /// The data the values live in, by symbol.
+    pub data: HashMap<String, ComptimeGlobalMeta>,
+    /// Each `comptime` statement the fold settled, by the statement.
+    pub statements: HashMap<NodeId, FoldedStmt>,
+}
+
+/// What a `comptime` statement came to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FoldedStmt {
+    /// A `comptime if`: which branch the program keeps — `true` the first.
+    /// Only that branch is code; the other was never there.
+    Branch(bool),
+    /// A `comptime { … }` of statements: it ran while compiling, and nothing
+    /// of it is left to run.
+    Ran,
+}
+
+/// One folded value: its data symbol, and the MIR type its bytes were written
+/// as. The bytes and the type come from the same place, so a read can't pick
+/// a width the write didn't use.
+#[derive(Debug, Clone)]
+pub struct FoldedNode {
+    pub symbol: String,
+    pub ty: MirType,
+}
+
+/// What a folded value's data holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FoldedForm {
+    /// The value exactly as it sits in memory; a use copies it out.
+    Value,
+    /// A string's characters. A use is a string literal, which is already
+    /// const data with a sentinel refcount (#1074).
+    Text,
+    /// A list's elements. A use builds a `Vec` the user owns from them.
+    List,
+    /// A map's entries, key then value. A use inserts them into a new map: a
+    /// hash table seeds its layout per process, so there's no table to emit
+    /// (#1075).
+    Map,
+}
+
+/// The data behind a folded value.
 #[derive(Debug, Clone)]
 pub struct ComptimeGlobalMeta {
+    pub form: FoldedForm,
     pub bytes: Vec<u8>,
-    /// Element count (for Vec/Array globals)
+    /// Element count (for a list or a map)
     pub elem_count: usize,
-    /// Type prefix for method dispatch ("Vec", "Array", etc.)
-    pub type_prefix: String,
-    /// What the elements are, for a Vec/Array global. Without it, indexing one
-    /// had no element type to resolve and lowering fell back to a guess.
-    pub elem_type: Option<String>,
+    /// What a list's elements are, from its checked type. Without it, indexing
+    /// one had no element type to resolve, and an empty `Vec<string>` came out
+    /// with word-sized slots for sixteen-byte strings.
+    pub elem: Option<MirType>,
     /// What a folded `Map`'s keys and values are. Lowering needs both to size
     /// the slots in the blob and to build the map they go into.
     pub map_types: Option<(String, String)>,
-    /// `(byte offset, text)` for each element string too long to sit inline.
+    /// `(byte offset, text)` for each string too long to sit inline.
     /// Codegen emits a static header for the text and writes its address at the
     /// offset — a pointer isn't a byte, so it can't travel in `bytes`.
     pub string_relocs: Vec<(usize, String)>,
-    /// The layout the bytes are laid out in, when the value is a struct or an
-    /// enum. `bytes` is then the value exactly as it sits in memory, and a
-    /// use copies it out.
-    pub aggregate: Option<ConstAggregate>,
 }
 
-/// Which layout a folded struct or enum constant was written in: an index
-/// into the program's struct or enum layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConstAggregate {
-    Struct(usize),
-    Enum(usize),
+/// The data symbol for a folded node.
+pub fn folded_symbol(node: NodeId) -> String {
+    format!("__comptime_{}", node.0)
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
 /// Codegen finds the slots by scanning `GlobalRef` names for this prefix, so
 /// the two sides can't drift apart.
 pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
-
-/// The key a comptime-folded *local* is stored under.
-///
-/// A comptime global map is shared by the whole program, and a bare binding name
-/// isn't unique in it: two functions each with a `let v = f()` collided, and one
-/// read the other's value and width (#825). The owning function's name makes it
-/// unique. `$` rather than `::` because the key becomes a data symbol name.
-pub fn comptime_local_key(fn_name: &str, binding: &str) -> String {
-    format!("{}$local${}", fn_name, binding)
-}
 
 /// Data-slot name for a module-level const.
 pub fn const_slot_name(const_name: &str) -> String {
@@ -316,7 +351,7 @@ mod empty {
         };
     }
     empty_of!(strings, std::collections::HashSet<String>);
-    empty_of!(comptime_globals, HashMap<String, ComptimeGlobalMeta>);
+    empty_of!(folded, Folded);
     empty_of!(node_names, HashMap<NodeId, String>);
     empty_of!(nominal_map, HashMap<String, Type>);
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
@@ -368,7 +403,7 @@ impl<'a> MirContext<'a> {
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
-            comptime_globals: empty::comptime_globals(),
+            folded: empty::folded(),
             extern_funcs: empty::strings(),
             package_modules: empty::strings(),
             line_map: None,
@@ -379,18 +414,14 @@ impl<'a> MirContext<'a> {
             decode_defaults: empty::decode_defaults(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
-            comptime_interp: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(Default::default()),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn with_comptime_globals(
-        mut self,
-        globals: &'a HashMap<String, ComptimeGlobalMeta>,
-    ) -> Self {
-        self.comptime_globals = globals;
+    pub fn with_folded(mut self, folded: &'a Folded) -> Self {
+        self.folded = folded;
         self
     }
 
@@ -437,10 +468,6 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_comptime_interp(mut self, interp: rask_comptime::ComptimeInterpreter) -> Self {
-        self.comptime_interp = Some(std::cell::RefCell::new(interp));
-        self
-    }
 }
 
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
@@ -468,9 +495,9 @@ pub struct MirContext<'a> {
     /// asking about exactly those (#791). This is the declarations as the checker
     /// recorded them — the same thing the interpreter reads off its AST maps.
     pub type_defs: &'a rask_types::TypeTable,
-    /// Comptime-evaluated global constants (name → metadata).
-    /// MIR lowering emits GlobalRef for these instead of lowering the init expr.
-    pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
+    /// Every value computed at compile time. Lowering reads these instead
+    /// of lowering the code that would compute them.
+    pub folded: &'a Folded,
     /// Names of extern "C" functions — calls emit FunctionRef::extern_c().
     pub extern_funcs: &'a std::collections::HashSet<String>,
     /// Names of imported external packages — used to recognize cross-package
@@ -495,9 +522,6 @@ pub struct MirContext<'a> {
     /// Tracking paths seen with more than one element type. Kept out of
     /// `shared_elem_types` for good.
     pub shared_elem_conflicts: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// Comptime interpreter for evaluating `comptime if` during lowering.
-    /// None in tests or when cfg is unavailable.
-    pub comptime_interp: Option<std::cell::RefCell<rask_comptime::ComptimeInterpreter>>,
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
@@ -590,8 +614,8 @@ impl<'a> MirContext<'a> {
 
     /// Empty context for tests that don't need layouts or type information.
     pub fn empty_with_map(map: &'a HashMap<NodeId, Type>) -> MirContext<'a> {
-        static EMPTY_COMPTIME: std::sync::LazyLock<HashMap<String, ComptimeGlobalMeta>> =
-            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_FOLDED: std::sync::LazyLock<Folded> =
+            std::sync::LazyLock::new(Folded::default);
         static EMPTY_EXTERNS: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_PACKAGES: std::sync::LazyLock<std::collections::HashSet<String>> =
@@ -628,14 +652,13 @@ impl<'a> MirContext<'a> {
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
             type_defs: &EMPTY_TYPE_DEFS,
-            comptime_globals: &EMPTY_COMPTIME,
+            folded: &EMPTY_FOLDED,
             extern_funcs: &EMPTY_EXTERNS,
             package_modules: &EMPTY_PACKAGES,
             line_map: None,
             source_file: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
@@ -1252,7 +1275,7 @@ impl<'a> MirContext<'a> {
     /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
     /// what it is instead of collapsing to a bare pointer — see
     /// `MirType::Container`.
-    pub(crate) fn payload_to_mir(&self, ty: &Type) -> MirType {
+    pub fn payload_to_mir(&self, ty: &Type) -> MirType {
         let mir = self.type_to_mir(ty);
         if mir != MirType::Ptr {
             return mir;
@@ -1913,7 +1936,7 @@ impl<'a> MirLowerer<'a> {
         self.locals.contains_key(name)
             || self.const_slots.contains_key(name)
             || self.pending_module_consts.contains_key(name)
-            || self.ctx.comptime_globals.contains_key(name)
+            || self.ctx.folded.consts.contains_key(name)
     }
 
     /// Record a module-level const's box type from its initializer, e.g.
@@ -2347,80 +2370,44 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// A folded comptime value for a binding in this function, if there is one.
+    /// A value the fold computed, as a MIR value of the type its bytes were
+    /// written in.
     ///
-    /// The local's own key first — that's where a comptime-folded `let` lives — and
-    /// the bare name second, which is a module-level const (#825).
-    pub(crate) fn comptime_global_for(&self, name: &str) -> Option<(String, &'a ComptimeGlobalMeta)> {
-        let local_key = comptime_local_key(&self.parent_name, name);
-        if let Some(meta) = self.ctx.comptime_globals.get(&local_key) {
-            return Some((local_key, meta));
+    /// - A string is a string literal (`FoldedForm::Text`).
+    /// - A list or a map is built from its elements into a collection the use
+    ///   owns.
+    /// - Anything else is its bytes: a scalar is loaded, an aggregate copied
+    ///   out, so changing the copy leaves the constant alone.
+    pub(crate) fn load_folded(&mut self, folded: &FoldedNode) -> Result<(MirOperand, MirType), LoweringError> {
+        let Some(meta) = self.ctx.folded.data.get(&folded.symbol) else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "folded value `{}` has no data", folded.symbol
+            )));
+        };
+        if meta.form == FoldedForm::Text {
+            let text = String::from_utf8(meta.bytes.clone()).map_err(|_| {
+                LoweringError::InvalidConstruct(format!("folded string `{}` isn't UTF-8", folded.symbol))
+            })?;
+            return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
         }
-        self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
-    }
-
-    /// A folded comptime value as a MIR value of its own type.
-    ///
-    /// - A string is the value itself rather than an address: the fold
-    ///   produced the exact characters, and a string literal is already
-    ///   emitted as const data with a sentinel refcount (#1074).
-    /// - A struct or enum is copied out of its bytes.
-    /// - A list or a map is built from its elements into a collection the
-    ///   caller owns.
-    /// - A scalar is loaded at the width the folded value has, not one a
-    ///   use guesses: an `i64` default read 8 of a `u128`'s 16 bytes (#824).
-    pub(crate) fn load_comptime_value(
-        &mut self,
-        key: &str,
-        meta: &ComptimeGlobalMeta,
-    ) -> Result<(MirOperand, MirType), LoweringError> {
-        if meta.type_prefix == "string" {
-            if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
-                return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
-            }
-        }
-        if let Some(agg) = meta.aggregate {
-            return Ok(self.load_comptime_aggregate(key, agg));
-        }
-        let data = self.builder.alloc_temp(MirType::Ptr);
+        // An aggregate's data is named as a value of its own type, so the
+        // copy below is a copy between two of them. Named as a bare address,
+        // an optional or a result read it as a payload and wrapped it:
+        // `by: (func(i64) -> i64)? = none` arrived as `Some(<address>)`.
+        let in_place = meta.form == FoldedForm::Value && folded.ty.passed_by_address();
+        let data = self.builder.alloc_temp(if in_place { folded.ty.clone() } else { MirType::Ptr });
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
             dst: data,
-            name: key.to_string(),
+            name: folded.symbol.clone(),
         }));
-        if let Some(built) = self.build_comptime_collection(data, meta) {
-            return built;
-        }
-        let ty = Self::comptime_global_mir_type(&meta.type_prefix).unwrap_or(MirType::I64);
-        let value = self.builder.alloc_temp(ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: value,
-            rvalue: MirRValue::Deref(MirOperand::Local(data)),
-        }));
-        Ok((MirOperand::Local(value), ty))
-    }
-
-    /// A folded `Vec` or `Map` constant built into a real collection from the
-    /// bytes at `data`. `None` when the constant is neither.
-    ///
-    /// The bytes are the elements, not a collection: a list's are what
-    /// `rask_vec_from_static` copies in, a map's the entries to insert.
-    pub(crate) fn build_comptime_collection(
-        &mut self,
-        data: LocalId,
-        meta: &ComptimeGlobalMeta,
-    ) -> Option<Result<(MirOperand, MirType), LoweringError>> {
-        match meta.type_prefix.as_str() {
-            "Vec" => {
-                // Elements are machine words, except strings — a `RaskStr`
-                // is sixteen bytes, and the vector has to be told it holds
-                // strings so that what it hands out is retained and released
-                // like one.
-                let holds_strings = meta.elem_type.as_deref() == Some("string");
-                let (elem_size, elem_desc) = if holds_strings {
-                    (16, MirType::String)
-                } else {
-                    (8, MirType::I64)
-                };
+        match meta.form {
+            FoldedForm::List => {
+                // A scalar element is a machine word. A string, or anything
+                // else held in place, is its own size, and the vector has to
+                // be told what it holds so what it hands out is retained and
+                // released like one.
+                let elem_desc = meta.elem.clone().unwrap_or(MirType::I64);
+                let elem_size = if elem_desc.passed_by_address() { elem_desc.size() as i64 } else { 8 };
                 let vec_local = self.builder.alloc_temp(MirType::Ptr);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
@@ -2432,74 +2419,30 @@ impl<'a> MirLowerer<'a> {
                         crate::elem_strs::elem(elem_desc),
                     ],
                 }));
-                Some(Ok((MirOperand::Local(vec_local), MirType::Ptr)))
+                Ok((MirOperand::Local(vec_local), MirType::Ptr))
             }
-            "Map" => {
+            FoldedForm::Map => {
                 // An empty map has no first entry to read the key and value
                 // types off, and holds nothing that could tell the
                 // difference, so any pair will do for one.
                 let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
                     ("i64".to_string(), "i64".to_string())
                 });
-                Some(self.build_comptime_map(data, meta.elem_count, &k, &v))
+                self.build_comptime_map(data, meta.elem_count, &k, &v)
             }
-            _ => None,
+            FoldedForm::Value | FoldedForm::Text => {
+                let value = self.builder.alloc_temp(folded.ty.clone());
+                let rvalue = if in_place {
+                    // One aggregate assigned from another copies its bytes,
+                    // so the use owns a copy and the data stays as it was.
+                    MirRValue::Use(MirOperand::Local(data))
+                } else {
+                    MirRValue::Deref(MirOperand::Local(data))
+                };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: value, rvalue }));
+                Ok((MirOperand::Local(value), folded.ty.clone()))
+            }
         }
-    }
-
-    /// A folded struct or enum constant, copied out of its bytes into a value
-    /// of its own. The bytes are read-only data and every use is a fresh copy,
-    /// the same as reading any other const.
-    pub(crate) fn load_comptime_aggregate(&mut self, key: &str, agg: ConstAggregate) -> (MirOperand, MirType) {
-        let ty = match agg {
-            ConstAggregate::Struct(i) => {
-                let l = &self.ctx.struct_layouts[i];
-                MirType::Struct(StructLayoutId::new(i as u32, l.size, l.align))
-            }
-            ConstAggregate::Enum(i) => {
-                let l = &self.ctx.enum_layouts[i];
-                MirType::Enum(EnumLayoutId::new(i as u32, l.size, l.align))
-            }
-        };
-        let addr = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-            dst: addr,
-            name: key.to_string(),
-        }));
-        let value = self.builder.alloc_temp(ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: value,
-            rvalue: MirRValue::Use(MirOperand::Local(addr)),
-        }));
-        (MirOperand::Local(value), ty)
-    }
-
-    /// The MIR type of a folded comptime global, from the width its value
-    /// actually has.
-    ///
-    /// A comptime global carries its bytes and the name of what they are; only
-    /// this said how many bytes to read back, and it listed five widths. Anything
-    /// else fell to `i64`, so a `u128` global was read 8 bytes at a time (the value
-    /// came back mod 2^64) and a `u32` one read 8 bytes out of a 4-byte allocation
-    /// (#824).
-    pub(crate) fn comptime_global_mir_type(prefix: &str) -> Option<MirType> {
-        Some(match prefix {
-            "bool" => MirType::Bool,
-            "i8" => MirType::I8,
-            "i16" => MirType::I16,
-            "i32" => MirType::I32,
-            "i64" => MirType::I64,
-            "i128" => MirType::I128,
-            "u8" => MirType::U8,
-            "u16" => MirType::U16,
-            "u32" => MirType::U32,
-            "u64" => MirType::U64,
-            "u128" => MirType::U128,
-            "char" => MirType::Char,
-            "f32" => MirType::F32,
-            "f64" => MirType::F64,
-            _ => return None,
-        })
     }
 
     /// The `T` in a declared `Owned<T>`, or `None` if the type isn't one.
@@ -2670,10 +2613,12 @@ impl<'a> MirLowerer<'a> {
         // A comptime-built global — `const SQUARES = comptime { … }` — records
         // what it holds alongside its bytes.
         if let ExprKind::Ident(name) = &expr.kind {
-            if let Some(elem) = self.ctx.comptime_globals.get(name)
-                .and_then(|g| g.elem_type.as_deref())
+            if let Some(elem) = self.ctx.folded.consts.get(name)
+                .and_then(|node| self.ctx.folded.nodes.get(node))
+                .and_then(|f| self.ctx.folded.data.get(&f.symbol))
+                .and_then(|g| g.elem.clone())
             {
-                return Some(self.ctx.resolve_type_name(elem));
+                return Some(elem);
             }
         }
         // A view over a collection holds what the collection holds, so ask the
@@ -4003,9 +3948,7 @@ impl<'a> MirLowerer<'a> {
             // data section. Giving it a slot would turn the folded constant
             // back into a runtime load, and any const computed from it would
             // stop folding too.
-            if matches!(c.init.kind, ExprKind::Comptime { .. })
-                || ctx.comptime_globals.contains_key(&c.name)
-            {
+            if ctx.folded.consts.contains_key(&c.name) {
                 continue;
             }
             if let Ok(Some(ty)) = Self::measure_const_init_ty(c, all_decls, ctx) {
@@ -4390,9 +4333,9 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
-                } else if lowerer.ctx.comptime_globals.contains_key(&c.name) {
+                } else if lowerer.ctx.folded.consts.contains_key(&c.name) {
                     // Folded at compile time: a reference reads the folded value
-                    // (`comptime_global_for`). Queueing the initializer as well
+                    // (`load_folded`). Queueing the initializer as well
                     // ran the `comptime` block again at runtime, at the first
                     // reference in every function — inside a loop, once a turn —
                     // and each run built a Vec nothing freed
@@ -7444,7 +7387,7 @@ mod tests {
 
         let enum_layouts = vec![shape_enum];
         let node_types = HashMap::new();
-        let comptime_globals = HashMap::new();
+        let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
@@ -7467,14 +7410,13 @@ mod tests {
             node_types: &node_types,
             type_names: &type_names,
             type_defs: &empty_type_defs,
-            comptime_globals: &comptime_globals,
+            folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
@@ -7527,7 +7469,7 @@ mod tests {
 
         let enum_layouts = vec![color_enum];
         let node_types = HashMap::new();
-        let comptime_globals = HashMap::new();
+        let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
@@ -7550,14 +7492,13 @@ mod tests {
             node_types: &node_types,
             type_names: &type_names,
             type_defs: &empty_type_defs,
-            comptime_globals: &comptime_globals,
+            folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
@@ -7617,7 +7558,7 @@ mod tests {
 
         let enum_layouts = vec![msg_enum];
         let node_types = HashMap::new();
-        let comptime_globals = HashMap::new();
+        let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
@@ -7640,14 +7581,13 @@ mod tests {
             node_types: &node_types,
             type_names: &type_names,
             type_defs: &empty_type_defs,
-            comptime_globals: &comptime_globals,
+            folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,

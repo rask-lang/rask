@@ -1,196 +1,303 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! A folded struct or enum, written out as it sits in memory.
+//! A folded value written out as the bytes of its type.
 //!
-//! The evaluator hands back a struct as names and values. A const needs the
-//! bytes a running program would have built: each field at its layout offset,
-//! at its declared width. Those go in read-only data and every use copies them
-//! out, so `const ORIGIN: Point = comptime { … }` costs nothing at startup.
+//! The evaluator hands back a value as names and numbers. What a running
+//! program needs is the bytes it would have built: every field at its layout
+//! offset and declared width, an optional's tag and payload, a string's
+//! sixteen-byte header. Those go in read-only data and every use copies them
+//! out (ctrl.comptime/CT58).
+//!
+//! A value with nothing static that can hold it has no bytes, and that's an
+//! error at the `comptime` that made it: a `Vec` inside a struct owns a heap
+//! buffer, an `any I` holds a pointer to a box.
 
 use rask_comptime::{ComptimeValue, SerializedConst};
-use rask_mir::ConstAggregate;
-use rask_mono::{EnumLayout, FieldLayout, MonoProgram, StructLayout};
-use rask_types::Type;
+use rask_mir::lower::MirContext;
+use rask_mir::MirType;
+use rask_mono::abi::{OPTION_PAYLOAD_OFFSET, OPTION_TAG_OFFSET, RESULT_PAYLOAD_OFFSET, RESULT_TAG_OFFSET};
+use rask_mono::{FieldLayout, MonoProgram};
+
+/// Tag of a present optional and of a success; absent and failure take 1.
+const TAG_PRESENT: u64 = 0;
+const TAG_ABSENT: u64 = 1;
 
 /// Why a value has no bytes.
 pub(crate) enum NoBytes {
-    /// Nothing static can hold it: a `Vec` field owns a heap buffer, an
-    /// optional has no layout of its own here. It runs at startup instead.
-    Gap,
-    /// A field's value doesn't fit the field's type. Overflow at compile time
-    /// is a compile error (type.overflow/CT1).
+    /// Nothing static can hold it. Says what, for the error.
+    Gap(String),
+    /// A value doesn't fit the type it's going into. Overflow at compile
+    /// time is a compile error (type.overflow/CT1).
     Overflow(String),
 }
 
-/// `val` as const bytes, and the layout they're in.
-pub(crate) fn aggregate_const(
+/// `val` as the bytes of `ty`.
+pub(crate) fn encode(
     val: &ComptimeValue,
+    ty: &MirType,
+    ctx: &MirContext,
     mono: &MonoProgram,
-) -> Result<(SerializedConst, ConstAggregate), NoBytes> {
-    let mut out = Writer { mono, bytes: Vec::new(), relocs: Vec::new() };
-    let agg = out.aggregate(val, 0)?;
-    Ok((SerializedConst { bytes: out.bytes, string_relocs: out.relocs }, agg))
+) -> Result<SerializedConst, NoBytes> {
+    let mut out = Writer { ctx, mono, bytes: vec![0; ty.size() as usize], relocs: Vec::new() };
+    out.write(val, ty, 0)?;
+    Ok(SerializedConst { bytes: out.bytes, string_relocs: out.relocs })
 }
 
-struct Writer<'a> {
+struct Writer<'a, 'c> {
+    ctx: &'a MirContext<'c>,
     mono: &'a MonoProgram,
     bytes: Vec<u8>,
     relocs: Vec<(usize, String)>,
 }
 
-impl Writer<'_> {
-    /// Write a struct or enum value at `at`, growing the buffer to hold it.
-    fn aggregate(&mut self, val: &ComptimeValue, at: usize) -> Result<ConstAggregate, NoBytes> {
-        match val {
-            // A variant with fields is built by the same literal as a struct,
-            // under the variant's dotted name: `Mode.On(level: 7)`.
-            ComptimeValue::Struct { name, fields } => match name.rsplit_once('.') {
-                Some((enum_path, variant)) => {
-                    let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
-                    self.variant(enum_name, variant, Some(fields), at)
-                }
-                None => {
-                    let (i, layout) = find(&self.mono.struct_layouts, |l: &StructLayout| &l.name, name)?;
-                    self.grow(at, layout.size);
-                    if fields.len() != layout.fields.len() {
-                        return Err(NoBytes::Gap);
-                    }
-                    for f in &layout.fields {
-                        let v = fields.get(&f.name).ok_or(NoBytes::Gap)?;
-                        self.field(f, v, at + f.offset as usize)?;
-                    }
-                    Ok(ConstAggregate::Struct(i))
-                }
-            },
-            ComptimeValue::Enum { name, variant, data: None } => self.variant(name, variant, None, at),
-            _ => Err(NoBytes::Gap),
-        }
-    }
+fn gap(what: impl Into<String>) -> NoBytes {
+    NoBytes::Gap(what.into())
+}
 
-    fn variant(
-        &mut self,
-        enum_name: &str,
-        variant: &str,
-        fields: Option<&std::collections::HashMap<String, ComptimeValue>>,
-        at: usize,
-    ) -> Result<ConstAggregate, NoBytes> {
-        let (i, layout) = find(&self.mono.enum_layouts, |l: &EnumLayout| &l.name, enum_name)?;
-        let v = layout.variants.iter().find(|v| v.name == variant).ok_or(NoBytes::Gap)?;
-        self.grow(at, layout.size);
-        let tag_width = layout.tag_ty.scalar_bytes().ok_or(NoBytes::Gap)? as usize;
-        let tag_at = at + layout.tag_offset as usize;
-        self.bytes[tag_at..tag_at + tag_width].copy_from_slice(&v.tag.to_le_bytes()[..tag_width]);
-        let given = fields.map_or(0, |f| f.len());
-        if given != v.fields.len() {
-            return Err(NoBytes::Gap);
-        }
-        for f in &v.fields {
-            let value = fields.and_then(|fs| fs.get(&f.name)).ok_or(NoBytes::Gap)?;
-            self.field(f, value, at + (v.payload_offset + f.offset) as usize)?;
-        }
-        Ok(ConstAggregate::Enum(i))
-    }
-
-    fn field(&mut self, f: &FieldLayout, v: &ComptimeValue, at: usize) -> Result<(), NoBytes> {
-        let size = f.size as usize;
-        if f.ty == Type::String {
-            let ComptimeValue::String(_) = v else { return Err(NoBytes::Gap) };
-            let mut slot = SerializedConst::default();
-            v.write_element(&mut slot).ok_or(NoBytes::Gap)?;
-            if slot.bytes.len() != size {
-                return Err(NoBytes::Gap);
+impl Writer<'_, '_> {
+    fn write(&mut self, v: &ComptimeValue, ty: &MirType, at: usize) -> Result<(), NoBytes> {
+        match ty {
+            MirType::Bool => {
+                let b = v.as_bool().ok_or_else(|| gap(format!("a `{}` where a `bool` goes", v.type_name())))?;
+                self.put(at, &[b as u8]);
             }
-            self.bytes[at..at + size].copy_from_slice(&slot.bytes);
-            self.relocs.extend(slot.string_relocs.into_iter().map(|(o, t)| (at + o, t)));
-            return Ok(());
-        }
-        if let Some(raw) = scalar_bytes(&f.ty, v, &f.name)? {
-            if raw.len() > size {
-                return Err(NoBytes::Gap);
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
+            | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128 => {
+                let raw = int_bytes(v, ty)?;
+                self.put(at, &raw);
             }
-            self.bytes[at..at + raw.len()].copy_from_slice(&raw);
-            return Ok(());
-        }
-        // Held in place: a nested struct or enum is its bytes, and they have
-        // to be exactly the field's slot. A field that holds a pointer (an
-        // `Owned<T>`, a shared generic slot) is narrower, and has no static form.
-        let before = self.bytes.len();
-        let agg = self.aggregate(v, at)?;
-        let written = match agg {
-            ConstAggregate::Struct(i) => self.mono.struct_layouts[i].size,
-            ConstAggregate::Enum(i) => self.mono.enum_layouts[i].size,
-        };
-        if written != f.size || self.bytes.len() != before {
-            return Err(NoBytes::Gap);
+            MirType::Char => {
+                let ComptimeValue::Char(c) = v else {
+                    return Err(gap(format!("a `{}` where a `char` goes", v.type_name())));
+                };
+                self.put(at, &(*c as u32).to_le_bytes());
+            }
+            MirType::F32 => {
+                let f = float(v).ok_or_else(|| gap(format!("a `{}` where an `f32` goes", v.type_name())))?;
+                self.put(at, &(f as f32).to_le_bytes());
+            }
+            MirType::F64 => {
+                let f = float(v).ok_or_else(|| gap(format!("a `{}` where an `f64` goes", v.type_name())))?;
+                self.put(at, &f.to_le_bytes());
+            }
+            MirType::String => {
+                let ComptimeValue::String(_) = v else {
+                    return Err(gap(format!("a `{}` where a `string` goes", v.type_name())));
+                };
+                let mut slot = SerializedConst::default();
+                v.write_element(&mut slot).ok_or_else(|| gap("a string"))?;
+                self.put(at, &slot.bytes);
+                self.relocs.extend(slot.string_relocs.into_iter().map(|(o, t)| (at + o, t)));
+            }
+            MirType::Struct(sid) => {
+                let ComptimeValue::Struct { fields, .. } = v else {
+                    return Err(gap(format!("a `{}` where a struct goes", v.type_name())));
+                };
+                let layout = &self.mono.struct_layouts[sid.id as usize];
+                if fields.len() != layout.fields.len() {
+                    return Err(gap(format!("a `{}` with fields `{}` doesn't have", layout.name, layout.name)));
+                }
+                for f in &layout.fields {
+                    let value = fields.get(&f.name).ok_or_else(|| gap(format!("`{}` with no field `{}`", layout.name, f.name)))?;
+                    self.field(f, value, at + f.offset as usize, &layout.name)?;
+                }
+            }
+            MirType::Enum(eid) => {
+                let layout = &self.mono.enum_layouts[eid.id as usize];
+                // A variant with fields is built by the same literal as a
+                // struct, under the variant's dotted name: `Mode.On(level: 7)`.
+                let (variant, fields) = match v {
+                    ComptimeValue::Struct { name, fields } => match name.rsplit_once('.') {
+                        Some((_, variant)) => (variant, Some(fields)),
+                        None => return Err(gap(format!("a `{name}` where a `{}` goes", layout.name))),
+                    },
+                    ComptimeValue::Enum { variant, data: None, .. } => (variant.as_str(), None),
+                    other => return Err(gap(format!("a `{}` where a `{}` goes", other.type_name(), layout.name))),
+                };
+                let var = layout
+                    .variants
+                    .iter()
+                    .find(|x| x.name == variant)
+                    .ok_or_else(|| gap(format!("`{}` has no variant `{variant}`", layout.name)))?;
+                let tag_width = layout.tag_ty.scalar_bytes().ok_or_else(|| gap("an enum tag"))? as usize;
+                self.put(at + layout.tag_offset as usize, &var.tag.to_le_bytes()[..tag_width]);
+                if fields.map_or(0, |f| f.len()) != var.fields.len() {
+                    return Err(gap(format!("`{}.{variant}` with the wrong fields", layout.name)));
+                }
+                for f in &var.fields {
+                    let value = fields
+                        .and_then(|fs| fs.get(&f.name))
+                        .ok_or_else(|| gap(format!("`{}.{variant}` with no field `{}`", layout.name, f.name)))?;
+                    self.field(f, value, at + (var.payload_offset + f.offset) as usize, &layout.name)?;
+                }
+            }
+            MirType::Option(inner) => {
+                if matches!(**inner, MirType::Link(_)) {
+                    return Err(gap("a link"));
+                }
+                let tag_at = at + OPTION_TAG_OFFSET as usize;
+                let payload_at = at + OPTION_PAYLOAD_OFFSET as usize;
+                match v {
+                    ComptimeValue::Enum { name, variant, data } if name == "Option" => match (variant.as_str(), data) {
+                        ("None", _) => self.put(tag_at, &TAG_ABSENT.to_le_bytes()),
+                        (_, Some(payload)) => {
+                            self.put(tag_at, &TAG_PRESENT.to_le_bytes());
+                            self.payload(payload, inner, payload_at)?;
+                        }
+                        _ => return Err(gap("an optional with no value")),
+                    },
+                    // A value where an optional goes is a present one.
+                    present => {
+                        self.put(tag_at, &TAG_PRESENT.to_le_bytes());
+                        self.payload(present, inner, payload_at)?;
+                    }
+                }
+            }
+            MirType::Result { ok, err } => {
+                let payload_at = at + RESULT_PAYLOAD_OFFSET as usize;
+                let tag_at = at + RESULT_TAG_OFFSET as usize;
+                let (failed, payload) = match v {
+                    ComptimeValue::Enum { name, variant, data: Some(d) } if name == "Result" => {
+                        (variant == "Err", d.as_ref())
+                    }
+                    // The evaluator hands back a returned error as the error
+                    // value itself; the error type's name says which side.
+                    other => (self.names_type(other, err), other),
+                };
+                self.put(tag_at, &(if failed { TAG_ABSENT } else { TAG_PRESENT }).to_le_bytes());
+                self.payload(payload, if failed { err } else { ok }, payload_at)?;
+            }
+            MirType::Tuple(parts) => {
+                let ComptimeValue::Tuple(items) = v else {
+                    return Err(gap(format!("a `{}` where a tuple goes", v.type_name())));
+                };
+                if items.len() != parts.len() {
+                    return Err(gap("a tuple of the wrong length"));
+                }
+                let mut offset = 0u32;
+                for (item, part) in items.iter().zip(parts) {
+                    let align = part.align();
+                    offset = (offset + align - 1) & !(align - 1);
+                    self.write(item, part, at + offset as usize)?;
+                    offset += part.size();
+                }
+            }
+            MirType::Array { elem, len } => {
+                let ComptimeValue::Array(items) = v else {
+                    return Err(gap(format!("a `{}` where an array goes", v.type_name())));
+                };
+                if items.len() != *len as usize {
+                    return Err(gap(format!("{} elements where the array holds {len}", items.len())));
+                }
+                for (i, item) in items.iter().enumerate() {
+                    self.write(item, elem, at + i * elem.size() as usize)?;
+                }
+            }
+            MirType::InterfaceObject { .. } => return Err(gap("an `any` value, which points at a box")),
+            MirType::Union(_) => return Err(gap("an error union")),
+            _ => {
+                let what = match v {
+                    ComptimeValue::Array(_) => "a list".to_string(),
+                    ComptimeValue::Map(_) => "a map".to_string(),
+                    ComptimeValue::Closure { .. } => "a closure".to_string(),
+                    other => format!("a `{}`", other.type_name()),
+                };
+                return Err(gap(format!("{what}, which owns memory a constant can't hold")));
+            }
         }
         Ok(())
     }
 
-    fn grow(&mut self, at: usize, size: u32) {
-        let end = at + size as usize;
-        if self.bytes.len() < end {
-            self.bytes.resize(end, 0);
-        }
-    }
-}
-
-/// The layout named `name`, and its index. A name two layouts share — a
-/// generic type's instances — says nothing about which one this is.
-fn find<'a, L>(layouts: &'a [L], name_of: impl Fn(&L) -> &String, name: &str) -> Result<(usize, &'a L), NoBytes> {
-    let mut hits = layouts.iter().enumerate().filter(|(_, l)| name_of(l) == name);
-    match (hits.next(), hits.next()) {
-        (Some(hit), None) => Ok(hit),
-        _ => Err(NoBytes::Gap),
-    }
-}
-
-/// A scalar field's bytes at the field's own width. `Ok(None)` when the field
-/// isn't a scalar.
-fn scalar_bytes(ty: &Type, v: &ComptimeValue, field: &str) -> Result<Option<Vec<u8>>, NoBytes> {
-    let overflow = |n: &dyn std::fmt::Display| {
-        NoBytes::Overflow(format!("field `{field}` is `{ty}`, and {n} doesn't fit in it"))
-    };
-    let int = || -> Result<i128, NoBytes> {
-        Ok(match v {
-            ComptimeValue::I8(n) => *n as i128,
-            ComptimeValue::I16(n) => *n as i128,
-            ComptimeValue::I32(n) => *n as i128,
-            ComptimeValue::I64(n) => *n as i128,
-            ComptimeValue::I128(n) => *n,
-            ComptimeValue::U8(n) => *n as i128,
-            ComptimeValue::U16(n) => *n as i128,
-            ComptimeValue::U32(n) => *n as i128,
-            ComptimeValue::U64(n) => *n as i128,
-            ComptimeValue::U128(n) => i128::try_from(*n).map_err(|_| NoBytes::Gap)?,
-            _ => return Err(NoBytes::Gap),
+    /// A field of a struct or an enum variant, at the type its layout gives it.
+    fn field(&mut self, f: &FieldLayout, v: &ComptimeValue, at: usize, owner: &str) -> Result<(), NoBytes> {
+        let ty = self.ctx.type_to_mir(&f.ty);
+        self.write(v, &ty, at).map_err(|e| match e {
+            NoBytes::Gap(why) => NoBytes::Gap(format!("{why} (field `{}` of `{owner}`)", f.name)),
+            other => other,
         })
+    }
+
+    /// An optional's or a result's payload. A scalar fills the whole word slot,
+    /// sign-extended, the way every run-time writer of a payload stores it.
+    fn payload(&mut self, v: &ComptimeValue, ty: &MirType, at: usize) -> Result<(), NoBytes> {
+        self.write(v, ty, at)?;
+        let width = ty.size() as usize;
+        let signed = matches!(ty, MirType::I8 | MirType::I16 | MirType::I32);
+        if signed && width < 8 && self.bytes[at + width - 1] & 0x80 != 0 {
+            self.bytes[at + width..at + 8].fill(0xff);
+        }
+        Ok(())
+    }
+
+    /// Does `v` name the type `ty` lays out? Only a struct or an enum carries
+    /// its name.
+    fn names_type(&self, v: &ComptimeValue, ty: &MirType) -> bool {
+        let value_name = match v {
+            ComptimeValue::Struct { name, .. } => name.rsplit_once('.').map_or(name.as_str(), |(owner, _)| owner),
+            ComptimeValue::Enum { name, .. } => name.as_str(),
+            _ => return false,
+        };
+        let layout_name = match ty {
+            MirType::Struct(sid) => &self.mono.struct_layouts[sid.id as usize].name,
+            MirType::Enum(eid) => &self.mono.enum_layouts[eid.id as usize].name,
+            _ => return false,
+        };
+        layout_name == value_name || layout_name.rsplit('.').next() == Some(value_name)
+    }
+
+    fn put(&mut self, at: usize, raw: &[u8]) {
+        if self.bytes.len() < at + raw.len() {
+            self.bytes.resize(at + raw.len(), 0);
+        }
+        self.bytes[at..at + raw.len()].copy_from_slice(raw);
+    }
+}
+
+/// A float, or an integer literal the checker took as one: `@default(3)` on an
+/// `f64` field is 3.0, and the evaluator hands back the integer it was written as.
+fn float(v: &ComptimeValue) -> Option<f64> {
+    v.as_f64().or_else(|| v.as_i64().map(|n| n as f64))
+}
+
+/// An integer value at the width of `ty`. A value that doesn't fit is
+/// overflow, not truncation.
+fn int_bytes(v: &ComptimeValue, ty: &MirType) -> Result<Vec<u8>, NoBytes> {
+    let n: i128 = match v {
+        ComptimeValue::I8(n) => *n as i128,
+        ComptimeValue::I16(n) => *n as i128,
+        ComptimeValue::I32(n) => *n as i128,
+        ComptimeValue::I64(n) => *n as i128,
+        ComptimeValue::I128(n) => *n,
+        ComptimeValue::U8(n) => *n as i128,
+        ComptimeValue::U16(n) => *n as i128,
+        ComptimeValue::U32(n) => *n as i128,
+        ComptimeValue::U64(n) => *n as i128,
+        ComptimeValue::U128(n) => match ty {
+            MirType::U128 => return Ok(n.to_le_bytes().to_vec()),
+            _ => i128::try_from(*n).map_err(|_| overflow(&n.to_string(), ty))?,
+        },
+        ComptimeValue::Char(c) => *c as i128,
+        other => return Err(gap(format!("a `{}` where an integer goes", other.type_name()))),
     };
     macro_rules! fit {
-        ($t:ty) => {{
-            let n = int()?;
-            <$t>::try_from(n).map_err(|_| overflow(&n))?.to_le_bytes().to_vec()
-        }};
+        ($t:ty) => {
+            <$t>::try_from(n).map_err(|_| overflow(&n.to_string(), ty))?.to_le_bytes().to_vec()
+        };
     }
-    Ok(Some(match ty {
-        Type::Bool => vec![v.as_bool().ok_or(NoBytes::Gap)? as u8],
-        Type::I8 => fit!(i8),
-        Type::I16 => fit!(i16),
-        Type::I32 => fit!(i32),
-        Type::I64 => fit!(i64),
-        Type::I128 => fit!(i128),
-        Type::U8 => fit!(u8),
-        Type::U16 => fit!(u16),
-        Type::U32 => fit!(u32),
-        Type::U64 => fit!(u64),
-        Type::U128 => match v {
-            ComptimeValue::U128(n) => n.to_le_bytes().to_vec(),
-            _ => fit!(u128),
-        },
-        Type::F32 => (v.as_f64().ok_or(NoBytes::Gap)? as f32).to_le_bytes().to_vec(),
-        Type::F64 => v.as_f64().ok_or(NoBytes::Gap)?.to_le_bytes().to_vec(),
-        Type::Char => match v {
-            ComptimeValue::Char(c) => (*c as u32).to_le_bytes().to_vec(),
-            _ => return Err(NoBytes::Gap),
-        },
-        _ => return Ok(None),
-    }))
+    Ok(match ty {
+        MirType::I8 => fit!(i8),
+        MirType::I16 => fit!(i16),
+        MirType::I32 => fit!(i32),
+        MirType::I64 => fit!(i64),
+        MirType::I128 => n.to_le_bytes().to_vec(),
+        MirType::U8 => fit!(u8),
+        MirType::U16 => fit!(u16),
+        MirType::U32 => fit!(u32),
+        MirType::U64 => fit!(u64),
+        MirType::U128 => fit!(u128),
+        _ => unreachable!("only called for integer types"),
+    })
+}
+
+fn overflow(n: &str, ty: &MirType) -> NoBytes {
+    NoBytes::Overflow(format!("{n} doesn't fit in `{ty}`"))
 }

@@ -1959,6 +1959,7 @@ mod tests {
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
+            node_origins: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
@@ -1980,6 +1981,7 @@ mod tests {
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
+            node_origins: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
@@ -2035,6 +2037,7 @@ mod tests {
         rask_mono::MonoProgram {
             type_names: Default::default(),
             instantiated_node_types: Default::default(),
+            node_origins: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),

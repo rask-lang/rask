@@ -449,35 +449,6 @@ impl<'a> MirLowerer<'a> {
                     Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
                     _ => { self.comptime_strings.remove(name); }
                 }
-                // Folded at compile time: the value is constant data, and the
-                // binding is an ordinary one — an annotated type is a coercion
-                // site here like anywhere else, so `let p: Point? = comptime
-                // { Point(…) }` wraps the folded struct.
-                if let Some((key, meta)) = self.comptime_global_for(name) {
-                    let (value, value_ty) = self.load_comptime_value(&key, meta)?;
-                    let var_ty = match ty.as_ref() {
-                        Some(written) => self.ctx.resolve_type_expr(written),
-                        None => value_ty.clone(),
-                    };
-                    let value = self.coerce_into_wrapper(
-                        rask_ast::coercion::CoercionSite::AnnotatedBinding,
-                        value, &value_ty, &var_ty,
-                    );
-                    let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local_id,
-                        rvalue: MirRValue::Use(value),
-                    }));
-                    self.locals.insert(name.to_string(), (local_id, var_ty));
-                    // The tracked prefix is what later method calls on this
-                    // binding dispatch through, and a scalar's dispatch prefix
-                    // isn't its type name — narrow widths ride the 64-bit symbols.
-                    let prefix = super::builtin_method_prefix_for_name(&meta.type_prefix)
-                        .map(str::to_string)
-                        .unwrap_or_else(|| meta.type_prefix.clone());
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                    return Ok(());
-                }
                 let r = self.lower_binding(name, ty.as_ref(), init);
                 self.check_resource_moved(init);
                 r
@@ -1279,19 +1250,29 @@ impl<'a> MirLowerer<'a> {
                     }
                     return Ok(());
                 }
-                // Try to evaluate comptime if at compile time (CC1)
-                if let Some(ref interp_cell) = self.ctx.comptime_interp {
-                    if let Some(taken) = self.try_eval_comptime_if(stmts, interp_cell)? {
+                // Settled by the fold: a `comptime if` keeps one branch, a
+                // block of statements already ran.
+                match self.ctx.folded.statements.get(&stmt.id) {
+                    Some(super::FoldedStmt::Branch(first)) => {
+                        let taken = rask_ast::comptime_if::parts(stmts)
+                            .and_then(|(_, then_branch, else_branch)| {
+                                rask_ast::comptime_if::branch(*first, then_branch, else_branch)
+                            })
+                            .ok_or_else(|| {
+                            LoweringError::InvalidConstruct("a settled `comptime if` has no branch to keep".to_string())
+                        })?;
                         for s in taken {
                             self.lower_stmt(s)?;
                         }
-                        return Ok(());
+                        Ok(())
                     }
+                    Some(super::FoldedStmt::Ran) => Ok(()),
+                    None => Err(LoweringError::InvalidConstruct(
+                        "a `comptime` statement reached lowering unsettled: its condition depends on \
+                         something only an unrolled `comptime for` knows, and that isn't known here"
+                            .to_string(),
+                    )),
                 }
-                for s in stmts {
-                    self.lower_stmt(s)?;
-                }
-                Ok(())
             }
 
             // CT48/CT50/CT63: unrolled right here. By the time MIR sees a
@@ -1511,11 +1492,15 @@ impl<'a> MirLowerer<'a> {
     fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
         use rask_ast::comptime_if;
         let (cond, then_branch, else_branch) = comptime_if::parts(stmts)?;
-        let taken = comptime_if::decide(cond, &mut |call| {
-            let ExprKind::MethodCall { object, method, type_args, .. } = &call.kind else {
-                return None;
+        let taken = comptime_if::decide(cond, &mut |fact| {
+            let answer = match &fact.kind {
+                ExprKind::MethodCall { object, method, type_args, .. } => {
+                    self.comptime_field_method_const(object, method, type_args)?
+                }
+                ExprKind::Field { object, field } => self.comptime_field_const(object.name()?, field)?,
+                _ => return None,
             };
-            match self.comptime_field_method_const(object, method, type_args)?.0 {
+            match answer.0 {
                 MirOperand::Constant(MirConst::Bool(b)) => Some(b),
                 _ => None,
             }
@@ -1527,52 +1512,6 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Returns `Some(stmts)` with the taken branch's statements if the condition
     /// evaluates successfully, or `None` if the block isn't a comptime if pattern.
-    fn try_eval_comptime_if<'b>(
-        &self,
-        stmts: &'b [Stmt],
-        interp_cell: &std::cell::RefCell<rask_comptime::ComptimeInterpreter>,
-    ) -> Result<Option<&'b [Stmt]>, LoweringError> {
-        // Pattern: comptime { if cond { then } else { else } }
-        if stmts.len() != 1 {
-            return Ok(None);
-        }
-        let inner = match &stmts[0].kind {
-            StmtKind::Expr(e) => e,
-            _ => return Ok(None),
-        };
-        let (cond, then_branch, else_branch) = match &inner.kind {
-            ExprKind::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
-            _ => return Ok(None),
-        };
-
-        let mut interp = interp_cell.borrow_mut();
-        match interp.eval_expr(cond) {
-            Ok(val) => {
-                let taken = val.as_bool().unwrap_or(false);
-                if taken {
-                    // Lower the then branch — it's a Block(stmts) expression
-                    if let ExprKind::Block(block_stmts) = &then_branch.kind {
-                        Ok(Some(block_stmts))
-                    } else {
-                        Ok(None)
-                    }
-                } else if let Some(else_br) = else_branch {
-                    if let ExprKind::Block(block_stmts) = &else_br.kind {
-                        Ok(Some(block_stmts))
-                    } else {
-                        Ok(None)
-                    }
-                } else {
-                    // No else branch, condition is false — emit nothing
-                    Ok(Some(&[]))
-                }
-            }
-            Err(_) => {
-                // Condition not evaluable — fall through to normal lowering
-                Ok(None)
-            }
-        }
-    }
 
     /// Give a copy of a Copy aggregate references of its own.
     ///

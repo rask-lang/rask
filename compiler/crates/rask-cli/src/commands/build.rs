@@ -808,7 +808,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         if let Some(result) = output.result {
             // Comptime globals were evaluated once in the pipeline; hard errors
             // (overflow, divide-by-zero) already failed it (result is None).
-            let comptime_globals = result.comptime_globals;
+            let comptime_globals = result.folded;
             let target = opts.target.as_deref();
 
             let build_mode = if opts.profile == "release" {
@@ -818,7 +818,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             };
             match super::compile::compile_to_object(
                 &result.mono, &result.typed, &result.decls, &comptime_globals,
-                None, None, target, &obj_str, build_mode, Some(&cfg),
+                None, None, target, &obj_str, build_mode,
                 &result.package_modules,
             ) {
                 Ok(()) => {

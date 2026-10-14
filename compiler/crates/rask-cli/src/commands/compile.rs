@@ -187,7 +187,7 @@ fn setup_codegen(
     symbols: &rask_resolve::SymbolTable,
     mono: &MonoProgram,
     mir_functions: &[rask_mir::MirFunction],
-    comptime_globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    comptime_globals: &rask_mir::Folded,
     target: Option<&str>,
     build_mode: rask_codegen::BuildMode,
 ) -> Result<rask_codegen::CodeGenerator, Vec<String>> {
@@ -222,7 +222,7 @@ fn setup_codegen(
         .map_err(|e| vec![e.to_string()])?;
     codegen.register_strings(mir_functions)
         .map_err(|e| vec![e.to_string()])?;
-    codegen.register_comptime_globals(comptime_globals)
+    codegen.register_comptime_globals(&comptime_globals.data)
         .map_err(|e| vec![e.to_string()])?;
     codegen.register_const_slots(mir_functions)
         .map_err(|e| vec![e.to_string()])?;
@@ -255,13 +255,12 @@ pub fn compile_to_object(
     mono: &MonoProgram,
     typed: &rask_types::TypedProgram,
     decls: &[rask_ast::decl::Decl],
-    comptime_globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    comptime_globals: &rask_mir::Folded,
     source_file: Option<&str>,
     source_text: Option<&str>,
     target: Option<&str>,
     obj_path: &str,
     build_mode: rask_codegen::BuildMode,
-    cfg: Option<&rask_comptime::CfgConfig>,
     package_modules: &std::collections::HashSet<String>,
 ) -> Result<(), Vec<String>> {
     let all_mono_decls = build_mono_decls(mono, decls, true);
@@ -270,12 +269,6 @@ pub fn compile_to_object(
     let interface_methods = build_interface_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
 
-    let comptime_interp = cfg.map(|c| {
-        let mut interp = rask_comptime::ComptimeInterpreter::new();
-        interp.inject_cfg(c);
-        interp.register_functions(decls);
-        std::cell::RefCell::new(interp)
-    });
 
     let nominal_underlying = build_nominal_underlying(typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
@@ -288,7 +281,7 @@ pub fn compile_to_object(
         &records,
         &type_names,
     )
-    .with_comptime_globals(comptime_globals)
+    .with_folded(comptime_globals)
     .with_extern_funcs(&extern_funcs)
     .with_package_modules(package_modules)
     .with_interface_methods(interface_methods.clone())
@@ -298,7 +291,6 @@ pub fn compile_to_object(
     // values, so they're set directly.
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
-    mir_ctx.comptime_interp = comptime_interp;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
 
@@ -576,12 +568,11 @@ pub fn compile_tests_to_object(
     mono: &MonoProgram,
     typed: &rask_types::TypedProgram,
     decls: &[Decl],
-    comptime_globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    comptime_globals: &rask_mir::Folded,
     tests: &[(String, String)],
     source_file: Option<&str>,
     source_text: Option<&str>,
     obj_path: &str,
-    cfg: Option<&rask_comptime::CfgConfig>,
 ) -> Result<(), Vec<String>> {
     let all_mono_decls = build_mono_decls(mono, decls, true);
     let line_map = source_text.map(rask_ast::LineMap::new);
@@ -589,12 +580,6 @@ pub fn compile_tests_to_object(
     let interface_methods = build_interface_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
 
-    let comptime_interp = cfg.map(|c| {
-        let mut interp = rask_comptime::ComptimeInterpreter::new();
-        interp.inject_cfg(c);
-        interp.register_functions(decls);
-        std::cell::RefCell::new(interp)
-    });
     let nominal_underlying = build_nominal_underlying(typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
@@ -606,14 +591,13 @@ pub fn compile_tests_to_object(
         &records,
         &type_names,
     )
-        .with_comptime_globals(comptime_globals)
+        .with_folded(comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
         .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
-    mir_ctx.comptime_interp = comptime_interp;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 
@@ -771,12 +755,11 @@ pub fn compile_benchmarks_to_object(
     mono: &MonoProgram,
     typed: &rask_types::TypedProgram,
     decls: &[Decl],
-    comptime_globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    comptime_globals: &rask_mir::Folded,
     benchmarks: &[(String, String)],
     source_file: Option<&str>,
     source_text: Option<&str>,
     obj_path: &str,
-    cfg: Option<&rask_comptime::CfgConfig>,
 ) -> Result<(), Vec<String>> {
     let all_mono_decls = build_mono_decls(mono, decls, false);
     let line_map = source_text.map(rask_ast::LineMap::new);
@@ -784,12 +767,6 @@ pub fn compile_benchmarks_to_object(
     let interface_methods = build_interface_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
 
-    let comptime_interp = cfg.map(|c| {
-        let mut interp = rask_comptime::ComptimeInterpreter::new();
-        interp.inject_cfg(c);
-        interp.register_functions(decls);
-        std::cell::RefCell::new(interp)
-    });
     let nominal_underlying = build_nominal_underlying(typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
@@ -801,14 +778,13 @@ pub fn compile_benchmarks_to_object(
         &records,
         &type_names,
     )
-        .with_comptime_globals(comptime_globals)
+        .with_folded(comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
         .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
-    mir_ctx.comptime_interp = comptime_interp;
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 

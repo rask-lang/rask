@@ -188,6 +188,10 @@ impl TypeChecker {
                 ArgSlot::Default => {
                     let mut expr = sig.defaults[i].clone().expect("a defaulted slot has a default");
                     self.renumber(&mut expr);
+                    // A default argument is a compile-time constant, filled
+                    // in as a `comptime` block the way desugar fills in a
+                    // free function's, so it's computed while compiling.
+                    let expr = self.comptime_block(expr);
                     let ty = self.infer_expr(&expr);
                     Placement::Default(expr, ty)
                 }
@@ -379,6 +383,21 @@ impl TypeChecker {
     /// fresh id has no entry of its own: a method default calling a free
     /// function, `func send(self, n: i64 = tries())`, was "undefined name
     /// `tries`" at every call that left `n` out.
+    /// `expr` as the body of a `comptime { }` of its own.
+    fn comptime_block(&mut self, expr: rask_ast::expr::Expr) -> rask_ast::expr::Expr {
+        let span = expr.span;
+        let stmt_id = NodeId(self.next_derived_id);
+        let block_id = NodeId(self.next_derived_id + 1);
+        self.next_derived_id += 2;
+        rask_ast::expr::Expr {
+            id: block_id,
+            kind: rask_ast::expr::ExprKind::Comptime {
+                body: vec![rask_ast::stmt::Stmt { id: stmt_id, kind: rask_ast::stmt::StmtKind::Expr(expr), span }],
+            },
+            span,
+        }
+    }
+
     fn renumber(&mut self, expr: &mut rask_ast::expr::Expr) {
         struct Fresh<'a> {
             next: &'a mut u32,

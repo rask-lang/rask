@@ -964,6 +964,20 @@ fn a_field_default_that_does_io_is_rejected() {
     assert!(!out.contains("__decode_default"), "the generated name leaked into the message: {out}");
 }
 
+/// #1552: a compile-time value is computed while compiling or the program
+/// doesn't compile. A const with no constant form used to run at startup with
+/// a warning, and a field default that couldn't be computed was built where it
+/// was used without a word.
+#[test]
+fn a_comptime_value_with_no_constant_form_is_rejected() {
+    let (failed, out) = compile_error_output("comptime_no_constant_form.rk");
+    assert!(failed, "an `any` const and a struct holding a Vec must not compile: {out}");
+    assert_eq!(out.matches("E0383").count(), 3, "one error per value, the default once: {out}");
+    assert!(out.contains("as any Opaque"), "{out}");
+    assert!(out.contains("field `items` of `Holder`"), "{out}");
+    assert!(!out.contains("W0303"), "no fallback warning any more: {out}");
+}
+
 /// #1537: a default argument is held to the same rule as a field's default.
 #[test]
 fn a_default_argument_that_does_io_is_rejected() {
@@ -982,7 +996,7 @@ fn a_default_argument_that_does_io_is_rejected() {
 fn a_field_default_that_overflows_is_rejected() {
     let (failed, out) = compile_error_output("field_default_overflows.rk");
     assert!(failed, "`@default(200 + 100)` on a u8 must not compile: {out}");
-    assert!(out.contains("exceeds u8 range"), "{out}");
+    assert!(out.contains("300 doesn't fit in `u8`"), "{out}");
 }
 
 /// #1034: `some_u8 == 'h'` type-checked, then native compared the char as its
@@ -4075,12 +4089,12 @@ fn a_padded_atomic_payload_is_rejected() {
 }
 
 #[test]
-fn comptime_todo_still_compiles() {
-    // `todo()` is the exception: it means "not written yet", so a program full
-    // of them has to compile. The const falls back to runtime, where the same
-    // `todo()` panics — the tutorial lessons are written this way.
+fn comptime_todo_is_a_compile_error() {
+    // A `comptime` value is computed while compiling or not at all (CT69), and
+    // `todo()` has no value to give. It used to fall back to run time (#1552).
     let (ok, output) = compile_only_succeeds("comptime_todo.rk");
-    assert!(ok, "a comptime `todo()` must not fail compilation: {}", output);
+    assert!(!ok, "a comptime `todo()` must fail compilation: {}", output);
+    assert!(output.contains("E0383") && output.contains("write the table"), "{}", output);
 }
 
 // ─── Panic semantics: ensure × panic (ctrl.panic, issue #299) ────

@@ -1510,6 +1510,11 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_expr_inner(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         self.builder.set_span(expr.span);
+        // A `comptime` block or a call to a `comptime func`: the fold already
+        // computed it, and the value is all that's left of it.
+        if let Some(folded) = self.ctx.folded.nodes.get(&expr.id).cloned() {
+            return self.load_folded(&folded);
+        }
         // Which expression form we're walking, for the type-coverage report.
         // A `node_types` miss records this, so `RASK_TRACE_TYPE_COVERAGE=1`
         // says which forms the checker doesn't record rather than only how
@@ -2196,32 +2201,16 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), result_ty))
         }
 
-    fn lower_comptime(&mut self, body: &[Stmt]) -> Result<TypedOperand, LoweringError> {
-            if let Some(ref interp_cell) = self.ctx.comptime_interp {
-                // Try evaluating the entire comptime block
-                let mut interp = interp_cell.borrow_mut();
-                if let Ok(val) = interp.eval_block_to_value(body) {
-                    return Ok(match val {
-                        rask_comptime::ComptimeValue::Bool(b) => {
-                            (MirOperand::Constant(MirConst::Bool(b)), MirType::Bool)
-                        }
-                        rask_comptime::ComptimeValue::I64(n) => {
-                            (MirOperand::Constant(MirConst::Int(n)), MirType::I64)
-                        }
-                        rask_comptime::ComptimeValue::String(s) => {
-                            (MirOperand::Constant(MirConst::String(s)), MirType::String)
-                        }
-                        _ => {
-                            // Complex value — fall through to normal lowering
-                            drop(interp);
-                            return self.lower_block(body);
-                        }
-                    });
-                }
-                drop(interp);
-            }
-            self.lower_block(body)
-        }
+    /// A `comptime` block the fold has no value for. Every one the program
+    /// contains is folded before lowering or the program doesn't compile, so
+    /// reaching this means a block was made after the fold ran.
+    fn lower_comptime(&mut self, _body: &[Stmt]) -> Result<TypedOperand, LoweringError> {
+        Err(LoweringError::InvalidConstruct(
+            "a `comptime` block reached lowering without a value: it was made after \
+             the compile-time fold ran, so nothing computed it"
+                .to_string(),
+        ))
+    }
 
     fn lower_ident(&mut self, expr: &Expr, name: &str) -> Result<TypedOperand, LoweringError> {
             // A module-level const with a non-literal initializer is emitted
@@ -2277,14 +2266,23 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(id), ty))
             } else if name == "None" {
                 self.lower_none(expr)
-            } else if let Some((key, meta)) = self.comptime_global_for(name) {
-                // A folded comptime value: a module-level const, or a local in
-                // this function (which is keyed by the function too — see
-                // `comptime_local_key`).
-                if matches!(meta.type_prefix.as_str(), "Vec" | "Map") {
-                    self.meta_mut(&name).type_prefix = Some(meta.type_prefix.clone());
+            } else if let Some(folded) = self
+                .ctx
+                .folded
+                .consts
+                .get(name)
+                .and_then(|node| self.ctx.folded.nodes.get(node))
+                .cloned()
+            {
+                // A module const the fold computed.
+                if let Some(meta) = self.ctx.folded.data.get(&folded.symbol) {
+                    if matches!(meta.form, super::FoldedForm::List) {
+                        self.meta_mut(name).type_prefix = Some("Vec".to_string());
+                    } else if matches!(meta.form, super::FoldedForm::Map) {
+                        self.meta_mut(name).type_prefix = Some("Map".to_string());
+                    }
                 }
-                self.load_comptime_value(&key, meta)
+                self.load_folded(&folded)
             } else if let Some(fnval) = self
                 .ctx
                 .call_rewrites
@@ -4957,7 +4955,7 @@ impl<'a> MirLowerer<'a> {
     /// splice the loop's current FieldInfo member as a constant. Returns
     /// `None` for anything else (not that binding, or not a FieldInfo member),
     /// so the caller falls through to ordinary field-access lowering.
-    fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
+    pub(super) fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
         let fc = self
             .comptime_for_bindings
             .iter()
@@ -5111,27 +5109,23 @@ impl<'a> MirLowerer<'a> {
             // A name bound earlier in this body to a comptime-known string.
             ExprKind::Ident(name) => self.comptime_strings.get(name).cloned(),
 
-            ExprKind::Comptime { body } => {
-                let Some(interp_cell) = self.ctx.comptime_interp.as_ref() else {
-                    return Ok(None);
-                };
-                let mut interp = interp_cell.borrow_mut();
-                match interp.eval_block_to_value(body) {
-                    Ok(rask_comptime::ComptimeValue::String(s)) => Some(s),
-                    // Evaluated fine, just not to a name.
-                    Ok(other) => {
-                        return Err(LoweringError::InvalidConstruct(format!(
-                            "a `comptime` block naming a field has to produce a string — \
-                             this one produced {}",
-                            other.type_name()
-                        )))
-                    }
-                    // Quota, overflow, a divide by zero — say which.
-                    Err(e) => {
-                        return Err(LoweringError::InvalidConstruct(format!(
-                            "the `comptime` block naming a field didn't finish: {}",
-                            e
-                        )))
+            // Folded with every other block; the checker already said a block
+            // here has to answer with a string (E0866).
+            ExprKind::Comptime { .. } => {
+                let text = self
+                    .ctx
+                    .folded
+                    .nodes
+                    .get(&expr.id)
+                    .and_then(|f| self.ctx.folded.data.get(&f.symbol))
+                    .filter(|meta| meta.form == super::FoldedForm::Text)
+                    .and_then(|meta| String::from_utf8(meta.bytes.clone()).ok());
+                match text {
+                    Some(t) => Some(t),
+                    None => {
+                        return Err(LoweringError::InvalidConstruct(
+                            "a `comptime` block naming a field has no folded string".to_string(),
+                        ))
                     }
                 }
             }

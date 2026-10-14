@@ -380,30 +380,20 @@ impl Desugarer {
         self.renumber = false;
     }
 
-    /// A field's defaults as `comptime func`s: `__decode_default_n` for what a
-    /// decode fills a missing field with (std.encoding/E20, type.structs/FD6),
-    /// and `__default_n` for the declared default when `@default` overrides it
-    /// on decode, so that one is held to the same rule.
+    /// `__decode_default_n`: what a decode fills a missing field with
+    /// (std.encoding/E20, type.structs/FD6). Its body is `return comptime { e }`,
+    /// so the value is computed while compiling like every compile-time value
+    /// (FD1, E21, ctrl.comptime/CT2) and the decoders read a constant.
     ///
-    /// A default is a compile-time constant (FD1, E21). As a `comptime func`
-    /// it can't reach I/O, transitively (CT60). Its value is folded at compile
-    /// time like any `let … = comptime`, so an overflow is a compile error at
-    /// the field's own width (CT1) and native carries the value as constant
-    /// data: a scalar, a string, a list, or a struct or enum built of those.
-    ///
-    /// Methods rather than copies, so a decode can call one: the decoders used
+    /// A method rather than a copy, so a decode can call one: the decoders used
     /// to read a default as a literal, and `@default(2 + 3)` made the field
     /// required (#1528).
     fn default_methods(&mut self, field: &rask_ast::decl::Field) -> Vec<FnDecl> {
         use rask_ast::decl::field_attrs;
-        let mut out = Vec::new();
-        if let Some(value) = field_attrs::decode_default(field) {
-            out.push(self.default_method(field_attrs::decode_default_method(&field.name), &field.ty, value));
-        }
-        if let (Some(_), Some(declared)) = (field_attrs::default_value(&field.attrs), &field.default) {
-            out.push(self.default_method(field_attrs::declared_default_method(&field.name), &field.ty, declared));
-        }
-        out
+        field_attrs::decode_default(field)
+            .map(|value| self.default_method(field_attrs::decode_default_method(&field.name), &field.ty, value))
+            .into_iter()
+            .collect()
     }
 
     fn default_method(&mut self, name: String, ty: &TypeExpr, value: &Expr) -> FnDecl {
@@ -417,19 +407,7 @@ impl Desugarer {
             },
             span: sp,
         };
-        let binding = "__default".to_string();
-        let body = vec![
-            Stmt {
-                id: self.fresh_id(),
-                kind: StmtKind::Let { name: binding.clone(), name_span: sp, ty: Some(ty.clone()), init: folded },
-                span: sp,
-            },
-            Stmt {
-                id: self.fresh_id(),
-                kind: StmtKind::Return(Some(Expr { id: self.fresh_id(), kind: ExprKind::Ident(binding), span: sp })),
-                span: sp,
-            },
-        ];
+        let body = vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }];
         FnDecl {
             name,
             type_params: vec![],
@@ -438,7 +416,7 @@ impl Desugarer {
             body,
             is_pub: false,
             is_private: false,
-            is_comptime: true,
+            is_comptime: false,
             is_unsafe: false,
             abi: None,
             attrs: vec![],

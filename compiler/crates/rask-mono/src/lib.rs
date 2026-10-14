@@ -57,6 +57,8 @@ pub struct MonoProgram {
     /// here — so without these, every lookup inside an instantiated body misses
     /// and lowering falls back to guessing from AST shape.
     pub instantiated_node_types: HashMap<NodeId, Type>,
+    /// Which original node each node of an instantiated body copies.
+    pub node_origins: HashMap<NodeId, NodeId>,
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
     /// OR1: operator calls a conformance answered, in instantiated bodies.
     pub instantiated_operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
@@ -1104,6 +1106,7 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         instantiated_node_types: mono.instantiated_node_types,
+        node_origins: mono.node_origins,
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_operator_targets: mono.instantiated_operator_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,

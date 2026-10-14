@@ -341,23 +341,11 @@ pub mod field_attrs {
     }
 
     /// The static method desugar writes for a field's decode default. Both
-    /// decoders call it for a field the input leaves out, so the default runs
-    /// as ordinary code: `2 + 3`, `Status.Closed` and `Vec.new()` all work.
+    /// decoders call it for a field the input leaves out. Its body is the
+    /// default as a `comptime` block, so what it hands back was computed
+    /// while compiling (type.structs/FD1, std.encoding/E21).
     pub fn decode_default_method(field_name: &str) -> String {
         format!("__decode_default_{field_name}")
-    }
-
-    /// The `comptime func` desugar writes for a declared default that
-    /// `@default` overrides on decode, so it's checked like the other one.
-    pub fn declared_default_method(field_name: &str) -> String {
-        format!("__default_{field_name}")
-    }
-
-    /// The field a generated default method belongs to, from its name.
-    pub fn field_of_default_method(method: &str) -> Option<&str> {
-        method
-            .strip_prefix("__decode_default_")
-            .or_else(|| method.strip_prefix("__default_"))
     }
 
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in

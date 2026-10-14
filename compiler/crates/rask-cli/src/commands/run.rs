@@ -232,7 +232,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         compiled.typed,
         compiled.decls,
         compiled.mono,
-        compiled.comptime_globals,
+        compiled.folded,
     );
 
     // One path per binary, not per process: a directory builds one per file,
@@ -246,7 +246,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
     if let Err(errors) = super::compile::compile_tests_to_object(
         &mono, &typed, &all_decls, &comptime_globals,
-        &tests, None, None, &obj_path, Some(&cfg),
+        &tests, None, None, &obj_path,
     ) {
         for e in &errors {
             eprintln!("{}: compile: {}", output::error_label(), e);
@@ -723,7 +723,7 @@ pub fn build_test_binary(
     }
 
     let mono = result.mono;
-    let comptime_globals = result.comptime_globals;
+    let comptime_globals = result.folded;
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
@@ -732,7 +732,7 @@ pub fn build_test_binary(
 
     if let Err(errors) = super::compile::compile_tests_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &tests, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+        &tests, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path,
     ) {
         // The file is named because nothing else here does. A failure at
         // this point prints no `=== Testing` header, so in a directory run
@@ -1616,7 +1616,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
     }
     let result = output.result.unwrap();
     let mono = result.mono;
-    let comptime_globals = result.comptime_globals;
+    let comptime_globals = result.folded;
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));
@@ -1625,7 +1625,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
 
     if let Err(errors) = super::compile::compile_benchmarks_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &benchmarks, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+        &benchmarks, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path,
     ) {
         if format == Format::Human {
             for e in &errors {

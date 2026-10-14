@@ -89,13 +89,21 @@ fn check_fn(f: &FnDecl, qname: &str, effects: &EffectMap, out: &mut Vec<Comptime
     });
 }
 
-/// A parameter default that reaches outside the compile-time subset.
+/// Which compile-time value an error is about, in the reader's words.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompileTimeValue {
+    /// The default of parameter `param` of `func`.
+    Param { func: String, param: String },
+    /// A field's default: the declared one, or `@default(…)`.
+    Field { field: String },
+    /// A `comptime { … }` someone wrote.
+    Block,
+}
+
+/// A compile-time value that reaches outside the compile-time subset.
 #[derive(Debug, Clone)]
-pub struct ParamDefaultError {
-    /// The function, e.g. `connect`.
-    pub func: String,
-    /// The parameter whose default it is.
-    pub param: String,
+pub struct CompileTimeValueError {
+    pub what: CompileTimeValue,
     /// What it reaches — "I/O", "concurrency", "a pool insert".
     pub effect: &'static str,
     /// The call that brings the effect in.
@@ -103,38 +111,76 @@ pub struct ParamDefaultError {
     pub span: Span,
 }
 
-/// A default argument is a compile-time constant (SYNTAX: "constants only"),
-/// the same rule as a field's default (type.structs/FD1). It's copied to every
-/// call that leaves the argument out, so a default that printed printed once
-/// per call and nothing said it wasn't a constant (#1537).
-pub fn check_param_defaults(decls: &[Decl], effects: &EffectMap) -> Vec<ParamDefaultError> {
-    let mut out = Vec::new();
-    let mut check = |f: &FnDecl| {
-        for param in &f.params {
-            let Some(default) = &param.default else { continue };
-            let body = [rask_ast::stmt::Stmt {
-                id: rask_ast::NodeId(0),
-                kind: rask_ast::stmt::StmtKind::Expr(default.clone()),
-                span: default.span,
-            }];
-            if let Some((via, span, effect)) = first_impure_call_effect(&body, effects) {
-                out.push(ParamDefaultError {
-                    func: f.name.clone(),
-                    param: param.name.clone(),
-                    effect,
-                    via,
-                    span,
-                });
+/// The functions and methods a declaration carries.
+fn fns(decl: &Decl) -> Vec<&FnDecl> {
+    match &decl.kind {
+        DeclKind::Fn(f) => vec![f],
+        DeclKind::Struct(s) => s.methods.iter().collect(),
+        DeclKind::Enum(e) => e.methods.iter().collect(),
+        DeclKind::Impl(i) => i.methods.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every value the program computes while compiling — a default argument, a
+/// field's default, a `comptime` block — checked against CT7 transitively,
+/// the way a `comptime func` is (CT60), and pointed at the call that leaves
+/// the subset.
+///
+/// A default is filled in as a `comptime` block at each use, so its copies
+/// would report once per use, at the default. Each place reports once, under
+/// the name the reader knows it by: the declaration's own defaults are seen
+/// first.
+pub fn check_compile_time_values(decls: &[Decl], effects: &EffectMap) -> Vec<CompileTimeValueError> {
+    let mut out: Vec<CompileTimeValueError> = Vec::new();
+    let push = |what: CompileTimeValue, expr: &Expr, out: &mut Vec<CompileTimeValueError>| {
+        let body = [rask_ast::stmt::Stmt {
+            id: rask_ast::NodeId(0),
+            kind: rask_ast::stmt::StmtKind::Expr(expr.clone()),
+            span: expr.span,
+        }];
+        if let Some((via, span, effect)) = first_impure_call_effect(&body, effects) {
+            if !out.iter().any(|e| e.span == span) {
+                out.push(CompileTimeValueError { what, effect, via, span });
             }
         }
     };
     for decl in decls {
-        match &decl.kind {
-            DeclKind::Fn(f) => check(f),
-            DeclKind::Struct(s) => s.methods.iter().for_each(&mut check),
-            DeclKind::Enum(e) => e.methods.iter().for_each(&mut check),
-            DeclKind::Impl(i) => i.methods.iter().for_each(&mut check),
-            _ => {}
+        for f in fns(decl) {
+            for param in &f.params {
+                if let Some(default) = &param.default {
+                    let what = CompileTimeValue::Param { func: f.name.clone(), param: param.name.clone() };
+                    push(what, default, &mut out);
+                }
+            }
+        }
+        if let DeclKind::Struct(s) = &decl.kind {
+            for field in &s.fields {
+                let declared = field.default.as_ref();
+                let decode = rask_ast::decl::field_attrs::decode_default(field);
+                for default in declared.into_iter().chain(decode) {
+                    push(CompileTimeValue::Field { field: field.name.clone() }, default, &mut out);
+                }
+            }
+        }
+    }
+    for decl in decls {
+        for f in fns(decl) {
+            if f.is_comptime {
+                continue;
+            }
+            rask_ast::visit::walk_body(&f.body, &mut |e: &Expr| {
+                if matches!(e.kind, ExprKind::Comptime { .. }) {
+                    push(CompileTimeValue::Block, e, &mut out);
+                }
+            });
+        }
+        if let DeclKind::Test(t) = &decl.kind {
+            rask_ast::visit::walk_body(&t.body, &mut |e: &Expr| {
+                if matches!(e.kind, ExprKind::Comptime { .. }) {
+                    push(CompileTimeValue::Block, e, &mut out);
+                }
+            });
         }
     }
     out

@@ -12,7 +12,7 @@ type PipelineResult = (
     MonoProgram,
     rask_types::TypedProgram,
     Vec<rask_ast::decl::Decl>,
-    std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    rask_mir::Folded,
     Option<String>,
     Vec<String>,
 );
@@ -54,7 +54,7 @@ fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> P
     let result = output.result.unwrap();
     let source = std::fs::read_to_string(path).ok();
     let package_names = vec![]; // package_modules is in CompileResult but not as names
-    (result.mono, result.typed, result.decls, result.comptime_globals, source, package_names)
+    (result.mono, result.typed, result.decls, result.folded, source, package_names)
 }
 
 
@@ -231,9 +231,6 @@ pub fn cmd_mir(path: &str, format: Format) {
     let type_names: std::collections::HashMap<rask_types::TypeId, String> =
         typed.types.type_name_map();
     let interface_methods = super::compile::build_interface_methods(&typed);
-    let mut mir_interp = rask_comptime::ComptimeInterpreter::new();
-    mir_interp.inject_cfg(&cfg);
-    mir_interp.register_functions(&decls);
     let nominal_underlying = super::compile::build_nominal_underlying(&typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
@@ -245,14 +242,13 @@ pub fn cmd_mir(path: &str, format: Format) {
         &records,
         &type_names,
     )
-        .with_comptime_globals(&comptime_globals)
+        .with_folded(&comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
         .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
-    mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
 
@@ -319,7 +315,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool, target: Option<&s
         &records,
         &type_names,
     )
-        .with_comptime_globals(&comptime_globals)
+        .with_folded(&comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_package_modules(&package_modules)
         .with_interface_methods(interface_methods.clone())
@@ -418,7 +414,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
     if let Err(errors) = super::compile::compile_to_object(
         &mono, &typed, &decls, &comptime_globals,
-        Some(path), source.as_deref(), target, &obj_path, build_mode, Some(&cfg),
+        Some(path), source.as_deref(), target, &obj_path, build_mode,
         &package_modules,
     ) {
         for e in &errors {

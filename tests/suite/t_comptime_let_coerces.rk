@@ -4,30 +4,11 @@
 // Its written type is a coercion site: `let p: Point? = comptime { Point(…) }`
 // bound a bare `Point`. And `as` inside the block is the conversion it says:
 // the evaluator used to hand back any value it couldn't convert unchanged, so
-// `Marker(v: 2) as any Opaque` came out a `Marker` and `3u32 as u64` a `u32`.
-
-interface Opaque {
-    func id(self) -> i64
-}
-
-struct Marker {
-    public v: i64
-}
-
-Marker implements Opaque {
-    func id(self) -> i64 {
-        return self.v + 40
-    }
-}
+// `3u32 as u64` came out a `u32`.
 
 struct Point {
     public x: i64
     public y: i64
-}
-
-func make() -> any Opaque {
-    let d: any Opaque = comptime { Marker(v: 2) as any Opaque }
-    return d
 }
 
 func maybe() -> Point? {
@@ -51,10 +32,6 @@ func opt_scalar() -> i64 {
 func wide() -> u64 {
     let w: u64 = comptime { 3u32 as u64 }
     return w
-}
-
-test "an interface value made at compile time" {
-    assert make().id() == 42
 }
 
 test "a folded struct into an optional" {

@@ -41,7 +41,7 @@ mod comptime_eval;
 // Re-export key types so callers don't need direct deps on pipeline crates.
 pub use rask_comptime::CfgConfig;
 pub use rask_effects::{EffectMap, EffectWarning};
-pub use rask_mir::ComptimeGlobalMeta;
+pub use rask_mir::{ComptimeGlobalMeta, Folded};
 pub use rask_mono::MonoProgram;
 pub use rask_resolve::{PackageId, PackageRegistry};
 pub use rask_types::TypedProgram;
@@ -94,7 +94,8 @@ pub struct CompileResult {
     pub typed: TypedProgram,
     pub mono: MonoProgram,
     pub decls: Vec<Decl>,
-    pub comptime_globals: HashMap<String, ComptimeGlobalMeta>,
+    /// Every value computed at compile time (ctrl.comptime/CT2).
+    pub folded: Folded,
     pub package_modules: HashSet<String>,
 }
 
@@ -488,8 +489,8 @@ pub fn check_loaded(
     for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_param_defaults(&parse_result.decls, &effects) {
-        diags.push(param_default_to_diagnostic(&e));
+    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects) {
+        diags.push(compile_time_value_to_diagnostic(&e));
     }
 
     let package_names = collect_builtin_imports(&parse_result.decls);
@@ -528,16 +529,9 @@ pub fn check_loaded(
 /// interpreter reported the same overflow at *runtime* under its own code
 /// (R0017) instead of as the compile error it is (#325).
 ///
-/// Monomorphization is what `evaluate_comptime_globals` needs and nothing else
+/// Monomorphization is what `fold_comptime` needs and nothing else
 /// here does, so it's built and thrown away. A program with no comptime const
 /// pays for it and gets nothing; that's the price of check and run agreeing.
-fn has_comptime_let(body: &[rask_ast::stmt::Stmt], decls: &[Decl]) -> bool {
-    body.iter().any(|st| match &st.kind {
-        rask_ast::stmt::StmtKind::Let { init, .. } => is_comptime_init(init, decls),
-        _ => false,
-    })
-}
-
 /// Identity of a diagnostic for de-duplication: its code and message. Two
 /// passes reporting the same unfoldable const produce byte-identical text.
 fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
@@ -553,32 +547,7 @@ fn comptime_diagnostics_for(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, Some(cfg));
 
-    let any_comptime_init = decls.iter().any(|d| match &d.kind {
-        DeclKind::Const(c) => is_comptime_init(&c.init, decls),
-        // A function-local `let x = comptime { … }` folds the same way, and
-        // check has to see it too or its warning would only appear on the
-        // compile path — which is one backend reporting and the other not.
-        DeclKind::Fn(f) => has_comptime_let(&f.body, decls),
-        DeclKind::Test(t) => has_comptime_let(&t.body, decls),
-        DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_) => comptime_eval::methods_of(d)
-            .iter()
-            .any(|(_, m)| has_comptime_let(&m.body, decls)),
-        _ => false,
-    });
-    // A `value.(comptime { … })` naming a field is neither a const nor a let,
-    // and the block still has to finish for the program to compile (CT53). A
-    // program whose only comptime code was one of these skipped the whole stage
-    // and type-checked clean, then failed at the end of a build (#1090).
-    let any_field_name_block = {
-        let mut found = false;
-        rask_ast::visit::walk_decls(decls, &mut |e| {
-            if let rask_ast::expr::ExprKind::DynamicField { field_expr, .. } = &e.kind {
-                found |= matches!(field_expr.kind, rask_ast::expr::ExprKind::Comptime { .. });
-            }
-        });
-        found
-    };
-    if !any_comptime_init && !any_field_name_block {
+    if !comptime_eval::has_comptime(decls) {
         return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
@@ -590,7 +559,7 @@ fn comptime_diagnostics_for(
         // stays quiet about them rather than reporting them twice.
         return diags;
     };
-    diags.extend(evaluate_comptime_globals(decls, typed, &mono, Some(cfg)).1);
+    diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
     diags
 }
 
@@ -871,8 +840,8 @@ fn check_package_scoped(
     for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_param_defaults(&pkg_ctx.all_decls, &effects) {
-        diags.push(param_default_to_diagnostic(&e));
+    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects) {
+        diags.push(compile_time_value_to_diagnostic(&e));
     }
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
@@ -1076,18 +1045,17 @@ fn finalize_compile_inner(
         }
     };
 
-    // --- Evaluate comptime globals (single source of truth) ---
-    // Hard errors (a panic, the branch quota, overflow, divide-by-zero) become
-    // pipeline diagnostics and fail the build like any other pass. Warnings —
-    // a const the evaluator couldn't fold, so it runs at startup — ride along.
+    // --- Fold every compile-time value (single source of truth) ---
+    // Anything that can't be computed — a panic, the branch quota, overflow,
+    // something the evaluator can't do, a value with no constant form — is a
+    // pipeline error and fails the build like any other pass.
     //
     // Comptime *tests* are not run here: `check_sources` / `check_package`
     // already ran them, and every path into this function comes through one of
     // those. Running them again was free only in the sense that a comptime test
     // has no side effects — it still interpreted every body twice on `rask run`
     // and `rask build`.
-    let (comptime_globals, ct_diags) =
-        evaluate_comptime_globals(&check.decls, &check.typed, &mono, Some(&config.cfg));
+    let (folded, ct_diags) = fold_comptime(&check.decls, &check.typed, &mono, Some(&config.cfg));
     // Check folded these same consts a moment ago, so anything it already
     // reported is in `diags` and would print twice. Both passes fold by
     // design — check has to answer "does this compile" without building the
@@ -1106,7 +1074,7 @@ fn finalize_compile_inner(
             typed: check.typed,
             mono,
             decls: check.decls,
-            comptime_globals,
+            folded,
             package_modules,
         },
         diags,
@@ -1120,7 +1088,7 @@ fn finalize_compile_inner(
 
 // The comptime-global evaluator lives in `comptime_eval` — the single source
 // of truth used by both the pipeline (below) and the CLI's test/bench paths.
-pub use crate::comptime_eval::{evaluate_comptime_globals, evaluate_comptime_tests};
+pub use crate::comptime_eval::{fold_comptime, evaluate_comptime_tests};
 
 pub(crate) fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
     use rask_ast::expr::ExprKind;
@@ -1329,23 +1297,35 @@ fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
 
 /// CT60: the promise `comptime func` makes, checked at the definition.
 /// A default argument that isn't a compile-time constant (#1537).
-fn param_default_to_diagnostic(e: &rask_effects::comptime_purity::ParamDefaultError) -> Diagnostic {
-    Diagnostic::error(format!(
-        "the default for parameter `{}` of `{}` reaches {} at compile time — `{}` does",
-        e.param, e.func, e.effect, e.via
-    ))
-    .with_code("E0875")
-    .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
-    .with_fix(format!(
-        "write the value itself, or drop the default and pass `{}` at each call",
-        e.param
-    ))
-    .with_why(
-        "a default argument is a compile-time constant, the same rule as a \
-         field's default, so it can't do anything that needs the program \
-         running [type.structs/FD1, ctrl.comptime/CT7]"
-            .to_string(),
-    )
+fn compile_time_value_to_diagnostic(e: &rask_effects::comptime_purity::CompileTimeValueError) -> Diagnostic {
+    use rask_effects::comptime_purity::CompileTimeValue;
+    let (what, fix, why) = match &e.what {
+        CompileTimeValue::Param { func, param } => (
+            format!("the default for parameter `{param}` of `{func}`"),
+            format!("write the value itself, or drop the default and pass `{param}` at each call"),
+            "a default argument is a compile-time constant, the same rule as a \
+             field's default, so it can't do anything that needs the program \
+             running [type.structs/FD1, ctrl.comptime/CT7]",
+        ),
+        CompileTimeValue::Field { field } => (
+            format!("the default for field `{field}`"),
+            format!("write the value itself, or drop the default and set `{field}` where the struct is built"),
+            "a field's default is a compile-time constant, worked out once while \
+             compiling, so it can't do anything that needs the program running \
+             [type.structs/FD1, std.encoding/E21, ctrl.comptime/CT7]",
+        ),
+        CompileTimeValue::Block => (
+            "this `comptime` block".to_string(),
+            format!("drop `comptime` and compute this at run time, or move the {} out", e.effect),
+            "a `comptime` block is computed while compiling, so it can't do \
+             anything that needs the program running [ctrl.comptime/CT7]",
+        ),
+    };
+    Diagnostic::error(format!("{what} reaches {} at compile time — `{}` does", e.effect, e.via))
+        .with_code("E0875")
+        .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+        .with_fix(fix)
+        .with_why(why.to_string())
 }
 
 fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePurityError) -> Diagnostic {
@@ -1353,26 +1333,6 @@ fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePuri
         Some(call) => format!(" — `{}` does", call),
         None => String::new(),
     };
-    // A field's default is a `comptime func` desugar wrote; the reader wrote
-    // the default, so say it in those words.
-    let method = e.func.rsplit('.').next().unwrap_or(&e.func);
-    if let Some(field) = rask_ast::decl::field_attrs::field_of_default_method(method) {
-        return Diagnostic::error(format!(
-            "the default for field `{field}` reaches {} at compile time{via}",
-            e.effect
-        ))
-        .with_code("E0875")
-        .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
-        .with_fix(format!(
-            "write the value itself, or drop the default and set `{field}` where the struct is built"
-        ))
-        .with_why(
-            "a field's default is a compile-time constant, worked out once while \
-             compiling, so it can't do anything that needs the program running \
-             [type.structs/FD1, std.encoding/E21, ctrl.comptime/CT7]"
-                .to_string(),
-        );
-    }
     let diag = Diagnostic::error(format!(
         "`comptime func {}` reaches {} at compile time{}",
         e.func, e.effect, via
