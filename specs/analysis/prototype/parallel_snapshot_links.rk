@@ -30,8 +30,8 @@ func walk(s: Rack<Node>) -> i32 {
 
 func main() {
     mut world: Rack<Node> = Rack.new()
-    let a = world.insert(Node { id: 1, peer: none })
-    let b = world.insert(Node { id: 2, peer: none })
+    let a = world.insert(Node(id: 1, peer: none))
+    let b = world.insert(Node(id: 2, peer: none))
     a.peer = b
 
     using Multitasking {

@@ -21,10 +21,10 @@ struct BlockCache {
 
 extend BlockCache {
     func new() -> BlockCache {
-        return BlockCache {
-            blocks: Map.new(),
-            access_counter: 0,
-        }
+        return BlockCache(
+            blocks: Map.new()
+            access_counter: 0
+        )
     }
 
     func cache_key(sst_id: i32, block_id: i32) -> string {
@@ -52,12 +52,12 @@ extend BlockCache {
         }
 
         self.access_counter += 1
-        self.blocks.insert(key, CacheBlock {
-            sst_id,
-            block_id,
-            entries,
-            access_count: self.access_counter,
-        })
+        self.blocks.insert(key, CacheBlock(
+            sst_id
+            block_id
+            entries
+            access_count: self.access_counter
+        ))
     }
 
     func evict_one(mutate self) {

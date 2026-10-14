@@ -32,32 +32,32 @@ struct Holder<T: Named> {
 enum Slot<T: Named> {
     Empty
     Full(T)
-    Pair { left: T, right: T }
+    Pair(left: T, right: T)
 }
 
 func main() {
     // Fine: `Dog` is `Named`.
-    let ok = Holder { item: Dog { n: "rex" } }
+    let ok = Holder(item: Dog(n: "rex"))
     println(ok.item.name())
 
     // ERROR: `Plain` does not implement `Named`
-    let h = Holder { item: Plain { x: 1 } }
+    let h = Holder(item: Plain(x: 1))
 
     // ERROR: an unsuffixed literal is checked as the type it defaults to
-    let k = Holder { item: 5 }
+    let k = Holder(item: 5)
 
     // ERROR: a variant's payload instantiates the enum
-    let s = Slot.Full(Plain { x: 2 })
+    let s = Slot.Full(Plain(x: 2))
 
     // ERROR: and with the arguments written out
-    let w = Slot<Plain>.Full(Plain { x: 3 })
+    let w = Slot<Plain>.Full(Plain(x: 3))
 
     // ERROR: a written type names an instantiation too
     let e: Slot<Plain> = Slot.Empty
 
     // ERROR: and so does a variant with named fields (#1473)
-    let p = Slot.Pair { left: Plain { x: 4 }, right: Plain { x: 5 } }
+    let p = Slot.Pair(left: Plain(x: 4), right: Plain(x: 5))
 
     // ERROR: with the arguments written at the variant (#1477)
-    let r = Slot<Plain>.Pair { left: Plain { x: 6 }, right: Plain { x: 7 } }
+    let r = Slot<Plain>.Pair(left: Plain(x: 6), right: Plain(x: 7))
 }

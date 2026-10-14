@@ -32,10 +32,18 @@
 //! function, passed by name to another, captured by the adapter that function
 //! returns, and called from inside it. That is every sequence adapter in
 //! `stdlib/sequence.rk`.
+//!
+//! And one more: a closure kept in a struct field, `Plan { run: || … }` read
+//! back as `p.run` (#1526). Each field is its own set: lowering records on a
+//! store which field it writes, so `o.inner.run = f`, a store at `Outer`'s
+//! byte 16, still counts for `Inner.run`. A store of a closure that lowering
+//! didn't name a field for goes into a set every field read includes, unless
+//! it lands in something no struct field read can see — an optional's payload,
+//! an enum's, a tuple's.
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind};
+use crate::{FieldSlot, LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind, MirType};
 
 /// What a value might be, as far as this walk can tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,6 +111,10 @@ impl ClosureTargets {
         let mut locals: HashMap<(String, LocalId), Flow> = HashMap::new();
         let mut params: HashMap<(String, usize), Flow> = HashMap::new();
         let mut captures: HashMap<(String, u32), Flow> = HashMap::new();
+        // What each struct field may hold, by layout and field index.
+        let mut fields: HashMap<FieldSlot, Flow> = HashMap::new();
+        // Closures stored where no field was named, which any field may hold.
+        let mut unattributed = Flow::Known(HashSet::new());
 
         for func in fns {
             if is_closure_body.contains(func.name.as_str()) {
@@ -117,7 +129,7 @@ impl ClosureTargets {
                 let Some(dst) = crate::analysis::uses::stmt_def(stmt) else { continue };
                 let followed_return = follow_returns
                     && matches!(&stmt.kind, MirStmtKind::Call { func: f, .. } if with_body.contains(f.name.as_str()));
-                if !modelled_def(stmt) && !followed_return {
+                if !modelled_def(func, stmt) && !followed_return {
                     locals.insert((func.name.clone(), dst), Flow::Unknown);
                 }
             }
@@ -154,6 +166,28 @@ impl ClosureTargets {
                         MirStmtKind::LoadCapture { dst, offset, .. } => {
                             if let Some(flow) = captures.get(&(name.clone(), *offset)).cloned() {
                                 grew |= merge_into(&mut locals, (name.clone(), *dst), &flow);
+                            }
+                        }
+                        MirStmtKind::Assign { dst, rvalue } if is_closure(func, *dst) => {
+                            if let Some(slot) = struct_field_read(func, rvalue) {
+                                let mut flow = fields.get(&slot).cloned().unwrap_or(Flow::Known(HashSet::new()));
+                                flow.merge(&unattributed);
+                                grew |= merge_into(&mut locals, (name.clone(), *dst), &flow);
+                                continue;
+                            }
+                            let Some(src) = copied_from(rvalue) else { continue };
+                            if let Some(flow) = locals.get(&(name.clone(), src)).cloned() {
+                                grew |= merge_into(&mut locals, (name.clone(), *dst), &flow);
+                            }
+                        }
+                        MirStmtKind::Store { addr, value: MirOperand::Local(v), field, .. }
+                            if is_closure(func, *v) =>
+                        {
+                            let Some(flow) = locals.get(&(name.clone(), *v)).cloned() else { continue };
+                            match field {
+                                Some(slot) => grew |= merge_into(&mut fields, *slot, &flow),
+                                None if no_field_sees(func, *addr) => {}
+                                None => grew |= unattributed.merge(&flow),
                             }
                         }
                         MirStmtKind::Assign { dst, rvalue } => {
@@ -260,11 +294,43 @@ fn copied_from(rvalue: &MirRValue) -> Option<LocalId> {
 /// from being *partly* right — a local written on one path by a
 /// `ClosureCreate` and on another by something unmodelled would otherwise look
 /// like it could only be the one closure.
-fn modelled_def(stmt: &crate::MirStmt) -> bool {
+fn modelled_def(func: &MirFunction, stmt: &crate::MirStmt) -> bool {
     match &stmt.kind {
         MirStmtKind::ClosureCreate { .. } | MirStmtKind::LoadCapture { .. } => true,
-        MirStmtKind::Assign { rvalue, .. } => copied_from(rvalue).is_some(),
+        MirStmtKind::Assign { dst, rvalue } => {
+            copied_from(rvalue).is_some()
+                || (is_closure(func, *dst) && struct_field_read(func, rvalue).is_some())
+        }
         MirStmtKind::Phi { .. } => true,
         _ => false,
     }
+}
+
+fn is_closure(func: &MirFunction, local: LocalId) -> bool {
+    matches!(func.local_ty(local), Some(MirType::FuncPtr(_)))
+}
+
+/// The field `rvalue` reads, when it reads one out of a struct.
+fn struct_field_read(func: &MirFunction, rvalue: &MirRValue) -> Option<FieldSlot> {
+    let MirRValue::Field { base: MirOperand::Local(base), field_index, .. } = rvalue else {
+        return None;
+    };
+    let Some(MirType::Struct(sid)) = func.local_ty(*base) else { return None };
+    Some(FieldSlot { layout: sid.id, field: *field_index })
+}
+
+/// Memory no struct field read can see: a wrapper's or an enum's payload, a
+/// tuple's slot, an array's element. A closure stored there comes back out
+/// through that shape's own read, which this walk doesn't follow.
+fn no_field_sees(func: &MirFunction, addr: LocalId) -> bool {
+    matches!(
+        func.local_ty(addr),
+        Some(
+            MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::Array { .. }
+        )
+    )
 }

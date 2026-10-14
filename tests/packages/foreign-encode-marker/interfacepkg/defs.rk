@@ -7,5 +7,5 @@ public struct Secret {
 }
 
 public func make_secret(t: string) -> Secret {
-    return Secret { token: t }
+    return Secret(token: t)
 }

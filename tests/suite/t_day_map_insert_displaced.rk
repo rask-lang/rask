@@ -61,8 +61,8 @@ struct Reading9 {
 
 test "std.collections — a displaced struct comes back whole" {
     mut m: Map<string, Reading9> = Map.new()
-    m.insert("s", Reading9 { id: 1, label: "first", scale: 1.5 })
-    let old = m.insert("s", Reading9 { id: 2, label: "second", scale: 2.5 })!
+    m.insert("s", Reading9(id: 1, label: "first", scale: 1.5))
+    let old = m.insert("s", Reading9(id: 2, label: "second", scale: 2.5))!
     assert old.id == 1
     assert old.label == "first"
     assert old.scale == 1.5

@@ -9,7 +9,7 @@ struct Config {
 
 // ERROR: E0360 — cannot mutate, bound from a shared read lock
 func mutate_through_read_lock() {
-    let config = Shared.new(Config { timeout: 5 })
+    let config = Shared.new(Config(timeout: 5))
     with config.read() as c {
         c.timeout = 10
     }

@@ -5,7 +5,7 @@ public struct Item {
 }
 
 public enum Change {
-    Add { at: Vec<i64>, item: Item }
+    Add(at: Vec<i64>, item: Item)
     Clear
 }
 
@@ -13,14 +13,14 @@ public enum Change {
 // suffix: `Change.Add { … }` has to follow `Change` to its new name.
 public func doubled(c: Change) -> Change {
     return match c {
-        Change.Add { at, item } => Change.Add { at: at.clone(), item: Item { v: item.v * 2 } },
+        Change.Add(at, item) => Change.Add(at: at.clone(), item: Item(v: item.v * 2)),
         Change.Clear => Change.Clear,
     }
 }
 
 public func size(c: Change) -> i64 {
     return match c {
-        Change.Add { item, .. } => item.v,
+        Change.Add(item, ..) => item.v,
         Change.Clear => 0,
     }
 }

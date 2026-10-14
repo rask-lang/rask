@@ -19,7 +19,7 @@ struct Money {
 
 Money implements Add {
     public func add(self, other: Money) -> Money {
-        return Money { cents: self.cents + other.cents }
+        return Money(cents: self.cents + other.cents)
     }
 }
 
@@ -69,7 +69,7 @@ test "an Equal parameter compares chars and bools" {
 
 test "a user type with its own operator is untouched" {
     // Not a primitive on the left, so the guard never sees it.
-    let m = Money { cents: 100 }.add(Money { cents: 50 })
+    let m = Money(cents: 100).add(Money(cents: 50))
     assert m.cents == 150
 }
 

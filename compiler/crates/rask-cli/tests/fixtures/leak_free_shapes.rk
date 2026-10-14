@@ -36,7 +36,7 @@ func optional(i: i64) -> string? {
 }
 
 func held(i: i64) -> Holder {
-    return Holder { text: "held-{i}-and-long-enough-that-it-lives-on-the-heap" }
+    return Holder(text: "held-{i}-and-long-enough-that-it-lives-on-the-heap")
 }
 
 func paired(i: i64) -> (string, i64) {
@@ -72,7 +72,7 @@ func main() {
         // And a container whose elements are structs holding strings — the
         // offsets the runtime is handed have to reach inside the element.
         mut nested = Vec<Holder>.new()
-        nested.push(Holder { text: "nested-{i}-long-enough-to-live-on-the-heap" })
+        nested.push(Holder(text: "nested-{i}-long-enough-to-live-on-the-heap"))
         n += nested[0].text.len().wrap<i64>()
 
         i += 1i64

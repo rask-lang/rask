@@ -13,7 +13,7 @@ extend LowError {
 
 func low(fail: bool) -> i64 or LowError {
     if fail {
-        return LowError { detail: "low failed" }
+        return LowError(detail: "low failed")
     }
     return 10
 }
@@ -22,7 +22,7 @@ func doubled(fail: bool) -> i64 or LowError {
     let v = try {
         try low(fail)
     } catch _e => {
-        return LowError { detail: "handled" }
+        return LowError(detail: "handled")
     }
     return v * 2
 }
@@ -50,7 +50,7 @@ func parsed(s: string) -> f64 or LowError {
     let v = try {
         try s.parse<f64>()
     } catch _e => {
-        return LowError { detail: "not a number" }
+        return LowError(detail: "not a number")
     }
     return v + 1.0
 }

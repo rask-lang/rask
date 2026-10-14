@@ -60,7 +60,7 @@ func k(m: Map<string>) -> i64 {
 
 // ERROR: `Box2` takes 1 type argument, found 2
 func r() -> Box2<i64, i64> {
-    return Box2 { v: 1 }
+    return Box2(v: 1)
 }
 
 func fine(s: Shared<i64>, t: Shared<i64, Readers>, b: Box2<i64>, m: Map<string, i64>) -> i64 {
@@ -72,7 +72,7 @@ func main() {
     let x: Slot<i64, i64> = Slot.Full(1)
 
     // ERROR: `Box2` takes 1 type argument, found 2
-    let b = Box2<i64, string> { v: 1 }
+    let b = Box2<i64, string>(v: 1)
 
     // ERROR: `Shared` takes 2 type arguments, found 3
     let s: Shared<i64, Readers, i64> = Shared.new(1)

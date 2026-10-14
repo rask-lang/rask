@@ -112,7 +112,7 @@ Slicing follows the same inline access rules as Vec and other growable sources u
 | Chained expression | `s[0..5].to_uppercase()` | Yes |
 | Storable conversion | `s[0..5].view()`, `s[0..5].to_string()` | Yes |
 | Variable assignment | `let x = s[0..5]` | Compile error |
-| Struct field | `Foo { field: s[0..5] }` | Compile error |
+| Struct field | `Foo(field: s[0..5])` | Compile error |
 | Return value | `return s[0..5]` | Compile error |
 
 To keep a substring past the expression, pick the conversion whose cost you want: `.view()` is zero-copy but keeps the whole source buffer alive (V2); `.to_string()` copies the bytes and is independent of the source.
@@ -148,10 +148,10 @@ struct Header {
 
 func parse_header(line: string) -> Header? {
     let colon = try line.index_of(":")
-    return Header {
-        name: line[0..colon].trim().view(),
-        value: line[colon+1..].trim().view(),
-    }
+    return Header(
+        name: line[0..colon].trim().view()
+        value: line[colon+1..].trim().view()
+    )
 }
 ```
 
@@ -730,7 +730,7 @@ struct Token {
 func tokenize(source: string) -> Vec<Token> {
     mut tokens = Vec.new()
     for (start, end, kind) in scan(source) {
-        tokens.push(Token { kind, text: source[start..end].view() })
+        tokens.push(Token(kind, text: source[start..end].view()))
     }
     return tokens
 }

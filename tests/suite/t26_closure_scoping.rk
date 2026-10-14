@@ -11,14 +11,14 @@ struct Player {
 // --- F4: Closures capturing disjoint fields don't conflict ---
 
 test "closure captures value, not field borrow" {
-    let p = Player { name: "Alice", score: 42, health: 100 }
+    let p = Player(name: "Alice", score: 42, health: 100)
     // Closure captures p.score (i32 is Copy, so it's a value copy)
     let get_score = || p.score
     assert get_score() == 42
 }
 
 test "closure using struct field inline" {
-    let p = Player { name: "Bob", score: 10, health: 20 }
+    let p = Player(name: "Bob", score: 10, health: 20)
     let total = || p.score + p.health
     assert total() == 30
 }

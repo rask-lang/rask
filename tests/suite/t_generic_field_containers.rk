@@ -24,14 +24,14 @@ func main() {}
 
 test "a Vec reached through a type parameter" {
     let v: Vec<i64> = [1, 2]
-    let p = Pair<i64, Vec<i64>> { a: 5, b: v }
+    let p = Pair<i64, Vec<i64>>(a: 5, b: v)
     assert p.a == 5
     assert p.b.len() == 2
 }
 
 test "a Vec as the only type argument" {
     let v: Vec<i64> = [1]
-    let b = Box1<Vec<i64>> { v }
+    let b = Box1<Vec<i64>>(v)
     assert b.v.len() == 1
 }
 
@@ -39,13 +39,13 @@ test "a Map reached through a type parameter" {
     let n = 1
     mut m = Map<string, string>.new()
     m.insert("k{n}", "v{n}")
-    let b = Box1<Map<string, string>> { v: m }
+    let b = Box1<Map<string, string>>(v: m)
     assert b.v.len() == 1
 }
 
 test "a string through a type parameter still works" {
     let n = 1
-    let p = Pair<i64, string> { a: 5, b: "s{n}" }
+    let p = Pair<i64, string>(a: 5, b: "s{n}")
     assert p.b == "s1"
 }
 
@@ -53,7 +53,7 @@ test "two containers in one instantiation" {
     let v: Vec<i64> = [1, 2, 3]
     mut m = Map<string, i64>.new()
     m.insert("k", 1)
-    let p = Pair<Vec<i64>, Map<string, i64>> { a: v, b: m }
+    let p = Pair<Vec<i64>, Map<string, i64>>(a: v, b: m)
     assert p.a.len() == 3
     assert p.b.len() == 1
 }

@@ -40,7 +40,7 @@ func move_one_branch_ifnoelse(cond: bool) {
 
 // --- Linear resource consumed in one if/else branch only (L1) ---
 func resource_one_branch_ifelse(cond: bool) {
-    let c = Conn { fd: 3 }
+    let c = Conn(fd: 3)
     // The error lands on the branch, which is the block's last statement and so
     // where the scope ends — not on the closing brace, where this marker used to
     // sit answering nothing.
@@ -54,7 +54,7 @@ func resource_one_branch_ifelse(cond: bool) {
 
 // --- Linear resource consumed in an if-without-else (L1, #294) ---
 func resource_one_branch_ifnoelse(cond: bool) {
-    let c = Conn { fd: 3 }
+    let c = Conn(fd: 3)
     // ERROR: resource `c` must be consumed before scope exit — leaks when cond is false [E0805]
     if cond {
         c.close()

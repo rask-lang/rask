@@ -30,8 +30,8 @@ struct JsonParser {
 }
 
 test "a program's type and the stdlib's private one are two types" {
-    let r = RawBytes { label: "mine" }
-    let p = JsonParser { depth: 3 }
+    let r = RawBytes(label: "mine")
+    let p = JsonParser(depth: 3)
     assert r.label == "mine"
     assert p.depth == 3
     // the untyped decode runs on the stdlib's JsonParser, not this one

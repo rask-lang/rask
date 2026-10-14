@@ -7,7 +7,7 @@ use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
 use super::builtins::BuiltinModules;
-use super::type_defs::{BinaryStructInfo, TypeDef};
+use super::type_defs::TypeDef;
 use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
@@ -144,8 +144,6 @@ pub struct TypeTable {
     pub(super) builtin_modules: BuiltinModules,
     /// `import time as tm`: `tm` → `time`.
     module_aliases: HashMap<String, String>,
-    /// B1–G4: binary struct metadata indexed by TypeId
-    pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
     /// Field names of a struct-shaped enum variant, keyed by
     /// `(enum TypeId, variant name)` and in declaration order.
     ///
@@ -240,7 +238,6 @@ impl TypeTable {
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
-            binary_structs: HashMap::new(),
             variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
             method_access: HashMap::new(),
@@ -999,9 +996,8 @@ impl TypeTable {
         let Type::Generic { base: id, args } = base else {
             return binding.clone();
         };
-        let params = match self.get(*id) {
-            Some(TypeDef::Struct { type_params, .. }) | Some(TypeDef::Enum { type_params, .. }) => type_params,
-            _ => return binding.clone(),
+        let Some(params) = self.get(*id).map(TypeDef::type_params) else {
+            return binding.clone();
         };
         let map: HashMap<String, Type> = params
             .iter()
@@ -2039,16 +2035,6 @@ impl TypeTable {
             return *is_binary;
         }
         false
-    }
-
-    /// Store binary struct metadata.
-    pub fn register_binary_info(&mut self, id: TypeId, info: BinaryStructInfo) {
-        self.binary_structs.insert(id, info);
-    }
-
-    /// Get binary struct metadata.
-    pub fn get_binary_info(&self, id: TypeId) -> Option<&BinaryStructInfo> {
-        self.binary_structs.get(&id)
     }
 
     /// Get TypeId for the builtin Option<T> enum.

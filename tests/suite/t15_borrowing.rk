@@ -11,19 +11,19 @@ struct Player {
 }
 
 test "struct integer field read" {
-    let p = Player { name: "Alice", score: 100, health: 50 }
+    let p = Player(name: "Alice", score: 100, health: 50)
     assert p.score == 100
     assert p.health == 50
 }
 
 // BUG: struct string field access returns "" in native codegen
 test "struct string field read" {
-    let p = Player { name: "Alice", score: 100, health: 50 }
+    let p = Player(name: "Alice", score: 100, health: 50)
     assert p.name == "Alice"
 }
 
 test "struct field used in expression" {
-    let p = Player { name: "Bob", score: 10, health: 20 }
+    let p = Player(name: "Bob", score: 10, health: 20)
     let total = p.score + p.health
     assert total == 30
 }
@@ -42,7 +42,7 @@ func boost_health(mutate health: i32) {
 }
 
 test "disjoint field mutation" {
-    mut p = Player { name: "Eve", score: 42, health: 99 }
+    mut p = Player(name: "Eve", score: 42, health: 99)
     // These borrow disjoint fields — both should be allowed
     boost_score(mutate p.score)
     boost_health(mutate p.health)
@@ -51,7 +51,7 @@ test "disjoint field mutation" {
 }
 
 test "disjoint field reads" {
-    let p = Player { name: "Eve", score: 42, health: 99 }
+    let p = Player(name: "Eve", score: 42, health: 99)
     let s = get_score(p)
     let h = get_health(p)
     assert s == 42
@@ -61,14 +61,14 @@ test "disjoint field reads" {
 // --- Parameter borrows (B3) ---
 
 test "struct borrowed for function call" {
-    let p = Player { name: "Test", score: 7, health: 3 }
+    let p = Player(name: "Test", score: 7, health: 3)
     let sum = add_stats(p)
     assert sum == 10
     assert p.score == 7
 }
 
 test "multiple reads of same struct" {
-    let p = Player { name: "Multi", score: 5, health: 15 }
+    let p = Player(name: "Multi", score: 5, health: 15)
     let a = get_score(p)
     let b = get_score(p)
     assert a == b
@@ -100,11 +100,11 @@ struct Point {
 }
 
 test "nested struct field access" {
-    let r = Rect {
-        origin: Point { x: 10, y: 20 },
-        width: 100,
+    let r = Rect(
+        origin: Point(x: 10, y: 20)
+        width: 100
         height: 50
-    }
+    )
     assert r.origin.x == 10
     assert r.origin.y == 20
     assert r.width == 100

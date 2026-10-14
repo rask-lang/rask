@@ -16,8 +16,8 @@ struct Cat {
 }
 
 func main() {
-    let mine = Cat { legs: 4 }
-    let theirs = libpkg.Cat { name: "mimi" }
+    let mine = Cat(legs: 4)
+    let theirs = libpkg.Cat(name: "mimi")
     println("{mine.legs}")
     println(libpkg.greet(theirs))
     // And the library's own function still constructs its own type.

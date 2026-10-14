@@ -38,7 +38,7 @@ func eat_n(take n: Big) -> i64 {
 
 // The control: the same move inside a plain function is fine, always.
 func move_in_a_plain_function() -> i64 {
-    let l = Big { a: 5, b: 0, c: 0 }
+    let l = Big(a: 5, b: 0, c: 0)
     return eat(l)
 }
 
@@ -57,19 +57,19 @@ func count(n: i64) -> i64 {
 // `peek` is second-to-last, so its `l` doesn't leak — this passes today, and it's
 // what makes the rule positional rather than a global name lookup.
 test "mem.ownership — a local named after a NON-adjacent borrowed parameter" {
-    let l = Big { a: 1, b: 2, c: 3 }
+    let l = Big(a: 1, b: 2, c: 3)
     assert eat(l) == 1
 }
 
 // `count(n: i64)` is the last declaration, so `n` leaks — and its type is an i64
 // against a Big local, which is why the check clearly isn't comparing types.
 test "mem.ownership — a local named after the adjacent borrowed parameter" {
-    let n = Big { a: 0, b: 9, c: 0 }
+    let n = Big(a: 0, b: 9, c: 0)
     assert eat_n(n) == 9
 }
 
 test "mem.ownership — a differently named local moves fine" {
-    let mine = Big { a: 4, b: 0, c: 0 }
+    let mine = Big(a: 4, b: 0, c: 0)
     assert eat(mine) == 4
 }
 

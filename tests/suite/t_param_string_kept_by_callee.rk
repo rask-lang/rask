@@ -29,7 +29,7 @@ test "a pushed parameter outlives the caller's reference" {
 
 test "a field write through a vector element frees the old string" {
     mut lines: Vec<Line> = Vec.new()
-    lines.push(Line { text: "the first text, long enough for the heap".to_uppercase(), n: 1 })
+    lines.push(Line(text: "the first text, long enough for the heap".to_uppercase(), n: 1))
     let t = "the replacement text, also on the heap".to_uppercase()
     lines[0].text = t
     assert lines[0].text == "THE REPLACEMENT TEXT, ALSO ON THE HEAP"

@@ -22,7 +22,7 @@ struct LargeData { values: Vec<i32> }
 func consume(take data: LargeData) {}
 
 func test_use_after_take() {
-    let data = LargeData { values: Vec.new() }
+    let data = LargeData(values: Vec.new())
     consume(data)
     println("{data.values.len()}")   // ERROR: data was taken
 }
@@ -48,7 +48,7 @@ func test_double_move() {
 struct Token { id: i32 }
 
 func test_unique_no_copy() {
-    mut t = Token { id: 1 }
+    mut t = Token(id: 1)
     mut t2 = t           // moves, not copies (despite being small)
     println("{t.id}")    // ERROR: t was moved
 }
@@ -57,7 +57,7 @@ func test_unique_no_copy() {
 struct Wrapper { tok: Token, label: string }
 
 func test_unique_transitive() {
-    mut w = Wrapper { tok: Token { id: 1 }, label: "test" }
+    mut w = Wrapper(tok: Token(id: 1), label: "test")
     mut w2 = w           // moves (Wrapper contains @unique Token)
     println("{w.label}")  // ERROR: w was moved
 }
@@ -67,14 +67,14 @@ func test_unique_transitive() {
 struct FileHandle { fd: i32 }
 
 func test_discard_resource() {
-    let f = FileHandle { fd: 3 }
+    let f = FileHandle(fd: 3)
     discard f            // ERROR: @resource must be consumed, not discarded
 }
 
 // --- @resource must be consumed (R1) ---
 // ERROR: resource 'f' not consumed before scope exit
 func test_resource_leak() {
-    let f = FileHandle { fd: 3 }
+    let f = FileHandle(fd: 3)
     // f goes out of scope without being consumed
 }
 
@@ -83,7 +83,7 @@ func test_resource_leak() {
 func close_file(take f: FileHandle) {}
 
 func test_double_consume() {
-    let f = FileHandle { fd: 3 }
+    let f = FileHandle(fd: 3)
     close_file(f)
     close_file(f)        // ERROR: f already consumed
 }

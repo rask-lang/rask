@@ -10,7 +10,7 @@ struct Name {
 }
 
 func name(t: string) -> Name {
-    return Name { s: t.to_uppercase() }
+    return Name(s: t.to_uppercase())
 }
 
 struct Holder {
@@ -19,7 +19,7 @@ struct Holder {
 }
 
 func holder(a: i64, t: string) -> Holder {
-    return Holder { arr: [1, 2, a], names: [name("x"), name(t)] }
+    return Holder(arr: [1, 2, a], names: [name("x"), name(t)])
 }
 
 test "arrays compare element by element" {
@@ -67,7 +67,7 @@ test "an array field is a map key's part" {
 }
 
 test "a mutating method on an array field changes the field" {
-    mut h = Holder { arr: [3, 1, 2], names: [name("x"), name("y")] }
+    mut h = Holder(arr: [3, 1, 2], names: [name("x"), name("y")])
     h.arr.sort()
     assert h.arr[0] == 1
     assert h.arr[2] == 3

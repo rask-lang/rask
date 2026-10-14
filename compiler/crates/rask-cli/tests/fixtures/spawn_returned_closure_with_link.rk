@@ -15,7 +15,7 @@ func reader(a: Link<Node>) -> func() -> i64 {
 func main() {
     using Multitasking {
         mut rack: Rack<Node> = Rack.new()
-        let a = rack.insert(Node { id: 1 })
+        let a = rack.insert(Node(id: 1))
         let f = reader(a)
         println("before")
         let t1 = spawn { f() }

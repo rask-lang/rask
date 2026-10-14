@@ -47,13 +47,13 @@ struct HasOptInt {
 }
 
 test "type.optionals — a chain onto an optional string field keeps the value" {
-    let a = HasOpt { inner: OptField { v: "abc" } }
+    let a = HasOpt(inner: OptField(v: "abc"))
     assert !(a.inner?.v is none)
     assert a.inner?.v! == "abc"
 }
 
 test "type.optionals — the same chain read through ??" {
-    let a = HasOpt { inner: OptField { v: "abc" } }
+    let a = HasOpt(inner: OptField(v: "abc"))
     // The chain is a `string?`, not a `string??` (OPT10), so `??` reads it in
     // one step. Written `a.inner?.v! ?? "X"` this asserted the old, wrong
     // shape: `!` peeled one of two layers and left something `??` could still
@@ -62,25 +62,25 @@ test "type.optionals — the same chain read through ??" {
 }
 
 test "type.optionals — a chain onto an optional integer field keeps the value" {
-    let a = HasOptInt { inner: OptInt { v: 7 } }
+    let a = HasOptInt(inner: OptInt(v: 7))
     let outer: i64? = a.inner?.v
     assert (outer ?? -1) == 7
 }
 
 test "type.optionals — an absent outer value short-circuits" {
-    let a = HasOpt { inner: none }
+    let a = HasOpt(inner: none)
     assert a.inner?.v is none
 }
 
 // Controls: both of these work on both backends today.
 test "type.optionals — a chain onto a plain field is the control" {
-    let b = HasPlain { inner: PlainField { v: "abc" } }
+    let b = HasPlain(inner: PlainField(v: "abc"))
     assert !(b.inner?.v is none)
     assert b.inner?.v! == "abc"
 }
 
 test "type.optionals — unwrapping the outer optional first is the other control" {
-    let a = HasOpt { inner: OptField { v: "abc" } }
+    let a = HasOpt(inner: OptField(v: "abc"))
     let outer = a.inner!
     assert outer.v! == "abc"
 }

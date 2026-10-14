@@ -53,7 +53,7 @@ pub fn check_missing_ensure(decls: &[Decl], source: &str) -> Vec<LintDiagnostic>
     let mut resource_types: Vec<String> = Vec::new();
     for decl in decls {
         if let DeclKind::Struct(s) = &decl.kind {
-            if s.attrs.iter().any(|a| a == "resource") {
+            if s.attrs.iter().any(|a| a.is("resource")) {
                 resource_types.push(s.name.clone());
             }
         }

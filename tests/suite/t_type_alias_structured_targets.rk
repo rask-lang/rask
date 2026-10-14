@@ -65,7 +65,7 @@ test "alias used before it is declared" {
     mut l: Later = Vec.new()
     l.push(4)
     assert count_later(l) == 1
-    mut e = Early { xs: Vec.new() }
+    mut e = Early(xs: Vec.new())
     e.xs.push(1)
     e.xs.push(2)
     assert e.xs.len() == 2
@@ -91,7 +91,7 @@ test "tuple, optional, map and result aliases" {
 }
 
 test "aliases as struct fields" {
-    let h = Holder { names: Vec.new(), f: |n| { return n * 10 } }
+    let h = Holder(names: Vec.new(), f: |n| { return n * 10 })
     assert h.names.len() == 0
     assert apply(h.f, 2) == 20
 }

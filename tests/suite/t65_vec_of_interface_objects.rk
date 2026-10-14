@@ -32,8 +32,8 @@ func total(shapes: Vec<any Shape>) -> i64 {
 
 test "each element keeps its own type — implicit push" {
     mut shapes: Vec<any Shape> = Vec.new()
-    shapes.push(Circle { r: 2 })
-    shapes.push(Square { s: 3 })
+    shapes.push(Circle(r: 2))
+    shapes.push(Square(s: 3))
     assert shapes.len() == 2
 
     mut names = Vec.new()
@@ -50,8 +50,8 @@ test "each element keeps its own type — implicit push" {
 
 test "each element keeps its own type — explicit `as any` push" {
     mut shapes: Vec<any Shape> = Vec.new()
-    shapes.push(Circle { r: 2 } as any Shape)
-    shapes.push(Square { s: 3 } as any Shape)
+    shapes.push(Circle(r: 2) as any Shape)
+    shapes.push(Square(s: 3) as any Shape)
     mut names = Vec.new()
     for s in shapes {
         names.push(s.name())
@@ -62,8 +62,8 @@ test "each element keeps its own type — explicit `as any` push" {
 
 test "Vec.from with casts, and indexed reads" {
     let shapes = Vec.from([
-        Circle { r: 1 } as any Shape,
-        Square { s: 4 } as any Shape,
+        Circle(r: 1) as any Shape
+        Square(s: 4) as any Shape
     ])
     assert shapes[0].area() == 3
     assert shapes[1].area() == 16
@@ -73,15 +73,15 @@ test "Vec.from with casts, and indexed reads" {
 
 test "a Vec of interface objects passed to a function" {
     mut shapes: Vec<any Shape> = Vec.new()
-    shapes.push(Circle { r: 2 })
-    shapes.push(Square { s: 3 })
+    shapes.push(Circle(r: 2))
+    shapes.push(Square(s: 3))
     assert total(shapes) == 21
 }
 
 test "same concrete type twice still reads as itself" {
     mut shapes: Vec<any Shape> = Vec.new()
-    shapes.push(Circle { r: 1 })
-    shapes.push(Circle { r: 2 })
+    shapes.push(Circle(r: 1))
+    shapes.push(Circle(r: 2))
     mut areas = Vec.new()
     for s in shapes {
         areas.push(s.area())

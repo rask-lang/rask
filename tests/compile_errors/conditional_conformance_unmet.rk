@@ -17,8 +17,8 @@ func present(x: T) -> string where T: Show { return x.show() }
 
 func main() {
     mut v = Vec.new<Blob>()
-    v.push(Blob { v: 1 })
-    let r = Ring { items: v }
+    v.push(Blob(v: 1))
+    let r = Ring(items: v)
     // Ring<Blob> can't satisfy `T: Show` because Blob doesn't implement Show.
     println("{present(r)}")
 }

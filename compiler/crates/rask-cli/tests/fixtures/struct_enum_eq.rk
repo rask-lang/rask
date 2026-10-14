@@ -21,11 +21,11 @@ func main() {
     println((m != Msg.Move(6)).to_string())   // true
 
     // Struct with a string field: string compares by content.
-    let u = User { name: "ada", id: 1 }
-    println((u == User { name: "ada", id: 1 }).to_string())   // true
-    println((u == User { name: "bob", id: 1 }).to_string())   // false
-    println((u == User { name: "ada", id: 2 }).to_string())   // false
-    println((u != User { name: "bob", id: 1 }).to_string())   // true
+    let u = User(name: "ada", id: 1)
+    println((u == User(name: "ada", id: 1)).to_string())   // true
+    println((u == User(name: "bob", id: 1)).to_string())   // false
+    println((u == User(name: "ada", id: 2)).to_string())   // false
+    println((u != User(name: "bob", id: 1)).to_string())   // true
 
     // `if x == Enum.Variant { .. }` takes the right branch natively.
     if (c == Color.Green) {

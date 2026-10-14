@@ -24,7 +24,7 @@ func first_line(mutate v: Vec<Line>) -> Line {
     with v[0] as l {
         return l
     }
-    return Line { text: "" }
+    return Line(text: "")
 }
 
 func first_word(mutate v: Vec<string>) -> string {
@@ -52,9 +52,9 @@ test "a string copy outlives a for mutate replacing it" {
 }
 
 test "a binding returned out of with outlives the slot" {
-    mut lines: Vec<Line> = [Line { text: heap("line") }]
+    mut lines: Vec<Line> = [Line(text: heap("line"))]
     let l = first_line(mutate lines)
-    lines[0] = Line { text: "y" }
+    lines[0] = Line(text: "y")
     mut words: Vec<string> = [heap("word")]
     let w = first_word(mutate words)
     words[0] = "z"
@@ -63,7 +63,7 @@ test "a binding returned out of with outlives the slot" {
 }
 
 test "swapping small struct elements through a copy" {
-    mut lines: Vec<Line> = [Line { text: heap("one") }, Line { text: heap("two") }]
+    mut lines: Vec<Line> = [Line(text: heap("one")), Line(text: heap("two"))]
     let tmp = lines[0]
     lines[0] = lines[1]
     lines[1] = tmp

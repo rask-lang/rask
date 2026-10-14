@@ -191,7 +191,7 @@ func push_deps(mutate out: Vec<JsonValue>, deps: Vec<Dep>, scope_name: string?) 
         match d.source {
             DepSource.Registry(req) => version = JsonValue.String(req),
             DepSource.Path(p) => path = JsonValue.String(p),
-            DepSource.Git { url, rev: r, branch: b } => {
+            DepSource.Git(url, rev: r, branch: b) => {
                 git = JsonValue.String(url)
                 rev = opt(r)
                 branch = opt(b)

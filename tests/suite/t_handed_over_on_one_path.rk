@@ -67,8 +67,8 @@ func labelled(n: i64) -> Vec<Row> or Refused {
         return Refused.Empty
     }
     mut rows: Vec<Row> = Vec.new()
-    rows.push(Row { key: "the first row has a long enough key", n: 1 })
-    rows.push(Row { key: "and the second one has its own", n: 2 })
+    rows.push(Row(key: "the first row has a long enough key", n: 1))
+    rows.push(Row(key: "and the second one has its own", n: 2))
     return rows
 }
 

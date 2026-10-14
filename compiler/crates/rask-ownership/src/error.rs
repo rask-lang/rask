@@ -68,7 +68,7 @@ pub enum OwnershipErrorKind {
     },
 
     /// mem.borrowing/S1, S3: a non-Copy field read handed to something that
-    /// owns what it holds: `out.items = src.items`, `Bag { items: src.items }`,
+    /// owns what it holds: `out.items = src.items`, `Bag(items: src.items)`,
     /// `v.push(src.items)`. The read is a view, so the two would be one value
     /// with two owners.
     #[error("`{path}` would get a second owner")]
@@ -616,7 +616,7 @@ pub enum OwnershipErrorKind {
 pub enum ViewSink {
     /// `out.items = …`, `v = …`: the place, rendered.
     Place(String),
-    /// `Bag { items: … }`.
+    /// `Bag(items: …)`.
     StructField { ty: String, field: String },
     /// `(…, 1)` or `[…]`.
     Element,

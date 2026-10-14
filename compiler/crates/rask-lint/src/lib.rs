@@ -174,7 +174,7 @@ struct Player {
 
 extend Player {
     func new(name: string) -> Player {
-        return Player { name: name, score: 0 }
+        return Player(name: name, score: 0)
     }
 
     func get_score(self) -> i32 {
@@ -259,7 +259,7 @@ func main() {}
         let report = lint_default(
             "struct W { v: string }\n\
              func f(p: string?) -> W {\n\
-                 return W { v: match p { none => \"x\", string as s => s } }\n\
+                 return W(v: match p { none => \"x\", string as s => s })\n\
              }",
         );
         assert!(has_rule(&report, "idiom/match-on-optional"), "got {:?}", report.diagnostics);
@@ -270,7 +270,7 @@ func main() {}
         let report = lint_default(
             "struct H { n: i64 }\n\
              func f(r: i64 or string) -> H {\n\
-                 return H { n: r.unwrap() }\n\
+                 return H(n: r.unwrap())\n\
              }",
         );
         assert!(has_rule(&report, "idiom/unwrap-production"), "got {:?}", report.diagnostics);
@@ -281,7 +281,7 @@ func main() {}
         let report = lint_default(
             "struct W { flag: bool }\n\
              func f(p: string?) -> W {\n\
-                 return W { flag: p == none }\n\
+                 return W(flag: p == none)\n\
              }",
         );
         assert!(has_rule(&report, "idiom/equality-absent-check"), "got {:?}", report.diagnostics);

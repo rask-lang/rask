@@ -18,7 +18,7 @@ same `comptime for` residue mechanism that already powers encoding. Design histo
 | **AN1: Declaration** | `annotation @name { field: T, field: T = default }` — a keyword, a sigiled name, a field body, nothing else. The name keeps its `@` so the declaration spells exactly what attachment sites write. Field types are limited to the const-representable set (`ctrl.comptime/CT58`): primitives, `string`, enums and fixed arrays of these. No methods, no `extend` blocks |
 | **AN3: Attachment checks as construction** | `@name(args)` type-checks exactly like the struct literal `name { args }` — non-defaulted fields required, names checked, values must be comptime constants |
 | **AN4: No duplicates** | Attaching the same annotation twice to one item is a compile error. Repetition wants are served by an array field: `@alias(names: ["a", "b"])` |
-| **AN5: Reserved names** | Compiler-known annotations (`@rename`, `@default`, `@no_serialize`, `@native`, `@test`, `@resource`, `@call_text`, `@call_location`, …) are reserved. User annotations resolve by normal name resolution — module-scoped, importable |
+| **AN5: Reserved names** | Compiler-known annotations (`@rename`, `@default`, `@no_serialize`, `@native`, `@test`, `@resource`, `@call_text`, `@call_location`, …) are reserved. User annotations resolve by normal name resolution — module-scoped, importable. A dependency's is written the way any of its names is: `@liba.validate(…)` after `import liba`, `@v.validate` after `import liba as v`, or `@validate` after `import liba.validate`, and `has<liba.validate>()` reads it |
 
 <!-- test: skip -->
 ```rask
@@ -75,11 +75,13 @@ func check<T>(value: T) -> void or ValidationError {
 | Annotation on a generic struct's field | AN3 | Values are constants — identical across instantiations, read per monomorphized type (`std.reflect/R5`) |
 | `comptime if` around an attachment | AN3 | Not allowed — annotations are source-declared facts (`ctrl.comptime/CT65` spirit), not conditional |
 | `comptime if item.has<A>()` guarding a `get<A>()` | AN6 | The guard has to be *comptime* — a runtime `if` on the same test leaves the untaken branch's reads to be resolved, and a field without `A` has nothing to read |
-| Two packages declare `validate` | AN5 | Importing both is a compile error naming them — an attachment records the name as written, not which package it resolved to, so `@validate` would be ambiguous. Declaring `validate` locally settles it. Making them coexist means carrying resolved identity in the attachment (#967) |
+| Two packages declare `validate` | AN5 | Two annotations. `@liba.validate(max: 3)` and `@libb.validate(min: 1)` can sit on the same field, and `has<liba.validate>()` answers only for the first |
+| `@validate` after a plain `import liba` | AN5 | Compile error — `import liba` binds the package, not its names (`structure.modules/IM1`). The fix is `@liba.validate`, or `import liba.validate` |
+| `@x.validate` where `x` names no package exporting it | AN5 | Compile error at the attachment |
 | `get<A>()` on an item without `A` | AN8 | Error at the read — guard with `comptime if item.has<A>()`. Not catchable when the item is written: which item a `comptime for` binding is on is only known once the loop unrolls |
 | `let r = field.get<A>()` | AN8 | Compile error — there is no type to bind it to. Project a field instead: `field.get<A>().max` |
 | Annotation field of annotation type | AN1 | Compile error — not in the CT58 set |
-| Annotation declared `public` in a dependency | AN5 | Importable, attachable and readable, defaults included. Defaults are filled before name resolution runs, so the importing package's dependencies are matched against its own `import` lines to find the declaration |
+| Annotation declared `public` in a dependency | AN5 | Importable, attachable and readable, defaults included. The dependency's own attachments of it, and its own `has<validate>()`, mean its declaration too |
 
 ## Error Messages
 

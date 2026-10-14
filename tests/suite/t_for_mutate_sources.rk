@@ -49,9 +49,9 @@ test "a Map's values write through" {
 }
 
 test "a SequenceMut writes through" {
-    mut b = Bag { items: Vec.new() }
-    b.items.push(Counter { n: 1 })
-    b.items.push(Counter { n: 2 })
+    mut b = Bag(items: Vec.new())
+    b.items.push(Counter(n: 1))
+    b.items.push(Counter(n: 2))
     for mutate c in b.each_mut() {
         c.n += 5
     }

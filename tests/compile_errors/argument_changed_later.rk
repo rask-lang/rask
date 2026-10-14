@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a later argument changing what an earlier one lent to the call
+// Expected: typecheck error E0869 at each marker below
+//
+// Arguments are lent to a call in the order written (mem.aliasing), so `x`
+// is still lent to the first argument when the second changes it. Allowed,
+// the answer depended on the backend: 12 when `x` was read first, 22 when
+// it was read after `bump` (#1534).
+
+func bump(mutate n: i64) -> i64 {
+    n = n + 1
+    return n
+}
+
+func pair(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
+
+struct Counter {
+    n: i64
+}
+
+extend Counter {
+    func plus(self, k: i64) -> i64 {
+        return self.n + k
+    }
+
+    func bump(mutate self) -> i64 {
+        self.n = self.n + 1
+        return self.n
+    }
+}
+
+func tick(mutate c: Counter) -> i64 {
+    c.n = c.n + 1
+    return 0
+}
+
+func main() {
+    mut x = 1
+    // ERROR: E0869 `x` is lent to the first argument
+    println("{pair(x, bump(mutate x))}")
+    mut c = Counter(n: 1)
+    // ERROR: E0869 a method's receiver is lent before its arguments
+    println("{c.plus(tick(mutate c))}")
+    // ERROR: E0869 a method that changes its receiver counts too
+    println("{pair(c.n, c.bump())}")
+}

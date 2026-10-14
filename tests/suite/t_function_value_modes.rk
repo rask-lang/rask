@@ -68,7 +68,7 @@ test "take through a value hands the argument over" {
     assert all.len() == 1
     assert all[0][0] == 6
     let wf = weigh
-    let bag = Bag { items: ["a", "b"] }
+    let bag = Bag(items: ["a", "b"])
     assert wf(bag) == 2
     let st: func(take Vec<i64>) -> Vec<i64> = stash
     let y: Vec<i64> = [7, 8]
@@ -89,12 +89,12 @@ test "mutate through a named function's value" {
     run_mutate(bump, mutate n)
     assert n == 7
     let t = tick
-    mut c = Counter { n: 1 }
+    mut c = Counter(n: 1)
     t(mutate c)
     t(mutate c)
     assert c.n == 201
     mut cs: Vec<Counter> = Vec.new()
-    cs.push(Counter { n: 0 })
+    cs.push(Counter(n: 0))
     t(mutate cs[0])
     assert cs[0].n == 100
 }
@@ -111,11 +111,11 @@ test "mutate through a closure's value" {
     hv(mutate xs)
     assert xs.len() == 2
     let hc = |mutate k: Counter| { k.n += 1 }
-    mut c = Counter { n: 1 }
+    mut c = Counter(n: 1)
     hc(mutate c)
     assert c.n == 2
     mut cs: Vec<Counter> = Vec.new()
-    cs.push(Counter { n: 0 })
+    cs.push(Counter(n: 0))
     hc(mutate cs[0])
     assert cs[0].n == 1
 }

@@ -47,21 +47,21 @@ func schema_error(s: Schema) -> string {
 const HEAD = "schema = \"svc@1\"\nname = \"api\"\n"
 
 func backend_ty() -> Ty {
-    return Ty.Variant {
+    return Ty.Variant(
         cases: Vec<Case>.from([
-            Case { name: "host", payload: Ty.Str, fields: Vec<Field>.from([optional("port", Ty.Int)]) },
-            Case { name: "socket", payload: Ty.Str, fields: Vec.new() },
-        ]),
-        shared: Vec<Field>.from([optional("weight", Ty.Int)]),
-    }
+            Case(name: "host", payload: Ty.Str, fields: Vec<Field>.from([optional("port", Ty.Int)]))
+            Case(name: "socket", payload: Ty.Str, fields: Vec.new())
+        ])
+        shared: Vec<Field>.from([optional("weight", Ty.Int)])
+    )
 }
 
 func svc_fields() -> Vec<Field> {
     return Vec<Field>.from([
-        required("name", Ty.Str),
-        defaulted("timeout", Ty.Int, Value.Int(30)),
-        defaulted("mode", Ty.OneOf(Vec<string>.from(["fast", "safe"])), Value.Str("safe")),
-        optional("backends", map_of(backend_ty())),
+        required("name", Ty.Str)
+        defaulted("timeout", Ty.Int, Value.Int(30))
+        defaulted("mode", Ty.OneOf(Vec<string>.from(["fast", "safe"])), Value.Str("safe"))
+        optional("backends", map_of(backend_ty()))
     ])
 }
 
@@ -69,29 +69,29 @@ func svc_history() -> Vec<Release> {
     mut adds = Vec<Change>.new()
     mut fields = svc_fields()
     for f in fields.take_all() {
-        adds.push(Change.Add { at: root(), field: f })
+        adds.push(Change.Add(at: root(), field: f))
     }
-    return Vec<Release>.from([Release { version: 1, changes: adds }])
+    return Vec<Release>.from([Release(version: 1, changes: adds)])
 }
 
 // The shape written out, as a real schema has it.
 func svc() -> Schema {
-    return Schema { name: "svc", shape: Ty.Record(svc_fields()), history: svc_history() }
+    return Schema(name: "svc", shape: Ty.Record(svc_fields()), history: svc_history())
 }
 
 // The shape replayed from the log.
 func svc_v2() -> Schema {
     mut history = svc_history()
-    history.push(Release {
-        version: 2,
+    history.push(Release(
+        version: 2
         changes: Vec<Change>.from([
-            Change.Rename { at: root(), from: "mode", to: "profile" },
-            Change.Default { at: root(), name: "timeout", from: Value.Int(30), to: Value.Int(60) },
-            Change.Add { at: root(), field: defaulted("region", Ty.Str, Value.Str("eu")) },
-        ]),
-    })
+            Change.Rename(at: root(), from: "mode", to: "profile")
+            Change.Default(at: root(), name: "timeout", from: Value.Int(30), to: Value.Int(60))
+            Change.Add(at: root(), field: defaulted("region", Ty.Str, Value.Str("eu")))
+        ])
+    ))
     let shape = replay_shape(history) catch e => panic(e.message())
-    return Schema { name: "svc", shape, history }
+    return Schema(name: "svc", shape, history)
 }
 
 // ─── Checking a file ────────────────────────────────────────────
@@ -244,10 +244,10 @@ test "a rewritten past release fails check" {
 
 test "a required field can't arrive after release 1" {
     mut s = svc()
-    s.history.push(Release {
-        version: 2,
-        changes: Vec<Change>.from([Change.Add { at: root(), field: required("owner", Ty.Str) }]),
-    })
+    s.history.push(Release(
+        version: 2
+        changes: Vec<Change>.from([Change.Add(at: root(), field: required("owner", Ty.Str))])
+    ))
     assert schema_error(s).contains("every older file would stop loading")
 }
 
@@ -256,26 +256,26 @@ test "a required field can't arrive after release 1" {
 // release 1: timeout is an integer of seconds
 // release 2: timeout is a duration string
 func timeout_schema() -> Schema {
-    let r1 = Release {
-        version: 1,
-        changes: Vec<Change>.from([Change.Add { at: root(), field: defaulted("timeout", Ty.Int, Value.Int(30)) }]),
-    }
-    let r2 = Release {
-        version: 2,
-        changes: Vec<Change>.from([Change.Retype {
-            at: root(),
-            name: "timeout",
-            from: Ty.Int,
-            to: Ty.Duration,
+    let r1 = Release(
+        version: 1
+        changes: Vec<Change>.from([Change.Add(at: root(), field: defaulted("timeout", Ty.Int, Value.Int(30)))])
+    )
+    let r2 = Release(
+        version: 2
+        changes: Vec<Change>.from([Change.Retype(
+            at: root()
+            name: "timeout"
+            from: Ty.Int
+            to: Ty.Duration
             mapping: Vec<ValuePair>.from([
-                ValuePair { before: Value.Int(30), after: Value.Str("30s") },
-                ValuePair { before: Value.Int(60), after: Value.Str("1m") },
-            ]),
-        }]),
-    }
+                ValuePair(before: Value.Int(30), after: Value.Str("30s"))
+                ValuePair(before: Value.Int(60), after: Value.Str("1m"))
+            ])
+        )])
+    )
     let history = Vec<Release>.from([r1, r2])
     let shape = replay_shape(history) catch e => panic(e.message())
-    return Schema { name: "svc", shape, history }
+    return Schema(name: "svc", shape, history)
 }
 
 test "a retype maps old values through the table" {
@@ -310,15 +310,15 @@ test "the JSON Schema closes every table and lists variant cases" {
 // ─── Versions ───────────────────────────────────────────────────
 
 func version_schema() -> Schema {
-    let history = Vec<Release>.from([Release {
-        version: 1,
+    let history = Vec<Release>.from([Release(
+        version: 1
         changes: Vec<Change>.from([
-            Change.Add { at: root(), field: optional("v", Ty.Version) },
-            Change.Add { at: root(), field: optional("r", Ty.VersionReq) },
-        ]),
-    }])
+            Change.Add(at: root(), field: optional("v", Ty.Version))
+            Change.Add(at: root(), field: optional("r", Ty.VersionReq))
+        ])
+    )])
     let shape = replay_shape(history) catch e => panic(e.message())
-    return Schema { name: "svc", shape, history }
+    return Schema(name: "svc", shape, history)
 }
 
 func version_error(line: string) -> string {
@@ -348,16 +348,16 @@ test "a pre-release can only be pinned exactly" {
 test "a missing required key at the top level says so and names a kind, not a shape" {
     let e = load_error("schema = \"svc@1\"\n", svc())
     assert e.contains("top level: missing required key `name` (string)")
-    let nested = Schema {
-        name: "svc",
-        shape: Ty.Record(Vec<Field>.from([required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)])))])),
-        history: Vec<Release>.from([Release {
-            version: 1,
-            changes: Vec<Change>.from([Change.Add {
-                at: root(),
-                field: required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)]))),
-            }]),
-        }]),
-    }
+    let nested = Schema(
+        name: "svc"
+        shape: Ty.Record(Vec<Field>.from([required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)])))]))
+        history: Vec<Release>.from([Release(
+            version: 1
+            changes: Vec<Change>.from([Change.Add(
+                at: root()
+                field: required("server", Ty.Record(Vec<Field>.from([required("host", Ty.Str)])))
+            )])
+        )])
+    )
     assert load_error("schema = \"svc@1\"\n", nested).contains("top level: missing required key `server` (table)")
 }

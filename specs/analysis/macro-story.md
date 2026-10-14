@@ -80,7 +80,7 @@ func dbg<T: Debug>(v: T, @call_text(v) text: string) -> T {
 Rules sketch — written to keep the blast radius small:
 
 - `@call_text(param)` → `string`: source text of the argument expression for `param`.
-  `@call_location` → `SourceLoc { file, line, column }`. Spliced per call site as
+  `@call_location` → `SourceLoc(file, line, column)`. Spliced per call site as
   constants.
 - **Data, never code.** No AST, no token access, no evaluation. The text can only flow
   where any other `string` flows.

@@ -137,8 +137,8 @@ struct Player {
 
 test "with on vec of structs" {
     mut players = Vec.new()
-    players.push(Player { name: "Alice", score: 0 })
-    players.push(Player { name: "Bob", score: 0 })
+    players.push(Player(name: "Alice", score: 0))
+    players.push(Player(name: "Bob", score: 0))
 
     with players[0] as p {
         p.score = 100

@@ -5,7 +5,7 @@ struct Stack<T> {
 
 extend Stack<T> {
     func new() -> Stack<T> {
-        return Stack { items: Vec.new() }
+        return Stack(items: Vec.new())
     }
 
     func push(mutate self, take value: T) {

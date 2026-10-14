@@ -15,28 +15,28 @@ struct Holder { public id: Id }
 
 func top_opt(present: bool) -> Top? {
     if present {
-        return Top { mid: Mid { deep: Deep { leaf: 11 } } }
+        return Top(mid: Mid(deep: Deep(leaf: 11)))
     }
     return none
 }
 
 func gen_opt(present: bool) -> Wrapper<i64>? {
-    if present { return Wrapper { item: 9 } }
+    if present { return Wrapper(item: 9) }
     return none
 }
 
 func gen_str(present: bool) -> Wrapper<string>? {
-    if present { return Wrapper { item: "hi" } }
+    if present { return Wrapper(item: "hi") }
     return none
 }
 
 func pair_opt(present: bool) -> Pair<i64, string>? {
-    if present { return Pair { left: 3, right: "x" } }
+    if present { return Pair(left: 3, right: "x") }
     return none
 }
 
 func holder_opt(present: bool) -> Holder? {
-    if present { return Holder { id: Id(42) } }
+    if present { return Holder(id: Id(42)) }
     return none
 }
 
@@ -46,7 +46,7 @@ test "a three-deep optional chain reaches the leaf" {
 }
 
 test "an intermediate none short-circuits the chain" {
-    let partial = Top { mid: Mid { deep: none } }
+    let partial = Top(mid: Mid(deep: none))
     assert partial.mid?.deep?.leaf ?? -1 == -1
 }
 

@@ -36,9 +36,9 @@ struct List {
 }
 
 func push_back(mutate list: List, value: i32) -> Link<Node> {
-    let n = list.nodes.insert(Node {
-        value: value, next: none, prev: list.tail, kids: Vec.new(),
-    })
+    let n = list.nodes.insert(Node(
+        value: value, next: none, prev: list.tail, kids: Vec.new()
+    ))
     if list.tail? as t {
         t.next = n
     } else {
@@ -65,7 +65,7 @@ func length(list: List) -> i32 {
 }
 
 test "a spliced-out node leaves nothing behind for the next delete" {
-    mut list = List { nodes: Rack.new(), head: none, tail: none }
+    mut list = List(nodes: Rack.new(), head: none, tail: none)
     let n1 = push_back(mutate list, 1)
     let n2 = push_back(mutate list, 2)
     let n3 = push_back(mutate list, 3)
@@ -87,9 +87,9 @@ test "a spliced-out node leaves nothing behind for the next delete" {
 
 test "a replaced container's entries stop naming it" {
     mut s: Rack<Node> = Rack.new()
-    let parent = s.insert(Node { value: 0, next: none, prev: none, kids: Vec.new() })
-    let a = s.insert(Node { value: 1, next: none, prev: none, kids: Vec.new() })
-    let b = s.insert(Node { value: 2, next: none, prev: none, kids: Vec.new() })
+    let parent = s.insert(Node(value: 0, next: none, prev: none, kids: Vec.new()))
+    let a = s.insert(Node(value: 1, next: none, prev: none, kids: Vec.new()))
+    let b = s.insert(Node(value: 2, next: none, prev: none, kids: Vec.new()))
     parent.kids.push(a)
     parent.kids.push(b)
     assert parent.kids.len() == 2
@@ -110,8 +110,8 @@ test "a replaced container's entries stop naming it" {
 
 test "the delete still fixes a live container entry" {
     mut s: Rack<Node> = Rack.new()
-    let parent = s.insert(Node { value: 0, next: none, prev: none, kids: Vec.new() })
-    let a = s.insert(Node { value: 1, next: none, prev: none, kids: Vec.new() })
+    let parent = s.insert(Node(value: 0, next: none, prev: none, kids: Vec.new()))
+    let a = s.insert(Node(value: 1, next: none, prev: none, kids: Vec.new()))
     parent.kids.push(a)
     assert parent.kids.len() == 1
     s.delete(a)
@@ -120,8 +120,8 @@ test "the delete still fixes a live container entry" {
 
 test "and a live field edge" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { value: 1, next: none, prev: none, kids: Vec.new() })
-    let b = s.insert(Node { value: 2, next: none, prev: none, kids: Vec.new() })
+    let a = s.insert(Node(value: 1, next: none, prev: none, kids: Vec.new()))
+    let b = s.insert(Node(value: 2, next: none, prev: none, kids: Vec.new()))
     a.next = b
     assert !(a.next is none)
     s.delete(b)

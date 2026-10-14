@@ -8,7 +8,7 @@ struct Config { port: i32, name: string }
 
 func load(bad: bool) -> Config or IoError {
     if bad { return IoError.NotFound("no config") }
-    return Config { port: 8080, name: "svc" }
+    return Config(port: 8080, name: "svc")
 }
 
 func read_file(path: string) -> string or IoError {
@@ -51,5 +51,5 @@ public func main() {
     print(name_len(false) catch _ => 0)
     print(doubled("x") catch _ => 0)
     print(doubled("missing") catch _ => 0)
-    print((whole(false) catch _ => Config { port: 0, name: "" }).port)
+    print((whole(false) catch _ => Config(port: 0, name: "")).port)
 }

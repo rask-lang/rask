@@ -23,7 +23,7 @@ struct File {
 
 extend File {
     func open() -> File {
-        return File { fd: 1 }
+        return File(fd: 1)
     }
     func close(take self) -> void {
         return

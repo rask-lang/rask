@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a default argument that isn't a compile-time constant
+//
+// Spec: SYNTAX (default args: "constants only"), type.structs (FD1),
+// ctrl.comptime (CT7)
+//
+// A default argument is copied into every call that leaves it out. One that
+// printed printed once per call, and nothing said it wasn't a constant
+// (#1537). It's held to the same rule as a field's default now.
+
+func tick() -> i64 {
+    println("tick")
+    return 1
+}
+
+// ERROR: a default argument that does I/O [E0875]
+func retry(times: i64 = tick()) -> i64 {
+    return times
+}
+
+struct Client {
+    public name: string
+}
+
+extend Client {
+    // ERROR: on a method too [E0875]
+    func send(self, attempts: i64 = tick()) -> i64 {
+        return attempts
+    }
+}
+
+// FIX: write the value itself
+func retry_fixed(times: i64 = 3) -> i64 {
+    return times
+}
+
+func main() {
+    let c = Client(name: "a")
+    println("{retry()} {c.send()} {retry_fixed()}")
+}

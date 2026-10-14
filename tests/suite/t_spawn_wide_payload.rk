@@ -36,7 +36,7 @@ func a_float_task() -> f64 or JoinError {
 
 func a_struct_task() -> Reading or JoinError {
     using Multitasking {
-        let h = spawn { return Reading { id: 3i64, label: "sensor", scale: 0.5f64 } }
+        let h = spawn { return Reading(id: 3i64, label: "sensor", scale: 0.5f64) }
         return try h.join()
     }
 }

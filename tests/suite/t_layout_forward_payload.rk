@@ -44,7 +44,7 @@ struct Pair {
 }
 
 test "payload declared below the enum keeps its fields" {
-    let e = Expr.Neg(Wrapped { a: 1, b: 2, c: 3, items: [Expr.Num(9)] })
+    let e = Expr.Neg(Wrapped(a: 1, b: 2, c: 3, items: [Expr.Num(9)]))
     if e is Neg(w) {
         assert w.a == 1
         assert w.b == 2
@@ -57,7 +57,7 @@ test "payload declared below the enum keeps its fields" {
 
 test "a generic holding the enum only through a vector" {
     let items: Vec<Expr> = [Expr.Num(1), Expr.Num(2)]
-    let e = Expr.Boxed(Holder { tag: "kids", n: 7, kids: Stack { items: items } })
+    let e = Expr.Boxed(Holder(tag: "kids", n: 7, kids: Stack(items: items)))
     if e is Boxed(h) {
         assert h.tag == "kids"
         assert h.n == 7
@@ -68,7 +68,7 @@ test "a generic holding the enum only through a vector" {
 }
 
 test "recursion through Heap with a forward payload" {
-    let c = Chain.Link(Pair { x: 1, y: 2, label: "a" }, Heap(Chain.End(Pair { x: 3, y: 4, label: "b" })))
+    let c = Chain.Link(Pair(x: 1, y: 2, label: "a"), Heap(Chain.End(Pair(x: 3, y: 4, label: "b"))))
     match c {
         Chain.Link(p, rest) => {
             assert p.x + p.y == 3

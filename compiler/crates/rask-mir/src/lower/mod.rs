@@ -230,6 +230,18 @@ pub struct ComptimeGlobalMeta {
     /// Codegen emits a static header for the text and writes its address at the
     /// offset — a pointer isn't a byte, so it can't travel in `bytes`.
     pub string_relocs: Vec<(usize, String)>,
+    /// The layout the bytes are laid out in, when the value is a struct or an
+    /// enum. `bytes` is then the value exactly as it sits in memory, and a
+    /// use copies it out.
+    pub aggregate: Option<ConstAggregate>,
+}
+
+/// Which layout a folded struct or enum constant was written in: an index
+/// into the program's struct or enum layouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstAggregate {
+    Struct(usize),
+    Enum(usize),
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
@@ -308,6 +320,7 @@ mod empty {
     empty_of!(node_names, HashMap<NodeId, String>);
     empty_of!(nominal_map, HashMap<String, Type>);
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
+    empty_of!(decode_defaults, HashMap<(String, String), String>);
 }
 
 impl<'a> MirContext<'a> {
@@ -363,6 +376,7 @@ impl<'a> MirContext<'a> {
             interface_methods: HashMap::new(),
             call_rewrites: empty::node_names(),
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             comptime_interp: None,
@@ -409,6 +423,7 @@ impl<'a> MirContext<'a> {
     pub fn with_mono_calls(mut self, mono: &'a rask_mono::MonoProgram) -> Self {
         self.call_rewrites = &mono.call_rewrites;
         self.map_key_fns = &mono.map_key_fns;
+        self.decode_defaults = &mono.decode_defaults;
         self
     }
 
@@ -509,6 +524,8 @@ pub struct MirContext<'a> {
     pub call_rewrites: &'a HashMap<NodeId, String>,
     /// A map-building call → the `hash`/`eq` its keys go through (#1391).
     pub map_key_fns: &'a HashMap<NodeId, rask_mono::MapKeyFns>,
+    /// (struct, field) → the method that builds that field's decode default.
+    pub decode_defaults: &'a HashMap<(String, String), String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -629,6 +646,7 @@ impl<'a> MirContext<'a> {
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &EMPTY_TARGETS,
             operator_targets: &EMPTY_OPERATOR_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -926,6 +944,11 @@ impl<'a> MirContext<'a> {
                 // name: `first$Big(o: One<Big>)` was given the shared 8-byte
                 // layout while its caller passed 24 bytes (#781).
                 let arg_tys: Vec<Type> = args.iter().map(rask_mono::field_type).collect();
+                if self.nominal_underlying.contains_key(head) {
+                    let generic: Vec<rask_types::GenericArg> =
+                        arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
+                    return self.resolve_unresolved_generic(head, &generic);
+                }
                 if let Some(name) = rask_mono::generic_instance_name(head, &arg_tys, self.type_names) {
                     if let Some((idx, sl)) = self.find_struct(&name) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
@@ -939,9 +962,32 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// A generic newtype at these arguments is what it wraps at them.
+    /// `None` when `def` isn't a newtype.
+    fn newtype_at(&self, def: Option<&rask_types::TypeDef>, args: &[rask_types::GenericArg]) -> Option<MirType> {
+        let Some(rask_types::TypeDef::NominalAlias { type_params, underlying, .. }) = def else {
+            return None;
+        };
+        let map: HashMap<String, Type> = type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().filter_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                rask_types::GenericArg::ConstUsize(_) => None,
+            }))
+            .collect();
+        Some(self.type_to_mir(&rask_types::substitute_type(underlying, &map)))
+    }
+
     /// A generic the checker left as a name with arguments: `One<Big>` in an
     /// instantiated copy, `Channel<i64>` before its name resolved.
     fn resolve_unresolved_generic(&self, name: &str, args: &[rask_types::GenericArg]) -> MirType {
+        if self.nominal_underlying.contains_key(name) {
+            let def = self.type_defs.get_type_id(name).and_then(|id| self.type_defs.get(id));
+            if let Some(wrapped) = self.newtype_at(def, args) {
+                return wrapped;
+            }
+        }
         match name {
             "Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared" => MirType::Ptr,
             _ => {
@@ -1276,6 +1322,12 @@ impl<'a> MirContext<'a> {
                 }
             }
             Type::Generic { base, args } => {
+                // A generic newtype is whatever it wraps at these arguments:
+                // `Saturating<u8>` is a `u8`. Read by name, it was the bare
+                // `T`, a pointer, and the arithmetic ran a word wide.
+                if let Some(wrapped) = self.newtype_at(self.type_defs.get(*base), args) {
+                    return wrapped;
+                }
                 if let Some(instance) = self.generic_instance_mir_type(base, args) {
                     return instance;
                 }
@@ -1517,10 +1569,20 @@ impl<'a> MirContext<'a> {
             return Self::conformance_prefix(&target.recv, self.type_names);
         }
         match self.call_targets.get(&node)? {
-            rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
+            rask_types::Callee::Method { recv, method, .. } => Self::type_prefix(recv, self.type_names)
+                .or_else(|| Self::declared_width_prefix(recv, method))
                 .or_else(|| builtin_method_prefix(recv).map(str::to_string)),
             rask_types::Callee::Free(_) => None,
         }
+    }
+
+    /// A primitive method a stdlib file declares at one width — `f32.to_bits`
+    /// in float.rk — is filed under that width. The builtin prefixes collapse
+    /// `f32` onto `f64`, which is right for a libm call and wrong here:
+    /// `f32.to_bits()` is the f32's own 32 bits.
+    fn declared_width_prefix(recv: &Type, method: &str) -> Option<String> {
+        let name = rask_types::primitive_spelling(recv)?;
+        rask_stdlib::lookup_method(name, method).map(|_| name.to_string())
     }
 
     /// Extract type prefix from a field type string (e.g. "Vec<string>" → "Vec").
@@ -1728,7 +1790,7 @@ pub struct MirLowerer<'a> {
     const_init_target: Option<String>,
     /// Declared type of the struct field currently being initialised, as written.
     /// `Map.new()` needs its key/value sizes, and the checker doesn't type the
-    /// nodes of a stdlib body — `Headers { entries: Map.new() }` had no type on
+    /// nodes of a stdlib body — `Headers(entries: Map.new())` had no type on
     /// that call, so the map was built with 8-byte slots and a `string` value lost
     /// half of its 16 bytes.
     field_type_hint: Option<Type>,
@@ -1779,7 +1841,7 @@ pub(crate) struct ReflectFieldConst {
     pub(crate) has_default: bool,
     /// Raw attribute strings (`indexed(weight:3)`) — what `field.has<A>()`
     /// answers from (type.annotations/AN6).
-    pub(crate) attrs: Vec<String>,
+    pub(crate) attrs: Vec<rask_ast::attr::Attr>,
 }
 
 /// Where a `try` inside a `try { … } catch e => …` block sends its error.
@@ -1960,26 +2022,17 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("rask_alloc".to_string()),
                 args: vec![MirOperand::Constant(MirConst::Int(size as i64))],
             }));
-            let mut off = 0u32;
-            while off < size {
-                let word = self.builder.alloc_temp(MirType::I64);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: word,
-                    rvalue: MirRValue::Field {
-                        base: value.clone(),
-                        field_index: 0,
-                        byte_offset: Some(off),
-                        access: FieldAccess::Sized(8),
-                    },
-                }));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: heap,
-                    offset: off,
-                    value: MirOperand::Local(word),
-                    store_size: Some(8),
-                }));
-                off += 8;
-            }
+            // One store of the whole value. Copied a word at a time through
+            // `Field { field_index: 0, byte_offset }`, every word read field 0:
+            // codegen picks a struct's field by index and the offset never
+            // counted, so `const P: Point = Point(x: 1, y: 6)` read back `1 1`.
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: heap,
+                offset: 0,
+                value,
+                store_size: Some(size),
+                field: None,
+            }));
             MirOperand::Local(heap)
         } else {
             value
@@ -1990,6 +2043,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: stored,
             store_size: None,
+            field: None,
         }));
     }
 
@@ -2023,6 +2077,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: MirOperand::Constant(MirConst::Int(word)),
                 store_size: Some(8),
+                field: None,
             }));
         }
         let (payload, size) = if err_ty.passed_by_address() {
@@ -2035,6 +2090,7 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::RESULT_PAYLOAD_OFFSET,
             value: payload,
             store_size: Some(size),
+            field: None,
         }));
         Some(MirOperand::Local(slot))
     }
@@ -2303,6 +2359,121 @@ impl<'a> MirLowerer<'a> {
         self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
     }
 
+    /// A folded comptime value as a MIR value of its own type.
+    ///
+    /// - A string is the value itself rather than an address: the fold
+    ///   produced the exact characters, and a string literal is already
+    ///   emitted as const data with a sentinel refcount (#1074).
+    /// - A struct or enum is copied out of its bytes.
+    /// - A list or a map is built from its elements into a collection the
+    ///   caller owns.
+    /// - A scalar is loaded at the width the folded value has, not one a
+    ///   use guesses: an `i64` default read 8 of a `u128`'s 16 bytes (#824).
+    pub(crate) fn load_comptime_value(
+        &mut self,
+        key: &str,
+        meta: &ComptimeGlobalMeta,
+    ) -> Result<(MirOperand, MirType), LoweringError> {
+        if meta.type_prefix == "string" {
+            if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
+                return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
+            }
+        }
+        if let Some(agg) = meta.aggregate {
+            return Ok(self.load_comptime_aggregate(key, agg));
+        }
+        let data = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+            dst: data,
+            name: key.to_string(),
+        }));
+        if let Some(built) = self.build_comptime_collection(data, meta) {
+            return built;
+        }
+        let ty = Self::comptime_global_mir_type(&meta.type_prefix).unwrap_or(MirType::I64);
+        let value = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Deref(MirOperand::Local(data)),
+        }));
+        Ok((MirOperand::Local(value), ty))
+    }
+
+    /// A folded `Vec` or `Map` constant built into a real collection from the
+    /// bytes at `data`. `None` when the constant is neither.
+    ///
+    /// The bytes are the elements, not a collection: a list's are what
+    /// `rask_vec_from_static` copies in, a map's the entries to insert.
+    pub(crate) fn build_comptime_collection(
+        &mut self,
+        data: LocalId,
+        meta: &ComptimeGlobalMeta,
+    ) -> Option<Result<(MirOperand, MirType), LoweringError>> {
+        match meta.type_prefix.as_str() {
+            "Vec" => {
+                // Elements are machine words, except strings — a `RaskStr`
+                // is sixteen bytes, and the vector has to be told it holds
+                // strings so that what it hands out is retained and released
+                // like one.
+                let holds_strings = meta.elem_type.as_deref() == Some("string");
+                let (elem_size, elem_desc) = if holds_strings {
+                    (16, MirType::String)
+                } else {
+                    (8, MirType::I64)
+                };
+                let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(vec_local),
+                    func: FunctionRef::internal("rask_vec_from_static".to_string()),
+                    args: vec![
+                        MirOperand::Local(data),
+                        MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
+                        MirOperand::Constant(MirConst::Int(elem_size)),
+                        crate::elem_strs::elem(elem_desc),
+                    ],
+                }));
+                Some(Ok((MirOperand::Local(vec_local), MirType::Ptr)))
+            }
+            "Map" => {
+                // An empty map has no first entry to read the key and value
+                // types off, and holds nothing that could tell the
+                // difference, so any pair will do for one.
+                let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
+                    ("i64".to_string(), "i64".to_string())
+                });
+                Some(self.build_comptime_map(data, meta.elem_count, &k, &v))
+            }
+            _ => None,
+        }
+    }
+
+    /// A folded struct or enum constant, copied out of its bytes into a value
+    /// of its own. The bytes are read-only data and every use is a fresh copy,
+    /// the same as reading any other const.
+    pub(crate) fn load_comptime_aggregate(&mut self, key: &str, agg: ConstAggregate) -> (MirOperand, MirType) {
+        let ty = match agg {
+            ConstAggregate::Struct(i) => {
+                let l = &self.ctx.struct_layouts[i];
+                MirType::Struct(StructLayoutId::new(i as u32, l.size, l.align))
+            }
+            ConstAggregate::Enum(i) => {
+                let l = &self.ctx.enum_layouts[i];
+                MirType::Enum(EnumLayoutId::new(i as u32, l.size, l.align))
+            }
+        };
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
+            dst: addr,
+            name: key.to_string(),
+        }));
+        let value = self.builder.alloc_temp(ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: MirRValue::Use(MirOperand::Local(addr)),
+        }));
+        (MirOperand::Local(value), ty)
+    }
+
     /// The MIR type of a folded comptime global, from the width its value
     /// actually has.
     ///
@@ -2400,6 +2571,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: val,
             store_size: Some(width),
+            field: None,
         }));
         MirOperand::Local(heap)
     }
@@ -2661,7 +2833,7 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or(false)
     }
 
-    /// Lower a nominal newtype construction — `Id { value: 5 }` or `Id(5)` — to
+    /// Lower a nominal newtype construction — `Id(5)` — to
     /// the wrapped value itself. Returns `None` when `name` isn't one.
     pub(crate) fn lower_newtype_wrap(
         &mut self,
@@ -2815,6 +2987,7 @@ impl<'a> MirLowerer<'a> {
                 offset: tag_offset,
                 value: MirOperand::Constant(MirConst::Int(0)),
                 store_size: Some(8),
+                field: None,
             }));
             if is_result {
                 // ER15 origin stays zero on the success side.
@@ -2827,6 +3000,7 @@ impl<'a> MirLowerer<'a> {
                         offset: off,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                 }
             }
@@ -2846,6 +3020,7 @@ impl<'a> MirLowerer<'a> {
                 offset: payload_offset,
                 value: payload_op,
                 store_size: Some(store_size),
+                field: None,
             }));
             cur_op = MirOperand::Local(slot);
             cur_ty = layer_ty;
@@ -4110,7 +4285,7 @@ impl<'a> MirLowerer<'a> {
             collected_elem_types: HashMap::new(),
             field_type_hint: None,
             catch_frames: Vec::new(),
-            in_test_body: fn_decl.attrs.iter().any(|a| a == "test_body"),
+            in_test_body: fn_decl.attrs.iter().any(|a| a.is("test_body")),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
@@ -4307,6 +4482,7 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     // Zero the origin-file and origin-line fields so they
                     // don't carry stale bytes when the caller copies the
@@ -4316,12 +4492,14 @@ impl<'a> MirLowerer<'a> {
                         offset: 8,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: wrap_local,
                         offset: 16,
                         value: MirOperand::Constant(MirConst::Int(0)),
                         store_size: Some(8),
+                        field: None,
                     }));
                     Some(MirOperand::Local(wrap_local))
                 } else {
@@ -4717,7 +4895,7 @@ impl<'a> MirLowerer<'a> {
     fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
         use rask_ast::expr::Pattern;
         match pattern {
-            Pattern::Constructor { name, .. } => self.variant_tag(name),
+            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.variant_tag(name),
             Pattern::Ident(name) if is_variant_name(name) => self.variant_tag(name),
             _ => 0,
         }
@@ -4754,7 +4932,10 @@ impl<'a> MirLowerer<'a> {
             Pattern::TypePat { ty, .. } => {
                 if self.pattern_is_err_side(&type_pat_name(ty), val_ty) { 1 } else { 0 }
             }
-            Pattern::Constructor { name, .. } => self
+            // A named variant is a variant like a positional one: `s is
+            // Rect(w, h)` tested against tag 0 whatever `Rect` was, so it was
+            // true of every first variant and of nothing else.
+            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self
                 .variant_tag_in_scrutinee(name, val_ty)
                 .unwrap_or_else(|| self.variant_tag(name)),
             _ => self.pattern_tag(pattern),
@@ -4837,12 +5018,14 @@ impl<'a> MirLowerer<'a> {
             offset: crate::types::UNION_MEMBER_OFFSET,
             value: MirOperand::Constant(MirConst::Int(index as i64)),
             store_size: Some(8),
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
             offset: crate::types::UNION_PAYLOAD_OFFSET,
             value: val.clone(),
             store_size: Some(member_size.max(8)),
+            field: None,
         }));
         Some(MirOperand::Local(slot))
     }
@@ -5145,6 +5328,22 @@ impl<'a> MirLowerer<'a> {
         }).collect())
     }
 
+    /// Field names of a named variant, in declaration order: of the scrutinee's
+    /// own enum, or of the error enum of a `T or E`.
+    fn variant_field_names(&self, scrutinee_ty: &MirType, variant_name: &str) -> Option<Vec<String>> {
+        let enum_ty = match scrutinee_ty {
+            MirType::Result { err, .. } => err.as_ref(),
+            other => other,
+        };
+        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = enum_ty else {
+            return None;
+        };
+        let layout = self.ctx.enum_layouts.get(*idx as usize)?;
+        let bare_name = variant_name.rsplit('.').next().unwrap_or(variant_name);
+        let variant = layout.variants.iter().find(|v| v.name == bare_name)?;
+        Some(variant.fields.iter().map(|f| f.name.clone()).collect())
+    }
+
     /// `Enum.Variant` naming a variant of a Result's error enum: each field's
     /// type, its offset *within the err payload*, and its size.
     fn err_variant_fields(
@@ -5210,6 +5409,24 @@ impl<'a> MirLowerer<'a> {
     ) {
         use rask_ast::expr::Pattern;
         match pattern {
+            // A named variant binds like its positional spelling: each field's
+            // pattern at that field's index, `_` for the ones it leaves out.
+            Pattern::Struct { name, fields, .. }
+                if self.variant_field_names(scrutinee_ty, name).is_some() =>
+            {
+                let names = self.variant_field_names(scrutinee_ty, name).unwrap_or_default();
+                let positional = names
+                    .iter()
+                    .map(|n| {
+                        fields
+                            .iter()
+                            .find(|(f, _)| f == n)
+                            .map_or(Pattern::Wildcard, |(_, p)| p.clone())
+                    })
+                    .collect();
+                let as_constructor = Pattern::Constructor { name: name.clone(), fields: positional };
+                self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty);
+            }
             Pattern::Constructor { name, .. }
                 if matches!(scrutinee_ty, MirType::Result { err, .. }
                     if matches!(err.as_ref(), MirType::Enum(_))
@@ -5337,6 +5554,7 @@ impl<'a> MirLowerer<'a> {
                                     offset: tuple_offset,
                                     value: MirOperand::Local(read),
                                     store_size: Some(field_ty.size()),
+                                    field: None,
                                 }));
                                 tuple_offset += field_ty.size();
                             }
@@ -5985,7 +6203,6 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
                 FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
                 FloatSig::ToString => MirType::String,
                 FloatSig::ToInt => MirType::I64,
-                FloatSig::ToBits => MirType::U64,
                 // Ordering is an enum; leave it to the caller's own typing.
                 FloatSig::Compare => MirType::I64,
             });
@@ -7196,7 +7413,6 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
-                            declared_default: None,
                         is_public: true,
                         decl_index: 0,
                         is_type_param: false,
@@ -7216,7 +7432,6 @@ mod tests {
                         align: 8,
                         attrs: vec![],
                         has_declared_default: false,
-                            declared_default: None,
                         is_public: true,
                         decl_index: 0,
                         is_type_param: false,
@@ -7270,6 +7485,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7352,6 +7568,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7389,10 +7606,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false,
-                            declared_default: None, is_public: true, decl_index: 0, is_type_param: false },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false,
-                            declared_default: None, is_public: true, decl_index: 0, is_type_param: false },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false },
                     ],
                     attrs: vec![],
                 },
@@ -7443,6 +7658,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
+            decode_defaults: empty::decode_defaults(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,

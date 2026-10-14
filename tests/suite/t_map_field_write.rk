@@ -25,7 +25,7 @@ func heap(s: string) -> string {
 
 test "a field write lands in the map" {
     mut m: Map<string, Line> = Map.new()
-    m["k"] = Line { text: heap("one"), n: 1 }
+    m["k"] = Line(text: heap("one"), n: 1)
     m["k"].text = heap("two")
     m["k"].n = 2
     assert m["k"].text == heap("two")
@@ -34,7 +34,7 @@ test "a field write lands in the map" {
 
 test "repeated writes release what they replace" {
     mut m: Map<i64, Line> = Map.new()
-    m[7] = Line { text: heap("start"), n: 0 }
+    m[7] = Line(text: heap("start"), n: 0)
     for i in 0..5 {
         m[7].text = heap("round {i}")
         m[7].n = i
@@ -45,7 +45,7 @@ test "repeated writes release what they replace" {
 
 test "a nested field write lands in the map" {
     mut m: Map<string, Row> = Map.new()
-    m["a"] = Row { pos: Pos { x: 1, y: 2 }, label: heap("a") }
+    m["a"] = Row(pos: Pos(x: 1, y: 2), label: heap("a"))
     m["a"].pos.y = 20
     m["a"].label = heap("b")
     assert m["a"].pos.x == 1
@@ -55,7 +55,7 @@ test "a nested field write lands in the map" {
 
 test "a heap key reaches the right entry" {
     mut m: Map<string, Line> = Map.new()
-    m[heap("key")] = Line { text: heap("old"), n: 0 }
+    m[heap("key")] = Line(text: heap("old"), n: 0)
     m[heap("key")].text = heap("new")
     assert m[heap("key")].text == heap("new")
     assert m.len() == 1

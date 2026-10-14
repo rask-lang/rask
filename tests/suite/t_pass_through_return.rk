@@ -116,7 +116,7 @@ func keep_or_refuse(take p: Vec<i64>, keep: bool) -> Vec<i64> or Refused {
     if keep {
         return p
     }
-    return Refused { why: "no {k}" }
+    return Refused(why: "no {k}")
 }
 
 struct Refused {

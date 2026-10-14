@@ -365,6 +365,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: MirOperand::Local(guard_local),
                 store_size: Some(size),
+                field: None,
             }));
         }
         if let Some(release) = syms.release {
@@ -899,6 +900,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: MirOperand::Constant(MirConst::Int(value)),
                 store_size: Some(8),
+                field: None,
             }));
         }
         if matches!(ty, MirType::Void) {
@@ -914,6 +916,7 @@ impl<'a> MirLowerer<'a> {
             offset: rask_mono::abi::RESULT_PAYLOAD_OFFSET,
             value: payload,
             store_size: Some(size),
+            field: None,
         }));
     }
 

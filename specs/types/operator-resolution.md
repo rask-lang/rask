@@ -66,7 +66,7 @@ struct Meters { v: f64 }
 
 Meters implements Mul<f64> {          // Out defaults to Meters
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -74,7 +74,7 @@ f64 implements Mul<Meters> {          // the direction that was impossible
     type Out = Meters
 
     func mul(self, m: Meters) -> Meters {
-        return Meters { v: self * m.v }
+        return Meters(v: self * m.v)
     }
 }
 ```
@@ -88,7 +88,7 @@ Meters implements Mul<Meters> {
     type Out = SquareMeters
 
     func mul(self, other: Meters) -> SquareMeters {
-        return SquareMeters { v: self.v * other.v }
+        return SquareMeters(v: self.v * other.v)
     }
 }
 ```

@@ -100,28 +100,28 @@ extend Bag {
 // The three branches the composite has to tell apart, built from the field.
 func broken_bag() -> Bag {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { n: 0 })     // absent -> continue
-    items.push(Item { n: -1 })    // error  -> propagate
-    return Bag { items: items, labels: Vec.new() }
+    items.push(Item(n: 0))     // absent -> continue
+    items.push(Item(n: -1))    // error  -> propagate
+    return Bag(items: items, labels: Vec.new())
 }
 
 func empty_bag() -> Bag {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { n: 0 })     // absent -> continue, then fall out
-    return Bag { items: items, labels: Vec.new() }
+    items.push(Item(n: 0))     // absent -> continue, then fall out
+    return Bag(items: items, labels: Vec.new())
 }
 
 func build() -> Bag {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { n: 0 })
-    items.push(Item { n: 3 })
-    items.push(Item { n: 4 })
+    items.push(Item(n: 0))
+    items.push(Item(n: 3))
+    items.push(Item(n: 4))
 
     mut labels: Vec<string> = Vec.new()
     labels.push("a")
     labels.push("b")
 
-    return Bag { items: items, labels: labels }
+    return Bag(items: items, labels: labels)
 }
 
 test "stdlib.collections — a method on the loop variable resolves" {

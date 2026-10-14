@@ -51,9 +51,9 @@ extend Bag {
 
 func build() -> Bag {
     mut items: Vec<Item> = Vec.new()
-    items.push(Item { n: 0 })
-    items.push(Item { n: 3 })
-    return Bag { items: items }
+    items.push(Item(n: 0))
+    items.push(Item(n: 3))
+    return Bag(items: items)
 }
 
 test "type.errors — `try … ?? continue` finds the hit past a miss" {

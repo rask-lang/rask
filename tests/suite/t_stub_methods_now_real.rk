@@ -47,9 +47,9 @@ test "stdlib.collections — down to empty, one at a time" {
 // the ones left behind keep theirs.
 test "stdlib.collections — remove_unordered on strings" {
     mut v: Vec<string> = [
-        "the first entry is long enough",
-        "the second entry is long enough",
-        "the third entry is long enough",
+        "the first entry is long enough"
+        "the second entry is long enough"
+        "the third entry is long enough"
     ]
     let taken = v.remove_unordered(0)
     assert taken == "the first entry is long enough"

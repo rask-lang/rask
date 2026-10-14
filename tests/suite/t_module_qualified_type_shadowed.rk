@@ -47,13 +47,13 @@ test "the qualified name is the stdlib's type" {
 }
 
 test "the bare name is still the program's" {
-    let d = Duration { ticks: 7 }
+    let d = Duration(ticks: 7)
     assert mine(d) == 7
 }
 
 test "both in one expression" {
     let t: time.Duration = time.Duration.seconds(2)
-    let d = Duration { ticks: 3 }
+    let d = Duration(ticks: 3)
     assert t.as_millis() == 2000
     assert d.ticks == 3
 }

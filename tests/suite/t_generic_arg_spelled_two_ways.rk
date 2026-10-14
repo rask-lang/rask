@@ -32,14 +32,14 @@ func first<T>(h: Holder<T>) -> T {
 func main() {}
 
 test "a tuple wider than the shared slot" {
-    let h = Holder<(i64, string)> { v: (7, "long enough to allocate a buffer") }
+    let h = Holder<(i64, string)>(v: (7, "long enough to allocate a buffer"))
     let got = first(h)
     assert got.0 == 7
     assert got.1 == "long enough to allocate a buffer"
 }
 
 test "a tuple of three" {
-    let h = Holder<(i64, i64, i64)> { v: (1, 2, 3) }
+    let h = Holder<(i64, i64, i64)>(v: (1, 2, 3))
     let got = first(h)
     assert got.0 == 1
     assert got.1 == 2
@@ -47,23 +47,23 @@ test "a tuple of three" {
 }
 
 test "a tuple inside a two-parameter generic" {
-    let p = Pair<(i64, string), i64> { a: (9, "also long enough to allocate"), b: 4 }
+    let p = Pair<(i64, string), i64>(a: (9, "also long enough to allocate"), b: 4)
     assert p.a.0 == 9
     assert p.a.1 == "also long enough to allocate"
     assert p.b == 4
 }
 
 test "a function type as the argument" {
-    let h = Holder<func(i64) -> i64> { v: |n| n * 3 }
+    let h = Holder<func(i64) -> i64>(v: |n| n * 3)
     let f = first(h)
     assert f(5) == 15
 }
 
 test "the shapes that already worked" {
-    let n = Holder<i64> { v: 42 }
+    let n = Holder<i64>(v: 42)
     assert first(n) == 42
 
-    let inner = Holder<i64> { v: 8 }
-    let outer = Holder<Holder<i64>> { v: inner }
+    let inner = Holder<i64>(v: 8)
+    let outer = Holder<Holder<i64>>(v: inner)
     assert first(outer).v == 8
 }

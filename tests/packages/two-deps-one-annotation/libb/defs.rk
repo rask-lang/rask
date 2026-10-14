@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import std.reflect
+
+public annotation @validate {
+    min: i64 = 0
+    note: string = "b"
+}
+
+public struct Entry {
+    @validate(min: 5)
+    public score: i64
+}
+
+public func limits() -> string {
+    mut out = "b:"
+    comptime for f in reflect.fields<Entry>() {
+        comptime if f.has<validate>() {
+            out = "{out} {f.name}>={f.get<validate>().min} ({f.get<validate>().note})"
+        }
+    }
+    return out
+}

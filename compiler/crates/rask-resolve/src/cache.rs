@@ -8,6 +8,13 @@ use std::path::{Path, PathBuf};
 
 use crate::lockfile::compute_checksum;
 
+/// Where an archive is extracted before it's renamed into the cache. Inside
+/// the cache root, so the rename stays on one filesystem.
+const STAGING: &str = ".staging";
+
+/// Tells apart two extractions in one process.
+static STAGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Package cache manager.
 #[derive(Debug)]
 pub struct PackageCache {
@@ -99,6 +106,12 @@ impl PackageCache {
     /// Store a downloaded archive: extract, verify checksum, return cache path.
     ///
     /// The archive is a `.tar.gz` file containing package source at the root.
+    ///
+    /// Extracted beside the cache and renamed into place once it checks out,
+    /// so a package's directory is either absent or complete. Extracted in
+    /// place, a second `rask` sharing the cache found the half-written
+    /// directory, read its checksum as a mismatch and deleted it under the
+    /// first, which then failed its own check.
     pub fn store(
         &self,
         name: &str,
@@ -107,32 +120,50 @@ impl PackageCache {
         expected_checksum: &str,
     ) -> Result<PathBuf, CacheError> {
         let dest = self.pkg_dir(name, version);
+        let staging = self.root.join(STAGING).join(format!(
+            "{name}-{version}-{}-{}",
+            std::process::id(),
+            STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging)?;
+        let result = Self::extract_verified(archive, &staging, expected_checksum)
+            .and_then(|()| Self::move_into_place(&staging, &dest, expected_checksum));
+        let _ = std::fs::remove_dir_all(&staging);
+        result.map(|()| dest)
+    }
 
-        // Clean up any partial extraction
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest)?;
-        }
-        std::fs::create_dir_all(&dest)?;
-
-        // Extract tar.gz
+    fn extract_verified(archive: &Path, into: &Path, expected_checksum: &str) -> Result<(), CacheError> {
         let file = std::fs::File::open(archive)?;
         let decoder = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(decoder);
-        archive.unpack(&dest)
+        tar::Archive::new(decoder)
+            .unpack(into)
             .map_err(|e| CacheError::Extract(e.to_string()))?;
-
-        // Verify checksum of extracted contents
-        let actual = compute_checksum(&dest);
+        let actual = compute_checksum(into);
         if actual != expected_checksum {
-            // Remove corrupted extraction
-            let _ = std::fs::remove_dir_all(&dest);
             return Err(CacheError::ChecksumMismatch {
                 expected: expected_checksum.to_string(),
                 actual,
             });
         }
+        Ok(())
+    }
 
-        Ok(dest)
+    /// Rename a verified extraction to `dest`. Another process may have put
+    /// the same package there first; a complete copy of the same checksum is
+    /// as good as ours.
+    fn move_into_place(staged: &Path, dest: &Path, expected_checksum: &str) -> Result<(), CacheError> {
+        if dest.is_dir() {
+            if compute_checksum(dest) == expected_checksum {
+                return Ok(());
+            }
+            std::fs::remove_dir_all(dest)?;
+        }
+        match std::fs::rename(staged, dest) {
+            Ok(()) => Ok(()),
+            Err(_) if dest.is_dir() && compute_checksum(dest) == expected_checksum => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Remove a specific cached package.
@@ -210,6 +241,46 @@ mod tests {
         let got = cache.get("hello", "1.0.0", &expected_checksum);
         assert!(got.is_some());
         assert_eq!(got.unwrap(), cached_path);
+    }
+
+    /// Processes sharing a cache store and read the same package at once.
+    /// Extracted in place, one deleted the other's half-written directory as
+    /// a checksum mismatch, and the other's store then failed.
+    #[test]
+    fn concurrent_stores_of_one_package_all_succeed() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("cache");
+        let files: Vec<(String, String)> =
+            (0..40).map(|i| (format!("f{i}.rk"), format!("func f{i}() {{ }}\n").repeat(200))).collect();
+        let refs: Vec<(&str, &str)> = files.iter().map(|(n, c)| (n.as_str(), c.as_str())).collect();
+        let tarball = create_test_tarball(tmp.path(), &refs);
+        let probe = tmp.path().join("probe");
+        fs::create_dir_all(&probe).unwrap();
+        tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(&tarball).unwrap()))
+            .unpack(&probe)
+            .unwrap();
+        let checksum = compute_checksum(&probe);
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (root, tarball, checksum) = (root.clone(), tarball.clone(), checksum.clone());
+                std::thread::spawn(move || {
+                    let cache = PackageCache::with_root(root);
+                    for _ in 0..10 {
+                        let got = match cache.get("busy", "1.0.0", &checksum) {
+                            Some(dir) => dir,
+                            None => cache.store("busy", "1.0.0", &tarball, &checksum).unwrap(),
+                        };
+                        assert!(got.join("f39.rk").is_file());
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let cache = PackageCache::with_root(root);
+        assert!(cache.get("busy", "1.0.0", &checksum).is_some());
     }
 
     #[test]

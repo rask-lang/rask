@@ -45,7 +45,7 @@ test "a tuple payload keeps both fields" {
 }
 
 test "a struct payload still works" {
-    let m = Shared.mutex(Point { x: 3, y: 4 })
+    let m = Shared.mutex(Point(x: 3, y: 4))
     with m.write() as p {
         assert p.x == 3
         assert p.y == 4

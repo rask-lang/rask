@@ -15,12 +15,12 @@
 import c "c_struct.h"
 
 func main() {
-    let r = c.Rect { width: 6, height: 7 }
-    let v = c.Vec2 { x: 1.5f32, y: 2.25f32 }
-    let vd = c.Vec2d { x: 1.5, y: 2.25 }
-    let s = c.Stamp { t: 0.5, id: 41i64 }
-    let t = c.Triple { a: 1i64, b: 2i64, c: 3i64 }
-    let col = c.Rgba { r: 1u8, g: 2u8, b: 3u8, a: 4u8 }
+    let r = c.Rect(width: 6, height: 7)
+    let v = c.Vec2(x: 1.5f32, y: 2.25f32)
+    let vd = c.Vec2d(x: 1.5, y: 2.25)
+    let s = c.Stamp(t: 0.5, id: 41i64)
+    let t = c.Triple(a: 1i64, b: 2i64, c: 3i64)
+    let col = c.Rgba(r: 1u8, g: 2u8, b: 3u8, a: 4u8)
 
     // Fields read on the Rask side, at the widths the header declares.
     println("fields {r.width} {r.height} {col.a}")

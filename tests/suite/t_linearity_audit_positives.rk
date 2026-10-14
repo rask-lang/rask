@@ -80,7 +80,7 @@ func borrow_it(c: Conn) -> i32 {
 }
 
 func make() -> Conn {
-    let c = Conn { id: 7 }
+    let c = Conn(id: 7)
     return c
 }
 
@@ -88,7 +88,7 @@ func make() -> Conn {
 // (#1216). Native ran the cleanup anyway — a second consume of a value the
 // `finish` had already taken — while the interpreter got it right.
 func wrapped_consume(n: i32) -> i32 or Oops {
-    let c = Conn { id: n }
+    let c = Conn(id: n)
     ensure c.discard()
     let v = try c.finish()
     return v
@@ -98,7 +98,7 @@ func wrapped_consume(n: i32) -> i32 or Oops {
 // cancellation into `let`, `mut` and `return` and not into `x = …` left the
 // double consume one spelling away.
 func wrapped_consume_assigned(n: i32) -> i32 or Oops {
-    let c = Conn { id: n }
+    let c = Conn(id: n)
     ensure c.discard()
     mut v = 0
     v = try c.finish()
@@ -107,7 +107,7 @@ func wrapped_consume_assigned(n: i32) -> i32 or Oops {
 
 // Nothing consumes it, so the ensure is what does.
 func ensure_runs(n: i32) -> i32 {
-    let c = Conn { id: n }
+    let c = Conn(id: n)
     ensure c.discard()
     return c.ping()
 }
@@ -122,17 +122,17 @@ func cleanups() -> i64 {
 func main() {}
 
 test "mem.linear/L5 — a take self method" {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     assert c.close() == 1
 }
 
 test "mem.linear/L5 — a take parameter" {
-    let c = Conn { id: 2 }
+    let c = Conn(id: 2)
     assert consume(c) == 2
 }
 
 test "mem.linear/L3 — a borrow is not a consume" {
-    let c = Conn { id: 3 }
+    let c = Conn(id: 3)
     ensure c.close()
     assert borrow_it(c) == 3
     assert c.ping() == 3
@@ -140,7 +140,7 @@ test "mem.linear/L3 — a borrow is not a consume" {
 }
 
 test "mem.linear/L5 — rebinding" {
-    let c = Conn { id: 4 }
+    let c = Conn(id: 4)
     let d = c
     assert d.close() == 4
 }
@@ -152,15 +152,15 @@ test "mem.linear/L5 — returned to the caller" {
 test "mem.linear/L5 — stored in a struct field" {
     // The aggregate owns it now, and consuming the aggregate is what pays the
     // debt. Both owing it is what made this unwritable.
-    let c = Conn { id: 5 }
-    let h = Holder { c: c }
+    let c = Conn(id: 5)
+    let h = Holder(c: c)
     assert h.shut() == 5
 }
 
 test "mem.linear/L1 — consumed on every branch" {
     mut total = 0
     for flag in [true, false] {
-        let c = Conn { id: 6 }
+        let c = Conn(id: 6)
         if flag {
             total = total + c.close()
         } else {
@@ -174,7 +174,7 @@ test "mem.linear/L1 — consumed on the turn it was acquired" {
     mut total = 0
     mut i = 1
     while i <= 4 {
-        let c = Conn { id: i }
+        let c = Conn(id: i)
         total = total + c.close()
         i = i + 1
     }
@@ -182,7 +182,7 @@ test "mem.linear/L1 — consumed on the turn it was acquired" {
 }
 
 test "mem.linear/L1 — a resource that outlives a break" {
-    let c = Conn { id: 9 }
+    let c = Conn(id: 9)
     ensure c.close()
     mut i = 0
     while i < 5 {
@@ -238,8 +238,8 @@ extend Pass {
 test "conc.async/CH1 — a channel carrying a resource" {
     using Multitasking {
         mut (tx, rx) = Channel<Pass>.buffered(2)
-        tx.send(Pass { seat: 4 })
-        tx.send(Pass { seat: 9 })
+        tx.send(Pass(seat: 4))
+        tx.send(Pass(seat: 9))
         let first = rx.receive() catch e => {
             assert false
             return
@@ -258,7 +258,7 @@ test "conc.async/CH1 — a channel carrying a resource" {
 test "conc.async/CH1 — and one carrying something ordinary" {
     using Multitasking {
         mut (tx, rx) = Channel<Ticket>.buffered(1)
-        tx.send(Ticket { seat: 7 })
+        tx.send(Ticket(seat: 7))
         let t = rx.receive() catch e => {
             assert false
             return
@@ -298,7 +298,7 @@ extend Latch {
 
 test "a task consumes the resource it was given" {
     using Multitasking {
-        let latch = Latch { id: 3 }
+        let latch = Latch(id: 3)
         let task = spawn {
             return latch.release()
         }
@@ -312,7 +312,7 @@ test "a task consumes the resource it was given" {
 
 test "and does so while unwinding" {
     using Multitasking {
-        let latch = Latch { id: 5 }
+        let latch = Latch(id: 5)
         let task = spawn {
             ensure latch.release()
             panic("the task dies here")

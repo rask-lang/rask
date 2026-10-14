@@ -55,7 +55,7 @@ extend Order {
     /// what comes back.
     public func with_item(take self, name: string, qty: i32) -> Order {
         mut o = self
-        o.items.push(Item { name: name, qty: qty })
+        o.items.push(Item(name: name, qty: qty))
         return o
     }
 }
@@ -66,7 +66,7 @@ func describe(o: Order) -> string {
 }
 
 test "mem.parameters/PM1 — a struct's Vec survives a call that borrows it" {
-    let o = Order { id: 1, items: [Item { name: "a", qty: 2 }] }
+    let o = Order(id: 1, items: [Item(name: "a", qty: 2)])
     assert describe(o) == "order 1 has 1 items"
     // Still readable afterwards: the release goes at the last use, not at the
     // call.
@@ -75,15 +75,15 @@ test "mem.parameters/PM1 — a struct's Vec survives a call that borrows it" {
 }
 
 test "mem.parameters — a take-self consumer with two exits" {
-    let o = Order { id: 1, items: [Item { name: "a", qty: 2 }, Item { name: "b", qty: 5 }] }
+    let o = Order(id: 1, items: [Item(name: "a", qty: 2), Item(name: "b", qty: 5)])
     assert o.count() == 2
 
-    let empty = Order { id: 2, items: Vec.new() }
+    let empty = Order(id: 2, items: Vec.new())
     assert empty.count() == 0
 }
 
 test "mem.parameters — a take-self builder hands the Vec on, so it lives" {
-    let o = Order { id: 3, items: Vec.new() }
+    let o = Order(id: 3, items: Vec.new())
         .with_item("x", 1)
         .with_item("y", 2)
     assert o.items.len() == 2
@@ -95,12 +95,12 @@ test "mem.ownership — an array literal's strings belong to the Vec it built" {
     // `rask_vec_from_static` copies the bytes without retaining, so the array
     // must not release them. Three levels deep, because that is where reading
     // back garbage showed up.
-    let inv = Inventory {
+    let inv = Inventory(
         orders: [
-            Order { id: 1, items: [Item { name: "a", qty: 1 }] },
-            Order { id: 2, items: [Item { name: "b", qty: 2 }, Item { name: "c", qty: 3 }] },
-        ],
-    }
+            Order(id: 1, items: [Item(name: "a", qty: 1)])
+            Order(id: 2, items: [Item(name: "b", qty: 2), Item(name: "c", qty: 3)])
+        ]
+    )
     assert inv.orders.len() == 2
     assert inv.orders[1].items.len() == 2
     assert inv.orders[1].items[1].name == "c"
@@ -110,7 +110,7 @@ test "mem.ownership — an array literal's strings belong to the Vec it built" {
 test "mem.parameters — the same call in a loop, repeatedly" {
     mut seen = 0
     for i in 1..5 {
-        let o = Order { id: i, items: [Item { name: "n", qty: i }] }
+        let o = Order(id: i, items: [Item(name: "n", qty: i)])
         seen = seen + o.count()
     }
     assert seen == 4

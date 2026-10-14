@@ -24,7 +24,7 @@ func eat(take v: Vec<i64>) -> u64 {
 
 func main() {
     using Multitasking {
-        let c = Conn { id: 1 }
+        let c = Conn(id: 1)
         // ERROR: the task only reads `c`, and nothing ever closes it [E0810]
         let t = spawn {
             return peek(c)
@@ -32,7 +32,7 @@ func main() {
         println("{t.join()!}")
 
         // Fine: the task closes what it captured.
-        let d = Conn { id: 2 }
+        let d = Conn(id: 2)
         let u = spawn {
             ensure d.close()
             return peek(d)

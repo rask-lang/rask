@@ -366,11 +366,11 @@ func load_config(path: string) -> Config or (IoError | ParseError) {
 
     let user = json.get("user") ?? return ParseError.MissingField("user")
 
-    return Config {
-        user: user,
-        email: json.get("email"),
-        theme: json.get("theme"),
-    }
+    return Config(
+        user: user
+        email: json.get("email")
+        theme: json.get("theme")
+    )
 }
 
 // High-level: consumes, narrows, chains, recovers

@@ -34,7 +34,7 @@ func unwrap_it(o: (i64, bool)?) -> (i64, bool) {
 }
 
 test "a tuple in a struct field" {
-    let h = Holder { inner: (42, 7) }
+    let h = Holder(inner: (42, 7))
     assert h.inner.0 == 42
     assert h.inner.1 == 7
 }
@@ -42,9 +42,9 @@ test "a tuple in a struct field" {
 // What the derive is for: the compare has to order, not just compile.
 test "structs holding tuples sort by the tuple" {
     mut hs: Vec<Holder> = Vec.new()
-    hs.push(Holder { inner: (3, 1) })
-    hs.push(Holder { inner: (1, 9) })
-    hs.push(Holder { inner: (2, 5) })
+    hs.push(Holder(inner: (3, 1)))
+    hs.push(Holder(inner: (1, 9)))
+    hs.push(Holder(inner: (2, 5)))
     hs.sort()
     assert hs[0].inner.0 == 1
     assert hs[1].inner.0 == 2

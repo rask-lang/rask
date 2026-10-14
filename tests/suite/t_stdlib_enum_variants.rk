@@ -42,7 +42,7 @@ extend ParseError {
 
 func parse_it(s: string) -> i32 or ParseError {
     if s == "42" { return 42 }
-    return ParseError { detail: "nope" }
+    return ParseError(detail: "nope")
 }
 
 test "a fieldless stdlib variant constructs and matches" {

@@ -132,7 +132,7 @@ test "struct method averages Vec<f64> via get unwrap" {
     s.push(2.0)
     s.push(4.0)
     s.push(6.0)
-    let a = Averager { samples: s, count: 3 }
+    let a = Averager(samples: s, count: 3)
     assert a.mean() == 4.0
 }
 

@@ -38,7 +38,7 @@ func risky(n: i64) -> i64 or Bad {
 }
 
 test "type.operators/P3 — a postfix operator continues the line above" {
-    let b = Box2 { n: 21 }
+    let b = Box2(n: 21)
 
     let called = b
         .doubled()
@@ -119,7 +119,7 @@ test "type.operators/P3 — bitwise, division and remainder continue" {
     assert left == 1
 }
 
-test "type.operators/P3 — the fallbacks and ranges continue" {
+test "type.operators/P3 — the fallbacks continue" {
     let missing: i64? = none
     let coalesced = missing
         ?? 7
@@ -129,19 +129,8 @@ test "type.operators/P3 — the fallbacks and ranges continue" {
         catch _ => 0
     assert caught == 0
 
-    mut half_open = 0
-    for i in 0
-        ..3 {
-        half_open = half_open + i
-    }
-    assert half_open == 3
-
-    mut inclusive = 0
-    for i in 0
-        ..=2 {
-        inclusive = inclusive + i
-    }
-    assert inclusive == 3
+    // `..` doesn't continue a line: one at the start of a line is a
+    // `..base` in a value's field list, so a range stays on one line.
 }
 
 test "type.operators/P3 — `else` continues an `if`" {

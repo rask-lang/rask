@@ -29,7 +29,7 @@ extend Mood {
 }
 
 public func from_b() -> Helper {
-    return Helper { label: "bee" }
+    return Helper(label: "bee")
 }
 
 func combine(h: Helper) -> string {

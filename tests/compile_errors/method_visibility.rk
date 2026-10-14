@@ -35,7 +35,7 @@ extend Other {
 }
 
 func main() {
-    let p = Pt { x: 3 }
+    let p = Pt(x: 3)
     // ERROR: `Pt.secret` is private [E0413]
     println("{p.secret()}")
     println("{p.revealed()}")
@@ -50,6 +50,6 @@ func main() {
     let v = JsonValue.Bool(true)
     println(v.to_string())
 
-    let o = Other { p: p }
+    let o = Other(p: p)
     println("{o.peek()}")
 }

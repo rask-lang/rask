@@ -17,7 +17,7 @@ impl TypeChecker {
     /// The process entry point: a free function called `main`, or one marked
     /// `@entry`. A method named `main` is an ordinary method — it has callers.
     fn is_entry_point(&self, f: &FnDecl) -> bool {
-        if f.attrs.iter().any(|a| a == "entry") {
+        if f.attrs.iter().any(|a| a.is("entry")) {
             return true;
         }
         f.name == "main" && self.current_self_type.is_none()
@@ -343,7 +343,7 @@ impl TypeChecker {
         self.inferred_errors = old_inferred_errors;
 
         // @no_alloc enforcement: scan body for heap allocations
-        if f.attrs.iter().any(|a| a == "no_alloc") {
+        if f.attrs.iter().any(|a| a.is("no_alloc")) {
             self.check_no_alloc(&f.name, &f.body);
         }
     }

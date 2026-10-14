@@ -25,7 +25,7 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
 
     fn is_resource(&self, name: &str) -> bool {
         self.0.struct_decls.get(name)
-            .is_some_and(|d| d.attrs.iter().any(|a| a == "resource"))
+            .is_some_and(|d| d.attrs.iter().any(|a| a.is("resource")))
     }
 
     fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>> {
@@ -134,7 +134,8 @@ impl Interpreter {
         let field_infos: Vec<Value> = decl
             .fields
             .iter()
-            .map(|f| {
+            .enumerate()
+            .map(|(index, f)| {
                 let mut fields = IndexMap::new();
                 fields.insert(
                     "name".to_string(),
@@ -176,18 +177,13 @@ impl Interpreter {
                     "has_default".to_string(),
                     Value::Bool(f.default.is_some() || has_attr(&f.attrs, "default")),
                 );
-                // AN6: raw attachments, hidden behind `__` — what
-                // `field.has<A>()` answers from. Mirrors the native
-                // ReflectFieldConst.attrs.
+                // AN6: which declaration and field this describes, hidden
+                // behind `__` — `field.has<A>()` reads the attachments there.
                 fields.insert(
-                    "__attrs".to_string(),
-                    Value::vec(
-                        f.attrs
-                            .iter()
-                            .map(|a| Value::String(Arc::new(Mutex::new(a.clone()))))
-                            .collect(),
-                    ),
+                    "__owner".to_string(),
+                    Value::String(Arc::new(Mutex::new(decl.name.clone()))),
                 );
+                fields.insert("__index".to_string(), Value::int(index as i64));
                 Value::Struct(Arc::new(Mutex::new(StructData {
                     name: "FieldInfo".to_string(),
                     fields,
@@ -200,17 +196,12 @@ impl Interpreter {
     }
 }
 
-/// True if an attribute with the given base name is present.
-/// Matches both bare (`skip`) and call-form (`default(0)`) attributes.
-fn has_attr(attrs: &[String], name: &str) -> bool {
-    attrs.iter().any(|a| a == name || a.starts_with(&format!("{name}(")))
+/// True if the attribute `name` is present, bare or with arguments.
+fn has_attr(attrs: &[rask_ast::attr::Attr], name: &str) -> bool {
+    rask_ast::attr::has(attrs, name)
 }
 
-/// Extract the string argument of `@rename("...")`, if present.
-fn rename_of(attrs: &[String]) -> Option<String> {
-    let raw = attrs.iter().find(|a| a.starts_with("rename("))?;
-    // Stored as `rename("user_name")` — pull out the quoted contents.
-    let inner = raw.strip_prefix("rename(")?.strip_suffix(')')?;
-    let inner = inner.trim();
-    inner.strip_prefix('"')?.strip_suffix('"').map(|s| s.to_string())
+/// The key `@rename("...")` gives the field, if it has one.
+fn rename_of(attrs: &[rask_ast::attr::Attr]) -> Option<String> {
+    rask_ast::attr::find(attrs, "rename")?.positional()?.string()
 }

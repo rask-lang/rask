@@ -22,8 +22,8 @@ Anything doing four jobs needs its edges pinned down.
 <!-- test: skip -->
 ```rask
 with world.batch() as w {
-    let a = w.insert(Entity { name: "drone", health: 20 })
-    let b = w.insert(Body { x: 0.0, y: 0.0 })
+    let a = w.insert(Entity(name: "drone", health: 20))
+    let b = w.insert(Body(x: 0.0, y: 0.0))
     a.body = b                    // mutual required links: legal in here
     b.owner = a
     w.delete(old_target)
@@ -92,8 +92,8 @@ over the block — that every omitted link is assigned before the block ends.
 <!-- test: skip -->
 ```rask
 with world.batch() as w {
-    let a = w.insert(Entity { name: "drone", health: 20 })   // body omitted
-    let b = w.insert(Body { x: 0.0, y: 0.0 })
+    let a = w.insert(Entity(name: "drone", health: 20))   // body omitted
+    let b = w.insert(Body(x: 0.0, y: 0.0))
     a.body = b        // assigned before block end ✓
     b.owner = a
 }

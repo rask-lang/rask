@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a turbofish on a container constructor is checked
-// ERROR: expected `string`, found `i64`
+// ERROR: expected `string`, found `i32`
 //
 // `Vec.new<string>()` used to parse its `<string>` and drop it, so the binding
 // stayed open and this push widened it instead of being rejected (#1084). The

@@ -16,7 +16,7 @@ func eat(take b: Bag) -> u64 {
 }
 
 func main() {
-    let b = Bag { items: [1, 2] }
+    let b = Bag(items: [1, 2])
     // ERROR: returns the borrowed capture itself [E0907]
     let f = || b
     let x = f()
@@ -45,7 +45,7 @@ func main() {
 
     // Fine: a local inside the body shadows the capture.
     let s = || {
-        let b = Bag { items: [3] }
+        let b = Bag(items: [3])
         return b
     }
     let u = s()

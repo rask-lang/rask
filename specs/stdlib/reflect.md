@@ -218,7 +218,7 @@ func debug_print<T>(value: T) {
 comptime func assert_all_public<T>() {
     for field in reflect.fields<T>() {
         @comptime_assert(
-            field.is_public,
+            field.is_public
             "Field '{field.name}' of {reflect.name_of<T>()} must be public"
         )
     }

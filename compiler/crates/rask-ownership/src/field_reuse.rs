@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! self.list = More(h, Heap(self.list))              // old list is the tail
-//! self.bag = Bag { tag: self.bag.tag.clone(), … }   // old bag is garbage
+//! self.bag = Bag(tag: self.bag.tag.clone(), …)   // old bag is garbage
 //! ```
 //!
 //! Releasing the first frees what the new value points at. Lowering asks this

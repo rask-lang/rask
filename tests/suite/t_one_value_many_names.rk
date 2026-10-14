@@ -65,8 +65,8 @@ test "mem.ownership — two calls that each copy the vector in" {
 // only in the allocation count.
 test "mem.ownership — the same string vector read three ways" {
     let words: Vec<string> = [
-        "the first word is long enough to allocate",
-        "and the second one is long as well",
+        "the first word is long enough to allocate"
+        "and the second one is long as well"
     ]
     let lengths = words.map(|w| w.len().wrap<i64>()).to_vec()
     let longest = words.filter(|w| w.len() > 35).to_vec()
@@ -78,8 +78,8 @@ test "mem.ownership — the same string vector read three ways" {
 
 test "mem.ownership — a vector of structs used twice" {
     let rows: Vec<Sample> = [
-        Sample { label: "the first row has a long label", value: 1 },
-        Sample { label: "the second row also has one", value: 2 },
+        Sample(label: "the first row has a long label", value: 1)
+        Sample(label: "the second row also has one", value: 2)
     ]
     let values = rows.map(|r| r.value).to_vec()
     // A `Sample` is 24 bytes, so a lent one is cloned where it's collected

@@ -2,7 +2,7 @@
 //! Pass 1: declaration collection and checking.
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
-use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, BinaryFieldSpec, BinaryStructInfo, Endian};
+use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
 use super::parse_type::resolve_type_expr;
@@ -155,7 +155,13 @@ impl TypeChecker {
                     fields,
                     methods: Vec::new(),
                     is_pub: true,
-                    attrs: vec!["layout(C)".to_string()],
+                    attrs: vec![rask_ast::attr::Attr::synthetic(
+                        "layout",
+                        Some(vec![rask_ast::attr::AttrArg {
+                            label: None,
+                            value: rask_ast::attr::AttrValue::synthetic_name("C"),
+                        }]),
+                    )],
                     doc: None,
                 }),
                 span,
@@ -238,7 +244,6 @@ impl TypeChecker {
             })
             .collect();
         self.write_derived_methods(&annotations);
-        self.register_binary_methods();
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
         self.pre_register_inferred_fns(decls);
@@ -248,21 +253,21 @@ impl TypeChecker {
     fn collect_type_declaration(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Struct(s) => {
-                self.check_declared_type_name(&s.name, "struct", decl.span);
+                self.check_declared_type_name(&s.name, "struct", decl.span, s.fields.is_empty());
                 let id = self.register_struct(s);
                 self.types.record_param_bounds(id, &s.type_params);
                 self.types.record_method_decl(id, decl.id);
                 self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
             }
             DeclKind::Enum(e) => {
-                self.check_declared_type_name(&e.name, "enum", decl.span);
+                self.check_declared_type_name(&e.name, "enum", decl.span, false);
                 let id = self.register_enum(e, decl.span);
                 self.types.record_param_bounds(id, &e.type_params);
                 self.types.record_method_decl(id, decl.id);
                 self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
             }
             DeclKind::Interface(t) => {
-                self.check_declared_type_name(&t.name, "interface", decl.span);
+                self.check_declared_type_name(&t.name, "interface", decl.span, false);
                 // DT1: shape-matching stops at the package boundary
                 if t.is_pub && t.is_duck {
                     self.errors.push(TypeError::PublicDuckInterface {
@@ -273,14 +278,14 @@ impl TypeChecker {
                 self.register_interface(t);
             }
             DeclKind::Union(u) => {
-                self.check_declared_type_name(&u.name, "union", decl.span);
+                self.check_declared_type_name(&u.name, "union", decl.span, false);
                 self.register_union(u);
             }
             // AN6: annotations register as nominal struct types so
             // `field.has<validate>()` can name them as type arguments.
             // The restricted shape (AN1) is enforced in annotations.rs.
             DeclKind::Annotation(a) => {
-                self.check_declared_type_name(&a.name, "annotation", decl.span);
+                self.check_declared_type_name(&a.name, "annotation", decl.span, false);
                 self.annotation_types.insert(a.name.clone());
                 let s = rask_ast::decl::StructDecl {
                     name: a.name.clone(),
@@ -295,12 +300,15 @@ impl TypeChecker {
                 self.types.record_method_decl(id, decl.id);
             }
             DeclKind::TypeAlias(a) => {
-                self.check_declared_type_name(&a.name, "type alias", decl.span);
+                self.check_declared_type_name(&a.name, "type alias", decl.span, false);
                 self.register_type_alias(a, decl.span);
                 // A nominal type (`type MyDoc = interfacepkg.Doc`) belongs to
                 // whoever wrote it, which is what makes it XC1's way out.
                 if let Some(id) = self.types.get_type_id(&a.name) {
                     self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+                    if !a.is_transparent {
+                        self.types.record_param_bounds(id, &a.type_params);
+                    }
                 }
             }
             // `const W = 4` then `[i32; W]`. The length has to be known
@@ -438,13 +446,8 @@ impl TypeChecker {
                     span: field.name_span,
                 });
             }
-            for attr in &field.attrs {
-                let attr = attr.trim();
-                let Some(arg) = attr.strip_prefix("rename") else { continue };
-                let inner = arg.trim_start().strip_prefix('(').and_then(|a| a.strip_suffix(')'));
-                let names_a_key = inner
-                    .map(str::trim)
-                    .is_some_and(|a| a.starts_with('"') && a.ends_with('"') && a.len() >= 2);
+            for attr in field.attrs.iter().filter(|a| a.is("rename")) {
+                let names_a_key = attr.positional().is_some_and(|v| v.string().is_some());
                 if !names_a_key {
                     self.errors.push(TypeError::BadFieldAnnotation {
                         attr: "rename".to_string(),
@@ -523,7 +526,20 @@ impl TypeChecker {
         });
     }
 
-    fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span) {
+    fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span, namespace: bool) {
+        // A type starts with a capital, which is what makes `Name(…)` read as
+        // building one and `name(…)` as a call. A struct with no fields is a
+        // namespace (`struct net { }`), never built; a C struct keeps the
+        // header's spelling; an annotation is `@name`, not a type anyone
+        // builds.
+        let compiler_provided = self.types.stdlib_mode || name.contains('.') || kind == "annotation";
+        if !compiler_provided && !namespace && !name.starts_with(|c: char| c.is_ascii_uppercase()) {
+            self.errors.push(TypeError::LowercaseTypeName {
+                name: name.to_string(),
+                kind: kind.to_string(),
+                span,
+            });
+        }
         if is_type_param_name(name) {
             self.errors.push(TypeError::SingleLetterTypeName {
                 name: name.to_string(),
@@ -1179,12 +1195,7 @@ impl TypeChecker {
         let decl_params = self
             .types
             .get(type_id)
-            .and_then(|d| match d {
-                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
-                    Some(type_params.clone())
-                }
-                _ => None,
-            })
+            .map(|d| d.type_params().to_vec())
             .filter(|p| !p.is_empty())
             .unwrap_or_else(|| Self::target_type_params(&i.target_ty));
 
@@ -1229,7 +1240,7 @@ impl TypeChecker {
         // subtraction on two nanosecond counts. The backends have to know
         // there's no body before they look for one.
         for (m, sig) in i.methods.iter().zip(new_methods.iter()) {
-            if m.attrs.iter().any(|a| a == "builtin") {
+            if m.attrs.iter().any(|a| a.is("builtin")) {
                 self.types.record_builtin_method(type_id, &sig.name);
             }
         }
@@ -1400,7 +1411,7 @@ impl TypeChecker {
             })
             .filter(|f| {
                 f.default.is_none()
-                    && rask_ast::decl::field_attrs::default_literal(&f.attrs).is_none()
+                    && rask_ast::decl::field_attrs::default_value(&f.attrs).is_none()
             })
             .map(|f| f.name.clone())
             .collect();
@@ -1412,30 +1423,25 @@ impl TypeChecker {
             .map(|m| self.method_signature(m, &struct_params, &Self::named_all(&struct_params)))
             .collect();
 
-        let is_resource = s.attrs.iter().any(|a| a == "resource");
-        let is_unique = s.attrs.iter().any(|a| a == "unique");
-        let is_binary = s.attrs.iter().any(|a| a == "binary");
+        let is_resource = s.attrs.iter().any(|a| a.is("resource"));
+        let is_unique = s.attrs.iter().any(|a| a.is("unique"));
+        let is_binary = s.attrs.iter().any(|a| a.is("binary"));
         // E16: the owner's refusal, recorded on the type. The field-level
         // `@no_serialize` narrows the wire form; this says there isn't one.
-        let no_encode = s.attrs.iter().any(|a| a == "no_encode");
-        let no_decode = s.attrs.iter().any(|a| a == "no_decode");
+        let no_encode = s.attrs.iter().any(|a| a.is("no_encode"));
+        let no_decode = s.attrs.iter().any(|a| a.is("no_decode"));
 
         // For @binary structs, convert binary field specifiers to runtime types
-        let (fields, binary_info) = if is_binary {
-            let result = parse_binary_struct_fields(&s.name, &s.fields);
-            match result {
-                Ok((typed_fields, info)) => {
-                    (typed_fields, Some(info))
-                }
+        let fields = if is_binary {
+            match parse_binary_struct_fields(&s.fields) {
+                Ok(typed_fields) => typed_fields,
                 Err(errors) => {
-                    for err in errors {
-                        self.errors.push(err);
-                    }
-                    (fields, None)
+                    self.errors.extend(errors);
+                    fields
                 }
             }
         } else {
-            (fields, None)
+            fields
         };
 
         let type_id = self.types.register_type(TypeDef::Struct {
@@ -1457,9 +1463,6 @@ impl TypeChecker {
             no_decode,
         });
 
-        if let Some(info) = binary_info {
-            self.types.register_binary_info(type_id, info);
-        }
         for m in &s.methods {
             self.note_method_access(type_id, m);
         }
@@ -1533,7 +1536,7 @@ impl TypeChecker {
                 // An unnamed payload has no field name to flatten into: the
                 // object already holds the tag, and the payload would need an
                 // invented key to sit beside it.
-                if v.fields.len() == 1 && v.fields[0].name == "_0" {
+                if v.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&v.fields[0].name) {
                     self.errors.push(TypeError::TagOnUnnamedPayload {
                         enum_name: e.name.clone(),
                         variant: v.name.clone(),
@@ -1613,8 +1616,8 @@ impl TypeChecker {
             // declarations are visible.
             is_transitive_resource: false,
             // E16, as on a struct.
-            no_encode: e.attrs.iter().any(|a| a == "no_encode"),
-            no_decode: e.attrs.iter().any(|a| a == "no_decode"),
+            no_encode: e.attrs.iter().any(|a| a.is("no_encode")),
+            no_decode: e.attrs.iter().any(|a| a.is("no_decode")),
         });
         for (variant, field_names) in variant_names {
             self.types
@@ -1756,6 +1759,7 @@ impl TypeChecker {
             self.note_linear_container_site(span, underlying.clone());
             self.types.register_type(TypeDef::NominalAlias {
                 name: a.name.clone(),
+                type_params: a.type_params.iter().map(|p| p.name.clone()).collect(),
                 underlying,
                 with_interfaces: a.with_interfaces.clone(),
                 methods: Vec::new(),
@@ -2486,7 +2490,7 @@ impl TypeChecker {
                 // and turns them into the runtime types. Judging the raw
                 // spelling here as well rejected every `@binary` struct there
                 // is, with a message telling you to declare `u16be`.
-                if !s.attrs.iter().any(|a| a == "binary") {
+                if !s.attrs.iter().any(|a| a.is("binary")) {
                     let owner = self.types.get_type_id(&s.name);
                     let fields: Vec<_> = s
                         .fields
@@ -2752,92 +2756,6 @@ impl TypeChecker {
             _ => {}
         }
     }
-
-    /// G1–G4: Register parse/build/build_into methods and SIZE/SIZE_BITS for @binary structs.
-    fn register_binary_methods(&mut self) {
-        use crate::types::TypeId;
-
-        let type_count = self.types.types.len();
-        for idx in 0..type_count {
-            let id = TypeId(idx as u32);
-            if !self.types.is_binary_type_by_id(id) {
-                continue;
-            }
-
-            let struct_type = Type::Named(id);
-
-            // G1: parse(data: Vec<u8>) -> (T, Vec<u8>) or ParseError
-            let bytes = Type::UnresolvedGeneric {
-                name: "Vec".to_string(),
-                args: vec![crate::types::GenericArg::Type(Box::new(Type::U8))],
-            };
-            let parse_result = Type::Result {
-                ok: Box::new(Type::Tuple(vec![
-                    struct_type.clone(),
-                    bytes.clone(),
-                ])),
-                err: Box::new(Type::UnresolvedNamed("ParseError".to_string())),
-            };
-
-            // G2: build(self) -> Vec<u8>
-            let vec_u8 = Type::UnresolvedGeneric {
-                name: "Vec".to_string(),
-                args: vec![crate::types::GenericArg::Type(Box::new(Type::U8))],
-            };
-
-            // G3: build_into(self, buffer: Vec<u8>) -> usize or BuildError
-            let build_into_result = Type::Result {
-                ok: Box::new(Type::U64), // usize
-                err: Box::new(Type::UnresolvedNamed("BuildError".to_string())),
-            };
-
-            let mut methods = vec![
-                MethodSig {
-                    param_names: Vec::new(),
-                    derived: false,
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "parse".to_string(),
-                    self_param: SelfParam::None,
-                    params: vec![(bytes.clone(), ParamMode::Borrow)],
-                    ret: parse_result,
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    derived: false,
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "build".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![],
-                    ret: vec_u8,
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    derived: false,
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "build_into".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(bytes.clone(), ParamMode::Mutate)],
-                    ret: build_into_result,
-                    defaults: Vec::new(),
-                },
-            ];
-
-            if let Some(TypeDef::Struct { methods: existing, .. }) = self.types.get_mut(id) {
-                existing.append(&mut methods);
-            }
-        }
-    }
 }
 
 /// The runtime type a `@binary` field specifier stands for, or `None` when the
@@ -2846,87 +2764,42 @@ impl TypeChecker {
 /// struct was laid out with a pointer-sized slot per field and a warning per
 /// compile.
 pub fn binary_field_runtime_type(ty: &TypeExpr) -> Option<Type> {
-    parse_binary_field_spec(ty).ok().map(|(_, _, ty, _, _)| ty)
+    rask_ast::binary::field_spec(ty).ok().map(|spec| held_type(&spec))
 }
 
-fn parse_binary_field_spec(ty: &TypeExpr) -> Result<(u32, Option<Endian>, Type, bool, usize), String> {
-    let s = match ty {
-        // [N]u8 — fixed byte array
-        TypeExpr::FixedCount { count, elem } => {
-            if !elem.is_name("u8") {
-                return Err(format!("binary byte arrays only support u8, found {}", ty.source()));
-            }
-            let count: usize = count.parse()
-                .map_err(|_| format!("invalid byte array count: {}", count))?;
-            let bits = (count as u32) * 8;
-            return Ok((bits, None, Type::Array { elem: Box::new(Type::U8), len: count }, true, count));
-        }
-        TypeExpr::Int(n) => n.as_str(),
-        _ => match ty.bare_name() {
-            Some(name) => name,
-            None => return Err(format!("unknown binary type: {}", ty.source())),
+fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
+    use rask_ast::binary::Held;
+    match spec.held {
+        Held::Bytes(len) => Type::Array { elem: Box::new(Type::U8), len },
+        Held::Int(name) | Held::Float(name) => match name {
+            "u8" => Type::U8,
+            "i8" => Type::I8,
+            "u16" => Type::U16,
+            "i16" => Type::I16,
+            "u32" => Type::U32,
+            "i32" => Type::I32,
+            "u64" => Type::U64,
+            "i64" => Type::I64,
+            "f32" => Type::F32,
+            _ => Type::F64,
         },
-    };
-
-    // Bare number — N bits
-    if let Ok(n) = s.parse::<u32>() {
-        if n == 0 || n > 64 {
-            return Err(format!("bit count must be >= 1 and <= 64, found {}", n));
-        }
-        let runtime_type = match n {
-            1..=8 => Type::U8,
-            9..=16 => Type::U16,
-            17..=32 => Type::U32,
-            33..=64 => Type::U64,
-            _ => unreachable!(),
-        };
-        return Ok((n, None, runtime_type, false, 0));
     }
-
-    // Endian types: u16be, i32le, f64be, etc.
-    let (base, endian) = if let Some(base) = s.strip_suffix("be") {
-        (base, Endian::Big)
-    } else if let Some(base) = s.strip_suffix("le") {
-        (base, Endian::Little)
-    } else {
-        // Non-endian types: u8, i8
-        return match s {
-            "u8" => Ok((8, None, Type::U8, false, 0)),
-            "i8" => Ok((8, None, Type::I8, false, 0)),
-            _ => Err(format!("multi-byte field '{}' must specify endianness (be/le)", s)),
-        };
-    };
-
-    let (bits, runtime_type) = match base {
-        "u16" => (16, Type::U16),
-        "i16" => (16, Type::I16),
-        "u32" => (32, Type::U32),
-        "i32" => (32, Type::I32),
-        "u64" => (64, Type::U64),
-        "i64" => (64, Type::I64),
-        "f32" => (32, Type::F32),
-        "f64" => (64, Type::F64),
-        _ => return Err(format!("unknown binary type: {}", s)),
-    };
-
-    Ok((bits, Some(endian), runtime_type, false, 0))
 }
 
-/// B1–V4: Parse and validate all fields of a @binary struct.
+/// B1–V4: check a `@binary` struct's fields and give each its runtime type.
 fn parse_binary_struct_fields(
-    struct_name: &str,
     fields: &[rask_ast::decl::Field],
-) -> Result<(Vec<(String, Type)>, BinaryStructInfo), Vec<TypeError>> {
+) -> Result<Vec<(String, Type)>, Vec<TypeError>> {
+    use rask_ast::binary::field_spec;
     let mut errors = Vec::new();
     let mut typed_fields = Vec::new();
-    let mut binary_fields = Vec::new();
     let mut bit_offset: u32 = 0;
 
     for field in fields {
-        match parse_binary_field_spec(&field.ty) {
-            Ok((bits, endian, runtime_type, is_byte_array, byte_array_len)) => {
+        match field_spec(&field.ty) {
+            Ok(spec) => {
                 // F3: multi-byte endian types must be byte-aligned
-                if endian.is_some() && bits > 8 && (bit_offset % 8) != 0 {
+                if spec.endian.is_some() && spec.bits > 8 && (bit_offset % 8) != 0 {
                     errors.push(TypeError::GenericError(
                         format!(
                             "[type.binary/F3] endian type '{}' not byte-aligned: starts at bit {}, not a byte boundary",
@@ -2935,26 +2808,8 @@ fn parse_binary_struct_fields(
                         field.name_span,
                     ));
                 }
-
-                // V1: bit count range
-                if !is_byte_array && (bits == 0 || bits > 64) {
-                    errors.push(TypeError::GenericError(
-                        format!("[type.binary/V1] invalid bit count: {} (must be 1-64)", bits),
-                        field.name_span,
-                    ));
-                }
-
-                typed_fields.push((field.name.clone(), runtime_type.clone()));
-                binary_fields.push(BinaryFieldSpec {
-                    name: field.name.clone(),
-                    bits,
-                    endian,
-                    runtime_type,
-                    bit_offset,
-                    is_byte_array,
-                    byte_array_len,
-                });
-                bit_offset += bits;
+                typed_fields.push((field.name.clone(), held_type(&spec)));
+                bit_offset += spec.bits;
             }
             Err(msg) => {
                 errors.push(TypeError::GenericError(msg, field.name_span));
@@ -2977,16 +2832,7 @@ fn parse_binary_struct_fields(
     if !errors.is_empty() {
         return Err(errors);
     }
-
-    let size_bytes = (bit_offset + 7) / 8;
-    let info = BinaryStructInfo {
-        name: struct_name.to_string(),
-        fields: binary_fields,
-        total_bits: bit_offset,
-        size_bytes,
-    };
-
-    Ok((typed_fields, info))
+    Ok(typed_fields)
 }
 
 /// PC1: single uppercase ASCII letter — always a type parameter in signatures.
@@ -3084,6 +2930,7 @@ pub(super) fn owner_type_params(kind: &DeclKind, types: &crate::TypeTable) -> Ve
         DeclKind::Enum(e) => enum_type_param_names(e),
         DeclKind::Interface(t) => interface_type_param_names(t),
         DeclKind::Impl(i) => header_type_params(i, types),
+        DeclKind::TypeAlias(a) if !a.is_transparent => a.type_params.iter().map(|p| p.name.clone()).collect(),
         _ => Vec::new(),
     }
 }
@@ -3131,10 +2978,10 @@ pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
 }
 
 /// The warning names an `@allow(...)` list suppresses.
-pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
+pub(super) fn allowed_from(attrs: &[rask_ast::attr::Attr]) -> Vec<String> {
     attrs
         .iter()
-        .filter_map(|a| a.strip_prefix("allow(").and_then(|r| r.strip_suffix(')')))
+        .filter_map(rask_ast::allow_names::allowed_name)
         .map(str::to_string)
         .collect()
 }
@@ -3213,12 +3060,8 @@ pub(super) fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<
         .target_ty
         .name()
         .and_then(|n| types.get_type_id(&n))
-        .and_then(|id| match types.get(id)? {
-            TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
-                Some(type_params.clone())
-            }
-            _ => None,
-        })
+        .and_then(|id| types.get(id))
+        .map(|d| d.type_params().to_vec())
         .unwrap_or_default();
     let args = i.target_ty.args();
     let mut out: Vec<String> = if args.is_empty() { declared.clone() } else { Vec::new() };

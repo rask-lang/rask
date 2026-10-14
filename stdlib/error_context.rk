@@ -20,5 +20,5 @@ extend ContextError {
 /// Intended for the transform-and-leave form:
 ///     let text = fs.read_text(path) catch e => return context("reading {path}", e)
 public func context<E: Error>(msg: string, err: E) -> ContextError {
-    return ContextError { context: msg, source: err.message() }
+    return ContextError(context: msg, source: err.message())
 }

@@ -16,7 +16,7 @@ extend Helper {
 }
 
 public func from_a() -> Helper {
-    return Helper { n: 7 }
+    return Helper(n: 7)
 }
 
 // A private name that collides too. Both packages have a `combine`, and

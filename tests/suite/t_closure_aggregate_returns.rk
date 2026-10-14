@@ -84,7 +84,7 @@ test "a string result survives two uses in one expression" {
 
 // A word-sized struct comes back as the value itself, not as an address.
 test "a one-word struct survives" {
-    let s = Small { a: 42 }
+    let s = Small(a: 42)
     let f = || { return s }
     assert f().a == 42
     let got = f()
@@ -92,7 +92,7 @@ test "a one-word struct survives" {
 }
 
 test "a struct narrower than a word survives" {
-    let p = Pair8 { a: 1, b: 2 }
+    let p = Pair8(a: 1, b: 2)
     let f = || { return p }
     assert f().a == 1
     assert f().b == 2
@@ -103,7 +103,7 @@ test "a struct narrower than a word survives" {
 
 // Exactly a word, but two fields rather than one.
 test "a two-field word-sized struct survives" {
-    let p = Pair32 { a: 3, b: 4 }
+    let p = Pair32(a: 3, b: 4)
     let f = || { return p }
     assert f().a == 3
     assert f().b == 4
@@ -112,7 +112,7 @@ test "a two-field word-sized struct survives" {
 }
 
 test "a struct wider than a word survives" {
-    let b = Big { a: 1, b: 2, c: 3 }
+    let b = Big(a: 1, b: 2, c: 3)
     let f = || { return b.clone() }
     assert f().a == 1
     assert f().c == 3
@@ -121,7 +121,7 @@ test "a struct wider than a word survives" {
 }
 
 test "a struct with a string field survives" {
-    let m = Mixed { n: 7, s: "seven" }
+    let m = Mixed(n: 7, s: "seven")
     let f = || { return m.clone() }
     assert f().n == 7
     assert f().s == "seven"
@@ -149,7 +149,7 @@ test "an enum with a payload survives" {
 
 // Calling through a `func()` parameter goes down the same path.
 test "a closure called through a parameter returns an aggregate" {
-    let b = Big { a: 4, b: 5, c: 6 }
+    let b = Big(a: 4, b: 5, c: 6)
     let f = || { return b.clone() }
     assert sum_pair(f) == 15
 }

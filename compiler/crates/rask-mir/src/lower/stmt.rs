@@ -112,6 +112,7 @@ impl<'a> MirLowerer<'a> {
                     offset: 0,
                     value: MirOperand::Constant(MirConst::Int(0)),
                     store_size: Some(8),
+                    field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: wrap_local,
@@ -123,6 +124,7 @@ impl<'a> MirLowerer<'a> {
                     // stale bytes inside every `i32?` built this way, and `==`
                     // reads the payload as a word (#920).
                     store_size: Some(val_ty.size().max(8)),
+                    field: None,
                 }));
                 return (MirOperand::Local(wrap_local), place_ty.clone());
             }
@@ -291,9 +293,13 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
+        // A closure in a field is the aggregate's, released with it (#1253),
+        // so writing a new one over it gives the old one back the same way.
+        // Left out, `p.run = || …` leaked the closure it replaced.
         matches!(
             fty,
             MirType::String | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
     }
@@ -323,11 +329,32 @@ impl<'a> MirLowerer<'a> {
         None
     }
 
+    /// Which struct field `field` names within `oty`, for a store to record.
+    fn field_slot_of(&self, oty: &MirType, field: &str) -> Option<crate::FieldSlot> {
+        let sid = match oty {
+            MirType::Struct(sid) | MirType::Link(sid) => sid,
+            _ => return None,
+        };
+        let layout = self.ctx.struct_layouts.get(sid.id as usize)?;
+        let index = layout.fields.iter().position(|f| f.name == field)?;
+        Some(crate::FieldSlot { layout: sid.id, field: index as u32 })
+    }
+
+    /// The field at the end of `path` within `base_ty`.
+    fn field_path_slot(&self, base_ty: &MirType, path: &[&str]) -> Option<crate::FieldSlot> {
+        let (last, owner) = path.split_last()?;
+        let mut ty = base_ty.clone();
+        for field in owner {
+            ty = self.field_offset_ty_size(&ty, field)?.1;
+        }
+        self.field_slot_of(&ty, last)
+    }
+
     /// Record the edges a struct's own fields carry, against the storage it
     /// just landed in.
     ///
     /// An assignment writes one edge and can register it as it goes. A *literal*
-    /// can't: `Cursor { at: victim }` fills the field before the value has an
+    /// can't: `Cursor(at: victim)` fills the field before the value has an
     /// address, so nothing knew which slot to record. This runs once the
     /// destination is settled, which is the first moment there is a slot.
     ///
@@ -422,46 +449,26 @@ impl<'a> MirLowerer<'a> {
                     Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
                     _ => { self.comptime_strings.remove(name); }
                 }
-                // If this const was evaluated at compile time, emit a global reference
+                // Folded at compile time: the value is constant data, and the
+                // binding is an ordinary one — an annotated type is a coercion
+                // site here like anywhere else, so `let p: Point? = comptime
+                // { Point(…) }` wraps the folded struct.
                 if let Some((key, meta)) = self.comptime_global_for(name) {
-                    if meta.type_prefix == "Vec" {
-                        // Array: store pointer for later Vec wrapping
-                        let mir_ty = if let Some(written) = ty.as_ref() {
-                            self.ctx.resolve_type_expr(written)
-                        } else {
-                            MirType::Ptr
-                        };
-                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.locals.insert(name.to_string(), (local_id, mir_ty));
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                            dst: local_id,
-                            name: key.clone(),
-                        }));
-                    } else {
-                        // Scalar: load the data pointer, then deref to get the value
-                        //
-                        // The folded value's own width decides this, not the
-                        // binding's annotation — an unannotated `let v = f()` on a
-                        // comptime `u128` used to default to `i64` and the deref
-                        // read 8 of the 16 bytes, so the answer came back mod 2^64
-                        // (#824).
-                        let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
-                            .unwrap_or_else(|| match ty.as_ref() {
-                                Some(written) => self.ctx.resolve_type_expr(written),
-                                None => MirType::I64,
-                            });
-                        let ptr_local = self.builder.alloc_temp(MirType::Ptr);
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-                            dst: ptr_local,
-                            name: key.clone(),
-                        }));
-                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Deref(MirOperand::Local(ptr_local)),
-                        }));
-                        self.locals.insert(name.to_string(), (local_id, mir_ty));
-                    }
+                    let (value, value_ty) = self.load_comptime_value(&key, meta)?;
+                    let var_ty = match ty.as_ref() {
+                        Some(written) => self.ctx.resolve_type_expr(written),
+                        None => value_ty.clone(),
+                    };
+                    let value = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::AnnotatedBinding,
+                        value, &value_ty, &var_ty,
+                    );
+                    let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local_id,
+                        rvalue: MirRValue::Use(value),
+                    }));
+                    self.locals.insert(name.to_string(), (local_id, var_ty));
                     // The tracked prefix is what later method calls on this
                     // binding dispatch through, and a scalar's dispatch prefix
                     // isn't its type name — narrow widths ride the 64-bit symbols.
@@ -706,6 +713,7 @@ impl<'a> MirLowerer<'a> {
                                 offset: 0,
                                 value: val_op,
                                 store_size,
+                                field: None,
                             }));
                         } else {
                             // A closure writing a whole struct over a capture
@@ -766,6 +774,7 @@ impl<'a> MirLowerer<'a> {
                                     offset,
                                     value: val_op,
                                     store_size: fsize,
+                                    field: self.field_slot_of(&guard_ty, field),
                                 }));
                                 if let Some(release) = release {
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -827,11 +836,15 @@ impl<'a> MirLowerer<'a> {
                             // 8-byte pointer instead, so `s.text = "lit"` left
                             // the address of the constant in a 16-byte string
                             // field and the field read back as garbage.
+                            let slot = self
+                                .lower_place_chain(object)
+                                .and_then(|(_, _, oty, _)| self.field_slot_of(&oty, field));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: base,
                                 offset,
                                 value: val_op,
                                 store_size: fsize,
+                                field: slot,
                             }));
                             return Ok(());
                         }
@@ -872,6 +885,7 @@ impl<'a> MirLowerer<'a> {
                                     .or_else(|| self.collection_elem_of_expr(coll));
                                 if let Some(elem_ty) = elem_ty {
                                     if let Some((offset, fsize, fty)) = self.field_path_offset_ty(&elem_ty, &path) {
+                                        let slot = self.field_path_slot(&elem_ty, &path);
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
                                         let tmp = self.builder.alloc_temp(elem_ty);
@@ -897,6 +911,7 @@ impl<'a> MirLowerer<'a> {
                                             offset,
                                             value: val_op,
                                             store_size: Some(fsize),
+                                            field: slot,
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: None,
@@ -909,6 +924,7 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
+                        let slot = self.field_slot_of(&obj_ty, field);
                         let offset = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                             if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                                 layout.fields.iter()
@@ -941,6 +957,7 @@ impl<'a> MirLowerer<'a> {
                             offset,
                             value: val_op,
                             store_size: None,
+                            field: slot,
                         }));
                     }
                     // Index assignment: a[i] = val
@@ -1020,6 +1037,7 @@ impl<'a> MirLowerer<'a> {
                             offset: 0,
                             value: val_op,
                             store_size,
+                            field: None,
                         }));
                     }
                     // CT49 is a read — `value.("x")` resolves to a field access
@@ -1470,7 +1488,7 @@ impl<'a> MirLowerer<'a> {
                     serial_name: field_attrs::serial_name(&fl.attrs, &fl.name),
                     is_skipped: field_attrs::is_skipped(&fl.attrs),
                     has_default: fl.has_declared_default
-                        || field_attrs::default_literal(&fl.attrs).is_some(),
+                        || field_attrs::default_value(&fl.attrs).is_some(),
                     attrs: fl.attrs.clone(),
                 }
             })
@@ -1742,6 +1760,7 @@ impl<'a> MirLowerer<'a> {
                 offset: 0,
                 value: init_op,
                 store_size: Some(var_ty.size()),
+                field: None,
             }));
             return Ok(());
         }

@@ -40,12 +40,12 @@ struct Graph {
 }
 
 func empty() -> Graph {
-    return Graph {
-        rack: Rack.new(),
-        list: Vec.new(),
-        nested: Vec.new(),
-        index: Map.new(),
-    }
+    return Graph(
+        rack: Rack.new()
+        list: Vec.new()
+        nested: Vec.new()
+        index: Map.new()
+    )
 }
 
 struct Entity {
@@ -78,10 +78,10 @@ extend World {
 
 func populated() -> World {
     mut entities: Rack<Entity> = Rack.new()
-    entities.insert(Entity { hp: 5, alive: true })
-    entities.insert(Entity { hp: 7, alive: false })
-    entities.insert(Entity { hp: 9, alive: true })
-    return World { entities: entities }
+    entities.insert(Entity(hp: 5, alive: true))
+    entities.insert(Entity(hp: 7, alive: false))
+    entities.insert(Entity(hp: 9, alive: true))
+    return World(entities: entities)
 }
 
 test "mem.racks/RK1 — a rack in a field, with nothing in it" {
@@ -91,8 +91,8 @@ test "mem.racks/RK1 — a rack in a field, with nothing in it" {
 
 test "mem.racks/RK1 — a rack in a field, with nodes in it" {
     mut g = empty()
-    let a = g.rack.insert(Node { id: 1, peer: none })
-    let b = g.rack.insert(Node { id: 2, peer: none })
+    let a = g.rack.insert(Node(id: 1, peer: none))
+    let b = g.rack.insert(Node(id: 2, peer: none))
     a.peer = b
     assert g.rack.len() == 2
     assert g.rack.contains(a)
@@ -102,7 +102,7 @@ test "mem.racks/RK1 — a rack in a field, with nodes in it" {
 // struct's fields hold links hands it the whole struct.
 test "mem.racks/RK3 — links in the struct's own containers are still fixed" {
     mut g = empty()
-    let a = g.rack.insert(Node { id: 3, peer: none })
+    let a = g.rack.insert(Node(id: 3, peer: none))
     g.list.push(a)
     g.index.insert("a", a)
     assert g.list.len() == 1
@@ -117,7 +117,7 @@ test "mem.racks/RK3 — links in the struct's own containers are still fixed" {
 // outer vector's buffer, so releasing the struct frees what the binding names.
 test "mem.racks/RK3 — an edge two containers deep, read after the delete" {
     mut g = empty()
-    let a = g.rack.insert(Node { id: 4, peer: none })
+    let a = g.rack.insert(Node(id: 4, peer: none))
     mut inner: Vec<Link<Node>> = Vec.new()
     inner.push(a)
     g.nested.push(inner)
@@ -149,7 +149,7 @@ test "mem.racks/RK1 — arenas in a loop" {
     mut total = 0
     for i in 1..6 {
         mut g = empty()
-        let a = g.rack.insert(Node { id: i, peer: none })
+        let a = g.rack.insert(Node(id: i, peer: none))
         g.list.push(a)
         total = total + g.rack.len().clamp<i64>()
     }

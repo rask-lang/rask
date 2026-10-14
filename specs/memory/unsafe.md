@@ -270,7 +270,7 @@ union IntOrFloat {
     f: f32,
 }
 
-let u = IntOrFloat { i: 42 }
+let u = IntOrFloat(i: 42)
 unsafe {
     let f = u.f    // Reinterprets bits as f32
 }
@@ -438,7 +438,7 @@ extend SafeBuffer {
     public func new(size: usize) -> SafeBuffer or AllocError {
         unsafe {
             let ptr = try alloc(size)
-            return SafeBuffer { ptr, len: size }
+            return SafeBuffer(ptr, len: size)
         }
     }
 
@@ -505,7 +505,7 @@ extend CString {
             let ptr = alloc(len)
             copy(s.as_ptr(), ptr, s.len())
             *ptr.add(s.len()) = 0
-            return CString { ptr, len }
+            return CString(ptr, len)
         }
     }
 

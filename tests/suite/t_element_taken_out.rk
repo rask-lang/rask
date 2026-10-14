@@ -51,9 +51,9 @@ test "mem.ownership — a popped string is the caller's" {
 
 test "mem.ownership — remove takes one out and leaves the rest" {
     mut v: Vec<string> = [
-        "the first entry is long enough",
-        "the second entry is long enough",
-        "the third entry is long enough",
+        "the first entry is long enough"
+        "the second entry is long enough"
+        "the third entry is long enough"
     ]
     let taken = v.remove(1)
     assert taken == "the second entry is long enough"

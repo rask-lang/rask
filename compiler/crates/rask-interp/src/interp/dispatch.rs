@@ -388,6 +388,11 @@ impl Interpreter {
             // "no method `foo` on type `closure`".
             Value::Closure { .. } | Value::Function { .. } => "Sequence".to_string(),
             Value::Enum { name, .. } => name.clone(),
+            // A newtype's own methods, its conformances included, are filed
+            // under its name. Without this arm `w8 + w8` on a `type W8 = u8`
+            // with its own `add` found nothing here and fell through to the
+            // `u8` underneath, which overflowed where the program wrapped.
+            Value::Nominal { type_name, .. } => type_name.clone(),
             // The collections, so a method written in Rask on one of them is
             // reachable. Nothing was until `Vec.as_sequence` — the chain head a
             // collection stands for (SEQ48) — so the fallback below had never
@@ -500,20 +505,6 @@ impl Interpreter {
                     "f32x8 has no method '{}'", method
                 ))),
             },
-            // @binary struct instance methods (build, build_into)
-            Value::Struct(ref s) => {
-                let name = s.lock().unwrap().name.clone();
-                if self.binary_structs.contains_key(&name)
-                    && matches!(method, "build" | "build_into")
-                {
-                    let span = rask_ast::Span::new(0, 0);
-                    if let Some(result) = self.try_binary_instance_method(&receiver, &name, method, args, span) {
-                        return result.map_err(|d| d.error);
-                    }
-                    unreachable!();
-                }
-                self.call_builtin_method(receiver, method, args, generics)
-            }
             // `Shared<T, Local>` — the strategy that takes no lock. `read` and
             // `write` are the same operation here; the verb is intent the
             // reader can see, not a different call (conc.sync/SH5).

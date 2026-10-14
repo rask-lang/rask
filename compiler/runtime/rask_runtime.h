@@ -302,7 +302,6 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(const void *field, int64_t size, void *out);
-int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
 // key of a (key, value) pair. `key_kind` is one of the RASK_DEBUG_ELEM_* codes
@@ -487,10 +486,10 @@ void        rask_check_fail_cmp_u128(RaskU128 left, RaskU128 right,
 
 // Format specs (std.fmt/S1). The spec is parsed at compile time; each piece
 // arrives here separately — a base conversion, then padding.
-void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper);
+void        rask_i64_to_base(RaskStr *out, int64_t val, int64_t base, int64_t upper, int64_t bits);
 void        rask_u64_to_base(RaskStr *out, uint64_t val, int64_t base, int64_t upper);
 void        rask_f64_to_precision(RaskStr *out, double val, int64_t precision);
-void        rask_f64_to_exp(RaskStr *out, double val);
+void        rask_f64_to_exp(RaskStr *out, double val, int64_t precision);
 void        rask_string_truncate_chars(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_pad(RaskStr *out, const RaskStr *s, int64_t width, int64_t align, int32_t fill);
 void        rask_panic_forced_error(const RaskStr *msg);
@@ -976,8 +975,13 @@ void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 #define RASK_JSHAPE_STRUCT 15
 
 // Shape field flags.
-// The key may be absent; whatever the caller already wrote stands (@default).
-#define RASK_JFIELD_OPTIONAL 1
+// Not in the serialized form (`@no_serialize`): encode leaves it out, and
+// decode never looks for it and always runs its fill.
+#define RASK_JFIELD_NOT_SERIALIZED 1
+
+// Writes a field's default into its slot. Called for a field the input leaves
+// out; generated per field by the call site.
+typedef void (*RaskJsonFill)(void *slot);
 
 // Mirrors rask_mono::abi — an Option is [tag:8][payload], tag 0 = Some.
 #define RASK_OPTION_PAYLOAD_OFFSET 8
@@ -990,11 +994,13 @@ void         rask_json_tree_free(RaskJsonVal *v);
 
 RaskJsonShape *rask_json_shape_prim(int64_t kind);
 RaskJsonShape *rask_json_shape_struct(int64_t size);
-RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot);
-RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot);
+RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
+                                   const int32_t *owned, int64_t n_owned);
+RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
+                                   const int32_t *owned, int64_t n_owned);
 RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
-                                     RaskJsonShape *fs, int64_t flags);
+                                     RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);
@@ -1369,6 +1375,11 @@ void     rask_process_read_stdout(RaskStr *out, int64_t handle);
 void     rask_process_captured_stdout(RaskStr *out, int64_t handle);
 void     rask_process_captured_stderr(RaskStr *out, int64_t handle);
 void     rask_process_release(int64_t handle);
+
+// os.signals (std.os/SG2): register a sender for each `Signal` in the list.
+int64_t  rask_os_signal_forward(int64_t tx, const RaskVec *list);
+// Drop the senders the signal reader holds, before the leak check at exit.
+void     rask_signals_release(void);
 
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.

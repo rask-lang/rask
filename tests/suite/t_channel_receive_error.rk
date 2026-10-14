@@ -63,7 +63,7 @@ test "the consumer loop from the spec terminates" {
 test "a struct element survives the round trip" {
     using Multitasking {
         mut (tx, rx) = Channel<Reading>.buffered(4)
-        tx.send(Reading { sensor: 3, value: 1.5, label: "north" })
+        tx.send(Reading(sensor: 3, value: 1.5, label: "north"))
         tx.close()
 
         let first = rx.receive()

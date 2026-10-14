@@ -27,7 +27,7 @@ struct Pair<A, B> {
 
 extend Pair<A, B> {
     func swapped(self) -> Pair<B, A> {
-        return Pair<B, A> { first: self.second, second: self.first }
+        return Pair<B, A>(first: self.second, second: self.first)
     }
 }
 
@@ -38,23 +38,23 @@ enum Holder<T> {
 
 func main() {
     // The reported case.
-    let c = One<i64> { only: 9 }
+    let c = One<i64>(only: 9)
     println("turbofish={c.only}")
 
     // The two forms that already worked.
-    let a: One<i64> = One { only: 5 }
-    let b = One { only: 7 }
+    let a: One<i64> = One(only: 5)
+    let b = One(only: 7)
     println("annotated={a.only} bare={b.only}")
 
     // Two type parameters, and the type arguments written in a return
     // expression inside a method.
-    let p = Pair<i64, string> { first: 1, second: "one" }
+    let p = Pair<i64, string>(first: 1, second: "one")
     println("pair={p.first} {p.second}")
     let q = p.swapped()
     println("swapped={q.first} {q.second}")
 
     // A string type argument.
-    let s = One<string> { only: "hi" }
+    let s = One<string>(only: "hi")
     println("string={s.only}")
 
     // A generic enum variant. Writing the type arguments on one of these

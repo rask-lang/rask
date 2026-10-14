@@ -24,10 +24,10 @@ vm.seed(12345)
 // Register extern bindings before loading
 vm.register_extern_struct("Enemy", raido.ExternStruct {
     fields: [
-        raido.Field.int("health", get_health, set_health),
-        raido.Field.number("x", get_x, set_x),
-        raido.Field.number("y", get_y, set_y),
-        raido.Field.string("name", get_name, null),  // readonly
+        raido.Field.int("health", get_health, set_health)
+        raido.Field.number("x", get_x, set_x)
+        raido.Field.number("y", get_y, set_y)
+        raido.Field.string("name", get_name, null)  // readonly
     ],
 })
 vm.register_extern_func("move_to", move_to_handler)
@@ -88,10 +88,10 @@ func chase(attacker: Enemy, target: Enemy) {
 ```rask
 vm.register_extern_struct("Enemy", raido.ExternStruct {
     fields: [
-        raido.Field.int("health", get_health, set_health),
-        raido.Field.number("x", get_x, set_x),
-        raido.Field.number("y", get_y, set_y),
-        raido.Field.string("name", get_name, null),  // null setter = readonly
+        raido.Field.int("health", get_health, set_health)
+        raido.Field.number("x", get_x, set_x)
+        raido.Field.number("y", get_y, set_y)
+        raido.Field.string("name", get_name, null)  // null setter = readonly
     ],
 })
 ```
@@ -140,9 +140,9 @@ import raido.bind
 
 // Bind a pool -- each handle becomes an extern struct reference
 raido.bind.pool(vm, "enemies", enemies, [
-    bind.Field.int("health"),
-    bind.Field.number("x"),
-    bind.Field.number("y"),
+    bind.Field.int("health")
+    bind.Field.number("x")
+    bind.Field.number("y")
 ])
 
 // Bind a struct directly

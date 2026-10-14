@@ -34,7 +34,7 @@ func optional(i: i64) -> string? {
 }
 
 func held(i: i64) -> Holder {
-    return Holder { text: "held-{i}-and-long-enough-that-it-lives-on-the-heap" }
+    return Holder(text: "held-{i}-and-long-enough-that-it-lives-on-the-heap")
 }
 
 func main() {

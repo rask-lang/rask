@@ -10,7 +10,7 @@ struct Counter {
 }
 
 const plain = 7
-const guarded = Shared.mutex(Counter { hits: 5 })
+const guarded = Shared.mutex(Counter(hits: 5))
 const total = Shared.mutex(10)
 const derived = plain * 3
 

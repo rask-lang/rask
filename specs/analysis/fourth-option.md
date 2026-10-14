@@ -43,7 +43,7 @@ a spec draft starts here.
 | Where edges may live | Anywhere the graph transitively owns — nodes, values inside nodes, graph-owned containers, root fields. **Locals hold links too**, kept honest by the compiler rather than the rack: `delete` takes the link, so use-after-delete is a move error (not a borrow rule, not lifetime inference). A `const` can hold neither |
 | Unlink timing | **Eager** at the apply point. `@lazy` deferred |
 | Delete policy | **Set-to-`none` only.** Cascade and restrict deferred; if cascade ships it needs a direction-explicit name and a `delete_cascade(n)` call site. Note this is only complete while every edge is optional — a required edge has no `none` to be set to, so admitting `Link<T>` (see below) makes one of cascade/restrict mandatory rather than deferred |
-| Ownership | Composition by value (`Entity { body: Body }`), not a policy |
+| Ownership | Composition by value (`Entity(body: Body)`), not a policy |
 | Concurrency | Deferred deletes, no lock on the hot path. Three parallel tiers: per-node, frozen, staged. Parallel inserts claim slots by atomic bump (B10) |
 | Atomicity | Batches — a region where **deletes** defer to the end. No validation step (required links are a compile-time check), no rollback needed. Also the delete-locked scope, and how required-link cycles get built. See [batches](fourth-option-batches.md) |
 | Compaction | Possible (relocation rewrites incoming edges) and **explicit only** — never automatic |

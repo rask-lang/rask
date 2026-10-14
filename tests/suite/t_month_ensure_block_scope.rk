@@ -61,7 +61,7 @@ func two_nested_blocks(mutate log: Log) {
 }
 
 test "ctrl.ensure — EN1: a bare block's ensure runs at that block's exit" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     bare_block(mutate log)
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -70,7 +70,7 @@ test "ctrl.ensure — EN1: a bare block's ensure runs at that block's exit" {
 }
 
 test "ctrl.ensure — EN1: an if body's ensure runs at the if's exit" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     if_body(mutate log, true)
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -79,7 +79,7 @@ test "ctrl.ensure — EN1: an if body's ensure runs at the if's exit" {
 }
 
 test "ctrl.ensure — EN1: an else body's ensure runs at the else's exit" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     else_body(mutate log, false)
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -88,7 +88,7 @@ test "ctrl.ensure — EN1: an else body's ensure runs at the else's exit" {
 }
 
 test "ctrl.ensure — EN1: nested blocks unwind innermost first" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     two_nested_blocks(mutate log)
     assert log.order.len() == 5
     assert log.order[0] == 0
@@ -99,7 +99,7 @@ test "ctrl.ensure — EN1: nested blocks unwind innermost first" {
 }
 
 test "ctrl.ensure — a skipped branch schedules nothing" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     if_body(mutate log, false)
     assert log.order.len() == 1
     assert log.order[0] == 7
@@ -179,7 +179,7 @@ func mixed_scopes(mutate log: Log) {
 }
 
 test "ctrl.ensure — a return out of a block runs its ensure once" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     assert return_from_block(mutate log) == 42
     assert log.order.len() == 2
     assert log.order[0] == 0
@@ -187,7 +187,7 @@ test "ctrl.ensure — a return out of a block runs its ensure once" {
 }
 
 test "ctrl.ensure — a break out of a nested block runs its ensure once" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     break_from_block(mutate log)
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -196,7 +196,7 @@ test "ctrl.ensure — a break out of a nested block runs its ensure once" {
 }
 
 test "ctrl.ensure — a continue out of a nested block runs its ensure once" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     continue_from_block(mutate log)
     assert log.order.len() == 6
     assert log.order[0] == 0
@@ -208,7 +208,7 @@ test "ctrl.ensure — a continue out of a nested block runs its ensure once" {
 }
 
 test "ctrl.ensure — EN1: a match arm's ensure runs at the arm's exit" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     match_arm(mutate log, 1)
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -217,7 +217,7 @@ test "ctrl.ensure — EN1: a match arm's ensure runs at the arm's exit" {
 }
 
 test "ctrl.ensure — a block's value is computed before its ensure runs" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     assert block_value(mutate log) == 7
     assert log.order.len() == 3
     assert log.order[0] == 0
@@ -226,7 +226,7 @@ test "ctrl.ensure — a block's value is computed before its ensure runs" {
 }
 
 test "ctrl.ensure — a block ensure and a function ensure keep their own scopes" {
-    mut log = Log { order: Vec.new() }
+    mut log = Log(order: Vec.new())
     mixed_scopes(mutate log)
     assert log.order.len() == 4
     assert log.order[0] == 0

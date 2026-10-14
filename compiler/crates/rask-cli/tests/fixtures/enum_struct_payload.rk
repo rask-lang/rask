@@ -13,6 +13,6 @@ func sum_shape(s: Shape) -> i32 {
 }
 
 func main() {
-    println("{sum_shape(Shape.Pos(Pt { x: 3, y: 4 }))}")
+    println("{sum_shape(Shape.Pos(Pt(x: 3, y: 4)))}")
     println("{sum_shape(Shape.Scalar(9))}")
 }

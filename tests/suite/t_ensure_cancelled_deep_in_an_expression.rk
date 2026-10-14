@@ -32,7 +32,7 @@ struct Wrapper {
 
 extend Conn {
     func open(id: i64) -> Conn {
-        return Conn { id: id }
+        return Conn(id: id)
     }
 
     func close(take self) -> i64 {
@@ -44,7 +44,7 @@ extend Conn {
 func in_a_struct_literal() -> Wrapper {
     let c = Conn.open(1)
     ensure c.close()
-    return Wrapper { value: c.close() }
+    return Wrapper(value: c.close())
 }
 
 func in_a_tuple() -> (i64, i64) {
@@ -73,7 +73,7 @@ func in_an_index() -> i64 {
 func nested() -> Wrapper {
     let c = Conn.open(5)
     ensure c.close()
-    return Wrapper { value: (c.close(), 7).0 }
+    return Wrapper(value: (c.close(), 7).0)
 }
 
 test "a struct literal field is looked inside" {

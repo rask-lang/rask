@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: a struct or enum name used as a constructor call (E0345)
-// Only nominal types (`type Name = Underlying`) have `Name(value)` (T7).
-// Structs are built field by field — there are no tuple structs (S1).
+// Rejects: a struct built by position (E0416), and an enum called (E0345).
+// Only nominal types (`type Name = Underlying`) take one value by position
+// (T7); a struct names its fields, `TaskId(value: 1)` (S1).
 
 struct TaskId { public value: u64 }
 
 enum Color { Red, Green }
 
 func main() {
-    let a = TaskId(1)     // ERROR: `TaskId` is a struct
+    let a = TaskId(1)     // ERROR: `TaskId` names its fields
     let c = Color(0)      // ERROR: `Color` is an enum
     println("{a.value} {c}")
 }

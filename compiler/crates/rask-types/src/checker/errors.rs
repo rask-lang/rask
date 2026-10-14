@@ -58,17 +58,29 @@ pub enum TypeError {
         found: usize,
         span: Span,
     },
-    /// A named argument whose label isn't the parameter in its position.
-    /// Labels never reorder a call, so this is either a reordering, a name the
-    /// callee doesn't have, or a callee with no names at all.
-    #[error("named argument `{label}` doesn't match the parameter in its position")]
-    ArgLabelMismatch {
+    /// A call's labels don't place its arguments on the callee's parameters
+    /// (SYNTAX.md, named arguments).
+    #[error("named arguments don't fit `{callee}`")]
+    ArgPlacement {
         callee: String,
-        label: String,
-        /// Zero-based position of the labeled argument.
-        position: usize,
+        problem: ArgProblem,
         /// The callee's parameter names in order; `None` when it has none.
         params: Option<Vec<String>>,
+        span: Span,
+    },
+    /// `pair(x, bump(mutate x))`: a later argument changes what an earlier one
+    /// already lent to the call.
+    #[error("`{place}` is lent to `{callee}` and changed by a later argument")]
+    ArgumentChangedLater {
+        callee: String,
+        place: String,
+        span: Span,
+    },
+    /// `Pair(0, y)` on a struct: a struct's pattern names its fields.
+    #[error("`{name}(…)` matches its fields by name")]
+    StructPatternByPosition {
+        name: String,
+        fields: Vec<String>,
         span: Span,
     },
     #[error("type {ty} is not callable")]
@@ -172,6 +184,13 @@ pub enum TypeError {
         kind: String,
         span: Span,
     },
+    /// A type's name starts with a capital, so `Name(…)` reads as building one.
+    #[error("type name `{name}` starts with a lowercase letter")]
+    LowercaseTypeName {
+        name: String,
+        kind: String,
+        span: Span,
+    },
     #[error("try can only be used in functions returning Option or Result, found {return_ty}")]
     TryInNonPropagatingContext { return_ty: Type, span: Span },
     #[error("error type mismatch in `try`: propagating `{inner_err}`, but function returns `_ or {outer_err}`")]
@@ -238,6 +257,10 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// ER11/ER31: a result whose error side can hold `extra`, going into a slot
+    /// whose error side can't. An error union never narrows.
+    #[error("`{from}` doesn't fit in `{to}`: `{extra}` isn't one of its errors")]
+    ErrorUnionNarrowing { from: Type, to: Type, extra: Type, span: Span },
     /// A pointer whose element type isn't the one the slot declares.
     ///
     /// Nothing converts here: the pointer is an address, and the reader decides
@@ -1594,6 +1617,11 @@ impl TypeError {
                 *from = f(from);
                 *to = f(to);
             }
+            ErrorUnionNarrowing { from, to, extra, .. } => {
+                *from = f(from);
+                *to = f(to);
+                *extra = f(extra);
+            }
 
             MixedSignednessArithmetic { left, right, .. } => {
                 *left = f(left);
@@ -1629,7 +1657,9 @@ impl TypeError {
             | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
-            | ArgLabelMismatch { .. }
+            | ArgPlacement { .. }
+            | StructPatternByPosition { .. }
+            | ArgumentChangedLater { .. }
             | UnimplementedStdlibMethod { .. }
             | NoSuchModuleFunction { .. }
             | PrivateModuleFunction { .. }
@@ -1639,6 +1669,7 @@ impl TypeError {
             | InvalidTypeString(..)
             | UnknownTypeName { .. }
             | SingleLetterTypeName { .. }
+            | LowercaseTypeName { .. }
             | TryErrorMismatch { .. }
             | AmbiguousErrorWrap { .. }
             | TryOutsideFunction { .. }
@@ -1734,4 +1765,20 @@ impl TypeError {
             | InvalidConvert { .. } => {}
         }
     }
+}
+
+/// What's wrong with a call's labels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArgProblem {
+    /// A label no parameter has.
+    UnknownLabel(String),
+    /// A label for a parameter another argument already fills.
+    Repeated(String),
+    /// An unlabeled argument after a labeled one.
+    PositionalAfterLabel,
+    /// A label on a callee whose parameters have no names.
+    NoNames(String),
+    /// Labels that place fine, on a kind of call the checker matches by
+    /// position only. A compiler gap, reported rather than miscompiled.
+    NotReordered,
 }

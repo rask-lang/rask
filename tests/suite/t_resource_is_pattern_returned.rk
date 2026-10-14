@@ -20,7 +20,7 @@ extend Conn {
 
 func maybe_conn(n: i64) -> Conn? {
     if n > 0 {
-        return Conn { id: n }
+        return Conn(id: n)
     }
     return none
 }
@@ -29,7 +29,7 @@ func first_or(n: i64, fallback: i64) -> Conn {
     if maybe_conn(n) is Conn as c {
         return c
     }
-    return Conn { id: fallback }
+    return Conn(id: fallback)
 }
 
 test "mem.linear — a resource bound by an is-pattern can be returned from the branch" {

@@ -70,7 +70,7 @@ enum Token {
 @unique
 struct UserId { id: u64 }
 
-let user1 = UserId{id: 42}
+let user1 = UserId(id: 42)
 let user2 = user1              // Moves, user1 invalid
 let user3 = user2.clone()      // OK: explicit clone
 let user4 = user3              // Moves, user3 invalid
@@ -156,13 +156,13 @@ struct Pair<T> {
 }
 
 // Pair<T> is Copy if T is Copy and Pair<T> ≤16 bytes
-let p1 = Pair{first: 1, second: 2}      // Pair<i32> is Copy (8 bytes)
+let p1 = Pair(first: 1, second: 2)      // Pair<i32> is Copy (8 bytes)
 let p2 = p1                              // Implicit copy
 
-let p3 = Pair{first: 1i64, second: 2i64} // Pair<i64> is Copy (16 bytes)
+let p3 = Pair(first: 1i64, second: 2i64) // Pair<i64> is Copy (16 bytes)
 let p4 = p3                              // Implicit copy
 
-let p5 = Pair{first: [1i64; 2], second: [2i64; 2]} // Pair<[i64;2]> is NOT Copy (32 bytes > 16)
+let p5 = Pair(first: [1i64; 2], second: [2i64; 2]) // Pair<[i64;2]> is NOT Copy (32 bytes > 16)
 let p6 = p5                              // ERROR: move, not copy
 ```
 

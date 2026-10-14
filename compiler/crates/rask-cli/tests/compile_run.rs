@@ -951,6 +951,40 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// #1537: a field default is a compile-time constant (type.structs/FD1). One
+/// that reaches I/O, declared or `@default`, is rejected where it's written,
+/// named by its field rather than by the method desugar wrote for it.
+#[test]
+fn a_field_default_that_does_io_is_rejected() {
+    let (failed, out) = compile_error_output("field_default_not_constant.rk");
+    assert!(failed, "a default calling `println` must not compile: {out}");
+    assert_eq!(out.matches("E0875").count(), 2, "one error per default: {out}");
+    assert!(out.contains("the default for field `retries`"), "{out}");
+    assert!(out.contains("the default for field `tries`"), "{out}");
+    assert!(!out.contains("__decode_default"), "the generated name leaked into the message: {out}");
+}
+
+/// #1537: a default argument is held to the same rule as a field's default.
+#[test]
+fn a_default_argument_that_does_io_is_rejected() {
+    let (failed, out) = compile_error_output("param_default_not_constant.rk");
+    assert!(failed, "a default argument calling `println` must not compile: {out}");
+    assert_eq!(out.matches("E0875").count(), 2, "one error per default: {out}");
+    assert!(out.contains("parameter `times` of `retry`"), "{out}");
+    assert!(out.contains("parameter `attempts` of `send`"), "{out}");
+    assert!(!out.contains("E0341"), "the method default's name has to resolve: {out}");
+}
+
+/// A default is folded at the width of its field, so overflowing it is a
+/// compile error (type.overflow/CT1), not a panic on the first decode that
+/// leaves the field out.
+#[test]
+fn a_field_default_that_overflows_is_rejected() {
+    let (failed, out) = compile_error_output("field_default_overflows.rk");
+    assert!(failed, "`@default(200 + 100)` on a u8 must not compile: {out}");
+    assert!(out.contains("exceeds u8 range"), "{out}");
+}
+
 /// #1034: `some_u8 == 'h'` type-checked, then native compared the char as its
 /// underlying scalar and answered `true` because 104 is both a byte and `'h'`,
 /// while the interpreter refused at runtime. The comparison arms unify the
@@ -1047,6 +1081,16 @@ fn error_try_in_a_function_that_returns_nothing() {
         out.matches("E0316").count() >= 2,
         "should report the helper and main, not stop at the first: {}", out,
     );
+}
+
+#[test]
+fn error_union_narrowing_is_rejected() {
+    // #1520: `T or A | B` went where `T or A` was wanted, at a `let`, a push
+    // and an argument, and the backends then disagreed about the stored error.
+    let (failed, out) = compile_error_output("error_union_narrowing.rk");
+    assert!(failed, "a wider error union into a narrower slot must be rejected: {}", out);
+    assert_eq!(out.matches("E0415").count(), 3, "one error per narrowing site: {}", out);
+    assert!(out.contains("can fail with `Other`"), "should name the error that doesn't fit: {}", out);
 }
 
 #[test]
@@ -1437,15 +1481,15 @@ fn error_type_named_in_diagnostics() {
 
 // A struct or enum name in call position used to type-check silently and then
 // die in MIR lowering as "method `next` on receiver of unresolved type".
-// `Name(value)` is the nominal-type constructor (T7); structs have no tuple
-// form (S1).
+// `Name(value)` is the nominal-type constructor (T7); a struct names its
+// fields (S1), and an enum is one of its variants.
 #[test]
 fn error_type_called_as_function() {
     let (failed, out) = compile_error_output("type_called_as_function.rk");
     assert!(failed, "`TaskId(1)` on a struct must be rejected: {}", out);
     assert!(
-        out.contains("E0345") && out.contains("TaskId { value: …")
-            && out.contains("Color.Variant"),
+        out.contains("E0416") && out.contains("value: …")
+            && out.contains("E0345") && out.contains("Color.Variant"),
         "should name both cases with their fix: {}", out,
     );
 }
@@ -2957,7 +3001,7 @@ fn error_move_in_if_without_else() {
 #[test]
 fn error_linear_consumed_one_branch_ifelse() {
     let output = check_output(
-        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn { fd: 3 }\n    if true {\n        c.close()\n    } else {\n        let x = 1\n    }\n}"
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn(fd: 3)\n    if true {\n        c.close()\n    } else {\n        let x = 1\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "resource consumed in only one if/else branch should be E0805 (L1): {}", output);
@@ -2968,7 +3012,7 @@ fn error_linear_consumed_if_without_else() {
     // #294: consuming a linear resource in an if-without-else leaks on the
     // false path.
     let output = check_output(
-        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn { fd: 3 }\n    if true {\n        c.close()\n    }\n}"
+        "@resource\nstruct Conn { fd: i32 }\nextend Conn { func close(take self) {} }\nfunc main() {\n    let c = Conn(fd: 3)\n    if true {\n        c.close()\n    }\n}"
     );
     assert!(output.contains("E0805"),
         "resource consumed in an if-without-else should be E0805 (L1): {}", output);
@@ -4973,7 +5017,7 @@ fn test_dir_runs_files_independently() {
     std::fs::write(dir.join("a.rk"), r#"
 struct Point { x: i32, y: i32 }
 test "a uses its own Point" {
-    let p = Point { x: 1, y: 2 }
+    let p = Point(x: 1, y: 2)
     assert p.x == 1
 }
 "#).unwrap();
@@ -4981,7 +5025,7 @@ test "a uses its own Point" {
     std::fs::write(dir.join("b.rk"), r#"
 struct Point { x: i32, y: i32, z: i32 }
 test "b uses its own Point" {
-    let p = Point { x: 1, y: 2, z: 3 }
+    let p = Point(x: 1, y: 2, z: 3)
     assert p.z == 3
 }
 "#).unwrap();
@@ -5049,18 +5093,18 @@ func scaled(n: i32, by: i32 = 3) -> i32 {
 }
 
 func main() {
-    let c = Config {}
+    let c = Config()
     println("{c.port}")
 }
 
 test "all fields defaulted" {
-    let c = Config {}
+    let c = Config()
     assert c.port == 8080
     assert c.host == "localhost"
 }
 
 test "explicit value wins over the default" {
-    let c = Config { port: 9090 }
+    let c = Config(port: 9090)
     assert c.port == 9090
     assert c.host == "localhost"
 }
@@ -5153,7 +5197,7 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
         ("chars", "assert 'a' == 'b'"),
         ("floats", "assert 1.5 == 2.5"),
         ("optionals", "assert maybe(1) == maybe(2)"),
-        ("structs", "assert Point { x: 1, y: 2 } == Point { x: 1, y: 3 }"),
+        ("structs", "assert Point(x: 1, y: 2) == Point(x: 1, y: 3)"),
         ("tuples", "assert (1, 2) == (1, 3)"),
     ];
 
@@ -5272,7 +5316,7 @@ extend Box9 {
 }
 
 func main() {
-    let b = Box9 { n: 1 }
+    let b = Box9(n: 1)
     println("{b.boom()}")
     return
 }
@@ -5506,7 +5550,7 @@ enum StoreError { Boom }
 struct Store { next: UserId }
 
 extend Store {
-    func new() -> Store { return Store { next: UserId(7) } }
+    func new() -> Store { return Store(next: UserId(7)) }
     func make(self) -> UserId or StoreError { return self.next }
 }
 
@@ -5535,22 +5579,22 @@ description = "T or E error side through a mutex global"
         ("errs.rk", r#"
 @message
 enum StoreError {
-    @message("nf {0}") NotFound(u64)
-    @message("cap {0}") Cap(u64)
+    @message("nf {id}") NotFound(id: u64)
+    @message("cap {limit}") Cap(limit: u64)
 }
 
 @message
 enum ApiError {
     Store(StoreError)
-    @message("bad {0}") Bad(string)
+    @message("bad {reason}") Bad(reason: string)
 }
 
 func code(e: ApiError) -> string {
-    match e { Store(inner) => return store_code(inner), Bad(_) => return "b" }
+    match e { Store(inner) => return store_code(inner), Bad(..) => return "b" }
 }
 
 func store_code(e: StoreError) -> string {
-    match e { NotFound(_) => return "nf", Cap(_) => return "cap" }
+    match e { NotFound(..) => return "nf", Cap(..) => return "cap" }
 }
 "#),
         ("main.rk", r#"
@@ -5583,10 +5627,10 @@ import sync.Shared
 struct Store { n: u64 }
 
 extend Store {
-    func new() -> Store { return Store { n: 0 } }
+    func new() -> Store { return Store(n: 0) }
     func view(self, id: u64) -> View or StoreError {
         if id > 100 { return StoreError.NotFound(id) }
-        return View { id: id }
+        return View(id: id)
     }
 }
 
@@ -7455,7 +7499,7 @@ test "a string past the inline capacity" {
 }
 
 test "a string field against a string variable" {
-    let h = Holder9 { name: "left" }
+    let h = Holder9(name: "left")
     let other = "right"
     assert h.name == other
 }
@@ -7654,8 +7698,8 @@ const RUN_ASSERT_OPAQUE_SRC: &str = r#"
 struct Pt { x: i64, y: i64 }
 
 func main() {
-    let a = Pt { x: 1, y: 2 }
-    let b = Pt { x: 3, y: 4 }
+    let a = Pt(x: 1, y: 2)
+    let b = Pt(x: 3, y: 4)
     assert a == b
 }
 "#;
@@ -8155,6 +8199,49 @@ fn a_c_header_is_found_through_cpath() {
     let _ = std::fs::remove_dir_all(&src_dir);
 }
 
+/// A cross build reads the target's system headers or none, never the host's
+/// (#1102). A struct laid out from the host's `/usr/include` and passed by value
+/// to code built for another machine is wrong in a way nothing else catches.
+///
+/// `CC` pointing nowhere makes "no compiler answered" deterministic: the host
+/// build still falls back to the usual places, the cross build refuses.
+#[test]
+fn a_cross_build_never_reads_the_hosts_system_headers() {
+    let src_dir = std::env::temp_dir().join("rask_cross_header_src");
+    let _ = std::fs::create_dir_all(&src_dir);
+    let src = src_dir.join("uses_stdint.rk");
+    std::fs::write(&src, "import c \"stdint.h\" as cstd\n\nfunc main() {\n    return\n}\n")
+        .expect("write source");
+
+    let run = |target: Option<&str>| {
+        let mut cmd = Command::new(rask_binary());
+        cmd.arg("compile").arg(&src).arg("-o").arg(src_dir.join("out"));
+        if let Some(t) = target {
+            cmd.arg("--target").arg(t);
+        }
+        cmd.env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("CC", "/nonexistent/cc")
+            .env_remove("CPATH")
+            .env_remove("C_INCLUDE_PATH");
+        let out = cmd.output().expect("failed to run rask compile");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+
+    let host = run(None);
+    assert!(
+        !host.contains("C header not found"),
+        "the host build should still find <stdint.h>:\n{host}"
+    );
+
+    let cross = run(Some("aarch64-macos"));
+    assert!(
+        cross.contains("C header not found") && cross.contains("cross-compiling to aarch64-macos"),
+        "the cross build should refuse the host's headers and say why:\n{cross}"
+    );
+
+    let _ = std::fs::remove_dir_all(&src_dir);
+}
+
 #[test]
 fn a_name_a_c_header_never_declared_is_not_a_type() {
     let (text, ok) = check_in_fixtures("c_struct_unknown.rk");
@@ -8612,7 +8699,9 @@ fn assert_says_which_side_wanted_a_bool() {
     let cases = [
         ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
         ("func main() { assert \"nonempty\" }", "found `string`"),
-        ("func main() { assert 1 }", "found `i64`"),
+        // An unsuffixed `1` is an `i32` (type.primitives/L1); the message
+        // used to say `i64` while the literal became an `i32` (#1523).
+        ("func main() { assert 1 }", "found `i32`"),
         ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
     ];
     for (src, found) in cases {
@@ -8627,7 +8716,7 @@ fn assert_says_which_side_wanted_a_bool() {
     // The message argument had the same inversion.
     let out = check_output("func main() { assert 1 == 1, 42 }");
     assert!(
-        out.contains("expected `string`") && out.contains("found `i64`"),
+        out.contains("expected `string`") && out.contains("found `i32`"),
         "the message has to be a string, and 42 isn't one:\n{out}"
     );
 }
@@ -8695,7 +8784,7 @@ fn a_user_error_does_not_drag_the_stdlib_in_with_it() {
     let out = check_output(
         "struct T { n: i32 }\n\
          func main() {\n\
-             let t = T { n: 1 }\n\
+             let t = T(n: 1)\n\
              println(\"{t.n}\")\n\
          }\n",
     );

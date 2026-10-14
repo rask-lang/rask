@@ -345,7 +345,7 @@ impl<'a> MirLowerer<'a> {
             }
             "sum" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_sum(&chain)?;
+                    let result = self.lower_iter_sum(&chain, _full_expr)?;
                     return Ok(Some(result));
                 }
             }
@@ -675,12 +675,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: body_op,
             store_size: Some(body_ty.size().max(1)),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -692,6 +694,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -821,12 +824,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: body_op,
             store_size: Some(body_ty.size().max(1)),
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -838,6 +843,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
@@ -1171,12 +1177,14 @@ impl<'a> MirLowerer<'a> {
                         offset: 0,
                         value: MirOperand::Local(idx),
                         store_size: None,
+                        field: None,
                     }));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
                         offset: 8,
                         value: current_op,
                         store_size: None,
+                        field: None,
                     }));
                     current_op = MirOperand::Local(tuple_local);
                     current_ty = tuple_ty;
@@ -1625,11 +1633,22 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_iter_sum(
         &mut self,
         chain: &super::IterChain<'_>,
+        call: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        let acc = self.builder.alloc_temp(MirType::I64);
+        // The sum's type is the checker's, not a guess: the accumulator used
+        // to be an `i64` starting at integer zero whatever the elements were,
+        // so `[0.5, 1.25, 2.0].sum()` added up the floats' bits and came out 3
+        // (#1287).
+        let Some(sum_ty) = self.lookup_expr_type(call) else {
+            return Err(LoweringError::InvalidConstruct(
+                "the checker recorded no type for this `sum()`".to_string(),
+            ));
+        };
+        let zero = if sum_ty.is_float() { MirConst::Float(0.0) } else { MirConst::Int(0) };
+        let acc = self.builder.alloc_temp(sum_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: acc,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+            rvalue: MirRValue::Use(MirOperand::Constant(zero)),
         }));
 
         let setup = self.setup_iter_chain_loop(chain)?;
@@ -1638,7 +1657,7 @@ impl<'a> MirLowerer<'a> {
             &setup,
         )?;
 
-        let sum = self.builder.alloc_temp(MirType::I64);
+        let sum = self.builder.alloc_temp(sum_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: sum,
             rvalue: MirRValue::BinaryOp {
@@ -1655,7 +1674,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(acc), MirType::I64))
+        Ok((MirOperand::Local(acc), sum_ty))
     }
 
     /// `.min()` / `.max()` — fused loop keeping the running extreme, `none` for
@@ -1694,6 +1713,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
 
         let setup = self.setup_iter_chain_loop(chain)?;
@@ -1764,12 +1784,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)), // present
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: final_op,
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
 
@@ -1794,6 +1816,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)), // None
             store_size: None,
+            field: None,
         }));
         let pos = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1841,12 +1864,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)), // Some
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: MirOperand::Local(here),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.exit_block }));
 
@@ -1966,11 +1991,13 @@ impl<'a> MirLowerer<'a> {
             addr: result, offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)),
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result, offset: 8,
             value: MirOperand::Local(acc),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
         self.builder.switch_to_block(none_block);
@@ -1978,6 +2005,7 @@ impl<'a> MirLowerer<'a> {
             addr: result, offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
         self.builder.switch_to_block(done_block);
@@ -1996,6 +2024,7 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: None,
+            field: None,
         }));
 
         let setup = self.setup_iter_chain_loop(chain)?;
@@ -2018,12 +2047,14 @@ impl<'a> MirLowerer<'a> {
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)), // Some tag
             store_size: None,
+            field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
             offset: 8,
             value: final_op,
             store_size: None,
+            field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.exit_block }));
 
@@ -2185,6 +2216,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: op,
                 store_size: Some(elem_size),
+                field: None,
             }));
             offset += elem_size;
         }
@@ -2285,7 +2317,7 @@ impl<'a> MirLowerer<'a> {
         });
         self.synthesized_functions.push(wb.finish());
 
-        let block = self.builder.alloc_temp(MirType::Ptr);
+        let block = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: block,
             func_name: wrapper_name,

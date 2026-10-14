@@ -51,10 +51,10 @@ struct Database {
 
 extend Database {
     func new() -> Database {
-        return Database {
-            users: Map.new(),
-            next_id: 1,
-        }
+        return Database(
+            users: Map.new()
+            next_id: 1
+        )
     }
 }
 
@@ -85,11 +85,11 @@ func handle(req: Request) -> Response {
 
 func list_users() -> Response {
     let users = with db.read() as d {
-        d.users.values().map(|u| UserResponse {
-            id: u.id,
-            name: u.name,
-            email: u.email,
-        }).to_vec()
+        d.users.values().map(|u| UserResponse(
+            id: u.id
+            name: u.name
+            email: u.email
+        )).to_vec()
     }
     return Response.json(json.encode(users))
 }
@@ -100,25 +100,23 @@ func get_user(id: i64) -> Response {
     }
 
     if found? as u {
-        let view = UserResponse { id: u.id, name: u.name, email: u.email }
+        let view = UserResponse(id: u.id, name: u.name, email: u.email)
         return Response.json(json.encode(view))
     }
-    return Response.json(json.encode(ErrorResponse { error: "user not found" })).with_status(404)
+    return Response.json(json.encode(ErrorResponse(error: "user not found"))).with_status(404)
 }
 
 func create_user(body: string) -> Response {
     let req = json.decode<CreateUserRequest>(body) is CreateUserRequest else {
-        return Response.bad_request(json.encode(ErrorResponse {
-            error: "invalid JSON",
-        }))
+        return Response.bad_request(json.encode(ErrorResponse(error: "invalid JSON")))
     }
 
     let user = with db.write() as d {
         let id = d.next_id
         d.next_id += 1
-        let user = User { id, name: req.name, email: req.email }
+        let user = User(id, name: req.name, email: req.email)
         d.users.insert(id, user.clone())
-        UserResponse { id: user.id, name: user.name, email: user.email }
+        UserResponse(id: user.id, name: user.name, email: user.email)
     }
 
     return Response.json(json.encode(user)).with_status(201)
@@ -130,7 +128,7 @@ func delete_user(id: i64) -> Response {
     if removed? {
         return Response.no_content()
     } else {
-        return Response.json(json.encode(ErrorResponse { error: "user not found" })).with_status(404)
+        return Response.json(json.encode(ErrorResponse(error: "user not found"))).with_status(404)
     }
 }
 

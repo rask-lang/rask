@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a struct pattern by position, where an enum shares the name
+// Expected: typecheck error E0416 at the marker below
+//
+// `Pair` is a struct and a variant, so the bare pattern waits for the
+// matched value to say which (type.enums, pattern matching). On a `Pair`
+// struct it's the struct, which is matched by field name: `0` says nothing
+// about which field it means.
+
+struct Pair {
+    a: i64
+    b: i64
+}
+
+enum Raw {
+    Pair(i64, i64)
+}
+
+func main() {
+    let p = Pair(a: 1, b: 2)
+    // ERROR: E0416 a struct is matched by field name
+    match p {
+        Pair(0, b) => println("{b}")
+        _ => println("other")
+    }
+}

@@ -37,8 +37,8 @@ func lowest<T: Comparable>(a: T, b: T) -> T {
 }
 
 test "the operators follow the hand-written compare" {
-    let a = Ranked { name: "z", rank: 1 }
-    let b = Ranked { name: "a", rank: 2 }
+    let a = Ranked(name: "z", rank: 1)
+    let b = Ranked(name: "a", rank: 2)
     assert a < b
     assert a <= b
     assert b > a
@@ -48,8 +48,8 @@ test "the operators follow the hand-written compare" {
 }
 
 test "a Comparable block needs only compare" {
-    let x = Fixed { raw: 1 }
-    let y = Fixed { raw: 2 }
+    let x = Fixed(raw: 1)
+    let y = Fixed(raw: 2)
     assert y < x
     assert lowest(x, y).raw == 2
     mut v: Vec<Fixed> = Vec.new()

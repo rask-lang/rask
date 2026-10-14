@@ -628,7 +628,7 @@ impl ComptimeValue {
     /// fit — a header address and the length with the heap bit set. The address
     /// isn't known until link time, so it's left zero and recorded as a
     /// relocation for codegen to fill in.
-    fn write_element(&self, out: &mut SerializedConst) -> Option<()> {
+    pub fn write_element(&self, out: &mut SerializedConst) -> Option<()> {
         const SSO_MAX: usize = 15;
         const HEAP_FLAG: u64 = 1 << 63;
         match self {
@@ -1274,18 +1274,23 @@ fn ct_checked_binop_i128(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeRes
 
 pub struct ComptimeInterpreter {
     env: ComptimeEnv,
+    /// Each enum's variants that carry no fields, by enum name. `Level.Low`
+    /// is a value, and nothing else here says `Level` names a type.
+    unit_variants: HashMap<String, Vec<String>>,
 }
 
 impl ComptimeInterpreter {
     pub fn new() -> Self {
         Self {
             env: ComptimeEnv::new(),
+            unit_variants: HashMap::new(),
         }
     }
 
     pub fn with_quota(quota: usize) -> Self {
         Self {
             env: ComptimeEnv::with_quota(quota),
+            unit_variants: HashMap::new(),
         }
     }
 
@@ -1320,10 +1325,15 @@ impl ComptimeInterpreter {
     /// would have; this only stops the lookup failing first.
     pub fn register_functions(&mut self, decls: &[Decl]) {
         for decl in decls {
-            if let DeclKind::Fn(f) = &decl.kind {
-                if f.is_comptime || !f.body.is_empty() {
+            match &decl.kind {
+                DeclKind::Fn(f) if f.is_comptime || !f.body.is_empty() => {
                     self.env.register_function(f.name.clone(), f.clone());
                 }
+                DeclKind::Enum(e) => {
+                    let units = e.variants.iter().filter(|v| v.fields.is_empty()).map(|v| v.name.clone());
+                    self.unit_variants.insert(e.name.clone(), units.collect());
+                }
+                _ => {}
             }
         }
     }
@@ -1422,6 +1432,17 @@ impl ComptimeInterpreter {
 
             // Field access
             ExprKind::Field { object, field } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    let is_unit_variant = self.env.get(name).is_none()
+                        && self.unit_variants.get(name).is_some_and(|vs| vs.contains(field));
+                    if is_unit_variant {
+                        return Ok(ControlFlow::Normal(ComptimeValue::Enum {
+                            name: name.clone(),
+                            variant: field.clone(),
+                            data: None,
+                        }));
+                    }
+                }
                 let obj = self.eval_expr(object)?;
                 match obj {
                     ComptimeValue::Struct { name, fields } => {
@@ -1727,8 +1748,36 @@ impl ComptimeInterpreter {
                     (ComptimeValue::U64(n), "i64") => ComptimeValue::I64(*n as i64),
                     (ComptimeValue::U8(n), "u32") => ComptimeValue::U32(*n as u32),
                     (ComptimeValue::I32(n), "i16") => ComptimeValue::I16(*n as i16),
-                    // Identity / pass-through
-                    _ => val,
+                    // Already the type asked for.
+                    _ if val.type_name() == ty.bare_name().unwrap_or("") => val,
+                    // Any integer to any integer width, `usize` included. The
+                    // checker lets `as` only widen (type.primitives/CV3), so the
+                    // value carries over whole. Listed pair by pair, `3u32 as
+                    // u64` wasn't a pair and came back still a `u32`.
+                    (_, target) if val.as_int().is_some() && CtInt::from_name(target).is_some() => {
+                        let kind = CtInt::from_name(target).expect("checked above");
+                        match val.as_int().expect("checked above").0 {
+                            CtNum::Signed(n) => kind.make(n),
+                            CtNum::Big(n) => kind.make_u128(n),
+                        }
+                    }
+                    (ComptimeValue::F32(f), "f64") => ComptimeValue::F64(*f as f64),
+                    (ComptimeValue::F64(f), "f32") => ComptimeValue::F32(*f as f32),
+                    // Anything else is a conversion this evaluator doesn't
+                    // model, and the value can't stand in for its result:
+                    // handed back unchanged, `Marker(v: 0) as any Opaque`
+                    // came out a `Marker`, and its bytes went where an
+                    // interface value belongs.
+                    _ => {
+                        let from = match &val {
+                            ComptimeValue::Struct { name, .. } | ComptimeValue::Enum { name, .. } => name.as_str(),
+                            other => other.type_name(),
+                        };
+                        return Err(ComptimeError::NotSupported(format!(
+                            "converting a `{from}` with `as {}`",
+                            ty.source()
+                        )));
+                    }
                 }
             }
 

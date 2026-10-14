@@ -18,8 +18,8 @@ struct Node {
 // The rack belongs to the caller, so the links outlive this body.
 func collect_into(mutate s: Rack<Node>) -> Vec<Link<Node>> {
     mut v: Vec<Link<Node>> = Vec.new()
-    v.push(s.insert(Node { value: 1 }))
-    v.push(s.insert(Node { value: 2 }))
+    v.push(s.insert(Node(value: 1)))
+    v.push(s.insert(Node(value: 2)))
     return v
 }
 
@@ -34,8 +34,8 @@ test "a container of links into a caller's rack" {
 test "a container that stays inside the rack's scope" {
     mut s: Rack<Node> = Rack.new()
     mut v: Vec<Link<Node>> = Vec.new()
-    v.push(s.insert(Node { value: 5 }))
-    v.push(s.insert(Node { value: 7 }))
+    v.push(s.insert(Node(value: 5)))
+    v.push(s.insert(Node(value: 7)))
     mut total = 0
     for l in v {
         total = total + l.value
@@ -49,7 +49,7 @@ test "a container that stays inside the rack's scope" {
 func rebound() -> Vec<Link<Node>> {
     mut s: Rack<Node> = Rack.new()
     mut v: Vec<Link<Node>> = Vec.new()
-    v.push(s.insert(Node { value: 1 }))
+    v.push(s.insert(Node(value: 1)))
     v = Vec.new()
     return v
 }
@@ -57,7 +57,7 @@ func rebound() -> Vec<Link<Node>> {
 func cleared() -> Vec<Link<Node>> {
     mut s: Rack<Node> = Rack.new()
     mut v: Vec<Link<Node>> = Vec.new()
-    v.push(s.insert(Node { value: 1 }))
+    v.push(s.insert(Node(value: 1)))
     v.clear()
     return v
 }
@@ -72,7 +72,7 @@ test "and so does emptying it" {
 
 test "the rack's own listing is a container of links too" {
     mut s: Rack<Node> = Rack.new()
-    let a = s.insert(Node { value: 3 })
+    let a = s.insert(Node(value: 3))
     assert s.nodes().len() == 1
     assert a.value == 3
 }

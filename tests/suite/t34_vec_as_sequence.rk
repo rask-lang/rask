@@ -105,7 +105,7 @@ test "a method on the element of an adapted chain" {
 }
 
 test "a method on a struct element" {
-    let pts: Vec<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    let pts: Vec<Point> = [Point(x: 1, y: 2), Point(x: 3, y: 4)]
     mut total = 0
     for p in pts.as_sequence() {
         total = total + p.sum()

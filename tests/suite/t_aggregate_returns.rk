@@ -58,7 +58,7 @@ extend Refused {
 // ── 1. a direct call ────────────────────────────────────────────
 
 func build_wide(n: i64) -> Wide {
-    return Wide { a: n, b: n * 2, c: n * 3, label: "w{n}" }
+    return Wide(a: n, b: n * 2, c: n * 3, label: "w{n}")
 }
 
 func maybe_wide(n: i64) -> Wide or Refused {
@@ -106,7 +106,7 @@ test "a string comes back whole" {
 
 test "a closure returning a wide struct" {
     let make = |n: i64| -> Wide {
-        return Wide { a: n, b: n + 1, c: n + 2, label: "c{n}" }
+        return Wide(a: n, b: n + 1, c: n + 2, label: "c{n}")
     }
     let w = make(10)
     assert w.a == 10
@@ -125,7 +125,7 @@ test "a closure returning a string" {
 // the way it always did.
 test "a closure returning something that fits a word" {
     let one = |n: i64| -> Small {
-        return Small { n: n }
+        return Small(n: n)
     }
     assert one(7).n == 7
 }
@@ -147,7 +147,7 @@ struct Alpha {
 
 Alpha implements Describes {
     public func describe(self) -> Wide {
-        return Wide { a: self.seed, b: self.seed * 10, c: self.seed * 100, label: "alpha" }
+        return Wide(a: self.seed, b: self.seed * 10, c: self.seed * 100, label: "alpha")
     }
 
     public func name(self) -> string {
@@ -159,7 +159,7 @@ struct Beta {}
 
 Beta implements Describes {
     public func describe(self) -> Wide {
-        return Wide { a: -1, b: -2, c: -3, label: "beta" }
+        return Wide(a: -1, b: -2, c: -3, label: "beta")
     }
 
     public func name(self) -> string {
@@ -177,7 +177,7 @@ func describe_all(items: Vec<any Describes>) -> i64 {
 }
 
 test "an interface method returning a wide struct, through a vtable" {
-    let a = Alpha { seed: 2 }
+    let a = Alpha(seed: 2)
     let boxed = a as any Describes
     let w = boxed.describe()
     assert w.a == 2
@@ -187,23 +187,23 @@ test "an interface method returning a wide struct, through a vtable" {
 }
 
 test "an interface method returning a string" {
-    let b = Beta {}
+    let b = Beta()
     let boxed = b as any Describes
     assert boxed.name() == "beta"
 }
 
 test "several implementations behind one interface" {
-    let items: Vec<any Describes> = [Alpha { seed: 1 } as any Describes, Beta {} as any Describes]
+    let items: Vec<any Describes> = [Alpha(seed: 1) as any Describes, Beta() as any Describes]
     assert describe_all(items) == 105
 }
 
 func main() {
     let w = build_wide(3)
-    let a = Alpha { seed: 1 }
+    let a = Alpha(seed: 1)
     let boxed = a as any Describes
     let d = boxed.describe()
     let make = |n: i64| -> Wide {
-        return Wide { a: n, b: n, c: n, label: "c" }
+        return Wide(a: n, b: n, c: n, label: "c")
     }
     let c = make(9)
     println("aggregate returns ok: {w.label} {d.label} {c.label} {joined("x", "y")}")

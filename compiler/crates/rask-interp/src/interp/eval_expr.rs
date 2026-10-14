@@ -717,14 +717,6 @@ impl Interpreter {
                         }
                     }
                 }
-                // G4: @binary SIZE and SIZE_BITS constants
-                if let Some(meta) = self.binary_structs.get(&type_name) {
-                    match field {
-                        "SIZE" => return Ok(Value::int(meta.size_bytes as i64)),
-                        "SIZE_BITS" => return Ok(Value::int(meta.total_bits as i64)),
-                        _ => {}
-                    }
-                }
                 Err(RuntimeDiagnostic::new(
                     RuntimeError::TypeError(format!(
                         "type '{}' has no field '{}'",
@@ -1334,17 +1326,6 @@ impl Interpreter {
                         }
                     }
 
-                    // @binary static methods (e.g. IpHeader.parse(data))
-                    if self.binary_structs.contains_key(name) {
-                        let arg_vals: Vec<Value> = args
-                            .iter()
-                            .map(|a| self.eval_expr(&a.expr))
-                            .collect::<Result<_, _>>()?;
-                        if let Some(result) = self.try_binary_static_method(name, method, arg_vals, expr.span) {
-                            return result;
-                        }
-                    }
-
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
                             // Skip a declaration whose body lives in the
@@ -1432,6 +1413,25 @@ impl Interpreter {
                     }
                 }
 
+                // `p.cast<U>()` — natively the next read through it takes
+                // `U`'s width. The target is the checker's type for the call,
+                // which covers `let q: *u8 = p.cast()` as well (#1012).
+                if method == "cast" && arg_vals.is_empty() {
+                    if let Value::RawPtr(p) = &receiver {
+                        let pointee = |id: rask_ast::NodeId| match self.node_types.get(&id) {
+                            Some(rask_types::Type::RawPtr(inner)) => {
+                                Some(crate::value::IntKind::from_type(inner))
+                                    .filter(|k| *k != crate::value::IntKind::Untyped)
+                            }
+                            _ => None,
+                        };
+                        return p
+                            .cast_to(pointee(object.id), pointee(expr.id))
+                            .map(Value::RawPtr)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                }
+
                 // `let a: u8 = "300".parse()` names its target through
                 // inference rather than a turbofish, and without the name here
                 // `parse` fell back to the 64-bit parse and kept 300 in a u8
@@ -1490,10 +1490,8 @@ impl Interpreter {
                             .and_then(|ta| ta.first())
                             .and_then(|t| self.resolve_type_param(t).bare_name().map(str::to_string))
                         {
-                            let attrs = field_info_attrs(s);
-                            let found = attrs.iter().find(|a| {
-                                rask_ast::decl::field_attrs::attachment_name(a) == annotation
-                            });
+                            let attrs = self.field_info_attrs(s);
+                            let found = attrs.iter().find(|a| a.is(&annotation));
                             if method == "has" {
                                 return Ok(Value::Bool(found.is_some()));
                             }
@@ -1510,7 +1508,7 @@ impl Interpreter {
                                     expr.span,
                                 ));
                             };
-                            return Ok(self.annotation_record(&annotation, attr));
+                            return Ok(self.annotation_record(&annotation, &attr.clone()));
                         }
                     }
                 }
@@ -3282,23 +3280,24 @@ impl Interpreter {
 }
 
 
-/// The raw attachment strings a reflect FieldInfo carries in its hidden
-/// `__attrs` (type.annotations/AN6). Mirrors the native lowering's
-/// `ReflectFieldConst.attrs`.
-pub(super) fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
-    let guard = s.lock().unwrap();
-    match guard.fields.get("__attrs") {
-        Some(Value::Vec(v)) => v
-            .lock()
-            .unwrap()
-            .items
-            .iter()
-            .filter_map(|a| match a {
-                Value::String(text) => Some(text.lock().unwrap().clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
+impl Interpreter {
+    /// The attachments on the field a reflect FieldInfo describes
+    /// (type.annotations/AN6), read off its declaration.
+    pub(super) fn field_info_attrs(&self, s: &Arc<Mutex<StructData>>) -> Vec<rask_ast::attr::Attr> {
+        let guard = s.lock().unwrap();
+        let owner = match guard.fields.get("__owner") {
+            Some(Value::String(text)) => text.lock().unwrap().clone(),
+            _ => return Vec::new(),
+        };
+        let index = match guard.fields.get("__index") {
+            Some(Value::Int(i, _)) => *i as usize,
+            _ => return Vec::new(),
+        };
+        self.struct_decls
+            .get(&owner)
+            .and_then(|d| d.fields.get(index))
+            .map(|f| f.attrs.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -3325,7 +3324,7 @@ pub(super) fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
 pub(super) fn unguarded_annotation_read(
     body: &[rask_ast::stmt::Stmt],
     binding: &str,
-    attrs: &[String],
+    attrs: &[rask_ast::attr::Attr],
 ) -> Option<(String, Option<String>, rask_ast::Span)> {
     use rask_ast::comptime_if;
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -3334,7 +3333,7 @@ pub(super) fn unguarded_annotation_read(
 
     struct Reads<'b> {
         binding: &'b str,
-        attrs: &'b [String],
+        attrs: &'b [rask_ast::attr::Attr],
         found: Option<(String, Option<String>, Span)>,
     }
 
@@ -3349,10 +3348,8 @@ pub(super) fn unguarded_annotation_read(
         type_args.as_ref()?.first()?.bare_name()
     }
 
-    fn carries(attrs: &[String], annotation: &str) -> bool {
-        attrs
-            .iter()
-            .any(|a| rask_ast::decl::field_attrs::attachment_name(a) == annotation)
+    fn carries(attrs: &[rask_ast::attr::Attr], annotation: &str) -> bool {
+        attrs.iter().any(|a| a.is(annotation))
     }
 
     impl<'a> Visit<'a> for Reads<'_> {
@@ -3406,14 +3403,12 @@ impl Interpreter {
     /// (type.annotations/AN6).
     ///
     /// Desugar already filled the declared defaults into the attachment text,
-    /// so what's written here is the whole record — the same text native
+    /// so what's written here is the whole record — the same values native
     /// lowering splices from, which is what keeps the two backends agreeing on
     /// what a default was. The declaration is consulted only for field types:
     /// `3` is an integer for `weight: i64` and a float for `scale: f64`, and
-    /// the text alone can't say which.
-    fn annotation_record(&self, annotation: &str, attr: &str) -> Value {
-        use rask_ast::decl::field_attrs;
-
+    /// the literal alone can't say which.
+    fn annotation_record(&self, annotation: &str, attr: &rask_ast::attr::Attr) -> Value {
         let declared: Vec<(String, String)> = self
             .struct_decls
             .get(annotation)
@@ -3426,7 +3421,7 @@ impl Interpreter {
             .unwrap_or_default();
 
         let mut fields = IndexMap::new();
-        for (name, value) in field_attrs::attachment_args(attr) {
+        for (name, value) in attr.labelled() {
             let ty = declared
                 .iter()
                 .find(|(n, _)| n == name)
@@ -3442,28 +3437,25 @@ impl Interpreter {
     }
 }
 
-/// One attachment argument's text as a value, read against its declared type.
+/// One attachment argument as a value, read against its declared type.
 /// The native side does the same in `rask-mir`'s `annotation_const`; both are
 /// driven off the declared type so `weight: f64 = 1` isn't an integer on one
 /// backend and a float on the other.
-fn annotation_value(text: &str, ty: &str) -> Value {
-    use rask_ast::decl::field_attrs;
-    let text = text.trim();
-    match ty {
-        "bool" => Value::Bool(text == "true"),
-        "f32" | "f64" => text
-            .parse::<f64>()
-            .map(|f| Value::Float(f, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 }))
-            .unwrap_or(Value::Unit),
-        "str" | "string" => Value::String(Arc::new(Mutex::new(
-            field_attrs::string_literal(text).unwrap_or_else(|| text.to_string()),
-        ))),
-        _ => match text.parse::<i64>() {
-            Ok(n) => Value::int(n),
-            // An enum variant (`Color.Red`) or an array — kept as text until
-            // annotation fields of those types are read back.
-            Err(_) => Value::String(Arc::new(Mutex::new(text.to_string()))),
-        },
+fn annotation_value(value: &rask_ast::attr::AttrValue, ty: &str) -> Value {
+    use rask_ast::expr::Literal;
+    match (value.literal(), ty) {
+        (Some(Literal::Bool(b)), "bool") => Value::Bool(b),
+        (Some(Literal::Float(f)), "f32" | "f64") => {
+            Value::Float(f, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 })
+        }
+        (Some(Literal::Int(n)), "f32" | "f64") => {
+            Value::Float(n as f64, if ty == "f32" { FloatKind::F32 } else { FloatKind::F64 })
+        }
+        (Some(Literal::Str(s)), "str" | "string") => Value::String(Arc::new(Mutex::new(s))),
+        (Some(Literal::Int(n)), _) if i64::try_from(n).is_ok() => Value::int(n as i64),
+        // An enum variant (`Color.Red`) or an array — kept as its written form
+        // until annotation fields of those types are read back.
+        _ => Value::String(Arc::new(Mutex::new(value.to_string()))),
     }
 }
 

@@ -796,10 +796,11 @@ fn main() {
             }
             let check_only = cmd_args.iter().any(|a| *a == "--check");
             let write_in_place = cmd_args.iter().any(|a| *a == "-w" || *a == "--write");
-            let file_arg = find_positional_arg(&cmd_args, 2, &[]);
-            match file_arg {
-                Some(file) => commands::tools::cmd_fmt(file, check_only, write_in_place),
-                None => commands::tools::cmd_fmt_stdin(),
+            let paths: Vec<&str> = cmd_args.iter().skip(2).copied().filter(|a| !a.starts_with('-')).collect();
+            if paths.is_empty() {
+                commands::tools::cmd_fmt_stdin();
+            } else {
+                commands::tools::cmd_fmt(&paths, check_only, write_in_place);
             }
         }
         "api" => {

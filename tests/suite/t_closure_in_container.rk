@@ -138,7 +138,7 @@ test "std.collections — a Map of closures" {
 // rather than where a local would.
 test "std.collections — closures in a struct's Vec field" {
     let base = 6
-    mut r = Registry { hooks: [] }
+    mut r = Registry(hooks: [])
     r.hooks.push(|x| {
         return x + base
     })

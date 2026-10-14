@@ -82,21 +82,21 @@ test "and, or" {
 }
 
 test "and short-circuits before the right side runs" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     let r = false && bump(mutate c)
     assert !r
     assert c.n == 0
 }
 
 test "or short-circuits before the right side runs" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     let r = true || bump(mutate c)
     assert r
     assert c.n == 0
 }
 
 test "the right side does run when the left does not decide it" {
-    mut c = Counter { n: 0 }
+    mut c = Counter(n: 0)
     let r = true && bump(mutate c)
     assert r
     assert c.n == 1

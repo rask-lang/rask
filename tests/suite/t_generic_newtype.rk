@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A generic newtype (type.aliases/T4) is built from its one value and works
+// out its type argument from it (T7): `Meters(2.5)` is a `Meters<f64>`.
+//
+// Building one used to give a bare `Meters` that matched no `Meters<f64>`,
+// `.value` on a generic one was "no field", and natively it was laid out as
+// a pointer, so arithmetic ran a whole word wide. An operator its own
+// conformance defines also skipped that conformance on the interpreter and
+// ran the arithmetic of the type underneath.
+
+type Meters<T: Numeric> = T
+
+extend Meters<T> {
+    func doubled(self) -> Meters<T> {
+        return Meters(self.value + self.value)
+    }
+}
+
+type Clamped<T: Integer> = T
+
+Clamped<T> implements Add where T: Integer {
+    func add(self, other: Clamped<T>) -> Clamped<T> {
+        return Clamped(self.value.saturating_add(other.value))
+    }
+}
+
+test "the type argument comes from the value" {
+    let m = Meters(2.5)
+    let n: Meters<f64> = m
+    assert n.value == 2.5
+    assert m.doubled().value == 5.0
+}
+
+test "an operator runs the newtype's own conformance" {
+    let a: Clamped<u8> = Clamped(250)
+    assert (a + Clamped(10)).value == 255
+}
+
+test "a newtype over a Copy value is Copy" {
+    let a = Clamped(7u32)
+    let b = a
+    let c = a
+    assert b.value + c.value == 14
+}
+
+func main() {}

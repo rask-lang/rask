@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: named arguments that don't place on the callee's parameters
+// Expected: typecheck error E0903 at each marker below
+//
+// A label puts its argument on the parameter it names, in any order
+// (SYNTAX.md, named arguments). These are the calls where that has no
+// answer: a name the callee doesn't have, two arguments for one parameter,
+// an unnamed argument after a named one, and a label on a callee whose
+// parameters have no names.
+
+enum Shape {
+    Pair(i64, i64)
+}
+
+func digits(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
+
+func main() {
+    // ERROR: a label naming no parameter
+    println("{digits(1, z: 2)}")
+    // ERROR: `a` filled by position and by label
+    println("{digits(1, a: 2)}")
+    // ERROR: an unnamed argument after a named one
+    println("{digits(b: 1, 2)}")
+    mut v: Vec<i64> = Vec.new()
+    // ERROR: a stdlib method has no `at`
+    v.insert(at: 0, value: 9)
+    // ERROR: tuple variant has no names to label
+    let p = Shape.Pair(x: 1, y: 2)
+    let g = |a: i64, b: i64| a * 10 + b
+    // ERROR: a closure value's parameters have no names
+    println("{g(a: 1, b: 2)}")
+}

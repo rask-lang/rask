@@ -29,12 +29,12 @@ extend Tx {
 // ERROR: `tx` has no cleanup committed yet [E0882]
 // ERROR: fix: add `ensure tx.commit()` or `ensure tx.rollback()` on the line after it's acquired
 func begins_and_forgets(n: i64) {
-    let tx = Tx { id: n }
+    let tx = Tx(id: n)
     println("began {n}")
 }
 
 func main() {
-    let tx = Tx { id: 1 }
+    let tx = Tx(id: 1)
     ensure tx.rollback()
     println("working")
 }

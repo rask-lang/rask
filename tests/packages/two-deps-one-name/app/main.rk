@@ -21,7 +21,7 @@ extend Helper {
 }
 
 func main() {
-    let mine = Helper { own: "here" }
+    let mine = Helper(own: "here")
     println(mine.describe())
 
     let a = liba.from_a()

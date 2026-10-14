@@ -27,7 +27,7 @@ public enum Ty {
     // A table naming its case by which tag key it holds: exactly one of the
     // case names appears. The case may own companion keys (a git dep's
     // `rev`), and `shared` keys are allowed whatever the case.
-    Variant { cases: Vec<Case>, shared: Vec<Field> }
+    Variant(cases: Vec<Case>, shared: Vec<Field>)
 }
 
 public struct Field {
@@ -64,14 +64,14 @@ public struct ValuePair {
 }
 
 public enum Change {
-    Add { at: Vec<Step>, field: Field }
+    Add(at: Vec<Step>, field: Field)
     // Carries the removed definition, so the log can run backwards.
-    Remove { at: Vec<Step>, field: Field }
-    Rename { at: Vec<Step>, from: string, to: string }
+    Remove(at: Vec<Step>, field: Field)
+    Rename(at: Vec<Step>, from: string, to: string)
     // Every value the old type allowed that a file might hold needs a pair;
     // an unmapped value is a load error, not a guess.
-    Retype { at: Vec<Step>, name: string, from: Ty, to: Ty, mapping: Vec<ValuePair> }
-    Default { at: Vec<Step>, name: string, from: Value, to: Value }
+    Retype(at: Vec<Step>, name: string, from: Ty, to: Ty, mapping: Vec<ValuePair>)
+    Default(at: Vec<Step>, name: string, from: Value, to: Value)
 }
 
 public struct Release {
@@ -108,15 +108,15 @@ extend Schema {
 // Schemas are written in Rask for now; these keep them readable.
 
 public func required(name: string, take ty: Ty) -> Field {
-    return Field { name, ty, required: true, default: none, ignorable: false }
+    return Field(name, ty, required: true, default: none, ignorable: false)
 }
 
 public func optional(name: string, take ty: Ty) -> Field {
-    return Field { name, ty, required: false, default: none, ignorable: false }
+    return Field(name, ty, required: false, default: none, ignorable: false)
 }
 
 public func defaulted(name: string, take ty: Ty, take default: Value) -> Field {
-    return Field { name, ty, required: false, default, ignorable: false }
+    return Field(name, ty, required: false, default, ignorable: false)
 }
 
 public func list_of(take t: Ty) -> Ty {
@@ -155,7 +155,7 @@ public func describe(t: Ty) -> string {
         Ty.List(item) => return "list of {describe(item[0].clone())}",
         Ty.MapOf(value) => return "map of {describe(value[0].clone())}",
         Ty.Record(fields) => return "record {{ {describe_fields(fields)} }}",
-        Ty.Variant { cases, shared } => {
+        Ty.Variant(cases, shared) => {
             mut parts = Vec<string>.new()
             for c in cases {
                 parts.push("{c.name}: {describe(c.payload)} {{ {describe_fields(c.fields)} }}")
@@ -172,7 +172,7 @@ public func kind_of(t: Ty) -> string {
         Ty.Record(_) => return "table",
         Ty.List(item) => return "list of {kind_of(item[0].clone())}",
         Ty.MapOf(value) => return "table of {kind_of(value[0].clone())}",
-        Ty.Variant { cases, .. } => {
+        Ty.Variant(cases, ..) => {
             mut names = Vec<string>.new()
             for c in cases {
                 names.push(c.name)
@@ -232,7 +232,7 @@ public func replay_shape(history: Vec<Release>) -> Ty or SchemaError {
     mut expected: i64 = 1
     for r in history {
         if r.version != expected {
-            return SchemaError { what: "release {r.version} follows release {expected - 1}; versions count up by one" }
+            return SchemaError(what: "release {r.version} follows release {expected - 1}; versions count up by one")
         }
         for c in r.changes {
             shape = try apply_to_shape(shape, c, r.version == 1)
@@ -244,13 +244,13 @@ public func replay_shape(history: Vec<Release>) -> Ty or SchemaError {
 
 public func check_history(s: Schema) -> void or SchemaError {
     if s.history.is_empty() {
-        return SchemaError { what: "schema `{s.name}` has no releases" }
+        return SchemaError(what: "schema `{s.name}` has no releases")
     }
     let replayed = try replay_shape(s.history)
     let got = describe(replayed)
     let want = describe(s.shape)
     if got != want {
-        return SchemaError { what: "schema `{s.name}`: replaying the history does not give the current shape\n  history gives: {got}\n  shape says:    {want}\nEither a change is missing from the latest release, or an earlier release was edited." }
+        return SchemaError(what: "schema `{s.name}`: replaying the history does not give the current shape\n  history gives: {got}\n  shape says:    {want}\nEither a change is missing from the latest release, or an earlier release was edited.")
     }
     return
 }
@@ -264,11 +264,11 @@ public func apply_to_shape(shape: Ty, c: Change, first: bool) -> Ty or SchemaErr
 
 public func change_path(c: Change) -> Vec<Step> {
     return match c {
-        Change.Add { at, .. } => at,
-        Change.Remove { at, .. } => at,
-        Change.Rename { at, .. } => at,
-        Change.Retype { at, .. } => at,
-        Change.Default { at, .. } => at,
+        Change.Add(at, ..) => at,
+        Change.Remove(at, ..) => at,
+        Change.Rename(at, ..) => at,
+        Change.Retype(at, ..) => at,
+        Change.Default(at, ..) => at,
     }
 }
 
@@ -281,11 +281,11 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                 let edited = try edit_fields(fields, c, first)
                 return Ty.Record(edited)
             }
-            Ty.Variant { cases, shared } => {
+            Ty.Variant(cases, shared) => {
                 let edited = try edit_fields(shared, c, first)
-                return Ty.Variant { cases: cases.clone(), shared: edited }
+                return Ty.Variant(cases: cases.clone(), shared: edited)
             }
-            _ => return SchemaError { what: "{describe_path(at)} holds a {kind_of(t)}, not a table, so it has no fields to change" },
+            _ => return SchemaError(what: "{describe_path(at)} holds a {kind_of(t)}, not a table, so it has no fields to change"),
         }
     }
     let step = at[depth].clone()
@@ -296,11 +296,11 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                     let edited = try edit_field_type(fields, k, at, depth, c, first)
                     return Ty.Record(edited)
                 }
-                Ty.Variant { cases, shared } => {
+                Ty.Variant(cases, shared) => {
                     let edited = try edit_field_type(shared, k, at, depth, c, first)
-                    return Ty.Variant { cases: cases.clone(), shared: edited }
+                    return Ty.Variant(cases: cases.clone(), shared: edited)
                 }
-                _ => return SchemaError { what: "{describe_path(at)}: `{k}` is not a field of this {kind_of(t)}" },
+                _ => return SchemaError(what: "{describe_path(at)}: `{k}` is not a field of this {kind_of(t)}"),
             }
         }
         Step.Each => {
@@ -313,12 +313,12 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                     let inner = try edit_fields_at(value[0].clone(), at, depth + 1, c, first)
                     return map_of(inner)
                 }
-                _ => return SchemaError { what: "{describe_path(at)}: `*` needs a list or a map, found {kind_of(t)}" },
+                _ => return SchemaError(what: "{describe_path(at)}: `*` needs a list or a map, found {kind_of(t)}"),
             }
         }
         Step.Case(name) => {
             match t {
-                Ty.Variant { cases, shared } => {
+                Ty.Variant(cases, shared) => {
                     mut out = Vec<Case>.new()
                     mut found = false
                     for cs in cases {
@@ -326,11 +326,11 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                             found = true
                             if depth + 1 == at.len() {
                                 let edited = try edit_fields(cs.fields, c, first)
-                                out.push(Case { name: cs.name, payload: cs.payload.clone(), fields: edited })
+                                out.push(Case(name: cs.name, payload: cs.payload.clone(), fields: edited))
                             } else {
                                 let edited = try edit_fields_at(Ty.Record(cs.fields.clone()), at, depth + 1, c, first)
                                 if edited is Record(fs) {
-                                    out.push(Case { name: cs.name, payload: cs.payload.clone(), fields: fs })
+                                    out.push(Case(name: cs.name, payload: cs.payload.clone(), fields: fs))
                                 }
                             }
                         } else {
@@ -338,11 +338,11 @@ func edit_fields_at(t: Ty, at: Vec<Step>, depth: usize, c: Change, first: bool) 
                         }
                     }
                     if !found {
-                        return SchemaError { what: "{describe_path(at)}: no case `{name}`" }
+                        return SchemaError(what: "{describe_path(at)}: no case `{name}`")
                     }
-                    return Ty.Variant { cases: out, shared: shared.clone() }
+                    return Ty.Variant(cases: out, shared: shared.clone())
                 }
-                _ => return SchemaError { what: "{describe_path(at)}: `<{name}>` needs a variant, found {kind_of(t)}" },
+                _ => return SchemaError(what: "{describe_path(at)}: `<{name}>` needs a variant, found {kind_of(t)}"),
             }
         }
     }
@@ -355,13 +355,13 @@ func edit_field_type(fields: Vec<Field>, name: string, at: Vec<Step>, depth: usi
         if f.name == name {
             found = true
             let inner = try edit_fields_at(f.ty, at, depth + 1, c, first)
-            out.push(Field { ty: inner, ..f })
+            out.push(Field(ty: inner, ..f))
         } else {
             out.push(f.clone())
         }
     }
     if !found {
-        return SchemaError { what: "{describe_path(at)}: no field `{name}`" }
+        return SchemaError(what: "{describe_path(at)}: no field `{name}`")
     }
     return out
 }
@@ -382,55 +382,55 @@ func position_of(fields: Vec<Field>, name: string) -> usize? {
 func edit_fields(fields: Vec<Field>, c: Change, first: bool) -> Vec<Field> or SchemaError {
     let where_ = describe_path(change_path(c))
     match c {
-        Change.Add { field, .. } => {
+        Change.Add(field, ..) => {
             if position_of(fields, field.name)? {
-                return SchemaError { what: "{where_}: Add `{field.name}`, which already exists" }
+                return SchemaError(what: "{where_}: Add `{field.name}`, which already exists")
             }
             if field.required && !first {
-                return SchemaError { what: "{where_}: Add `{field.name}` as required; every older file would stop loading. Give it a default instead" }
+                return SchemaError(what: "{where_}: Add `{field.name}` as required; every older file would stop loading. Give it a default instead")
             }
             mut out = fields.clone()
             out.push(field.clone())
             return out
         }
-        Change.Remove { field, .. } => {
-            let i = position_of(fields, field.name) ?? return SchemaError { what: "{where_}: Remove `{field.name}`, which doesn't exist" }
+        Change.Remove(field, ..) => {
+            let i = position_of(fields, field.name) ?? return SchemaError(what: "{where_}: Remove `{field.name}`, which doesn't exist")
             if describe_fields(vec_one(fields[i].clone())) != describe_fields(vec_one(field.clone())) {
-                return SchemaError { what: "{where_}: Remove `{field.name}` records a definition that doesn't match the current one" }
+                return SchemaError(what: "{where_}: Remove `{field.name}` records a definition that doesn't match the current one")
             }
             mut out = fields.clone()
             out.remove(i.wrap<i64>())
             return out
         }
-        Change.Rename { from, to, .. } => {
-            let i = position_of(fields, from) ?? return SchemaError { what: "{where_}: Rename `{from}`, which doesn't exist" }
+        Change.Rename(from, to, ..) => {
+            let i = position_of(fields, from) ?? return SchemaError(what: "{where_}: Rename `{from}`, which doesn't exist")
             if position_of(fields, to)? {
-                return SchemaError { what: "{where_}: Rename `{from}` to `{to}`, which already exists" }
+                return SchemaError(what: "{where_}: Rename `{from}` to `{to}`, which already exists")
             }
             mut out = fields.clone()
             let old = out[i.wrap<i64>()].clone()
-            out.set(i.wrap<i64>(), Field { name: to, ..old })
+            out.set(i.wrap<i64>(), Field(name: to, ..old))
             return out
         }
-        Change.Retype { name, from, to, .. } => {
-            let i = position_of(fields, name) ?? return SchemaError { what: "{where_}: Retype `{name}`, which doesn't exist" }
+        Change.Retype(name, from, to, ..) => {
+            let i = position_of(fields, name) ?? return SchemaError(what: "{where_}: Retype `{name}`, which doesn't exist")
             if describe(fields[i].ty.clone()) != describe(from) {
-                return SchemaError { what: "{where_}: Retype `{name}` from {describe(from)}, but it is {describe(fields[i].ty.clone())}" }
+                return SchemaError(what: "{where_}: Retype `{name}` from {describe(from)}, but it is {describe(fields[i].ty.clone())}")
             }
             mut out = fields.clone()
             let old = out[i.wrap<i64>()].clone()
-            out.set(i.wrap<i64>(), Field { ty: to.clone(), ..old })
+            out.set(i.wrap<i64>(), Field(ty: to.clone(), ..old))
             return out
         }
-        Change.Default { name, from, to, .. } => {
-            let i = position_of(fields, name) ?? return SchemaError { what: "{where_}: Default `{name}`, which doesn't exist" }
+        Change.Default(name, from, to, ..) => {
+            let i = position_of(fields, name) ?? return SchemaError(what: "{where_}: Default `{name}`, which doesn't exist")
             let old = fields[i].clone()
-            let current = old.default ?? return SchemaError { what: "{where_}: Default `{name}`, which has no default to change" }
+            let current = old.default ?? return SchemaError(what: "{where_}: Default `{name}`, which has no default to change")
             if !current.eq(from) {
-                return SchemaError { what: "{where_}: Default `{name}` from {render_value(from)}, but it is {render_value(current)}" }
+                return SchemaError(what: "{where_}: Default `{name}` from {render_value(from)}, but it is {render_value(current)}")
             }
             mut out = fields.clone()
-            out.set(i.wrap<i64>(), Field { default: to.clone(), ..old })
+            out.set(i.wrap<i64>(), Field(default: to.clone(), ..old))
             return out
         }
     }

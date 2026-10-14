@@ -20,13 +20,13 @@ struct Meters {
 
 Meters implements ops.Mul<f64> {
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
 Meters implements o.Mul<Meters> {
     func mul(self, other: Meters) -> Meters {
-        return Meters { v: self.v * other.v }
+        return Meters(v: self.v * other.v)
     }
 }
 
@@ -39,8 +39,8 @@ func squared<T: o.Mul<T>>(x: T) -> T {
 }
 
 test "qualified and aliased operator headers both resolve" {
-    assert (Meters { v: 1.5 } * 2.0).v == 3.0
-    assert (Meters { v: 1.5 } * Meters { v: 2.0 }).v == 3.0
-    assert scaled(Meters { v: 2.0 }).v == 4.0
-    assert squared(Meters { v: 3.0 }).v == 9.0
+    assert (Meters(v: 1.5) * 2.0).v == 3.0
+    assert (Meters(v: 1.5) * Meters(v: 2.0)).v == 3.0
+    assert scaled(Meters(v: 2.0)).v == 4.0
+    assert squared(Meters(v: 3.0)).v == 9.0
 }

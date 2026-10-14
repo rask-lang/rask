@@ -52,7 +52,7 @@ func main() {
     }
 
     // Block-scoped views with structs
-    let user = User { name: "Alice", age: 30 }
+    let user = User(name: "Alice", age: 30)
 
     {
         let borrowed = user.clone()
@@ -68,7 +68,7 @@ func main() {
     print("\n\n")
 
     // Multiple immutable borrows are allowed
-    let user2 = User { name: "Bob", age: 25 }
+    let user2 = User(name: "Bob", age: 25)
 
     {
         let ref1 = user2.clone()
@@ -81,7 +81,7 @@ func main() {
     print("\n")
 
     // Passing borrowed values to functions
-    let alice = User { name: "Alice", age: 35 }
+    let alice = User(name: "Alice", age: 35)
 
     print_user(alice)
 
@@ -91,7 +91,7 @@ func main() {
     print("\n\n")
 
     // Iterating with borrows
-    let users = Vec.from([User { name: "Charlie", age: 40 }, User { name: "Diana", age: 28 }, User { name: "Eve", age: 32 }])
+    let users = Vec.from([User(name: "Charlie", age: 40), User(name: "Diana", age: 28), User(name: "Eve", age: 32)])
 
     print("All users:\n")
     for user in users {

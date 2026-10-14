@@ -14,7 +14,7 @@ struct Memtable {
 
 extend Memtable {
     func new() -> Memtable {
-        return Memtable { entries: Vec.new(), size_bytes: 0 }
+        return Memtable(entries: Vec.new(), size_bytes: 0)
     }
 
     func put(mutate self, take kv: KeyValue) {

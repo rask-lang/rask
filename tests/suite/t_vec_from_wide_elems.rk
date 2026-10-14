@@ -32,7 +32,7 @@ test "a heap string past the small-string limit" {
 }
 
 test "struct elements" {
-    let v = Vec.from([Point { x: 1, y: 2 }, Point { x: 3, y: 4 }])
+    let v = Vec.from([Point(x: 1, y: 2), Point(x: 3, y: 4)])
     assert v[0].x == 1
     assert v[1].y == 4
 }

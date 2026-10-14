@@ -127,6 +127,19 @@ JavaScript's automatic semicolon insertion, which guesses from the previous line
 |------|-------------|
 | **CA1: Evaluates to void** | `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` evaluate to `void` |
 
+## Evaluation Order
+
+What runs first when one line has several things to run. Written down because
+nothing shared decides it: the interpreter walks the tree and native lowers it,
+and `tests/suite/t_eval_order.rk` holds both to these.
+
+| Rule | Description |
+|------|-------------|
+| **EO1: Left to right, as written** | The operands of a binary operator, the arguments of a call, the elements of an array or tuple literal and the fields of a struct literal run in source order. Precedence decides what an operand *is*, not when it runs: in `a() + b() * c()`, `a` runs first. A struct literal's fields run in the order written, not the order declared |
+| **EO2: Receiver first** | In `a.m(b)`, `a` runs before `b`. In `c[i]`, `c` before `i` |
+| **EO3: Short-circuit** | `&&` and `\|\|` run the right operand only when the left leaves the answer open (`type.primitives/BL1`) |
+| **EO4: A compound assignment's place runs once** | In `v[i()] += x()`, `i()` runs once, then `x()`, then the read and the write. Indices run left to right: `g[a()][b()] += 1` runs `a` before `b` |
+
 ## Equality Interface
 
 | Rule | Description |

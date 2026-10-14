@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An annotation field's default is checked where it's declared, once.
+//
+// Desugar copies the default into every attachment that leaves the field out,
+// so a bad default used to surface at each `@limit()`, pointing back at the
+// declaration, and nowhere at all while nothing used it. The copies are
+// skipped at the attachment now: two uses, one error.
+
+annotation @limit {
+    max: i64 = "ten"                   // ERROR: a string default for an i64
+}
+
+struct Form {
+    @limit()
+    x: i64
+}
+
+struct Order {
+    @limit()
+    y: i64
+}
+
+func main() {}

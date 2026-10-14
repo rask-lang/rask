@@ -11,7 +11,7 @@ test "a private free function is in scope" {
 }
 
 test "a private method is in scope" {
-    mut c = Counter { value: 0 }
+    mut c = Counter(value: 0)
     c.step()
     c.step()
     assert c.value == 2

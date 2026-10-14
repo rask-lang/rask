@@ -16,30 +16,30 @@ struct Inner {
 }
 
 struct Middle {
-    inner: Inner = Inner {}
+    inner: Inner = Inner()
     label: string = "middle"
 }
 
 struct Outer {
-    middle: Middle = Middle {}
+    middle: Middle = Middle()
     port: u16 = DEFAULT_PORT
     tags: Vec<string> = Vec.new()
 }
 
 func main() {
     // Two levels of nesting, all defaulted.
-    let o = Outer {}
+    let o = Outer()
     println("o: {o.middle.inner.n} {o.middle.label} {o.port} tags={o.tags.len()}")
 
     // Overriding an outer field leaves the nested defaults alone.
-    let p = Outer { port: 1 }
+    let p = Outer(port: 1)
     println("p: {p.middle.inner.n} {p.middle.label} {p.port}")
 
     // Overriding at the middle level.
-    let q = Outer { middle: Middle { label: "given" } }
+    let q = Outer(middle: Middle(label: "given"))
     println("q: {q.middle.inner.n} {q.middle.label} {q.port}")
 
     // Directly, the case that always worked.
-    let direct = Inner {}
+    let direct = Inner()
     println("direct: {direct.n}")
 }

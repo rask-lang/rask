@@ -120,13 +120,13 @@ impl Interpreter {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
-                    if f.attrs.iter().any(|a| a == "entry") {
+                    if f.attrs.iter().any(|a| a.is("entry")) {
                         if entry_fn.is_some() {
                             return Err(RuntimeError::MultipleEntryPoints);
                         }
                         entry_fn = Some(f.clone());
                     }
-                    if f.attrs.iter().any(|a| a == "test") {
+                    if f.attrs.iter().any(|a| a.is("test")) {
                         test_fns.push(f.clone());
                     }
                     let fn_name = f.name.clone();
@@ -233,12 +233,6 @@ impl Interpreter {
                 }
                 DeclKind::Struct(s) => {
                     let base_name = s.name.clone();
-                    // Register @binary struct metadata
-                    if s.attrs.iter().any(|a| a == "binary") {
-                        if let Some(meta) = super::binary::BinaryStructMeta::from_decl(&s.name, &s.fields) {
-                            self.binary_structs.insert(base_name.clone(), meta);
-                        }
-                    }
                     self.struct_decls.insert(base_name.clone(), s.clone());
                     if !s.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();
@@ -391,7 +385,7 @@ impl Interpreter {
                         name: "Some".to_string(),
                         name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
-                            name: "value".to_string(),
+                            name: rask_ast::decl::positional_field_name(0),
                             name_span: Span::new(0, 0),
                             ty: TypeExpr::named("T"),
                             visibility: FieldVisibility::Package,
@@ -427,7 +421,7 @@ impl Interpreter {
                         name: "Ok".to_string(),
                         name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
-                            name: "value".to_string(),
+                            name: rask_ast::decl::positional_field_name(0),
                             name_span: Span::new(0, 0),
                             ty: TypeExpr::named("T"),
                             visibility: FieldVisibility::Package,
@@ -442,7 +436,7 @@ impl Interpreter {
                         name: "Err".to_string(),
                         name_span: rask_ast::Span::new(0, 0),
                         fields: vec![Field {
-                            name: "error".to_string(),
+                            name: rask_ast::decl::positional_field_name(0),
                             name_span: Span::new(0, 0),
                             ty: TypeExpr::named("E"),
                             visibility: FieldVisibility::Package,

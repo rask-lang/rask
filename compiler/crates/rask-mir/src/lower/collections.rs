@@ -79,6 +79,7 @@ impl<'a> MirLowerer<'a> {
                 offset: i as u32 * elem_size,
                 value: op,
                 store_size,
+                field: None,
             }));
         }
 
@@ -98,7 +99,10 @@ impl<'a> MirLowerer<'a> {
             })
             .unwrap_or_else(|| elem_ty.clone());
 
-        let vec_local = self.builder.alloc_temp(MirType::I64);
+        // The handle is an address, and the binding that takes it over says
+        // so. Typed `i64` here, an unannotated `let v = Vec.from([1, 2])` was
+        // an integer local and `{v:debug}` printed the buffer's address.
+        let vec_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
             func: FunctionRef::internal("rask_vec_from_static".to_string()),
@@ -109,7 +113,7 @@ impl<'a> MirLowerer<'a> {
                 crate::elem_strs::elem(elem_desc),
             ],
         }));
-        Ok((MirOperand::Local(vec_local), MirType::I64))
+        Ok((MirOperand::Local(vec_local), MirType::Ptr))
     }
 
     /// Map.from([(k, v), ...]) → Map.new() + Map.insert() per pair.
@@ -174,7 +178,7 @@ impl<'a> MirLowerer<'a> {
         };
         args.push(crate::elem_strs::elem(desc(0, &key_ty)));
         args.push(crate::elem_strs::elem(desc(1, &val_ty)));
-        let map_local = self.builder.alloc_temp(MirType::I64);
+        let map_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
             func: FunctionRef::internal(ctor.to_string()),
@@ -202,7 +206,7 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
-        Ok((MirOperand::Local(map_local), MirType::I64))
+        Ok((MirOperand::Local(map_local), MirType::Ptr))
     }
 
     /// Expand `json.encode(struct_val)` into a sequence of json_buf_* calls.
@@ -481,7 +485,7 @@ impl<'a> MirLowerer<'a> {
 
             self.builder.switch_to_block(hit);
             let variant_name = rask_ast::decl::field_attrs::serial_name(&variant.attrs, &variant.name);
-            let is_single_unnamed = variant.fields.len() == 1 && variant.fields[0].name == "_0";
+            let is_single_unnamed = variant.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&variant.fields[0].name);
 
             if variant.fields.is_empty() {
                 match &tag_field {
@@ -959,7 +963,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         // The enclosing struct field's declared type, when the checker has nothing
-        // for this node. `Headers { entries: Map<string, string> }` initialised by
+        // for this node. `Headers(entries: Map<string, string>)` initialised by
         // `Map.new()` inside a stdlib body is exactly that case, and falling back
         // to an 8-byte slot silently halved every `string` value stored in it.
         if self.ctx.lookup_raw_type(node_id).is_none() {
@@ -1124,6 +1128,7 @@ impl<'a> MirLowerer<'a> {
                 offset,
                 value: MirOperand::Local(word),
                 store_size: None,
+                field: None,
             }));
         }
 
@@ -1221,6 +1226,7 @@ impl<'a> MirLowerer<'a> {
                             offset: abs_offset,
                             value: MirOperand::Local(cloned),
                             store_size: None,
+                            field: None,
                         }));
                     }
                 }

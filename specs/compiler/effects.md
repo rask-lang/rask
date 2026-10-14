@@ -37,7 +37,7 @@ func load_config(path: string) -> Config or Error {
 func parse_header(raw: string) -> Header or ParseError {
     let parts = raw.split(":").to_vec()
     if parts.len() != 2 { return ParseError.MalformedHeader }
-    return Header { key: parts[0].trim(), value: parts[1].trim() }
+    return Header(key: parts[0].trim(), value: parts[1].trim())
 }
 ```
 
@@ -129,7 +129,7 @@ func add(a: i32, b: i32) -> i32 {
 // Pure — errors are values, not effects
 func parse(input: string) -> Config or ParseError {
     if input.is_empty() { return ParseError.Empty }
-    return Config { value: input }
+    return Config(value: input)
 }
 
 // Not pure — calls File.open (IO effect)

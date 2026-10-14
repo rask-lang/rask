@@ -251,7 +251,7 @@ struct User {
     nickname: string?       // sugar for (string or none)
 }
 
-let u = User { name: "Tove", nickname: none }
+let u = User(name: "Tove", nickname: none)
 ```
 
 **Error and optional layered:**

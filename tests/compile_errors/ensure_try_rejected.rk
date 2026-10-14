@@ -12,7 +12,7 @@ extend CloseErr9 {
 struct Sink9 { id: i32 }
 extend Sink9 {
     func close(self) -> i32 or CloseErr9 {
-        return CloseErr9 { why: "device gone" }
+        return CloseErr9(why: "device gone")
     }
     func retry(self) -> i32 or CloseErr9 {
         return 0
@@ -22,7 +22,7 @@ extend Sink9 {
     }
 }
 func main() -> i32 or CloseErr9 {
-    let s = Sink9 { id: 3 }
+    let s = Sink9(id: 3)
     // ER4: in the body.
     ensure {
         let n = try s.close()

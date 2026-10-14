@@ -41,7 +41,7 @@ func heap(s: string) -> string {
 
 func flat(which: i64) -> Point? or MyErr {
     if which == 0 {
-        return Point { x: 1, label: heap("p") }
+        return Point(x: 1, label: heap("p"))
     }
     if which == 1 {
         return none
@@ -51,9 +51,9 @@ func flat(which: i64) -> Point? or MyErr {
 
 func plain(fail: bool) -> Point or Oops {
     if fail {
-        return Oops { code: 7, why: heap("no") }
+        return Oops(code: 7, why: heap("no"))
     }
-    return Point { x: 3, label: heap("q") }
+    return Point(x: 3, label: heap("q"))
 }
 
 func flat_label(which: i64) -> string {

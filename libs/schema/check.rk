@@ -81,7 +81,7 @@ func check_value(v: Value, t: Ty, at: string, mutate errors: Vec<string>) {
                 errors.push("{at}: expected a table, found {v.kind()}")
             }
         }
-        Ty.Variant { cases, shared } => check_variant(v, cases, shared, at, mutate errors),
+        Ty.Variant(cases, shared) => check_variant(v, cases, shared, at, mutate errors),
     }
 }
 

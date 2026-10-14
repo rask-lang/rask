@@ -44,7 +44,7 @@ func process(take account: Account) {
 }
 
 func main() {
-    let account = Account { name: "ada", inventory: Inventory { items: Vec.new() } }
+    let account = Account(name: "ada", inventory: Inventory(items: Vec.new()))
     let items = account.inventory.clone()   // explicit: this copies
     println("{items.items.len()}")
     process(account)                        // the name is consumed here
@@ -140,14 +140,14 @@ enum DbError {
 
 extend Account {
     func new(id: UserId, name: string) -> Account {
-        return Account { id: id, name: name }
+        return Account(id: id, name: name)
     }
 }
 
 extend Database {
     func next_id(mutate self) -> UserId or DbError {
         self.next += 1
-        return UserId { value: self.next }
+        return UserId(value: self.next)
     }
 
     func insert(mutate self, account: Account) -> void or DbError {
@@ -191,7 +191,7 @@ enum StatsError {
 }
 
 func parse_stats(data: string) -> Stats {
-    return Stats { lines: data.lines().count() }
+    return Stats(lines: data.lines().count())
 }
 
 func process(path: string) -> Stats or StatsError {

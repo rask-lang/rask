@@ -44,7 +44,7 @@ test "a Shared holding a string" {
 }
 
 test "a Shared holding a struct" {
-    let s = Shared.new(Reading { label: "temp", value: 21 })
+    let s = Shared.new(Reading(label: "temp", value: 21))
     with s.write() as r {
         r.value = 22
     }

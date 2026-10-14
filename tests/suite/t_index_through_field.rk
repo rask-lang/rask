@@ -27,7 +27,7 @@ func build() -> World {
     mut grid: Vec<Vec<i64>> = Vec.new()
     grid.push(inner)
 
-    return World { names: names, scores: scores, grid: grid }
+    return World(names: names, scores: scores, grid: grid)
 }
 
 test "stdlib.collections — a Vec behind a field indexes to its element type" {

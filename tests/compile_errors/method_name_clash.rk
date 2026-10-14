@@ -50,6 +50,6 @@ extend Counter {
 }
 
 func main() {
-    let d = Doc { n: 1 }
+    let d = Doc(n: 1)
     println(d.label())
 }

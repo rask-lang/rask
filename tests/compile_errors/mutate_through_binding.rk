@@ -28,7 +28,7 @@ func bump(mutate c: Counter) {
 
 func main() {
     // 1. optional payload bind — field write
-    mut opt: Counter? = Counter { n: 5 }
+    mut opt: Counter? = Counter(n: 5)
     if opt? as t {
         t.n += 1
     }
@@ -40,21 +40,21 @@ func main() {
 
     // 3. `for` element in the default read-only mode
     mut xs: Vec<Counter> = Vec.new()
-    xs.push(Counter { n: 1 })
+    xs.push(Counter(n: 1))
     for c in xs {
         c.n += 1
     }
 
     // 4. match-arm payload bind — the scrutinee is a `let`, so this write would
     //    have gone straight through deep immutability
-    let s = Shape.Round(Counter { n: 2 })
+    let s = Shape.Round(Counter(n: 2))
     match s {
         Shape.Round(r) => r.n += 1,
         Shape.Flat => println("flat"),
     }
 
     // 5. `while cond? as v` — same bind, loop form
-    mut queue: Counter? = Counter { n: 9 }
+    mut queue: Counter? = Counter(n: 9)
     while queue? as item {
         item.n += 1
         queue = none

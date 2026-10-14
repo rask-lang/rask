@@ -15,7 +15,7 @@ public struct Path {
 extend Path {
     /// Create a path from a string.
     public func from(s: string) -> Path {
-        return Path { value: s }
+        return Path(value: s)
     }
 
     /// Cheap view — Path IS a string.
@@ -41,9 +41,9 @@ extend Path {
                 if self.value.len() == 1 {
                     return none
                 }
-                return Path { value: "/" }
+                return Path(value: "/")
             }
-            return Path { value: self.value[0..cut].to_string() }
+            return Path(value: self.value[0..cut].to_string())
         }
         return none
     }
@@ -121,7 +121,7 @@ extend Path {
             if dir? as d {
                 return d / named
             }
-            return Path { value: named }
+            return Path(value: named)
         }
         return self.clone()
     }
@@ -131,7 +131,7 @@ extend Path {
         if self.parent()? as d {
             return d / name
         }
-        return Path { value: name }
+        return Path(value: name)
     }
 
     /// The components, with separators dropped. An absolute path's leading "/"
@@ -157,14 +157,14 @@ Path implements Div<string> {
         // An absolute right side replaces the left, the way every path library
         // resolves it.
         if other.starts_with("/") {
-            return Path { value: other }
+            return Path(value: other)
         }
         if self.value.is_empty() {
-            return Path { value: other }
+            return Path(value: other)
         }
         if self.value.ends_with("/") {
-            return Path { value: "{self.value}{other}" }
+            return Path(value: "{self.value}{other}")
         }
-        return Path { value: "{self.value}/{other}" }
+        return Path(value: "{self.value}/{other}")
     }
 }

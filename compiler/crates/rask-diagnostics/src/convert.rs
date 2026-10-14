@@ -787,51 +787,44 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("function calls must provide exactly the number of arguments the function declares")
             }
 
-            ArgLabelMismatch { callee, label, position, params, span } => {
-                let why = "named arguments label a call, they don't reorder it: each label is checked against the parameter in its position. Matched by name instead, `f(b: 2, a: 1)` and `f(2, 1)` would mean different things";
-                match params {
-                    Some(names) if names.contains(label) => {
-                        let declared = names.iter().position(|n| n == label).unwrap_or(0);
-                        let in_order = names
-                            .iter()
-                            .map(|n| format!("{n}: …"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        Diagnostic::error(format!("named argument `{}` is out of order", label))
-                            .with_code("E0903")
-                            .with_primary(*span, format!(
-                                "`{}` is parameter {} of `{}`, but this is argument {}",
-                                label, declared + 1, callee, position + 1
-                            ))
-                            .with_help("named arguments keep the declaration order")
-                            .with_fix(format!("write them in order: `{}({})`", callee, in_order))
-                            .with_why(why)
-                    }
-                    Some(names) => {
-                        let listed = if names.is_empty() {
-                            format!("`{}` takes no parameters", callee)
-                        } else {
-                            format!(
-                                "`{}`'s parameters are {}",
-                                callee,
-                                names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
-                            )
-                        };
-                        let (primary, fix) = match names.get(*position) {
-                            Some(here) => (
-                                format!("this position is `{}`", here),
-                                format!("rename the label to `{}:`, or drop it", here),
-                            ),
-                            None => ("no parameter has this name".to_string(), format!("drop the label ({})", listed)),
+            ArgPlacement { callee, problem, params, span } => {
+                use rask_types::ArgProblem;
+                let listed = match params {
+                    Some(names) if names.is_empty() => format!("`{}` takes no parameters", callee),
+                    Some(names) => format!(
+                        "`{}`'s parameters are {}",
+                        callee,
+                        names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+                    ),
+                    None => String::new(),
+                };
+                match problem {
+                    ArgProblem::UnknownLabel(label) => {
+                        let names = params.as_deref().unwrap_or(&[]);
+                        let fix = match crate::suggestions::did_you_mean(label, names.iter().map(String::as_str)) {
+                            Some(close) => close,
+                            None => "use one of the parameter names, or drop the label".to_string(),
                         };
                         Diagnostic::error(format!("`{}` has no parameter named `{}`", callee, label))
                             .with_code("E0903")
-                            .with_primary(*span, primary)
+                            .with_primary(*span, "no parameter has this name")
                             .with_help(listed)
                             .with_fix(fix)
-                            .with_why(why)
+                            .with_why("a label puts its argument on the parameter it names, so it has to be one the callee declares")
                     }
-                    None => Diagnostic::error(format!(
+                    ArgProblem::Repeated(label) => Diagnostic::error(format!("parameter `{}` gets two arguments", label))
+                        .with_code("E0903")
+                        .with_primary(*span, format!("`{}` already has an argument", label))
+                        .with_help("an unnamed argument fills the next parameter in order, and a label fills the one it names; here both land on the same one")
+                        .with_fix("drop one, or label the other with the parameter it was meant for")
+                        .with_why("each parameter takes exactly one argument"),
+                    ArgProblem::PositionalAfterLabel => Diagnostic::error("an unnamed argument after a named one")
+                        .with_code("E0903")
+                        .with_primary(*span, "which parameter is this?")
+                        .with_help(listed)
+                        .with_fix("name it, or move it before the named arguments")
+                        .with_why("named arguments can come in any order, so an unnamed one after them has no position left to say which parameter it fills"),
+                    ArgProblem::NoNames(label) => Diagnostic::error(format!(
                         "`{}` has no parameter names for `{}:` to match",
                         callee, label
                     ))
@@ -839,8 +832,41 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_primary(*span, "labeled argument")
                         .with_help("a closure value, an extern function, a tuple variant and a compiler-generated method take their arguments by position only")
                         .with_fix("drop the label and pass the argument by position")
-                        .with_why("a label is checked against the parameter's declared name. With no name to check it against, the label would be ignored, and an ignored label claims something the call doesn't do"),
+                        .with_why("a label puts its argument on the parameter it names. With no names, there's nothing for it to find"),
+                    ArgProblem::NotReordered => Diagnostic::error(format!(
+                        "the compiler can't yet reorder named arguments in this call to `{}`",
+                        callee
+                    ))
+                        .with_code("E0903")
+                        .with_primary(*span, "written out of parameter order")
+                        .with_help(listed)
+                        .with_fix("write the arguments in parameter order")
+                        .with_why("this kind of call is checked by position, so moving the arguments would check each against the wrong parameter. This is a compiler gap, not a language rule"),
                 }
+            }
+
+            ArgumentChangedLater { callee, place, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is lent to `{}` and then changed by a later argument",
+                    place, callee
+                ))
+                .with_code("E0869")
+                .with_primary(*span, format!("changes `{}` while the call holds it", place))
+                .with_fix(format!(
+                    "work out the changing argument first: `let v = …` before the call, then pass `v` and `{}`",
+                    place
+                ))
+                .with_why("arguments are lent to a call in the order they're written, so the earlier argument still holds this place when the later one changes it [mem.aliasing]")
+            }
+
+            StructPatternByPosition { name, fields, span } => {
+                let example = fields.iter().map(|f| format!("{f}: …")).collect::<Vec<_>>().join(", ");
+                Diagnostic::error(format!("`{}(…)` matches its fields by name", name))
+                    .with_code("E0416")
+                    .with_primary(*span, "in this pattern")
+                    .with_help("a bare name binds the field it names; anything else needs the field's name in front")
+                    .with_fix(format!("write `{}({})`", name, example))
+                    .with_why("a struct is built and matched by field name, so a position says nothing about which field it means")
             }
 
             NotCallable { ty, span } => {
@@ -1260,6 +1286,18 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("single uppercase letters in signatures always mean type parameters — a concrete type with that name would be unusable [type.gradual/PC3]")
             }
 
+            LowercaseTypeName { name, kind, span } => {
+                let mut fixed = name.clone();
+                if let Some(first) = fixed.get(0..1) {
+                    fixed.replace_range(0..1, &first.to_ascii_uppercase());
+                }
+                Diagnostic::error(format!("type name `{}` starts with a lowercase letter", name))
+                    .with_code("E0417")
+                    .with_primary(*span, format!("{} named in lowercase", kind))
+                    .with_fix(format!("rename it `{}`", fixed))
+                    .with_why("a type's name starts with a capital, so `Name(…)` reads as building a value and `name(…)` as calling a function, without looking anything up [type.structs/S1a]")
+            }
+
             TryInNonPropagatingContext { return_ty, span } => {
                 Diagnostic::error(format!(
                     "`try` requires function returning Result or Option, found `{}`",
@@ -1420,6 +1458,19 @@ impl ToDiagnostic for rask_types::TypeError {
                         to_elem
                     ))
                     .with_why("a pointer's element type is part of it: nothing converts the bytes, so the other side would read a different number of them at a different stride [mem.unsafe, struct.c-interop/TM2]")
+            }
+
+            ErrorUnionNarrowing { from, to, extra, span } => {
+                Diagnostic::error(format!(
+                    "`{}` doesn't fit in `{}` — it can fail with `{}`, and this can't",
+                    from, to, extra
+                ))
+                    .with_code("E0415")
+                    .with_primary(*span, format!("this can fail with `{}`", extra))
+                    .with_fix(format!(
+                        "handle `{extra}` here with `catch e => …` or `if r is {extra} as e`, or widen the slot's error type to include it"
+                    ))
+                    .with_why("an error union never narrows: a narrower slot would hold an error its own type says it can't, and the two backends read those bytes differently [type.errors/ER11, ER31]")
             }
 
             NarrowingNeedsPolicy { from, to, span } => {
@@ -2771,19 +2822,19 @@ impl ToDiagnostic for rask_types::TypeError {
                 let fix = if is_enum {
                     format!("name a variant: `{}.Variant`", name)
                 } else if fields.is_empty() {
-                    format!("write the literal: `{} {{}}`", name)
+                    format!("build it with no fields: `{}()`", name)
                 } else {
                     let list: Vec<String> = fields.iter()
                         .map(|f| format!("{}: …", f))
                         .collect();
-                    format!("write the literal: `{} {{ {} }}`", name, list.join(", "))
+                    format!("name the fields: `{}({})`", name, list.join(", "))
                 };
                 let why = if is_enum {
                     "an enum value is one of its variants — there's no whole-enum constructor. \
                      `Name(value)` builds a nominal type declared with `type Name = …` (T7)"
                 } else {
-                    "`Name(value)` builds a nominal type declared with `type Name = …` (T7). \
-                     Structs are built field by field — there are no tuple structs (S1)"
+                    "a struct is built by naming its fields, `Name(field: value)`; only a nominal \
+                     type declared with `type Name = …` takes one value by position (T7, S1)"
                 };
                 Diagnostic::error(format!("`{}` is {}, so calling it doesn't construct one", name, kind))
                     .with_code("E0345")
@@ -2944,7 +2995,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("`@tag(\"{}\")` needs a named payload, and `{}.{}` has an unnamed one", tag, enum_name, variant))
                     .with_code("E0841")
                     .with_primary(*span, format!("`{}` carries one unnamed value", variant))
-                    .with_fix(format!("{} {{ value: … }}   // name the field, and the tag sits beside it", variant))
+                    .with_fix(format!("{}(value: …)   // name the field, and the tag sits beside it", variant))
                     .with_why(format!("internal tagging writes the tag as a field inside the payload's own object, so the payload needs field names for `{}` to sit beside. An unnamed value has no key to pair it with, and the compiler will not invent one. Dropping `@tag` also works: external tagging (std.encoding/E23) puts an unnamed payload directly under the variant name [std.encoding/E24]", tag))
             }
             TagCollidesWithField { enum_name, variant, tag, span } => {

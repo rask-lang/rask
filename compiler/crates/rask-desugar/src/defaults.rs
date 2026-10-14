@@ -10,6 +10,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
+use rask_ast::call::{place_args, ArgSlot, ParamSpec};
 
 /// Desugar default arguments and named arguments across all declarations.
 ///
@@ -85,15 +86,14 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
 
 /// Maps function names to parameter lists.
 struct FunctionLookup {
-    /// Free functions: name → params
+    /// Free functions: name → params. Every one, since labels place
+    /// arguments whether or not a function has defaults.
     functions: HashMap<String, Vec<Param>>,
     /// Struct field defaults (FD1): base type name -> [(field name, default expr)].
     /// Only structs with at least one defaulted field are recorded.
     struct_defaults: HashMap<String, Vec<(String, Expr)>>,
-    /// Every name declared here, defaulted or not. The maps above hold only
-    /// the defaulted ones, so they can't answer "does this program declare a
-    /// `parse` of its own?" — and the stdlib fallback must not fill an
-    /// argument into a call to the program's own same-named function.
+    /// Every function name declared here. The stdlib fallback must not place
+    /// a call to the program's own same-named function.
     declared_fns: HashSet<String>,
     declared_types: HashSet<String>,
 }
@@ -109,9 +109,7 @@ impl FunctionLookup {
             match &decl.kind {
                 DeclKind::Fn(f) => {
                     declared_fns.insert(f.name.clone());
-                    if f.params.iter().any(|p| p.default.is_some()) {
-                        functions.insert(f.name.clone(), f.params.clone());
-                    }
+                    functions.insert(f.name.clone(), f.params.clone());
                 }
                 DeclKind::Struct(s) => {
                     declared_types.insert(s.name.clone());
@@ -146,103 +144,48 @@ impl FunctionLookup {
 
 // ---- Argument Resolution ----
 
-/// Resolve call arguments against function parameters, filling in defaults.
-///
-/// Returns the rewritten args list with defaults inserted,
-/// or None if resolution can't be done (error or no changes needed).
+/// Fill the parameters a call leaves out from their defaults. Each default is
+/// appended, labeled with its parameter, so the call reads the same with it
+/// as without: the arguments stay in written order, and the checker places
+/// them all on their parameters (`rask_ast::call`). `None` when nothing is
+/// left out, or when the call doesn't fit: the checker reports that.
 fn resolve_call_args(
     params: &[Param],
     args: &[CallArg],
     fresh_id: &mut impl FnMut() -> NodeId,
 ) -> Option<Vec<CallArg>> {
-    // Quick check: if all args are positional and count matches, nothing to do
-    let has_named = args.iter().any(|a| a.name.is_some());
-    let has_defaults = params.iter().any(|p| p.default.is_some());
-
-    if !has_named && args.len() == params.len() {
-        return None; // Already fully resolved
-    }
-    if !has_named && !has_defaults {
-        return None; // No defaults to fill, will error elsewhere
-    }
-    if args.len() > params.len() {
-        return None; // Too many args, let type checker report
-    }
-
-    let mut result = Vec::with_capacity(params.len());
-    let mut arg_idx = 0;
-
-    for param in params {
-        if param.name == "self" {
-            // self is never filled by default
-            if arg_idx < args.len() {
-                result.push(CallArg {
-                    name: None,
-                    mode: args[arg_idx].mode,
-                    expr: args[arg_idx].expr.clone(),
-                });
-                arg_idx += 1;
+    let specs: Vec<ParamSpec> = params
+        .iter()
+        .map(|p| ParamSpec { name: &p.name, has_default: p.default.is_some() })
+        .collect();
+    let labels: Vec<Option<&str>> = args.iter().map(|a| a.name.as_deref()).collect();
+    let slots = place_args(&specs, &labels).ok()?;
+    let defaults: Vec<CallArg> = slots
+        .iter()
+        .zip(params)
+        .filter(|(slot, _)| **slot == ArgSlot::Default)
+        .map(|(_, param)| {
+            // A default is a compile-time constant, so the copy is a
+            // `comptime` block: a scalar or a string folds where it's filled
+            // in. Its purity is checked once, at the parameter
+            // (`comptime_purity::check_param_defaults`).
+            let value = clone_expr_with_fresh_ids(
+                param.default.as_ref().expect("a defaulted slot has a default"),
+                fresh_id,
+            );
+            let span = value.span;
+            let block = Stmt { id: fresh_id(), kind: StmtKind::Expr(value), span };
+            CallArg {
+                name: Some(param.name.clone()),
+                mode: ArgMode::Default,
+                expr: Expr { id: fresh_id(), kind: ExprKind::Comptime { body: vec![block] }, span },
             }
-            continue;
-        }
-
-        if arg_idx < args.len() {
-            let arg = &args[arg_idx];
-
-            if let Some(ref name) = arg.name {
-                if name == &param.name {
-                    // Named arg matches this param. The label stays: the type
-                    // checker matches it against the callee it actually
-                    // resolves, which this pass can only guess at by name.
-                    result.push(CallArg {
-                        name: Some(name.clone()),
-                        mode: arg.mode,
-                        expr: arg.expr.clone(),
-                    });
-                    arg_idx += 1;
-                    continue;
-                }
-                // Named arg doesn't match — this param must have a default
-                if let Some(ref default_expr) = param.default {
-                    result.push(CallArg {
-                        name: None,
-                        mode: ArgMode::Default,
-                        expr: clone_expr_with_fresh_ids(default_expr, fresh_id),
-                    });
-                    continue;
-                }
-                // Required param skipped — bail out, let type checker report
-                return None;
-            }
-
-            // Positional arg — use it directly
-            result.push(CallArg {
-                name: None,
-                mode: arg.mode,
-                expr: arg.expr.clone(),
-            });
-            arg_idx += 1;
-        } else {
-            // No more provided args — fill with default
-            if let Some(ref default_expr) = param.default {
-                result.push(CallArg {
-                    name: None,
-                    mode: ArgMode::Default,
-                    expr: clone_expr_with_fresh_ids(default_expr, fresh_id),
-                });
-            } else {
-                // Required param missing — bail
-                return None;
-            }
-        }
-    }
-
-    // If there are leftover args, bail
-    if arg_idx < args.len() {
+        })
+        .collect();
+    if defaults.is_empty() {
         return None;
     }
-
-    Some(result)
+    Some(args.iter().cloned().chain(defaults).collect())
 }
 
 /// Clone an expression, assigning fresh NodeIds to avoid collisions.
@@ -543,9 +486,16 @@ impl DefaultDesugarer {
             if fields.iter().any(|f| &f.name == field_name) {
                 continue;
             }
+            // A default is a compile-time constant (FD1): the copy is a
+            // `comptime` block, so a scalar or a string folds to a constant
+            // where it's filled in. Its purity is checked once, at the
+            // declaration, through the default's own `comptime func`.
+            let value = clone_expr_with_fresh_ids(default_expr, &mut id_gen);
+            let span = value.span;
+            let block = Stmt { id: id_gen(), kind: StmtKind::Expr(value), span };
             fields.push(FieldInit {
                 name: field_name.clone(),
-                value: clone_expr_with_fresh_ids(default_expr, &mut id_gen),
+                value: Expr { id: id_gen(), kind: ExprKind::Comptime { body: vec![block] }, span },
             });
             filled += 1;
         }
@@ -664,15 +614,20 @@ mod tests {
         });
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
-        // Second arg should be the default 8080
+        // The written arguments stay put; the default goes after them.
         match &resolved[1].expr.kind {
-            ExprKind::Int(v, _) => assert_eq!(*v, 8080),
-            _ => panic!("expected default int 8080"),
-        }
-        // Third arg should be the provided 60
-        match &resolved[2].expr.kind {
             ExprKind::Int(v, _) => assert_eq!(*v, 60),
             _ => panic!("expected provided int 60"),
+        }
+        assert_eq!(resolved[2].name.as_deref(), Some("port"));
+        // A default is a compile-time constant, filled in as a `comptime`
+        // block around the declared value.
+        let ExprKind::Comptime { body } = &resolved[2].expr.kind else {
+            panic!("expected the default in a comptime block")
+        };
+        match body.as_slice() {
+            [Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Int(8080, _), .. }), .. }] => {}
+            other => panic!("expected default int 8080, got {other:?}"),
         }
     }
 
@@ -695,11 +650,32 @@ mod tests {
         });
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
-        // Labels survive for the type checker to match against the callee;
-        // a filled default has none.
-        assert_eq!(resolved[0].name.as_deref(), Some("host"));
-        assert_eq!(resolved[1].name, None);
-        assert_eq!(resolved[2].name.as_deref(), Some("timeout"));
+        // Labels survive for the checker to place; a filled default is
+        // labeled with its parameter.
+        let names: Vec<_> = resolved.iter().map(|a| a.name.as_deref()).collect();
+        assert_eq!(names, [Some("host"), Some("timeout"), Some("port")]);
+    }
+
+    #[test]
+    fn labels_in_any_order_stay_as_written() {
+        let params = vec![
+            make_param("host", "string", None),
+            make_param("port", "i32", Some(int_expr(8080))),
+            make_param("timeout", "i32", None),
+        ];
+        // connect(timeout: 60, host: "localhost"): the checker places them.
+        let args = vec![
+            make_named_arg("timeout", int_expr(60)),
+            make_named_arg("host", str_expr("localhost")),
+        ];
+        let mut next = 100;
+        let resolved = resolve_call_args(&params, &args, &mut || {
+            next += 1;
+            NodeId(next)
+        })
+        .expect("should resolve");
+        let names: Vec<_> = resolved.iter().map(|a| a.name.as_deref()).collect();
+        assert_eq!(names, [Some("timeout"), Some("host"), Some("port")]);
     }
 
     #[test]
@@ -815,8 +791,13 @@ mod tests {
         let ExprKind::StructLit { fields, .. } = &e.kind else { panic!("expected struct lit") };
         assert_eq!(fields.len(), 2, "port default should be filled in");
         let port = fields.iter().find(|fi| fi.name == "port").expect("port field");
-        match &port.value.kind {
-            ExprKind::Int(8080, _) => {}
+        // A default is a compile-time constant (FD1), so it's filled in as a
+        // `comptime` block around the declared value.
+        let ExprKind::Comptime { body } = &port.value.kind else {
+            panic!("expected the default in a comptime block, got {:?}", port.value.kind)
+        };
+        match body.as_slice() {
+            [Stmt { kind: StmtKind::Expr(Expr { kind: ExprKind::Int(8080, _), .. }), .. }] => {}
             other => panic!("expected filled default 8080, got {other:?}"),
         }
     }

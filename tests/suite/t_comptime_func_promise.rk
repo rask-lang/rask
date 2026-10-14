@@ -71,7 +71,7 @@ func build(count: i64) -> i64 {
     mut r: Rack<Node> = Rack.new()
     mut i = 0
     while i < count {
-        let n = r.insert(Node { n: i })
+        let n = r.insert(Node(n: i))
         i = i + 1
     }
     return r.len().wrap<i64>()

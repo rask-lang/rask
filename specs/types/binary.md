@@ -73,15 +73,17 @@ struct IpHeader {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Parse** | `.parse(data)` returns `(T, Vec<u8>) or ParseError` |
+| **G1: Parse** | `.parse(data)` returns `(T, Vec<u8>) or bits.BinaryParseError` — the struct and the bytes after it. Fewer than `T.SIZE` bytes is `UnexpectedEnd` |
 | **G2: Build** | `.build()` returns `Vec<u8>` |
-| **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` |
+| **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` (not built yet, #1539) |
 | **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
+
+`parse` and `build` are ordinary methods the compiler writes from the field specifiers, so they behave the same on every backend. A float field goes on the wire as its bit pattern (`std.bits/B4`), so a NaN is always the same bytes.
 
 <!-- test: skip -->
 ```rask
 extend T {
-    func parse(data: Vec<u8>) -> (T, Vec<u8>) or ParseError
+    func parse(data: Vec<u8>) -> (T, Vec<u8>) or bits.BinaryParseError
     func build(self) -> Vec<u8>
     func build_into(self, buffer: Vec<u8>) -> usize or BuildError
     let SIZE: usize
@@ -170,21 +172,21 @@ ERROR [type.binary/V1]: invalid bit count
 
 <!-- test: skip -->
 ```rask
-let header = IpHeader {
-    version: 4,
-    ihl: 5,
-    dscp: 0,
-    ecn: 0,
-    total_length: 60,
-    identification: 0x1234,
-    flags: 0b010,        // Don't Fragment
-    fragment_offset: 0,
-    ttl: 64,
-    protocol: 6,         // TCP
-    checksum: 0,
-    src: 0xC0A80001,     // 192.168.0.1
-    dst: 0xC0A80002,     // 192.168.0.2
-}
+let header = IpHeader(
+    version: 4
+    ihl: 5
+    dscp: 0
+    ecn: 0
+    total_length: 60
+    identification: 0x1234
+    flags: 0b010        // Don't Fragment
+    fragment_offset: 0
+    ttl: 64
+    protocol: 6         // TCP
+    checksum: 0
+    src: 0xC0A80001     // 192.168.0.1
+    dst: 0xC0A80002     // 192.168.0.2
+)
 
 let bytes = header.build()  // Vec<u8> of 20 bytes
 ```
@@ -219,11 +221,11 @@ let MAGIC_HEADER: [u8; 8] = comptime {
         flags: u16be
     }
 
-    Header {
-        magic: 0xCAFEBABE,
-        version: 1,
+    Header(
+        magic: 0xCAFEBABE
+        version: 1
         flags: 0
-    }.build()
+    ).build()
 }
 ```
 

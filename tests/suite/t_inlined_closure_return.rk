@@ -32,7 +32,7 @@ test "an inlined closure's return lands in its own slot" {
     mut entries: Vec<string> = Vec.new()
     entries.push("first-entry-long-enough-for-heap")
     entries.push("second-entry-long-enough-for-heap")
-    blocks.insert("a", Block { entries, hits: 0 })
+    blocks.insert("a", Block(entries, hits: 0))
 
     let got = touch(mutate blocks, "a") ?? panic("expected the block")
     assert got.len() == 2

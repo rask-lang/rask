@@ -42,7 +42,7 @@ extend Line {
 }
 
 test "a returned parameter can be passed again" {
-    let held = Line { text: heap("param") }
+    let held = Line(text: heap("param"))
     let a = id(held, 1)
     let b = id(held, 2)
     assert a.text == "param, long enough to live on the heap"
@@ -51,7 +51,7 @@ test "a returned parameter can be passed again" {
 }
 
 test "a returned field of a parameter" {
-    let w = Wrap { line: Line { text: heap("wrapped") } }
+    let w = Wrap(line: Line(text: heap("wrapped")))
     let a = inner(w, 1)
     let b = inner(w, 2)
     assert b.text == "wrapped, long enough to live on the heap"
@@ -60,7 +60,7 @@ test "a returned field of a parameter" {
 }
 
 test "a returned mutate parameter and self" {
-    mut m = Line { text: heap("mutate") }
+    mut m = Line(text: heap("mutate"))
     let e = through(mutate m, 1)
     let f = through(mutate m, 2)
     assert e.text == f.text
@@ -71,7 +71,7 @@ test "a returned mutate parameter and self" {
 }
 
 test "a closure returning its parameter" {
-    let held = Line { text: heap("closure") }
+    let held = Line(text: heap("closure"))
     let f = |l: Line| -> Line { return l }
     let a = f(held)
     let b = f(held)

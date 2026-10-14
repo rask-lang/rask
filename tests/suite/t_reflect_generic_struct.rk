@@ -132,10 +132,10 @@ test "a non-generic struct still reads the same" {
 // The fields are real enough to build one and read it back — the reflection
 // answer and the layout the program actually runs on are the same layout.
 test "and the struct it describes still works" {
-    let p = Pair<string> { value: "x", tag: 7i64 }
+    let p = Pair<string>(value: "x", tag: 7i64)
     assert p.value == "x"
     assert p.tag == 7i64
-    let q = Pair<i64> { value: 42i64, tag: 8i64 }
+    let q = Pair<i64>(value: 42i64, tag: 8i64)
     assert q.value == 42i64
     assert q.tag == 8i64
 }

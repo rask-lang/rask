@@ -41,7 +41,7 @@ test "mutate self on a nominal writes back to a variable" {
 }
 
 test "mutate self on a nominal writes back to a field" {
-    mut t = Track { length: Meters(1) }
+    mut t = Track(length: Meters(1))
     t.length.grow()
     assert t.length.value == 2
 }

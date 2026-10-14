@@ -91,7 +91,7 @@ test "ctrl.loops/LP11 — return from a nested for mutate writes both levels" {
 
 func reject_big(n: i64) -> i64 or Boom {
     if n > 50 {
-        return Boom { why: "too big" }
+        return Boom(why: "too big")
     }
     return n
 }

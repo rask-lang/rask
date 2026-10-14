@@ -12,10 +12,10 @@ struct Slot {
 }
 
 func main() {
-    let a = Atomic.new(Slot { index: 1, generation: 2 })
+    let a = Atomic.new(Slot(index: 1, generation: 2))
     let s = a.load(SeqCst)
     println("{s.index} {s.generation}")
-    a.store(Slot { index: 7, generation: 9 }, SeqCst)
+    a.store(Slot(index: 7, generation: 9), SeqCst)
     let t = a.load(SeqCst)
     println("{t.index} {t.generation}")
 }

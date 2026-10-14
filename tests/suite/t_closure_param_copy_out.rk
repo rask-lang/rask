@@ -23,7 +23,7 @@ test "a cloned vector is its own" {
 }
 
 test "expression body" {
-    let b = Bag { items: ["x"] }
+    let b = Bag(items: ["x"])
     let f = |p: Bag| p.clone()
     mut c = f(b)
     c.items.push("y")

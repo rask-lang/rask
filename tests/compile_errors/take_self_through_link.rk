@@ -22,7 +22,7 @@ extend Task {
 
 func main() {
     mut r: Rack<Task> = Rack.new()
-    let a = r.insert(Task { id: 1, name: "a" })
+    let a = r.insert(Task(id: 1, name: "a"))
     // ERROR: `finish` takes its `Task`, and a link only reaches one
     let done = a.finish()
     println(done)

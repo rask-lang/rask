@@ -21,7 +21,7 @@ struct Task {
 }
 
 test "std.collections — filter on a plain struct field" {
-    mut t: Task = Task { deps: [1, 2, 3] }
+    mut t: Task = Task(deps: [1, 2, 3])
     let filtered = t.deps.filter(|x| {
         return x > 1
     }).to_vec()
@@ -31,7 +31,7 @@ test "std.collections — filter on a plain struct field" {
 }
 
 test "std.collections — map on a plain struct field" {
-    mut t: Task = Task { deps: [1, 2, 3] }
+    mut t: Task = Task(deps: [1, 2, 3])
     let mapped = t.deps.map(|x| {
         return x * 10
     }).to_vec()
@@ -42,7 +42,7 @@ test "std.collections — map on a plain struct field" {
 
 test "std.collections — filter on a Vec field reached through a link" {
     mut tasks: Rack<Task> = Rack.new()
-    let a = tasks.insert(Task { deps: [] })
+    let a = tasks.insert(Task(deps: []))
     a.deps.push(1)
     a.deps.push(2)
     a.deps.push(3)
@@ -57,7 +57,7 @@ test "std.collections — filter on a Vec field reached through a link" {
 
 test "std.collections — map on a Vec field reached through a link" {
     mut tasks: Rack<Task> = Rack.new()
-    let a = tasks.insert(Task { deps: [1, 2, 3] })
+    let a = tasks.insert(Task(deps: [1, 2, 3]))
 
     let mapped = a.deps.map(|x| {
         return x + 1
@@ -71,7 +71,7 @@ test "std.collections — map on a Vec field reached through a link" {
 // they didn't crash — codegen refused the program.
 
 test "std.collections — fold on a plain struct field" {
-    let t: Task = Task { deps: [1, 2, 3, 4] }
+    let t: Task = Task(deps: [1, 2, 3, 4])
     let total = t.deps.fold(0, |acc, x| {
         return acc + x
     })
@@ -79,7 +79,7 @@ test "std.collections — fold on a plain struct field" {
 }
 
 test "std.collections — enumerate on a plain struct field" {
-    let t: Task = Task { deps: [7, 8, 9] }
+    let t: Task = Task(deps: [7, 8, 9])
     mut seen = ""
     for p in t.deps.enumerate() {
         seen = "{seen}({p.0},{p.1})"
@@ -88,7 +88,7 @@ test "std.collections — enumerate on a plain struct field" {
 }
 
 test "std.collections — chained filter into map on a struct field" {
-    let t: Task = Task { deps: [1, 2, 3, 4] }
+    let t: Task = Task(deps: [1, 2, 3, 4])
     let out = t.deps.filter(|x| {
         return x % 2 == 0
     }).map(|x| {
@@ -100,7 +100,7 @@ test "std.collections — chained filter into map on a struct field" {
 }
 
 test "std.collections — sum on a struct field" {
-    let t: Task = Task { deps: [1, 2, 3, 4] }
+    let t: Task = Task(deps: [1, 2, 3, 4])
     assert t.deps.sum() == 10
 }
 

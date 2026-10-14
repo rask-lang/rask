@@ -25,11 +25,11 @@ extend Pairs<(K, V)> {
 
 func main() {
     using Multitasking {
-        let plain = Pairs { item: ("a", 4) }
+        let plain = Pairs(item: ("a", 4))
         let plain_f = plain.second()
         let t1 = spawn { plain_f() }
         println("{t1.join()!}")
-        let p = Pairs { item: ("b", Vec<Link<Node>>.new()) }
+        let p = Pairs(item: ("b", Vec<Link<Node>>.new()))
         let f = p.second()
         println("before")
         let t2 = spawn { f() }

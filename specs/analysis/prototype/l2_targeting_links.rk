@@ -18,9 +18,9 @@ struct Entity {
 func main() {
     mut world: Rack<Entity> = Rack.new()
 
-    let a = world.insert(Entity { name: "a", health: 100, damage: 10, target: none })
-    let b = world.insert(Entity { name: "b", health: 100, damage: 20, target: none })
-    let c = world.insert(Entity { name: "c", health: 100, damage: 30, target: none })
+    let a = world.insert(Entity(name: "a", health: 100, damage: 10, target: none))
+    let b = world.insert(Entity(name: "b", health: 100, damage: 20, target: none))
+    let c = world.insert(Entity(name: "c", health: 100, damage: 30, target: none))
 
     a.target = b
     b.target = c

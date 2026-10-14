@@ -813,8 +813,8 @@ impl<'a> InterfaceChecker<'a> {
     ) -> Option<InterfaceError> {
         use crate::types::GenericArg;
         let type_params = match self.types.get(type_id) {
-            Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) => {
-                type_params.clone()
+            Some(def @ (TypeDef::Struct { .. } | TypeDef::Enum { .. } | TypeDef::NominalAlias { .. })) => {
+                def.type_params().to_vec()
             }
             _ => return None,
         };

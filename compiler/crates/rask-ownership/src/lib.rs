@@ -639,7 +639,7 @@ impl<'a> OwnershipChecker<'a> {
     fn check_size_fences(&mut self, decls: &[Decl]) {
         for decl in decls {
             let DeclKind::Struct(s) = &decl.kind else { continue };
-            if !s.attrs.iter().any(|a| a == "small") {
+            if !s.attrs.iter().any(|a| a.is("small")) {
                 continue;
             }
             let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
@@ -701,7 +701,7 @@ impl<'a> OwnershipChecker<'a> {
         let mut fenced: HashMap<String, Span> = HashMap::new();
         for decl in decls {
             let DeclKind::Struct(s) = &decl.kind else { continue };
-            if s.type_params.is_empty() || !s.attrs.iter().any(|a| a == "small") {
+            if s.type_params.is_empty() || !s.attrs.iter().any(|a| a.is("small")) {
                 continue;
             }
             fenced.insert(s.name.clone(), decl.span);
@@ -3500,7 +3500,7 @@ impl<'a> OwnershipChecker<'a> {
     /// `func first(mutate s: Rack<T>) -> Link<T>` is an ordinary accessor.
     fn check_link_escape(&mut self, expr: &Expr, via: LinkEscape, span: Span) {
         // A link inside an aggregate escapes just as well as a bare one —
-        // `return Holder { link: n }` is the same dangle with a wrapper on it.
+        // `return Holder(link: n)` is the same dangle with a wrapper on it.
         match &expr.kind {
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for e in elems {
@@ -6407,7 +6407,7 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// ```text
     /// while i < 3 {
-    ///     let c = Conn { id: i }
+    ///     let c = Conn(id: i)
     ///     if i == 1 { break }      // `c` is never closed
     ///     c.close()
     /// }

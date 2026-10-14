@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{CallArg, Expr, ExprKind};
 use rask_ast::stmt::StmtKind;
 use rask_ast::{NodeId, Span};
 
@@ -258,6 +258,73 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    /// Arguments are lent to a call as they're written, a method's receiver
+    /// first (mem.aliasing), and the call holds each until it runs. A later
+    /// argument that changes one of them, through a `mutate` or `deleting`
+    /// argument of its own or a method that changes its receiver, conflicts
+    /// with that loan: `pair(x, bump(mutate x))`, `pair(c.n, c.bump())`.
+    ///
+    /// Reading it is fine, since the reads all happen before the call does:
+    /// `v.push(v.len())` lends `v` to `push` and reads it on the way.
+    ///
+    /// Allowed, the answer depended on the backend, which read the first
+    /// argument either before the second ran or at the call (#1534). Checked
+    /// as written, before any labels place the arguments.
+    pub(super) fn check_argument_lending(&mut self, callee: &str, receiver: Option<&Expr>, args: &[CallArg]) {
+        let mut lent: Vec<Vec<String>> = receiver.and_then(Self::access_path).into_iter().collect();
+        for arg in args {
+            for (path, span) in self.places_changed_inside(&arg.expr) {
+                if let Some(held) = lent.iter().find(|held| super::check_expr::paths_overlap(held, &path)) {
+                    self.errors.push(TypeError::ArgumentChangedLater {
+                        callee: callee.to_string(),
+                        place: held.join("."),
+                        span,
+                    });
+                    return;
+                }
+            }
+            if let Some(path) = Self::access_path(&arg.expr) {
+                lent.push(path);
+            }
+        }
+    }
+
+    /// The places a call inside `e` changes. A closure's body runs later, if
+    /// at all, so it isn't looked into.
+    fn places_changed_inside(&self, e: &Expr) -> Vec<(Vec<String>, Span)> {
+        use rask_ast::expr::ArgMode;
+        let mut out = Vec::new();
+        rask_ast::visit::walk_expr_pruned(e, &mut |inner| {
+            match &inner.kind {
+                ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+                    for a in args {
+                        if matches!(a.mode, ArgMode::Mutate | ArgMode::Deleting) {
+                            if let Some(path) = Self::access_path(&a.expr) {
+                                out.push((path, a.expr.span));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // A method that changes its receiver. Only once the receiver's
+            // type is known: an open one answers by method name across every
+            // type, and `close` would count.
+            if let ExprKind::MethodCall { object, method, .. } = &inner.kind {
+                if let Some(var) = object.name() {
+                    let settled = self
+                        .lookup_local(var)
+                        .is_some_and(|t| !matches!(self.resolve_named(&self.ctx.apply(&t)), Type::Var(_)));
+                    if settled && self.method_mutates_self(var, method) {
+                        out.push((vec![var.to_string()], object.span));
+                    }
+                }
+            }
+            !matches!(inner.kind, ExprKind::Closure { .. })
+        });
+        out
     }
 
     /// Scan a closure body for variable accesses and check for conflicts.

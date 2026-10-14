@@ -45,19 +45,19 @@ extend Nope {
 }
 
 func pick(n: i64) -> (any Shape)? {
-    if n == 0 { return Circle { r: 2.0 } as any Shape }
-    if n == 1 { return Square { s: 3.0 } as any Shape }
+    if n == 0 { return Circle(r: 2.0) as any Shape }
+    if n == 1 { return Square(s: 3.0) as any Shape }
     return none
 }
 
 func wrapped(n: i64) -> (any Shape) or Nope {
-    if n == 0 { return Circle { r: 1.0 } as any Shape }
-    return Nope {}
+    if n == 0 { return Circle(r: 1.0) as any Shape }
+    return Nope()
 }
 
 func main() {
     // 1: the annotated optional binding.
-    let a: (any Shape)? = Circle { r: 2.0 } as any Shape
+    let a: (any Shape)? = Circle(r: 2.0) as any Shape
     if a? as shape {
         println("a = {shape.message()} {shape.area()}")
     } else {
@@ -84,7 +84,7 @@ func main() {
     }
 
     // 3: an interface object declared after the loop above.
-    let c: any Shape = Square { s: 4.0 } as any Shape
+    let c: any Shape = Square(s: 4.0) as any Shape
     println("c = {c.message()} {c.area()}")
 
     // 2 again, one layer over: the err branch of `(any Shape) or Nope`.

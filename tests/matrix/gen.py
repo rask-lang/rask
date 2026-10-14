@@ -56,7 +56,7 @@ TYPES = {
     "f32":    dict(decl="f32",    val="2.5",           val2="1.5",    show="2.5"),
     "bool":   dict(decl="bool",   val="true",          val2="false",  show="true"),
     "string": dict(decl="string", val="\"hi\"",        val2="\"yo\"", show="hi"),
-    "struct": dict(decl="Pay",    val="Pay { a: 42 }", val2="Pay { a: 7 }",
+    "struct": dict(decl="Pay",    val="Pay(a: 42)", val2="Pay(a: 7)",
                    show="Pay(42)", read="Pay({{{e}.a}})"),
     "enum":   dict(decl="Colour", val="Colour.Red",    val2="Colour.Blue",
                    show="Red", read="{{{e}.name()}}"),
@@ -291,7 +291,7 @@ struct Holder {{
     # reads as a method call on Holder (type.structs/M6).
     src = "(h.inner)" if ty["decl"].startswith("func(") else "h.inner"
     return decls, """\
-    let h = Holder {{ inner: {val} }}
+    let h = Holder(inner: {val})
 {commit}    println("got={show}")
 """.format(val=ty["val"], commit=commit(t, "h"), show=read_expr(t, src))
 

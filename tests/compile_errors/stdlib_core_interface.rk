@@ -51,7 +51,7 @@ string implements Comparable {
 }
 
 func main() {
-    let c = Counted(Doc { n: 1 })
+    let c = Counted(Doc(n: 1))
     println("{c.hash()}")
     return
 }

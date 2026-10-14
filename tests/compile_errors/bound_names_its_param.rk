@@ -14,7 +14,7 @@ struct Meters {
 // Only scales by a number. No `Mul<Meters>`.
 Meters implements Mul<f64> {
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -28,12 +28,12 @@ func scaled<T: Mul<K>, K>(x: T, k: K) -> T {
 
 func main() {
     // ERROR: `Meters` does not implement `Mul<Meters>`
-    let a = squared(Meters { v: 3.0 })
+    let a = squared(Meters(v: 3.0))
 
     // ERROR: the sibling's argument fills in too: `Mul<string>`
-    let b = scaled(Meters { v: 1.0 }, "two")
+    let b = scaled(Meters(v: 1.0), "two")
 
     // Fine: `Mul<f64>` is declared.
-    let c = scaled(Meters { v: 1.0 }, 2.0)
+    let c = scaled(Meters(v: 1.0), 2.0)
     println("{c.v}")
 }

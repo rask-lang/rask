@@ -12,7 +12,7 @@
 
 enum Cmd {
     Ins(i32)
-    Del { at: i32 }
+    Del(at: i32)
     Move(i32, i32)
     Quit
 }
@@ -66,7 +66,7 @@ test "the payload is named by writing it" {
 
 test "a pattern reusing an outer name rebinds it only in the branch" {
     let d = Cmd.Del(at: 7)
-    if d is Del(d) {
+    if d is Del(at: d) {
         assert d == 7
     }
     mut other = false

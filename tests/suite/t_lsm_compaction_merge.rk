@@ -17,11 +17,11 @@ struct KeyValue {
 
 extend KeyValue {
     func new(key: string, value: string, seq: i64) -> KeyValue {
-        return KeyValue { key, value, seq, deleted: false }
+        return KeyValue(key, value, seq, deleted: false)
     }
 
     func tombstone(key: string, seq: i64) -> KeyValue {
-        return KeyValue { key, value: "", seq, deleted: true }
+        return KeyValue(key, value: "", seq, deleted: true)
     }
 }
 

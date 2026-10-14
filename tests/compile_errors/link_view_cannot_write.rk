@@ -53,7 +53,7 @@ func main() {
     mut r: Rack<Node> = Rack.new()
     // `let`, not `mut`: writing through a link doesn't change the link, so the
     // binding needs no mutability of its own.
-    let a = r.insert(Node { value: 5, child: none })
+    let a = r.insert(Node(value: 5, child: none))
     zero_all(mutate a)
     println("{a.value}")
 }

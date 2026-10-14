@@ -550,7 +550,7 @@ impl Interpreter {
                         for item in &items {
                             if let (ForBinding::Single(name), Value::Struct(s)) = (binding, item) {
                                 if s.lock().unwrap().name == "FieldInfo" {
-                                    let attrs = super::eval_expr::field_info_attrs(s);
+                                    let attrs = self.field_info_attrs(s);
                                     if let Some((annotation, field, span)) =
                                         super::eval_expr::unguarded_annotation_read(body, name, &attrs)
                                     {

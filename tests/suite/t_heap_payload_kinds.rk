@@ -85,7 +85,7 @@ test "a Shared as the payload" {
 
 // The struct payload still gets a block, and reads through it.
 test "a struct payload still gets a block" {
-    let b: Heap<Pay> = Heap(Pay { a: 42 })
+    let b: Heap<Pay> = Heap(Pay(a: 42))
     ensure drop(b)
     assert (*b).a == 42
     drop(b)
@@ -94,7 +94,7 @@ test "a struct payload still gets a block" {
 // The same question reached through a field: the release walk was treating the
 // slot as a block pointer and handing `rask_free` the number in it.
 test "a scalar payload in a field" {
-    let h = Holder { inner: Heap(42) }
+    let h = Holder(inner: Heap(42))
     assert *h.inner == 42
 }
 

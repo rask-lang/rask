@@ -232,7 +232,7 @@ FIX: Add a migration step, or keep the old field and add a new one.
 
 ### Rationale
 
-**R1–R3 (tiers):** I wanted to be upfront about what's actually relocatable. Every game dev will try `Entity { name: string }` with mmap and hit the wall. Being honest about the tiers prevents frustration. Flat types get the zero-cost path; deep types get the linear-scan path; opaque types don't pretend to work.
+**R1–R3 (tiers):** I wanted to be upfront about what's actually relocatable. Every game dev will try `Entity(name: string)` with mmap and hit the wall. Being honest about the tiers prevents frustration. Flat types get the zero-cost path; deep types get the linear-scan path; opaque types don't pretend to work.
 
 **FL3 / RB3 (what a link costs):** handles looked like they made persistence work because they're integers. They didn't — they made it work because they're *positions*, and racks are position-addressed too. So links need no new machinery here, just a second pass at deserialization. What a link does cost is the reference-level promise: a handle was a slot number the caller held, so it could be handed straight back after a round trip; a link is an address and cannot be.
 

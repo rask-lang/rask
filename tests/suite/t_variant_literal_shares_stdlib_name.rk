@@ -11,18 +11,18 @@
 // `t_type_shares_stdlib_name.rk` covers the rest of the rename.
 
 enum HttpError {
-    Timeout { after: i64 }
+    Timeout(after: i64)
     Refused
 }
 
 func waited(e: HttpError) -> i64 {
     match e {
-        HttpError.Timeout { after } => return after,
+        HttpError.Timeout(after) => return after,
         HttpError.Refused => return 0,
     }
 }
 
 test "a same-named enum's variant literal builds the program's enum" {
-    assert waited(HttpError.Timeout { after: 7 }) == 7
+    assert waited(HttpError.Timeout(after: 7)) == 7
     assert waited(HttpError.Refused) == 0
 }

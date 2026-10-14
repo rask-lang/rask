@@ -178,7 +178,7 @@ A dependency names exactly one source (`struct.build/D2`). The old block allowed
 ### Deprecation
 
 ```rask
-@deprecated(since = "2.1.0", note = "Use new_function instead")
+@deprecated(since: "2.1.0", note: "Use new_function instead")
 public func old_function() { ... }
 ```
 

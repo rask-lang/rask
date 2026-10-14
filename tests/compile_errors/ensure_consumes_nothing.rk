@@ -26,14 +26,14 @@ func show(id: i64) {
 }
 
 func borrowing_method() {
-    let latch = Latch { id: 1 }
+    let latch = Latch(id: 1)
     // ERROR: `peek` borrows `latch`, so the ensure commits nothing
     ensure latch.peek()
     println("x")
 }
 
 func field_read() {
-    let latch = Latch { id: 2 }
+    let latch = Latch(id: 2)
     // ERROR: reading a field consumes nothing
     ensure show(latch.id)
     println("y")
@@ -41,7 +41,7 @@ func field_read() {
 
 // Legal: the consume is an argument to the call the ensure runs.
 func nested_consume() {
-    let latch = Latch { id: 3 }
+    let latch = Latch(id: 3)
     ensure show(latch.release())
     println("z")
 }

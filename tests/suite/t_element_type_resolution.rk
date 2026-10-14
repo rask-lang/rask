@@ -22,7 +22,7 @@ func make_holder() -> Holder {
     names.push("beta")
     mut scores: Map<string, f64> = Map.new()
     scores.insert("alpha", 1.5)
-    return Holder { names: names, scores: scores }
+    return Holder(names: names, scores: scores)
 }
 
 test "indexing a Vec field of a returned struct keeps the element type" {
@@ -60,8 +60,8 @@ test "a Map inside a Mutex resolves its value type through lock" {
 
 test "a Vec of structs keeps its element type through index and iteration" {
     mut pts: Vec<Point> = Vec.new()
-    pts.push(Point { x: 1.5, y: 2.5 })
-    pts.push(Point { x: 3.5, y: 4.5 })
+    pts.push(Point(x: 1.5, y: 2.5))
+    pts.push(Point(x: 3.5, y: 4.5))
 
     assert pts[1].x == 3.5
 
@@ -85,8 +85,8 @@ test "an iterator chain keeps the element type" {
 
 test "deleting during a snapshot iteration reaches the element type" {
     mut rack: Rack<Point> = Rack.new()
-    let a = rack.insert(Point { x: 1.0, y: 1.0 })
-    let b = rack.insert(Point { x: 9.0, y: 9.0 })
+    let a = rack.insert(Point(x: 1.0, y: 1.0))
+    let b = rack.insert(Point(x: 9.0, y: 9.0))
     assert rack.len() == 2
 
     // `nodes()` is a snapshot, so deleting one node while walking it is fine —

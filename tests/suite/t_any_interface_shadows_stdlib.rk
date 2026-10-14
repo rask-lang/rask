@@ -40,10 +40,10 @@ test "the stdlib's any Writer takes a stdlib Buffer" {
 }
 
 test "the program's any Writer takes the program's type" {
-    assert label(Note { text: "a" }) == "note:a"
-    let held: any Writer = Note { text: "b" }
+    assert label(Note(text: "a")) == "note:a"
+    let held: any Writer = Note(text: "b")
     assert held.tag() == "note:b"
-    let all: Vec<any Writer> = [Note { text: "c" }]
+    let all: Vec<any Writer> = [Note(text: "c")]
     assert all[0].tag() == "note:c"
 }
 

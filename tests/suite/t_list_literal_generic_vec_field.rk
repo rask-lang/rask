@@ -21,18 +21,18 @@ func first<T>(xs: Vec<T>) -> T {
 }
 
 test "elements decide T" {
-    let b = Bag { items: ["a", "b"] }
+    let b = Bag(items: ["a", "b"])
     assert b.items.len() == 2
     assert b.items[1] == "b"
 }
 
 test "annotated binding" {
-    let b: Bag<string> = Bag { items: ["x"] }
+    let b: Bag<string> = Bag(items: ["x"])
     assert b.items[0] == "x"
 }
 
 test "integer elements default like any literal" {
-    let b = Bag { items: [1, 2, 3] }
+    let b = Bag(items: [1, 2, 3])
     mut total = 0
     for x in b.items {
         total += x
@@ -41,12 +41,12 @@ test "integer elements default like any literal" {
 }
 
 test "the element type comes from the annotation when the literal is empty" {
-    let b: Bag<i64> = Bag { items: [] }
+    let b: Bag<i64> = Bag(items: [])
     assert b.items.len() == 0
 }
 
 test "two parameters" {
-    let t = Two { keys: ["k1", "k2"], vals: [10, 20] }
+    let t = Two(keys: ["k1", "k2"], vals: [10, 20])
     assert t.keys[1] == "k2"
     assert t.vals[0] == 10
 }

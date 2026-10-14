@@ -30,21 +30,21 @@ func is_positive(x: i64) -> bool {
 func main() {}
 
 test "a closure in a field is called and freed" {
-    let h = Holder { v: |x| x > 0 }
+    let h = Holder(v: |x| x > 0)
     let f = h.v
     assert f(3)
     assert !f(-1)
 }
 
 test "a named function in a field" {
-    let h = Holder { v: is_positive }
+    let h = Holder(v: is_positive)
     let f = h.v
     assert f(3)
 }
 
 test "a closure beside a string in the same struct" {
     let n = 1
-    let p = Pair { tag: "t{n}", check: |x| x > 10 }
+    let p = Pair(tag: "t{n}", check: |x| x > 10)
     assert p.tag == "t1"
     let f = p.check
     assert f(20)

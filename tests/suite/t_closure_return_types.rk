@@ -36,7 +36,7 @@ test "string survives" {
 }
 
 test "a struct survives" {
-    let c = Pair { a: 1, b: 2 }
+    let c = Pair(a: 1, b: 2)
     let f = || { return c }
     assert f().a == 1
     let got = f()

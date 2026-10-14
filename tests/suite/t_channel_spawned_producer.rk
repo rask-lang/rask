@@ -90,8 +90,8 @@ struct Note {
 
 test "concurrency.channels — a struct with a string crosses" {
     let (tx, rx) = Channel<Note>.buffered(2)
-    tx.send(Note { id: 1, text: "first" })
-    tx.send(Note { id: 2, text: "second" })
+    tx.send(Note(id: 1, text: "first"))
+    tx.send(Note(id: 2, text: "second"))
     mut joined = ""
     if rx.try_receive() is Note as a {
         joined = "{a.id}:{a.text}"

@@ -66,29 +66,29 @@ extend Holder<T> {
 }
 
 test "a generic method returning its T" {
-    let s = Sink { n: 0 }
-    let c = s.keep(Conn { id: 4 })
+    let s = Sink(n: 0)
+    let c = s.keep(Conn(id: 4))
     assert c.close() == 4
 }
 
 test "a method of a generic type hands back the resource it holds" {
-    let h = Holder { item: Conn { id: 5 } }
+    let h = Holder(item: Conn(id: 5))
     let c = h.unwrap_it()
     assert c.close() == 5
 }
 
 test "a generic returning its T hands the resource back" {
-    let c = keep(Conn { id: 1 })
+    let c = keep(Conn(id: 1))
     assert c.close() == 1
 }
 
 test "a chain of generics that pass the T along" {
-    let c = pass_through(Conn { id: 2 })
+    let c = pass_through(Conn(id: 2))
     assert c.close() == 2
 }
 
 test "a resource through a generic enum, consumed at the match" {
-    let s = fill(Conn { id: 3 })
+    let s = fill(Conn(id: 3))
     assert close_slot(s) == 3
 }
 

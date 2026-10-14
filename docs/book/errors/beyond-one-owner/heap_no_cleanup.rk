@@ -9,7 +9,7 @@ struct Frame {
 }
 
 func main() {
-    let frame = Heap(Frame { label: "canvas", width: 1920 })
+    let frame = Heap(Frame(label: "canvas", width: 1920))
 
     println("{(*frame).label}")
 

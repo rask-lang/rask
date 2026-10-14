@@ -36,7 +36,7 @@ extend Row {
 // An element of a Vec, reached by index.
 test "with over a Vec element" {
     mut v: Vec<Row> = Vec.new()
-    v.push(Row { key: "a", n: 1 })
+    v.push(Row(key: "a", n: 1))
     with v[0] as first {
         first.bump()
         first.bump()
@@ -60,8 +60,8 @@ extend Sheet {
 }
 
 test "with over an element behind a field" {
-    mut s = Sheet { rows: Vec<Row>.new() }
-    s.rows.push(Row { key: "c", n: 100 })
+    mut s = Sheet(rows: Vec<Row>.new())
+    s.rows.push(Row(key: "c", n: 100))
     s.bump_first()
     assert s.rows[0].n == 101
 }
@@ -85,16 +85,16 @@ test "with over what a Shared holds" {
 // What the rejected form has to be written as instead: reach the field where it
 // lives. Two lines shorter than the block was.
 test "a plain field is written through, not scoped" {
-    mut sheet = Sheet { rows: Vec<Row>.new() }
-    sheet.rows.push(Row { key: "d", n: 1 })
-    sheet.rows.push(Row { key: "e", n: 2 })
+    mut sheet = Sheet(rows: Vec<Row>.new())
+    sheet.rows.push(Row(key: "d", n: 1))
+    sheet.rows.push(Row(key: "e", n: 2))
     assert sheet.rows.len() == 2
     assert sheet.rows[1].n == 2
 }
 
 func main() {
     mut v: Vec<Row> = Vec.new()
-    v.push(Row { key: "a", n: 1 })
+    v.push(Row(key: "a", n: 1))
     with v[0] as first {
         first.bump()
     }

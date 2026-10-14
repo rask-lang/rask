@@ -55,12 +55,12 @@ extend Holder<T> {
 }
 
 test "a forwarded call to a callee with its own type parameter" {
-    let h = Holder<i64> { items: [1, 2, 3] }
+    let h = Holder<i64>(items: [1, 2, 3])
     assert h.mapped(|x| x * 2).count() == 3
 }
 
 test "the values are right, not just the count" {
-    let h = Holder<i64> { items: [1, 2, 3] }
+    let h = Holder<i64>(items: [1, 2, 3])
     let out: Vec<i64> = h.mapped(|x| x * 2).to_vec()
     assert out.len() == 3
     assert out[0] == 2
@@ -68,7 +68,7 @@ test "the values are right, not just the count" {
 }
 
 test "the type argument can differ from the receiver's" {
-    let h = Holder<i64> { items: [1, 2] }
+    let h = Holder<i64>(items: [1, 2])
     let names: Vec<string> = h.mapped(|x| "n{x}").to_vec()
     assert names.len() == 2
     assert names[0] == "n1"
@@ -76,12 +76,12 @@ test "the type argument can differ from the receiver's" {
 }
 
 test "a callee without its own type parameter still forwards" {
-    let h = Holder<i64> { items: [1, 2, 3] }
+    let h = Holder<i64>(items: [1, 2, 3])
     assert h.kept(|x| x > 1).count() == 2
 }
 
 test "two hops" {
-    let h = Holder<i64> { items: [1, 2] }
+    let h = Holder<i64>(items: [1, 2])
     assert h.mapped_twice(|x| x * 3).count() == 2
     let out: Vec<i64> = h.mapped_twice(|x| x * 3).to_vec()
     assert out[0] == 3
@@ -92,8 +92,8 @@ test "two hops" {
 // serve both, so this is what would break if the fix bound the argument once
 // and reused it.
 test "two instantiations don't share a body" {
-    let a = Holder<i64> { items: [1, 2] }
-    let b = Holder<string> { items: ["x", "y", "z"] }
+    let a = Holder<i64>(items: [1, 2])
+    let b = Holder<string>(items: ["x", "y", "z"])
     assert a.mapped(|x| x + 1).count() == 2
     assert b.mapped(|s| s).count() == 3
 }

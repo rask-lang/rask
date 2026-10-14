@@ -17,5 +17,5 @@ public func greet(c: Cat) -> string {
 // rewritten along with the declarations or this returns a type that no longer
 // exists (#1112).
 public func named(n: string) -> Cat {
-    return Cat { name: n }
+    return Cat(name: n)
 }

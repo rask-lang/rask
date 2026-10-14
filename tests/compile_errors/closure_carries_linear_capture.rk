@@ -25,7 +25,7 @@ func peek(c: Conn) -> i32 {
 }
 
 func make_reader() -> func() -> i32 {
-    let c = Conn { id: 1 }
+    let c = Conn(id: 1)
     // ERROR: the returned closure would hold `c` forever [E0913]
     return || peek(c)
 }
@@ -38,7 +38,7 @@ func make_sizer() -> func() -> i64 {
 
 func main() {
     // Fine: a closure that stays in its frame only borrows.
-    let e = Conn { id: 4 }
+    let e = Conn(id: 4)
     ensure e.close()
     let read = || peek(e)
     println("{read()}")

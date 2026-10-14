@@ -14,15 +14,15 @@ struct Row {
 
 func build() -> Vec<Row> {
     mut v = Vec.new()
-    v.push(Row { inner: Inner { n: 1 }, n: 10 })
-    v.push(Row { inner: Inner { n: 2 }, n: 20 })
+    v.push(Row(inner: Inner(n: 1), n: 10))
+    v.push(Row(inner: Inner(n: 2), n: 20))
     return v
 }
 
 struct Holder { rows: Vec<Row> }
 
 extend Holder {
-    func new() -> Holder { return Holder { rows: build() } }
+    func new() -> Holder { return Holder(rows: build()) }
     // `take self` — the Vec goes to the caller rather than being lent out
     // (mem.borrowing/S3): a borrowed `self` would hand out a second name for it.
     func take(take self) -> Vec<Row> { return self.rows }

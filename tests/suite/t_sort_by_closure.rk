@@ -24,9 +24,9 @@ struct Scored {
 
 test "stdlib.collections — sort_by orders by a struct field" {
     mut rows = Vec.new()
-    rows.push(Row { rank: 2, name: "b" })
-    rows.push(Row { rank: 1, name: "a" })
-    rows.push(Row { rank: 3, name: "c" })
+    rows.push(Row(rank: 2, name: "b"))
+    rows.push(Row(rank: 1, name: "a"))
+    rows.push(Row(rank: 3, name: "c"))
 
     rows.sort_by(|x, y| {
         return x.rank.compare(y.rank)
@@ -43,9 +43,9 @@ test "stdlib.collections — sort_by orders by a struct field" {
 // Declaration order is the ordering, so a fieldless enum compares by variant.
 test "stdlib.collections — sort_by orders by an enum field, descending" {
     mut items = Vec.new()
-    items.push(Scored { grade: Grade.Mid, id: 1 })
-    items.push(Scored { grade: Grade.High, id: 2 })
-    items.push(Scored { grade: Grade.Low, id: 3 })
+    items.push(Scored(grade: Grade.Mid, id: 1))
+    items.push(Scored(grade: Grade.High, id: 2))
+    items.push(Scored(grade: Grade.Low, id: 3))
 
     items.sort_by(|a, b| {
         return b.grade.compare(a.grade)

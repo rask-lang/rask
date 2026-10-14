@@ -28,7 +28,7 @@ struct Holder {
 
 extend Holder {
     public func new() -> Holder {
-        return Holder { m: Map.new() }
+        return Holder(m: Map.new())
     }
 
     public func add(mutate self, v: i64) -> void {
@@ -60,7 +60,7 @@ struct Wrap<T> {
 
 extend Wrap<T> {
     public func new() -> Wrap<T> {
-        return Wrap { m: Map.new() }
+        return Wrap(m: Map.new())
     }
 
     public func add(mutate self, take v: T) -> void {

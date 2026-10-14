@@ -7,7 +7,7 @@ func main() {
     println("{libpkg.twice(21)}")
 
     // The caller constructs it; the library only reads it.
-    let d = Dog { age: 3, name: "rex" }
+    let d = Dog(age: 3, name: "rex")
     println("{libpkg.years(d)}")
     println("{libpkg.describe(d)}")
     return

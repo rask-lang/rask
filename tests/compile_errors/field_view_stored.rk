@@ -39,22 +39,22 @@ func eat(take v: Vec<i64>) -> u64 {
 }
 
 func from_borrowed(src: Bag) -> Bag {
-    mut out = Bag { items: [], count: 0 }
+    mut out = Bag(items: [], count: 0)
     // ERROR: `out.items` and `src.items` would be the same `Vec`
     out.items = src.items
     return out
 }
 
 func from_taken(take src: Bag) -> Bag {
-    mut out = Bag { items: [], count: 0 }
+    mut out = Bag(items: [], count: 0)
     // ERROR: a `take` parameter's field is still a view
     out.items = src.items
     return out
 }
 
 func from_local() -> u64 {
-    let a = Bag { items: [1, 2], count: 2 }
-    mut out = Bag { items: [], count: 0 }
+    let a = Bag(items: [1, 2], count: 2)
+    mut out = Bag(items: [], count: 0)
     // ERROR: a local's field is still a view
     out.items = a.items
     out.items.push(9)
@@ -70,12 +70,12 @@ func into_variable(src: Bag) -> u64 {
 
 func into_literal(src: Bag) -> Bag {
     // ERROR: the new `Bag` would share its `items` with `src.items`
-    return Bag { items: src.items, count: 0 }
+    return Bag(items: src.items, count: 0)
 }
 
 func into_taken_literal(take src: Bag) -> Bag {
     // ERROR: a `take` parameter's field is still a view
-    return Bag { items: src.items, count: 1 }
+    return Bag(items: src.items, count: 1)
 }
 
 func into_tuple(src: Bag) -> (Vec<i64>, i64) {
@@ -108,7 +108,7 @@ func into_push(src: Bag) -> Vec<Vec<i64>> {
 }
 
 func via_let(src: Bag) -> Bag {
-    mut out = Bag { items: [], count: 0 }
+    mut out = Bag(items: [], count: 0)
     let tmp = src.items
     // ERROR: `tmp` is the same view under its own name
     out.items = tmp
@@ -116,10 +116,10 @@ func via_let(src: Bag) -> Bag {
 }
 
 func via_let_into_literal() -> Bag {
-    let a = Bag { items: [1], count: 1 }
+    let a = Bag(items: [1], count: 1)
     let tmp = a.items
     // ERROR: a local's field, named, then stored
-    return Bag { items: tmp, count: a.count }
+    return Bag(items: tmp, count: a.count)
 }
 
 func via_let_returned(src: Bag) -> Vec<i64> {
@@ -130,7 +130,7 @@ func via_let_returned(src: Bag) -> Vec<i64> {
 
 // Legal: a copy of its own, and a Copy field.
 func copies(src: Bag) -> Bag {
-    mut out = Bag { items: [], count: 0 }
+    mut out = Bag(items: [], count: 0)
     out.items = src.items.clone()
     out.count = src.count
     return out

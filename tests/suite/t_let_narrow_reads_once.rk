@@ -16,7 +16,7 @@ extend ListError {
 
 func listing(n: i64) -> Vec<string> or ListError {
     if n < 0 {
-        return ListError { code: n }
+        return ListError(code: n)
     }
     mut out: Vec<string> = Vec.new()
     for i in 0..n {

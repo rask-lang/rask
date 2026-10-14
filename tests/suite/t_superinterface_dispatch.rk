@@ -81,17 +81,17 @@ func all_three(x: any Deafening) -> string {
 }
 
 test "superinterface — the sub-interface's own method still dispatches" {
-    let h = Horn { id: 1 }
+    let h = Horn(id: 1)
     assert sub_method(h as any Shouty) == "BEEP1"
 }
 
 test "superinterface — the inherited method dispatches too" {
-    let h = Horn { id: 2 }
+    let h = Horn(id: 2)
     assert super_method(h as any Shouty) == "beep2"
 }
 
 test "superinterface — two levels up and a second parent" {
-    let s = Siren { id: 3 }
+    let s = Siren(id: 3)
     assert all_three(s as any Deafening) == "wail3/WAIL3/11/120"
 }
 
@@ -99,8 +99,8 @@ test "superinterface — two levels up and a second parent" {
 // vtable layout, so a wrong slot shows up as the wrong method being called.
 test "superinterface — through a Vec of sub-interface objects" {
     mut xs: Vec<any Shouty> = Vec.new()
-    xs.push(Horn { id: 4 })
-    xs.push(Siren { id: 5 })
+    xs.push(Horn(id: 4))
+    xs.push(Siren(id: 5))
     mut out: Vec<string> = Vec.new()
     for x in xs {
         out.push("{x.say()}:{x.shout()}")
@@ -111,7 +111,7 @@ test "superinterface — through a Vec of sub-interface objects" {
 // A value declared as the parent's object still works — nothing about the
 // sub-interface's extra slots may shift the parent's.
 test "superinterface — the parent's own object is unchanged" {
-    let h = Horn { id: 6 }
+    let h = Horn(id: 6)
     let p = h as any Speak
     assert p.say() == "beep6"
 }

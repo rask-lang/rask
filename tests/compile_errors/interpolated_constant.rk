@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `{…}` hole holding a constant is an error in every string (std.fmt/I4).
+//
+// `{0}` puts the number 0 in the string, which writing `0` already does, so
+// nobody means it. It's `format`'s positional placeholder written outside
+// `format`, or the old `@message` spelling for a variant's first value. That
+// spelling is gone: a `@message` is an ordinary string, and a payload it
+// mentions has a name (type.errors/ER36).
+
+@message
+enum LoadError {
+    @message("nf {0}")                 // ERROR: positional payload reference
+    NotFound(u64)
+    @message("parse error at {line}")
+    Parse(line: i32)
+}
+
+func main() {
+    println("width {80}")              // ERROR: a constant in a hole
+}

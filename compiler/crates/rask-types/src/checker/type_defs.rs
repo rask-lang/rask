@@ -187,6 +187,9 @@ pub enum TypeDef {
     /// Nominal type alias: same layout as underlying, distinct identity.
     NominalAlias {
         name: String,
+        /// `type Wrapping<T: Integer> = T`: the `T`. The underlying type is
+        /// written in them.
+        type_params: Vec<String>,
         underlying: Type,
         with_interfaces: Vec<rask_ast::ty::TypeExpr>,
         /// Methods from `extend` blocks. A nominal newtype has its own identity,
@@ -221,6 +224,17 @@ pub(crate) fn method_base(name: &str) -> &str {
 }
 
 impl TypeDef {
+    /// The type's declared parameters: a generic struct's, enum's or
+    /// newtype's. Empty for anything else.
+    pub fn type_params(&self) -> &[String] {
+        match self {
+            TypeDef::Struct { type_params, .. }
+            | TypeDef::Enum { type_params, .. }
+            | TypeDef::NominalAlias { type_params, .. } => type_params,
+            _ => &[],
+        }
+    }
+
     /// TR3: true if `method` is a generic method of this interface (can't dispatch through `any`).
     /// Interface method names carry their type params (`convert<T>`); the call site does
     /// not, so compare on the base name.
@@ -333,37 +347,6 @@ pub struct ModuleMethodSig {
     /// freshening runs on, so by then the name is gone. Without it a call that
     /// didn't write the type argument had nothing to check the bound against.
     pub param_type_params: Vec<Option<String>>,
-}
-
-/// Endianness for multi-byte binary fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endian {
-    Big,
-    Little,
-}
-
-/// A single field's binary layout specifier.
-#[derive(Debug, Clone)]
-pub struct BinaryFieldSpec {
-    pub name: String,
-    pub bits: u32,
-    pub endian: Option<Endian>,
-    pub runtime_type: Type,
-    /// Byte offset within the struct where this field's bits start
-    pub bit_offset: u32,
-    /// Whether this is a fixed byte array ([N]u8)
-    pub is_byte_array: bool,
-    pub byte_array_len: usize,
-}
-
-/// Metadata for a @binary struct.
-#[derive(Debug, Clone)]
-pub struct BinaryStructInfo {
-    pub name: String,
-    pub fields: Vec<BinaryFieldSpec>,
-    pub total_bits: u32,
-    /// SIZE in bytes (rounded up)
-    pub size_bytes: u32,
 }
 
 /// One type parameter and what a call site settled it to.
@@ -505,21 +488,64 @@ impl TypedProgram {
             rask_ast::rewrite::rewrite_decls(decls, &mut ChainHeads(&self.sequence_coercions, Default::default()));
         }
 
-        // Defaults the checker filled into method calls.
-        struct Defaults<'a>(&'a HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr)>>);
-        impl rask_ast::rewrite::Rewrite for Defaults<'_> {
+        // Calls the checker placed: each argument moves to its parameter, and
+        // a parameter left out gets its default. Where that would change
+        // which argument's code runs first, those arguments are bound to
+        // temporaries beforehand, in written order, and the call reads them.
+        struct Places<'a> {
+            placed: &'a HashMap<NodeId, Vec<PlacedArg>>,
+            hoists: &'a HashMap<NodeId, ArgHoist>,
+            done: std::collections::HashSet<NodeId>,
+        }
+        impl rask_ast::rewrite::Rewrite for Places<'_> {
             fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-                use rask_ast::expr::{ArgMode, CallArg, ExprKind};
-                let Some(fills) = self.0.get(&e.id) else { return };
-                let ExprKind::MethodCall { args, .. } = &mut e.kind else { return };
-                for (at, expr) in fills {
-                    let arg = CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() };
-                    args.insert((*at).min(args.len()), arg);
+                use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
+                use rask_ast::stmt::{Stmt, StmtKind};
+                let Some(placed) = self.placed.get(&e.id) else { return };
+                // The call is still inside the block that replaces it.
+                if !self.done.insert(e.id) {
+                    return;
+                }
+                let (ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. }) = &mut e.kind else { return };
+                if placed.iter().any(|p| matches!(p, PlacedArg::Written(i) if *i >= args.len())) {
+                    return;
+                }
+                let mut written = std::mem::take(args);
+                let mut lets = Vec::new();
+                if let Some(hoist) = self.hoists.get(&e.id) {
+                    for (arg, let_id, ident) in &hoist.binds {
+                        let name = format!("__arg_{}", let_id.0);
+                        let span = written[*arg].expr.span;
+                        let read = Expr { id: *ident, kind: ExprKind::Ident(name.clone()), span };
+                        let init = std::mem::replace(&mut written[*arg].expr, read);
+                        lets.push(Stmt { id: *let_id, kind: StmtKind::Let { name, name_span: span, ty: None, init }, span });
+                    }
+                }
+                *args = placed
+                    .iter()
+                    .map(|p| match p {
+                        PlacedArg::Written(i) => written[*i].clone(),
+                        PlacedArg::Default(expr) => CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() },
+                    })
+                    .collect();
+                if let Some(hoist) = self.hoists.get(&e.id) {
+                    let span = e.span;
+                    let call = Expr { id: e.id, kind: std::mem::replace(&mut e.kind, ExprKind::Bool(false)), span };
+                    lets.push(Stmt { id: hoist.block, kind: StmtKind::Expr(call), span });
+                    e.id = hoist.block;
+                    e.kind = ExprKind::Block(lets);
                 }
             }
         }
-        if !self.default_fills.is_empty() {
-            rask_ast::rewrite::rewrite_decls(decls, &mut Defaults(&self.default_fills));
+        if !self.arg_places.is_empty() {
+            rask_ast::rewrite::rewrite_decls(
+                decls,
+                &mut Places { placed: &self.arg_places, hoists: &self.arg_hoists, done: Default::default() },
+            );
+        }
+
+        if !self.struct_shorthand_patterns.is_empty() {
+            struct_shorthands(decls, &self.struct_shorthand_patterns);
         }
 
         // A program type sharing a stdlib type's name has gone by its symbol
@@ -603,6 +629,26 @@ impl TypedProgram {
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut AnySymbols(&self.types));
     }
+}
+
+/// Arguments of a placed call bound to temporaries so they run in the order
+/// written (`arg_labels::plan_hoist`).
+#[derive(Debug, Clone)]
+pub struct ArgHoist {
+    /// The block that replaces the call.
+    pub block: NodeId,
+    /// `(written argument, its let's id, the temporary's use's id)`, in
+    /// written order.
+    pub binds: Vec<(usize, NodeId, NodeId)>,
+}
+
+/// Where one parameter's argument comes from in a placed call.
+#[derive(Debug, Clone)]
+pub enum PlacedArg {
+    /// The argument written at this index.
+    Written(usize),
+    /// The parameter's default, copied for this call.
+    Default(rask_ast::expr::Expr),
 }
 
 /// Result of type checking.
@@ -721,10 +767,17 @@ pub struct TypedProgram {
     /// type says which. Renaming a type has to rename the first kind and leave
     /// `AppError`'s `ParseError` variant alone (`attach_derived`).
     pub type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
-    /// Method calls that left parameters to their defaults: call → (position,
-    /// the default's copy). The checker filled them where it knew which
-    /// method the call reaches; `attach_derived` puts them in the call.
-    pub default_fills: HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr)>>,
+    /// Bare `Pair(a, b)` patterns that matched a struct, keyed like
+    /// `type_test_patterns`. Some enum also has a `Pair` variant, so the
+    /// desugarer left the pattern as written; `attach_derived` makes each one
+    /// the struct pattern `Pair(a: a, b: b)`.
+    pub struct_shorthand_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
+    /// Calls whose labels or defaults moved their arguments: call → where each
+    /// parameter's argument comes from. The checker placed them where it knew
+    /// the callee; `attach_derived` writes them into the call.
+    pub arg_places: HashMap<NodeId, Vec<PlacedArg>>,
+    /// Placed calls whose arguments are bound first, by call.
+    pub arg_hoists: HashMap<NodeId, ArgHoist>,
     /// Function name → inferred return type, for functions that don't declare one
     /// (`func f() { return 41 }`). An absent annotation is not the same as
     /// returning nothing, and the declaration string is the only thing lowering
@@ -763,6 +816,68 @@ pub struct TypedProgram {
 /// pattern is just as often `AppError`'s variant of that name. Only the ones
 /// the checker read as a type test are the type (`type_test_patterns`); a bare
 /// constructor pattern is always a variant.
+/// Bare `Pair(a, b)` patterns the checker matched against a struct become
+/// that struct's pattern. Spans are the ones `check_pattern` was handed.
+fn struct_shorthands(
+    decls: &mut [rask_ast::decl::Decl],
+    found: &std::collections::HashSet<(rask_ast::Span, String)>,
+) {
+    use rask_ast::expr::{Expr, ExprKind, Pattern};
+    use rask_ast::stmt::{Stmt, StmtKind};
+
+    struct Shorthands<'a>(&'a std::collections::HashSet<(rask_ast::Span, String)>);
+
+    impl Shorthands<'_> {
+        fn convert(&self, p: &mut Pattern, span: rask_ast::Span) {
+            match p {
+                Pattern::Constructor { name, fields } if self.0.contains(&(span, name.clone())) => {
+                    let fields = fields
+                        .iter()
+                        .filter_map(|f| match f {
+                            Pattern::Ident(n) => Some((n.clone(), Pattern::Ident(n.clone()))),
+                            _ => None,
+                        })
+                        .collect();
+                    *p = Pattern::Struct { name: name.clone(), fields, rest: false };
+                }
+                Pattern::Constructor { fields, .. } | Pattern::Tuple(fields) | Pattern::Or(fields) => {
+                    fields.iter_mut().for_each(|f| self.convert(f, span))
+                }
+                Pattern::Struct { fields, .. } => fields.iter_mut().for_each(|(_, f)| self.convert(f, span)),
+                Pattern::Wildcard
+                | Pattern::Ident(_)
+                | Pattern::Literal(_)
+                | Pattern::Range { .. }
+                | Pattern::TypePat { .. } => {}
+            }
+        }
+    }
+
+    impl rask_ast::rewrite::Rewrite for Shorthands<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            let span = e.span;
+            match &mut e.kind {
+                ExprKind::Match { arms, .. } => arms.iter_mut().for_each(|a| self.convert(&mut a.pattern, span)),
+                ExprKind::IfLet { pattern, .. }
+                | ExprKind::GuardPattern { pattern, .. }
+                | ExprKind::IsPattern { pattern, .. } => self.convert(pattern, span),
+                _ => {}
+            }
+        }
+
+        fn body(&mut self, b: &mut Vec<Stmt>) {
+            for stmt in b {
+                if let StmtKind::LetStruct { pattern, .. } = &mut stmt.kind {
+                    let span = stmt.span;
+                    self.convert(pattern, span);
+                }
+            }
+        }
+    }
+
+    rask_ast::rewrite::rewrite_decls(decls, &mut Shorthands(found));
+}
+
 fn rename_types(
     decls: &mut [rask_ast::decl::Decl],
     map: &HashMap<String, String>,

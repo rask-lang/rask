@@ -21,7 +21,7 @@ test "printing at the top of each unsigned range" {
 }
 
 test "unsigned struct fields" {
-    let r = Rec { n: 4000000000, m: 200 }
+    let r = Rec(n: 4000000000, m: 200)
     assert "{r.n}" == "4000000000"
     assert "{r.m}" == "200"
 }

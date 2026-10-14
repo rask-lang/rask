@@ -49,6 +49,6 @@ func works(b: Budget9) -> i64 {
 }
 
 func main() {
-    let b = Budget9 { spent: 3, limit: 10 }
+    let b = Budget9(spent: 3, limit: 10)
     println("{works(b)}")
 }

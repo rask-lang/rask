@@ -32,7 +32,7 @@ struct Doc {
 }
 
 func point() -> Point {
-    return Point { x: 1, y: 2 }
+    return Point(x: 1, y: 2)
 }
 
 test "std.json — encode_pretty indents, encode doesn't" {
@@ -41,14 +41,14 @@ test "std.json — encode_pretty indents, encode doesn't" {
 }
 
 test "std.json — pretty nests, and leaves an empty container inline" {
-    let d = Doc {
-        name: "a,b:c",
-        tags: ["x"],
-        point: point(),
-        empty: [],
-        score: 2.5,
-        ok: true,
-    }
+    let d = Doc(
+        name: "a,b:c"
+        tags: ["x"]
+        point: point()
+        empty: []
+        score: 2.5
+        ok: true
+    )
     let expected = "{{\n  \"name\": \"a,b:c\",\n  \"tags\": [\n    \"x\"\n  ],\n  \"point\": {{\n    \"x\": 1,\n    \"y\": 2\n  }},\n  \"empty\": [],\n  \"score\": 2.5,\n  \"ok\": true\n}}"
     assert json.encode_pretty(d) == expected
 }
@@ -62,14 +62,14 @@ test "std.json — a Vec encodes pretty too" {
 
 // The separators inside a string must not be indented on.
 test "std.json — punctuation inside a string is left alone" {
-    let d = Doc {
-        name: "{{a}}: [b], \"c\"",
-        tags: [],
-        point: point(),
-        empty: [],
-        score: 0.0,
-        ok: false,
-    }
+    let d = Doc(
+        name: "{{a}}: [b], \"c\""
+        tags: []
+        point: point()
+        empty: []
+        score: 0.0
+        ok: false
+    )
     let pretty = json.encode_pretty(d)
     assert(pretty.contains("\"{{a}}: [b], \\\"c\\\"\""))
 }
@@ -79,7 +79,7 @@ struct Text {
 }
 
 test "std.json — non-ASCII survives a round trip" {
-    let t = Text { s: "é 😀 ü — ½" }
+    let t = Text(s: "é 😀 ü — ½")
     let enc = json.encode(t)
     let back = json.decode<Text>(enc)
     if back is Text as v {
@@ -99,10 +99,10 @@ test "std.json — a `\\u` surrogate pair is one character" {
 }
 
 test "std.json — an integer encodes exactly, however large" {
-    let big = Point { x: 9007199254740993, y: 0 - 9007199254740993 }
+    let big = Point(x: 9007199254740993, y: 0 - 9007199254740993)
     assert json.encode(big) == "{{\"x\":9007199254740993,\"y\":-9007199254740993}}"
 
-    let biggest = Point { x: 9223372036854775807, y: 0 - 9223372036854775807 }
+    let biggest = Point(x: 9223372036854775807, y: 0 - 9223372036854775807)
     assert json.encode(biggest) == "{{\"x\":9223372036854775807,\"y\":-9223372036854775807}}"
 }
 

@@ -23,8 +23,8 @@ enum Token {
 // AST nodes
 enum Expr {
     Number(f64)
-    Binary { left: Heap<Expr>, op: BinaryOp, right: Heap<Expr> }
-    Unary { op: UnaryOp, expr: Heap<Expr> }
+    Binary(left: Heap<Expr>, op: BinaryOp, right: Heap<Expr>)
+    Unary(op: UnaryOp, expr: Heap<Expr>)
 }
 
 enum BinaryOp {
@@ -66,7 +66,7 @@ struct Lexer {
 
 extend Lexer {
     func new(input: string) -> Lexer {
-        return Lexer { input, pos: 0 }
+        return Lexer(input, pos: 0)
     }
 
     func peek_char(self) -> char? {
@@ -169,7 +169,7 @@ extend Parser {
     func new(input: string) -> Parser or CalcError {
         mut lexer = Lexer.new(input)
         let current = try lexer.next_token()
-        return Parser { lexer, current }
+        return Parser(lexer, current)
     }
 
     func advance(mutate self) -> void or CalcError {
@@ -289,7 +289,7 @@ extend Parser {
 func evaluate(expr: Expr) -> f64 or CalcError {
     match expr {
         Number(n) => return n
-        Unary(op, inner) => {
+        Unary(op, expr: inner) => {
             let val = try evaluate(inner)
             match op {
                 Neg => return -val

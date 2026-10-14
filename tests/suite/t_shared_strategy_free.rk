@@ -63,7 +63,7 @@ test "and the local one" {
 // A payload wider than a word goes through the pointer-based runtime entry
 // points, which allocate the same two things.
 test "an aggregate payload survives the round trip" {
-    let s = Shared.mutex(Reading { sensor: 1, value: 0.0 })
+    let s = Shared.mutex(Reading(sensor: 1, value: 0.0))
     with s.write() as r {
         r.value = 2.5
         r.sensor = 9

@@ -26,10 +26,10 @@ func summarize(values: Vec<f64>) -> Stats? {
         if v < smallest { smallest = v }
         if v > largest { largest = v }
     }
-    return Stats {
-        count: values.len().to<i64>()!,
-        total,
-        smallest,
-        largest,
-    }
+    return Stats(
+        count: values.len().to<i64>()!
+        total
+        smallest
+        largest
+    )
 }

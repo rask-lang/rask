@@ -113,9 +113,9 @@ extend CErr {
 }
 
 func get(n: i64) -> string or (AErr | BErr | CErr) {
-    if n == 0 { return AErr { code: 7 } }
-    if n == -1 { return BErr { why: "b, on the heap for sure" } }
-    if n < 0 { return CErr { note: "c, on the heap for sure" } }
+    if n == 0 { return AErr(code: 7) }
+    if n == -1 { return BErr(why: "b, on the heap for sure") }
+    if n < 0 { return CErr(note: "c, on the heap for sure") }
     return "ok {n}, on the heap for sure"
 }
 

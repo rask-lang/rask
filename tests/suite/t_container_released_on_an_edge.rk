@@ -73,10 +73,10 @@ func order(n: i32) -> Order {
     mut v: Vec<Item> = Vec.new()
     mut i = 0
     while i < n {
-        v.push(Item { name: "item-{i}", qty: i })
+        v.push(Item(name: "item-{i}", qty: i))
         i = i + 1
     }
-    return Order { id: n, items: v }
+    return Order(id: n, items: v)
 }
 
 test "mem.ownership — a loop over a container in a field" {

@@ -914,6 +914,14 @@ fn insert_aggregate_release(
                     {
                         ev.push(ownership::Event::Fill(*addr));
                     }
+                    // A replacement writes the slot in place: what it held was
+                    // just released, so a copy made earlier holds a freed
+                    // value. `mut p = …; p.run = || …` stores into `p`'s new
+                    // version, and releasing the struct under the old name
+                    // freed the replaced closure a second time.
+                    if aggregates.contains(addr) && replaces {
+                        ev.push(ownership::Event::WriteThrough(*addr));
+                    }
                 }
                 MirStmtKind::ArrayStore { value, .. } => {
                     if let Some(v) = uses::operand_local(value).filter(|v| !retained.contains(v)) {
@@ -1851,6 +1859,7 @@ mod tests {
                     offset: 0,
                     value: MirOperand::Local(local(1)),
                     store_size: Some(16),
+                    field: None,
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
@@ -2075,6 +2084,7 @@ mod tests {
                             offset: 0,
                             value: MirOperand::Constant(MirConst::Int(1)),
                             store_size: None,
+                            field: None,
                         }),
                     ],
                     terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -2088,6 +2098,7 @@ mod tests {
                         offset: 24,
                         value: MirOperand::Local(local(1)),
                         store_size: None,
+                        field: None,
                     })],
                     terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Local(local(0))),

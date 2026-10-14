@@ -16,7 +16,7 @@ func eat(take b: Bag) -> usize {
 func fresh(n: i32) -> Bag {
     mut v: Vec<i32> = Vec.new()
     v.push(n)
-    return Bag { items: v }
+    return Bag(items: v)
 }
 
 // Reading without consuming: the common case.
@@ -28,7 +28,7 @@ func peek(b: Bag) -> usize {
 // binding afterwards, so it has to hold something again by the time this returns.
 func swap_out(mutate b: Bag) -> usize {
     let n = eat(b)
-    b = Bag { items: Vec.new() }
+    b = Bag(items: Vec.new())
     return n
 }
 

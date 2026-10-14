@@ -64,7 +64,7 @@ Build values with struct literals and `from_*` constructors.
 
 ```rask
 // Struct literal — the default for known fields
-let point = Point { x: 10, y: 20 }
+let point = Point(x: 10, y: 20)
 
 // from_* — construction from a different source type
 let path = Path.from("/usr/bin")
@@ -223,8 +223,8 @@ func load_config(path: string) -> Config or ContextError {
 
 // Library code — typed domain errors (callers can match)
 func load_config(path: string) -> Config or ConfigError {
-    let text = fs.read_text(path) catch e => return ConfigError.Io { path, source: e }
-    return Config.parse(text) catch e => return ConfigError.Parse { path, source: e }
+    let text = fs.read_text(path) catch e => return ConfigError.Io(path, source: e)
+    return Config.parse(text) catch e => return ConfigError.Parse(path, source: e)
 }
 
 // Block form — when you need side effects before leaving
@@ -440,8 +440,8 @@ func describe(r: Link<Room>) -> string {
 
 func main() {
     mut rooms = Rack.new()
-    let cell = rooms.insert(Room { name: "cell", exit: none })
-    let hall = rooms.insert(Room { name: "hall", exit: cell })
+    let cell = rooms.insert(Room(name: "cell", exit: none))
+    let hall = rooms.insert(Room(name: "hall", exit: cell))
     println(describe(hall))
 
     rooms.delete(cell)

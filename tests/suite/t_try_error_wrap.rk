@@ -160,13 +160,13 @@ func variant_of(r: string or ApiError) -> string {
 
 test "the wrapped value is the boundary variant, not the source" {
     assert variant_of(fetch("z")) == "Store:not found: z"
-    assert variant_of(accept(Dto { title: "" })) == "Validation"
+    assert variant_of(accept(Dto(title: ""))) == "Validation"
     assert variant_of(explicit("z")) == "BadRequest"
 }
 
 test "method-call source resolves before the wrap is decided" {
-    assert describe_api(accept(Dto { title: "write it up" })) == "accepted write it up"
-    assert describe_api(accept(Dto { title: "" })) == "err: title must not be empty"
+    assert describe_api(accept(Dto(title: "write it up"))) == "accepted write it up"
+    assert describe_api(accept(Dto(title: ""))) == "err: title must not be empty"
 }
 
 test "each hop wraps once" {
@@ -198,7 +198,7 @@ test "same type in and out stays plain" {
 func main() {
     println(describe_api(fetch("a")))
     println(describe_api(fetch("z")))
-    println(describe_api(accept(Dto { title: "" })))
+    println(describe_api(accept(Dto(title: ""))))
     println(describe_top(serve("z")))
     println(describe_api(explicit("z")))
 }

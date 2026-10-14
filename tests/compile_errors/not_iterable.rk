@@ -68,7 +68,7 @@ func over_local_int(n: i64) -> i64 {
 }
 
 func main() {
-    let b = Bag { rows: Vec.new(), count: 3, label: "x", one: Row { n: 1 } }
+    let b = Bag(rows: Vec.new(), count: 3, label: "x", one: Row(n: 1))
     println("{b.over_int()} {b.over_string()} {b.over_struct()} {b.bad_index()}")
     println("{over_local_int(3)}")
 }

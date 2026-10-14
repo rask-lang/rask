@@ -28,7 +28,7 @@ public struct Package {
 public enum DepSource {
     Registry(string)
     Path(string)
-    Git { url: string, rev: string?, branch: string? }
+    Git(url: string, rev: string?, branch: string?)
 }
 
 public struct Dep {
@@ -78,25 +78,25 @@ public struct Profile {
 public func load_package(text: string) -> Package or LoadError {
     let tree = try load(text, package_schema())
     let pkg = table_at(tree, "package")
-    let built = Package {
-        name: str_at(pkg, "name") ?? "",
-        version: str_at(pkg, "version") ?? "",
-        description: str_at(pkg, "description"),
-        license: str_at(pkg, "license"),
-        repository: str_at(pkg, "repository"),
-        members: strs_at(pkg, "members"),
-        sandbox: bool_at(pkg, "sandbox") ?? false,
-        vendor_dir: str_at(pkg, "vendor-dir"),
-        dependencies: deps_at(tree, "dependencies"),
-        dev_dependencies: deps_at(tree, "dev-dependencies"),
-        build_dependencies: deps_at(tree, "build-dependencies"),
-        features: features_at(tree),
-        exclusive_features: exclusive_at(tree),
-        profiles: profiles_at(tree),
-    }
+    let built = Package(
+        name: str_at(pkg, "name") ?? ""
+        version: str_at(pkg, "version") ?? ""
+        description: str_at(pkg, "description")
+        license: str_at(pkg, "license")
+        repository: str_at(pkg, "repository")
+        members: strs_at(pkg, "members")
+        sandbox: bool_at(pkg, "sandbox") ?? false
+        vendor_dir: str_at(pkg, "vendor-dir")
+        dependencies: deps_at(tree, "dependencies")
+        dev_dependencies: deps_at(tree, "dev-dependencies")
+        build_dependencies: deps_at(tree, "build-dependencies")
+        features: features_at(tree)
+        exclusive_features: exclusive_at(tree)
+        profiles: profiles_at(tree)
+    )
     let errors = rule_errors(built)
     if !errors.is_empty() {
-        return LoadError { what: errors.join("\n") }
+        return LoadError(what: errors.join("\n"))
     }
     return built
 }
@@ -236,10 +236,10 @@ func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
                             list.push(dep_from(d.key, spec))
                         }
                     }
-                    options.push(FeatureOption { name: o.key, dependencies: list })
+                    options.push(FeatureOption(name: o.key, dependencies: list))
                 }
             }
-            out.push(ExclusiveFeature { name: e.key, default: str_at(g, "default") ?? "", options })
+            out.push(ExclusiveFeature(name: e.key, default: str_at(g, "default") ?? "", options))
         }
     }
     return out
@@ -262,31 +262,31 @@ func dep_from(name: string, spec: Vec<Entry>) -> Dep {
     } else if str_at(spec, "path")? as p {
         source = DepSource.Path(p)
     } else if str_at(spec, "git")? as url {
-        source = DepSource.Git { url, rev: str_at(spec, "rev"), branch: str_at(spec, "branch") }
+        source = DepSource.Git(url, rev: str_at(spec, "rev"), branch: str_at(spec, "branch"))
     }
-    return Dep {
-        name,
-        source,
-        target: str_at(spec, "target"),
-        with: strs_at(spec, "with"),
-        allow: strs_at(spec, "allow"),
-        select: pairs_at(spec, "select"),
-        feature: str_at(spec, "feature"),
-    }
+    return Dep(
+        name
+        source
+        target: str_at(spec, "target")
+        with: strs_at(spec, "with")
+        allow: strs_at(spec, "allow")
+        select: pairs_at(spec, "select")
+        feature: str_at(spec, "feature")
+    )
 }
 
 func features_at(tree: Vec<Entry>) -> Vec<Feature> {
     mut out = Vec<Feature>.new()
     for e in table_at(tree, "features") {
         if e.value is Table(f) {
-            out.push(Feature {
-                name: e.key,
-                on_by_default: bool_at(f, "default") ?? false,
-                enables: strs_at(f, "enables"),
-                dependencies: deps_at(f, "dependencies"),
-                dev_dependencies: deps_at(f, "dev-dependencies"),
-                build_dependencies: deps_at(f, "build-dependencies"),
-            })
+            out.push(Feature(
+                name: e.key
+                on_by_default: bool_at(f, "default") ?? false
+                enables: strs_at(f, "enables")
+                dependencies: deps_at(f, "dependencies")
+                dev_dependencies: deps_at(f, "dev-dependencies")
+                build_dependencies: deps_at(f, "build-dependencies")
+            ))
         }
     }
     return out
@@ -296,17 +296,17 @@ func profiles_at(tree: Vec<Entry>) -> Vec<Profile> {
     mut out = Vec<Profile>.new()
     for e in table_at(tree, "profiles") {
         if e.value is Table(p) {
-            out.push(Profile {
-                name: e.key,
-                inherits: str_at(p, "inherits"),
-                opt_level: str_at(p, "opt-level"),
-                debug_info: bool_at(p, "debug-info"),
-                overflow_checks: bool_at(p, "overflow-checks"),
-                lto: str_at(p, "lto"),
-                codegen_units: int_at(p, "codegen-units"),
-                strip: bool_at(p, "strip"),
-                panic: str_at(p, "panic"),
-            })
+            out.push(Profile(
+                name: e.key
+                inherits: str_at(p, "inherits")
+                opt_level: str_at(p, "opt-level")
+                debug_info: bool_at(p, "debug-info")
+                overflow_checks: bool_at(p, "overflow-checks")
+                lto: str_at(p, "lto")
+                codegen_units: int_at(p, "codegen-units")
+                strip: bool_at(p, "strip")
+                panic: str_at(p, "panic")
+            ))
         }
     }
     return out
@@ -317,7 +317,7 @@ extend DepSource {
         return match self {
             DepSource.Registry(req) => "registry {req}",
             DepSource.Path(p) => "path {p}",
-            DepSource.Git { url, rev, branch } => {
+            DepSource.Git(url, rev, branch) => {
                 mut s = "git {url}"
                 if rev? as r {
                     s = "{s} rev {r}"

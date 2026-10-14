@@ -112,8 +112,8 @@ Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is eq
 
 ```rask
 let users = Map.from([
-    ["alice", User.new("Alice")],
-    ["bob", User.new("Bob")],
+    ["alice", User.new("Alice")]
+    ["bob", User.new("Bob")]
 ])
 ```
 

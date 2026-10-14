@@ -8,7 +8,7 @@
 import libpkg
 
 func main() {
-    let c = libpkg.Cat { name: "mimi" }
+    let c = libpkg.Cat(name: "mimi")
     println(libpkg.greet(c))
     println(polish("no"))
     return

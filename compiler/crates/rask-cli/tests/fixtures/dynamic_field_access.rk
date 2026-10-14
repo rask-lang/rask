@@ -13,7 +13,7 @@ struct Point {
 }
 
 func main() {
-    let value = Point { x: 1.5, y: 2.5, hidden: 99 }
+    let value = Point(x: 1.5, y: 2.5, hidden: 99)
     comptime for field in reflect.fields<Point>() {
         comptime if !field.is_skipped {
             println("{field.name} ({field.serial_name}) = {value.(field.name)}")

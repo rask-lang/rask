@@ -35,6 +35,7 @@ use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 pub mod package_scope;
+mod comptime_aggregate;
 mod comptime_eval;
 
 // Re-export key types so callers don't need direct deps on pipeline crates.
@@ -72,41 +73,6 @@ pub struct PackageContext {
     pub root_id: PackageId,
     /// All declarations from the root package (all files combined).
     pub all_decls: Vec<Decl>,
-}
-
-impl PackageContext {
-    /// See [`dependency_annotations`].
-    pub fn dependency_annotations(&self) -> Vec<(String, Decl)> {
-        dependency_annotations(&self.registry, self.root_id)
-    }
-}
-
-/// Public annotation declarations from every package other than `root_id`,
-/// each paired with the name of the package that declares it.
-///
-/// Desugar fills an annotation's declared defaults into the attachment text, and
-/// it runs before name resolution — so a dependency's declarations can't be
-/// looked up later and have to be handed in. Without them an attachment of an
-/// imported annotation lost every defaulted field (type.annotations/AN3).
-///
-/// The package name travels with the declaration because the name alone isn't
-/// enough: two dependencies may both declare `validate`, and filling from
-/// whichever came last is silently the wrong value. Desugar matches these
-/// against the file's own imports.
-pub fn dependency_annotations(
-    registry: &PackageRegistry,
-    root_id: PackageId,
-) -> Vec<(String, Decl)> {
-    registry
-        .packages()
-        .iter()
-        .filter(|p| p.id != root_id)
-        .flat_map(|p| {
-            p.all_decls()
-                .filter(|d| matches!(&d.kind, DeclKind::Annotation(a) if a.is_pub))
-                .map(move |d| (p.name.clone(), d.clone()))
-        })
-        .collect()
 }
 
 /// Result of the frontend pipeline (through ownership + effects).
@@ -444,13 +410,13 @@ pub fn check_loaded(
     // --- Desugar (accumulate errors, continue) ---
     let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::defaulted_signatures(),
+        rask_stdlib::StubRegistry::desugar_declarations(),
     );
     for e in &desugared.errors {
         diags.push(
             Diagnostic::error(e.message.clone())
-                .with_code("E0338")
-                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+                .with_code(e.code)
+                .with_primary(e.span, e.label.clone()),
         );
     }
 
@@ -470,6 +436,7 @@ pub fn check_loaded(
         &parse_result.decls,
         &stdlib_bodies,
         source_dirs,
+        Some((config.cfg.arch.clone(), config.cfg.os.clone())),
     ) {
         Ok(r) => r,
         Err(errors) => {
@@ -520,6 +487,9 @@ pub fn check_loaded(
     // --- CT60: a `comptime func` keeps its promise where it is written ---
     for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
+    }
+    for e in rask_effects::comptime_purity::check_param_defaults(&parse_result.decls, &effects) {
+        diags.push(param_default_to_diagnostic(&e));
     }
 
     let package_names = collect_builtin_imports(&parse_result.decls);
@@ -590,6 +560,9 @@ fn comptime_diagnostics_for(
         // compile path — which is one backend reporting and the other not.
         DeclKind::Fn(f) => has_comptime_let(&f.body, decls),
         DeclKind::Test(t) => has_comptime_let(&t.body, decls),
+        DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_) => comptime_eval::methods_of(d)
+            .iter()
+            .any(|(_, m)| has_comptime_let(&m.body, decls)),
         _ => false,
     });
     // A `value.(comptime { … })` naming a field is neither a const nor a let,
@@ -721,18 +694,32 @@ fn check_package_scoped(
     // the importing package's own `import … as` lines, so this is per package
     // rather than program-wide.
     if !exports.is_empty() {
+        let annotations: std::collections::HashSet<String> = merged
+            .iter()
+            .flat_map(|(_, decls)| package_scope::annotation_names(decls))
+            .collect();
         let root_visible = visible_packages(&pkg_ctx.all_decls, exports);
-        package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible);
+        package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
             package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_visible);
-        package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported);
+        package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations);
         diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
+        diags.extend(
+            package_scope::unimported_annotations(&mut pkg_ctx.all_decls, &root_visible, &annotations)
+                .iter()
+                .map(unimported_annotation_diagnostic),
+        );
         for (_, decls) in merged.iter_mut() {
             let visible = visible_packages(decls, exports);
-            package_scope::qualify_references(decls, &visible);
+            package_scope::qualify_references(decls, &visible, &annotations);
             let (imported, shadowed) = package_scope::unqualified_imports(decls, &visible);
-            package_scope::qualify_imported_names(decls, &imported);
+            package_scope::qualify_imported_names(decls, &imported, &annotations);
             diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
+            diags.extend(
+                package_scope::unimported_annotations(decls, &visible, &annotations)
+                    .iter()
+                    .map(unimported_annotation_diagnostic),
+            );
         }
     }
     for (_, decls) in merged {
@@ -747,21 +734,18 @@ fn check_package_scoped(
     }
 
     // --- Desugar ---
-    // A dependency's public annotations come along: defaults are filled into
-    // attachment text here, before name resolution, so they can't be looked up
-    // later (type.annotations/AN3).
-    let dep_annotations = pkg_ctx.dependency_annotations();
+    // After package scoping, so a dependency's annotations and the
+    // attachments naming them already agree on the name (type.annotations/AN3).
     let desugared =
         rask_desugar::desugar_package(
             &mut pkg_ctx.all_decls,
-            &dep_annotations,
-            rask_stdlib::StubRegistry::defaulted_signatures(),
+            rask_stdlib::StubRegistry::desugar_declarations(),
         );
     for e in &desugared.errors {
         diags.push(
             Diagnostic::error(e.message.clone())
-                .with_code("E0338")
-                .with_primary(e.span, "variant needs @message(\"...\") annotation"),
+                .with_code(e.code)
+                .with_primary(e.span, e.label.clone()),
         );
     }
 
@@ -778,6 +762,7 @@ fn check_package_scoped(
         &pkg_ctx.registry,
         pkg_ctx.root_id,
         &stdlib_bodies,
+        Some((config.cfg.arch.clone(), config.cfg.os.clone())),
     ) {
         Ok(r) => r,
         Err(errors) => {
@@ -885,6 +870,9 @@ fn check_package_scoped(
     // --- CT60: a `comptime func` keeps its promise where it is written ---
     for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
+    }
+    for e in rask_effects::comptime_purity::check_param_defaults(&pkg_ctx.all_decls, &effects) {
+        diags.push(param_default_to_diagnostic(&e));
     }
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
@@ -1243,6 +1231,20 @@ fn shadowed_import_diagnostic(s: &package_scope::ShadowedImport) -> Diagnostic {
     ))
 }
 
+fn unimported_annotation_diagnostic(u: &package_scope::UnimportedAnnotation) -> Diagnostic {
+    Diagnostic::error(format!(
+        "`@{}` is not in scope — `{}` declares it, but `import {}` brings in the package, not its names",
+        u.name, u.binding, u.binding
+    ))
+    .with_code("E0210")
+    .with_primary(u.at, format!("`{}` here means `{}.{}`", u.name, u.binding, u.name))
+    .with_fix(format!("@{}.{}", u.binding, u.name))
+    .with_help(format!(
+        "or import the annotation by name: `import {}.{}` (structure.modules/IM1, type.annotations/AN5)",
+        u.binding, u.name
+    ))
+}
+
 /// What each package binding in these declarations makes available.
 ///
 /// `import libpkg` binds `libpkg`; `import libpkg as l` binds `l`. A package's
@@ -1326,11 +1328,51 @@ fn effect_warning_to_diagnostic(w: &EffectWarning) -> Diagnostic {
 }
 
 /// CT60: the promise `comptime func` makes, checked at the definition.
+/// A default argument that isn't a compile-time constant (#1537).
+fn param_default_to_diagnostic(e: &rask_effects::comptime_purity::ParamDefaultError) -> Diagnostic {
+    Diagnostic::error(format!(
+        "the default for parameter `{}` of `{}` reaches {} at compile time — `{}` does",
+        e.param, e.func, e.effect, e.via
+    ))
+    .with_code("E0875")
+    .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+    .with_fix(format!(
+        "write the value itself, or drop the default and pass `{}` at each call",
+        e.param
+    ))
+    .with_why(
+        "a default argument is a compile-time constant, the same rule as a \
+         field's default, so it can't do anything that needs the program \
+         running [type.structs/FD1, ctrl.comptime/CT7]"
+            .to_string(),
+    )
+}
+
 fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePurityError) -> Diagnostic {
     let via = match &e.via {
         Some(call) => format!(" — `{}` does", call),
         None => String::new(),
     };
+    // A field's default is a `comptime func` desugar wrote; the reader wrote
+    // the default, so say it in those words.
+    let method = e.func.rsplit('.').next().unwrap_or(&e.func);
+    if let Some(field) = rask_ast::decl::field_attrs::field_of_default_method(method) {
+        return Diagnostic::error(format!(
+            "the default for field `{field}` reaches {} at compile time{via}",
+            e.effect
+        ))
+        .with_code("E0875")
+        .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
+        .with_fix(format!(
+            "write the value itself, or drop the default and set `{field}` where the struct is built"
+        ))
+        .with_why(
+            "a field's default is a compile-time constant, worked out once while \
+             compiling, so it can't do anything that needs the program running \
+             [type.structs/FD1, std.encoding/E21, ctrl.comptime/CT7]"
+                .to_string(),
+        );
+    }
     let diag = Diagnostic::error(format!(
         "`comptime func {}` reaches {} at compile time{}",
         e.func, e.effect, via

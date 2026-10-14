@@ -91,9 +91,9 @@ extend World {
 // The same two loops over locals — the shapes that always worked.
 func local_rack_active() -> i64 {
     mut r: Rack<Entity> = Rack.new()
-    r.insert(Entity { hp: 10, active: true })
-    r.insert(Entity { hp: 20, active: false })
-    r.insert(Entity { hp: 30, active: true })
+    r.insert(Entity(hp: 10, active: true))
+    r.insert(Entity(hp: 20, active: false))
+    r.insert(Entity(hp: 30, active: true))
     mut n = 0
     for e in r.nodes() {
         if e.active {
@@ -105,8 +105,8 @@ func local_rack_active() -> i64 {
 
 func local_rack_total_hp() -> i64 {
     mut r: Rack<Entity> = Rack.new()
-    r.insert(Entity { hp: 10, active: true })
-    r.insert(Entity { hp: 20, active: false })
+    r.insert(Entity(hp: 10, active: true))
+    r.insert(Entity(hp: 20, active: false))
     mut total = 0
     for e in r.nodes() {
         total = total + e.hp
@@ -116,19 +116,19 @@ func local_rack_total_hp() -> i64 {
 
 func build() -> World {
     mut rows: Vec<Row> = Vec.new()
-    rows.push(Row { key: "a", n: 1 })
-    rows.push(Row { key: "b", n: 2 })
+    rows.push(Row(key: "a", n: 1))
+    rows.push(Row(key: "b", n: 2))
 
     mut index: Map<string, i64> = Map.new()
     index.insert("a", 10)
     index.insert("b", 20)
 
     mut entities: Rack<Entity> = Rack.new()
-    entities.insert(Entity { hp: 5, active: true })
-    entities.insert(Entity { hp: 7, active: false })
-    entities.insert(Entity { hp: 9, active: true })
+    entities.insert(Entity(hp: 5, active: true))
+    entities.insert(Entity(hp: 7, active: false))
+    entities.insert(Entity(hp: 9, active: true))
 
-    return World { entities: entities, rows: rows, index: index }
+    return World(entities: entities, rows: rows, index: index)
 }
 
 test "type.gradual — a `for` over a Vec field knows its element type" {

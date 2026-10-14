@@ -84,12 +84,12 @@ extend Ledger {
 }
 
 test "type.sequence — a sequence over a struct's container field" {
-    let h = Holder { items: [1, 2, 3] }
+    let h = Holder(items: [1, 2, 3])
     assert h.walk().count() == 3
 }
 
 test "type.sequence — and the values, so nothing was freed early" {
-    let h = Holder { items: [1, 2, 3] }
+    let h = Holder(items: [1, 2, 3])
     let out: Vec<i64> = h.walk().to_vec()
     assert out.len() == 3
     assert out[0] == 1
@@ -100,16 +100,16 @@ test "type.sequence — and the values, so nothing was freed early" {
 }
 
 test "type.sequence — an adapter on top of it" {
-    let h = Holder { items: [1, 2, 3] }
+    let h = Holder(items: [1, 2, 3])
     let out: Vec<i64> = h.doubled().to_vec()
     assert out[0] == 2
     assert out[2] == 6
 }
 
 test "type.sequence — a generic holder" {
-    let a = Bag<i64> { items: [1, 2] }
+    let a = Bag<i64>(items: [1, 2])
     assert a.walk().count() == 2
-    let b = Bag<string> { items: ["x", "y", "z"] }
+    let b = Bag<string>(items: ["x", "y", "z"])
     assert b.walk().count() == 3
 }
 
@@ -117,11 +117,11 @@ test "type.sequence — a generic holder" {
 // twice would leave the header pointing at freed bytes and the comparison
 // would fail rather than the count being wrong.
 test "type.sequence — a struct with a string and two vectors" {
-    let l = Ledger {
-        name: "the ledger's name, long enough to allocate",
-        amounts: [10, 20, 30],
-        tags: ["one tag long enough to allocate", "and a second one, also long"],
-    }
+    let l = Ledger(
+        name: "the ledger's name, long enough to allocate"
+        amounts: [10, 20, 30]
+        tags: ["one tag long enough to allocate", "and a second one, also long"]
+    )
     assert l.walk().count() == 3
     assert l.name == "the ledger's name, long enough to allocate"
     assert l.tags[1] == "and a second one, also long"
@@ -131,7 +131,7 @@ test "type.sequence — a struct with a string and two vectors" {
 // Two chains over one struct, so the one-free-per-value rule is exercised on
 // an aggregate as well as on a bare container.
 test "type.sequence — two chains over one struct" {
-    let h = Holder { items: [1, 2, 3] }
+    let h = Holder(items: [1, 2, 3])
     let a: Vec<i64> = h.walk().to_vec()
     let b: Vec<i64> = h.doubled().to_vec()
     assert a.len() == 3
@@ -145,7 +145,7 @@ test "type.sequence — two chains over one struct" {
 test "type.sequence — a struct per turn" {
     mut total: usize = 0
     for i in 1..5 {
-        let h = Holder { items: [i, i * 2] }
+        let h = Holder(items: [i, i * 2])
         total = total + h.walk().count() + h.doubled().count()
     }
     assert total == 16

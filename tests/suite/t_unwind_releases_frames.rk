@@ -161,13 +161,13 @@ func panics(f: func() -> i64) -> bool {
 }
 
 test "a skip releases what a struct holds" {
-    let h = Held { items: [1, 2, 3] }
+    let h = Held(items: [1, 2, 3])
     let k = later(1)
     assert h.items.len() == 3
 }
 
 func half_built(n: i64) -> i64 {
-    let r = Rec { name: label(n), items: [n, n], n: boom(n) }
+    let r = Rec(name: label(n), items: [n, n], n: boom(n))
     return r.n + r.items.len().to<i64>()!
 }
 
@@ -178,7 +178,7 @@ test "a panic while a later field is evaluated" {
 func rebuild(turns: i64, k: i64) -> i64 {
     mut total = 0
     for i in 0..turns {
-        let r = Rec { name: label(i), items: [i, i, i], n: if i == k { boom(3) } else { i } }
+        let r = Rec(name: label(i), items: [i, i, i], n: if i == k { boom(3) } else { i })
         total += r.n + r.name.len().to<i64>()! + r.items.len().to<i64>()!
     }
     return total
@@ -223,7 +223,7 @@ extend ParseFail {
 
 func parse(n: i64) -> Vec<i64> or ParseFail {
     if n > 100 {
-        return ParseFail { text: label(n) }
+        return ParseFail(text: label(n))
     }
     let v: Vec<i64> = [n]
     return v
@@ -265,7 +265,7 @@ func takes_rec(take r: Rec, depth: i64) -> i64 {
 
 test "a struct handed to a callee that panics is released once" {
     assert panics(|| {
-        let r = Rec { name: label(1), items: [1, 2], n: 1 }
+        let r = Rec(name: label(1), items: [1, 2], n: 1)
         return takes_rec(r, 0)
     })
 }

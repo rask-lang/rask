@@ -349,7 +349,7 @@ fn env_drop_glue(
         // shared the closure with a keeper, when the glue is what runs last.
         let frame_drops = crate::closures::closures_the_frame_frees_last(func);
         for block in &func.blocks {
-            for stmt in &block.statements {
+            for (si, stmt) in block.statements.iter().enumerate() {
                 let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true, .. } = &stmt.kind
                 else {
                     continue;
@@ -423,6 +423,31 @@ fn env_drop_glue(
                             offset: c.offset,
                             holds: Holds::Handle("rask_closure_free"),
                         }),
+                );
+                // A borrowed closure the frame retained for this environment
+                // just before building it (`retain_borrowed_closures_handed_on`).
+                // That reference is the environment's, so the environment gives
+                // it back — the same contract as a string below.
+                let retained_here: HashSet<LocalId> = block.statements[..si]
+                    .iter()
+                    .rev()
+                    .map_while(|st| match st.kind {
+                        MirStmtKind::ClosureRetain { closure, made: None } => Some(closure),
+                        _ => None,
+                    })
+                    .collect();
+                owned.extend(
+                    captures
+                        .iter()
+                        .filter(|c| !c.by_ref)
+                        .filter(|c| !gone(c))
+                        .filter(|c| retained_here.contains(&c.local_id))
+                        .filter(|c| !owned.iter().any(|o| o.offset == c.offset))
+                        .map(|c| EnvSlot {
+                            offset: c.offset,
+                            holds: Holds::Handle("rask_closure_free"),
+                        })
+                        .collect::<Vec<_>>(),
                 );
                 // A string capture needs none of the reasoning above. The
                 // environment holds a *reference* — `rc_insert` retains it at

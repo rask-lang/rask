@@ -21,7 +21,7 @@ struct Conn {
 
 extend Conn {
     func open(id: i32) -> Conn {
-        return Conn { id }
+        return Conn(id)
     }
 
     func id_of(self) -> i32 {
@@ -40,7 +40,7 @@ struct Session {
 
 extend Session {
     func start(label: string, id: i32) -> Session {
-        return Session { label, conn: Conn.open(id) }
+        return Session(label, conn: Conn.open(id))
     }
 
     // Consuming the struct consumes the linear field with it.

@@ -27,7 +27,7 @@ extend Foo {
     }
 
     public func make(start: i64 = 7) -> Foo {
-        return Foo { x: start }
+        return Foo(x: start)
     }
 }
 
@@ -36,13 +36,13 @@ func free_bump(x: i64, by: i64 = 1) -> i64 {
 }
 
 test "default filled on a method called through a variable" {
-    let f = Foo { x: 10 }
+    let f = Foo(x: 10)
     assert f.bump() == 11
     assert f.bump(5) == 15
 }
 
 test "default filled on a method called on a literal receiver" {
-    assert Foo { x: 10 }.bump() == 11
+    assert Foo(x: 10).bump() == 11
 }
 
 test "free functions keep working" {
@@ -51,12 +51,12 @@ test "free functions keep working" {
 }
 
 test "a named argument names the parameter it fills" {
-    let f = Foo { x: 10 }
+    let f = Foo(x: 10)
     assert f.bump(by: 5) == 15
 }
 
 test "a named argument can skip an earlier optional" {
-    let f = Foo { x: 1 }
+    let f = Foo(x: 1)
     assert f.tag() == "[1]"
     assert f.tag("<") == "<1]"
     assert f.tag(suffix: ">") == "[1>"

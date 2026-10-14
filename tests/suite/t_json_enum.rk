@@ -32,19 +32,19 @@ struct Task {
 }
 
 test "std.encoding — a unit variant is its own name" {
-    assert json.encode(Task { name: "a", status: Status.Pending }) == "{{\"name\":\"a\",\"status\":\"Pending\"}}"
-    assert json.encode(Task { name: "b", status: Status.Active }) == "{{\"name\":\"b\",\"status\":\"Active\"}}"
-    assert json.encode(Task { name: "c", status: Status.Done }) == "{{\"name\":\"c\",\"status\":\"Done\"}}"
+    assert json.encode(Task(name: "a", status: Status.Pending)) == "{{\"name\":\"a\",\"status\":\"Pending\"}}"
+    assert json.encode(Task(name: "b", status: Status.Active)) == "{{\"name\":\"b\",\"status\":\"Active\"}}"
+    assert json.encode(Task(name: "c", status: Status.Done)) == "{{\"name\":\"c\",\"status\":\"Done\"}}"
 }
 
 test "std.encoding — pretty printing an enum field" {
-    assert json.encode_pretty(Task { name: "a", status: Status.Done }) == "{{\n  \"name\": \"a\",\n  \"status\": \"Done\"\n}}"
+    assert json.encode_pretty(Task(name: "a", status: Status.Done)) == "{{\n  \"name\": \"a\",\n  \"status\": \"Done\"\n}}"
 }
 
 // An enum that also has payload variants: the unit ones still work, because
 // the check is on the value in hand rather than on the type.
 enum Shape {
-    Circle { radius: f64 }
+    Circle(radius: f64)
     Point
 }
 
@@ -53,7 +53,7 @@ struct Holder {
 }
 
 test "std.encoding — a unit variant works even with payload siblings" {
-    assert json.encode(Holder { s: Shape.Point }) == "{{\"s\":\"Point\"}}"
+    assert json.encode(Holder(s: Shape.Point)) == "{{\"s\":\"Point\"}}"
 }
 
 // A bare enum value, not nested in a struct field. Native had no enum case in
@@ -63,12 +63,12 @@ test "std.encoding — a unit variant works even with payload siblings" {
 // this fix; same family as the struct-field case #854 itself is about).
 test "std.encoding — a bare enum value encodes the same as a field" {
     assert json.encode(Shape.Point) == "\"Point\""
-    assert json.encode(Shape.Circle { radius: 4.0 }) == "{{\"Circle\":{{\"radius\":4}}}}"
+    assert json.encode(Shape.Circle(radius: 4.0)) == "{{\"Circle\":{{\"radius\":4}}}}"
 }
 
 test "std.encoding/E22 — a struct-shaped payload nests under the variant name" {
-    assert json.encode(Holder { s: Shape.Circle { radius: 1.5 } }) == "{{\"s\":{{\"Circle\":{{\"radius\":1.5}}}}}}"
-    assert json.encode(Shape.Circle { radius: 2.5 }) == "{{\"Circle\":{{\"radius\":2.5}}}}"
+    assert json.encode(Holder(s: Shape.Circle(radius: 1.5))) == "{{\"s\":{{\"Circle\":{{\"radius\":1.5}}}}}}"
+    assert json.encode(Shape.Circle(radius: 2.5)) == "{{\"Circle\":{{\"radius\":2.5}}}}"
 }
 
 enum Number {
@@ -82,7 +82,7 @@ test "std.encoding/E23 — a single unnamed payload goes in directly" {
 }
 
 // A tuple-style variant whose one field is written *with* a name
-// (`Wrapped(value: i64)`, not `Wrapped(i64)`) is struct-shaped (E22), not
+// (`Wrapped(value: i64)`, not `Wrapped(value: i64)`) is struct-shaped (E22), not
 // E23's bare value — the interpreter used to only check the field count and
 // missed this, giving `{"Wrapped":5}` where native correctly gave
 // `{"Wrapped":{"value":5}}` (#951 review).
@@ -91,23 +91,23 @@ enum Message {
 }
 
 test "std.encoding/E22 — a named single field in a tuple variant still nests" {
-    assert json.encode(Message.Wrapped(5)) == "{{\"Wrapped\":{{\"value\":5}}}}"
+    assert json.encode(Message.Wrapped(value: 5)) == "{{\"Wrapped\":{{\"value\":5}}}}"
 }
 
 @tag("type")
 enum Event {
-    Click { x: i32, y: i32 }
+    Click(x: i32, y: i32)
 
     @rename("key_press")
-    KeyPress { code: u32 }
+    KeyPress(code: u32)
 }
 
 test "std.encoding/E24 — @tag flattens the tag into the same object" {
-    assert json.encode(Event.Click { x: 10, y: 20 }) == "{{\"type\":\"Click\",\"x\":10,\"y\":20}}"
+    assert json.encode(Event.Click(x: 10, y: 20)) == "{{\"type\":\"Click\",\"x\":10,\"y\":20}}"
 }
 
 test "std.encoding/E25 — @rename overrides a variant's serialized name" {
-    assert json.encode(Event.KeyPress { code: 65 }) == "{{\"type\":\"key_press\",\"code\":65}}"
+    assert json.encode(Event.KeyPress(code: 65)) == "{{\"type\":\"key_press\",\"code\":65}}"
 }
 
 @tag("kind")

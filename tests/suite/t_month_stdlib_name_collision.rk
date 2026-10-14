@@ -35,7 +35,7 @@ struct Timer {
 
 extend Timer {
     func start(label: string, budget: Duration) -> Timer {
-        return Timer { started: Instant.now(), budget: budget, label: label }
+        return Timer(started: Instant.now(), budget: budget, label: label)
     }
 
     func budget_seconds(self) -> u64 {
@@ -58,7 +58,7 @@ struct Output {
 }
 
 test "struct.modules — a struct named like a stdlib type keeps its own fields" {
-    let t = Timer { started: Instant.now(), budget: Duration.seconds(5), label: "work" }
+    let t = Timer(started: Instant.now(), budget: Duration.seconds(5), label: "work")
     assert t.label == "work"
     assert t.budget.as_seconds() == 5
 }
@@ -70,22 +70,22 @@ test "struct.modules — and its own methods" {
 }
 
 test "struct.modules — a shadowed name whose stdlib type has fields of its own" {
-    let s = Span { lo: 3, hi: 9 }
+    let s = Span(lo: 3, hi: 9)
     assert s.lo == 3
     assert s.hi == 9
     assert s.hi - s.lo == 6
 }
 
 test "struct.modules — three fields, none of them the stdlib type's" {
-    let o = Output { code: 2, text: "nope" }
+    let o = Output(code: 2, text: "nope")
     assert o.code == 2
     assert o.text == "nope"
 }
 
 test "struct.modules — the shadowing type survives a round trip through a Vec" {
     mut spans = Vec.new()
-    spans.push(Span { lo: 1, hi: 2 })
-    spans.push(Span { lo: 10, hi: 20 })
+    spans.push(Span(lo: 1, hi: 2))
+    spans.push(Span(lo: 10, hi: 20))
     assert spans.len() == 2
     assert spans[1].hi == 20
 }

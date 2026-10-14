@@ -132,7 +132,7 @@ test "a Map's pairs destructure" {
 }
 
 test "a tuple holding a struct" {
-    let t = (Point { x: 1, y: 2 }, "origin-ish")
+    let t = (Point(x: 1, y: 2), "origin-ish")
     assert t.0.x == 1
     assert t.0.y == 2
     assert t.1 == "origin-ish"

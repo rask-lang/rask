@@ -19,13 +19,13 @@ interface Mul<Rhs = Self> {
 
 Point implements Mul {
     func mul(self, rhs: Point) -> Point {
-        return Point { x: self.x * rhs.x, y: self.y * rhs.y }
+        return Point(x: self.x * rhs.x, y: self.y * rhs.y)
     }
 }
 
 Meters implements Mul<f64> {
     func mul(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -37,7 +37,7 @@ SquareMeters implements Mul<SquareMeters> {
     type Out = SquareMeters
 
     func mul(self, other: SquareMeters) -> SquareMeters {
-        return SquareMeters { v: self.v * other.v }
+        return SquareMeters(v: self.v * other.v)
     }
 }
 
@@ -48,7 +48,7 @@ interface Scale<Rhs> {
 
 Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
-        return Meters { v: self.v * k }
+        return Meters(v: self.v * k)
     }
 }
 
@@ -59,15 +59,15 @@ func doubled<T: Mul<f64>>(x: T) -> T.Out {
 }
 
 func main() {
-    let m = Meters { v: 3.0 }
+    let m = Meters(v: 3.0)
     println(m.mul(2.0).v)
     println(m.scale(4.0).v)
     println(doubled(m).v)
 
-    let p = Point { x: 2.0, y: 3.0 }.mul(Point { x: 4.0, y: 5.0 })
+    let p = Point(x: 2.0, y: 3.0).mul(Point(x: 4.0, y: 5.0))
     println(p.x)
     println(p.y)
 
-    let a = SquareMeters { v: 2.0 }.mul(SquareMeters { v: 5.0 })
+    let a = SquareMeters(v: 2.0).mul(SquareMeters(v: 5.0))
     println(a.v)
 }

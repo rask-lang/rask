@@ -36,9 +36,9 @@ HttpRegistry implements Registry {
 
 func make(k: i64) -> any Registry {
     if k == 0 {
-        return HttpRegistry { port_no: 80, secure: true }
+        return HttpRegistry(port_no: 80, secure: true)
     }
-    return LocalRegistry { depth: k }
+    return LocalRegistry(depth: k)
 }
 
 func ask(r: any Registry) -> i64 {

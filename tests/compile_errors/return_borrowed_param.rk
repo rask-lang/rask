@@ -17,14 +17,14 @@ func back(b: Bag) -> Bag {
 
 // ERROR: E0872 — the value a branch produces is the value returned
 func pick(c: bool, b: Bag) -> Bag {
-    return if c { b } else { Bag { items: [] } }
+    return if c { b } else { Bag(items: []) }
 }
 
 func pick_arm(n: i64, b: Bag) -> Bag {
     return match n {
         // ERROR: E0872
         0 => b,
-        _ => Bag { items: [] },
+        _ => Bag(items: []),
     }
 }
 
@@ -40,7 +40,7 @@ func unwrap_it(o: Bag?) -> Bag {
         // ERROR: E0872
         return inner
     }
-    return Bag { items: [] }
+    return Bag(items: [])
 }
 
 // Fine: given to us.
@@ -59,7 +59,7 @@ func same(n: i64) -> i64 {
 }
 
 func main() {
-    mut b = Bag { items: ["x"] }
+    mut b = Bag(items: ["x"])
     println("{back(b).items.len()} {pick(true, b).items.len()} {pick_arm(0, b).items.len()}")
     println("{back_mutated(mutate b).items.len()} {copy_of(b).items.len()} {same(1)}")
     println("{give_back(b).items.len()}")

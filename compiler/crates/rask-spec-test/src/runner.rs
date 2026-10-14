@@ -220,7 +220,7 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
     }
     let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::defaulted_signatures(),
+        rask_stdlib::StubRegistry::desugar_declarations(),
     );
 
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
@@ -440,7 +440,7 @@ fn run_interpreter(code: &str, expected: &str) -> (bool, String) {
     // Desugar
     rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::defaulted_signatures(),
+        rask_stdlib::StubRegistry::desugar_declarations(),
     );
 
     // Run with captured output
@@ -559,7 +559,7 @@ fn run_rk_tests_interp(source: &str) -> (usize, usize, Vec<String>) {
     // Desugar
     rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::defaulted_signatures(),
+        rask_stdlib::StubRegistry::desugar_declarations(),
     );
 
     let mut interp = rask_interp::Interpreter::new();

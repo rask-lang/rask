@@ -24,7 +24,7 @@ extend Conn {
 }
 
 func each(take f: func(take Conn) -> i32) -> i32 {
-    return f(Conn { id: 10 }) + f(Conn { id: 20 })
+    return f(Conn(id: 10)) + f(Conn(id: 20))
 }
 
 func apply(take c: Conn, f: func(take Conn) -> i32) -> i32 {
@@ -33,15 +33,15 @@ func apply(take c: Conn, f: func(take Conn) -> i32) -> i32 {
 
 test "one closure, a handle per call" {
     let close_it = |take c: Conn| { return c.close() }
-    let a = close_it(Conn { id: 1 })
-    let b = close_it(Conn { id: 2 })
+    let a = close_it(Conn(id: 1))
+    let b = close_it(Conn(id: 2))
     assert a + b == 3
 }
 
 test "through a func(take T) slot" {
     let offset = 100
     assert each(|take c: Conn| { return c.close() + offset }) == 230
-    let c = Conn { id: 7 }
+    let c = Conn(id: 7)
     assert apply(c, |take c: Conn| { return c.close() }) == 7
 }
 
