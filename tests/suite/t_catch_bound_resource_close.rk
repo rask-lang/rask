@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A resource bound through `catch` has its `ensure` cancelled by an explicit
+// close, the same as one bound through `try`.
+//
+// Natively the binding's type prefix was read off the initializer with `try`
+// unwrapped but not `catch`, so `f.close()` wasn't recognised as consuming `f`.
+// The `ensure f.close()` then ran too and glibc aborted on the double fclose.
+import fs
+
+func write_through_catch(path: string) -> string {
+    let f = fs.create_file(path) catch e => {
+        return "{e}"
+    }
+    ensure f.close()
+    let _ = f.write_text("hello\n")
+    let _ = f.close()
+    return "created"
+}
+
+test "mem.linear — a catch-bound file closed explicitly is closed once" {
+    let p = "/tmp/rask_t_catch_bound_resource_close.txt"
+    assert write_through_catch(p) == "created"
+    assert write_through_catch(p) == "created"
+    assert fs.read_text(p)! == "hello\n"
+    let _ = fs.remove_file(p)
+}

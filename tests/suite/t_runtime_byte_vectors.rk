@@ -35,6 +35,7 @@ test "the last byte of a file read by the runtime" {
         assert false
         return
     }
+    ensure f.close()
     let bytes = f.read_bytes() catch e => {
         assert false
         return

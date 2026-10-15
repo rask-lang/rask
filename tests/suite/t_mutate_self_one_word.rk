@@ -55,6 +55,7 @@ test "mutate self passes itself on to another mutate self" {
 test "a Rask-bodied mutate self method on File runs" {
     let p = "/tmp/rask_t_mutate_self_one_word.txt"
     mut f = try fs.create_file(p)
+    ensure f.close()
     try f.write_twice("ab")
     try f.close()
     assert (try fs.read_text(p)) == "abab"

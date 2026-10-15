@@ -657,15 +657,6 @@ int64_t rask_io_read_line(RaskStr *out, RaskStr *err_out) {
 // ─── FS module ────────────────────────────────────────────────────
 
 
-// Did `fopen` fail? The handle *is* the value a `File` carries, and a failed
-// open is NULL — so `fs.open` can check it and build the IoError in Rask,
-// where both backends read the same source. Before this the NULL sailed
-// through as a successful `File`, and the failure only surfaced on the first
-// read as "file handle is closed" (#858).
-int64_t rask_file_is_null(int64_t file) {
-    return file == 0 ? 1 : 0;
-}
-
 // std.io/K1, K3. `whence` is 0 = Start, 1 = End, 2 = Current, which is the
 // order `SeekFrom`'s variants are declared in — the enum is the source and this
 // follows it rather than SEEK_SET's numbering.
@@ -686,16 +677,20 @@ int64_t rask_file_position(int64_t file) {
     return (int64_t)ftell(f);
 }
 
+// The handle, or -1 with errno set when `fopen` failed — the `File?` that
+// `fs.open` turns into an IoError in Rask, where both backends read the same
+// source. A failed open used to come back as a NULL `File`, which sailed
+// through as a success until the first read (#858).
 int64_t rask_fs_open(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     FILE *f = rask_libc_fopen(p, "r");
-    return (int64_t)(uintptr_t)f;
+    return f ? (int64_t)(uintptr_t)f : -1;
 }
 
 int64_t rask_fs_create(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
     FILE *f = rask_libc_fopen(p, "w");
-    return (int64_t)(uintptr_t)f;
+    return f ? (int64_t)(uintptr_t)f : -1;
 }
 
 #include <sys/stat.h>

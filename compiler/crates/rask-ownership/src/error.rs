@@ -365,6 +365,9 @@ pub enum OwnershipErrorKind {
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {
         name: String,
+        /// The calls that consume it, as the fix should spell them
+        /// (`file.close()`, `drop(frame)`). Empty when nothing does.
+        consume: Vec<String>,
     },
 
     /// H1: a resource-typed value produced by an expression statement is
@@ -391,6 +394,7 @@ pub enum OwnershipErrorKind {
         name: String,
         /// Where the resource was acquired.
         acquired_at: Span,
+        consume: Vec<String>,
     },
 
     /// mem.linear/L7: a statement stands between acquiring a linear value and
@@ -402,6 +406,7 @@ pub enum OwnershipErrorKind {
         name: String,
         /// Where the resource was acquired.
         acquired_at: Span,
+        consume: Vec<String>,
     },
 
     /// mem.linear/L4: an `ensure` in the commit window whose body doesn't
@@ -411,6 +416,7 @@ pub enum OwnershipErrorKind {
         name: String,
         /// Where the resource was acquired.
         acquired_at: Span,
+        consume: Vec<String>,
     },
 
     /// A resource the closure body owns — a `take` parameter or a local it

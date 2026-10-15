@@ -848,13 +848,8 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
 //   checksum = "sha256:a1b2..."
 
 func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
-    // Write to temp file, rename on success. ensure cleans up on error.
+    // Write to a temp file, then rename, so a reader never sees half a lockfile.
     let tmp_path = "{path}.tmp"
-
-    mut tmp_file = fs.create_file(tmp_path) catch e => {
-        return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
-    }
-    ensure fs.remove_file(tmp_path)
 
     mut out = StringBuilder.new()
     out.push("lockfile-version = 1\n\n")
@@ -883,12 +878,10 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
         out.push("\n")
     }
 
-    tmp_file.write(out.build()) catch e => {
-        return FetchError.Io(IoErrorMsg.Msg("cannot write lock file: {e.message()}"))
+    fs.write_text(tmp_path, out.build()) catch e => {
+        return FetchError.Io(IoErrorMsg.Msg("cannot write temp lock file: {e.message()}"))
     }
-    tmp_file.close()
 
-    // Atomic rename: success path — cancels ensure (EN6)
     fs.rename(tmp_path, path) catch e => {
         return FetchError.Io(IoErrorMsg.Msg("cannot rename lock file: {e.message()}"))
     }

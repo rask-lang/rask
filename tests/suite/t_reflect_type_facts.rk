@@ -9,6 +9,7 @@
 // backends now fold the same constants from one classifier
 // (rask-types/src/reflect.rs), which is what this gates.
 import std.reflect
+import fs
 import memory.Link
 
 struct Point { public x: f64, public y: f64 }
@@ -129,6 +130,8 @@ type NodeId = u64
 
 test "mem.resource-types — is_resource reads the annotation" {
     assert reflect.is_resource<Conn>()
+    // The stdlib's `File` carries the annotation like any other resource.
+    assert reflect.is_resource<File>()
     assert !reflect.is_resource<Point>()
     assert !reflect.is_resource<i64>()
 }

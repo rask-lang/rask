@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every accepted HTTP request gets exactly one response (std.http/S2).
+//
+// `Responder` is a `@resource` whose only consuming method is `respond`, so the
+// two classic server bugs are compile errors: a path that never answers (the
+// client hangs) and a path that answers twice.
+//
+// The messages are part of what's tested. A forgotten response said "call a
+// consuming method (e.g. `.close()`)", which a Responder doesn't have, and a
+// second `respond` blamed the 16-byte copy threshold and suggested `.clone()`.
+
+import http
+import http.Request
+import http.Response
+
+func handle(req: Request) -> Response {
+    return Response.ok("hello")
+}
+
+func forgets_the_other_paths() -> void or Error {
+    let server = try http.listen("127.0.0.1:8080")
+    ensure server.close()
+    let (req, responder) = try server.accept()
+    // ERROR: `responder` has no cleanup committed yet [E0882]
+    // ERROR: fix: add `ensure responder.respond(…)` on the line after it's acquired
+    if req.path() == "/health" {
+        try responder.respond(Response.ok("ok"))
+    }
+}
+
+func responds_twice() -> void or Error {
+    let server = try http.listen("127.0.0.1:8080")
+    ensure server.close()
+    let (req, responder) = try server.accept()
+    try responder.respond(handle(req))
+    // ERROR: use of moved value: `responder` [E0800]
+    // ERROR: note: `Responder` is a resource: it's consumed exactly once, and it can't be copied or cloned
+    try responder.respond(Response.ok("again"))
+}
+
+// The fix: a fallback response committed on the line after the accept. A
+// `respond` on the normal path consumes the Responder and cancels it.
+func answers_every_request() -> void or Error {
+    let server = try http.listen("127.0.0.1:8080")
+    ensure server.close()
+    let (req, responder) = try server.accept()
+    ensure responder.respond(Response.internal_error("unhandled"))
+    if req.path() == "/health" {
+        try responder.respond(Response.ok("ok"))
+        return
+    }
+    try responder.respond(handle(req))
+}
+
+func main() -> void or Error {
+    try answers_every_request()
+}

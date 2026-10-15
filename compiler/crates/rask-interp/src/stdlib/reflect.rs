@@ -24,11 +24,8 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
     }
 
     fn is_resource(&self, name: &str) -> bool {
-        // `File` is the compiler's own resource — it has no declaration to carry
-        // the annotation, and the runtime tracks it as one.
-        name == "File"
-            || self.0.struct_decls.get(name)
-                .is_some_and(|d| d.attrs.iter().any(|a| a.is("resource")))
+        self.0.struct_decls.get(name)
+            .is_some_and(|d| d.attrs.iter().any(|a| a.is("resource")))
     }
 
     fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>> {

@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A leaked resource whose type can be consumed more than one way.
+//
+// Nothing in a declaration says which consuming method is the cleanup, and
+// naming the wrong one in an `ensure` (`commit`) would commit half-done work
+// on every error exit. So the fix lists every public one, in declaration order:
+// `ensure tx.commit()` or `ensure tx.rollback()`. The private `finish` helper
+// is left out — the fix never names a method the caller isn't meant to call.
+
+@resource
+struct Tx {
+    id: i64
+}
+
+extend Tx {
+    public func commit(take self) {
+        self.finish(1)
+    }
+
+    public func rollback(take self) {
+        self.finish(0)
+    }
+
+    func finish(take self, how: i64) {
+        println("tx {self.id} ended with {how}")
+    }
+}
+
+// ERROR: `tx` has no cleanup committed yet [E0882]
+// ERROR: fix: add `ensure tx.commit()` or `ensure tx.rollback()` on the line after it's acquired
+func begins_and_forgets(n: i64) {
+    let tx = Tx(id: n)
+    println("began {n}")
+}
+
+func main() {
+    let tx = Tx(id: 1)
+    ensure tx.rollback()
+    println("working")
+}

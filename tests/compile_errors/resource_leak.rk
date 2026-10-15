@@ -1,107 +1,57 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: Resource type not consumed
-// Rejects: resource 'file' must be consumed before scope ends
-
-// This file demonstrates that @resource types must be consumed exactly once.
-// You cannot forget to close a file or drop a connection.
+// Forgetting to close a file (mem.linear/L1, L7).
+//
+// `File` is a `@resource`, so every opened file is closed exactly once and the
+// compiler checks it. It used to be a plain struct in stdlib/io.rk, and every
+// function below compiled. This file was "rejected" only because it was
+// written in syntax that no longer parses, so it proved nothing.
+//
+// Each fix names the call that closes a `File`, `close()`. A placeholder like
+// `<consuming method>()` was what it said before.
 
 import fs
 
-func process_data() -> () or Error {
-    // Open a file - this returns a @resource type
-    let file = try fs.open("data.txt")
-
-    // Read some data
-    let data = try file.read_all()
-
-    // Process data...
-    process(data)
-
-    // COMPILE ERROR: 'file' is a resource that must be consumed
-    // We forgot to close it!
-
-    // implicit unit success (ER10)
+// ERROR: `file` would leak if this fails [E0881]
+// ERROR: fix: add `ensure file.close()` on the line after it's acquired
+func forgets_to_close(path: string) -> string or Error {
+    let file = try fs.open(path)
+    let text = try file.read_text()
+    return text
 }
 
-// Why this is an error:
-// @resource types have linear semantics - they must be used exactly once.
-// This ensures:
-// - Files are always closed
-// - Connections are always terminated
-// - Locks are always released
-// - Transactions are always committed or rolled back
-
-// THE FIX: Consume the resource
-
-// Option 1: Explicit close
-func process_data_v1() -> () or Error {
-    let file = try fs.open("data.txt")
-    let data = try file.read_all()
-    process(data)
-    try file.close()  // Consumes the resource
-    // implicit unit success (ER10)
+// ERROR: `file` has no cleanup committed yet [E0882]
+func closes_too_late(path: string) -> string or Error {
+    let file = try fs.open(path)
+    println("opened {path}")
+    let text = file.read_text() catch _ => ""
+    try file.close()
+    return text
 }
 
-// Option 2: Use 'ensure' for automatic cleanup
-func process_data_v2() -> () or Error {
-    let file = try fs.open("data.txt")
-    ensure file.close()  // Runs at scope exit, even on early return
-
-    let data = try file.read_all()
-    process(data)
-
-    if data.is_empty() {
-        return Error.new("empty file")  // ensure still runs!
-    }
-
-    // implicit unit success (ER10)
-}
-
-// Option 3: Scoped resource pattern
-func process_data_v3() -> () or Error {
-    (try fs.open("data.txt")).use(|file| {
-        let data = try file.read_all()
-        process(data)
-        // implicit unit success (ER10)
-    })
-}
-
-// Another error case: resource in a branch that doesn't consume
-func conditional_leak(flag: bool) -> () or Error {
-    let file = try fs.open("data.txt")
-
+func closes_on_one_branch(path: string, flag: bool) -> void or Error {
+    let file = try fs.open(path)
+    // ERROR: consumption of `file` depends on which path ran [E0821]
+    ensure file.close()
     if flag {
         try file.close()
     }
-    // COMPILE ERROR: 'file' may not be consumed (false branch doesn't close)
-
-    // implicit unit success (ER10)
 }
 
-// THE FIX: All branches must consume
-func conditional_fixed(flag: bool) -> () or Error {
-    let file = try fs.open("data.txt")
-
-    if flag {
-        let data = try file.read_all()
-        process(data)
-        try file.close()
-    } else {
-        try file.close()  // Must close in both branches
-    }
-
-    // implicit unit success (ER10)
+func closes_twice(path: string) -> void or Error {
+    let file = try fs.open(path)
+    try file.close()
+    // ERROR: use of moved value: `file` [E0800]
+    // ERROR: note: `File` is a resource: it's consumed exactly once, and it can't be copied or cloned
+    try file.close()
 }
 
-func process(data: string) {
-    // ...
+// The fix: commit the close on the line after the open, then use the file freely.
+func reads_and_closes(path: string) -> string or Error {
+    let file = try fs.open(path)
+    ensure file.close()
+    return try file.read_text()
 }
 
-
-func main() -> () or Error {
-
-    try process_data()
-    try process_data_v1()
-    try process_data_v2()
-    // implicit unit success (ER10)
+func main() -> void or Error {
+    println(try reads_and_closes("/etc/hostname"))
 }
