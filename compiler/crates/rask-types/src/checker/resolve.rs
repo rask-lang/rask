@@ -480,13 +480,19 @@ impl TypeChecker {
         }
 
         // The method's own parameters differ from the receiver's in when
-        // they're chosen — once per call rather than once per receiver — and a
-        // fresh variable each time is exactly that. One the caller already
-        // bound (a written `parse<i32>()`) keeps its binding.
+        // they're chosen — once per call rather than once per receiver. A type
+        // argument written at the call binds one (`json.decode<Profile>(…)`,
+        // `s.parse<i32>()`); the rest get a fresh variable each.
+        let written = call_node
+            .and_then(|n| self.written_method_type_args.get(&n).cloned())
+            .unwrap_or_default();
+        let mut written = written.into_iter();
         for (name, _) in &method_sig.type_params {
-            if !subst.contains_key(name.as_str()) {
-                subst.insert(name.as_str(), self.ctx.fresh_var());
+            if subst.contains_key(name.as_str()) {
+                continue;
             }
+            let bound = written.next().unwrap_or_else(|| self.ctx.fresh_var());
+            subst.insert(name.as_str(), bound);
         }
         self.note_method_type_args(call_node, method_sig, span, &subst);
 
@@ -1286,17 +1292,17 @@ impl TypeChecker {
                 }
             }
             Type::String => self
-                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, &written, call_node, span)
+                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, call_node, span)
                 .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
             // and used to miss the resolver above entirely.
             Type::UnresolvedNamed(ref name) if name == "string" => self
-                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, &written, call_node, span)
+                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, call_node, span)
                 .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
             Type::Char => self
-                .resolve_declared_primitive_method("char", &ty, &method, &args, &ret, &written, call_node, span)
+                .resolve_declared_primitive_method("char", &ty, &method, &args, &ret, call_node, span)
                 .unwrap_or_else(|| self.resolve_char_method(&method, &args, &ret, span)),
             Type::Array { .. } => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span, call_node)
@@ -1388,7 +1394,7 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
                 || rask_stdlib::StubRegistry::load().get_type(name).is_some()
             => {
-                self.resolve_runtime_method(name, &method, &args, &ret, span)
+                self.resolve_runtime_method(name, &method, &args, &ret, call_node, span)
             }
             Type::Generic { base, args: generic_args } => {
                 let (methods, type_params) = match self.types.get(*base) {
@@ -1550,7 +1556,7 @@ impl TypeChecker {
             // Primitive float types
             Type::F32 | Type::F64 => {
                 let width = if matches!(ty, Type::F32) { "f32" } else { "f64" };
-                self.resolve_declared_primitive_method(width, &ty, &method, &args, &ret, &written, call_node, span)
+                self.resolve_declared_primitive_method(width, &ty, &method, &args, &ret, call_node, span)
                     .unwrap_or_else(|| self.resolve_float_method(&ty, &method, &args, &ret, span))
             }
             // `bool` is Equal and Comparable with `false < true`
@@ -2013,7 +2019,6 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
-        written: &[Type],
         call_node: Option<NodeId>,
         span: Span,
     ) -> Option<Result<bool, TypeError>> {
@@ -2023,15 +2028,7 @@ impl TypeChecker {
             TypeDef::Primitive { methods, .. } => methods.iter().find(|m| m.name == method)?.clone(),
             _ => return None,
         };
-        // A type argument written at the call binds the method's own
-        // parameter: `s.parse<i32>()`.
-        let subst: std::collections::HashMap<&str, Type> = sig
-            .type_params
-            .iter()
-            .zip(written.iter())
-            .map(|((name, _), w)| (name.as_str(), w.clone()))
-            .collect();
-        Some(self.apply_method_sig(ty, method, &sig, subst, args.to_vec(), ret, call_node, span))
+        Some(self.apply_method_sig(ty, method, &sig, Default::default(), args.to_vec(), ret, call_node, span))
     }
 
     pub(super) fn resolve_char_method(
@@ -2259,6 +2256,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let declared = match self.types.lookup(type_name) {
@@ -2274,7 +2272,7 @@ impl TypeChecker {
             let ty = Type::UnresolvedNamed(type_name.to_string());
             let subst: std::collections::HashMap<&str, Type> =
                 type_params.iter().map(|p| (p.as_str(), self.ctx.fresh_var())).collect();
-            return self.apply_method_sig(&ty, method, &sig, subst, args.to_vec(), ret, None, span);
+            return self.apply_method_sig(&ty, method, &sig, subst, args.to_vec(), ret, call_node, span);
         }
         match (type_name, method) {
             // The runtime's clock values order like the numbers they hold. A
@@ -2885,7 +2883,7 @@ impl TypeChecker {
             // through to "couldn't work out the type", which says nothing.
             name if matches!(name, "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex" | "Cell")
                 || rask_stdlib::StubRegistry::load().get_type(name).is_some() => {
-                Some(self.resolve_runtime_method(name, method, args, ret, span))
+                Some(self.resolve_runtime_method(name, method, args, ret, None, span))
             }
             _ => None,
         }
