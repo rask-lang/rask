@@ -34,7 +34,9 @@ use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
+pub mod emit;
 pub mod package_scope;
+pub mod runners;
 mod comptime_aggregate;
 mod comptime_eval;
 

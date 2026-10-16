@@ -808,18 +808,19 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         if let Some(result) = output.result {
             // Comptime globals were evaluated once in the pipeline; hard errors
             // (overflow, divide-by-zero) already failed it (result is None).
-            let comptime_globals = result.folded;
             let target = opts.target.as_deref();
 
             let build_mode = if opts.profile == "release" {
-                rask_codegen::BuildMode::Release
+                rask_compiler::emit::BuildMode::Release
             } else {
-                rask_codegen::BuildMode::Debug
+                rask_compiler::emit::BuildMode::Debug
             };
-            match super::compile::compile_to_object(
-                &result.mono, &result.typed, &result.decls, &comptime_globals,
-                None, None, target, &obj_str, build_mode,
-                &result.package_modules,
+            // A package is several files, and the back end takes one source
+            // for locations. Giving it the right one per function needs the
+            // source map #1568 plans, so a package build has none yet.
+            let input = rask_compiler::emit::BackEnd::of(&result, None, None);
+            match super::compile::emit_object(
+                &input, &rask_compiler::emit::Entry::Main, target, build_mode, &obj_str,
             ) {
                 Ok(()) => {
                     if !opts.no_cache {

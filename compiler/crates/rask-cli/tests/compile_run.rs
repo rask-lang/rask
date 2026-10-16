@@ -1159,6 +1159,35 @@ fn a_type_that_contains_itself_is_rejected() {
 }
 
 #[test]
+fn benchmarks_build_natively_with_boxes_consts_and_collections() {
+    // #1563: benchmarks had their own copy of the back end. It registered no
+    // vtables and left module consts out of lowering, so boxing to `any I` or
+    // reading a const failed to compile, and the command quietly re-ran
+    // everything on the interpreter. It also freed each benchmark's
+    // collections a second time, so a body that owned a Vec died on a signal.
+    let rask = rask_binary();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("benchmark_boxes_and_consts.rk");
+    let out = Command::new(&rask)
+        .arg("benchmark")
+        .arg(&fixture)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask benchmark");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "benchmarks should run: {}", combined);
+    assert!(combined.contains("(native)"), "should run natively: {}", combined);
+    assert!(!combined.contains("interpreter"), "no interpreter run: {}", combined);
+    assert_eq!(combined.matches("ops/sec").count(), 3, "all three timed: {}", combined);
+}
+
+#[test]
 fn a_failing_benchmark_body_is_reported_not_timed() {
     // #1182: every pass discarded its result, so a body that panicked still
     // produced min/max/mean/median — timings for how long it took to fail,

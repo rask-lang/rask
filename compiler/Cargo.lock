@@ -1410,6 +1410,7 @@ name = "rask-compiler"
 version = "0.5.0"
 dependencies = [
  "rask-ast",
+ "rask-codegen",
  "rask-comptime",
  "rask-desugar",
  "rask-diagnostics",
