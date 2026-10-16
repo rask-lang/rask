@@ -7593,10 +7593,10 @@ impl<'a> MirLowerer<'a> {
             rask_types::Type::RawPtr(inner) => match inner.as_ref() {
                 rask_types::Type::U8 | rask_types::Type::I8 | rask_types::Type::Bool => Some(1),
                 rask_types::Type::U16 | rask_types::Type::I16 => Some(2),
-                rask_types::Type::U32 | rask_types::Type::I32 | rask_types::Type::F32 => Some(4),
-                rask_types::Type::U64 | rask_types::Type::I64 | rask_types::Type::F64
-                | rask_types::Type::U128 | rask_types::Type::I128
-                | rask_types::Type::Char => Some(8),
+                rask_types::Type::U32 | rask_types::Type::I32 | rask_types::Type::F32
+                | rask_types::Type::Char => Some(4),
+                rask_types::Type::U64 | rask_types::Type::I64 | rask_types::Type::F64 => Some(8),
+                rask_types::Type::U128 | rask_types::Type::I128 => Some(16),
                 _ => None,
             },
             _ => None,

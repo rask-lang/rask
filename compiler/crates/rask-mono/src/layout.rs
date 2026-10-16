@@ -1074,9 +1074,7 @@ mod tests {
         assert_eq!(tsa(&Type::I64), (8, 8));
         assert_eq!(tsa(&Type::U64), (8, 8));
         assert_eq!(tsa(&Type::F64), (8, 8));
-        // `char` is a full word, not four bytes: the runtime carries a
-        // code point in one.
-        assert_eq!(tsa(&Type::Char), (8, 8));
+        assert_eq!(tsa(&Type::Char), (4, 4));
     }
 
     #[test]

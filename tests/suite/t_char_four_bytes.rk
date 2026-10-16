@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `char` is 4 bytes (type.primitives/P5). Layout used to give it a full
+// word in a struct or enum while MIR and codegen read and wrote four, so the
+// sizes only agreed by accident of padding.
+
+struct Glyph {
+    public c: char
+    public d: char
+    public n: i32
+    public w: i64
+}
+
+enum Tok {
+    Ch(char)
+    Pair(char, char)
+    Num(i64)
+}
+
+func show(t: Tok) -> string {
+    return match t {
+        Ch(c) => "ch {c}",
+        Pair(a, b) => "pair {a}{b}",
+        Num(n) => "num {n}",
+    }
+}
+
+func glyphs() -> string {
+    let g = Glyph(c: 'é', d: 'z', n: -7, w: 99)
+    mut gs: Vec<Glyph> = Vec.new()
+    gs.push(g)
+    gs.push(Glyph(c: 'a', d: '€', n: 3, w: 4))
+    return "{gs[0].c}{gs[0].d} {gs[0].n} {gs[0].w} {gs[1].c}{gs[1].d} {gs[1].n} {gs[1].w}"
+}
+
+test "char fields sit beside their neighbours at four bytes" {
+    assert glyphs() == "éz -7 99 a€ 3 4"
+}
+
+test "char payloads in an enum, a tuple and an optional" {
+    assert show(Tok.Pair('x', 'y')) == "pair xy"
+    assert show(Tok.Ch('q')) == "ch q"
+    let t = ('a', 'b', 5)
+    assert "{t.0}{t.1}{t.2}" == "ab5"
+    let o: char? = 'k'
+    assert (o ?? '-') == 'k'
+}
+
+func main() {}
