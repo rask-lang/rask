@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A protocol that trusts UDP to deliver everything once and in order. Fine on
+// loopback, and on most seeds. On a seed where the link is bad, a datagram
+// goes missing (the receiver waits forever), arrives twice, or overtakes the
+// one before it.
+import net
+
+test "every datagram arrives once, in order" {
+    let a = try net.udp_bind("127.0.0.1:0")
+    ensure a.close()
+    let b = try net.udp_bind("127.0.0.1:0")
+    ensure b.close()
+
+    for i in 0..20 {
+        try a.send_to([i.wrap<u8>()], b.local_addr())
+    }
+    for i in 0..20 {
+        let got = try b.receive_from()
+        assert got.data[0] == i.wrap<u8>()
+    }
+}

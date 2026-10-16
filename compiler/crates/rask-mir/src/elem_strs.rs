@@ -334,6 +334,8 @@ pub const WRAPPED_CTORS: &[(&str, &str)] = &[
     // A file's bytes from the current position, the same shape and for the
     // same reason: `File.read_bytes` is another body behind `reader.read_bytes()`.
     ("File_read_bytes_raw", "Vec_free"),
+    // One datagram with its sender appended, in a Vec made for this call.
+    ("UdpSocket_receive_raw", "Vec_free"),
 ];
 
 /// What frees the container inside the wrapper this native call handed back.

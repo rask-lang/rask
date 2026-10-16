@@ -1396,6 +1396,165 @@ void rask_net_remote_addr(RaskStr *out, int64_t fd) {
     rask_string_from(out, buf);
 }
 
+// ─── UDP ───────────────────────────────────────────────────────
+
+// Largest payload one IPv4 datagram carries.
+#define UDP_MAX_PAYLOAD 65507
+
+// Resolve host:port for a datagram socket. 0, or -2 when it names nothing.
+static int udp_resolve(const char *host, const char *port, struct sockaddr_storage *out,
+                       socklen_t *out_len) {
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo(host, port, &hints, &result) != 0) return -2;
+    memcpy(out, result->ai_addr, result->ai_addrlen);
+    *out_len = result->ai_addrlen;
+    freeaddrinfo(result);
+    return 0;
+}
+
+// Whether "host:port" names an IPv4 address (net.resolves). Under sim the
+// bind decides: sim's network is loopback only, and it says so by name.
+int8_t rask_net_resolves(const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) return 0;
+#ifdef RASK_SIM
+    if (rask_sim_active()) return 1;
+#endif
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
+    return udp_resolve(host, port_str, &sa, &sa_len) == 0;
+}
+
+// net.udp_bind: the fd, or -1 with errno set.
+int64_t rask_net_udp_bind(const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        errno = EINVAL;
+        return -1;
+    }
+#ifdef RASK_SIM
+    if (rask_sim_active()) return rask_sim_net_udp_bind(host, port_str);
+#endif
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
+    if (udp_resolve(host, port_str, &sa, &sa_len) != 0) {
+        // Resolved a moment ago in net.resolves, gone now.
+        errno = EADDRNOTAVAIL;
+        return -1;
+    }
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    if (bind(fd, (struct sockaddr *)&sa, sa_len) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    sock_nonblocking(fd);
+    return (int64_t)fd;
+}
+
+// Send one datagram: 0, -1 with errno set, -2 when `addr` doesn't resolve.
+int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        return -2;
+    }
+    const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
+    int64_t len = rask_vec_len(v);
+    if (len > UDP_MAX_PAYLOAD) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    char *bytes = (char *)rask_alloc(len > 0 ? len : 1);
+    for (int64_t i = 0; i < len; i++) {
+        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
+        bytes[i] = b ? (char)*b : 0;
+    }
+    int64_t result;
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) {
+        result = rask_sim_net_send_to(fd, bytes, (size_t)len, host, port_str);
+        rask_free(bytes);
+        return result;
+    }
+#endif
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
+    if (udp_resolve(host, port_str, &sa, &sa_len) != 0) {
+        rask_free(bytes);
+        return -2;
+    }
+    for (;;) {
+        ssize_t put = sendto((int)fd, bytes, (size_t)len, 0, (struct sockaddr *)&sa, sa_len);
+        if (put >= 0) {
+            result = 0;
+            break;
+        }
+        if (!would_block()) {
+            result = -1;
+            break;
+        }
+        if (rask_io_wait(fd, 1)) {
+            errno = ECANCELED;
+            result = -1;
+            break;
+        }
+    }
+    int saved = errno;
+    rask_free(bytes);
+    errno = saved;
+    return result;
+}
+
+// Wait for one datagram. A Vec<u8> of the payload, then the sender as
+// "ip:port", then that address's length in one byte; or -1 with errno set.
+// stdlib/net.rk takes it apart.
+int64_t rask_net_udp_receive(int64_t fd) {
+    static __thread char buf[UDP_MAX_PAYLOAD + 64];
+    char from[64];
+    ssize_t n;
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) {
+        n = (ssize_t)rask_sim_net_receive_from(fd, buf, UDP_MAX_PAYLOAD, from, sizeof(from));
+        if (n < 0) return -1;
+        goto got;
+    }
+#endif
+    for (;;) {
+        struct sockaddr_in sa;
+        socklen_t sa_len = sizeof(sa);
+        n = recvfrom((int)fd, buf, UDP_MAX_PAYLOAD, 0, (struct sockaddr *)&sa, &sa_len);
+        if (n >= 0) {
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &sa.sin_addr, ip, sizeof(ip));
+            snprintf(from, sizeof(from), "%s:%d", ip, ntohs(sa.sin_port));
+            break;
+        }
+        if (!would_block()) return -1;
+        if (rask_io_wait(fd, 0)) {
+            errno = ECANCELED;
+            return -1;
+        }
+    }
+#ifdef RASK_SIM
+got:
+#endif
+    {
+        size_t from_len = strlen(from);
+        memcpy(buf + n, from, from_len);
+        buf[n + (ssize_t)from_len] = (char)from_len;
+        RaskVec *v = rask_vec_from_bytes(buf, n + (int64_t)from_len + 1);
+        return (int64_t)(uintptr_t)v;
+    }
+}
+
 // Local address a listener/connection is bound to (TcpListener.local_addr).
 void rask_net_local_addr(RaskStr *out, int64_t fd) {
 #ifdef RASK_SIM

@@ -391,6 +391,29 @@ fn a_trace_shows_the_interleaving_that_overdrew_the_account() {
     assert_eq!(saw_100, 2, "each task's printed line is in its lane:\n{text}");
 }
 
+/// sim/N1: a datagram link is healthy (delayed, in order) or, on some seeds,
+/// bad for the whole run: datagrams lost, repeated and reordered. A protocol
+/// that trusts UDP passes the healthy seeds and fails a bad one, the report
+/// names the link, and the replay line reproduces it.
+#[test]
+fn a_bad_link_breaks_a_protocol_that_trusts_udp() {
+    let (healthy, code) = sim(&["--seed", "1", "udp.rk"]);
+    assert_eq!(code, 0, "seed 1's link is healthy:\n{healthy}");
+
+    let (out, code) = sim(&["--seed", "2", "udp.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        line_with(&out, "sick this seed").contains("datagrams :49152 → :49153 lost, repeated and reordered"),
+        "{out}"
+    );
+    let failure = line_with(&out, "assertion failed").trim().to_string();
+    let replay = line_with(&out, "replay: ").trim().trim_start_matches("replay: ");
+    let seed = replay.split_whitespace().skip_while(|w| *w != "--seed").nth(1).unwrap();
+    let (again, code) = sim(&["--seed", seed, "-f", "once, in order", "udp.rk"]);
+    assert_eq!(code, 1, "{again}");
+    assert_eq!(line_with(&again, "assertion failed").trim(), failure);
+}
+
 /// What a run printed, read off its trace (a passing run's output isn't shown).
 fn printed(dir: &Path, seed: &str, file: &str) -> Vec<String> {
     let trace_file = format!("{file}.{seed}.json");

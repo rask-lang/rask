@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// UDP over loopback (std.net/U1–U2): one datagram there, one back, and the
+// receiver learns who sent each.
+import net
+
+test "std.net — a datagram arrives whole, with its sender" {
+    let a = try net.udp_bind("127.0.0.1:0")
+    ensure a.close()
+    let b = try net.udp_bind("127.0.0.1:0")
+    ensure b.close()
+
+    try a.send_to([1u8, 2, 3, 250], b.local_addr())
+    let got = try b.receive_from()
+    assert got.data.len() == 4
+    assert got.data[3] == 250u8
+    assert got.from == a.local_addr()
+
+    try b.send_to([9u8], got.from)
+    let back = try a.receive_from()
+    assert back.data[0] == 9u8
+    assert back.from == b.local_addr()
+}
+
+test "std.net — an empty datagram is still a datagram" {
+    let a = try net.udp_bind("127.0.0.1:0")
+    ensure a.close()
+    let none_bytes: Vec<u8> = []
+    try a.send_to(none_bytes, a.local_addr())
+    let got = try a.receive_from()
+    assert got.data.len() == 0
+}
+
+test "std.net — a bad address is an IoError, not a send" {
+    let a = try net.udp_bind("127.0.0.1:0")
+    ensure a.close()
+    let r = a.send_to([1u8], "nowhere")
+    assert r is IoError
+}
+
+test "std.net — binding a port that's taken is an IoError" {
+    let a = try net.udp_bind("127.0.0.1:0")
+    ensure a.close()
+    // The second bind fails, and the test ends there.
+    let b = net.udp_bind(a.local_addr()) catch e => {
+        return
+    }
+    ensure b.close()
+    assert false
+}
