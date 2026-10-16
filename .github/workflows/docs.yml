@@ -9,6 +9,7 @@ on:
       - 'docs/book/**'
       - 'docs/playground/**'
       - 'docs/landing/**'
+      - 'docs/showcase/**'
       - 'docs/shared/**'
       - 'writing/**'
       - 'examples/**'
@@ -75,6 +76,7 @@ jobs:
         mkdir -p docs/build
         cp docs/shared/tokens.css docs/build/tokens.css
         cp docs/shared/rask-vocabulary.js docs/build/rask-vocabulary.js
+        cp docs/shared/rask-highlight.js docs/build/rask-highlight.js
         cd docs/book
         mdbook build -d ../build/book
 
@@ -95,6 +97,10 @@ jobs:
         cp docs/landing/index.html docs/build/index.html
         cp docs/landing/landing.css docs/build/landing.css
         cp docs/landing/try.js docs/build/try.js
+
+        # Showcase pages: each directory is a page with its files beside it.
+        mkdir -p docs/build/showcase
+        cp -r docs/showcase/* docs/build/showcase/
 
         # Copy playground to /app/
         mkdir -p docs/build/app

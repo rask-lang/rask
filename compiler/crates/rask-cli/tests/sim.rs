@@ -397,3 +397,40 @@ fn trace_takes_one_schedule() {
     assert_eq!(code, 1);
     assert!(out.contains("`--trace` records one schedule"), "{out}");
 }
+
+/// The website's sim showcase (docs/showcase/sim/) draws its trace viewer and
+/// its terminal output from these files. Regenerated here so the page can't
+/// show what the compiler no longer does; `RASK_UPDATE_SHOWCASE=1` rewrites
+/// them after a deliberate change.
+#[test]
+fn the_showcase_traces_are_current() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/showcase/sim");
+    let update = std::env::var_os("RASK_UPDATE_SHOWCASE").is_some();
+    let scratch = std::env::temp_dir().join(format!("rask_showcase_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let cases = [
+        ("bank.rk", "1", "bank.trace.json", false),
+        ("bank.rk", "4", "bank.pass.trace.json", true),
+        ("bank_fixed.rk", "1", "bank_fixed.trace.json", true),
+    ];
+    let mut stale = Vec::new();
+    for (file, seed, trace, passes) in cases {
+        let fresh = scratch.join(trace);
+        let fresh_str = fresh.to_str().unwrap();
+        let (out, code) = sim_in(&dir, &["--seed", seed, "--trace", fresh_str, file]);
+        assert_eq!(code == 0, passes, "{file} on seed {seed}:\n{out}");
+        let got = std::fs::read_to_string(&fresh).unwrap();
+        let committed = dir.join(trace);
+        if update {
+            std::fs::write(&committed, &got).unwrap();
+        } else if std::fs::read_to_string(&committed).ok().as_deref() != Some(got.as_str()) {
+            stale.push(trace);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        stale.is_empty(),
+        "docs/showcase/sim traces are out of date: {stale:?}. If the change is deliberate, \
+         rerun with RASK_UPDATE_SHOWCASE=1 and look at the page"
+    );
+}

@@ -788,9 +788,9 @@ void rask_sim_trace_write(const char *name, int passed, const char *error) {
     tr.len = tr.cap = 0;
     tr_put("{\"test\":", 8);
     tr_json_str(name ? name : "", name ? strlen(name) : 0);
-    tr_printf(",\"test_seed\":\"%llu\",\"passed\":%s,\"steps\":%lld,\"truncated\":%s",
+    tr_printf(",\"test_seed\":\"%llu\",\"passed\":%s,\"steps\":%lld,\"time_ns\":%lld,\"truncated\":%s",
               (unsigned long long)g.seed, passed ? "true" : "false",
-              (long long)g.step, tr.truncated ? "true" : "false");
+              (long long)g.step, (long long)g.now_ns, tr.truncated ? "true" : "false");
     if (error) {
         tr_put(",\"error\":", 9);
         tr_json_str(error, strlen(error));
