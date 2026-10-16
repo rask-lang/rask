@@ -1362,56 +1362,15 @@ impl CodeGenerator {
     }
 
     fn collect_string_constants(&mut self, stmt: &rask_mir::MirStmt, counter: &mut usize) -> CodegenResult<()> {
-        // Walk operands looking for string constants
-        match &stmt.kind {
-            rask_mir::MirStmtKind::Assign { rvalue, .. } => {
-                self.scan_rvalue_strings(rvalue, counter)?;
-            }
-            rask_mir::MirStmtKind::Store { value, .. } => {
-                self.register_operand_string(value, counter)?;
-            }
-            rask_mir::MirStmtKind::Call { args, .. }
-            | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
-                for arg in args {
-                    self.register_operand_string(arg, counter)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
+        let mut ops = Vec::new();
+        rask_mir::analysis::uses::visit_stmt_operands(stmt, &mut |op| ops.push(op));
+        ops.into_iter().try_for_each(|op| self.register_operand_string(op, counter))
     }
 
     fn collect_terminator_strings(&mut self, term: &rask_mir::MirTerminator, counter: &mut usize) -> CodegenResult<()> {
-        match &term.kind {
-            rask_mir::MirTerminatorKind::Return { value: Some(op) } => {
-                self.register_operand_string(op, counter)?;
-            }
-            rask_mir::MirTerminatorKind::Switch { value, .. } => {
-                self.register_operand_string(value, counter)?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn scan_rvalue_strings(&mut self, rvalue: &rask_mir::MirRValue, counter: &mut usize) -> CodegenResult<()> {
-        match rvalue {
-            rask_mir::MirRValue::Use(op) => self.register_operand_string(op, counter),
-            rask_mir::MirRValue::BinaryOp { left, right, .. } => {
-                self.register_operand_string(left, counter)?;
-                self.register_operand_string(right, counter)
-            }
-            rask_mir::MirRValue::UnaryOp { operand, .. } => self.register_operand_string(operand, counter),
-            rask_mir::MirRValue::Cast { value, .. } | rask_mir::MirRValue::Convert { value, .. } => self.register_operand_string(value, counter),
-            rask_mir::MirRValue::Field { base, .. } => self.register_operand_string(base, counter),
-            rask_mir::MirRValue::EnumTag { value } => self.register_operand_string(value, counter),
-            rask_mir::MirRValue::Deref(op) => self.register_operand_string(op, counter),
-            rask_mir::MirRValue::Ref(_) | rask_mir::MirRValue::FuncAddr(_) => Ok(()),
-            rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
-                self.register_operand_string(base, counter)?;
-                self.register_operand_string(index, counter)
-            }
-        }
+        let mut ops = Vec::new();
+        rask_mir::analysis::uses::visit_terminator_operands(term, &mut |op| ops.push(op));
+        ops.into_iter().try_for_each(|op| self.register_operand_string(op, counter))
     }
 
     fn register_operand_string(&mut self, op: &MirOperand, counter: &mut usize) -> CodegenResult<()> {
@@ -1958,43 +1917,11 @@ fn collect_used_strings(mir_fn: &MirFunction) -> HashSet<String> {
 }
 
 fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<String>) {
-    match &stmt.kind {
-        rask_mir::MirStmtKind::Assign { rvalue, .. } => collect_rvalue_strings(rvalue, out),
-        rask_mir::MirStmtKind::Store { value, .. } => collect_operand_string(value, out),
-        rask_mir::MirStmtKind::Call { args, .. }
-        | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
-            for arg in args { collect_operand_string(arg, out); }
-        }
-        _ => {}
-    }
+    rask_mir::analysis::uses::visit_stmt_operands(stmt, &mut |op| collect_operand_string(op, out));
 }
 
 fn collect_operand_strings_term(term: &rask_mir::MirTerminator, out: &mut HashSet<String>) {
-    match &term.kind {
-        rask_mir::MirTerminatorKind::Return { value: Some(op) } => collect_operand_string(op, out),
-        rask_mir::MirTerminatorKind::Switch { value, .. } => collect_operand_string(value, out),
-        _ => {}
-    }
-}
-
-fn collect_rvalue_strings(rvalue: &rask_mir::MirRValue, out: &mut HashSet<String>) {
-    match rvalue {
-        rask_mir::MirRValue::Use(op) => collect_operand_string(op, out),
-        rask_mir::MirRValue::BinaryOp { left, right, .. } => {
-            collect_operand_string(left, out);
-            collect_operand_string(right, out);
-        }
-        rask_mir::MirRValue::UnaryOp { operand, .. } => collect_operand_string(operand, out),
-        rask_mir::MirRValue::Cast { value, .. } | rask_mir::MirRValue::Convert { value, .. } => collect_operand_string(value, out),
-        rask_mir::MirRValue::Field { base, .. } => collect_operand_string(base, out),
-        rask_mir::MirRValue::EnumTag { value } => collect_operand_string(value, out),
-        rask_mir::MirRValue::Deref(op) => collect_operand_string(op, out),
-        rask_mir::MirRValue::Ref(_) | rask_mir::MirRValue::FuncAddr(_) => {}
-        rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
-            collect_operand_string(base, out);
-            collect_operand_string(index, out);
-        }
-    }
+    rask_mir::analysis::uses::visit_terminator_operands(term, &mut |op| collect_operand_string(op, out));
 }
 
 fn collect_operand_string(op: &MirOperand, out: &mut HashSet<String>) {

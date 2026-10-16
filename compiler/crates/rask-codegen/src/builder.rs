@@ -9193,32 +9193,16 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().stack_store(tagged_v, tmp_slot, 8);
                             return Ok(builder.ins().stack_addr(types::I64, tmp_slot, 0));
                         }
-                        // No header emitted for this literal — fall back to the
-                        // allocating path rather than producing a wrong value.
-                        if let Some(gv) = ctx.string_globals.get(s.as_str()) {
-                            let raw_ptr = builder.ins().global_value(types::I64, *gv);
-                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                                StackSlotKind::ExplicitSlot, 16, 0,
-                            ));
-                            let out_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
-                            if let Some(string_from_ref) = ctx.func_refs.get("string_from") {
-                                builder.ins().call(*string_from_ref, &[out_ptr, raw_ptr]);
-                                Ok(out_ptr)
-                            } else {
-                                return Err(CodegenError::FunctionNotFound("string_from".to_string()))
-                            }
-                        } else {
-                            // Empty string: SSO with remaining=15
-                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                                StackSlotKind::ExplicitSlot, 16, 0,
-                            ));
-                            let lo = builder.ins().iconst(types::I64, crate::layouts::EMPTY_STRING_LO);
-                            builder.ins().stack_store(lo, tmp_slot, 0);
-                            let hi = builder.ins().iconst(types::I64, crate::layouts::EMPTY_STRING_HI);
-                            builder.ins().stack_store(hi, tmp_slot, 8);
-                            let out_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
-                            Ok(out_ptr)
-                        }
+                        // Every literal a function names is registered before
+                        // its body is built (`collect_string_constants`, over
+                        // MIR's exhaustive operand visitor). One that wasn't is
+                        // a walk that skipped a statement kind, and the value
+                        // it would get here is wrong: this used to build `""`,
+                        // and a literal passed to an interface method printed
+                        // as nothing (#1558).
+                        Err(CodegenError::UnsupportedFeature(format!(
+                            "string literal {s:?} reached codegen without being registered"
+                        )))
                     }
                 }
             }
