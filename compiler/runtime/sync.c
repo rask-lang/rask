@@ -457,7 +457,7 @@ typedef struct {
 } RaskCell;
 
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
-    if (data_size <= 0) data_size = 8;
+    if (data_size <= 0) rask_panic("Shared data size must be positive");
     RaskCell *c = (RaskCell *)rask_alloc(sizeof(RaskCell));
     *c = (RaskCell){
         .header = { .release = cell_release },

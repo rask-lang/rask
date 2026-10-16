@@ -670,9 +670,8 @@ static const char *json_shape_name(int64_t kind) {
     }
 }
 
-// Writes an integer into a `width`-byte slot. Vec/Map slots are always a full
-// word and readers load a whole word out of them, so a narrow value is
-// sign-extended into the slot rather than left with garbage above it.
+// Writes an integer into a `width`-byte slot — the integer's own width,
+// wherever the slot is.
 static void json_store_int(void *dst, int64_t width, int64_t v) {
     switch (width) {
         case 1: { int8_t  x = (int8_t)v;  memcpy(dst, &x, 1); break; }
@@ -751,7 +750,7 @@ static int json_decode_vec(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                   path[0] ? path : "the value", json_kind_name(v->kind));
         return 0;
     }
-    int64_t slot = shape->slot > 0 ? shape->slot : 8;
+    int64_t slot = shape->slot;
     RaskVec *vec = rask_vec_with_capacity(slot, v->as.arr.len,
                                           shape->elem_owned, shape->n_elem_owned);
     char stack_slot[64];
@@ -781,7 +780,7 @@ static int json_decode_map(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                   path[0] ? path : "the value", json_kind_name(v->kind));
         return 0;
     }
-    int64_t slot = shape->slot > 0 ? shape->slot : 8;
+    int64_t slot = shape->slot;
     RaskMap *map = rask_map_new_string_keys(16, slot,
                                             rask_elem_strs_one, 1,
                                             shape->elem_owned, shape->n_elem_owned);

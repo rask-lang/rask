@@ -673,7 +673,7 @@ fn err_routing_native_matches_interp() {
 }
 
 // One element-size query — collections must allocate correctly-sized slots for
-// i32 (8-byte slot, no truncation), string (16), and struct (layout) elements,
+// i32 (4 bytes, no truncation), string (16), and struct (layout) elements,
 // with Map keys/values sized independently. Native must equal interp.
 const COLLECTION_SIZES_OUT: &str = "100\n200000\nalpha\nbeta\n1 2 3\n2\n";
 

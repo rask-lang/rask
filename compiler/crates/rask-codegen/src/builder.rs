@@ -255,11 +255,9 @@ enum CallAdapt {
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
     PopOutParam(StackSlot),
-    /// The callee copied an element out for the destination `T?` and returned
-    /// 1 (wrote) or 0 (nothing). An aggregate went straight into the payload
-    /// and only the tag is left to set; a scalar went into the second slot in
-    /// the container's own form, to be read from there into the payload.
-    OptionOutParam(StackSlot, Option<StackSlot>),
+    /// The callee copied an element straight into the destination `T?`'s
+    /// payload and returned 1 (wrote) or 0 (nothing). Only the tag is left.
+    OptionOutParam(StackSlot),
     /// String out-param: callee wrote 16-byte RaskStr to this slot.
     /// Result is the slot address (pointer), not a loaded value.
     StringOutParam(StackSlot),
@@ -5368,21 +5366,12 @@ impl<'a> FunctionBuilder<'a> {
                         Self::build_none(builder, *ss);
                         builder.ins().jump(merge_block, &[]);
 
-                        // non-NULL path: Some(the element `ptr` points at). An
-                        // aggregate is copied whole; a scalar is read the way
-                        // the container stores it, which holds a float as an
-                        // f64 — a plain copy of an `f32`'s four bytes took the
-                        // double's zero low half (#629).
+                        // non-NULL path: Some(the element `ptr` points at),
+                        // copied as it is — the container holds it in the
+                        // payload's own layout.
                         builder.switch_to_block(else_block);
                         builder.seal_block(else_block);
-                        let inner = Self::wrapper_arm(&wrapper, false).clone();
-                        match mir_to_cranelift_type(&inner) {
-                            Ok(want) if !Self::is_boxed_payload(&inner) => {
-                                let v = Self::load_scalar_slot(builder, ptr, want);
-                                Self::build_some(builder, *ss, &wrapper, v);
-                            }
-                            _ => Self::build_wrapped_aggregate(builder, *ss, &wrapper, false, ptr),
-                        }
+                        Self::build_wrapped_aggregate(builder, *ss, &wrapper, false, ptr);
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -5423,33 +5412,18 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 CallAdapt::PopOutParam(ss) => {
-                    // Value was written to stack slot by callee.
-                    //
-                    // A float has to be loaded as one. The widening below reads
-                    // a mismatched type as a *number* to convert, not as bits to
-                    // reinterpret, so an integer load of a double came out as
-                    // its bit pattern: `Shared<f64>.local(1.5).replace(2.5)`
-                    // answered 4609434218613702700. Integers keep the word load
-                    // — the callee always writes a full one — and narrow on the
-                    // way into the destination.
-                    //
-                    // An `f32` slot holds a promoted double, so it reads eight
-                    // bytes wide and demotes, which is the pair `load_scalar_slot`
-                    // and `value_to_ptr` already agree on. A four-byte read got
-                    // the double's zero low half and `Shared<f32>.replace` came
-                    // back 0.
+                    // The callee copied the element out at its own width, and
+                    // the destination is that element. A float has to be
+                    // loaded as one: read as an integer and converted, a double
+                    // came out as its bit pattern —
+                    // `Shared<f64>.local(1.5).replace(2.5)` answered
+                    // 4609434218613702700.
                     let want = dst_local
                         .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
-                        .filter(|t| t.is_float())
                         .unwrap_or(types::I64);
-                    if want == types::F32 {
-                        let wide = builder.ins().stack_load(types::F64, ss, 0);
-                        builder.ins().fdemote(types::F32, wide)
-                    } else {
-                        builder.ins().stack_load(want, ss, 0)
-                    }
+                    builder.ins().stack_load(want, ss, 0)
                 }
-                CallAdapt::OptionOutParam(ss, scratch) => {
+                CallAdapt::OptionOutParam(ss) => {
                     // 1 means the element is there (present), 0 that there
                     // was nothing (absent).
                     let results = builder.inst_results(call_inst);
@@ -5462,15 +5436,6 @@ impl<'a> FunctionBuilder<'a> {
                     let none_tag = Self::tag_const(builder, crate::layouts::TAG_ABSENT);
                     let tag = builder.ins().select(wrote, some_tag, none_tag);
                     Self::store_tag(builder, ss, tag);
-                    // An absent payload is dead, so reading the scratch slot
-                    // unconditionally costs nothing.
-                    if let (Some(scratch), Some(wrapper)) = (scratch, Self::dst_wrapper(ctx, dst_id)) {
-                        let inner = Self::wrapper_arm(&wrapper, false).clone();
-                        let want = mir_to_cranelift_type(&inner)?;
-                        let addr = builder.ins().stack_addr(types::I64, scratch, 0);
-                        let v = Self::load_scalar_slot(builder, addr, want);
-                        Self::store_payload(builder, ss, &wrapper, &inner, v);
-                    }
                     if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
                         if *dst_ss == ss {
                             slot_already_written = true;
@@ -5554,21 +5519,13 @@ impl<'a> FunctionBuilder<'a> {
                         let merge_block = builder.create_block();
                         builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
 
-                        // Ok(payload): the channel wrote it in its own form,
-                        // a scalar in a word.
+                        // Ok(payload), copied from where the channel wrote it.
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
                         let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
-                        let ok = Self::wrapper_arm(&wrapper, false).clone();
-                        match mir_to_cranelift_type(&ok) {
-                            Ok(want) if !Self::is_boxed_payload(&ok) => {
-                                let v = Self::load_scalar_slot(builder, payload_addr, want);
-                                Self::build_ok(builder, dst_ss, &wrapper, v);
-                            }
-                            _ => Self::build_wrapped_aggregate(
-                                builder, dst_ss, &wrapper, false, payload_addr,
-                            ),
-                        }
+                        Self::build_wrapped_aggregate(
+                            builder, dst_ss, &wrapper, false, payload_addr,
+                        );
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(err_block);
@@ -7881,44 +7838,45 @@ impl<'a> FunctionBuilder<'a> {
         Self::store_payload(builder, dst_slot, wrapper, Self::wrapper_arm(wrapper, false), value);
     }
 
-    /// Store a value to a stack slot and return its address.
-    /// Used for pointer-based calling convention (typed runtime API).
-    ///
-    /// An f32 is widened to f64 first, so a float always occupies the whole
-    /// 8-byte slot — the same convention struct fields use. `load_scalar_slot`
-    /// is the matching read. Without agreeing on one width, `v.push(1.5)` on a
-    /// `Vec<f32>` wrote 8 bytes of double (a float literal materializes as f64
-    /// when the callee's declared parameter isn't a float type) while
-    /// `v.push(a)` on an `f32` local wrote 4, and the 4-byte read back got the
-    /// double's zero low half — printing 0 for the literal and the right value
-    /// for the local (#629).
-    ///
-    /// The slot is as wide as the value, and an i128 is sixteen bytes. An
-    /// eight-byte slot took the store's high half into whatever Cranelift put
-    /// next to it: in a test body that was the spill slot holding a `u128::MAX`
-    /// literal, so `assert u[1] == <max>` compared against `0` (#1407).
-    fn value_to_ptr(builder: &mut ClifFunctionBuilder, val: Value) -> Value {
-        let stored = if builder.func.dfg.value_type(val) == types::F32 {
-            builder.ins().fpromote(types::F64, val)
-        } else {
+    /// Spill a scalar the runtime takes by address into a slot of its own,
+    /// at `want`'s type and width — the argument's MIR type, which MIR has
+    /// already made the container slot's (`as_slot_value`). The register
+    /// value can be wider: every runtime-call argument is widened to a word
+    /// on the way in, and storing that word would hand an f32 slot a double
+    /// and a one-byte slot eight bytes.
+    fn value_to_ptr(builder: &mut ClifFunctionBuilder, val: Value, want: Option<Type>) -> Value {
+        let have = builder.func.dfg.value_type(val);
+        let want = want.unwrap_or(have);
+        let stored = if have == want {
             val
+        } else {
+            Self::convert_value(builder, val, have, want, None)
         };
-        let size = builder.func.dfg.value_type(stored).bytes().max(8);
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot, size, 0,
+            StackSlotKind::ExplicitSlot, want.bytes(), 4,
         ));
         builder.ins().stack_store(stored, ss, 0);
         builder.ins().stack_addr(types::I64, ss, 0)
     }
 
-    /// Load a scalar the runtime stored in an 8-byte slot, as `want`.
-    /// The twin of `value_to_ptr`: a float lives there as f64, so an f32
-    /// destination loads the double and demotes.
+    /// Spill argument `index` with `value_to_ptr`, at the argument's own type.
+    fn spill_arg(
+        builder: &mut ClifFunctionBuilder,
+        args: &mut [Value],
+        mir_args: &[MirOperand],
+        index: usize,
+        locals: &[rask_mir::MirLocal],
+    ) {
+        let want = mir_args
+            .get(index)
+            .and_then(|op| Self::operand_mir_type(op, locals))
+            .and_then(|ty| mir_to_cranelift_type(&ty).ok());
+        args[index] = Self::value_to_ptr(builder, args[index], want);
+    }
+
+    /// Read a scalar out of a runtime container's slot, which holds it at its
+    /// own type.
     fn load_scalar_slot(builder: &mut ClifFunctionBuilder, ptr: Value, want: Type) -> Value {
-        if want == types::F32 {
-            let wide = builder.ins().load(types::F64, MemFlags::new(), ptr, 0);
-            return builder.ins().fdemote(types::F32, wide);
-        }
         builder.ins().load(want, MemFlags::new(), ptr, 0)
     }
 
@@ -7978,8 +7936,7 @@ impl<'a> FunctionBuilder<'a> {
         locals: &[rask_mir::MirLocal],
     ) {
         if args.len() > index && !Self::is_by_ptr_arg(mir_args, index, locals) {
-            let val = args[index];
-            args[index] = Self::value_to_ptr(builder, val);
+            Self::spill_arg(builder, args, mir_args, index, locals);
         }
     }
 
@@ -8011,8 +7968,13 @@ impl<'a> FunctionBuilder<'a> {
             args.push(addr);
             CallAdapt::StringOutParam(ss)
         } else {
+            // A scalar, as wide as the destination it becomes.
+            let size = dst
+                .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                .map(|l| l.ty.size().max(1))
+                .unwrap_or(8);
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot, 8, 0,
+                StackSlotKind::ExplicitSlot, size, 4,
             ));
             let addr = builder.ins().stack_addr(types::I64, ss, 0);
             args.push(addr);
@@ -8109,38 +8071,21 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// Look up struct layout size for a MIR arg, returning (elem_size, is_struct).
-    /// (byte size, already-a-pointer) for an aggregate argument.
-    ///
-    /// Every aggregate is passed as an address, so a caller that spills
-    /// "scalars" through `value_to_ptr` must not touch these — doing so stores
-    /// the address itself and hands the runtime a pointer to a pointer. Only
-    /// structs used to count, so sending an enum over a channel copied the
-    /// pointer's bytes as if they were the value (#360).
+    /// The slot an argument the runtime takes by address fills: its size,
+    /// and whether the operand already is an address (an aggregate, a string)
+    /// rather than a scalar that has to be spilled first. Every value is its
+    /// own size; an untyped constant is an `i64`.
     fn struct_elem_size(mir_args: &[MirOperand], arg_index: usize, ctx: &CodegenCtx) -> (i64, bool) {
         match mir_args.get(arg_index) {
             Some(MirOperand::Local(arg_id)) => {
-                if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
-                    match &local.ty {
-                        MirType::Struct(layout_id) => {
-                            if let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) {
-                                return (layout.size as i64, true);
-                            }
-                        }
-                        MirType::Enum(layout_id) => {
-                            if let Some(layout) = ctx.enum_layouts.get(layout_id.id as usize) {
-                                return (layout.size as i64, true);
-                            }
-                        }
-                        // Same question the lock side asks: does the address
-                        // name the value? The two used to spell out different
-                        // lists, and the short one made a `Mutex<string>` look
-                        // word-sized.
-                        ty if ty.passed_by_address() => return (ty.size() as i64, true),
-                        _ => {}
+                match ctx.locals.iter().find(|l| l.id == *arg_id).map(|l| &l.ty) {
+                    Some(ty) => {
+                        let size = Self::resolve_type_alloc_size(ty, ctx.struct_layouts, ctx.enum_layouts)
+                            .unwrap_or(ty.size());
+                        (size as i64, ty.passed_by_address())
                     }
+                    None => (8, false),
                 }
-                (8, false)
             }
             // A string constant is already the address of its 16 bytes — same
             // shape as a string local. Reading only the operand kind, it looked
@@ -8190,22 +8135,14 @@ impl<'a> FunctionBuilder<'a> {
         let call_adapt = match arg_adapt {
             ArgAdapt::None => CallAdapt::None,
 
-            ArgAdapt::InjectOneSize => {
-                if args.is_empty() {
-                    args.insert(0, builder.ins().iconst(types::I64, 8));
-                }
-                CallAdapt::None
-            }
-
             ArgAdapt::ContainerCtor { leading, tags } => {
                 let leading = leading as usize;
-                // The sizes, when a lowering path emitted none — a Vec built by
-                // the compiler for its own use holds machine words.
-                if args.is_empty() {
-                    for _ in 0..leading {
-                        args.push(builder.ins().iconst(types::I64, 8));
-                    }
-                }
+                // Lowering names every size. A guessed one is a container
+                // whose reads and writes disagree about where elements sit.
+                assert!(
+                    args.len() >= leading,
+                    "`{func_name}` was lowered without its {leading} size argument(s)",
+                );
                 // Then one element tag per container slot, each becoming
                 // (offsets pointer, count). A path that emitted no tag gets the
                 // null map, which says the elements own nothing.
@@ -8234,14 +8171,6 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 args.truncate(leading);
                 args.extend(expanded);
-                CallAdapt::None
-            }
-
-            ArgAdapt::InjectTwoSizes => {
-                if args.is_empty() {
-                    args.insert(0, builder.ins().iconst(types::I64, 8));
-                    args.insert(1, builder.ins().iconst(types::I64, 8));
-                }
                 CallAdapt::None
             }
 
@@ -8371,20 +8300,11 @@ impl<'a> FunctionBuilder<'a> {
                     .and_then(|id| ctx.stack_slot_map.get(id))
                     .map(|(ss, _)| *ss)
                     .unwrap_or_else(|| Self::wrapper_slot(builder, &wrapper));
-                let inner = Self::wrapper_arm(&wrapper, false);
-                if Self::is_boxed_payload(inner) {
-                    let offset = wrapper.payload_offset() as i32;
-                    args.push(builder.ins().stack_addr(types::I64, ss, offset));
-                    CallAdapt::OptionOutParam(ss, None)
-                } else {
-                    // A container holds a scalar in a word (a float as an
-                    // f64), wider than the payload it becomes.
-                    let scratch = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, inner.size().max(8), 3,
-                    ));
-                    args.push(builder.ins().stack_addr(types::I64, scratch, 0));
-                    CallAdapt::OptionOutParam(ss, Some(scratch))
-                }
+                // A container holds the element in the payload's own layout,
+                // so the callee copies it straight in.
+                let offset = wrapper.payload_offset() as i32;
+                args.push(builder.ins().stack_addr(types::I64, ss, offset));
+                CallAdapt::OptionOutParam(ss)
             }
 
             ArgAdapt::ParseOutParam => {
@@ -8466,8 +8386,7 @@ impl<'a> FunctionBuilder<'a> {
                             .unwrap_or(false)
                     ) || Self::is_string_arg(mir_args, 1, ctx.locals);
                     if !is_aggregate {
-                        let val = args[1];
-                        args[1] = Self::value_to_ptr(builder, val);
+                        Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
                     }
                 }
                 CallAdapt::None
@@ -8504,8 +8423,7 @@ impl<'a> FunctionBuilder<'a> {
             "Rack_insert" => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                 if args.len() >= 2 && !is_struct {
-                    let val = args[1];
-                    args[1] = Self::value_to_ptr(builder, val);
+                    Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
                 }
                 let fields = Self::link_field_descriptor(mir_args, 1, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
@@ -8555,8 +8473,7 @@ impl<'a> FunctionBuilder<'a> {
                 if !args.is_empty() {
                     let (data_size, is_aggregate) = Self::struct_elem_size(mir_args, 0, ctx);
                     if !is_aggregate {
-                        let val = args[0];
-                        args[0] = Self::value_to_ptr(builder, val);
+                        Self::spill_arg(builder, args, mir_args, 0, ctx.locals);
                     }
                     Self::box_new_args(builder, args, data_size);
                 }
@@ -8574,8 +8491,7 @@ impl<'a> FunctionBuilder<'a> {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
-                        let val = args[1];
-                        args[1] = Self::value_to_ptr(builder, val);
+                        Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
                     }
                 }
                 if func_name.ends_with("_replace") {
@@ -8606,8 +8522,7 @@ impl<'a> FunctionBuilder<'a> {
                 if !args.is_empty() {
                     let (data_size, is_struct) = Self::struct_elem_size(mir_args, 0, ctx);
                     if !is_struct {
-                        let val = args[0];
-                        args[0] = Self::value_to_ptr(builder, val);
+                        Self::spill_arg(builder, args, mir_args, 0, ctx.locals);
                     }
                     Self::box_new_args(builder, args, data_size);
                 }
@@ -8661,8 +8576,7 @@ impl<'a> FunctionBuilder<'a> {
                 if args.len() >= 2 {
                     let (_, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_struct {
-                        let val = args[1];
-                        args[1] = Self::value_to_ptr(builder, val);
+                        Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
                     }
                 }
                 // Custom entries return before `ret_adapt` is read.
@@ -8680,7 +8594,7 @@ impl<'a> FunctionBuilder<'a> {
                     _ => 8,
                 };
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, elem_size.max(8), 0,
+                    StackSlotKind::ExplicitSlot, elem_size.max(1), 4,
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }

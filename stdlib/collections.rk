@@ -411,7 +411,7 @@ extend Vec<T> where T: Equal {
 // the payloads in push order (#1313).
 extend Vec<T> where T: Comparable {
     /// Sort elements in ascending order.
-    @native("rask_vec_sort")
+    @native
     public func sort(mutate self) {}
 
     /// Minimum element. The first of several equal ones.

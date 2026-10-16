@@ -33,33 +33,37 @@ impl<'a> MirLowerer<'a> {
         elem_hint: Option<MirType>,
         literal_id: Option<rask_ast::NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        let mut elem_ty = MirType::I64;
         let mut lowered = Vec::new();
-        for (i, elem) in elems.iter().enumerate() {
-            let (op, ty) = self.lower_expr(elem)?;
-            if i == 0 {
-                elem_ty = ty.clone();
-            }
-            lowered.push((op, ty));
+        for elem in elems {
+            lowered.push(self.lower_expr(elem)?);
         }
-        if let Some(hint) = elem_hint {
-            elem_ty = hint;
-        }
-        // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size 8
-        // and readers load a whole word per element. An untyped integer literal
-        // lowers as i32, so building the array at its natural 4-byte stride left
-        // storage and readers disagreeing: `Vec.from([1, 2, 3])` summed to
-        // 21474836486 because each 8-byte load straddled two elements (#461).
-        // Widen narrow scalars to the slot width; genuinely wide elements
-        // (string, interface object, aggregates) keep their real size.
-        if elem_ty.size() < 8 && !matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_)) {
-            elem_ty = MirType::I64;
-        }
+        // The element type is the checker's: the first element's own lowered
+        // type is a guess. It can't see that the slot wants a `T?`, so
+        // `[1, none, 3]` into a `Vec<i64?>` built 8-byte slots and dropped
+        // every tag; and an unsuffixed literal lowers as `i32` where the vector
+        // holds `i64`s, which put four-byte elements where eight were read
+        // (#461).
+        let elem_ty = elem_hint
+            .or_else(|| literal_id.and_then(|id| self.container_elem_mir_type(id, 0)))
+            .or_else(|| {
+                let first = elems.first()?;
+                let raw = self.ctx.lookup_raw_type(first.id)?.clone();
+                match raw {
+                    rask_types::Type::Var(_) => None,
+                    resolved => Some(self.ctx.type_to_mir(&resolved)),
+                }
+            })
+            .or_else(|| lowered.first().map(|(_, ty)| ty.clone()))
+            .unwrap_or(MirType::I64);
         // A bare `T` filling a `T?` slot gets its layers here, same as an array
-        // literal's elements and a struct field's value.
+        // literal's elements and a struct field's value; a scalar is converted
+        // to the element's own type.
         let lowered: Vec<MirOperand> = lowered
             .into_iter()
-            .map(|(op, val_ty)| self.wrap_collection_element(&elem_ty, &val_ty, op))
+            .map(|(op, val_ty)| {
+                let op = self.wrap_collection_element(&elem_ty, &val_ty, op);
+                self.to_slot_width(op, &elem_ty)
+            })
             .collect();
         let elem_size = elem_ty.size();
         let array_ty = MirType::Array {
@@ -67,18 +71,15 @@ impl<'a> MirLowerer<'a> {
             len: elems.len() as u32,
         };
         let arr_local = self.builder.alloc_temp(array_ty);
-        // Elements wider than a word are values, not pointers: a string
-        // constant lowers to the address of its 16-byte blob, so without a
-        // store size codegen drops the address into the slot and the reader
-        // sees the pointer's bytes as a string. `Vec.from(["ab", "cde"])`
-        // reported len 15 for every element that way (#508).
-        let store_size = (elem_size > 8).then_some(elem_size);
+        // Every element at its own size. Without one, codegen stored a string
+        // constant's address in the slot where its 16 bytes belonged, and
+        // `Vec.from(["ab", "cde"])` reported len 15 for every element (#508).
         for (i, op) in lowered.into_iter().enumerate() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: arr_local,
                 offset: i as u32 * elem_size,
                 value: op,
-                store_size,
+                store_size: Some(elem_size),
                 field: None,
             }));
         }
@@ -188,9 +189,13 @@ impl<'a> MirLowerer<'a> {
         for elem in elems {
             let (key_op, val_op) = match &elem.kind {
                 ExprKind::Tuple(parts) if parts.len() == 2 => {
-                    let (k, _) = self.lower_expr(&parts[0])?;
-                    let (v, _) = self.lower_expr(&parts[1])?;
-                    (k, v)
+                    let (k, k_ty) = self.lower_expr(&parts[0])?;
+                    let (v, v_ty) = self.lower_expr(&parts[1])?;
+                    // The map holds each at its own width, so a value goes in
+                    // as the key or value type it is stored as.
+                    let k = self.wrap_collection_element(&key_ty, &k_ty, k);
+                    let v = self.wrap_collection_element(&val_ty, &v_ty, v);
+                    (self.as_slot_value(k, &key_ty), self.as_slot_value(v, &val_ty))
                 }
                 _ => {
                     let _ = self.lower_expr(elem)?;
@@ -808,13 +813,14 @@ impl<'a> MirLowerer<'a> {
         });
 
         // The element's own type, so a struct element comes back as a pointer to
-        // its storage and a string keeps all 16 bytes.
+        // its storage, a string keeps all 16 bytes and a scalar is read at its
+        // own width.
         let elem_local_ty = match (&nested_struct, elem_ref, &elem_mir) {
             (Some((idx, l)), _, _) => {
                 MirType::Struct(crate::types::StructLayoutId::new(*idx, l.size, l.align))
             }
-            (None, Some(Type::String), _) => MirType::String,
-            (None, _, Some(m)) if matches!(m, MirType::String) => MirType::String,
+            (None, Some(ty), _) if !matches!(ty, Type::Var(_)) => self.ctx.type_to_mir(ty),
+            (None, _, Some(m)) => m.clone(),
             _ => MirType::I64,
         };
         let elem = self.builder.alloc_temp(elem_local_ty);
@@ -847,10 +853,21 @@ impl<'a> MirLowerer<'a> {
                     _ => "json_buf_array_add_i64",
                 },
             };
+            // The helpers take an i64, an f64 or a bool; a narrower element
+            // is converted by its own signedness.
+            let helper_ty = match helper {
+                "json_buf_array_add_f64" => Some(MirType::F64),
+                "json_buf_array_add_i64" => Some(MirType::I64),
+                _ => None,
+            };
+            let elem_op = match helper_ty {
+                Some(ty) => self.to_slot_width(MirOperand::Local(elem), &ty),
+                None => MirOperand::Local(elem),
+            };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal(helper.to_string()),
-                args: vec![MirOperand::Local(arr_buf), MirOperand::Local(elem)],
+                args: vec![MirOperand::Local(arr_buf), elem_op],
             }));
         }
 
@@ -878,77 +895,29 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result), MirType::String))
     }
 
-    /// Size in bytes for a MIR type (used for runtime allocation).
-    pub(super) fn elem_size_for_type(&self, ty: &MirType) -> i64 {
-        match ty {
-            MirType::Bool | MirType::I8 | MirType::U8 => 1,
-            MirType::I16 | MirType::U16 => 2,
-            MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::FuncPtr(_) | MirType::Link(_)
-            | MirType::Container(_) | MirType::Heap(_) => 8,
-            MirType::I128 | MirType::U128 => 16,
-            MirType::String => 16,
-            MirType::Struct(sid) => sid.byte_size as i64,
-            MirType::Enum(eid) => eid.byte_size as i64,
-            MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
-            MirType::Tuple(_) | MirType::Option(_)
-            | MirType::Result { .. } | MirType::Union(_)
-            | MirType::SimdVector { .. } | MirType::InterfaceObject { .. } => ty.size() as i64,
-            MirType::Void => 0,
-        }
-    }
-
-    /// The single slot-size authority for a value stored in a collection
-    /// (Vec/Map element or key/value, Channel/Shared/Mutex element).
-    ///
-    /// Keyed on the resolved `Type` — no type-name string parsing. Delegates to
-    /// the mono layout tables (via `type_to_mir`): scalars occupy an 8-byte slot
-    /// (storing a scalar in a narrower slot truncated it on the i64 load-back),
-    /// string is 16, `T?` is `[tag:8][payload]` with the payload floored to a
-    /// word, and aggregates use their computed layout size. `None` when the type
-    /// is still an unresolved variable.
+    /// The slot a value takes in a collection — a Vec or Map element, a key,
+    /// a channel element, a box payload: the type's own size. Every value sits
+    /// at its own width wherever it is, so a `Vec<u8>` is a byte per element
+    /// and a `Vec<f32>` holds f32s. `None` while the type is still a variable.
     pub(super) fn slot_size_for_type(&self, ty: &rask_types::Type) -> Option<i64> {
-        use rask_types::Type;
         match ty {
-            Type::Var(_) => None,
-            // `T?` is as big as `rask_mono::abi` lays it out, the same size
-            // every copy of one moves. A niche — `Link<T>?` — is one word with
-            // no tag beside it; two computations of the element's shape once
-            // disagreed about that, and every read came back from the wrong
-            // offset (#959).
-            Type::Result { err, .. } if **err == Type::None => {
-                Some(self.ctx.type_to_mir(ty).size() as i64)
-            }
-            _ => Some(Self::mir_slot_size(&self.ctx.type_to_mir(ty))),
+            rask_types::Type::Var(_) => None,
+            _ => Some(self.ctx.type_to_mir(ty).size() as i64),
         }
     }
 
-    /// Slot size for an already-lowered `MirType`: scalars and pointers occupy
-    /// one 8-byte slot, string is 16, aggregates use their layout size.
-    pub(super) fn mir_slot_size(ty: &MirType) -> i64 {
-        match ty {
-            MirType::String => 16,
-            MirType::Void => 0,
-            MirType::Bool | MirType::I8 | MirType::U8
-            | MirType::I16 | MirType::U16
-            | MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char
-            | MirType::I64 | MirType::U64 | MirType::F64
-            | MirType::Ptr | MirType::FuncPtr(_) => 8,
-            // Struct/Enum/Tuple/Option/Result/Union/Array/... — layout size.
-            _ => ty.size() as i64,
-        }
-    }
-
-    /// Slot size of the Nth generic argument of the collection/box type inferred
-    /// at `node_id` (e.g. the `T` of `Vec<T>` / `Channel<T>`, or the key/value of
-    /// `Map<K, V>`). Routes through `slot_size_for_type`; falls back to an 8-byte
-    /// scalar slot when the argument is missing or still an unresolved variable.
+    /// Size of the Nth generic argument of the collection/box type inferred at
+    /// `node_id` (e.g. the `T` of `Vec<T>` / `Channel<T>`, or the key/value of
+    /// `Map<K, V>`).
+    ///
+    /// The checker rejects a container whose element type it couldn't work out
+    /// (E0361), so a missing one here is a lowering bug. It used to be an
+    /// 8-byte guess, which halved every string stored in the container.
     pub(super) fn generic_arg_slot_size(
         &self,
         node_id: rask_ast::NodeId,
         index: usize,
-    ) -> i64 {
+    ) -> Result<i64, LoweringError> {
         use rask_types::{GenericArg, Type};
         fn generic_args(ty: &Type) -> Option<&[GenericArg]> {
             match ty {
@@ -963,7 +932,7 @@ impl<'a> MirLowerer<'a> {
         if self.ctx.lookup_raw_type(node_id).is_none() {
             if let Some(hint) = self.field_type_hint.clone() {
                 if let Some(GenericArg::Type(arg)) = generic_args(&hint).and_then(|a| a.get(index)) {
-                    return Self::mir_slot_size(&self.ctx.type_to_mir(arg));
+                    return Ok(self.ctx.type_to_mir(arg).size() as i64);
                 }
             }
         }
@@ -980,7 +949,11 @@ impl<'a> MirLowerer<'a> {
             };
             self.slot_size_for_type(inner)
         });
-        size.unwrap_or(8)
+        size.ok_or_else(|| {
+            LoweringError::InvalidConstruct(format!(
+                "no type for type argument {index} of the container built at {node_id:?}"
+            ))
+        })
     }
 
     /// The MIR type of a container's Nth type argument — `Vec<i32?>` at index 0
@@ -1068,10 +1041,10 @@ impl<'a> MirLowerer<'a> {
     /// the returned pair (`let rx = ch.1`) has no such record, so fall back
     /// to its own `Receiver<T>` type — otherwise a 24-byte struct was received
     /// into an 8-byte buffer and smashed the stack (#360).
-    pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> i64 {
+    pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> Result<i64, LoweringError> {
         if let Some(var_name) = object.name() {
             if let Some(size) = self.meta(var_name).and_then(|m| m.channel_elem_size) {
-                return size;
+                return Ok(size);
             }
         }
         self.generic_arg_slot_size(object.id, 0)

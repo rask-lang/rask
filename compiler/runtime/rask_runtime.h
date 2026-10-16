@@ -248,8 +248,8 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
 RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
                        const int32_t *str_offs, int64_t n_str_offs);
 void     rask_vec_free_view(RaskVec *v);
-void     rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride);
-// A `Vec<u8>` of raw bytes, one 8-byte slot per byte like compiled code's.
+void     rask_vec_copy_back(const RaskVec *v, char *dst);
+// A `Vec<u8>` of raw bytes, one byte per element.
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n);
 // Releases every string the elements hold, then the vector itself.
 void     rask_vec_free(RaskVec *v);
@@ -291,17 +291,14 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(const void *field, int64_t size, void *out);
-void     rask_vec_sort(RaskVec *v);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
-// key of a (key, value) pair. `key_kind` is one of the RASK_DEBUG_ELEM_* codes
-// below.
+// key of a (key, value) pair. `key_kind` is one of the RASK_ELEM_KIND_* codes
+// (rask_abi.h).
 void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
-// `pass`: how the comparator takes the two elements. Lowering knows which;
-// the width doesn't say. Lowering picks one in `sort_pass` (rask-mir lower/expr.rs).
-#define RASK_SORT_PASS_WORD    0  /* the slot's word */
-#define RASK_SORT_PASS_ADDRESS 1  /* a pointer to the slot: aggregates, strings */
-#define RASK_SORT_PASS_WIDE    2  /* the slot's two words as one i128 */
+// `pass`: how the comparator takes the two elements, a RASK_SORT_PASS_* code
+// (rask_abi.h). Lowering knows which; the width doesn't say. Lowering picks one
+// in `sort_pass` (rask-mir lower/expr.rs).
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass);
 // Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
 // over two keys — same shape sort_by takes. `keys` is read, not reordered.
@@ -588,17 +585,10 @@ uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
-void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
-
-// How `rask_vec_debug` reads one element. The vector header only carries a
-// width, and a four-byte slot could be an i32, a u32 or an f32 — all three
-// print differently — so the caller says which.
-#define RASK_DEBUG_ELEM_I64    0
-#define RASK_DEBUG_ELEM_U64    1
-#define RASK_DEBUG_ELEM_F64    2
-#define RASK_DEBUG_ELEM_BOOL   3
-#define RASK_DEBUG_ELEM_STRING 4
-#define RASK_DEBUG_ELEM_CHAR   5
+// `kind` is a RASK_ELEM_KIND_* code (rask_abi.h): the vector only records a
+// width, and a four-byte element could be an i32, a u32 or an f32.
+void     rask_vec_join_scalar(RaskStr *out, const RaskVec *src, const RaskStr *sep,
+                              int64_t kind);
 void     rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind);
 int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 
@@ -666,6 +656,9 @@ int64_t  rask_map_is_empty(const RaskMap *m);
 void     rask_map_clear(RaskMap *m);
 RaskVec *rask_map_keys(const RaskMap *m);
 RaskVec *rask_map_values(const RaskMap *m);
+// The entries as a Vec of `(key, value)` tuples: the value `voff` bytes into
+// each, entries `stride` bytes apart. The caller lays the tuple out.
+RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride);
 RaskMap *rask_map_clone(const RaskMap *m);
 // mem.racks/RK3: drop every entry whose value is this link.
 int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
@@ -1280,21 +1273,16 @@ RaskSender *rask_sender_clone(RaskSender *tx);
 void rask_sender_drop(RaskSender *tx);
 void rask_recver_drop(RaskRecver *rx);
 
-// i64-based channel wrappers for codegen dispatch table.
+// Channel wrappers for the codegen dispatch table.
 // `let (tx, rx) = Channel<T>.buffered(n)`: `new` hands back the channel and
 // each accessor makes the one handle of its kind. Nothing between the calls
 // owns anything, which is the point — the 16-byte pair that used to carry the
 // two handles could be freed by neither accessor and leaked once per channel.
-int64_t rask_channel_new_i64(int64_t capacity);
 int64_t rask_channel_get_tx(int64_t chan);
 int64_t rask_channel_get_rx(int64_t chan);
-int64_t rask_channel_send_i64(int64_t tx, int64_t value);
-int64_t rask_channel_recv_i64(int64_t rx);
 void    rask_sender_drop_i64(int64_t tx);
 void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
-int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
-int64_t rask_channel_try_recv_i64(int64_t rx);
 int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_sender_close_i64(int64_t tx);
@@ -1495,6 +1483,7 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 // Pointer-based channel wrappers for aggregate element types.
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr);
+int64_t rask_channel_try_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr);
 
 // ── Error origin (ER15/ER16) ────────────────────────────────────

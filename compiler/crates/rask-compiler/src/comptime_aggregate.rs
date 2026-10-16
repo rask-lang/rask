@@ -39,6 +39,64 @@ pub(crate) fn encode(
     Ok(SerializedConst { bytes: out.bytes, string_relocs: out.relocs })
 }
 
+/// A list's elements back to back at `elem`'s size, the buffer a `Vec<elem>`
+/// holds.
+pub(crate) fn encode_list(
+    items: &[ComptimeValue],
+    elem: &MirType,
+    ctx: &MirContext,
+    mono: &MonoProgram,
+) -> Result<SerializedConst, NoBytes> {
+    let stride = elem.size() as usize;
+    let mut out = Writer { ctx, mono, bytes: vec![0; stride * items.len()], relocs: Vec::new() };
+    for (i, item) in items.iter().enumerate() {
+        out.write(item, elem, i * stride)?;
+    }
+    Ok(SerializedConst { bytes: out.bytes, string_relocs: out.relocs })
+}
+
+/// A map's entries as `(key, value)` tuples back to back.
+pub(crate) fn encode_map(
+    entries: &[(ComptimeValue, ComptimeValue)],
+    key: &MirType,
+    val: &MirType,
+    ctx: &MirContext,
+    mono: &MonoProgram,
+) -> Result<SerializedConst, NoBytes> {
+    let parts = [key.clone(), val.clone()];
+    let val_at = rask_mir::tuple_offsets(&parts)[1] as usize;
+    let stride = MirType::Tuple(parts.to_vec()).size() as usize;
+    let mut out = Writer { ctx, mono, bytes: vec![0; stride * entries.len()], relocs: Vec::new() };
+    for (i, (k, v)) in entries.iter().enumerate() {
+        out.write(k, key, i * stride)?;
+        out.write(v, val, i * stride + val_at)?;
+    }
+    Ok(SerializedConst { bytes: out.bytes, string_relocs: out.relocs })
+}
+
+/// The type a scalar or string value is on its own, for a list or map whose
+/// checked type didn't come through.
+pub(crate) fn natural_type(v: &ComptimeValue) -> Option<MirType> {
+    Some(match v {
+        ComptimeValue::String(_) => MirType::String,
+        ComptimeValue::Bool(_) => MirType::Bool,
+        ComptimeValue::Char(_) => MirType::Char,
+        ComptimeValue::I8(_) => MirType::I8,
+        ComptimeValue::I16(_) => MirType::I16,
+        ComptimeValue::I32(_) => MirType::I32,
+        ComptimeValue::I64(_) => MirType::I64,
+        ComptimeValue::I128(_) => MirType::I128,
+        ComptimeValue::U8(_) => MirType::U8,
+        ComptimeValue::U16(_) => MirType::U16,
+        ComptimeValue::U32(_) => MirType::U32,
+        ComptimeValue::U64(_) => MirType::U64,
+        ComptimeValue::U128(_) => MirType::U128,
+        ComptimeValue::F32(_) => MirType::F32,
+        ComptimeValue::F64(_) => MirType::F64,
+        _ => return None,
+    })
+}
+
 struct Writer<'a, 'c> {
     ctx: &'a MirContext<'c>,
     mono: &'a MonoProgram,
@@ -168,12 +226,8 @@ impl Writer<'_, '_> {
                 if items.len() != parts.len() {
                     return Err(gap("a tuple of the wrong length"));
                 }
-                let mut offset = 0u32;
-                for (item, part) in items.iter().zip(parts) {
-                    let align = part.align();
-                    offset = (offset + align - 1) & !(align - 1);
+                for ((item, part), offset) in items.iter().zip(parts).zip(rask_mir::tuple_offsets(parts)) {
                     self.write(item, part, at + offset as usize)?;
-                    offset += part.size();
                 }
             }
             MirType::Array { elem, len } => {
@@ -211,8 +265,6 @@ impl Writer<'_, '_> {
         })
     }
 
-    /// An optional's or a result's payload. A scalar fills the whole word slot,
-    /// sign-extended, the way every run-time writer of a payload stores it.
     /// A wrapper's tag, at its own offset and width. The origin of a
     /// `T or E` stays zero: a constant has no `try` site.
     fn put_tag(&mut self, wrapper_at: usize, tag: i64) {

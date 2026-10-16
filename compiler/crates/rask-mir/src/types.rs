@@ -8,6 +8,23 @@ pub use rask_mono::abi::{
     RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
 };
 
+/// Where each field of a tuple sits: in order, each at its own alignment.
+/// The runtime builds tuples too — a map's `(key, value)` entries — and takes
+/// the offsets from here.
+pub fn tuple_offsets(fields: &[MirType]) -> Vec<u32> {
+    let mut offset = 0u32;
+    fields
+        .iter()
+        .map(|f| {
+            let align = f.align().max(1);
+            offset = (offset + align - 1) & !(align - 1);
+            let at = offset;
+            offset += f.size();
+            at
+        })
+        .collect()
+}
+
 /// Which container a handle points at. What frees it is codegen's to name;
 /// this is the vocabulary both ends share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -262,15 +279,13 @@ impl MirType {
             MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
             MirType::Tuple(fields) => {
-                let mut offset = 0u32;
-                for f in fields {
-                    let align = f.align();
-                    offset = (offset + align - 1) & !(align - 1);
-                    offset += f.size();
-                }
+                let end = match (tuple_offsets(fields).last(), fields.last()) {
+                    (Some(off), Some(f)) => off + f.size(),
+                    _ => 0,
+                };
                 // Round up to max alignment
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
-                (offset + max_align - 1) & !(max_align - 1)
+                (end + max_align - 1) & !(max_align - 1)
             }
             MirType::InterfaceObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {

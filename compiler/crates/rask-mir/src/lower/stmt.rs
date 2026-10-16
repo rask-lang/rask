@@ -86,9 +86,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
-    /// `Option<T>` place. Same two-store construction the return-path auto-wrap
-    /// uses (tag 0 at offset 0, payload at offset 8). Returns the value unchanged
-    /// when no wrap applies.
+    /// `Option<T>` place. Returns the value unchanged when no wrap applies.
     pub(super) fn wrap_for_option_place(
         &mut self,
         val_op: MirOperand,
@@ -2227,16 +2225,8 @@ impl<'a> MirLowerer<'a> {
                 if let Some(type_name) = object.name() {
                     let base = type_name;
                     if base == "Channel" && (method == "buffered" || method == "unbuffered") {
-                        // Same source the constructor uses for its elem_size arg,
-                        // falling back to the annotation's inner type name.
-                        let mut elem_size = self.generic_arg_slot_size(init.id, 0);
-                        if elem_size <= 8 {
-                            if let Some(arg) = object.written_type_args().first() {
-                                if let MirType::Struct(id) = self.ctx.resolve_type_expr(arg) {
-                                    elem_size = id.byte_size as i64;
-                                }
-                            }
-                        }
+                        // Same source the constructor uses for its elem_size arg.
+                        let elem_size = self.generic_arg_slot_size(init.id, 0)?;
                         self.meta_mut(name).channel_elem_size = Some(elem_size);
                         if !found_prefix {
                             let prefix = match i {
@@ -2422,7 +2412,7 @@ impl<'a> MirLowerer<'a> {
             // LP13: a map iterates over its entries. Without this the loop ran
             // `Vec_len`/`Vec_get` straight on the map pointer, and reading a
             // field off whatever came back segfaulted. `Map_entries` snapshots
-            // it as a Vec of 16-byte (key, value) pairs, which the tuple
+            // it as a Vec of (key, value) tuples, which the tuple
             // destructuring below already knows how to read.
             let map_tmp = self.builder.alloc_temp(iter_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2431,10 +2421,12 @@ impl<'a> MirLowerer<'a> {
             }));
             map_local = Some(map_tmp);
             let entries_vec = self.builder.alloc_temp(MirType::I64);
+            let pair = self.map_entry_pair_types(iter_expr);
+            let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(entries_vec),
                 func: FunctionRef::internal("Map_entries".to_string()),
-                args: vec![MirOperand::Local(map_tmp)],
+                args,
             }));
             (MirOperand::Local(entries_vec), MirType::I64)
         } else {

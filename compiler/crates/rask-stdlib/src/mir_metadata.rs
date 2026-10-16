@@ -980,8 +980,6 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 const BORROWS_ITS_CALLBACK: &[&str] = &[
     "Vec_sort_by",
     "Vec_sort_by_keys",
-    "Vec_map",
-    "Vec_filter",
     "rask_closure_refuse_crossing",
 ];
 

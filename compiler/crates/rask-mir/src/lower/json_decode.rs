@@ -281,7 +281,7 @@ impl<'a> MirLowerer<'a> {
 
         if let Some(elem) = self.collection_arg(ty, "Vec", 0) {
             let elem_shape = self.emit_shape(&elem)?;
-            let slot = self.slot_size_for_type(&elem).unwrap_or(8);
+            let slot = self.slot_size_for_type(&elem)?;
             let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&elem));
             return Some(self.emit_shape_call("json_shape_vec", vec![
                 MirOperand::Local(elem_shape),
@@ -298,7 +298,7 @@ impl<'a> MirLowerer<'a> {
             }
             let val = self.collection_arg(ty, "Map", 1)?;
             let val_shape = self.emit_shape(&val)?;
-            let slot = self.slot_size_for_type(&val).unwrap_or(8);
+            let slot = self.slot_size_for_type(&val)?;
             let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&val));
             return Some(self.emit_shape_call("json_shape_map", vec![
                 MirOperand::Local(val_shape),

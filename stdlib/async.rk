@@ -142,7 +142,7 @@ extend Sender<T> {
     public func send(self, take value: T) -> void or SendError {}
 
     /// Non-blocking send. Returns error if full or closed.
-    @native("rask_channel_try_send_i64")
+    @native("rask_channel_try_send_ptr")
     public func try_send(self, value: T) -> void or TrySendError {}
 
     /// Explicitly close this end. Consumes the sender: closing *is* dropping
@@ -157,7 +157,7 @@ public struct Receiver<T> { }
 
 extend Receiver<T> {
     /// Receive a value. Pauses/blocks if buffer empty.
-    @native("rask_channel_recv_i64")
+    @native("rask_channel_recv_into")
     public func receive(self) -> T or ReceiveError {}
 
     /// Non-blocking receive. Returns error if empty or closed.

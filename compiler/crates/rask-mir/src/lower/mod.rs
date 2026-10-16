@@ -275,9 +275,9 @@ pub struct ComptimeGlobalMeta {
     /// one had no element type to resolve, and an empty `Vec<string>` came out
     /// with word-sized slots for sixteen-byte strings.
     pub elem: Option<MirType>,
-    /// What a folded `Map`'s keys and values are. Lowering needs both to size
-    /// the slots in the blob and to build the map they go into.
-    pub map_types: Option<(String, String)>,
+    /// What a folded `Map`'s keys and values are. The blob is its entries as
+    /// `(K, V)` tuples, and lowering builds the map they go into.
+    pub map_types: Option<(MirType, MirType)>,
     /// `(byte offset, text)` for each string too long to sit inline.
     /// Codegen emits a static header for the text and writes its address at the
     /// offset — a pointer isn't a byte, so it can't travel in `bytes`.
@@ -2383,12 +2383,10 @@ impl<'a> MirLowerer<'a> {
         }));
         match meta.form {
             FoldedForm::List => {
-                // A scalar element is a machine word. A string, or anything
-                // else held in place, is its own size, and the vector has to
-                // be told what it holds so what it hands out is retained and
-                // released like one.
+                // The vector is told what it holds so what it hands out is
+                // retained and released like one.
                 let elem_desc = meta.elem.clone().unwrap_or(MirType::I64);
-                let elem_size = if elem_desc.passed_by_address() { elem_desc.size() as i64 } else { 8 };
+                let elem_size = elem_desc.size() as i64;
                 let vec_local = self.builder.alloc_temp(MirType::Ptr);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
@@ -2406,10 +2404,8 @@ impl<'a> MirLowerer<'a> {
                 // An empty map has no first entry to read the key and value
                 // types off, and holds nothing that could tell the
                 // difference, so any pair will do for one.
-                let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
-                    ("i64".to_string(), "i64".to_string())
-                });
-                self.build_comptime_map(data, meta.elem_count, &k, &v)
+                let (k, v) = meta.map_types.clone().unwrap_or((MirType::I64, MirType::I64));
+                self.build_comptime_map(data, meta.elem_count, k, v)
             }
             FoldedForm::Value | FoldedForm::Text => {
                 let value = self.builder.alloc_temp(folded.ty.clone());
@@ -2963,6 +2959,78 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// A scalar operand converted to `slot`'s type when the two differ in
+    /// width or register class, for a store into a slot of that type. A
+    /// narrower value stored as is leaves the bytes above it holding whatever
+    /// was there.
+    ///
+    /// Only a real change converts. A handle typed `i64` going into a `ptr`
+    /// slot is the same word, and copying it through a temporary hid the move
+    /// from the ownership pass, which then dropped the handle on the way out:
+    /// `os.signals` handed back a receiver it had already freed.
+    pub(crate) fn to_slot_width(&mut self, value: MirOperand, slot: &MirType) -> MirOperand {
+        let have = match &value {
+            MirOperand::Local(id) => self.builder.local_type(*id),
+            _ => None,
+        };
+        match have {
+            Some(have)
+                if !have.passed_by_address()
+                    && !slot.passed_by_address()
+                    && have.size() > 0
+                    && slot.size() > 0
+                    && (have.size() != slot.size() || have.is_float() != slot.is_float()) =>
+            {
+                let converted = self.builder.alloc_temp(slot.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: converted,
+                    rvalue: MirRValue::Cast { value, target_ty: slot.clone() },
+                }));
+                MirOperand::Local(converted)
+            }
+            _ => value,
+        }
+    }
+
+    /// A scalar going into a runtime container's slot, as a local of the
+    /// slot's own type: the runtime copies the slot's width out of it, so the
+    /// value has to be that wide and in that register class. A constant has
+    /// no type of its own until it lands in one. Anything passed by address
+    /// already is its storage.
+    pub(crate) fn as_slot_value(&mut self, value: MirOperand, slot: &MirType) -> MirOperand {
+        if slot.passed_by_address() || slot.size() == 0 {
+            return value;
+        }
+        match value {
+            MirOperand::Constant(c) => {
+                let typed = self.builder.alloc_temp(slot.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: typed,
+                    rvalue: MirRValue::Use(MirOperand::Constant(c)),
+                }));
+                MirOperand::Local(typed)
+            }
+            local => self.to_slot_width(local, slot),
+        }
+    }
+
+    /// The arguments `Map_entries` takes for a `Map<key, val>`: the map, then
+    /// where a value sits in an entry and how big an entry is. An entry is a
+    /// `(key, value)` tuple, read by the same code that reads any tuple, so
+    /// its layout comes from `tuple_offsets` rather than the runtime's guess:
+    /// it used to put the value at the next eight-byte boundary, and a
+    /// `Map<i32, i32>` read each value four bytes early.
+    pub(crate) fn map_entries_args(&self, map: MirOperand, key: &MirType, val: &MirType) -> Vec<MirOperand> {
+        let fields = [key.clone(), val.clone()];
+        let value_offset = crate::types::tuple_offsets(&fields)[1];
+        let entry_size = MirType::Tuple(fields.to_vec()).size();
+        vec![
+            map,
+            MirOperand::Constant(MirConst::Int(value_offset as i64)),
+            MirOperand::Constant(MirConst::Int(entry_size as i64)),
+        ]
+    }
+
     /// Fill `slot`, a local holding a `T?`, with a present `value`. A niche
     /// option is its payload, so the value is the whole of it.
     pub(crate) fn fill_present(&mut self, slot: LocalId, value: MirOperand) {
@@ -3037,35 +3105,10 @@ impl<'a> MirLowerer<'a> {
         if size == 0 {
             return;
         }
-        // A scalar can arrive narrower than the payload: `let opt: i64? = big`
-        // with `big: u32` (CV1a). Stored at its own width into an 8-byte
-        // payload, it left four bytes of whatever was there above the value.
-        //
-        // Only a real change of width or of register class converts. A handle
-        // typed `i64` going into a `ptr` payload is the same word, and
-        // converting it through a temporary hid the move from the ownership
-        // pass, which then dropped the handle on the way out: `os.signals`
-        // handed back a receiver it had already freed.
-        let actual = match &value {
-            MirOperand::Local(id) => self.builder.local_type(*id),
-            _ => None,
-        };
-        let value = match actual {
-            Some(have)
-                if !have.passed_by_address()
-                    && !arm.passed_by_address()
-                    && have.size() > 0
-                    && (have.size() != arm.size() || have.is_float() != arm.is_float()) =>
-            {
-                let widened = self.builder.alloc_temp(arm.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: widened,
-                    rvalue: MirRValue::Cast { value, target_ty: arm.clone() },
-                }));
-                MirOperand::Local(widened)
-            }
-            _ => value,
-        };
+        // `let opt: i64? = big` with `big: u32` (CV1a): stored at its own
+        // width into an 8-byte payload, it left four bytes of whatever was
+        // there above the value.
+        let value = self.to_slot_width(value, &arm);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
             offset: wrapper_ty.payload_offset(),
@@ -7571,13 +7614,27 @@ mod tests {
 
     #[test]
     fn lower_static_method_call_on_type() {
-        // Vec.new() → Call to Vec_new
+        // Instant.now() → Call to Instant_now
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Instant"), "now", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_call(&f, "Instant_now"));
+    }
+
+    #[test]
+    fn container_without_an_element_type_is_refused() {
+        // The checker rejects an element type it couldn't work out, so one
+        // missing here is a lowering bug, not a reason to guess a size.
         let decl = make_fn("f", vec![], None, vec![
             expr_stmt(method_call_expr(ident_expr("Vec"), "new", vec![])),
             return_stmt(None),
         ]);
-        let f = lower_one(&decl);
-        assert!(find_call(&f, "Vec_new"));
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
+        let err = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx).unwrap_err();
+        assert!(matches!(err, LoweringError::InvalidConstruct(ref m) if m.contains("no type")), "{err:?}");
     }
 
     #[test]

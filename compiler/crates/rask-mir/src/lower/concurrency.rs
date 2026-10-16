@@ -571,7 +571,7 @@ impl<'a> MirLowerer<'a> {
         // loop — polling must not re-run them each round.
         enum Probe {
             Recv { rx: MirOperand, buf: crate::LocalId, elem: MirType, binding: String, arm: usize },
-            Send { tx: MirOperand, value: MirOperand, arm: usize },
+            Send { tx: MirOperand, buf: crate::LocalId, arm: usize },
         }
         let mut probes = Vec::new();
         let mut default_arm: Option<usize> = None;
@@ -592,8 +592,27 @@ impl<'a> MirLowerer<'a> {
                 }
                 SelectArmKind::Send { channel, value } => {
                     let (tx, _) = self.lower_expr(channel)?;
-                    let (value, _) = self.lower_expr(value)?;
-                    probes.push(Probe::Send { tx, value, arm: i });
+                    let elem = self.channel_elem_type(channel);
+                    let (value, value_ty) = self.lower_expr(value)?;
+                    // The runtime copies the element out of a buffer, at the
+                    // channel's element size — the same one-element slot the
+                    // receive arm reads into.
+                    let value = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Argument, value, &value_ty, &elem,
+                    );
+                    let value = self.as_slot_value(value, &elem);
+                    let buf = self.builder.alloc_temp(MirType::Array {
+                        elem: Box::new(elem.clone()),
+                        len: 1,
+                    });
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: buf,
+                        offset: 0,
+                        value,
+                        store_size: Some(elem.size()),
+                        field: None,
+                    }));
+                    probes.push(Probe::Send { tx, buf, arm: i });
                 }
                 SelectArmKind::Default => default_arm = Some(i),
             }
@@ -691,12 +710,17 @@ impl<'a> MirLowerer<'a> {
                     }));
                     (status, *match probe { Probe::Recv { arm, .. } => arm, _ => unreachable!() })
                 }
-                Probe::Send { tx, value, arm } => {
+                Probe::Send { tx, buf, arm } => {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::Ref(*buf),
+                    }));
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_send_i64".to_string()),
-                        args: vec![tx.clone(), value.clone()],
+                        func: FunctionRef::internal("rask_channel_try_send_ptr".to_string()),
+                        args: vec![tx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *arm)
                 }

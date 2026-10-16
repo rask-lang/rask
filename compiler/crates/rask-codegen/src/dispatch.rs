@@ -12,9 +12,12 @@
 //!
 //! The typed C API uses `const void*` for element parameters and returns
 //! `void*` for element access. Builder.rs handles the adaptation:
-//! - Constructors: codegen injects hardcoded elem_size (8) args
-//! - Value params (push, set, insert): codegen stores to stack slot, passes address
-//! - Value returns (get, pop): codegen loads from returned/out pointer
+//! - Constructors: lowering passes each element's size; codegen expands the
+//!   element tags into owned-offset tables
+//! - Value params (push, set, insert): codegen stores the value at its own
+//!   width in a stack slot and passes the address
+//! - Value returns (get, pop): codegen loads from the returned or out pointer
+//!   at the destination's width
 
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
@@ -27,10 +30,6 @@ use crate::{CodegenError, CodegenResult};
 pub enum ArgAdapt {
     /// Pass args as-is
     None,
-    /// Inject elem_size=8 as first arg when args empty (Vec_new)
-    InjectOneSize,
-    /// Inject key_size=8, val_size=8 when args empty (Map_new)
-    InjectTwoSizes,
     /// A container constructor: `leading` size arguments, then one element tag
     /// per `tags`, each expanded into (offsets pointer, count).
     ///
@@ -224,7 +223,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Vec_free_view", "rask_vec_free_view", &[types::I64], None, false),
-        StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64, types::I64], None, false),
+        StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         // Giving back the reference a captured variable's slot held, on the way
         // to the slot holding another one. Spelled apart from the refcount
@@ -375,23 +374,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // `join` on anything but strings — the last argument is a
+        // RASK_ELEM_KIND_* code, for the same reason `Vec_debug`'s is.
         StdlibEntry {
-            mir_name: "Vec_join_i64", c_name: "rask_vec_join_i64",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            mir_name: "Vec_join_scalar", c_name: "rask_vec_join_scalar",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // `{v:debug}` — the second argument is a RASK_DEBUG_ELEM_* code saying
+        // `{v:debug}` — the second argument is a RASK_ELEM_KIND_* code saying
         // how to read one element, since the header only carries its width.
         StdlibEntry {
             mir_name: "Vec_debug", c_name: "rask_vec_debug",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("Vec_sort", "rask_vec_sort", &[types::I64], None, false),
         StdlibEntry::simple("Vec_sort_str", "rask_vec_sort_str", &[types::I64], None, false),
         // Sort by the scalar at offset 0 of each element: `sort()` on a Vec
         // of scalars, and `{m:debug}` ordering a map's (key, value) pairs.
-        // Args: (vec, RASK_DEBUG_ELEM_* kind, size in bytes).
+        // Args: (vec, RASK_ELEM_KIND_* kind, size in bytes).
         StdlibEntry::simple(
             "Vec_sort_scalar", "rask_vec_sort_scalar",
             &[types::I64, types::I64, types::I64], None, false,
@@ -436,9 +436,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Iterator runtime support ──────────────────────────────
         StdlibEntry::simple("Vec_skip", "rask_iter_skip", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_take", "rask_iter_take", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Vec_map", "rask_vec_map", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_collect", "rask_vec_collect", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Vec_filter", "rask_vec_filter", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Wide<T> data-parallel (conc.data-parallel) ─────────
         // Closure-free ops only. `.wide()`/`.read()` reuse Vec clone (Wide is a
@@ -969,8 +967,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clear", "rask_map_clear", &[types::I64], None, false),
         StdlibEntry::simple("Map_keys", "rask_map_keys", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_values", "rask_map_values", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Map_iter", "rask_map_entries", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Map_entries", "rask_map_entries", &[types::I64], Some(types::I64), false),
+        // (map, value offset, entry size): an entry is a `(key, value)` tuple
+        // and lowering lays it out.
+        StdlibEntry::simple("Map_iter", "rask_map_entries", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Map_entries", "rask_map_entries", &[types::I64, types::I64, types::I64], Some(types::I64), false),
 
         // ── Rack + Link operations (mem.racks) ─────────────────
         // `Rack.new()` has nothing to read `T` off, so the node type's size and
@@ -1425,7 +1425,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::AppendZero, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Channel_new", "rask_channel_new_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("channel_tx", "rask_channel_get_tx", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("channel_rx", "rask_channel_get_rx", &[types::I64], Some(types::I64), false),
 
@@ -1435,7 +1434,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::Status,
         },
-        StdlibEntry::neg_err("Sender_try_send", "rask_channel_try_send_i64", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Sender_try_send", c_name: "rask_channel_try_send_ptr",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::NegErr,
+        },
         StdlibEntry::neg_err("Sender_close", "rask_sender_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
@@ -1467,7 +1470,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("rask_select_wait", "rask_select_wait", &[types::I64], Some(types::I64), false),
         StdlibEntry::neg_err("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
-        StdlibEntry::simple("receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("recver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
 
         // ── Concurrency: Shared<T> ──────────────────────────────────
@@ -1978,6 +1980,7 @@ mod tests {
     ("Vec.modify",                Ok_("t_native_reach_vec")),
     ("Vec.position",              Ok_("t_native_reach_vec")),
     ("Vec.read",                  Ok_("t_native_reach_vec")),
+    ("Vec.sort",                  Ok_("t_container_real_width")),
     ("Vec.reduce",                Ok_("t_native_reach_vec")),
     ("Vec.sort_by_key",           Ok_("t_native_reach_vec")),
     ("Vec.sum",                   Ok_("t_native_reach_vec")),

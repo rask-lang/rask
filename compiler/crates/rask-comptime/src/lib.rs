@@ -247,27 +247,6 @@ pub struct SerializedConst {
     pub string_relocs: Vec<(usize, String)>,
 }
 
-/// The Rask type name of a scalar or string, spelled the way an annotation
-/// would be. `None` for anything with no constant form.
-fn scalar_type_name(v: &ComptimeValue) -> Option<&'static str> {
-    Some(match v {
-        ComptimeValue::String(_) => "string",
-        ComptimeValue::Bool(_) => "bool",
-        ComptimeValue::Char(_) => "char",
-        ComptimeValue::I8(_) => "i8",
-        ComptimeValue::I16(_) => "i16",
-        ComptimeValue::I32(_) => "i32",
-        ComptimeValue::I64(_) => "i64",
-        ComptimeValue::U8(_) => "u8",
-        ComptimeValue::U16(_) => "u16",
-        ComptimeValue::U32(_) => "u32",
-        ComptimeValue::U64(_) => "u64",
-        ComptimeValue::F32(_) => "f32",
-        ComptimeValue::F64(_) => "f64",
-        _ => return None,
-    })
-}
-
 /// Whether two comptime values are the same map key.
 ///
 /// A key is a scalar or a string — the things a map can hash — so this is
@@ -492,26 +471,6 @@ impl ComptimeValue {
         }
     }
 
-    /// The Rask type name of what an Array holds, spelled the way a type
-    /// annotation would be.
-    ///
-    /// A comptime global keeps its bytes and its length but used to drop what
-    /// those bytes *are*, so `SQUARES[i]` on a `const SQUARES = comptime { … }`
-    /// had nothing to go on and lowering guessed i64 — right for these, wrong
-    /// the moment a comptime block builds floats or strings.
-    pub fn elem_type_name(&self) -> Option<&'static str> {
-        let ComptimeValue::Array(elems) = self else { return None };
-        let first = elems.first()?;
-        Some(match first {
-            // `type_name` spells this one for error messages, not as a type.
-            ComptimeValue::String(_) => "string",
-            ComptimeValue::Array(_) | ComptimeValue::Tuple(_) | ComptimeValue::Map(_)
-            | ComptimeValue::Struct { .. } | ComptimeValue::Enum { .. }
-            | ComptimeValue::Closure { .. } | ComptimeValue::Unit => return None,
-            other => other.type_name(),
-        })
-    }
-
     /// Convert to bool if possible.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -563,64 +522,6 @@ impl ComptimeValue {
         }
     }
 
-    /// Serialize to bytes for embedding in Cranelift data sections.
-    ///
-    /// Primitives, strings, and arrays of either. Anything else has no constant
-    /// form and the const is left to run where it's used.
-    pub fn serialize(&self) -> Option<SerializedConst> {
-        let mut out = SerializedConst::default();
-        match self {
-            ComptimeValue::Array(elems) => {
-                for elem in elems {
-                    elem.write_array_element(&mut out)?;
-                }
-            }
-            // The characters, not a `RaskStr`. Lowering turns a whole-value
-            // string back into a string literal, which is already emitted as
-            // const data with a sentinel refcount — so a folded string const
-            // costs nothing at startup and needs no layout knowledge here. An
-            // *element* is different: it sits in a slot next to its neighbours,
-            // so it has to be a real `RaskStr` (see `write_element`).
-            ComptimeValue::String(s) => out.bytes.extend_from_slice(s.as_bytes()),
-            // Entries back to back, key then value, each in a slot of its own.
-            // Lowering reads them at the same offsets and inserts them into a
-            // real map: a hash table seeds its layout per process, so there is
-            // no static table to emit, only the entries to put in one (#1075).
-            ComptimeValue::Map(entries) => {
-                for (k, v) in entries {
-                    k.write_map_slot(&mut out)?;
-                    v.write_map_slot(&mut out)?;
-                }
-            }
-            _ => out.bytes.extend(self.serialize_element()?),
-        }
-        Some(out)
-    }
-
-    /// The Rask type names of a map's keys and values, taken from the first
-    /// entry. `None` for an empty map, or one holding something with no
-    /// constant form.
-    pub fn map_types(&self) -> Option<(&'static str, &'static str)> {
-        let ComptimeValue::Map(entries) = self else { return None };
-        let (k, v) = entries.first()?;
-        Some((scalar_type_name(k)?, scalar_type_name(v)?))
-    }
-
-    /// One map slot: the value, then padding out to the next eight bytes.
-    ///
-    /// Every slot is a whole number of words, so a sixteen-byte string never
-    /// lands at a four-byte offset. Lowering computes the same offsets from the
-    /// type names in the metadata, so the two sides can't drift.
-    fn write_map_slot(&self, out: &mut SerializedConst) -> Option<()> {
-        scalar_type_name(self)?;
-        let start = out.bytes.len();
-        self.write_element(out)?;
-        let written = out.bytes.len() - start;
-        let padded = written.div_ceil(8) * 8;
-        out.bytes.resize(start + padded, 0);
-        Some(())
-    }
-
     /// Append one array element to `out`.
     ///
     /// A string element is a full sixteen-byte `RaskStr`: up to fifteen
@@ -645,33 +546,6 @@ impl ComptimeValue {
             }
             _ => out.bytes.extend(self.serialize_element()?),
         }
-        Some(())
-    }
-
-    /// One vector element: a string as a `RaskStr`, anything else in the
-    /// machine word the runtime's vector holds it in, signed integers
-    /// sign-extended. Packed at its own width, a folded `Vec<bool>` put eight
-    /// flags in the word the reader takes as one (18_comptime). Wider than a
-    /// word has no folded form here.
-    fn write_array_element(&self, out: &mut SerializedConst) -> Option<()> {
-        let word: i64 = match self {
-            ComptimeValue::String(_) => return self.write_element(out),
-            ComptimeValue::I8(v) => *v as i64,
-            ComptimeValue::I16(v) => *v as i64,
-            ComptimeValue::I32(v) => *v as i64,
-            ComptimeValue::I64(v) => *v,
-            _ => {
-                let raw = self.serialize_element()?;
-                if raw.len() > 8 {
-                    return None;
-                }
-                let mut w = [0u8; 8];
-                w[..raw.len()].copy_from_slice(&raw);
-                out.bytes.extend_from_slice(&w);
-                return Some(());
-            }
-        };
-        out.bytes.extend_from_slice(&word.to_le_bytes());
         Some(())
     }
 

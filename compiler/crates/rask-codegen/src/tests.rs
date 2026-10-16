@@ -1167,7 +1167,7 @@ mod tests {
     #[test]
     fn codegen_stdlib_vec_push() {
         // Calling stdlib Vec methods through dispatch.
-        // _0 = Vec_new()
+        // _0 = Vec_new(4, <i32>)
         // Vec_push(_0, 42)
         let mir = MirFunction {
             name: "f".to_string(),
@@ -1178,7 +1178,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    call(Some(0), "Vec_new", vec![]),
+                    call(Some(0), "Vec_new", vec![i32_const(4), rask_mir::elem_strs::elem(MirType::I32)]),
                     call(None, "Vec_push", vec![local_op(0), i32_const(42)]),
                 ], ret(None)),
             ],
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn codegen_stdlib_vec_len() {
-        // _0 = Vec_new()
+        // _0 = Vec_new(8, <i64>)
         // _1 = Vec_len(_0)
         // return _1
         let mir = MirFunction {
@@ -1207,7 +1207,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    call(Some(0), "Vec_new", vec![]),
+                    call(Some(0), "Vec_new", vec![i32_const(8), rask_mir::elem_strs::elem(MirType::I64)]),
                     call(Some(1), "Vec_len", vec![local_op(0)]),
                 ], ret(Some(local_op(1)))),
             ],

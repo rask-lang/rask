@@ -16,6 +16,32 @@
 // `uint32_t`, zero for none (`crate::abi`).
 #define RASK_RESULT_ORIGIN_LINE_OFFSET 4
 
+// How the runtime reads one element of a vector it formats or sorts. The
+// vector only records a width, and a four-byte element could be an i32,
+// a u32 or an f32 — which print and order differently — so the caller
+// says which.
+#define RASK_ELEM_KIND_SIGNED 0
+#define RASK_ELEM_KIND_UNSIGNED 1
+#define RASK_ELEM_KIND_FLOAT 2
+#define RASK_ELEM_KIND_BOOL 3
+#define RASK_ELEM_KIND_STRING 4
+#define RASK_ELEM_KIND_CHAR 5
+
+// How a sort hands its comparator two elements. An integer goes in a
+// register, widened from the element's own width.
+#define RASK_SORT_PASS_WORD 0
+
+// A pointer to each element: aggregates and strings.
+#define RASK_SORT_PASS_ADDRESS 1
+
+// A 128-bit integer, as one value in two registers.
+#define RASK_SORT_PASS_WIDE 2
+
+// A float goes in a float register, so the comparator is called through
+// a signature that says so.
+#define RASK_SORT_PASS_F64 3
+#define RASK_SORT_PASS_F32 4
+
 // A `RaskStr` holds up to this many bytes inline. Its last byte is the
 // inline capacity left, so an empty string's is this.
 #define RASK_SSO_MAX 15

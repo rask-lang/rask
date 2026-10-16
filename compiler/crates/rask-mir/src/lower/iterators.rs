@@ -527,7 +527,8 @@ impl<'a> MirLowerer<'a> {
         // Missing: run the factory and put its value in, so the modify path
         // below has something to read either way.
         self.builder.switch_to_block(insert_block);
-        let (default_op, _) = self.inline_closure_no_arg(&args[1].expr)?;
+        let (default_op, default_ty) = self.inline_closure_no_arg(&args[1].expr)?;
+        let default_op = self.as_slot_value(default_op, &default_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Map_insert".to_string()),
@@ -1268,10 +1269,10 @@ impl<'a> MirLowerer<'a> {
         elem: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let result_vec = self.builder.alloc_temp(MirType::I64);
-        // The element size isn't known until the adapters have been lowered —
-        // `.map(|r| r.view.clone())` collects whatever the closure returns. Note
-        // where the call lands and fill the size in below; a bare `Vec_new()`
-        // defaulted to an 8-byte stride, so collecting structs overlapped them.
+        // Without a checker type the element size isn't known until the
+        // adapters have been lowered — `.map(|r| r.view.clone())` collects
+        // whatever the closure returns. Note where the call lands and fill the
+        // size in below.
         let vec_new_pos = self.builder.next_stmt_pos();
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_vec),
@@ -1284,16 +1285,22 @@ impl<'a> MirLowerer<'a> {
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
         )?;
-        let elem_size = Self::mir_slot_size(&final_ty);
-        if elem_size > 0 {
-            let args = vec![
-                MirOperand::Constant(MirConst::Int(elem_size)),
-                crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
-            ];
-            self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
-            self.collected_elem_types.insert(result_vec, final_ty);
-        }
+        // The vector holds the checker's element type. A `map` whose closure
+        // body computes an `i32` can still yield `i64`s, widened on the way
+        // out because the binding asked for a `Vec<i64>`; sized by the body,
+        // the vector held 4-byte elements that every reader took 8 at a time.
+        let slot_ty = elem
+            .as_ref()
+            .map(MirType::without_container_kinds)
+            .unwrap_or_else(|| final_ty.clone());
+        let args = vec![
+            MirOperand::Constant(MirConst::Int(slot_ty.size() as i64)),
+            crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
+        ];
+        self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
+        self.collected_elem_types.insert(result_vec, slot_ty.clone());
 
+        let final_op = self.as_slot_value(final_op, &slot_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_push".to_string()),
@@ -1355,21 +1362,24 @@ impl<'a> MirLowerer<'a> {
             "Map_new",
             crate::elem_strs::map_ctor_for(&key_ty),
             vec![
-                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty))),
-                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&val_ty))),
+                MirOperand::Constant(MirConst::Int((key_ty.size() as i64))),
+                MirOperand::Constant(MirConst::Int((val_ty.size() as i64))),
                 crate::elem_strs::elem(key.unwrap_or_else(|| key_ty.clone())),
                 crate::elem_strs::elem(value.unwrap_or_else(|| val_ty.clone())),
             ],
         );
 
+        // The pair is a `(key, value)` tuple, each field at its own offset
+        // and width.
+        let offsets = crate::types::tuple_offsets(&[key_ty.clone(), val_ty.clone()]);
         let key = self.builder.alloc_temp(key_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: key,
             rvalue: MirRValue::Field {
                 base: final_op.clone(),
                 field_index: 0,
-                byte_offset: Some(0),
-                access: FieldAccess::Word,
+                byte_offset: Some(offsets[0]),
+                access: FieldAccess::for_field(&key_ty, key_ty.size()),
             },
         }));
         let val = self.builder.alloc_temp(val_ty.clone());
@@ -1378,8 +1388,8 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: final_op,
                 field_index: 1,
-                byte_offset: Some(Self::mir_slot_size(&key_ty) as u32),
-                access: FieldAccess::Word,
+                byte_offset: Some(offsets[1]),
+                access: FieldAccess::for_field(&val_ty, val_ty.size()),
             },
         }));
         // SEQ29: a later key overwrites an earlier one. `Map_set`, because
@@ -2059,7 +2069,7 @@ impl<'a> MirLowerer<'a> {
             vec_new_pos.1,
             "Vec_new",
             vec![
-                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&pair_ty))),
+                MirOperand::Constant(MirConst::Int((pair_ty.size() as i64))),
                 crate::elem_strs::elem(pair.unwrap_or_else(|| pair_ty.clone())),
             ],
         );
@@ -2297,6 +2307,7 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(vec_local), MirOperand::Local(ex_idx)],
         }));
         let (key_op, key_ty) = self.inline_closure_body(closure, MirOperand::Local(elem), elem_ty)?;
+        let key_op = self.as_slot_value(key_op, &key_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_push".to_string()),
@@ -2325,7 +2336,7 @@ impl<'a> MirLowerer<'a> {
             keys_new_pos.0,
             keys_new_pos.1,
             "Vec_new",
-            vec![MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty)))],
+            vec![MirOperand::Constant(MirConst::Int((key_ty.size() as i64)))],
         );
 
         // The sort itself is the runtime's merge sort, over the keys.

@@ -228,17 +228,6 @@ fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
     }
 }
 
-/// The width a Vec element actually occupies. Scalars live in 8-byte slots, so
-/// a narrower type on the reading side sees half a value; aggregates keep their
-/// own size.
-fn vec_slot_type(ty: MirType) -> MirType {
-    match ty {
-        MirType::Struct(_) | MirType::Enum(_) => ty,
-        _ if ty.size() < 8 => MirType::I64,
-        _ => ty,
-    }
-}
-
 /// An annotation attachment's value as a MIR constant
 /// (type.annotations/AN1, AN6). The declared type decides how the value reads —
 /// `3` is an integer for `weight: i64` and a float for `scale: f64` — so this
@@ -457,9 +446,10 @@ impl<'a> MirLowerer<'a> {
     /// segfaulted. A 128-bit integer is a value in two words, and passing it as
     /// one gave `|a, b| a.compare(b)` half of each element (#1408).
     pub(super) fn sort_pass(ty: &MirType) -> MirOperand {
-        const WORD: i64 = 0;
-        const ADDRESS: i64 = 1;
-        const WIDE: i64 = 2;
+        use rask_mono::runtime_abi::{
+            RASK_SORT_PASS_ADDRESS as ADDRESS, RASK_SORT_PASS_F32, RASK_SORT_PASS_F64,
+            RASK_SORT_PASS_WIDE as WIDE, RASK_SORT_PASS_WORD as WORD,
+        };
         let pass = match ty {
             MirType::String
             | MirType::Struct(_)
@@ -472,6 +462,10 @@ impl<'a> MirLowerer<'a> {
             | MirType::SimdVector { .. }
             | MirType::InterfaceObject { .. } => ADDRESS,
             MirType::I128 | MirType::U128 => WIDE,
+            // A float travels in a float register, so the runtime has to call
+            // the comparator through a float signature.
+            MirType::F64 => RASK_SORT_PASS_F64,
+            MirType::F32 => RASK_SORT_PASS_F32,
             _ => WORD,
         };
         MirOperand::Constant(MirConst::Int(pass))
@@ -915,7 +909,7 @@ impl<'a> MirLowerer<'a> {
     ) -> (MirOperand, MirType) {
         let concrete_type = self.mir_type_name(concrete_mir_ty)
             .unwrap_or_else(|| "unknown".to_string());
-        let concrete_size = self.elem_size_for_type(concrete_mir_ty) as u32;
+        let concrete_size = (concrete_mir_ty.size() as i64) as u32;
         let vtable_name = format!(".vtable.{}__{}", concrete_type, interface_name);
         let interface_obj_ty = MirType::InterfaceObject { interface_name: interface_name.to_string() };
         let result_local = self.builder.alloc_temp(interface_obj_ty.clone());
@@ -998,9 +992,21 @@ impl<'a> MirLowerer<'a> {
     /// compiled to field 2 of an unrelated struct and a string comparison.
     fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<TypeExpr> {
         let Some(arity) = Self::elem_closure_arity(method) else { return Vec::new() };
-        let Some(key) = Self::vec_tracking_key(object) else { return Vec::new() };
-        let elem = self.tracked_elem_for_key(&key);
-        let Some(name) = elem.and_then(|ty| self.mir_type_name(&ty)) else { return Vec::new() };
+        // The checker's element type first. Push tracking only sees what was
+        // lowered, and a float literal lowers as an f64 wherever it lands, so
+        // `Vec<f32>`'s comparator took two doubles where the sort handed it
+        // two floats.
+        let elem = self.collection_elem_of_expr(object).or_else(|| {
+            Self::vec_tracking_key(object).and_then(|key| self.tracked_elem_for_key(&key))
+        });
+        // `mir_type_name` answers the method prefix, and f32 shares f64's
+        // methods. The parameter needs the element's own type.
+        let name = match elem {
+            Some(MirType::F32) => Some("f32".to_string()),
+            Some(ty) => self.mir_type_name(&ty),
+            None => None,
+        };
+        let Some(name) = name else { return Vec::new() };
         vec![TypeExpr::named(name); arity]
     }
 
@@ -2050,7 +2056,7 @@ impl<'a> MirLowerer<'a> {
             let (cnt, _) = self.lower_expr(count)?;
             let result_ty = MirType::Ptr;
             let result_local = self.builder.alloc_temp(result_ty.clone());
-            let elem_size = self.elem_size_for_type(&elem_ty);
+            let elem_size = (elem_ty.size() as i64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
                 func: FunctionRef::internal("array_repeat".to_string()),
@@ -2327,23 +2333,16 @@ impl<'a> MirLowerer<'a> {
                     let boxed = self.box_into_owned(operand_op, &payload);
                     return Ok((boxed, MirType::Heap(Box::new(payload))));
                 }
-                // A float pointee reads as a float. `rask_ptr_read` hands
-                // back an `int64_t`, so the bits arrived intact and got
-                // printed as an integer — `*q` on a `*f64` holding 2.5 said
-                // 4612811918334231000 (#1091). A struct pointee still takes
-                // the arm below it.
-                UnaryOp::Deref if self.float_pointee(operand).is_some() => {
-                    let want = self.float_pointee(operand).expect("just checked");
-                    return Ok(self.emit_float_load(operand_op, want));
-                }
-                // `*p` on a raw pointer reads exactly the pointee: its width
-                // and its sign. A full-word load read "hello" through a
-                // `*u8` as 1869376613 instead of 101 (#696), and a zeroed
-                // word made an `*i16` holding -2 read as 65534. `p.read()`
-                // goes through the same load.
-                UnaryOp::Deref if self.integral_pointee(operand).is_some() => {
-                    let want = self.integral_pointee(operand).expect("just checked");
-                    return Ok(self.emit_int_load(operand_op, want));
+                // `*p` on a raw pointer reads exactly the pointee: its width,
+                // its sign and its register class. A full-word load read
+                // "hello" through a `*u8` as 1869376613 instead of 101 (#696),
+                // a zeroed word made an `*i16` holding -2 read as 65534, and
+                // an integer load printed a `*f64` holding 2.5 as
+                // 4612811918334231000 (#1091). `p.read()` goes through the
+                // same load.
+                UnaryOp::Deref if self.scalar_pointee(operand).is_some() => {
+                    let want = self.scalar_pointee(operand).expect("just checked");
+                    return Ok(self.emit_pointee_load(operand_op, want));
                 }
                 // `*b` on a `Heap<T>` reads the block. An aggregate lives
                 // at an address anyway, so the block's address *is* the
@@ -5213,9 +5212,7 @@ impl<'a> MirLowerer<'a> {
         // A method that writes through `self` changes the view, so its
         // elements are copied back into the array afterwards.
         let write_back = match &obj_ty {
-            MirType::Array { elem, .. } if Self::vec_method_mutates(method) => {
-                Some((obj_op.clone(), elem.size()))
-            }
+            MirType::Array { .. } if Self::vec_method_mutates(method) => Some(obj_op.clone()),
             _ => None,
         };
         let (obj_op, obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
@@ -5227,11 +5224,11 @@ impl<'a> MirLowerer<'a> {
         let result = self.lower_regular_method_call(
             expr, object, method, args, type_args, obj_op, obj_ty, wb_mark,
         )?;
-        if let Some((array, stride)) = write_back {
+        if let Some(array) = write_back {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("rask_vec_copy_back".to_string()),
-                args: vec![view, array, MirOperand::Constant(MirConst::Int(stride as i64))],
+                args: vec![view, array],
             }));
         }
         Ok(result)
@@ -5283,68 +5280,20 @@ impl<'a> MirLowerer<'a> {
         let MirType::Array { elem, len } = obj_ty else {
             return None;
         };
-        // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size
-        // 8 and every Vec method reads a whole word per element. An array packs
-        // them at their natural stride, so handing the buffer over as-is built a
-        // Vec whose stride and readers disagreed: `[1i32, 2i32, 3i32].join(",")`
-        // answered `8589934593,12884901890,3`, where 8589934593 is `(2<<32)|1` —
-        // two elements read as one. Copy narrow scalars up to the slot width
-        // first; `lower_vec_from_array_with` widens for the same reason.
-        let (buffer, slot_size) = self.array_buffer_at_vec_stride(obj_op, elem, *len);
+        // An array and a Vec lay their elements out alike, each at its own
+        // size, so the buffer is handed over as it is.
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
             func: FunctionRef::internal("rask_vec_view".to_string()),
             args: vec![
-                buffer,
+                obj_op.clone(),
                 MirOperand::Constant(MirConst::Int(*len as i64)),
-                MirOperand::Constant(MirConst::Int(slot_size as i64)),
+                MirOperand::Constant(MirConst::Int(elem.size() as i64)),
                 crate::elem_strs::elem((**elem).clone()),
             ],
         }));
         Some((MirOperand::Local(vec_local), MirType::I64))
-    }
-
-    /// The array's elements laid out the way a Vec expects them, and the stride
-    /// that describes it.
-    ///
-    /// Anything already a word or wider is handed over as-is — the strides
-    /// agree, so there is nothing to copy. A narrower scalar is read out
-    /// element by element into a fresh array of word-sized slots; the length is
-    /// a compile-time constant, so this is a fixed sequence rather than a loop.
-    fn array_buffer_at_vec_stride(
-        &mut self,
-        obj_op: &MirOperand,
-        elem: &MirType,
-        len: u32,
-    ) -> (MirOperand, u32) {
-        let elem_size = elem.size();
-        if elem_size >= 8 || matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
-            return (obj_op.clone(), elem_size);
-        }
-        // Word-sized slots, so the buffer is `8 * len` bytes and the stores
-        // below land where the Vec's readers look.
-        let wide_ty = MirType::Array { elem: Box::new(MirType::I64), len };
-        let wide = self.builder.alloc_temp(wide_ty);
-        for i in 0..len {
-            let slot = self.builder.alloc_temp(elem.clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: slot,
-                rvalue: MirRValue::ArrayIndex {
-                    base: obj_op.clone(),
-                    index: MirOperand::Constant(MirConst::Int(i as i64)),
-                    elem_size,
-                },
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: wide,
-                offset: i * 8,
-                value: MirOperand::Local(slot),
-                store_size: None,
-                field: None,
-            }));
-        }
-        (MirOperand::Local(wide), 8)
     }
 
     /// Calls where the receiver is a type or module name, not a value:
@@ -5468,23 +5417,36 @@ impl<'a> MirLowerer<'a> {
 
                         // .variants() on enum types: build a Vec of tag values
                         if method == "variants" && args.is_empty() {
-                            if let Some((_idx, layout)) = self.ctx.find_enum(name) {
-                                // Create a new Vec
+                            if let Some((idx, layout)) = self.ctx.find_enum(name) {
+                                // A `Vec` of the enum itself: each element is a
+                                // value with only its tag written.
+                                let enum_ty = MirType::Enum(crate::types::EnumLayoutId::new(
+                                    idx as u32, layout.size, layout.align,
+                                ));
+                                let (tag_offset, tag_bytes) =
+                                    (layout.tag_offset as u32, layout.tag_bytes());
                                 let vec_local = self.builder.alloc_temp(MirType::Ptr);
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(vec_local),
                                     func: FunctionRef::internal("Vec_new".to_string()),
-                                    args: vec![],
+                                    args: vec![
+                                        MirOperand::Constant(MirConst::Int(enum_ty.size() as i64)),
+                                        crate::elem_strs::elem(enum_ty.clone()),
+                                    ],
                                 }));
-                                // Push each variant's tag value
                                 for variant in &layout.variants {
+                                    let value = self.builder.alloc_temp(enum_ty.clone());
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                        addr: value,
+                                        offset: tag_offset,
+                                        value: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                                        store_size: Some(tag_bytes),
+                                        field: None,
+                                    }));
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                         dst: None,
                                         func: FunctionRef::internal("Vec_push".to_string()),
-                                        args: vec![
-                                            MirOperand::Local(vec_local),
-                                            MirOperand::Constant(MirConst::Int(variant.tag as i64)),
-                                        ],
+                                        args: vec![MirOperand::Local(vec_local), MirOperand::Local(value)],
                                     }));
                                 }
                                 return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
@@ -5746,7 +5708,7 @@ impl<'a> MirLowerer<'a> {
                             if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
                                 || ((base_name == "Shared" || base_name == "Mutex") && method == "new")
                             {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0)?;
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 if base_name == "Channel" {
                                     // Channel: elem_size goes first → (elem_size, capacity)
@@ -5785,7 +5747,7 @@ impl<'a> MirLowerer<'a> {
                             if base_name == "Vec"
                                 && (method == "new" || method == "with_capacity" || method == "fixed")
                             {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
+                                let elem_size = self.generic_arg_slot_size(expr.id, 0)?;
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
                                 arg_operands.insert(0, size_op);
                                 // What the elements are, settled here and kept
@@ -5797,8 +5759,8 @@ impl<'a> MirLowerer<'a> {
                             // key_size, val_size. with_capacity keeps its `n`
                             // after them, the way Vec's does.
                             if (base_name == "Map") && (method == "new" || method == "with_capacity") {
-                                let key_size = self.generic_arg_slot_size(expr.id, 0);
-                                let val_size = self.generic_arg_slot_size(expr.id, 1);
+                                let key_size = self.generic_arg_slot_size(expr.id, 0)?;
+                                let val_size = self.generic_arg_slot_size(expr.id, 1)?;
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
                                 arg_operands.push(self.container_elem_desc(expr.id, 0));
@@ -6235,31 +6197,63 @@ impl<'a> MirLowerer<'a> {
             all_args.push(MirOperand::Constant(MirConst::Int(kind)));
         }
 
-        // A value going into a container's element slot is an argument position,
-        // so it gains wrapper layers the same way any other one does. Nothing
-        // did that here: a stdlib method has no `param_ty_strs` to coerce
-        // against, so `v.push(1)` on a `Vec<i32?>` stored a bare 1 into a
-        // 16-byte `[tag][payload]` slot. Reading it back said absent natively
-        // and handed the interpreter a bare i64.
-        if let Some((arg_index, type_arg_index)) = match qualified_name.as_str() {
-            "Vec_push" | "Vec_remove_item" => Some((0usize, 0usize)),
-            "Vec_set" | "Vec_insert" => Some((1, 0)),
-            "Map_insert" => Some((1, 1)),
-            _ => None,
-        } {
-            // all_args[0] is the receiver.
-            if let (Some(elem_ty), Some(src_ty)) = (
-                self.container_elem_mir_type(object.id, type_arg_index),
-                arg_types.get(arg_index).cloned(),
+        // A value going into a container's slot — an element, a key, a box's
+        // payload — is an argument position, so it gains wrapper layers the
+        // same way any other one does. Nothing did that here: a stdlib method
+        // has no `param_ty_strs` to coerce against, so `v.push(1)` on a
+        // `Vec<i32?>` stored a bare 1 into a `[tag][payload]` slot. Reading it
+        // back said absent natively and handed the interpreter a bare i64.
+        //
+        // A scalar is then handed over as a local of the slot's own type. The
+        // runtime copies the slot's width out of it, so a literal `5` going
+        // into a `Vec<u8>` has to be one byte, and a `2.5` into a `Vec<f32>`
+        // an f32.
+        //
+        // Each entry: (argument index, which of the container's type arguments
+        // the slot holds). `all_args[0]` is the receiver.
+        let slot_args: &[(usize, usize)] = match qualified_name.as_str() {
+            "Vec_push" | "Vec_try_push" | "Vec_remove_item" | "Vec_contains" => &[(0, 0)],
+            "Vec_set" | "Vec_insert" | "Vec_write_back" => &[(1, 0)],
+            "Map_insert" | "Map_set" | "Map_write_back" => &[(0, 0), (1, 1)],
+            "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_lend"
+            | "Map_borrow_elem" => &[(0, 0)],
+            "Sender_send" | "Sender_try_send" | "Rack_insert" => &[(0, 0)],
+            "Shared_set" | "Shared_replace" | "Mutex_set" | "Mutex_replace" | "Cell_set"
+            | "Cell_replace" => &[(0, 0)],
+            _ => &[],
+        };
+        // An entry is a `(key, value)` tuple, laid out by the caller.
+        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter") && all_args.len() == 1 {
+            if let (Some(key), Some(val)) = (
+                self.container_elem_mir_type(object.id, 0),
+                self.container_elem_mir_type(object.id, 1),
             ) {
-                if let Some(slot) = all_args.get(arg_index + 1).cloned() {
-                    all_args[arg_index + 1] = self.coerce_into_wrapper(
-                        rask_ast::coercion::CoercionSite::Argument,
-                        slot,
-                        &src_ty,
-                        &elem_ty,
-                    );
-                }
+                let map = all_args[0].clone();
+                all_args = self.map_entries_args(map, &key, &val);
+            }
+        }
+
+        // A box's constructor is called on the type, so the box is the call's
+        // own result.
+        let (slot_args, holder) = match qualified_name.as_str() {
+            "Shared_new" | "Mutex_new" | "Cell_new" => (&[(0usize, 0usize)][..], expr.id),
+            _ => (slot_args, object.id),
+        };
+        for &(arg_index, type_arg_index) in slot_args {
+            let (Some(slot_ty), Some(src_ty)) = (
+                self.container_elem_mir_type(holder, type_arg_index),
+                arg_types.get(arg_index).cloned(),
+            ) else {
+                continue;
+            };
+            if let Some(arg) = all_args.get(arg_index + 1).cloned() {
+                let arg = self.coerce_into_wrapper(
+                    rask_ast::coercion::CoercionSite::Argument,
+                    arg,
+                    &src_ty,
+                    &slot_ty,
+                );
+                all_args[arg_index + 1] = self.as_slot_value(arg, &slot_ty);
             }
         }
 
@@ -6295,7 +6289,7 @@ impl<'a> MirLowerer<'a> {
         // fit in the return value. One shape covers both, and the error branch
         // works (#1067).
         if matches!(qualified_name.as_str(), "Receiver_receive" | "Receiver_try_receive") {
-            let elem_size = self.channel_elem_size(object);
+            let elem_size = self.channel_elem_size(object)?;
             all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
         }
 
@@ -6348,7 +6342,7 @@ impl<'a> MirLowerer<'a> {
                 .first()
                 .and_then(|a| self.collection_elem_of_expr(&a.expr))
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:random_choice"));
-            Some(super::option_of(vec_slot_type(elem)))
+            Some(super::option_of(elem))
         } else if matches!(qualified_name.as_str(),
             "Map_get" | "Map_remove" | "Map_insert")
         {
@@ -6395,13 +6389,8 @@ impl<'a> MirLowerer<'a> {
             // This chain used to start with `tracked_elem`, which is only
             // computed for `Vec_get` and `Vec_index` and so was always `None`
             // here — the receiver's layout was doing all the work.
-            //
-            // Either way the width is rounded up to a word: a Vec keeps scalars
-            // in 8-byte slots, and an i32-typed destination read back only half
-            // of what the out-param wrote.
             self.collection_elem_of_expr(object)
                 .or_else(|| self.ctx.lookup_node_type(expr.id))
-                .map(vec_slot_type)
                 .map(|t| self.handed_over_elem(object, t))
         } else if qualified_name == "Vec_pop" {
             // Same, one level in: `.pop()` is `T?`, and the payload type sizes
@@ -6411,7 +6400,7 @@ impl<'a> MirLowerer<'a> {
             // `tracked_elem` was in front of this too, and `None` here for the
             // same reason.
             self.extract_payload_type(expr)
-                .map(|elem| super::option_of(self.handed_over_elem(object, vec_slot_type(elem))))
+                .map(|elem| super::option_of(self.handed_over_elem(object, elem)))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
             // Both hand back a link. The stub says `Link<T>`, which reaches MIR
             // without `T`'s layout attached — and a link without its layout
@@ -6595,12 +6584,7 @@ impl<'a> MirLowerer<'a> {
         let sort_scalar = if qualified_name == "Vec_sort" {
             self.tracked_elem_of(object)
                 .or_else(|| self.collection_elem_of_expr(object))
-                .and_then(|elem| {
-                    // An `f32` element lives in its slot as a promoted double
-                    // (codegen's `value_to_ptr`), so it reads eight bytes wide.
-                    let size = if elem == MirType::F32 { 8 } else { elem.size() as i64 };
-                    Some((Self::debug_elem_kind(&elem)?, size))
-                })
+                .and_then(|elem| Some((Self::debug_elem_kind(&elem)?, elem.size() as i64)))
         } else {
             None
         };
@@ -6634,11 +6618,21 @@ impl<'a> MirLowerer<'a> {
             // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
             ("Vec_get_opt".to_string(), all_args)
         } else if qualified_name == "Vec_join" {
-            // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
+            // `Vec_join` takes strings. Anything else is written the way it
+            // prints, which the runtime can't tell from a width: a one-byte
+            // element is a u8, an i8 or a bool.
             if self.vec_elem_is_string(object) {
                 (qualified_name.clone(), all_args)
             } else {
-                ("Vec_join_i64".to_string(), all_args)
+                let kind = self.tracked_elem_of(object)
+                    .or_else(|| self.collection_elem_of_expr(object))
+                    .and_then(|elem| Self::debug_elem_kind(&elem))
+                    .ok_or_else(|| LoweringError::InvalidConstruct(
+                        "join on a Vec whose elements have no text form".into(),
+                    ))?;
+                let mut args = all_args;
+                args.push(MirOperand::Constant(MirConst::Int(kind)));
+                ("Vec_join_scalar".to_string(), args)
             }
         } else if let Some((kind, size)) = sort_scalar {
             // A scalar or a string: the runtime compares it as what it is.
@@ -6664,6 +6658,14 @@ impl<'a> MirLowerer<'a> {
             args.push(sort_comparator.expect("checked above"));
             args.push(self.sort_pass_arg(object));
             ("Vec_sort_by".to_string(), args)
+        } else if qualified_name == "Vec_sort" {
+            // `sort` is `T: Comparable` (SO3), so one of the two above always
+            // answers for a type that was worked out.
+            return Err(LoweringError::InvalidConstruct(
+                "sort() on a Vec whose element type couldn't be worked out — \
+                 annotate the vector's type"
+                    .into(),
+            ));
         } else if qualified_name == "Vec_sort_by" {
             let mut args = all_args;
             args.push(self.sort_pass_arg(object));
@@ -6890,6 +6892,7 @@ impl<'a> MirLowerer<'a> {
         // Room left: an ordinary push, and the ok branch carries nothing.
         self.builder.switch_to_block(push_block);
         let push_ret = self.builder.alloc_temp(MirType::I64);
+        let value = self.as_slot_value(value, &value_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(push_ret),
             func: FunctionRef::internal("Vec_push".to_string()),
@@ -7403,8 +7406,8 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// The pointee's own type, for a pointer to an integer or a bool.
-    fn integral_pointee(&self, expr: &Expr) -> Option<MirType> {
+    /// The pointee's own type, for a pointer to a number, a bool or a char.
+    fn scalar_pointee(&self, expr: &Expr) -> Option<MirType> {
         use rask_types::Type as T;
         match self.ctx.lookup_raw_type(expr.id)? {
             T::RawPtr(inner) => Some(match inner.as_ref() {
@@ -7417,19 +7420,22 @@ impl<'a> MirLowerer<'a> {
                 T::I32 => MirType::I32,
                 T::U64 => MirType::U64,
                 T::I64 => MirType::I64,
+                T::F32 => MirType::F32,
+                T::F64 => MirType::F64,
+                T::Char => MirType::Char,
                 _ => return None,
             }),
             _ => None,
         }
     }
 
-    /// Load an integer through a raw pointer at its own width and signedness.
+    /// Load a scalar through a raw pointer at its own width and signedness.
     ///
     /// This went through `rask_ptr_read`, which copies the bytes into a zeroed
     /// word, and the result was labelled `i64` whatever the pointee. So every
     /// signed narrow read came back zero-extended: `*p` on an `*i16` holding -2
     /// was 65534, and so was anything computed from it.
-    fn emit_int_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+    fn emit_pointee_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
         let value = self.builder.alloc_temp(want.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: value,
@@ -7471,44 +7477,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// A float behind a raw pointer, and how wide the program wants it.
-    ///
-    /// The load itself is always a whole word: every float slot is eight bytes
-    /// (`Vec<f32>` widens on the way in), so an `f32` reads as an `f64` and
-    /// narrows after. Reading it as an integer is what made `*q` on a `*f64`
-    /// print 4612811918334231000 instead of 2.5.
-    fn float_pointee(&self, expr: &Expr) -> Option<MirType> {
-        match self.ctx.lookup_raw_type(expr.id)? {
-            rask_types::Type::RawPtr(inner) => match inner.as_ref() {
-                rask_types::Type::F64 => Some(MirType::F64),
-                rask_types::Type::F32 => Some(MirType::F32),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    /// Load a float through a raw pointer: one word, narrowed if it's an `f32`.
-    fn emit_float_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
-        let word = self.builder.alloc_temp(MirType::F64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: word,
-            rvalue: MirRValue::Deref(ptr),
-        }));
-        if want == MirType::F32 {
-            let narrowed = self.builder.alloc_temp(MirType::F32);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: narrowed,
-                rvalue: MirRValue::Cast {
-                    value: MirOperand::Local(word),
-                    target_ty: MirType::F32,
-                },
-            }));
-            return (MirOperand::Local(narrowed), MirType::F32);
-        }
-        (MirOperand::Local(word), MirType::F64)
-    }
-
     /// Raw-pointer methods (`.read()`, `.write()`, `.add()`, `.cast()`, ...)
     /// dispatched to `RawPtr_*` C functions. Skips smart-pointer types.
     fn try_lower_raw_ptr_method(
@@ -7547,16 +7515,14 @@ impl<'a> MirLowerer<'a> {
             // load and store `*p` does — the C helpers move an `int64_t`, which
             // is the wrong register class for a float (#1091).
             if method == "read" && args.is_empty() {
-                if let Some(want) = self.integral_pointee(object) {
-                    return Ok(Some(self.emit_int_load(obj_op.clone(), want)));
+                if let Some(want) = self.scalar_pointee(object) {
+                    return Ok(Some(self.emit_pointee_load(obj_op.clone(), want)));
                 }
             }
-            if let Some(want) = self.float_pointee(object) {
-                if method == "read" && args.is_empty() {
-                    return Ok(Some(self.emit_float_load(obj_op.clone(), want)));
-                }
+            if let Some(want) = self.scalar_pointee(object).filter(|t| t.is_float()) {
                 if method == "write" && args.len() == 1 {
                     let (val, _) = self.lower_expr(&args[0].expr)?;
+                    let val = self.as_slot_value(val, &want);
                     let addr = match obj_op {
                         MirOperand::Local(id) => *id,
                         other => {
@@ -7572,7 +7538,7 @@ impl<'a> MirLowerer<'a> {
                         addr,
                         offset: 0,
                         value: val,
-                        store_size: None,
+                        store_size: Some(want.size()),
                         field: None,
                     }));
                     return Ok(Some((MirOperand::Constant(MirConst::Int(0)), MirType::Void)));
@@ -9321,30 +9287,20 @@ impl<'a> MirLowerer<'a> {
     /// intermediate values, just N inserts of data that is already in the
     /// binary (#1075).
     ///
-    /// The blob is a pair per entry, key then value, each padded out to a whole
-    /// number of words so a sixteen-byte string never lands at a four-byte
-    /// offset. `rask_vec_from_static` reads it as a Vec of those pairs, which
-    /// is the same shape `Map_entries` hands back going the other way.
+    /// The blob is a `(K, V)` tuple per entry. `rask_vec_from_static` reads
+    /// it as a Vec of those pairs, the same shape `Map_entries` hands back
+    /// going the other way.
     pub(super) fn build_comptime_map(
         &mut self,
         blob: crate::LocalId,
         entries: usize,
-        key_name: &str,
-        val_name: &str,
+        key_ty: MirType,
+        val_ty: MirType,
     ) -> Result<TypedOperand, LoweringError> {
-        // What a slot holds: a whole `RaskStr`, or one machine word. The
-        // declared type decides what the *map* stores; this is only the blob.
-        let slot_ty = |name: &str| {
-            if name == "string" { MirType::String } else { MirType::I64 }
-        };
-        let key_slot = slot_ty(key_name);
-        let val_slot = slot_ty(val_name);
-        let pair_ty = MirType::Tuple(vec![key_slot.clone(), val_slot.clone()]);
-        let val_offset = key_slot.size();
-        let stride = val_offset + val_slot.size();
+        let pair_ty = MirType::Tuple(vec![key_ty.clone(), val_ty.clone()]);
+        let val_offset = crate::types::tuple_offsets(&[key_ty.clone(), val_ty.clone()])[1];
+        let stride = pair_ty.size();
 
-        let key_ty = self.ctx.resolve_type_name(key_name);
-        let val_ty = self.ctx.resolve_type_name(val_name);
         let pairs = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pairs),
@@ -9407,24 +9363,24 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal("Vec_get".to_string()),
             args: vec![MirOperand::Local(pairs), MirOperand::Local(idx)],
         }));
-        let key_local = self.builder.alloc_temp(key_slot.clone());
+        let key_local = self.builder.alloc_temp(key_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: key_local,
             rvalue: MirRValue::Field {
                 base: MirOperand::Local(pair),
                 field_index: 0,
                 byte_offset: Some(0),
-                access: FieldAccess::for_field(&key_slot, key_slot.size()),
+                access: FieldAccess::for_field(&key_ty, key_ty.size()),
             },
         }));
-        let val_local = self.builder.alloc_temp(val_slot.clone());
+        let val_local = self.builder.alloc_temp(val_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: val_local,
             rvalue: MirRValue::Field {
                 base: MirOperand::Local(pair),
                 field_index: 1,
                 byte_offset: Some(val_offset),
-                access: FieldAccess::for_field(&val_slot, val_slot.size()),
+                access: FieldAccess::for_field(&val_ty, val_ty.size()),
             },
         }));
         // `Map_set`: nothing takes a displaced value, so the map releases it.
@@ -9495,10 +9451,11 @@ impl<'a> MirLowerer<'a> {
         };
 
         let entries = self.builder.alloc_temp(MirType::Ptr);
+        let entries_args = self.map_entries_args(map_op.clone(), key_ty, val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(entries),
             func: FunctionRef::internal("Map_entries".to_string()),
-            args: vec![map_op.clone()],
+            args: entries_args,
         }));
 
         // The rendered entries, one string each, so they can be sorted.
@@ -9589,7 +9546,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: MirOperand::Local(pair),
                 field_index: 1,
-                byte_offset: Some(key_ty.size()),
+                byte_offset: Some(crate::types::tuple_offsets(&[key_ty.clone(), val_ty.clone()])[1]),
                 access: FieldAccess::for_field(val_ty, val_ty.size()),
             },
         }));
@@ -9795,13 +9752,18 @@ impl<'a> MirLowerer<'a> {
     /// codes, shared by `Vec_debug` and by the map renderer's key sort. `None`
     /// for anything the runtime can't read a slot at a time.
     fn debug_elem_kind(ty: &MirType) -> Option<i64> {
+        use rask_mono::runtime_abi::*;
         Some(match ty {
-            MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 | MirType::I128 => 0,
-            MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 | MirType::U128 => 1,
-            MirType::F64 | MirType::F32 => 2,
-            MirType::Bool => 3,
-            MirType::String => 4,
-            MirType::Char => 5,
+            MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 | MirType::I128 => {
+                RASK_ELEM_KIND_SIGNED
+            }
+            MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 | MirType::U128 => {
+                RASK_ELEM_KIND_UNSIGNED
+            }
+            MirType::F64 | MirType::F32 => RASK_ELEM_KIND_FLOAT,
+            MirType::Bool => RASK_ELEM_KIND_BOOL,
+            MirType::String => RASK_ELEM_KIND_STRING,
+            MirType::Char => RASK_ELEM_KIND_CHAR,
             _ => return None,
         })
     }

@@ -22,7 +22,7 @@ use rask_mir::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt};
 use rask_mono::MonoProgram;
 use rask_types::TypedProgram;
 
-use crate::comptime_aggregate::{encode, NoBytes};
+use crate::comptime_aggregate::{encode, encode_list, encode_map, natural_type, NoBytes};
 use crate::{is_comptime_init, CfgConfig};
 
 /// CT35: backwards branches allowed per fold unless `@comptime_quota` says more.
@@ -306,21 +306,35 @@ impl Fold<'_, '_> {
                 Ok(ComptimeGlobalMeta { bytes: s.as_bytes().to_vec(), ..empty(FoldedForm::Text) })
             }
             // A list is a `Vec` unless the slot is a fixed array.
-            ComptimeValue::Array(_) | ComptimeValue::Map(_) if !matches!(ty, rask_mir::MirType::Array { .. }) => {
-                let form = if matches!(value, ComptimeValue::Map(_)) { FoldedForm::Map } else { FoldedForm::List };
-                let ser = value.serialize().ok_or_else(|| {
-                    NoBytes::Gap("a list or map whose elements aren't numbers, booleans, characters or strings".to_string())
-                })?;
+            ComptimeValue::Array(items) if !matches!(ty, rask_mir::MirType::Array { .. }) => {
+                let elem = match type_args.first() {
+                    Some(t) => self.ctx.payload_to_mir(t),
+                    None => items.first().and_then(natural_type).unwrap_or(rask_mir::MirType::I64),
+                };
+                let ser = encode_list(items, &elem, self.ctx, self.mono)?;
                 Ok(ComptimeGlobalMeta {
                     bytes: ser.bytes,
                     string_relocs: ser.string_relocs,
-                    elem_count: value.elem_count(),
-                    elem: type_args.first().map(|t| self.ctx.payload_to_mir(t)),
-                    map_types: match type_args.as_slice() {
-                        [k, v] => Some((k.to_string(), v.to_string())),
-                        _ => value.map_types().map(|(k, v)| (k.to_string(), v.to_string())),
-                    },
-                    ..empty(form)
+                    elem_count: items.len(),
+                    elem: Some(elem),
+                    ..empty(FoldedForm::List)
+                })
+            }
+            ComptimeValue::Map(entries) => {
+                let (k, v) = match type_args.as_slice() {
+                    [k, v] => (self.ctx.payload_to_mir(k), self.ctx.payload_to_mir(v)),
+                    _ => entries
+                        .first()
+                        .and_then(|(k, v)| Some((natural_type(k)?, natural_type(v)?)))
+                        .unwrap_or((rask_mir::MirType::I64, rask_mir::MirType::I64)),
+                };
+                let ser = encode_map(entries, &k, &v, self.ctx, self.mono)?;
+                Ok(ComptimeGlobalMeta {
+                    bytes: ser.bytes,
+                    string_relocs: ser.string_relocs,
+                    elem_count: entries.len(),
+                    map_types: Some((k, v)),
+                    ..empty(FoldedForm::Map)
                 })
             }
             _ => {
