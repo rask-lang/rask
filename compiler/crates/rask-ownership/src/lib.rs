@@ -2320,10 +2320,9 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_to_vec_has_owned_items(expr, object);
                 }
                 self.note_link_into_container(object, method, args);
-                // #296/PM3: consume arguments bound to `take` parameters of user
-                // methods. T1: a channel `send` transfers ownership of its value.
-                let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
-                let channel_send = self.is_channel_send(object, method, expr.span);
+                // #296/PM3: consume arguments bound to `take` parameters. T1: a
+                // channel `send` is one (`send(self, take value: T)`).
+                let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(expr.id, object, method);
                 let mut rack_args = self.rack_arg_roots(args);
                 // For a method call the receiver is an argument too.
                 if let Some(root) = Self::extract_root_and_fields(object).0 {
@@ -2355,12 +2354,12 @@ impl<'a> OwnershipChecker<'a> {
                     let is_take_param = matches!(
                         method_takes.as_ref().and_then(|t| t.get(i)),
                         Some(ParamMode::Take)
-                    ) || (channel_send && i == 0);
+                    );
                     // SL4, as above: only a `take` parameter keeps it.
                     let known_mode = method_takes
                         .as_ref()
                         .and_then(|t| t.get(i))
-                        .map(|m| matches!(m, ParamMode::Take) || (channel_send && i == 0));
+                        .map(|m| matches!(m, ParamMode::Take));
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
                     if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
@@ -5217,7 +5216,7 @@ impl<'a> OwnershipChecker<'a> {
                     true
                 }
                 ExprKind::MethodCall { object, method, args, .. } => {
-                    let modes = self.method_param_modes(object, method);
+                    let modes = self.method_param_modes(e.id, object, method);
                     for (i, arg) in args.iter().enumerate() {
                         let takes = matches!(
                             modes.as_ref().and_then(|m| m.get(i)),
@@ -6754,16 +6753,26 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Parameter modes of a user method on the receiver's type, if resolvable.
-    fn method_param_modes(&self, object: &Expr, method_name: &str) -> Option<Vec<ParamMode>> {
-        let ty = self.node_ty(&object.id)?;
-        let id = match ty {
-            Type::Named(id) => *id,
-            Type::Generic { base, .. } => *base,
-            // A stdlib type named as the receiver of a static method arrives
-            // as its name.
-            Type::UnresolvedNamed(name) => self.program.types.get_type_id(name)?,
-            _ => return None,
+    /// Parameter modes of the method a call resolved to, as its declaration
+    /// says: the checker's resolved receiver first, the receiver's own type
+    /// when the checker recorded none.
+    ///
+    /// The declaration is the whole answer. A channel `send` was a special
+    /// case once, recognised by its name and a span the checker recorded,
+    /// because no declaration was read for it; `Sender.send` declares
+    /// `take value: T` like any other keeping parameter.
+    fn method_param_modes(&self, call: rask_ast::NodeId, object: &Expr, method_name: &str) -> Option<Vec<ParamMode>> {
+        let resolved = self.program.call_targets.get(&call).and_then(|c| c.recv_type_id());
+        let id = match resolved {
+            Some(id) => id,
+            None => match self.node_ty(&object.id)? {
+                Type::Named(id) => *id,
+                Type::Generic { base, .. } => *base,
+                // A stdlib type named as the receiver of a static method arrives
+                // as its name.
+                Type::UnresolvedNamed(name) => self.program.types.get_type_id(name)?,
+                _ => return None,
+            },
         };
         let methods = match self.program.types.get(id)? {
             rask_types::TypeDef::Struct { methods, .. } => methods,
@@ -6774,24 +6783,6 @@ impl<'a> OwnershipChecker<'a> {
             .iter()
             .find(|m| m.name == method_name)
             .map(|m| m.params.iter().map(|(_, mode)| *mode).collect())
-    }
-
-    /// T1: a channel `send` transfers ownership of the sent value.
-    /// `send` is a builtin (no user MethodSig), so recognize it structurally.
-    fn is_channel_send(&self, object: &Expr, method_name: &str, call_span: Span) -> bool {
-        if method_name != "send" {
-            return false;
-        }
-        // Type checker recorded this call as a `Sender.send` — authoritative even
-        // when inference left the receiver as a bare var in node_types (T1).
-        if self.program.channel_send_sites.contains(&call_span) {
-            return true;
-        }
-        // Fallback: receiver type is concrete. TypeDef names carry their generic
-        // params ("Sender<T>"); match the base.
-        self.receiver_type_name(object)
-            .map(|n| n == "Sender")
-            .unwrap_or(false)
     }
 
     /// L1/ER42: a type-name annotation refers to a transitively-linear type.

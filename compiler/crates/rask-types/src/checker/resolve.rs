@@ -2233,6 +2233,9 @@ impl TypeChecker {
         self.resolve_vec_method(&type_args, method, &args, ret, span)
     }
 
+    /// A method on an open `File`: what stdlib/io.rk declares. It had a
+    /// table of its own once, with `write` returning a count the declaration
+    /// doesn't and a `lines` nothing declares (#1561).
     pub(super) fn resolve_file_method(
         &mut self,
         method: &str,
@@ -2240,98 +2243,16 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        // File methods return Result types (T or IoError)
-        let io_error_ty = Type::UnresolvedNamed("IoError".to_string());
-
-        match method {
-            "read_text" if args.is_empty() => {
-                // Returns string or IoError
-                let result_type = Type::Result {
-                    ok: Box::new(Type::String),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "read_bytes" if args.is_empty() => {
-                // Returns Vec<u8> or IoError
-                let bytes_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(Type::U8))],
-                };
-                let result_type = Type::Result {
-                    ok: Box::new(bytes_ty),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "close" if args.is_empty() => {
-                // Returns () or IoError (takes self)
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "write_text" if args.len() == 1 => {
-                // write_text(data: string) -> () or IoError
-                self.unify(&args[0], &Type::String, span)?;
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "write_bytes" if args.len() == 1 => {
-                // write_bytes(data: Vec<u8>) -> () or IoError
-                let bytes_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(Type::U8))],
-                };
-                self.unify(&args[0], &bytes_ty, span)?;
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "write" if args.len() == 1 => {
-                // write(data: string) -> usize or IoError
-                self.unify(&args[0], &Type::String, span)?;
-                let result_type = Type::Result {
-                    ok: Box::new(Type::U64),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "write_line" if args.len() == 1 => {
-                // write_line(data: string) -> () or IoError
-                self.unify(&args[0], &Type::String, span)?;
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "lines" if args.is_empty() => {
-                // Returns Vec<string> or IoError
-                let vec_string = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(Type::String))],
-                };
-                let result_type = Type::Result {
-                    ok: Box::new(vec_string),
-                    err: Box::new(io_error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedNamed("File".to_string()),
-                method: method.to_string(),
-                span,
-            }),
-        }
+        self.resolve_declared_by_name("File", method, args, ret, span)
     }
 
+    /// A method on a stdlib type the checker reaches by name (`Instant`,
+    /// `Duration`, `TcpListener`, …): what its declaration in `stdlib/*.rk`
+    /// says, checked like any declared method.
+    ///
+    /// This held a table of its own once, and the table answered methods no
+    /// file declares: `Duration.from_millis(5)` type-checked and native
+    /// codegen then found no such function (#1561).
     pub(super) fn resolve_runtime_method(
         &mut self,
         type_name: &str,
@@ -2340,57 +2261,28 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let error_ty = Type::UnresolvedNamed("IoError".to_string());
+        let declared = match self.types.lookup(type_name) {
+            Some(Type::Named(id) | Type::Generic { base: id, .. }) => match self.types.get(id) {
+                Some(TypeDef::Struct { methods, type_params, .. } | TypeDef::Enum { methods, type_params, .. }) => {
+                    methods.iter().find(|m| m.name == method).map(|m| (m.clone(), type_params.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((sig, type_params)) = declared {
+            let ty = Type::UnresolvedNamed(type_name.to_string());
+            let subst: std::collections::HashMap<&str, Type> =
+                type_params.iter().map(|p| (p.as_str(), self.ctx.fresh_var())).collect();
+            return self.apply_method_sig(&ty, method, &sig, subst, args.to_vec(), ret, None, span);
+        }
         match (type_name, method) {
-            // Instant static constructor and instance methods
-            ("Instant", "now") if args.is_empty() => {
-                self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
-            }
-            ("Instant", "elapsed") if args.is_empty() => {
-                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-            }
-            // Duration methods
-            ("Duration", "as_seconds_f64") if args.is_empty() => {
-                self.unify(ret, &Type::F64, span)
-            }
-            ("Duration", "as_nanos") if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            ("Duration", "as_seconds") if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            ("Duration", "from_nanos") if args.len() == 1 => {
-                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-            }
-            ("Duration", "from_millis") if args.len() == 1 => {
-                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-            }
-
-            // Instant comparisons
-            ("Instant", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
-                let instant_ty = Type::UnresolvedNamed("Instant".to_string());
-                self.unify(&args[0], &instant_ty, span)?;
+            // The runtime's clock values order like the numbers they hold. A
+            // derived comparison would compare no fields at all.
+            ("Instant" | "Duration", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
+                let own = Type::UnresolvedNamed(type_name.to_string());
+                self.unify(&args[0], &own, span)?;
                 self.unify(ret, &Type::Bool, span)
-            }
-
-            // Duration comparisons
-            ("Duration", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
-                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
-                self.unify(&args[0], &duration_ty, span)?;
-                self.unify(ret, &Type::Bool, span)
-            }
-
-            // TcpListener
-            ("TcpListener", "accept") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::UnresolvedNamed("TcpConnection".to_string())),
-                    err: Box::new(error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // Response — allow method-style access for chaining
-            ("Response", "status") if args.is_empty() => {
-                self.unify(ret, &Type::U16, span)
             }
             // `Shared.new/mutex/local(value)` — the constructor settles the
             // strategy, and it lands in the type so a reader of the annotation
@@ -2409,31 +2301,11 @@ impl TypeChecker {
                 });
                 Ok(true)
             }
-            _ => {
-                // Try stub registry before falling through
-                if let Some(stub) = rask_stdlib::lookup_method(type_name, method) {
-                    let expected_params = stub.params.len();
-                    if args.len() != expected_params {
-                        return Err(TypeError::ArityMismatch {
-                            expected: expected_params,
-                            found: args.len(),
-                            span,
-                        });
-                    }
-                    for ((_, param_ty_str), arg) in stub.params.iter().zip(args.iter()) {
-                        let param_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(param_ty_str));
-                        self.unify(arg, &param_ty, span)?;
-                    }
-                    let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&stub.ret_ty));
-                    return self.unify(ret, &ret_ty, span);
-                }
-                // Known runtime type but unknown method — hard error
-                Err(TypeError::NoSuchMethod {
-                    ty: Type::UnresolvedNamed(type_name.to_string()),
-                    method: method.to_string(),
-                    span,
-                })
-            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedNamed(type_name.to_string()),
+                method: method.to_string(),
+                span,
+            }),
         }
     }
 
@@ -2487,6 +2359,12 @@ impl TypeChecker {
         self.unify(ret, &Type::option(result), span)
     }
 
+    /// `(Sender<T>, Receiver<T>)`, what a channel constructor hands back.
+    fn channel_ends(inner_args: &[GenericArg]) -> Type {
+        let end = |name: &str| Type::UnresolvedGeneric { name: name.to_string(), args: inner_args.to_vec() };
+        Type::Tuple(vec![end("Sender"), end("Receiver")])
+    }
+
     pub(super) fn resolve_concurrency_generic_method(
         &mut self,
         type_name: &str,
@@ -2496,6 +2374,25 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
+        // What `Sender` and `Receiver` declare in stdlib/async.rk. `Shared`
+        // is the compiler's (its strategy decides what a call means,
+        // conc.sync/SH2), and the retired box names are only here to be
+        // rejected with a pointer to it.
+        if matches!(type_name, "Sender" | "Receiver") {
+            let targs: Vec<Type> = type_args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => (**t).clone(),
+                    GenericArg::ConstUsize(_) => self.ctx.fresh_var(),
+                })
+                .collect();
+            let self_ty = Type::UnresolvedGeneric { name: type_name.to_string(), args: type_args.to_vec() };
+            if let Some(answer) =
+                self.resolve_declared_stdlib_method(type_name, &self_ty, &targs, method, args, ret, span)
+            {
+                return answer;
+            }
+        }
         // Extract inner type T from generic args
         let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
             *t.clone()
@@ -2587,34 +2484,6 @@ impl TypeChecker {
                 });
                 Ok(true)
             }
-            // Sender<T>.send(value: T) -> () or string
-            ("Sender", "send") if args.len() == 1 => {
-                // T1: record the call so ownership transfers the sent value.
-                self.channel_send_sites.insert(span);
-                let _ = self.unify(&args[0], &inner_type, span);
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(Type::String),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // Sender<T>.try_send(value: T) -> () or string
-            ("Sender", "try_send") if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(Type::String),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // Sender<T>.close() -> () or string
-            ("Sender", "close") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(Type::String),
-                };
-                self.unify(ret, &result_type, span)
-            }
             // Sender<T>.clone() -> Sender<T>
             ("Sender", "clone") if args.is_empty() => {
                 let sender_ty = Type::UnresolvedGeneric {
@@ -2623,55 +2492,18 @@ impl TypeChecker {
                 };
                 self.unify(ret, &sender_ty, span)
             }
-            // Receiver<T>.receive() -> T or string
-            ("Receiver", "receive") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(inner_type),
-                    err: Box::new(Type::String),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // Receiver<T>.try_receive() -> T or string
-            ("Receiver", "try_receive") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(inner_type),
-                    err: Box::new(Type::String),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // Receiver<T>.close() -> () or string
-            ("Receiver", "close") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(Type::String),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // Channel<T>.buffered(n) -> (Sender<T>, Receiver<T>)
+            // `Channel` is only where a channel's two ends come from: there is
+            // no type to declare, so its two constructors are answered here.
+            // Declared as a struct, native lowering stopped seeing the
+            // constructor and sent on a null handle.
             ("Channel", "buffered") if args.len() == 1 => {
-                let sender = Type::UnresolvedGeneric {
-                    name: "Sender".to_string(),
-                    args: inner_args.clone(),
-                };
-                let receiver = Type::UnresolvedGeneric {
-                    name: "Receiver".to_string(),
-                    args: inner_args.clone(),
-                };
-                let tuple_ty = Type::Tuple(vec![sender, receiver]);
-                self.unify(ret, &tuple_ty, span)
+                let _ = self.unify(&args[0], &Type::U64, span);
+                let ends = Self::channel_ends(&inner_args);
+                self.unify(ret, &ends, span)
             }
-            // Channel<T>.unbuffered() -> (Sender<T>, Receiver<T>)
             ("Channel", "unbuffered") if args.is_empty() => {
-                let sender = Type::UnresolvedGeneric {
-                    name: "Sender".to_string(),
-                    args: inner_args.clone(),
-                };
-                let receiver = Type::UnresolvedGeneric {
-                    name: "Receiver".to_string(),
-                    args: inner_args.clone(),
-                };
-                let tuple_ty = Type::Tuple(vec![sender, receiver]);
-                self.unify(ret, &tuple_ty, span)
+                let ends = Self::channel_ends(&inner_args);
+                self.unify(ret, &ends, span)
             }
             // Written `Shared.new(0)` the element type comes from the value, so
             // pin the variable to it. The strategy comes from the constructor.
@@ -2817,6 +2649,47 @@ impl TypeChecker {
     }
 
     /// Resolve instance methods on Vec<T>.
+    /// A method a stdlib generic type declares, checked against its
+    /// declaration with the receiver's type arguments bound positionally.
+    /// `None` when the type declares no such method.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_declared_stdlib_method(
+        &mut self,
+        type_name: &str,
+        self_ty: &Type,
+        type_args: &[Type],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Option<Result<bool, TypeError>> {
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = self.types.lookup(type_name)? else {
+            return None;
+        };
+        let (sig, type_params) = match self.types.get(id)? {
+            TypeDef::Struct { methods, type_params, .. } | TypeDef::Enum { methods, type_params, .. } => {
+                (methods.iter().find(|m| m.name == method)?.clone(), type_params.clone())
+            }
+            _ => return None,
+        };
+        let subst: std::collections::HashMap<&str, Type> = type_params
+            .iter()
+            .zip(type_args.iter())
+            .map(|(p, t)| (p.as_str(), t.clone()))
+            .collect();
+        Some(self.apply_method_sig(self_ty, method, &sig, subst, args.to_vec(), ret, None, span))
+    }
+
+    /// A method on a `Vec<T>` the checker reaches by name: what `Vec`
+    /// declares in stdlib/collections.rk, or, for an adapter or terminal, what
+    /// `Sequence` declares — a collection is its own chain head
+    /// (type.sequence/SEQ48), so `v.map(f)` is typed as the `map` of `v`'s
+    /// sequence.
+    ///
+    /// This was a table of its own once, with signatures that had drifted
+    /// from the declarations: `capacity` said `u64` where the declaration says
+    /// `usize?`, `position` said `i64?`, `enumerate` counted in `i64`, and
+    /// `filter` never looked at its predicate (#1561).
     pub(super) fn resolve_vec_method(
         &mut self,
         type_args: &[GenericArg],
@@ -2830,317 +2703,23 @@ impl TypeChecker {
         } else {
             self.ctx.fresh_var()
         };
-
         let self_ty = Type::UnresolvedGeneric {
             name: "Vec".to_string(),
-            args: type_args.to_vec(),
+            args: vec![GenericArg::Type(Box::new(inner_type.clone()))],
         };
-        // SEQ41: an adapter on a collection is the chain's head and builds a
-        // sequence. `zip` and `chunks` are not adapters — SEQ14/SEQ39 keep them
-        // on the indexable source, where two positions are actually available.
-        let sequence_of = |elem: Type| Type::UnresolvedGeneric {
-            name: "Sequence".to_string(),
-            args: vec![GenericArg::Type(Box::new(elem))],
-        };
-
-        match method {
-            // The element slot is an argument position like any other, so it
-            // widens a bare `T` into a `T?` element. Plain unify accepted the
-            // bare value without recording the coercion, so `Vec<i32?>` stored
-            // raw ints — every read then came back absent natively and as a
-            // bare i64 on the interpreter.
-            "push" if args.len() == 1 => {
-                let _ = self.coerce_arg(&inner_type, &args[0], None, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-            "pop" if args.is_empty() => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            "len" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            "get" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            "set" if args.len() == 2 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.coerce_arg(&inner_type, &args[1], None, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-            "clear" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            "is_empty" if args.is_empty() => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            "capacity" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            // vec.insert(index, value) -> ()
-            "insert" if args.len() == 2 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.coerce_arg(&inner_type, &args[1], None, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-            // vec.remove(index) -> T
-            "remove" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &inner_type, span)
-            }
-            // vec.chunks(size) -> Vec<Vec<T>>
-            "chunks" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                let chunk_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(chunk_ty))],
-                };
-                self.unify(ret, &result_ty, span)
-            }
-            // vec.to_vec() -> Vec<T>
-            "to_vec" if args.is_empty() => {
-                self.unify(ret, &self_ty, span)
-            }
-            // SEQ29: `v.map(|u| (u.id, u.name)).to_map()`. A chain's head is the
-            // collection itself now that `.iter()` is gone, so the terminal has
-            // to be reachable from `Vec<(K, V)>` and not only from a sequence.
-            // Same pair-or-error rule; MIR fuses either spelling identically.
-            "to_map" if args.is_empty() => {
-                let resolved = self.ctx.apply(&inner_type);
-                match &resolved {
-                    Type::Tuple(parts) if parts.len() == 2 => {
-                        let map_ty = Type::UnresolvedGeneric {
-                            name: "Map".to_string(),
-                            args: vec![
-                                GenericArg::Type(Box::new(parts[0].clone())),
-                                GenericArg::Type(Box::new(parts[1].clone())),
-                            ],
-                        };
-                        self.unify(ret, &map_ty, span)
-                    }
-                    Type::Var(_) => {
-                        self.ctx.add_constraint(TypeConstraint::HasMethod {
-                            ty: self_ty.clone(),
-                            method: "to_map".to_string(),
-                            args: args.to_vec(),
-                            ret: ret.clone(),
-                            span,
-                            call_node: None,
-                        });
-                        Ok(false)
-                    }
-                    other => Err(TypeError::ToMapNeedsPairs {
-                        elem: other.clone(),
-                        span,
-                    }),
-                }
-            }
-            "skip" | "take" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                let seq = sequence_of(inner_type);
-                self.unify(ret, &seq, span)
-            }
-            "limit" if args.len() == 1 => {
-                self.check_integer_arg(&self_ty, &args[0], span);
-                self.unify(ret, &self_ty, span)
-            }
-            // vec.first() -> Option<T>
-            "first" if args.is_empty() => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.last() -> Option<T>
-            "last" if args.is_empty() => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.contains(value) -> bool
-            "contains" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                self.unify(ret, &Type::Bool, span)
-            }
-            // vec.reverse() -> ()
-            "reverse" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            // vec.join(sep) -> string
-            "join" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::String, span);
-                self.unify(ret, &Type::String, span)
-            }
-            // vec.sort() -> ()
-            "sort" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            // vec.sort_by(comparator) -> ()
-            "sort_by" if args.len() == 1 => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            // vec.sort_by_key(key_fn) -> ()
-            //
-            // The key type comes from the closure. Leaving it free was harmless
-            // while the body was native — nothing read it — and fatal once
-            // `sort_by_key` was written in Rask over `sort_by`: the body compares
-            // two keys, and an unresolved key type reached MIR as `compare` on a
-            // receiver with no type at all (#887).
-            "sort_by_key" if args.len() == 1 => {
-                let key = self.ctx.fresh_var();
-                let _ = self.unify(
-                    &args[0],
-                    &Type::fn_borrowing(vec![inner_type.clone()], key),
-                    span,
-                );
-                self.unify(ret, &Type::Unit, span)
-            }
-            // vec.remove_adjacent_duplicates() -> ()
-            "remove_adjacent_duplicates" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            "filter" if args.len() == 1 => {
-                let seq = sequence_of(inner_type);
-                self.unify(ret, &seq, span)
-            }
-            // vec.map(transform) -> Vec<U>. U is the closure's return type —
-            // without tying the two together the element stayed an unbound var
-            // and `doubled[0] == 2` reported "no method eq for type U" (#327).
-            "map" if args.len() == 1 => {
-                let fresh = self.ctx.fresh_var();
-                let expected_fn = Type::fn_borrowing(vec![inner_type], fresh.clone());
-                let _ = self.unify(&args[0], &expected_fn, span);
-                let result_ty = sequence_of(fresh);
-                self.unify(ret, &result_ty, span)
-            }
-            // vec.flat_map(transform) -> Sequence<U>, where the closure hands
-            // back a Vec<U> per element.
-            "flat_map" if args.len() == 1 => {
-                let fresh = self.ctx.fresh_var();
-                let inner_vec = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh.clone()))],
-                };
-                let expected_fn = Type::fn_borrowing(vec![inner_type], inner_vec);
-                let _ = self.unify(&args[0], &expected_fn, span);
-                let result_ty = sequence_of(fresh);
-                self.unify(ret, &result_ty, span)
-            }
-            // vec.flatten() -> Sequence<T>, where the receiver's element is
-            // itself a Vec. The element's element is what comes out, so it's
-            // read off the receiver rather than left to a fresh variable —
-            // nothing downstream would ever settle one.
-            "flatten" if args.is_empty() => {
-                let inner_elem = match &self.ctx.apply(&inner_type) {
-                    Type::UnresolvedGeneric { name, args } if name == "Vec" => {
-                        match args.first() {
-                            Some(GenericArg::Type(t)) => (**t).clone(),
-                            _ => self.ctx.fresh_var(),
-                        }
-                    }
-                    Type::Generic { base, args }
-                        if self.types.type_name(*base).starts_with("Vec") =>
-                    {
-                        match args.first() {
-                            Some(GenericArg::Type(t)) => (**t).clone(),
-                            _ => self.ctx.fresh_var(),
-                        }
-                    }
-                    _ => self.ctx.fresh_var(),
-                };
-                let result_ty = sequence_of(inner_elem);
-                self.unify(ret, &result_ty, span)
-            }
-            // vec.fold(init, f) -> U, with f: func(U, T) -> U
-            "fold" if args.len() == 2 => {
-                let acc = args[0].clone();
-                let expected_fn = Type::fn_borrowing(vec![acc.clone(), inner_type], acc.clone());
-                let _ = self.unify(&args[1], &expected_fn, span);
-                let _ = self.unify(ret, &acc, span);
-                Ok(true)
-            }
-            // vec.reduce(f) -> Option<T>
-            "reduce" if args.len() == 1 => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.enumerate() -> Sequence<(i64, T)>
-            "enumerate" if args.is_empty() => {
-                let pair_ty = Type::Tuple(vec![Type::I64, inner_type]);
-                let result_ty = sequence_of(pair_ty);
-                self.unify(ret, &result_ty, span)
-            }
-            // vec.zip(other) -> Vec<(T, U)>. U never had anywhere to come
-            // from: `other` is `Vec<U>` and nothing tied the fresh var to its
-            // element, so U stayed unbound and the mangled name carried it as
-            // a bare, unresolved type parameter (#887).
-            "zip" if args.len() == 1 => {
-                let fresh = self.ctx.fresh_var();
-                let other_vec = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh.clone()))],
-                };
-                let _ = self.unify(&args[0], &other_vec, span);
-                let pair_ty = Type::Tuple(vec![inner_type, fresh]);
-                let result_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(pair_ty))],
-                };
-                self.unify(ret, &result_ty, span)
-            }
-            // vec.any(predicate) -> bool
-            "any" if args.len() == 1 => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            // vec.all(predicate) -> bool
-            "all" if args.len() == 1 => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            // vec.find(predicate) -> Option<T>
-            "find" if args.len() == 1 => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.position(predicate) -> Option<i64>
-            "position" if args.len() == 1 => {
-                let opt_ty = Type::option(Type::I64);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.take_all() -> Vec<T> (consuming iteration)
-            "take_all" if args.is_empty() => {
-                self.unify(ret, &self_ty, span)
-            }
-            // vec.sum() -> T
-            "sum" if args.is_empty() => {
-                self.unify(ret, &inner_type, span)
-            }
-            // vec.min() / vec.max() -> Option<T>
-            "min" | "max" if args.is_empty() => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.clone() -> Vec<T>
-            "clone" if args.is_empty() => {
-                self.unify(ret, &self_ty, span)
-            }
-            // vec.eq(other) -> bool
-            "eq" | "ne" if args.len() == 1 => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            // vec.as_ptr() / vec.as_mut_ptr() -> *T. Both name the same buffer
-            // address; the `mutate self` on as_mut_ptr is what allows writing.
-            // Reached when the receiver is still the unresolved `Vec<T>` shape
-            // rather than the registered type — the registered path finds these
-            // in Vec's own method table.
-            "as_ptr" | "as_mut_ptr" if args.is_empty() => {
-                self.unify(ret, &Type::RawPtr(Box::new(inner_type)), span)
-            }
-            // Fall through to static methods (e.g. Vec<Route>.from(...))
-            _ => self.resolve_vec_static_method(method, args, ret, span),
+        if let Some(answer) =
+            self.resolve_declared_stdlib_method("Vec", &self_ty, &[inner_type.clone()], method, args, ret, span)
+        {
+            return answer;
         }
+        if rask_stdlib::lookup_method("Sequence", method).is_some() {
+            let sequence = Type::UnresolvedGeneric {
+                name: "Sequence".to_string(),
+                args: vec![GenericArg::Type(Box::new(inner_type))],
+            };
+            return self.resolve_method(sequence, method.to_string(), args.to_vec(), ret.clone(), span, None);
+        }
+        self.resolve_vec_static_method(method, args, ret, span)
     }
 
     /// Resolve static methods on bare Map (e.g. Map.new()).
@@ -3230,7 +2809,9 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve instance methods on Map<K, V>.
+    /// A method on a `Map<K, V>` the checker reaches by name: what `Map`
+    /// declares in stdlib/collections.rk. It had a table of its own once
+    /// (#1561).
     pub(super) fn resolve_map_method(
         &mut self,
         type_args: &[GenericArg],
@@ -3239,62 +2820,20 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let key_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-            *t.clone()
-        } else {
-            self.ctx.fresh_var()
+        let mut arg = |i: usize| match type_args.get(i) {
+            Some(GenericArg::Type(t)) => (**t).clone(),
+            _ => self.ctx.fresh_var(),
         };
-        let val_type = if let Some(GenericArg::Type(t)) = type_args.get(1) {
-            *t.clone()
-        } else {
-            self.ctx.fresh_var()
+        let (key, value) = (arg(0), arg(1));
+        let self_ty = Type::UnresolvedGeneric {
+            name: "Map".to_string(),
+            args: vec![
+                GenericArg::Type(Box::new(key.clone())),
+                GenericArg::Type(Box::new(value.clone())),
+            ],
         };
-
-        match method {
-            "insert" if args.len() == 2 => {
-                self.check_arg_against(&args[0], &key_type, span);
-                self.check_arg_against(&args[1], &val_type, span);
-                self.unify(ret, &Type::I64, span)
-            }
-            "contains" if args.len() == 1 => {
-                self.check_arg_against(&args[0], &key_type, span);
-                self.unify(ret, &Type::Bool, span)
-            }
-            "get" if args.len() == 1 => {
-                self.check_arg_against(&args[0], &key_type, span);
-                let opt_ty = Type::option(val_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            "remove" if args.len() == 1 => {
-                self.check_arg_against(&args[0], &key_type, span);
-                self.unify(ret, &Type::I64, span)
-            }
-            "len" if args.is_empty() => {
-                self.unify(ret, &Type::I64, span)
-            }
-            "is_empty" if args.is_empty() => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            "clear" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            "keys" if args.is_empty() => {
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(key_type))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            "values" if args.is_empty() => {
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(val_type))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            // Fall through to static methods (e.g. Map<K,V>.new())
-            _ => self.resolve_map_static_method(method, args, ret, span),
-        }
+        self.resolve_declared_stdlib_method("Map", &self_ty, &[key, value], method, args, ret, span)
+            .unwrap_or_else(|| self.resolve_map_static_method(method, args, ret, span))
     }
 
     /// Resolve methods on Rng (both static and instance — no type params).
@@ -3352,6 +2891,7 @@ impl TypeChecker {
         }
     }
 
+    /// A method on `Random`: what stdlib/random.rk declares (#1561).
     pub(super) fn resolve_rng_method(
         &mut self,
         method: &str,
@@ -3359,42 +2899,23 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let rng_ty = Type::UnresolvedNamed("Random".to_string());
+        self.resolve_declared_by_name("Random", method, args, ret, span)
+    }
 
-        match method {
-            "new" if args.is_empty() => {
-                self.unify(ret, &rng_ty, span)
-            }
-            "from_seed" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
-                self.unify(ret, &rng_ty, span)
-            }
-            "u64" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            "i64" if args.is_empty() => {
-                self.unify(ret, &Type::I64, span)
-            }
-            "f64" if args.is_empty() => {
-                self.unify(ret, &Type::F64, span)
-            }
-            "f32" if args.is_empty() => {
-                self.unify(ret, &Type::F32, span)
-            }
-            "bool" if args.is_empty() => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            "range" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
-                let _ = self.unify(&args[1], &Type::I64, span);
-                self.unify(ret, &Type::I64, span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: rng_ty,
-                method: method.to_string(),
-                span,
-            }),
-        }
+    /// A method a non-generic stdlib type declares, or "no such method".
+    fn resolve_declared_by_name(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let ty = Type::UnresolvedNamed(type_name.to_string());
+        self.resolve_declared_stdlib_method(type_name, &ty, &[], method, args, ret, span)
+            .unwrap_or_else(|| {
+                Err(TypeError::NoSuchMethod { ty, method: method.to_string(), span })
+            })
     }
 
     /// The payload written in `Atomic<T>`, if this is one.

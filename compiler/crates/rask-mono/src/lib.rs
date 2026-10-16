@@ -1311,7 +1311,6 @@ mod tests {
             else_binding_types: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
-            channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: std::collections::HashMap::new(),

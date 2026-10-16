@@ -516,11 +516,6 @@ pub struct TypeChecker {
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
     pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
-    /// T1: method-call spans that resolved to a channel `Sender.send`. The
-    /// ownership checker reads these to consume the sent value (`mem.ownership/T1`),
-    /// even when inference leaves the receiver as a bare type variable in
-    /// `node_types` (deferred `Sender.send` resolution).
-    pub(super) channel_send_sites: std::collections::HashSet<rask_ast::Span>,
     /// Bare names in patterns read as a type test (`r is ParseError`), by the
     /// span `check_pattern` was handed. See `TypedProgram::type_test_patterns`.
     pub(super) type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
@@ -704,7 +699,6 @@ impl TypeChecker {
             closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
-            channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: HashMap::new(),
@@ -1136,7 +1130,6 @@ impl TypeChecker {
             unsafe_ops,
             span_types,
             mutate_self_fns: self.mutate_self_fns,
-            channel_send_sites: self.channel_send_sites,
             type_test_patterns: self.type_test_patterns,
             struct_shorthand_patterns: self.struct_shorthand_patterns,
             arg_hoists: self

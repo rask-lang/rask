@@ -799,10 +799,6 @@ pub struct TypedProgram {
     /// Keyed by span because FnDecl has no NodeId, and spans survive the clone
     /// monomorphization makes of each generic instantiation.
     pub mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
-    /// T1: method-call spans that resolved to a channel `Sender.send`. Read by
-    /// the ownership checker to transfer ownership of the sent value even when
-    /// inference leaves the receiver as a type variable in `node_types`.
-    pub channel_send_sites: std::collections::HashSet<rask_ast::Span>,
     /// Bare names in a pattern that the checker read as a type test rather
     /// than as a variant or a binding — `r is ParseError` — keyed by the span
     /// of the statement or expression the pattern sits in.
