@@ -753,6 +753,11 @@ pub struct TypedProgram {
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
     pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER9: the value of each `return` that goes to the error side of the
+    /// function's `T or E`. The checker picked the side by type when it
+    /// accepted the return; the backends wrap by this instead of comparing
+    /// types again — a `type Code = i64` error is an `i64` to both of them.
+    pub err_returns: std::collections::HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them, so their
     /// captures travel with them instead of being pointed at. Worked out by the
     /// ownership pass and written back here, because lowering and the

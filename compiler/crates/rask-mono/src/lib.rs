@@ -67,6 +67,8 @@ pub struct MonoProgram {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    /// ER9: error-side returns in instantiated bodies.
+    pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     pub instantiated_field_reuses: HashSet<NodeId>,
     /// Closures in instantiated bodies that may not reach another task, each
@@ -92,6 +94,8 @@ pub struct NodeRecords {
     pub error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape.
     pub fallback_keeps_shape: HashSet<NodeId>,
+    /// ER9: `return` values that go to the error side.
+    pub err_returns: HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them.
     pub escaping_closures: HashSet<NodeId>,
     /// Assignments whose new value takes the old one (ownership).
@@ -109,6 +113,7 @@ impl NodeRecords {
             operator_targets: typed.operator_targets.clone(),
             error_wraps: typed.error_wraps.clone(),
             fallback_keeps_shape: typed.fallback_keeps_shape.clone(),
+            err_returns: typed.err_returns.clone(),
             escaping_closures: typed.escaping_closures.clone(),
             field_reuses: typed.field_reuses.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
@@ -127,6 +132,7 @@ impl MonoProgram {
             .extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
         r.error_wraps.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
         r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
+        r.err_returns.extend(self.instantiated_err_returns.iter().copied());
         r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
         r.field_reuses.extend(self.instantiated_field_reuses.iter().copied());
         r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
@@ -1118,6 +1124,7 @@ fn monomorphize_inner(
         instantiated_operator_targets: mono.instantiated_operator_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
+        instantiated_err_returns: mono.instantiated_err_returns,
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
         instantiated_field_reuses: mono.instantiated_field_reuses,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
@@ -1310,6 +1317,7 @@ mod tests {
             conformance_interfaces: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),

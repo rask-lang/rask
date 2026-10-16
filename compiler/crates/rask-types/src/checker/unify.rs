@@ -1456,6 +1456,9 @@ impl TypeChecker {
                         && resolved_ret != resolved_ok
                     {
                         self.inferred_errors.push(resolved_ret);
+                        if let (CoercionSite::Return, Some(node)) = (site, value_node) {
+                            self.err_returns.insert(node);
+                        }
                         return Ok(false);
                     }
                     let is_err_branch = match &resolved_err {
@@ -1477,6 +1480,9 @@ impl TypeChecker {
                     // `i64 or any Error` came back as a *success* holding 0 on
                     // native while the interpreter reported the error (#708).
                     if is_err_branch {
+                        if let (CoercionSite::Return, Some(node)) = (site, value_node) {
+                            self.err_returns.insert(node);
+                        }
                         if let (Type::InterfaceObject { interface_name, decl }, Some(node)) =
                             (&resolved_err, value_node)
                         {

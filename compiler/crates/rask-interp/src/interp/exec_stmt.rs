@@ -100,10 +100,11 @@ impl Interpreter {
             }
 
             StmtKind::Return(expr) => {
-                let value = if let Some(e) = expr {
-                    self.eval_expr(e)?
-                } else {
-                    Value::Unit
+                let value = match expr {
+                    // ER9: the checker said which side this return takes.
+                    Some(e) if self.err_returns.contains(&e.id) => Value::err(self.eval_expr(e)?),
+                    Some(e) => self.eval_expr(e)?,
+                    None => Value::Unit,
                 };
                 Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
@@ -758,20 +759,14 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
         }
         return value;
     }
-    if let Some((_, err)) = super::call::result_sides(ty) {
+    // A bare value here is the success side: only a `return` may put a bare
+    // error on the error side (ER9); a binding needs the whole `T or E`
+    // (ER11), and the checker rejects anything else.
+    if super::call::result_sides(ty).is_some() {
         if matches!(&value, Value::Enum { name, .. } if name == "Result") {
             return value;
         }
-        let err_names = super::call::err_arms(err);
-        let is_err = match &value {
-            Value::Enum { name, .. } => err_names.iter().any(|n| super::call::same_nominal(n, name)),
-            Value::Struct(s) => {
-                let guard = s.lock().unwrap();
-                err_names.iter().any(|n| super::call::same_nominal(n, &guard.name))
-            }
-            _ => false,
-        };
-        return if is_err { Value::err(value) } else { Value::ok(value) };
+        return Value::ok(value);
     }
     value
 }

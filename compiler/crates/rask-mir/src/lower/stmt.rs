@@ -465,22 +465,24 @@ impl<'a> MirLowerer<'a> {
                     // inner option's address as the vector (#1498).
                     let inlined_closure = self.inline_return_target.is_some() && seq_ret.is_none();
                     let ret_ty = seq_ret.clone().unwrap_or_else(|| self.builder.ret_ty().clone());
+                    // ER9: the checker picked the side when it accepted the
+                    // return. Comparing types here again got it wrong for a
+                    // `type Code = i64` error in a `string or Code` function:
+                    // to MIR that's an `i64`, and the function handed back a
+                    // bare 3 the caller read as a string.
                     let final_op = if inlined_closure {
                         op
+                    } else if self.ctx.err_returns.contains(&e.id) {
+                        self.build_err(op, &op_ty, &ret_ty).ok_or_else(|| {
+                            LoweringError::InvalidConstruct(format!(
+                                "a return on the error side of `{}`, which has none", ret_ty
+                            ))
+                        })?
                     } else {
                         self.coerce_into_wrapper(
                             rask_ast::coercion::CoercionSite::Return,
                             op, &op_ty, &ret_ty,
                         )
-                    };
-                    // A function's own `return e` leaves the error side for
-                    // its exit to build. This one is stored in a slot of the
-                    // whole `T or E`, so it's built here: unbuilt, the slot
-                    // held the bare error and the caller read it as a success
-                    // (#1325).
-                    let final_op = match &seq_ret {
-                        Some(ret_ty) => self.wrap_err_branch(&final_op, &op_ty, ret_ty).unwrap_or(final_op),
-                        None => final_op,
                     };
                     Some(final_op)
                 } else {

@@ -374,6 +374,7 @@ impl<'a> MirContext<'a> {
             operator_targets: &records.operator_targets,
             error_wraps: &records.error_wraps,
             fallback_keeps_shape: &records.fallback_keeps_shape,
+            err_returns: &records.err_returns,
             escaping_closures: &records.escaping_closures,
             field_reuses: &records.field_reuses,
             task_bound_closures: &records.task_bound_closures,
@@ -515,6 +516,8 @@ pub struct MirContext<'a> {
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
     pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
+    /// ER9: `return` values that go to the error side.
+    pub err_returns: &'a std::collections::HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
@@ -645,6 +648,7 @@ impl<'a> MirContext<'a> {
             interface_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
+            err_returns: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
             field_reuses: &EMPTY_ESCAPING,
             task_bound_closures: &EMPTY_ESCAPING,
@@ -2096,10 +2100,28 @@ impl<'a> MirLowerer<'a> {
         if !is_err {
             return None;
         }
+        self.build_err(val.clone(), val_ty, result_ty)
+    }
+
+    /// `val` on the error side of `result_ty`: tag 1, no origin, the error as
+    /// payload — a union member wrapped into the union first. `None` when
+    /// `result_ty` has no error side.
+    pub(super) fn build_err(
+        &mut self,
+        val: MirOperand,
+        val_ty: &MirType,
+        result_ty: &MirType,
+    ) -> Option<MirOperand> {
+        let MirType::Result { err, .. } = result_ty else { return None };
         let err_ty = (**err).clone();
+        let payload = if matches!(err_ty, MirType::Union(_)) && err_ty != *val_ty {
+            self.wrap_operand_into_union(&val, val_ty, &err_ty)?
+        } else {
+            val
+        };
         let slot = self.builder.alloc_temp(result_ty.clone());
         self.store_wrapper_tag(slot, result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
-        self.store_wrapper_payload(slot, result_ty, val.clone(), &err_ty);
+        self.store_wrapper_payload(slot, result_ty, payload, &err_ty);
         Some(MirOperand::Local(slot))
     }
 
@@ -2833,9 +2855,11 @@ impl<'a> MirLowerer<'a> {
         src_ty: &MirType,
         dst_ty: &MirType,
     ) -> MirOperand {
-        // Same question the checker asked when it accepted this coercion, asked
-        // through the same match, so the two halves can't drift.
-        let err_branch_by_type = site.wraps_error_branch();
+        // A `return` that goes to the error side never reaches here: the
+        // checker recorded it (`err_returns`) and the return builds it. What
+        // a catch arm hands back has no such record yet, so it still picks
+        // the side by type.
+        let err_branch_by_type = site == rask_ast::coercion::CoercionSite::CatchArm;
 
         let (dst_layers, _) = Self::wrapper_layers(dst_ty);
         let (src_layers, _) = Self::wrapper_layers(src_ty);
@@ -7407,6 +7431,7 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7489,6 +7514,7 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7578,6 +7604,7 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,

@@ -363,6 +363,8 @@ pub struct TypeChecker {
     /// expression keeps the optional shape. Both backends read this to know
     /// whether the present path yields the payload or the operand as-is.
     pub(super) fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER9: values handed back by a `return` that land on the error side.
+    pub(super) err_returns: std::collections::HashSet<NodeId>,
     /// The solver's last retry of the shape constraints: nothing else will
     /// move, so a constraint that would rather wait has to commit now.
     pub(super) final_shape_pass: bool,
@@ -658,6 +660,7 @@ impl TypeChecker {
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             final_shape_pass: false,
             carried_coalesce: Vec::new(),
             late_coalesce: false,
@@ -1075,6 +1078,7 @@ impl TypeChecker {
         let interface_coercions = self.interface_coercions.clone();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        let err_returns = self.err_returns.clone();
         let try_chain_placement = self.try_chain_placement.clone();
         let else_binding_types: HashMap<_, _> = self
             .else_binding_types
@@ -1120,6 +1124,7 @@ impl TypeChecker {
             conformance_interfaces: self.conformance_interfaces,
             error_wraps,
             fallback_keeps_shape,
+            err_returns,
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),

@@ -279,17 +279,10 @@ impl Interpreter {
         // the interpreter was broken (#1211).
         let returns_option = func.ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
         if returns_result {
-            // Already a Result: pass through.
+            // Already a Result: pass through. That includes every return
+            // the checker put on the error side — `return` wrapped those.
             if matches!(&value, Value::Enum { name, .. } if name == "Result") {
                 return Ok(value);
-            }
-            // ER9: pick the branch by the value's runtime type. If the value
-            // matches E (or a variant of a union E), wrap as Err; else Ok.
-            // Disjointness (ER3) makes this unambiguous.
-            let err_names = result_sides.map(|(_, err)| err_arms(err)).unwrap_or_default();
-            let is_err_branch = self.value_matches_any_err(&value, &err_names);
-            if is_err_branch {
-                return Ok(Value::err(value));
             }
             // ER9: the ok value still has to satisfy the ok side. `KV? or E`
             // returning a bare KV needs the optional layer too — without it,
@@ -626,103 +619,5 @@ pub(crate) fn option_depth(value: &Value) -> usize {
         }
         _ => 0,
     }
-}
-
-/// The error side of a result, one entry per arm of a union.
-pub(super) fn err_arms(err: &TypeExpr) -> Vec<TypeExpr> {
-    match err {
-        TypeExpr::Union(arms) => arms.clone(),
-        one => vec![one.clone()],
-    }
-}
-
-impl Interpreter {
-    /// ER9 branch selection where the error side is erased.
-    ///
-    /// A name like `any Error` names no runtime type, so the plain name compare
-    /// below never matched it and a directly returned concrete error was
-    /// wrapped as the *success* branch: `return StoreError.Missing(k)` from an
-    /// `i64 or any Error` came back to the caller as an ok value holding the
-    /// error, and `catch` never fired (#708).
-    ///
-    /// An interface object matches when the value's type provides the interface's
-    /// methods. ER4 already restricts an error side to `Error`, so the
-    /// compiler-provided method lists cover every case that can legally appear
-    /// here — a user interface can't be an error type on its own.
-    fn value_matches_any_err(&self, value: &Value, names: &[TypeExpr]) -> bool {
-        if value_matches_any_type(value, names) {
-            return true;
-        }
-        let type_name = match value {
-            Value::Enum { name, .. } => name.clone(),
-            Value::Struct(s) => s.lock().unwrap().name.clone(),
-            _ => return false,
-        };
-        names.iter().any(|n| {
-            // `Error` and `any Error` are one type written two ways (#1095).
-            // Only the long spelling matched, so an `i64 or Error` function
-            // returning a concrete error handed it back as the *ok* branch —
-            // the same #708 bug, in the spelling most of the corpus uses.
-            let interface_name = match n {
-                TypeExpr::Any(t) => t.to_string(),
-                _ if n.is_name("Error") => "Error".to_string(),
-                _ => return false,
-            };
-            let required = rask_types::builtin_interface_method_names(&interface_name);
-            if required.is_empty() {
-                return false;
-            }
-            let provided = self.methods.get(&type_name);
-            required
-                .iter()
-                .all(|m| provided.is_some_and(|ms| ms.contains_key(m)))
-        })
-    }
-}
-
-/// Does the runtime value match any of the named types?
-fn value_matches_any_type(value: &Value, names: &[TypeExpr]) -> bool {
-    if names.is_empty() {
-        return false;
-    }
-    // "none" in the error type names matches the interpreter's `none` runtime value,
-    // which is represented as Option.None (from ExprKind::None).
-    if names.iter().any(|n| *n == TypeExpr::NoneType) {
-        if matches!(value, Value::Enum { name, variant, .. } if name == "Option" && variant == "None") {
-            return true;
-        }
-    }
-    let value_type_name: Option<&str> = match value {
-        Value::Enum { name, .. } => Some(name.as_str()),
-        Value::Struct(s) => {
-            let guard = s.lock().unwrap();
-            if names.iter().any(|n| same_nominal(n, &guard.name)) {
-                return true;
-            }
-            None
-        }
-        _ => None,
-    };
-    if let Some(vn) = value_type_name {
-        names.iter().any(|n| same_nominal(n, vn))
-    } else {
-        false
-    }
-}
-
-/// Do these two spellings name the same nominal type?
-///
-/// The declared error type carries the type arguments the source wrote —
-/// `Refused<i64>` — and a runtime value's name is the bare one. Exact equality
-/// therefore missed for every generic error type, so `return Refused.Full(n)`
-/// from a `-> i64 or Refused<i64>` was wrapped as `Result.Ok(…)`: the wrong
-/// side. `catch` then never fired and the error came back as the value.
-///
-/// Native had the same bug in its own spelling — `is Refused<i64>` compared
-/// against a layout named `Refused` and routed to the success arm — so
-/// `Vec.try_push`, declared `void or GrowError<T>`, read backwards on both
-/// backends in different ways.
-pub(super) fn same_nominal(written: &TypeExpr, runtime_name: &str) -> bool {
-    written.last_segment() == runtime_name.rsplit('.').next()
 }
 
