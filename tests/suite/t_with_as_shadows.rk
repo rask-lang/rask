@@ -15,8 +15,10 @@ struct Ledger {
 test "mem.borrowing — a with-as name shadows a moved binding" {
     let b = Ledger(entries: [1, 2])
     let kept = b
-    let shared = Shared.new(Ledger(entries: [3, 4, 5]))
-    let n = with shared.read() as b { b.entries.len() }
+    // A Vec payload rather than a Ledger: a Shared holding a struct with heap
+    // fields leaks them (#1571), which isn't what this file is about.
+    let shared = Shared.new([3, 4, 5])
+    let n = with shared.read() as b { b.len() }
     assert n == 3
     assert kept.entries.len() == 2
 }
