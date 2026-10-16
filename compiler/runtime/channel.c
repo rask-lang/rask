@@ -465,20 +465,18 @@ int64_t rask_channel_send(RaskSender *tx, const void *data) {
     RASK_SIM_POINT();
     RASK_CHECK_NONNULL(tx, "Sender.send: tx handle is null (bad channel destructure?)");
     RaskChannel *ch = tx->chan;
-    if (ch->capacity > 0) {
-        return buffered_send(ch, data);
-    }
-    return unbuffered_send(ch, data);
+    int64_t r = ch->capacity > 0 ? buffered_send(ch, data) : unbuffered_send(ch, data);
+    RASK_SIM_TRACE(r == RASK_CHAN_OK ? "send" : "send failed", "channel", ch);
+    return r;
 }
 
 int64_t rask_channel_recv(RaskRecver *rx, void *data_out) {
     RASK_SIM_POINT();
     RASK_CHECK_NONNULL(rx, "Receiver.recv: rx handle is null (bad channel destructure?)");
     RaskChannel *ch = rx->chan;
-    if (ch->capacity > 0) {
-        return buffered_recv(ch, data_out);
-    }
-    return unbuffered_recv(ch, data_out);
+    int64_t r = ch->capacity > 0 ? buffered_recv(ch, data_out) : unbuffered_recv(ch, data_out);
+    RASK_SIM_TRACE(r == RASK_CHAN_OK ? "receive" : "receive failed", "channel", ch);
+    return r;
 }
 
 int64_t rask_channel_try_send(RaskSender *tx, const void *data) {

@@ -164,6 +164,7 @@ static void sim_print_position(void) {
 // A failure that can't unwind to the test's setjmp — a deadlock is noticed on
 // whichever thread tried to schedule, not on the test's own.
 _Noreturn void rask_test_sim_fail(const char *msg) {
+    rask_sim_trace_write(sim_current_name, 0, msg);
     printf("%s{\"name\":\"", record_mark());
     json_print_escaped(sim_current_name ? sim_current_name : "");
     printf("\",\"passed\":false,\"duration_ns\":0,\"error\":\"");
@@ -285,6 +286,10 @@ static int test_run_one(test_fn fn, const char *name) {
         // Use last check message as error
         error_msg = strdup(rask_check_last_msg);
     }
+
+#ifdef RASK_SIM
+    rask_sim_trace_write(name, !failed, failed ? error_msg : NULL);
+#endif
 
     // Normal case: escape quotes in error message for JSON
     if (failed) {

@@ -443,6 +443,13 @@ fn main() {
                 }
             }
             if !sim {
+                if cmd_args.contains(&"--trace") {
+                    eprintln!(
+                        "{}: `--trace` records a sim schedule — add `--sim` and the `--seed` to replay",
+                        output::error_label(),
+                    );
+                    process::exit(1);
+                }
                 for flag in ["--seeds", "--keep-going", "--max-steps"] {
                     if cmd_args.contains(&flag) {
                         eprintln!(
@@ -454,7 +461,7 @@ fn main() {
                     }
                 }
             }
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps"]);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps", "--trace"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -519,11 +526,32 @@ fn main() {
                     eprintln!("{}: `--max-steps 0` would fail every test at its first step", output::error_label());
                     process::exit(1);
                 }
+                let trace = if cmd_args.contains(&"--trace") {
+                    let Some(path) = extract_flag_value(&cmd_args, "--trace") else {
+                        eprintln!("{}: `--trace` needs a file to write after it", output::error_label());
+                        process::exit(1);
+                    };
+                    // A trace is one schedule: one test, one seed (sim/TR1).
+                    if seeds > 1 {
+                        eprintln!(
+                            "{}: `--trace` records one schedule, and `--seeds {}` runs {} — \
+                             find the failure first, then trace its replay line",
+                            output::error_label(),
+                            seeds,
+                            seeds,
+                        );
+                        process::exit(1);
+                    }
+                    Some(path.to_string())
+                } else {
+                    None
+                };
                 let opts = commands::sim::SimOptions {
                     seed: parse_u64("--seed"),
                     seeds,
                     keep_going: cmd_args.contains(&"--keep-going"),
                     max_steps,
+                    trace,
                 };
                 commands::sim::cmd_test_sim(file, filter, format, opts);
                 return;

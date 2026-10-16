@@ -3144,7 +3144,29 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                // Each `as` name is a fresh binding for the body. It used to
+                // be left unregistered, so `as b` read the state of whatever
+                // `b` was in scope: an earlier `b` that had been moved made
+                // every use of the new one a use after move.
+                let shadowed: Vec<(String, Option<BindingState>, Option<Type>)> = bindings
+                    .iter()
+                    .map(|b| {
+                        let state = self.bindings.insert(b.name.clone(), BindingState::Owned);
+                        let ty = self.binding_types.remove(&b.name);
+                        (b.name.clone(), state, ty)
+                    })
+                    .collect();
                 self.check_block(body);
+                for (name, state, ty) in shadowed.into_iter().rev() {
+                    match state {
+                        Some(s) => self.bindings.insert(name.clone(), s),
+                        None => self.bindings.remove(&name),
+                    };
+                    match ty {
+                        Some(t) => self.binding_types.insert(name, t),
+                        None => self.binding_types.remove(&name),
+                    };
+                }
                 self.active_with_bindings.truncate(prev_count);
             }
             ExprKind::Unsafe { body } => {

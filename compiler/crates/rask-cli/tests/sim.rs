@@ -348,3 +348,89 @@ fn seed_search_flags_need_sim() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("add `--sim`"));
 }
+
+#[test]
+fn a_trace_shows_the_interleaving_that_overdrew_the_account() {
+    let dir = fixture_copy();
+    let seed = "627405149472732430";
+    let replay = ["--seed", seed, "-f", "never overdrawn", "overdraft.rk"];
+    let (plain, code) = sim_in(&dir, &replay);
+    assert_eq!(code, 1, "this seed overdraws:\n{plain}");
+
+    let mut traced_args = replay.to_vec();
+    traced_args.extend(["--trace", "overdraft.json"]);
+    let (out, code) = sim_in(&dir, &traced_args);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("trace written to overdraft.json"), "{out}");
+
+    let text = std::fs::read_to_string(dir.join("overdraft.json")).unwrap();
+    let trace: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+    assert_eq!(trace["passed"], false);
+    assert!(trace["error"].as_str().unwrap().contains("alice is at -60"), "{text}");
+    assert!(trace["replay"].as_str().unwrap().contains(seed), "{text}");
+
+    // TR4: recording didn't change the schedule — same step as the plain run.
+    let step = trace["steps"].as_i64().unwrap();
+    assert!(line_with(&plain, "virtual time").contains(&format!("step {step},")), "{plain}\n{text}");
+
+    // Both transfers saw 100 before either debited: two reads of the bank,
+    // from two tasks, ahead of the first write.
+    let events = trace["events"].as_array().unwrap();
+    let op = |e: &serde_json::Value, what: &str| e["op"] == "acquire" && e["what"] == what;
+    let first_write = events.iter().position(|e| op(e, "Shared write")).expect("a write");
+    let readers: std::collections::BTreeSet<i64> = events[..first_write]
+        .iter()
+        .filter(|e| op(e, "Shared read"))
+        .map(|e| e["task"].as_i64().unwrap())
+        .collect();
+    assert_eq!(readers.len(), 2, "both tasks read before the first write:\n{text}");
+    let saw_100 = events
+        .iter()
+        .filter(|e| e["op"] == "print" && e["text"] == "sees 100")
+        .count();
+    assert_eq!(saw_100, 2, "each task's printed line is in its lane:\n{text}");
+}
+
+#[test]
+fn trace_takes_one_schedule() {
+    let (out, code) = sim(&["--seeds", "5", "--trace", "x.json", "overdraft.rk"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("`--trace` records one schedule"), "{out}");
+}
+
+/// The website's sim showcase (docs/showcase/sim/) draws its trace viewer and
+/// its terminal output from these files. Regenerated here so the page can't
+/// show what the compiler no longer does; `RASK_UPDATE_SHOWCASE=1` rewrites
+/// them after a deliberate change.
+#[test]
+fn the_showcase_traces_are_current() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/showcase/sim");
+    let update = std::env::var_os("RASK_UPDATE_SHOWCASE").is_some();
+    let scratch = std::env::temp_dir().join(format!("rask_showcase_{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let cases = [
+        ("bank.rk", "1", "bank.trace.json", false),
+        ("bank.rk", "4", "bank.pass.trace.json", true),
+        ("bank_fixed.rk", "1", "bank_fixed.trace.json", true),
+    ];
+    let mut stale = Vec::new();
+    for (file, seed, trace, passes) in cases {
+        let fresh = scratch.join(trace);
+        let fresh_str = fresh.to_str().unwrap();
+        let (out, code) = sim_in(&dir, &["--seed", seed, "--trace", fresh_str, file]);
+        assert_eq!(code == 0, passes, "{file} on seed {seed}:\n{out}");
+        let got = std::fs::read_to_string(&fresh).unwrap();
+        let committed = dir.join(trace);
+        if update {
+            std::fs::write(&committed, &got).unwrap();
+        } else if std::fs::read_to_string(&committed).ok().as_deref() != Some(got.as_str()) {
+            stale.push(trace);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert!(
+        stale.is_empty(),
+        "docs/showcase/sim traces are out of date: {stale:?}. If the change is deliberate, \
+         rerun with RASK_UPDATE_SHOWCASE=1 and look at the page"
+    );
+}

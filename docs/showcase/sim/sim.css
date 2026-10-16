@@ -1,0 +1,147 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+/* The sim showcase. Builds on landing.css: the masthead, sections, code
+   windows and syntax colours come from there. What's here is the intro and
+   the trace viewer. */
+
+.intro { padding-block: clamp(2.5rem, 7vw, 4.5rem) clamp(1.5rem, 4vw, 2.5rem); }
+
+.intro h1 {
+    font-family: var(--font-display);
+    font-size: clamp(2.1rem, 5vw, 3.2rem);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+    margin: 1.1rem 0 1rem;
+}
+
+.intro .lede { margin-bottom: 0; }
+
+section .prose p { margin: 0 0 1rem; color: var(--ink-soft); }
+section .prose { margin-bottom: 1.6rem; }
+
+.code-window, .terminal { max-width: 760px; margin-bottom: 1.2rem; }
+
+/* Terminal output keeps its own line breaks and never wraps a command. */
+.terminal pre { white-space: pre; }
+.terminal .prompt { color: var(--c-cmt); user-select: none; }
+.terminal .ok, .viewer .good { color: var(--c-ty); }
+.terminal .bad, .viewer .bad { color: var(--c-bad); }
+.terminal .replay { color: var(--c-fn); }
+
+/* ---------- the trace viewer ---------- */
+
+.viewer {
+    max-width: 760px;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--surface);
+    padding: 1rem;
+}
+
+.viewer-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+
+.viewer-tabs button {
+    font: inherit;
+    font-size: 0.88rem;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    background: none;
+    color: var(--ink-soft);
+    cursor: pointer;
+}
+
+.viewer-tabs button[aria-selected="true"] {
+    border-color: var(--accent);
+    color: var(--ink);
+    background: var(--accent-wash);
+}
+
+.tag { font-size: 0.78rem; margin-left: 0.25rem; }
+.tag.bad { color: var(--c-bad); }
+.tag.good { color: var(--c-ty); }
+
+.viewer-note { color: var(--ink-soft); font-size: 0.95rem; margin: 0.9rem 0; min-height: 3em; }
+
+.viewer-controls { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.8rem; }
+.viewer-controls .btn { padding: 0.35rem 0.9rem; font-size: 0.9rem; cursor: pointer; font-family: inherit; }
+/* A <button> keeps the browser's grey fill unless told otherwise. */
+.viewer-controls .btn.outline { background: none; color: var(--ink); }
+.viewer-pos { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-faint); margin-left: auto; }
+
+/* One column per task, time running down the page: narrow enough for a phone,
+   and the order of events reads top to bottom like the log it is. */
+.lanes {
+    --lanes: 3;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background: var(--code-bg);
+    border: 1px solid var(--code-rule);
+    border-radius: 8px;
+    padding: 0.5rem 0.6rem;
+    overflow-x: auto;
+}
+
+.lane-row {
+    display: grid;
+    grid-template-columns: 2.6rem repeat(var(--lanes), minmax(7.5rem, 1fr));
+    gap: 0.4rem;
+    align-items: center;
+    min-height: 2rem;
+    border-radius: 5px;
+    transition: opacity 0.25s;
+}
+
+.lane-row.hidden { opacity: 0; }
+.lane-row.current { background: var(--accent-wash); }
+
+.lane-head {
+    position: sticky;
+    top: 0;
+    color: var(--ink-soft);
+    font-weight: 500;
+    border-bottom: 1px solid var(--code-rule);
+    margin-bottom: 0.3rem;
+}
+
+.step { color: var(--c-cmt); text-align: right; padding-right: 0.3rem; }
+
+.chip {
+    display: inline-block;
+    padding: 0.12rem 0.45rem;
+    border-radius: 4px;
+    border: 1px solid var(--code-rule);
+    color: var(--code-fg);
+    background: var(--code-chrome);
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.chip.life { color: var(--c-cmt); border-style: dashed; background: none; }
+.chip.print { color: var(--c-str); background: none; border-color: transparent; padding-inline: 0; }
+.chip.read { color: var(--c-ty); }
+.chip.write { color: var(--c-kw); }
+
+/* A write that lands on a balance its task never read. */
+.chip.stale {
+    border-color: var(--c-bad);
+    color: var(--c-bad);
+    box-shadow: 0 0 0 1px var(--c-bad);
+}
+
+.viewer-legend { margin: 0.7rem 0 0; font-size: 0.85rem; color: var(--ink-soft); }
+.viewer-legend .chip { font-family: var(--font-mono); font-size: 0.78rem; margin-right: 0.35rem; }
+
+.viewer-result { margin: 0.9rem 0 0; font-family: var(--font-mono); font-size: 0.88rem; }
+.viewer-result.hidden { visibility: hidden; }
+
+@media (max-width: 560px) {
+    .viewer { padding: 0.7rem; border-radius: 0; border-inline: none; margin-inline: calc(-1 * var(--gutter)); }
+    .lane-row { grid-template-columns: 1.8rem repeat(var(--lanes), minmax(6.2rem, 1fr)); gap: 0.25rem; }
+    .lanes { font-size: 0.74rem; padding-inline: 0.35rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .lane-row { transition: none; }
+}

@@ -14,6 +14,7 @@ build_site() {
     cp shared/tokens.css build/tokens.css
     # Rask's words, read by the book, the playground and the Try box alike.
     cp shared/rask-vocabulary.js build/rask-vocabulary.js
+    cp shared/rask-highlight.js build/rask-highlight.js
 
     cd book
     mdbook build -d ../build/book
@@ -22,6 +23,9 @@ build_site() {
     cp landing/index.html build/index.html
     cp landing/landing.css build/landing.css
     cp landing/try.js build/try.js
+
+    mkdir -p build/showcase
+    cp -r showcase/* build/showcase/
 
     # Rebuild playground examples from examples/*.rk
     node playground/build-examples.js
@@ -52,7 +56,7 @@ build_site
 
 echo ""
 echo "Server running at http://localhost:8080"
-echo "Watching for changes in book/, landing/, blog/, shared/ and writing/..."
+echo "Watching for changes in book/, landing/, showcase/, blog/, shared/ and writing/..."
 echo "Press Ctrl+C to stop"
 echo ""
 
@@ -65,7 +69,7 @@ trap "kill $SERVER_PID 2>/dev/null" EXIT
 
 # Watch for changes and rebuild
 while true; do
-    inotifywait -qr -e modify,create,delete book/src book/theme landing/ shared/ blog/ ../writing/ ../examples/ 2>/dev/null && {
+    inotifywait -qr -e modify,create,delete book/src book/theme landing/ showcase/ shared/ blog/ ../writing/ ../examples/ 2>/dev/null && {
         echo ""
         build_site
     }
