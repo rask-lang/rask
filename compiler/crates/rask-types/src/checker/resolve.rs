@@ -449,6 +449,94 @@ impl TypeChecker {
         self.project_through_bounds(ty, &bounds, &pairs, span)
     }
 
+    /// Check a call against a method's declared signature: argument count,
+    /// each argument against its parameter, the result against the return.
+    ///
+    /// `subst` binds the receiver's type parameters; the method's own get a
+    /// fresh variable per call here. One body for every receiver whose methods
+    /// are declared: a program's struct or enum, a generic one, and the
+    /// primitives the stdlib extends (`string`, `char`, `f32`, `f64`). The
+    /// primitives used to get a weaker copy that checked only the count and
+    /// the return, so `"hello".contains(5)` type-checked (#1561).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_method_sig<'s>(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        method_sig: &'s MethodSig,
+        mut subst: std::collections::HashMap<&'s str, Type>,
+        args: Vec<Type>,
+        ret: &Type,
+        call_node: Option<NodeId>,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let args = self.place_method_args(call_node, method_sig, args);
+        if method_sig.params.len() != args.len() {
+            return Err(TypeError::ArityMismatch {
+                expected: method_sig.params.len(),
+                found: args.len(),
+                span,
+            });
+        }
+
+        // The method's own parameters differ from the receiver's in when
+        // they're chosen — once per call rather than once per receiver — and a
+        // fresh variable each time is exactly that. One the caller already
+        // bound (a written `parse<i32>()`) keeps its binding.
+        for (name, _) in &method_sig.type_params {
+            if !subst.contains_key(name.as_str()) {
+                subst.insert(name.as_str(), self.ctx.fresh_var());
+            }
+        }
+        self.note_method_type_args(call_node, method_sig, span, &subst);
+
+        // ER3a: a `T or E` in the method's signature is a disjointness
+        // obligation on the receiver's type args.
+        self.note_disjointness_obligations(method, &method_sig.ret, &subst, span);
+        for (param_ty, _mode) in &method_sig.params {
+            self.note_disjointness_obligations(method, param_ty, &subst, span);
+        }
+
+        // PC3: names the *method* declares, not the type — the `U` of
+        // `Vec<T>.map(f: func(T) -> U) -> Vec<U>`. One fresh var per name,
+        // shared across params and return so they line up.
+        let mut method_params: HashMap<String, Type> = HashMap::new();
+
+        let index_params = super::receiver_name(ty, &self.types)
+            .map(|n| sequence_index_params(&n, method))
+            .unwrap_or(&[]);
+
+        let mut progress = false;
+        for (i, ((param_ty, _mode), arg)) in method_sig.params.iter().zip(args.iter()).enumerate() {
+            // V8: a position or count takes any integer type. The declared
+            // width is what the runtime receives, not a constraint on the
+            // caller.
+            if index_params.contains(&i) {
+                self.check_integer_arg(ty, arg, span);
+                continue;
+            }
+            let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
+            let substituted = Self::substitute_type_params(&param_ty, &subst);
+            let substituted = self.freshen_free_type_params(&substituted, &mut method_params);
+            // CV1a/CV2 (#649) and the wrapper coercion (#701) are the same
+            // question — which side is the slot — so one call answers both:
+            // `coerce_arg` runs `check_fits` before deciding whether layers
+            // are needed.
+            let node = self.method_arg_node(call_node, i);
+            if self.coerce_arg(&substituted, arg, node, span)? {
+                progress = true;
+            }
+        }
+
+        let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
+        let ret_substituted = Self::substitute_type_params(&ret_ty, &subst);
+        let ret_substituted = self.freshen_free_type_params(&ret_substituted, &mut method_params);
+        if self.unify(&ret_substituted, ret, span)? {
+            progress = true;
+        }
+        Ok(progress)
+    }
+
     fn note_method_type_args(
         &mut self,
         call_node: Option<NodeId>,
@@ -1057,74 +1145,16 @@ impl TypeChecker {
                 };
 
                 if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
-                    let args = self.place_method_args(call_node, method_sig, args.clone());
-                    if method_sig.params.len() != args.len() {
-                        return Err(TypeError::ArityMismatch {
-                            expected: method_sig.params.len(),
-                            found: args.len(),
-                            span,
-                        });
-                    }
-
                     // Instantiate generic type params with fresh vars so a
                     // bare `Vec.new()` produces a Vec carrying a fresh element
                     // var instead of the literal "T" placeholder. Without this
                     // the placeholder leaks into node_types and downstream
                     // unifications (push, get, ...) silently no-op.
-                    //
-                    // The method's own parameters go in the same map. They
-                    // differ from the receiver's in when they're chosen — once
-                    // per call rather than once per receiver — but a fresh
-                    // variable each time is exactly that.
                     let subst: std::collections::HashMap<&str, Type> = type_params
                         .iter()
-                        .map(|p| p.as_str())
-                        .chain(method_sig.type_params.iter().map(|(n, _)| n.as_str()))
-                        .map(|p| (p, self.ctx.fresh_var()))
+                        .map(|p| (p.as_str(), self.ctx.fresh_var()))
                         .collect();
-                    self.note_method_type_args(call_node, method_sig, span, &subst);
-
-                    // ER3a: a `T or E` in the method's signature is a
-                    // disjointness obligation on the receiver's type args.
-                    self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);
-                    for (param_ty, _mode) in &method_sig.params {
-                        self.note_disjointness_obligations(&method, param_ty, &subst, span);
-                    }
-
-                    let index_params = super::receiver_name(&ty, &self.types)
-                        .map(|n| sequence_index_params(&n, &method))
-                        .unwrap_or(&[]);
-
-                    let mut progress = false;
-                    for (i, ((param_ty, _mode), arg)) in
-                        method_sig.params.iter().zip(args.iter()).enumerate()
-                    {
-                        // V8: a position or count takes any integer type. The
-                        // declared width is what the runtime receives, not a
-                        // constraint on the caller.
-                        if index_params.contains(&i) {
-                            self.check_integer_arg(&ty, arg, span);
-                            continue;
-                        }
-                        let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
-                        let substituted = Self::substitute_type_params(&param_ty, &subst);
-                        // CV1a/CV2 (#649) and the wrapper coercion (#701) are
-                        // the same question — which side is the slot — so one
-                        // call answers both: `coerce_arg` runs `check_fits`
-                        // before deciding whether layers are needed.
-                        let node = self.method_arg_node(call_node, i);
-                        if self.coerce_arg(&substituted, arg, node, span)? {
-                            progress = true;
-                        }
-                    }
-
-                    let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
-                    let substituted_ret = Self::substitute_type_params(&ret_ty, &subst);
-                    if self.unify(&substituted_ret, &ret, span)? {
-                        progress = true;
-                    }
-
-                    Ok(progress)
+                    self.apply_method_sig(&ty, &method, method_sig, subst, args.clone(), &ret, call_node, span)
                 } else {
                     let variant = self.types.get(*type_id).and_then(|def| {
                         if let TypeDef::Enum { variants, .. } = def {
@@ -1255,15 +1285,19 @@ impl TypeChecker {
                     }
                 }
             }
-            Type::String => self.resolve_string_method(&method, &args, &ret, &written, span),
+            Type::String => self
+                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, &written, call_node, span)
+                .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
             // and used to miss the resolver above entirely.
-            Type::UnresolvedNamed(ref name) if name == "string" => {
-                self.resolve_string_method(&method, &args, &ret, &written, span)
-            }
-            Type::Char => self.resolve_char_method(&method, &args, &ret, span),
+            Type::UnresolvedNamed(ref name) if name == "string" => self
+                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, &written, call_node, span)
+                .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
+            Type::Char => self
+                .resolve_declared_primitive_method("char", &ty, &method, &args, &ret, &written, call_node, span)
+                .unwrap_or_else(|| self.resolve_char_method(&method, &args, &ret, span)),
             Type::Array { .. } => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span, call_node)
             }
@@ -1395,22 +1429,6 @@ impl TypeChecker {
                 }
 
                 if let Some(method_sig) = found {
-                    let args = self.place_method_args(call_node, method_sig, args.clone());
-                    if method_sig.params.len() != args.len() {
-                        return Err(TypeError::ArityMismatch {
-                            expected: method_sig.params.len(),
-                            found: args.len(),
-                            span,
-                        });
-                    }
-
-                    // The receiver's type args are pinned by the call site; the
-                    // method's own parameters are still open, one fresh variable
-                    // per call.
-                    for (name, _) in &method_sig.type_params {
-                        subst.insert(name.as_str(), self.ctx.fresh_var());
-                    }
-                    self.note_method_type_args(call_node, method_sig, span, &subst);
                     // CC3: the block's `where` clause, against what the
                     // receiver's arguments turn out to be.
                     let pairs: Vec<(String, Type)> =
@@ -1420,51 +1438,7 @@ impl TypeChecker {
                         method_sig.owner_bounds.iter().map(|(n, b)| (n, b)),
                         span,
                     );
-
-                    // ER3a: same obligation on the explicitly-spelled type args.
-                    self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);
-                    for (param_ty, _mode) in &method_sig.params {
-                        self.note_disjointness_obligations(&method, param_ty, &subst, span);
-                    }
-
-                    // PC3: names the *method* declares, not the type — the `U`
-                    // of `Vec<T>.map(f: func(T) -> U) -> Vec<U>`. One fresh var
-                    // per name, shared across params and return so they line up.
-                    let mut method_params: HashMap<String, Type> = HashMap::new();
-
-                    let index_params = super::receiver_name(&ty, &self.types)
-                        .map(|n| sequence_index_params(&n, &method))
-                        .unwrap_or(&[]);
-
-                    let mut progress = false;
-                    for (i, ((param_ty, _mode), arg)) in
-                        method_sig.params.iter().zip(args.iter()).enumerate()
-                    {
-                        // V8: a position or count takes any integer type.
-                        if index_params.contains(&i) {
-                            self.check_integer_arg(&ty, arg, span);
-                            continue;
-                        }
-                        let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
-                        let substituted = Self::substitute_type_params(&param_ty, &subst);
-                        let substituted =
-                            self.freshen_free_type_params(&substituted, &mut method_params);
-                        // Same direction as above, same one call (#649, #701).
-                        let node = self.method_arg_node(call_node, i);
-                        if self.coerce_arg(&substituted, arg, node, span)? {
-                            progress = true;
-                        }
-                    }
-
-                    let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
-                    let ret_substituted = Self::substitute_type_params(&ret_ty, &subst);
-                    let ret_substituted =
-                        self.freshen_free_type_params(&ret_substituted, &mut method_params);
-                    if self.unify(&ret_substituted, &ret, span)? {
-                        progress = true;
-                    }
-
-                    Ok(progress)
+                    self.apply_method_sig(&ty, &method, method_sig, subst, args.clone(), &ret, call_node, span)
                 } else {
                     // Check enum variants as constructors
                     let variant = self.types.get(*base).and_then(|def| {
@@ -1575,7 +1549,9 @@ impl TypeChecker {
             }
             // Primitive float types
             Type::F32 | Type::F64 => {
-                self.resolve_float_method(&ty, &method, &args, &ret, span)
+                let width = if matches!(ty, Type::F32) { "f32" } else { "f64" };
+                self.resolve_declared_primitive_method(width, &ty, &method, &args, &ret, &written, call_node, span)
+                    .unwrap_or_else(|| self.resolve_float_method(&ty, &method, &args, &ret, span))
             }
             // `bool` is Equal and Comparable with `false < true`
             // (type.operators, support table).
@@ -2022,6 +1998,42 @@ impl TypeChecker {
         }
     }
 
+    /// A method `extend string`, `char`, `f32` or `f64` declares in the
+    /// stdlib, checked like any declared method (`apply_method_sig`): each
+    /// argument against its parameter, at the receiver's own width (`to_bits`
+    /// is `u32` on an `f32`). `None` when the type's own `extend` blocks
+    /// declare no such method. The operators (`add`, `eq`, …) come from
+    /// conformances and keep the caller's arms, which say what's wrong with a
+    /// mixed `f64 + i64` instead of "expected `i64`".
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_declared_primitive_method(
+        &mut self,
+        primitive: &str,
+        ty: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        written: &[Type],
+        call_node: Option<NodeId>,
+        span: Span,
+    ) -> Option<Result<bool, TypeError>> {
+        rask_stdlib::lookup_method(primitive, method)?;
+        let id = self.types.primitive_id(primitive)?;
+        let sig = match self.types.get(id)? {
+            TypeDef::Primitive { methods, .. } => methods.iter().find(|m| m.name == method)?.clone(),
+            _ => return None,
+        };
+        // A type argument written at the call binds the method's own
+        // parameter: `s.parse<i32>()`.
+        let subst: std::collections::HashMap<&str, Type> = sig
+            .type_params
+            .iter()
+            .zip(written.iter())
+            .map(|((name, _), w)| (name.as_str(), w.clone()))
+            .collect();
+        Some(self.apply_method_sig(ty, method, &sig, subst, args.to_vec(), ret, call_node, span))
+    }
+
     pub(super) fn resolve_char_method(
         &mut self,
         method: &str,
@@ -2029,19 +2041,6 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        if let Some(method_def) = rask_stdlib::lookup_method("char", method) {
-            let expected_params = method_def.params.len();
-            if args.len() != expected_params {
-                return Err(TypeError::ArityMismatch {
-                    expected: expected_params,
-                    found: args.len(),
-                    span,
-                });
-            }
-            let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty));
-            return self.unify(ret, &ret_ty, span);
-        }
-
         match method {
             // `char` is Comparable in Unicode scalar order (type.operators
             // ORD1 and the support table). Only `eq`/`ne` were wired up, so
@@ -2068,44 +2067,15 @@ impl TypeChecker {
         }
     }
 
+    /// What `string` answers that its declarations in stdlib/string.rk
+    /// don't: the operators and the removed spellings.
     pub(super) fn resolve_string_method(
         &mut self,
         method: &str,
         args: &[Type],
         ret: &Type,
-        written: &[Type],
         span: Span,
     ) -> Result<bool, TypeError> {
-        if let Some(method_def) = rask_stdlib::lookup_method("string", method) {
-            let expected_params = method_def.params.len();
-            if args.len() != expected_params {
-                return Err(TypeError::ArityMismatch {
-                    expected: expected_params,
-                    found: args.len(),
-                    span,
-                });
-            }
-            // `string` is not generic, so a bare single-uppercase name in its
-            // stub signature is the method's own type parameter (PC3) — as in
-            // `parse<T>(self) -> T or ParseError`. Left as a named type it made
-            // every parse yield the literal type `T`, so `const x: f64 =
-            // s.parse()` never learned the target and ran the integer parse
-            // (#480). A fresh var lets the call site decide.
-            // A type argument written at the call binds the method's own
-            // parameter; `freshen_free_type_params` only invents a variable for
-            // the ones nothing named. `stub_type` has already rewritten a
-            // single-uppercase name to `_Any`, so that is the key to seed.
-            let mut seen = std::collections::HashMap::new();
-            if let Some(first) = written.first() {
-                seen.insert("_Any".to_string(), first.clone());
-            }
-            let ret_ty = self.freshen_free_type_params(
-                &self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty)),
-                &mut seen,
-            );
-            return self.unify(ret, &ret_ty, span);
-        }
-
         match method {
             "add" => return Err(TypeError::StringAddForbidden { span }),
             // `a == b` desugars to `a.eq(b)` and there's no `eq` in the string
@@ -4281,20 +4251,6 @@ impl TypeChecker {
             method: method.to_string(),
             span,
         };
-        // Methods declared in stdlib/float.rk, at the receiver's own width
-        // (`to_bits` is `u32` on an `f32`).
-        let width = if matches!(ty, Type::F32) { "f32" } else { "f64" };
-        if let Some(method_def) = rask_stdlib::lookup_method(width, method) {
-            if args.len() != method_def.params.len() {
-                return Err(TypeError::ArityMismatch {
-                    expected: method_def.params.len(),
-                    found: args.len(),
-                    span,
-                });
-            }
-            let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty));
-            return self.unify(ret, &ret_ty, span);
-        }
         let entry = rask_stdlib::float_methods::lookup(method).ok_or_else(no_such)?;
 
         // Arity comes from the signature shape; a call with the wrong count

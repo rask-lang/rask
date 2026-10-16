@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an argument of the wrong type to a method `string`, `char` or `f64` declares
+//
+// Spec: type.functions (argument types match parameters)
+//
+// The checker read these methods' declarations for the count and the return
+// type only, so `"hello".contains(5)` type-checked and failed at run time on
+// the interpreter (#1561).
+
+func main() {
+    let s = "hello"
+    // ERROR: `contains` takes a string [E0308]
+    let a = s.contains(5)
+    // ERROR: `starts_with` takes a string [E0308]
+    let b = s.starts_with('h')
+    println("{a} {b}")
+}
