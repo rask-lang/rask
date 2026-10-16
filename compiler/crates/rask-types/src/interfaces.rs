@@ -1007,6 +1007,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Add" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1020,6 +1021,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Sub" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1033,6 +1035,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Mul" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1046,6 +1049,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Div" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1059,6 +1063,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Rem" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1072,6 +1077,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Neg" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1085,6 +1091,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Equal" | "Eq" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1099,6 +1106,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1117,6 +1125,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1130,6 +1139,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1143,6 +1153,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1156,6 +1167,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1170,6 +1182,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Clone" | "Cloneable" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1184,6 +1197,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1197,6 +1211,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1211,6 +1226,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Displayable" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1224,6 +1240,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Debug" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1238,6 +1255,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Iterator" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1273,6 +1291,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 sigs.push(MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
+                    effect: Default::default(),
                     is_public: true,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1289,6 +1308,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Error" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1644,6 +1664,7 @@ fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
         param_names: Vec::new(),
         origin: crate::MethodOrigin::Declared,
+        effect: Default::default(),
         is_public: true,
         owner_patterns: Vec::new(),
         owner_bounds: Vec::new(),
@@ -1683,6 +1704,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
         param_names: Vec::new(),
         origin: crate::MethodOrigin::Declared,
+        effect: Default::default(),
         is_public: true,
         owner_patterns: Vec::new(),
         owner_bounds: Vec::new(),
@@ -1696,6 +1718,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
     let nullary = |name: &str, self_param| MethodSig {
         param_names: Vec::new(),
         origin: crate::MethodOrigin::Declared,
+        effect: Default::default(),
         is_public: true,
         owner_patterns: Vec::new(),
         owner_bounds: Vec::new(),
@@ -1717,6 +1740,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         MethodSig {
             param_names: Vec::new(),
             origin: crate::MethodOrigin::Declared,
+            effect: Default::default(),
             is_public: true,
             owner_patterns: Vec::new(),
             owner_bounds: Vec::new(),
@@ -1965,6 +1989,7 @@ mod tests {
         let show = || MethodSig {
             param_names: Vec::new(),
             origin: crate::MethodOrigin::Declared,
+            effect: Default::default(),
             is_public: true,
             owner_patterns: Vec::new(),
             owner_bounds: Vec::new(),
@@ -2060,6 +2085,7 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
     MethodSig {
         param_names: m.param_names.clone(),
         origin: m.origin,
+        effect: m.effect,
         is_public: true,
         owner_patterns: m.owner_patterns.clone(),
         owner_bounds: m.owner_bounds.clone(),

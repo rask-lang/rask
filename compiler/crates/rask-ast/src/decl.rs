@@ -177,6 +177,45 @@ impl FnDecl {
         self.attrs.iter().any(|a| a.is("native") || a.is("builtin") || a.is("unimplemented"))
     }
 
+    /// What the method does to the size of the collection it's called on,
+    /// as its declaration says (`@grows`, `@shrinks`).
+    pub fn structural_effect(&self) -> StructuralEffect {
+        StructuralEffect {
+            grows: self.attrs.iter().any(|a| a.is("grows")),
+            shrinks: self.attrs.iter().any(|a| a.is("shrinks")),
+        }
+    }
+}
+
+/// A method that changes how many elements its receiver holds, or moves them
+/// to new storage (comp.advanced/EF1). Either one invalidates a `with` binding
+/// or a `for mutate` loop over the receiver (mem.borrowing/W2,
+/// ctrl.loops/LP14), and neither is possible on a fixed array.
+///
+/// Declared on the stdlib method (`@grows`, `@shrinks`) and read from there by
+/// the checker, ownership and effects. It was five name lists once, and the
+/// with-block rule's list didn't know `remove_where` (#1560).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StructuralEffect {
+    /// Adds elements, or may move them to a bigger buffer (`push`, `reserve`).
+    pub grows: bool,
+    /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
+    pub shrinks: bool,
+}
+
+impl StructuralEffect {
+    pub fn any(self) -> bool {
+        self.grows || self.shrinks
+    }
+}
+
+/// What the checker resolved a method call to, for the passes after it:
+/// `"Type.method"` with the receiver's declared type (`Handle.join` for
+/// `t.join()` on a `Handle<i64>`), and the method's declared effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodTarget {
+    pub name: String,
+    pub effect: StructuralEffect,
 }
 
 /// A function parameter.

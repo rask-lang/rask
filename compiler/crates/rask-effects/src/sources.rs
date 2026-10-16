@@ -12,38 +12,27 @@ use crate::Effects;
 /// `callee` is a free function's name, a module function as `module.name`,
 /// or a method as `Type.method` with the receiver's declared type — the form
 /// the checker resolves a method call to. Returns non-empty effects only for
-/// known source functions (stdlib IO, async primitives, container structural
-/// mutations). Unknown functions return `Effects::default()` — their effects
-/// come from transitive propagation.
+/// known source functions (stdlib IO, async primitives). Unknown functions
+/// return `Effects::default()` — their effects come from transitive
+/// propagation.
 pub fn classify_call(callee: &str) -> Effects {
     // IO sources (conc.io-context table). The async ones among them are the
     // calls that wait — sleep, a channel op, a join (AS3).
     if is_io_source(callee) {
         return Effects { io: true, async_: is_async_source(callee), grow: false, shrink: false, needs_runtime: false };
     }
-
-    // Container structural mutation sources (EF1: split into Grow/Shrink)
-    if is_grow_source(callee) {
-        return Effects { io: false, async_: false, grow: true, shrink: false, needs_runtime: false };
-    }
-    if is_shrink_source(callee) {
-        return Effects { io: false, async_: false, grow: false, shrink: true, needs_runtime: false };
-    }
-
     Effects::default()
 }
 
 /// Classify a method call: IO and Async by the resolved `Type.method`, and
-/// the structural effects by the method's own name, which is what EF1 keys
-/// them on (`insert`, `remove`, … on whatever container).
-pub fn classify_method(callee: &str, method: &str) -> Effects {
+/// the structural effects (EF1) by what the method's declaration says
+/// (`@grows`, `@shrinks`). They used to come from the bare method name, on
+/// any receiver: a program's own `Foo.insert` counted as growing a
+/// collection, and `push` and `pop` counted as nothing (#1560).
+pub fn classify_method(callee: &str, effect: rask_ast::decl::StructuralEffect) -> Effects {
     let mut e = classify_call(callee);
-    if is_grow_source(method) {
-        e.grow = true;
-    }
-    if is_shrink_source(method) {
-        e.shrink = true;
-    }
+    e.grow |= effect.grows;
+    e.shrink |= effect.shrinks;
     e
 }
 
@@ -85,16 +74,6 @@ fn is_async_source(callee: &str) -> bool {
     )
 }
 
-fn is_grow_source(callee: &str) -> bool {
-    // Structural growth (EF1: Grow effect).
-    matches!(callee, "insert" | "alloc")
-}
-
-fn is_shrink_source(callee: &str) -> bool {
-    // Structural shrinkage (EF1: Shrink effect).
-    matches!(callee, "remove" | "clear" | "drain" | "delete")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,38 +102,17 @@ mod tests {
         assert!(e.async_);
     }
 
-    /// A container's structural effects come from the method's name, whatever
-    /// the receiver; its I/O comes from the receiver's type.
+    /// A method's structural effects are what its declaration says; its I/O
+    /// comes from the receiver's type.
     #[test]
     fn method_classification() {
-        assert!(classify_method("Vec.remove", "remove").shrink);
-        assert!(!classify_method("Vec.remove", "remove").io);
-        assert!(classify_method("Handle.join", "join").io);
-        assert!(!classify_method("Vec.join", "join").io);
-    }
-
-    #[test]
-    fn grow_sources_classified() {
-        let e = classify_call("insert");
-        assert!(e.grow);
-        assert!(!e.shrink);
-        assert!(!e.io);
-
-        let e = classify_call("alloc");
-        assert!(e.grow);
-    }
-
-    #[test]
-    fn shrink_sources_classified() {
-        let e = classify_call("remove");
-        assert!(e.shrink);
-        assert!(!e.grow);
-
-        let e = classify_call("delete");
-        assert!(e.shrink);
-
-        let e = classify_call("clear");
-        assert!(e.shrink);
+        use rask_ast::decl::StructuralEffect;
+        let shrinks = StructuralEffect { grows: false, shrinks: true };
+        assert!(classify_method("Vec.remove", shrinks).shrink);
+        assert!(!classify_method("Vec.remove", shrinks).io);
+        assert!(classify_method("Handle.join", StructuralEffect::default()).io);
+        assert!(!classify_method("Vec.join", StructuralEffect::default()).io);
+        assert!(classify_method("Foo.insert", StructuralEffect::default()).is_pure());
     }
 
     #[test]

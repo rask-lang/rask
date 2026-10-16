@@ -192,7 +192,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::Call { func, args } => {
                 let callee_name = extract_callee_name(func);
                 if let Some(ref name) = callee_name {
-                    self.maybe_warn_io_call(name, name, expr.span, warnings);
+                    self.maybe_warn_io_call(name, expr.span, warnings);
                     // CC2: calling a needs_runtime function outside any using Multitasking block
                     if !self.in_multitasking {
                         if let Some(callee_effects) = self.effects.get(name.as_str()) {
@@ -282,7 +282,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let names = crate::method_callees(expr.id, object, method, self.targets);
                 for name in &names {
-                    self.maybe_warn_io_call(name, method, expr.span, warnings);
+                    self.maybe_warn_io_call(name, expr.span, warnings);
                 }
                 self.check_expr(object, warnings);
                 for arg in args {
@@ -418,17 +418,15 @@ impl<'a> WarnContext<'a> {
     }
 
     /// Check if a callee has IO effects and we're in a warning context.
-    /// `method` is the bare name the call was written with.
     fn maybe_warn_io_call(
         &self,
         callee: &str,
-        method: &str,
         span: rask_ast::Span,
         warnings: &mut Vec<EffectWarning>,
     ) {
         let has_io = self.effects.get(callee)
             .map_or(false, |e| e.io)
-            || crate::sources::classify_method(callee, method).io;
+            || crate::sources::classify_call(callee).io;
 
         if !has_io {
             return;

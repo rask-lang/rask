@@ -19,6 +19,7 @@ extend Rack<T> {
 
     /// Insert a node, returning a link to it.
     @native("rask_rack_insert")
+    @grows
     public func insert(mutate self, take node: T) -> Link<T> {}
 
     /// Delete a node. Every edge pointing at it becomes `none` before this
@@ -26,6 +27,7 @@ extend Rack<T> {
     /// revoked, which is what makes use-after-delete a compile error rather
     /// than a runtime check.
     @native("rask_rack_delete")
+    @shrinks
     public func delete(mutate self, take link: Link<T>) -> void {}
 
     /// Number of live nodes.
@@ -46,6 +48,7 @@ extend Rack<T> {
 
     /// Remove every node.
     @native("rask_rack_clear")
+    @shrinks
     public func clear(mutate self) -> void {}
 
     /// An independent copy of the whole graph, with every edge inside it

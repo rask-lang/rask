@@ -309,6 +309,8 @@ pub struct MethodSig {
     pub owner_bounds: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
     /// Who wrote it, and whether it has a body.
     pub origin: MethodOrigin,
+    /// What it does to its receiver's size, as declared (`@grows`, `@shrinks`).
+    pub effect: rask_ast::decl::StructuralEffect,
     /// Declared `public`. A checker-supplied signature has no declaration and
     /// is callable from anywhere, so it counts as public.
     pub is_public: bool,
@@ -389,16 +391,39 @@ impl TypeBinding {
 }
 
 impl TypedProgram {
-    /// Each method call the checker resolved, named `Type.method` after the
-    /// receiver's declared type — `Handle.join` for `t.join()` on a
-    /// `Handle<i64>`. What the effects pass classifies a call by.
-    pub fn method_call_names(&self) -> HashMap<NodeId, String> {
+    /// What a method call does to the size of its receiver, as the method's
+    /// declaration says (`@grows`, `@shrinks`). Nothing for a call that isn't
+    /// a method call or whose method declares neither.
+    pub fn structural_effect(&self, call: NodeId) -> rask_ast::decl::StructuralEffect {
+        let Some(callee @ Callee::Method { method, .. }) = self.call_targets.get(&call) else {
+            return Default::default();
+        };
+        callee
+            .recv_type_id()
+            .and_then(|id| self.types.get(id))
+            .and_then(|def| match def {
+                TypeDef::Struct { methods, .. }
+                | TypeDef::Enum { methods, .. }
+                | TypeDef::NominalAlias { methods, .. } => {
+                    methods.iter().find(|m| m.name == *method).map(|m| m.effect)
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Each method call the checker resolved, keyed by the call's node: what
+    /// it calls and what the method declares it does to its receiver's size.
+    pub fn method_targets(&self) -> HashMap<NodeId, rask_ast::decl::MethodTarget> {
         self.call_targets
             .iter()
             .filter_map(|(node, callee)| match callee {
                 Callee::Method { recv, method, .. } => {
                     let ty = receiver_name(recv, &self.types)?;
-                    Some((*node, format!("{ty}.{method}")))
+                    Some((*node, rask_ast::decl::MethodTarget {
+                        name: format!("{ty}.{method}"),
+                        effect: self.structural_effect(*node),
+                    }))
                 }
                 Callee::Free(_) => None,
             })

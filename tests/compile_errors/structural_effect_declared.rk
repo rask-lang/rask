@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a length-changing method inside `with` or `for mutate`, whatever it's called
+//
+// Spec: mem.borrowing (W2), ctrl.loops (LP14), comp.advanced (EF1)
+//
+// Which methods change a collection's size is what their declaration says
+// (`@grows`, `@shrinks` in stdlib/collections.rk). The rules used to match a
+// five-name list, so `remove_where` slipped through and the `with` binding
+// outlived the element it named (#1560).
+
+func remove_where_in_with() {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    v.push(2)
+    with v[0] as item {
+        // ERROR: cannot remove_where `v` inside `with` block [E0808]
+        v.remove_where(|x| x > 0)
+        println("{item}")
+    }
+}
+
+func reserve_in_with() {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    with v[0] as item {
+        // ERROR: reserving can move the buffer the binding points into [E0808]
+        v.reserve(100)
+        println("{item}")
+    }
+}
+
+func take_where_in_for_mutate() {
+    mut v = Vec<i32>.new()
+    v.push(1)
+    for mutate x in v {
+        x += 1
+        // ERROR: structural mutation during `for mutate` [E0814]
+        let gone = v.take_where(|y| y > 5)
+    }
+}
+
+func main() {}

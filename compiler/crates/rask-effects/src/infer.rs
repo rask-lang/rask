@@ -424,8 +424,9 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         }
 
         ExprKind::MethodCall { object, method, args, .. } => {
+            let effect = t.get(&expr.id).map(|target| target.effect).unwrap_or_default();
             for name in crate::method_callees(expr.id, object, method, t) {
-                effects.union(sources::classify_method(&name, method));
+                effects.union(sources::classify_method(&name, effect));
                 callees.insert(name);
             }
 
@@ -856,6 +857,10 @@ mod tests {
     use rask_ast::stmt::{Stmt, StmtKind};
     use rask_ast::{NodeId, Span};
 
+    fn target(name: &str) -> rask_ast::decl::MethodTarget {
+        rask_ast::decl::MethodTarget { name: name.to_string(), effect: Default::default() }
+    }
+
     fn sp() -> Span { Span::new(0, 0) }
 
     fn ident(name: &str) -> Expr {
@@ -1034,14 +1039,14 @@ mod tests {
     #[test]
     fn method_call_classed_by_resolved_receiver() {
         let decls = vec![make_fn("wait", vec![expr_stmt(method_call("t", "join"))])];
-        let targets: MethodTargets = [(NodeId(0), "Handle.join".to_string())].into();
+        let targets: MethodTargets = [(NodeId(0), target("Handle.join"))].into();
         let effects = infer(&decls, &targets);
         assert!(effects["wait"].io);
         assert!(effects["wait"].async_);
 
         // A variable spelled like a source type, holding something else.
         let decls = vec![make_fn("words", vec![expr_stmt(method_call("Handle", "join"))])];
-        let targets: MethodTargets = [(NodeId(0), "Vec.join".to_string())].into();
+        let targets: MethodTargets = [(NodeId(0), target("Vec.join"))].into();
         assert!(infer(&decls, &targets)["words"].is_pure());
     }
 
@@ -1154,14 +1159,31 @@ mod tests {
         assert!(effects["c_function"].io, "INF5: extern is conservative IO");
     }
 
+    /// The checker resolved `insert` to a method declared `@grows`.
+    fn growing(node: u32) -> MethodTargets {
+        let effect = rask_ast::decl::StructuralEffect { grows: true, shrinks: false };
+        [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into()
+    }
+
     #[test]
     fn mutation_effect() {
         let decls = vec![make_fn("grow", vec![
             expr_stmt(method_call("pool", "insert")),
         ])];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer(&decls, &growing(0));
         assert!(effects["grow"].mutation());
         assert!(!effects["grow"].io, "Mutation is orthogonal to IO");
+    }
+
+    /// The method's declaration decides, not its name: a program's own
+    /// `insert` that declares nothing is pure (#1560).
+    #[test]
+    fn an_undeclared_insert_is_pure() {
+        let decls = vec![make_fn("own", vec![
+            expr_stmt(method_call("thing", "insert")),
+        ])];
+        let effects = infer(&decls, &Default::default());
+        assert!(!effects["own"].mutation());
     }
 
     #[test]
@@ -1171,7 +1193,7 @@ mod tests {
             expr_stmt(spawn_block()),
             expr_stmt(method_call("pool", "insert")),
         ])];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer(&decls, &growing(0));
         assert!(effects["complex"].io);
         assert!(effects["complex"].async_);
         assert!(effects["complex"].mutation());

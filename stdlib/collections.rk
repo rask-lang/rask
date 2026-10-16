@@ -49,6 +49,7 @@ extend Vec<T> {
 
     /// Push a value onto the end. Panics if bounded and full, or on OOM.
     @native("rask_vec_push")
+    @grows
     public func push(mutate self, take value: T) {}
 
     /// Push a value onto the end. Hands the value back instead of panicking
@@ -56,6 +57,7 @@ extend Vec<T> {
     ///
     /// Written in Rask so the two backends share one rule. `NoMemory` has no
     /// path yet — the allocator panics on OOM rather than reporting it.
+    @grows
     public func try_push(mutate self, take value: T) -> void or GrowError<T> {
         if self.is_full() {
             return GrowError.Full(value)
@@ -76,6 +78,7 @@ extend Vec<T> {
     /// A sequence lends its items, so what goes in — and what comes back
     /// refused — is a copy. Pushing the item itself gave `self` an element
     /// the source still owned (E0906, #1429).
+    @grows
     public func try_push_all(mutate self, items: Sequence<T>) -> void or GrowError<T> {
         for item in items {
             if self.is_full() {
@@ -87,18 +90,22 @@ extend Vec<T> {
 
     /// Remove and return the last element.
     @native("rask_vec_pop")
+    @shrinks
     public func pop(mutate self) -> Option<T> {}
 
     /// Remove all elements.
     @native("rask_vec_clear")
+    @shrinks
     public func clear(mutate self) {}
 
     /// Insert a value at the given index, shifting later elements right.
     @native("rask_vec_insert_at")
+    @grows
     public func insert(mutate self, index: i64, take value: T) {}
 
     /// Remove and return the element at the given index.
     @native("rask_vec_remove_at")
+    @shrinks
     public func remove(mutate self, index: i64) -> T {}
 
     /// Remove and return the element at the given index by swapping in the
@@ -107,6 +114,7 @@ extend Vec<T> {
     /// Rask rather than a runtime symbol: `swap` and `pop` already do the two
     /// halves, and writing it here means both backends run the same three
     /// lines. The index is checked by `swap`.
+    @shrinks
     public func remove_unordered(mutate self, index: i64) -> T {
         let last = self.len().wrap<i64>() - 1
         if index != last {
@@ -118,6 +126,7 @@ extend Vec<T> {
     /// Reserve space for at least `additional` more elements. Panics on OOM,
     /// and on a request past a bounded vector's bound.
     @native("rask_vec_reserve")
+    @grows
     public func reserve(mutate self, additional: usize) {}
 
     /// Reserve space for at least `additional` more elements. Reports why
@@ -125,6 +134,7 @@ extend Vec<T> {
     ///
     /// Only a bounded vector can refuse: the allocator panics on OOM, so
     /// `ReserveError.NoMemory` is not reachable from here.
+    @grows
     public func try_reserve(mutate self, additional: usize) -> void or ReserveError {
         if self.remaining()? as room {
             if additional > room {
@@ -161,6 +171,7 @@ extend Vec<T> {
 
     /// Drain all elements into an iterator, leaving the vec empty.
     @native("rask_vec_take_all")
+    @shrinks
     public func take_all(mutate self) -> Iterator<T> {}
 
     /// A sequence over these elements — the chain head a collection stands for
@@ -184,6 +195,7 @@ extend Vec<T> {
     /// One pass, in place: each survivor is swapped down to the next free slot,
     /// which keeps survivors in order and gathers the removed ones at the end,
     /// where `pop` releases each exactly once.
+    @shrinks
     public func remove_where(mutate self, f: func(T) -> bool) -> usize {
         let n = self.len()
         mut kept: usize = 0
@@ -209,6 +221,7 @@ extend Vec<T> {
     /// One pass. Swapping in place would scramble the removed elements, so
     /// this splits the contents instead; `take_all` keeps this vector's
     /// buffer, so pushing the survivors back doesn't grow it.
+    @shrinks
     public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> {
         mut taken: Vec<T> = Vec.new()
         for item in self.take_all() {
@@ -246,6 +259,7 @@ extend Vec<T> {
     /// Remove consecutive duplicate elements. Only runs of equal neighbors
     /// collapse — sort first for full dedup.
     @native("rask_vec_dedup")
+    @shrinks
     public func remove_adjacent_duplicates(mutate self) {}
 
     /// Map then flatten results. Lazy (type.sequence/SEQ41).
@@ -331,6 +345,7 @@ extend Vec<T> {
     /// exactly the second with a zero — `std.api/SD5` says one operation gets
     /// one spelling, and `SD2` says the surface grows by parameter.
     @native("rask_vec_shrink_to")
+    @shrinks
     public func shrink(mutate self, to: usize = 0) {}
 
     /// Raw pointer to the underlying buffer (unsafe).
@@ -518,14 +533,17 @@ extend Map<K, V> {
 
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert")
+    @grows
     public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
 
     /// Remove a key and return its value.
     @native("rask_map_take")
+    @shrinks
     public func remove(mutate self, key: K) -> Option<V> {}
 
     /// Remove all entries.
     @native("rask_map_clear")
+    @shrinks
     public func clear(mutate self) {}
 
     /// Clone the map.
@@ -564,6 +582,7 @@ extend Map<K, V> {
     /// `Map_insert_if_missing` reached codegen as a function nothing emits, while
     /// the interpreter's own copy ran (#886). One source, so the two can't
     /// disagree about it.
+    @grows
     public func insert_if_missing(mutate self, take key: K, f: func() -> V) -> void {
         if self.contains(key) {
             return
@@ -575,6 +594,7 @@ extend Map<K, V> {
     /// Insert default if key absent, then modify the value. One hash lookup.
     /// Panics on alloc failure.
     @native
+    @grows
     public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(mutate V) -> R) -> R {}
 
     /// The chain head: each entry as a `(key, value)` pair (type.sequence/SEQ49).
@@ -776,6 +796,7 @@ extend Set<T> {
     }
 
     /// Add a value. True if it wasn't already there.
+    @grows
     public func insert(mutate self, take value: T) -> bool {
         if self.entries.contains(value) {
             return false
@@ -790,6 +811,7 @@ extend Set<T> {
     }
 
     /// Remove a value. True if it was there.
+    @shrinks
     public func remove(mutate self, value: T) -> bool {
         if !self.entries.contains(value) {
             return false
@@ -799,6 +821,7 @@ extend Set<T> {
     }
 
     /// Remove all values.
+    @shrinks
     public func clear(mutate self) -> void {
         self.entries.clear()
     }

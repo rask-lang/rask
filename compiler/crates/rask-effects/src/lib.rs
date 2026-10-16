@@ -104,9 +104,8 @@ pub struct EffectWarning {
 }
 
 /// The checker's answer for each method call it resolved, keyed by the
-/// call's node: `"Type.method"`, with the receiver's declared type
-/// (`Handle.join` for `t.join()` on a `Handle<i64>`).
-pub type MethodTargets = HashMap<NodeId, String>;
+/// call's node.
+pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
 
 /// Run effect inference on a set of declarations.
 ///
@@ -136,8 +135,8 @@ pub(crate) fn method_callees(
     method: &str,
     targets: &MethodTargets,
 ) -> Vec<String> {
-    if let Some(name) = targets.get(&call) {
-        return vec![name.clone()];
+    if let Some(target) = targets.get(&call) {
+        return vec![target.name.clone()];
     }
     let mut names = Vec::new();
     if let Some(recv) = object.name() {

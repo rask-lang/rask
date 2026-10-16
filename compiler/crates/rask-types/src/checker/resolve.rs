@@ -2160,21 +2160,23 @@ impl TypeChecker {
         }
     }
 
-    /// Methods that change how many elements a sequence holds.
+    /// Whether `Vec`'s `method` changes how many elements it holds, or moves
+    /// them: what its declaration says (`@grows`, `@shrinks`).
     ///
-    /// A `Vec` has them all; a fixed array has none of them, because its length
+    /// A `Vec` has these; a fixed array has none of them, because its length
     /// is written in its type. Sharing the `Vec` method table below is what let
     /// `[i32; 3].push(4)` type-check (#901), so the array receiver is filtered
-    /// against this list before the shared lookup runs.
-    fn changes_length(method: &str) -> bool {
-        matches!(
-            method,
-            "push" | "pop" | "push_all" | "insert" | "insert_at" | "remove" | "remove_at"
-            | "remove_where" | "take_where" | "clear" | "truncate" | "resize"
-            | "reserve" | "shrink" | "with_capacity" | "try_insert" | "try_push"
-            | "try_push_all" | "try_reserve" | "remove_unordered" | "take_all"
-            | "remove_adjacent_duplicates"
-        )
+    /// through this before the shared lookup runs.
+    fn changes_length(&self, method: &str) -> bool {
+        let Some(Type::Named(id) | Type::Generic { base: id, .. }) = self.types.lookup("Vec") else {
+            return false;
+        };
+        match self.types.get(id) {
+            Some(TypeDef::Struct { methods, .. }) => {
+                methods.iter().any(|m| m.name == method && m.effect.any())
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn resolve_array_method(
@@ -2189,7 +2191,7 @@ impl TypeChecker {
         // Neither a fixed array nor a slice has a growth surface: one has a
         // length in its type, the other is a view into somebody else's storage.
         if matches!(array_ty, Type::Array { .. })
-            && Self::changes_length(method)
+            && self.changes_length(method)
         {
             return Err(TypeError::FixedArrayGrowth {
                 method: method.to_string(),

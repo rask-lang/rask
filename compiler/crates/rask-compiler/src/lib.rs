@@ -480,7 +480,7 @@ pub fn check_loaded(
     );
 
     // --- Effects (non-blocking metadata) ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls, &typed.method_call_names());
+    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls, &typed.method_targets());
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -831,7 +831,7 @@ fn check_package_scoped(
     );
 
     // --- Effects ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls, &typed.method_call_names());
+    let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls, &typed.method_targets());
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }

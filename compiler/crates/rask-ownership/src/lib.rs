@@ -2443,8 +2443,13 @@ impl<'a> OwnershipChecker<'a> {
                 for rack_arg in &method_deleting_args {
                     self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
+                // What the method's declaration says it does to the
+                // receiver's size (`@grows`, `@shrinks`). A name list here
+                // didn't know `remove_where`, and a `with v[0]` binding
+                // outlived the element it named (#1560).
+                let structural = self.program.structural_effect(expr.id).any();
                 // W2: Check structural mutations inside `with` blocks
-                if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop") {
+                if structural {
                     if let Some(coll_name) = object.name() {
                         for wb in &self.active_with_bindings {
                             if wb.collection_name == *coll_name {
@@ -2464,7 +2469,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 // LP14: Check structural mutations on collection during `for mutate`
-                if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop" | "drain") {
+                if structural {
                     if let Some(coll_name) = object.name() {
                         for fm in &self.active_for_mutates {
                             if fm.collection_name == *coll_name {

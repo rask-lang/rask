@@ -68,6 +68,9 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm)] = &[
     ("native", ArgForm::Exprs),
     ("builtin", ArgForm::Exprs),
     ("unimplemented", ArgForm::Exprs),
+    // Stdlib declarations: structural effects (comp.advanced/EF1)
+    ("grows", ArgForm::Exprs),
+    ("shrinks", ArgForm::Exprs),
     // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs),
     // Comptime

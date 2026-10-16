@@ -1891,6 +1891,7 @@ impl TypeChecker {
         MethodSig {
             param_names,
             origin: crate::MethodOrigin::Declared,
+            effect: m.structural_effect(),
             is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
             // stored name is `tag<E>`. Method lookup compares against what the
@@ -2129,6 +2130,7 @@ impl TypeChecker {
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Structural,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
