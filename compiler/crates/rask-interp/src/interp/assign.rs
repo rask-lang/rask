@@ -17,13 +17,7 @@ fn wrap_like(old: Option<&Value>, new: Value) -> Value {
     let old_is_option = matches!(old, Some(Value::Enum { name, .. }) if name == "Option");
     let new_is_option = matches!(&new, Value::Enum { name, .. } if name == "Option");
     if old_is_option && !new_is_option {
-        Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![new],
-            variant_index: 0,
-            origin: None,
-        }
+        Value::some(new)
     } else {
         new
     }

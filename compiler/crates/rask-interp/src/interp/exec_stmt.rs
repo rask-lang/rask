@@ -736,13 +736,7 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
         }
         let mut out = value;
         for _ in value_option_depth(&out)..want {
-            out = Value::Enum {
-                name: "Option".to_string(),
-                variant: "Some".to_string(),
-                fields: vec![out],
-                variant_index: 0,
-                origin: None,
-            };
+            out = Value::some(out);
         }
         return out;
     }
@@ -777,13 +771,7 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
             }
             _ => false,
         };
-        return Value::Enum {
-            name: "Result".to_string(),
-            variant: if is_err { "Err".to_string() } else { "Ok".to_string() },
-            fields: vec![value],
-            variant_index: if is_err { 1 } else { 0 },
-            origin: None,
-        };
+        return if is_err { Value::err(value) } else { Value::ok(value) };
     }
     value
 }

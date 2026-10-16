@@ -5035,49 +5035,45 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn variant_tag_impl(&self, name: &str) -> i64 {
-        // Well-known built-in variant tags
-        match name {
-            "Some" | "Ok" => 0,
-            "None" | "Err" => 1,
-            _ => {
-                let (enum_name, bare) = match name.rsplit_once('.') {
-                    Some((qualifier, variant)) => (
-                        Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
-                        variant,
-                    ),
-                    None => (None, name),
-                };
-                if let Some(enum_name) = enum_name {
-                    for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
-                        for variant in &layout.variants {
-                            if variant.name == bare {
-                                return variant.tag as i64;
-                            }
-                        }
-                    }
-                    // `Ordering` is registered by the compiler, not declared,
-                    // so it has no layout to read tags from.
-                    if enum_name == "Ordering" {
-                        if let Some(tag) = rask_stdlib::ordering_tag(bare) {
-                            return tag;
-                        }
+        if let Some(tag) = rask_stdlib::wrappers::wrapper_tag(name) {
+            return tag as i64;
+        }
+        let (enum_name, bare) = match name.rsplit_once('.') {
+            Some((qualifier, variant)) => (
+                Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
+                variant,
+            ),
+            None => (None, name),
+        };
+        if let Some(enum_name) = enum_name {
+            for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
+                for variant in &layout.variants {
+                    if variant.name == bare {
+                        return variant.tag as i64;
                     }
                 }
-                // Unqualified, or the qualifier named no known enum: first
-                // layout that declares the variant.
-                for layout in self.ctx.enum_layouts {
-                    for variant in &layout.variants {
-                        if variant.name == bare {
-                            return variant.tag as i64;
-                        }
-                    }
+            }
+            // `Ordering` is registered by the compiler, not declared,
+            // so it has no layout to read tags from.
+            if enum_name == "Ordering" {
+                if let Some(tag) = rask_stdlib::ordering_tag(bare) {
+                    return tag;
                 }
-                // A declared enum wins the bare name; `Ordering` picks up what's
-                // left, which is what `Ordering.Less` arrives as — the qualifier
-                // is dropped before it gets here.
-                rask_stdlib::ordering_tag(bare).unwrap_or(0)
             }
         }
+        // Unqualified, or the qualifier named no known enum: first
+        // layout that declares the variant.
+        for layout in self.ctx.enum_layouts {
+            for variant in &layout.variants {
+                if variant.name == bare {
+                    return variant.tag as i64;
+                }
+            }
+        }
+        // A declared enum wins the bare name; `Ordering` picks up what's
+        // left, which is what `Ordering.Less` arrives as — the qualifier
+        // is dropped before it gets here.
+        rask_stdlib::ordering_tag(bare).unwrap_or(0)
     }
 
     /// Check if an expression's type is niche-optimized Option<Handle<T>>.

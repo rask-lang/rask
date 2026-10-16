@@ -514,13 +514,7 @@ impl Interpreter {
                     if method == "try_write" {
                         *c.lock().unwrap() = result.clone();
                     }
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![result],
-                        variant_index: 0,
-                        origin: None,
-                    })
+                    Ok(Value::some(result))
                 }
                 "read" | "write" => {
                     let guard = c.lock().unwrap();

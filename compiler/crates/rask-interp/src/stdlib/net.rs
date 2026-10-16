@@ -11,12 +11,7 @@ use crate::value::Value;
 
 /// Build a Result.Ok(value).
 fn make_result_ok(value: Value) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Ok".to_string(),
-        fields: vec![value],
-        variant_index: 0, origin: None,
-    }
+    Value::ok(value)
 }
 
 /// Build a `Result.Err(IoError.Other(message))`.
@@ -26,20 +21,11 @@ fn make_result_ok(value: Value) -> Value {
 /// `message` on type `string`" — while native, which builds a real `IoError`,
 /// was fine (#863). The outer tag was wrong too: `Err` is variant 1, not 0.
 fn make_result_err(msg: &str) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![Value::Enum {
-            name: "IoError".to_string(),
-            variant: "Other".to_string(),
-            fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-            // NotFound(0) PermissionDenied(1) AlreadyExists(2) BrokenPipe(3)
-            // ConnectionReset(4) TimedOut(5) UnexpectedEof(6) Other(7) Cancelled(8)
-            variant_index: 7,
-            origin: None,
-        }],
-        variant_index: 1, origin: None,
-    }
+    Value::err(Value::stdlib_enum(
+        "IoError",
+        "Other",
+        vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
+    ))
 }
 
 fn is_cancelled(e: &std::io::Error) -> bool {
@@ -51,18 +37,7 @@ fn io_err(e: &std::io::Error) -> Value {
     if !is_cancelled(e) {
         return make_result_err(&e.to_string());
     }
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![Value::Enum {
-            name: "IoError".to_string(),
-            variant: "Cancelled".to_string(),
-            fields: vec![],
-            variant_index: 8,
-            origin: None,
-        }],
-        variant_index: 1, origin: None,
-    }
+    Value::err(Value::stdlib_enum("IoError", "Cancelled", vec![]))
 }
 
 #[derive(Debug)]
@@ -159,23 +134,11 @@ impl Interpreter {
                         buf.truncate(n);
                         let bytes: Vec<Value> =
                             buf.into_iter().map(|b| Value::Int(b as i64, crate::value::IntKind::U8)).collect();
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![Value::vec(bytes)],
-                            variant_index: 0,
-                            origin: None,
-                        })
+                        Ok(Value::some(Value::vec(bytes)))
                     }
                     Err(e) => {
                         set_last_os_error(&e);
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 1,
-                            origin: None,
-                        })
+                        Ok(Value::none())
                     }
                 }
             }
@@ -607,23 +570,11 @@ impl Interpreter {
                 match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut buf)) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![Value::vec(bytes)],
-                            variant_index: 0,
-                            origin: None,
-                        })
+                        Ok(Value::some(Value::vec(bytes)))
                     }
                     Err(e) => {
                         set_last_os_error(&e);
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 1,
-                            origin: None,
-                        })
+                        Ok(Value::none())
                     }
                 }
             }

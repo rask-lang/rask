@@ -1347,29 +1347,55 @@ impl fmt::Debug for IteratorState {
 }
 
 impl Value {
-    /// An unbounded vector holding `items`.
     /// The success side of a `T or E`.
     pub fn ok(value: Value) -> Value {
-        Value::Enum {
-            name: "Result".to_string(),
-            variant: "Ok".to_string(),
-            fields: vec![value],
-            variant_index: 0,
-            origin: None,
-        }
+        Self::wrapper("Result", "Ok", vec![value])
     }
 
     /// The error side of a `T or E`.
     pub fn err(error: Value) -> Value {
+        Self::wrapper("Result", "Err", vec![error])
+    }
+
+    /// A present `T?`.
+    pub fn some(value: Value) -> Value {
+        Self::wrapper("Option", "Some", vec![value])
+    }
+
+    /// An absent `T?`.
+    pub fn none() -> Value {
+        Self::wrapper("Option", "None", vec![])
+    }
+
+    fn wrapper(name: &str, variant: &str, fields: Vec<Value>) -> Value {
+        Self::stdlib_enum(name, variant, fields)
+    }
+
+    /// What `compare` answers.
+    pub fn ordering(ord: std::cmp::Ordering) -> Value {
+        let variant = match ord {
+            std::cmp::Ordering::Less => "Less",
+            std::cmp::Ordering::Equal => "Equal",
+            std::cmp::Ordering::Greater => "Greater",
+        };
+        Self::stdlib_enum("Ordering", variant, vec![])
+    }
+
+    /// A value of an enum the stdlib declares, tagged by that declaration.
+    /// Naming a variant the stdlib doesn't declare is an interpreter bug.
+    pub fn stdlib_enum(enum_name: &str, variant: &str, fields: Vec<Value>) -> Value {
+        let tag = rask_stdlib::modules::variant_tag(enum_name, variant)
+            .unwrap_or_else(|| panic!("the stdlib declares no `{enum_name}.{variant}`"));
         Value::Enum {
-            name: "Result".to_string(),
-            variant: "Err".to_string(),
-            fields: vec![error],
-            variant_index: 1,
+            name: enum_name.to_string(),
+            variant: variant.to_string(),
+            fields,
+            variant_index: tag,
             origin: None,
         }
     }
 
+    /// An unbounded vector holding `items`.
     pub fn vec(items: Vec<Value>) -> Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
     }
@@ -1407,12 +1433,6 @@ impl Value {
     /// Create a new struct value wrapped in Arc<Mutex<>>.
     pub fn new_struct(name: String, fields: IndexMap<String, Value>, resource_id: Option<u64>) -> Self {
         Value::Struct(Arc::new(Mutex::new(StructData { name, fields, resource_id })))
-    }
-
-    /// Create an enum value. variant_index defaults to 0 (builtin enums).
-    /// User-defined enums should use `enum_with_index` for correct ordering.
-    pub fn enum_val(name: String, variant: String, fields: Vec<Value>) -> Self {
-        Value::Enum { name, variant, fields, variant_index: 0, origin: None }
     }
 
     /// Create an enum value with an explicit variant index for ordering.

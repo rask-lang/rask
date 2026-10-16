@@ -180,18 +180,8 @@ pub fn call_method(
             }
             let name = expect_string(&args[0], "env name")?;
             match std::env::var(&name) {
-                Ok(val) => Ok(Value::Enum {
-                    name: "Option".into(),
-                    variant: "Some".into(),
-                    fields: vec![Value::String(Arc::new(Mutex::new(val)))],
-                    variant_index: 0, origin: None,
-                }),
-                Err(_) => Ok(Value::Enum {
-                    name: "Option".into(),
-                    variant: "None".into(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                }),
+                Ok(val) => Ok(Value::stdlib_enum("Option", "Some", vec![Value::String(Arc::new(Mutex::new(val)))])),
+                Err(_) => Ok(Value::stdlib_enum("Option", "None", vec![])),
             }
         }
 
@@ -263,21 +253,11 @@ pub fn call_method(
                 for dir in std::env::split_paths(&path_env) {
                     let candidate = dir.join(&name);
                     if candidate.is_file() {
-                        return Ok(Value::Enum {
-                            name: "Option".into(),
-                            variant: "Some".into(),
-                            fields: vec![make_path(&candidate)],
-                            variant_index: 0, origin: None,
-                        });
+                        return Ok(Value::stdlib_enum("Option", "Some", vec![make_path(&candidate)]));
                     }
                 }
             }
-            Ok(Value::Enum {
-                name: "Option".into(),
-                variant: "None".into(),
-                fields: vec![],
-                variant_index: 0, origin: None,
-            })
+            Ok(Value::stdlib_enum("Option", "None", vec![]))
         }
 
         "is_cross_compiling" => {

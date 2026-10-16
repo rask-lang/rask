@@ -149,14 +149,6 @@ const STORE_METHODS: &[&str] = &[
 
 const LINK_METHODS: &[&str] = &["eq", "ne"];
 
-const RESULT_METHODS: &[&str] = &[
-    "map_err", "map", "ok", "unwrap_or", "is_ok", "is_err", "unwrap",
-];
-
-const OPTION_METHODS: &[&str] = &[
-    "unwrap_or", "is_some", "is_none", "map", "unwrap",
-];
-
 const FILE_METHODS: &[&str] = &[
     "close", "read_bytes", "read_text", "write", "write_bytes", "write_text", "write_line",
 ];
@@ -309,7 +301,6 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "u8", "u16", "u32", "u64", "u128",
     "f64", "bool", "char", "string",
     "Vec", "Map", "Rack", "Link",
-    "Result", "Option",
     "File", "Metadata",
     "TcpListener", "TcpConnection",
     "JsonValue",
@@ -366,8 +357,6 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Map" => MAP_METHODS,
         "Rack" => STORE_METHODS,
         "Link" => LINK_METHODS,
-        "Result" => RESULT_METHODS,
-        "Option" => OPTION_METHODS,
         "File" => FILE_METHODS,
         "Metadata" => METADATA_METHODS,
         "TcpListener" => TCP_LISTENER_METHODS,

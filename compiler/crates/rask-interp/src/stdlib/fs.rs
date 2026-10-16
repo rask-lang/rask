@@ -18,34 +18,22 @@ use crate::value::Value;
 pub(crate) fn io_error_result(e: &std::io::Error) -> Value {
     use std::io::ErrorKind;
     let msg = e.to_string();
-    let (variant, index, carries_msg) = match e.kind() {
-        ErrorKind::NotFound => ("NotFound", 0, true),
-        ErrorKind::PermissionDenied => ("PermissionDenied", 1, true),
-        ErrorKind::AlreadyExists => ("AlreadyExists", 2, true),
-        ErrorKind::BrokenPipe => ("BrokenPipe", 3, false),
-        ErrorKind::ConnectionReset => ("ConnectionReset", 4, false),
-        ErrorKind::TimedOut => ("TimedOut", 5, false),
-        ErrorKind::UnexpectedEof => ("UnexpectedEof", 6, false),
-        _ => ("Other", 7, true),
+    let (variant, carries_msg) = match e.kind() {
+        ErrorKind::NotFound => ("NotFound", true),
+        ErrorKind::PermissionDenied => ("PermissionDenied", true),
+        ErrorKind::AlreadyExists => ("AlreadyExists", true),
+        ErrorKind::BrokenPipe => ("BrokenPipe", false),
+        ErrorKind::ConnectionReset => ("ConnectionReset", false),
+        ErrorKind::TimedOut => ("TimedOut", false),
+        ErrorKind::UnexpectedEof => ("UnexpectedEof", false),
+        _ => ("Other", true),
     };
     let fields = if carries_msg {
         vec![Value::String(Arc::new(Mutex::new(msg)))]
     } else {
         vec![]
     };
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![Value::Enum {
-            name: "IoError".to_string(),
-            variant: variant.to_string(),
-            fields,
-            variant_index: index,
-            origin: None,
-        }],
-        variant_index: 0,
-        origin: None,
-    }
+    Value::err(Value::stdlib_enum("IoError", variant, fields))
 }
 
 impl Interpreter {
@@ -59,12 +47,7 @@ impl Interpreter {
             "read_text" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(content)))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(content) => Ok(Value::ok(Value::String(Arc::new(Mutex::new(content))))),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -76,12 +59,7 @@ impl Interpreter {
                             .into_iter()
                             .map(|b| Value::int(b as i64))
                             .collect();
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::vec(values)],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::ok(Value::vec(values)))
                     }
                     Err(e) => Ok(io_error_result(&e)),
                 }
@@ -94,12 +72,7 @@ impl Interpreter {
                             .lines()
                             .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
                             .collect();
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::vec(lines)],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::ok(Value::vec(lines)))
                     }
                     Err(e) => Ok(io_error_result(&e)),
                 }
@@ -108,12 +81,7 @@ impl Interpreter {
                 let path = self.expect_string(&args, 0)?;
                 let content = self.expect_string(&args, 1)?;
                 match std::fs::write(&path, &content) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -137,12 +105,7 @@ impl Interpreter {
                     }
                 };
                 match std::fs::write(&path, &bytes) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -156,12 +119,7 @@ impl Interpreter {
                     .open(&path)
                     .and_then(|mut f| f.write_all(content.as_bytes()));
                 match result {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -186,12 +144,7 @@ impl Interpreter {
                         let arc = Arc::new(Mutex::new(Some(file)));
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker.register_file(ptr, self.env.scope_depth());
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::File(arc)],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::ok(Value::File(arc)))
                     }
                     Err(e) => Ok(io_error_result(&e)),
                 }
@@ -203,12 +156,7 @@ impl Interpreter {
                         let arc = Arc::new(Mutex::new(Some(file)));
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker.register_file(ptr, self.env.scope_depth());
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::File(arc)],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::ok(Value::File(arc)))
                     }
                     Err(e) => Ok(io_error_result(&e)),
                 }
@@ -216,14 +164,9 @@ impl Interpreter {
             "absolute_path" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::canonicalize(&path) {
-                    Ok(p) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
+                    Ok(p) => Ok(Value::ok(Value::String(Arc::new(Mutex::new(
                             p.to_string_lossy().to_string(),
-                        )))],
-                        variant_index: 0, origin: None,
-                    }),
+                        ))))),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -243,16 +186,11 @@ impl Interpreter {
                                 fields.insert("modified".to_string(), Value::int(dur.as_secs() as i64));
                             }
                         }
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::new_struct(
+                        Ok(Value::ok(Value::new_struct(
                                 "Metadata".to_string(),
                                 fields,
                                 None,
-                            )],
-                            variant_index: 0, origin: None,
-                        })
+                            )))
                     }
                     Err(e) => Ok(io_error_result(&e)),
                 }
@@ -260,48 +198,28 @@ impl Interpreter {
             "remove_file" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::remove_file(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "remove_dir" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::remove_dir(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "create_dir" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::create_dir(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "create_dir_all" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::create_dir_all(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -309,12 +227,7 @@ impl Interpreter {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
                 match std::fs::rename(&from, &to) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(()) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -322,12 +235,7 @@ impl Interpreter {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
                 match std::fs::copy(&from, &to) {
-                    Ok(_bytes) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(_bytes) => Ok(Value::ok(Value::Unit)),
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
@@ -339,18 +247,8 @@ impl Interpreter {
             }
             "home_dir" => {
                 match std::env::var("HOME") {
-                    Ok(home) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![super::path::make_path_value(&home)],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(home) => Ok(Value::some(super::path::make_path_value(&home))),
+                    Err(_) => Ok(Value::none()),
                 }
             }
             "list_dir" => {
@@ -365,12 +263,7 @@ impl Interpreter {
                                 ))));
                             }
                         }
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::vec(names)],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::ok(Value::vec(names)))
                     }
                     Err(e) => Ok(io_error_result(&e)),
                 }
@@ -494,21 +387,11 @@ impl Interpreter {
                 match f.read_to_end(&mut content) {
                     Ok(_) => {
                         let bytes: Vec<Value> = content.into_iter().map(|b| Value::int(b as i64)).collect();
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![Value::vec(bytes)],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(Value::vec(bytes)))
                     }
                     Err(e) => {
                         super::net::set_last_os_error(&e);
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 1, origin: None,
-                        })
+                        Ok(Value::none())
                     }
                 }
             }

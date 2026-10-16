@@ -289,12 +289,7 @@ impl Interpreter {
             let err_names = result_sides.map(|(_, err)| err_arms(err)).unwrap_or_default();
             let is_err_branch = self.value_matches_any_err(&value, &err_names);
             if is_err_branch {
-                return Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Err".to_string(),
-                    fields: vec![value],
-                    variant_index: 1, origin: None,
-                });
+                return Ok(Value::err(value));
             }
             // ER9: the ok value still has to satisfy the ok side. `KV? or E`
             // returning a bare KV needs the optional layer too — without it,
@@ -304,12 +299,7 @@ impl Interpreter {
                 Some((ok, _)) => wrap_optional_layers(value, ok),
                 None => value,
             };
-            return Ok(Value::Enum {
-                name: "Result".to_string(),
-                variant: "Ok".to_string(),
-                fields: vec![payload],
-                variant_index: 0, origin: None,
-            });
+            return Ok(Value::ok(payload));
         } else if returns_option {
             // As many layers as the signature declares, not one: `-> T??`
             // returning a bare `T` got a single Some, and the caller's second
@@ -623,13 +613,7 @@ fn wrap_optional_layers(value: Value, ty: &TypeExpr) -> Value {
     let want = optional_depth(ty);
     let mut out = value;
     for _ in option_depth(&out)..want {
-        out = Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![out],
-            variant_index: 0,
-            origin: None,
-        };
+        out = Value::some(out);
     }
     out
 }

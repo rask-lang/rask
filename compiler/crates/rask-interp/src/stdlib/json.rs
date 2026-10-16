@@ -828,57 +828,27 @@ fn encode_enum_variant(
 // ─── JsonValue Constructors ───
 
 fn make_json_null() -> Value {
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "Null".to_string(),
-        fields: vec![],
-        variant_index: 0, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "Null", vec![])
 }
 
 fn make_json_bool(b: bool) -> Value {
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "Bool".to_string(),
-        fields: vec![Value::Bool(b)],
-        variant_index: 1, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "Bool", vec![Value::Bool(b)])
 }
 
 fn make_json_number(n: f64) -> Value {
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "Number".to_string(),
-        fields: vec![Value::Float(n, FloatKind::Untyped)],
-        variant_index: 2, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "Number", vec![Value::Float(n, FloatKind::Untyped)])
 }
 
 fn make_json_int(n: i64, kind: crate::value::IntKind) -> Value {
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "Number".to_string(),
-        fields: vec![Value::Int(n, kind)],
-        variant_index: 2, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "Number", vec![Value::Int(n, kind)])
 }
 
 fn make_json_string(s: &str) -> Value {
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "String".to_string(),
-        fields: vec![Value::String(Arc::new(Mutex::new(s.to_string())))],
-        variant_index: 3, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "String", vec![Value::String(Arc::new(Mutex::new(s.to_string())))])
 }
 
 fn make_json_array(items: Vec<Value>) -> Value {
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "Array".to_string(),
-        fields: vec![Value::vec(items)],
-        variant_index: 4, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "Array", vec![Value::vec(items)])
 }
 
 fn make_json_object(entries: Vec<(String, Value)>) -> Value {
@@ -889,12 +859,7 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
     for (k, v) in entries {
         pairs.insert(MapKey::string(k), v);
     }
-    Value::Enum {
-        name: "JsonValue".to_string(),
-        variant: "Object".to_string(),
-        fields: vec![Value::Map(Arc::new(Mutex::new(pairs)))],
-        variant_index: 5, origin: None,
-    }
+    Value::stdlib_enum("JsonValue", "Object", vec![Value::Map(Arc::new(Mutex::new(pairs)))])
 }
 
 // ─── JSON Decode (typed deserialization) ───
@@ -908,11 +873,11 @@ pub(crate) enum JsonErrKind {
 }
 
 impl JsonErrKind {
-    fn variant(self) -> (&'static str, u32) {
+    fn variant(self) -> &'static str {
         match self {
-            JsonErrKind::Parse => ("ParseError", 0),
-            JsonErrKind::Type => ("TypeError", 1),
-            JsonErrKind::Missing => ("MissingField", 2),
+            JsonErrKind::Parse => "ParseError",
+            JsonErrKind::Type => "TypeError",
+            JsonErrKind::Missing => "MissingField",
         }
     }
 }
@@ -988,9 +953,9 @@ fn json_to_typed(
     // `T?` — null or absent becomes none, anything else Some(T).
     if let TypeExpr::Optional(inner) = ty {
         if is_json_null(json) {
-            return Ok(option_none());
+            return Ok(Value::none());
         }
-        return Ok(option_some(json_to_typed(json, inner, path, cx)?));
+        return Ok(Value::some(json_to_typed(json, inner, path, cx)?));
     }
 
     // The untyped tree, handed back as-is.
@@ -1077,7 +1042,7 @@ fn json_to_typed(
                     }
                     // A `T?` field takes `none`; anything else has to be there (J9).
                     None if matches!(field.ty, TypeExpr::Optional(_)) => {
-                        fields.insert(field.name.clone(), option_none());
+                        fields.insert(field.name.clone(), Value::none());
                     }
                     None => {
                         return Err(JsonErr {
@@ -1189,50 +1154,17 @@ fn object_entries(v: &Value) -> Option<Vec<(String, Value)>> {
 // ─── Result / Option helpers ───
 
 fn make_result_ok(value: Value) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Ok".to_string(),
-        fields: vec![value],
-        variant_index: 0, origin: None,
-    }
+    Value::ok(value)
 }
 
 fn make_result_err(kind: JsonErrKind, msg: &str) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![make_json_error(kind, msg)],
-        variant_index: 1, origin: None,
-    }
+    Value::err(make_json_error(kind, msg))
 }
 
 /// The `JsonError` a failing decode hands back (J3). A bare string used to go
 /// here, so `e.message()` didn't resolve — the error had no type.
 fn make_json_error(kind: JsonErrKind, msg: &str) -> Value {
-    let (variant, index) = kind.variant();
-    Value::Enum {
-        name: "JsonError".to_string(),
-        variant: variant.to_string(),
-        fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-        variant_index: index,
-        origin: None,
-    }
+    Value::stdlib_enum("JsonError", kind.variant(), vec![Value::String(Arc::new(Mutex::new(msg.to_string())))])
 }
 
-fn option_some(value: Value) -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "Some".to_string(),
-        fields: vec![value],
-        variant_index: 0, origin: None,
-    }
-}
 
-fn option_none() -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "None".to_string(),
-        fields: vec![],
-        variant_index: 1, origin: None,
-    }
-}

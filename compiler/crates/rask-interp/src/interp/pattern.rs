@@ -45,18 +45,11 @@ impl Interpreter {
             return value;
         }
         let payload = fields.first().cloned().unwrap_or(Value::Unit);
-        let wrap = |name: &str, variant: &str, field: Value| Value::Enum {
-            name: name.to_string(),
-            variant: variant.to_string(),
-            fields: vec![field],
-            variant_index: 0,
-            origin: None,
-        };
         match rest_ty {
             // `E?` or `T?` out of a flat value: the error moves into an
             // option; the success side already is one.
             Some(rest) if rest.is_option() => {
-                if variant == "Err" { wrap("Option", "Some", payload) } else { payload }
+                if variant == "Err" { Value::some(payload) } else { payload }
             }
             Some(Type::Result { ok: rest_ok, .. }) => {
                 let had_option = matches!(scrutinee_ty, Some(Type::Result { ok, .. }) if ok.is_option());
@@ -66,7 +59,7 @@ impl Interpreter {
                         Value::Enum { fields, .. } => fields.first().cloned().unwrap_or(Value::Unit),
                         other => other.clone(),
                     };
-                    wrap("Result", "Ok", inner)
+                    Value::ok(inner)
                 } else {
                     value
                 }

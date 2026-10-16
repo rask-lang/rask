@@ -154,20 +154,10 @@ impl Interpreter {
                 if let Value::Vec(v) = &args[0] {
                     let vec = v.lock().unwrap();
                     if vec.is_empty() {
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::none())
                     } else {
                         let idx = (state.next_u64() as usize) % vec.len();
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![vec[idx].clone()],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(vec[idx].clone()))
                     }
                 } else {
                     Err(RuntimeError::TypeError("choice requires a Vec".to_string()))

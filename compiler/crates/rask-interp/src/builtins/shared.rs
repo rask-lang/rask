@@ -47,19 +47,9 @@ impl Interpreter {
                         let snapshot = guard.clone();
                         drop(guard);
                         let result = self.call_closure_with_arg(&closure, snapshot)?;
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![result],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(result))
                     }
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 1, origin: None,
-                    }),
+                    Err(_) => Ok(Value::none()),
                 }
             }
             // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
@@ -75,19 +65,9 @@ impl Interpreter {
                         if !matches!(&result, Value::Unit) {
                             *guard = result.clone();
                         }
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![result],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(result))
                     }
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 1, origin: None,
-                    }),
+                    Err(_) => Ok(Value::none()),
                 }
             }
             // The single-expression shorthands, under every strategy.
@@ -271,19 +251,9 @@ impl Interpreter {
                         let snapshot = guard.clone();
                         drop(guard);
                         let result = self.call_closure_with_arg(&closure, snapshot)?;
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![result],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(result))
                     }
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 1, origin: None,
-                    }),
+                    Err(_) => Ok(Value::none()),
                 }
             }
             // `read`/`write` on the `Mutex` strategy both take the one lock it

@@ -59,18 +59,13 @@ impl Interpreter {
                     }
                 });
                 match cancelled {
-                    Some(true) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
+                    Some(true) => Ok(Value::err(Value::Enum {
                             name: "SysError".to_string(),
                             variant: "Cancelled".to_string(),
                             fields: vec![],
                             // Unsupported(0) Failed(1) Cancelled(2)
                             variant_index: 2, origin: None,
-                        }],
-                        variant_index: 1, origin: None,
-                    }),
+                        })),
                     Some(false) | None => Ok(sleep_ok()),
                 }
             }
@@ -365,10 +360,5 @@ impl Interpreter {
 }
 
 fn sleep_ok() -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Ok".to_string(),
-        fields: vec![Value::Unit],
-        variant_index: 0, origin: None,
-    }
+    Value::ok(Value::Unit)
 }

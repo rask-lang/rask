@@ -43,18 +43,6 @@ fn dummy_value(type_name: &str) -> Value {
             rack.lock().unwrap().insert(Arc::clone(&node));
             Value::Link { rack_id, node }
         }
-        "Result" => Value::Enum {
-            name: "Result".to_string(),
-            variant: "Ok".to_string(),
-            fields: vec![Value::Unit],
-            variant_index: 0, origin: None,
-        },
-        "Option" => Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![Value::Unit],
-            variant_index: 0, origin: None,
-        },
         "File" => Value::File(Arc::new(Mutex::new(None))),
         "Metadata" => Value::new_struct(
             "Metadata".to_string(),
@@ -276,4 +264,35 @@ fn all_registered_module_methods_implemented() {
             );
         }
     }
+}
+
+/// A stdlib enum value built in Rust carries the tag the interpreter reads off
+/// that enum's declaration, so ordering and hashing treat it like one the
+/// program built. Each site used to spell its own tag.
+#[test]
+fn rust_built_enums_carry_the_declared_tags() {
+    let mut interp = Interpreter::new();
+    interp.register_stdlib_enums();
+    let tag = |v: &Value| match v {
+        Value::Enum { variant_index, .. } => *variant_index,
+        other => panic!("not an enum: {other:?}"),
+    };
+    for (enum_name, variant) in [
+        ("IoError", "NotFound"),
+        ("IoError", "Other"),
+        ("IoError", "Cancelled"),
+        ("JsonError", "MissingField"),
+        ("ConvertError", "NotFinite"),
+        ("ParseError", "OutOfRange"),
+        ("SelectError", "Cancelled"),
+        ("TryReceiveError", "Closed"),
+        ("Ordering", "Greater"),
+        ("Ordering", "SeqCst"),
+    ] {
+        let built = Value::stdlib_enum(enum_name, variant, vec![]);
+        let declared = interp.enum_variant(enum_name, variant, vec![]).unwrap();
+        assert_eq!(tag(&built), tag(&declared), "{enum_name}.{variant}");
+    }
+    assert_eq!(tag(&Value::none()), rask_stdlib::wrappers::ABSENT_TAG);
+    assert_eq!(tag(&Value::err(Value::Unit)), rask_stdlib::wrappers::ABSENT_TAG);
 }

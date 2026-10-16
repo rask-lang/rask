@@ -63,18 +63,8 @@ impl Interpreter {
                 let options = extract_map_strings(fields, "_options")?;
                 let val = options.get(&long).or_else(|| options.get(&short)).cloned();
                 match val {
-                    Some(v) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(v)))],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(v) => Ok(Value::some(Value::String(Arc::new(Mutex::new(v))))),
+                    None => Ok(Value::none()),
                 }
             }
             "option_or" => {
