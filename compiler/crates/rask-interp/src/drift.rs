@@ -164,41 +164,54 @@ fn rask_implemented_types_have_no_rust_copy() {
 
 #[test]
 fn all_registered_type_methods_implemented() {
-    use rask_stdlib::registry::{is_codegen_only_type, codegen_only_methods};
+    use rask_stdlib::registry::is_codegen_only_type;
 
     let mut interp = Interpreter::new();
     let reg = rask_stdlib::StubRegistry::load();
+    let mut missing = Vec::new();
     for &type_name in rask_stdlib::registry::REGISTERED_TYPES {
         // Skip types that only exist for native codegen
         if is_codegen_only_type(type_name) {
             continue;
         }
         let dummy = dummy_value(type_name);
-        let skip = codegen_only_methods(type_name);
         // Written in Rask: `rask_implemented_types_have_no_rust_copy` checks
         // the opposite for these.
         if rask_stdlib::registry::is_rask_implemented(type_name) {
             continue;
         }
-        for &method in rask_stdlib::registry::type_method_names(type_name) {
-            if skip.contains(&method) {
-                continue;
-            }
+        for method in rask_stdlib::registry::type_method_names(type_name) {
             // A method with a Rask body in stdlib/*.rk runs that body, which
             // this bare interpreter hasn't loaded. `File.read_bytes` is one.
-            let rask_bodied = reg
-                .get_type(type_name)
-                .and_then(|ty| ty.methods.iter().find(|m| m.name == method))
-                .is_some_and(|m| m.has_body);
-            if rask_bodied {
+            let stub = reg.lookup_method(type_name, method);
+            if stub.is_some_and(|m| m.has_body) {
                 continue;
             }
-            assert!(
-                interp.has_method_dispatch(dummy.clone(), method),
-                "{type_name}.{method} registered in rask-stdlib but interpreter returns NoSuchMethod"
-            );
+            // Inherited from `Sequence` (type.sequence/SEQ49): a generated
+            // forwarder to `as_sequence()`, Rask on both backends.
+            if stub.is_none() && reg.get_type(type_name).is_some() {
+                continue;
+            }
+            // Called on the type, `f64.from_bits(…)`, so there's no value to
+            // dispatch on.
+            if stub.is_some_and(|m| !m.takes_self) {
+                continue;
+            }
+            // The compiler's own, not a method table's: `staged` only exists
+            // as the source of a `with`.
+            if stub.is_some_and(|m| m.builtin) {
+                continue;
+            }
+            if !interp.has_method_dispatch(dummy.clone(), method) {
+                missing.push(format!("{type_name}.{method}"));
+            }
         }
     }
+    assert!(
+        missing.is_empty(),
+        "declared in stdlib/*.rk, but the interpreter answers NoSuchMethod: {}",
+        missing.join(", ")
+    );
 }
 
 // Every raw-pointer method has to answer. `PTR_METHODS` is the one list — the
@@ -251,7 +264,7 @@ fn all_registered_module_methods_implemented() {
     let mut interp = Interpreter::new();
     for &module in rask_stdlib::registry::REGISTERED_MODULES {
         let kind = module_kind(module);
-        for &method in rask_stdlib::registry::module_method_names(module) {
+        for method in rask_stdlib::registry::module_method_names(module) {
             let in_rust = interp.has_module_dispatch(&kind, method);
             let in_rask = stubs
                 .lookup_method(module, method)

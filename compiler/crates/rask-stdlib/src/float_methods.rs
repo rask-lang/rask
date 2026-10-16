@@ -100,8 +100,3 @@ pub const FLOAT_METHODS: &[FloatMethod] = &[
 pub fn lookup(name: &str) -> Option<&'static FloatMethod> {
     FLOAT_METHODS.iter().find(|m| m.name == name)
 }
-
-/// Method names, for the drift registry.
-pub fn method_names() -> Vec<&'static str> {
-    FLOAT_METHODS.iter().map(|m| m.name).collect()
-}

@@ -43,7 +43,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// match everything. Empty when the type has no registry entry — a user-defined
 /// type, where there's nothing to compare against.
 fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
-    nearest_names(rask_stdlib::registry::type_method_names(type_base(ty)), method)
+    nearest_names(&rask_stdlib::registry::type_method_names(type_base(ty)), method)
 }
 
 /// The rules `nearest_methods` describes, over any list of names.

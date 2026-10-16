@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Implementation method registry for drift detection and layer classification.
+//! Which methods a stdlib type or module has, by name, for "did you mean" and
+//! the interpreter's drift tests, and which layer each lives in.
 //!
-//! Lists methods the interpreter actually handles, per type and module.
-//! The drift test in rask-interp exercises the interpreter against these
-//! lists to catch registered-but-unimplemented methods.
-//!
-//! Also classifies each type and module by layer — codegen uses this to
-//! decide what needs FFI stubs (Runtime) vs what can compile from Rask (Pure).
-//!
-//! Separate from the spec MethodDefs in types.rs — the spec defines
-//! the planned API, this tracks what's implemented today.
+//! A type declared in `stdlib/*.rk` answers from its declaration. Only the
+//! compiler's own types — the integers, `bool`, the SIMD vectors, `Atomic` —
+//! have lists here, because nothing declares them.
 
 /// Where a stdlib type or module lives in the compilation pipeline.
 ///
@@ -71,8 +66,6 @@ const UNSIGNED_INT_METHODS: &[&str] = &[
     "to_string", "to_float",
 ];
 
-const I64_METHODS: &[&str] = SIGNED_INT_METHODS;
-
 const I128_METHODS: &[&str] = &[
     "add", "sub", "mul", "div", "rem", "neg",
     "eq", "lt", "le", "gt", "ge",
@@ -87,104 +80,8 @@ const U128_METHODS: &[&str] = &[
     "to_string",
 ];
 
-/// Float methods come from `float_methods::FLOAT_METHODS` — the checker,
-/// interpreter and codegen read that same table, so this list can't drift
-/// from what f64 actually answers to.
-fn f64_methods() -> &'static [&'static str] {
-    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(crate::float_methods::method_names).as_slice()
-}
-
 const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
 
-const CHAR_METHODS: &[&str] = &[
-    "is_whitespace", "is_ascii", "is_alphabetic", "is_numeric",
-    "is_alphanumeric", "is_digit", "is_uppercase", "is_lowercase",
-    "to_uppercase", "to_lowercase", "len_utf8",
-    "to_string", "eq", "lt", "le", "gt", "ge", "compare",
-];
-
-const STRING_METHODS: &[&str] = &[
-    "len", "is_empty", "clone", "starts_with", "ends_with", "contains",
-    "push", "push_str", "trim", "trim_start", "trim_end",
-    // No `to_owned`: it's a Rust name with no entry in std.strings and no
-    // signature anywhere, so it resolved as a known method whose return type
-    // stayed open — MIR gave the temp `i64`, codegen had no string slot to
-    // copy into, and `part.to_owned()` segfaulted. The spec's two storable
-    // conversions are `.to_string()` (copies) and `.view()` (zero-copy).
-    "to_string", "to_uppercase", "to_lowercase", "normalized",
-    "split", "split_whitespace", "chars", "char_indices", "bytes", "lines",
-    "graphemes",
-    "replace", "parse",
-    "byte_at", "char_at", "index_of", "last_index_of",
-    "repeat", "reverse", "truncate", "eq", "ne",
-    // `width` is display columns, `len` is bytes (std.strings/U1-U2). No
-    // char_count: a scalar count answers no real question. `char_at` takes a
-    // byte offset like every other index, so it's O(1) instead of a scan from
-    // the start.
-    "width", "is_ascii",
-];
-
-const VEC_METHODS: &[&str] = &[
-    "push", "pop", "len", "get", "is_empty", "clear",
-    "skip", "take", "first", "last", "contains",
-    "reverse", "swap", "join", "clone", "to_vec", "to_map",
-    "insert", "remove", "chunks",
-    "filter", "map", "flat_map", "fold", "reduce",
-    "enumerate", "zip", "limit", "flatten",
-    "sort", "sort_by", "any", "all", "find", "position",
-    "remove_adjacent_duplicates", "sum", "min", "max", "take_all",
-];
-
-const MAP_METHODS: &[&str] = &[
-    "insert", "get", "remove", "contains", "keys", "values",
-    "len", "is_empty", "clear", "clone",
-];
-
-/// `Rack<T>` — structural ops only. There is no `get`: a link is followed by
-/// field access, not redeemed at the container (analysis.fourth-option).
-const STORE_METHODS: &[&str] = &[
-    "insert", "delete", "len", "is_empty", "contains", "nodes", "links", "clear",
-];
-
-const LINK_METHODS: &[&str] = &["eq", "ne"];
-
-const FILE_METHODS: &[&str] = &[
-    "close", "read_bytes", "read_text", "write", "write_bytes", "write_text", "write_line",
-];
-
-const METADATA_METHODS: &[&str] = &["size", "accessed", "modified"];
-
-const TCP_LISTENER_METHODS: &[&str] = &["accept", "local_addr", "close", "clone"];
-
-const TCP_CONNECTION_METHODS: &[&str] = &[
-    "read_bytes", "write_bytes", "read_text", "write_text", "remote_addr",
-    "close", "clone",
-];
-
-const JSON_VALUE_METHODS: &[&str] = &[
-    "is_null", "as_bool", "as_number", "as_string", "as_array", "as_object",
-];
-
-const DURATION_METHODS: &[&str] = &[
-    "as_seconds", "as_millis", "as_micros", "as_nanos", "as_seconds_f64",
-];
-
-const INSTANT_METHODS: &[&str] = &["elapsed"];
-
-const PATH_METHODS: &[&str] = &[
-    "parent", "file_name", "extension", "stem", "components",
-    "is_absolute", "is_relative", "has_extension",
-    "div", "with_extension", "with_file_name", "as_string",
-];
-
-const ARGS_METHODS: &[&str] = &[
-    "flag", "option", "option_or", "positional", "program",
-];
-
-const HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
-const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
-const RECEIVER_METHODS: &[&str] = &["receive", "try_receive", "close"];
 /// A compiler type's methods, each with the argument counts it accepts.
 ///
 /// Two lists — one of names, one of arities — is one list too many. This
@@ -201,25 +98,6 @@ macro_rules! methods_with_arity {
         const $arities: &[(&str, &[usize])] = &[$(($m, &[$($n),*])),*];
     };
 }
-
-// conc.sync: one box, three strategies. Every verb answers under every
-// strategy — `read`/`write` are the scoped views, the rest are the
-// single-expression shorthands `Cell` used to own.
-//
-// No arities here: `Shared` declares its own in `stdlib/sync.rk`, and a second
-// copy would be a second thing to keep in step. `clone` is the one name this
-// list has that the stdlib file doesn't — it comes from the box family rather
-// than from a declaration.
-//
-// `staged` is missing on purpose, and not because it doesn't exist: it is
-// declared and `with s.staged() as v` runs on both backends. It just isn't a
-// method call — a working copy that commits when a scope ends needs the scope,
-// so the checker now rejects the call in every other position (E0846, #1156).
-// This list is for names a method call answers, and no call to this one does.
-const SHARED_METHODS: &[&str] = &[
-    "read", "write", "try_read", "try_write", "clone",
-    "get", "set", "replace", "take",
-];
 
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",
@@ -250,46 +128,6 @@ methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
     "fetch_min" => [2],
     "take" => [0],
 );
-
-// ---------------------------------------------------------------------------
-// Module-level functions
-// ---------------------------------------------------------------------------
-
-const FS_METHODS: &[&str] = &[
-    "read_text", "read_bytes", "read_lines", "write_text", "write_bytes",
-    "append_text", "exists", "open", "create_file", "absolute_path", "metadata",
-    "remove_file", "remove_dir", "create_dir", "create_dir_all",
-    "rename", "copy", "current_dir", "home_dir",
-];
-
-const NET_METHODS: &[&str] = &["tcp_listen", "tcp_connect"];
-
-// No "stringify"/"stringify_pretty": std.json has one verb pair and no
-// parse/stringify family, so they were never declared in stdlib/json.rk and
-// nothing could call them. `parse` is the untyped half of `decode`, written in
-// Rask.
-const JSON_METHODS: &[&str] = &[
-    "parse", "encode", "encode_pretty", "to_value", "decode",
-];
-
-const TIME_METHODS: &[&str] = &["sleep"];
-
-const MATH_METHODS: &[&str] = &[
-    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
-    "exp", "ln", "log2", "log10",
-    "hypot", "to_radians", "to_degrees",
-];
-
-const RANDOM_METHODS: &[&str] = &["f32", "f64", "i64", "bool", "range"];
-
-const OS_METHODS: &[&str] = &[
-    "env", "env_or", "set_env", "remove_env", "env_vars",
-    "args", "exit", "pid", "platform", "arch",
-];
-
-const IO_METHODS: &[&str] = &["read_line"];
-
-const CLI_METHODS: &[&str] = &["args", "parse"];
 
 // ---------------------------------------------------------------------------
 // Lookup
@@ -342,41 +180,49 @@ pub fn is_rask_implemented(type_name: &str) -> bool {
     RASK_IMPLEMENTED_TYPES.contains(&type_name)
 }
 
-/// Get implemented method names for a type.
-pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
-    match type_name {
+/// The methods a program can call on `type_name`: the public, implemented
+/// ones its declaration in `stdlib/*.rk` has. A hand list per type drifted from
+/// the declarations, so "did you mean" offered methods that didn't exist.
+///
+/// The integers, `bool`, the SIMD vectors and `Atomic` have no declaration —
+/// they're the compiler's own — so they answer from the lists above.
+pub fn type_method_names(type_name: &str) -> Vec<&'static str> {
+    let compiler_type: &[&str] = match type_name {
         "i8" | "i16" | "i32" | "i64" => SIGNED_INT_METHODS,
         "u8" | "u16" | "u32" | "u64" => UNSIGNED_INT_METHODS,
         "i128" => I128_METHODS,
         "u128" => U128_METHODS,
-        "f64" => f64_methods(),
         "bool" => BOOL_METHODS,
-        "char" => CHAR_METHODS,
-        "string" => STRING_METHODS,
-        "Vec" => VEC_METHODS,
-        "Map" => MAP_METHODS,
-        "Rack" => STORE_METHODS,
-        "Link" => LINK_METHODS,
-        "File" => FILE_METHODS,
-        "Metadata" => METADATA_METHODS,
-        "TcpListener" => TCP_LISTENER_METHODS,
-        "TcpConnection" => TCP_CONNECTION_METHODS,
-        "JsonValue" => JSON_VALUE_METHODS,
-        "Duration" => DURATION_METHODS,
-        "Instant" => INSTANT_METHODS,
-        "Path" => PATH_METHODS,
-        "Args" => ARGS_METHODS,
-        "Handle" => HANDLE_METHODS,
-        "Sender" => SENDER_METHODS,
-        "Receiver" => RECEIVER_METHODS,
-        "Shared" => SHARED_METHODS,
         "Atomic" => ATOMIC_METHODS,
         "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" => SIMD_METHODS,
-        _ => &[],
-    }
+        _ => return declared_method_names(type_name),
+    };
+    compiler_type.to_vec()
 }
 
-/// Get implemented method names for a module.
+/// What a program can call on a stdlib type or module, from its declaration.
+/// A type declaring `as_sequence` also has `Sequence`'s methods
+/// (type.sequence/SEQ49): `v.filter(p)` is a `Vec` call.
+fn declared_method_names(name: &str) -> Vec<&'static str> {
+    let reg = crate::StubRegistry::load();
+    let callable = |type_name: &str| -> Vec<&'static str> {
+        reg.methods(type_name)
+            .iter()
+            .filter(|m| m.is_pub && !m.unimplemented)
+            .map(|m| m.name.as_str())
+            .collect()
+    };
+    let mut names = callable(name);
+    if names.contains(&"as_sequence") {
+        for m in callable("Sequence") {
+            if !names.contains(&m) {
+                names.push(m);
+            }
+        }
+    }
+    names
+}
+
 /// The argument counts `type_name.method` accepts, where nothing else knows.
 ///
 /// Almost every builtin declares its methods in `stdlib/*.rk`, so a wrong count
@@ -396,19 +242,9 @@ pub fn type_method_arity(type_name: &str, method: &str) -> Option<&'static [usiz
     table.iter().find(|(m, _)| *m == method).map(|(_, counts)| *counts)
 }
 
-pub fn module_method_names(module: &str) -> &'static [&'static str] {
-    match module {
-        "fs" => FS_METHODS,
-        "net" => NET_METHODS,
-        "json" => JSON_METHODS,
-        "time" => TIME_METHODS,
-        "math" => MATH_METHODS,
-        "random" => RANDOM_METHODS,
-        "os" => OS_METHODS,
-        "io" => IO_METHODS,
-        "cli" => CLI_METHODS,
-        _ => &[],
-    }
+/// The functions a program can call in a stdlib module, from its declaration.
+pub fn module_method_names(module: &str) -> Vec<&'static str> {
+    declared_method_names(module)
 }
 
 /// Types that exist only for codegen — the interpreter doesn't dispatch them.
@@ -419,14 +255,6 @@ pub fn is_codegen_only_type(type_name: &str) -> bool {
     )
 }
 
-/// Methods that exist only for codegen on types the interpreter partially covers.
-/// Returns methods to skip for drift testing.
-pub fn codegen_only_methods(type_name: &str) -> &'static [&'static str] {
-    match type_name {
-        _ => &[],
-    }
-}
-
 /// Check if a type has a registered method.
 pub fn has_type_method(type_name: &str, method: &str) -> bool {
     type_method_names(type_name).contains(&method)
@@ -435,4 +263,34 @@ pub fn has_type_method(type_name: &str, method: &str) -> bool {
 /// Check if a module has a registered function.
 pub fn has_module_method(module: &str, method: &str) -> bool {
     module_method_names(module).contains(&method)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The names come from the declarations, so a method the language dropped
+    /// isn't offered back. The old hand list still had `string.push_str`, so
+    /// a typo near it was told to call a method strings no longer have.
+    #[test]
+    fn names_are_what_the_declaration_has() {
+        let string = type_method_names("string");
+        assert!(string.contains(&"to_lowercase"));
+        assert!(!string.contains(&"push_str"));
+    }
+
+    /// A chain head carries the sequence surface (type.sequence/SEQ49).
+    #[test]
+    fn a_chain_head_has_the_sequence_methods() {
+        let vec = type_method_names("Vec");
+        assert!(vec.contains(&"push"));
+        assert!(vec.contains(&"filter"));
+        assert!(vec.contains(&"take_while"));
+    }
+
+    #[test]
+    fn compiler_types_answer_from_their_lists() {
+        assert!(type_method_names("i64").contains(&"abs"));
+        assert!(type_method_names("Atomic").contains(&"fetch_add"));
+    }
 }
