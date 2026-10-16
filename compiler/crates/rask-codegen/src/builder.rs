@@ -14,7 +14,7 @@ use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::dispatch::{ArgAdapt, RetAdapt};
 use crate::types::mir_to_cranelift_type;
-use crate::{BuildMode, CodegenError, CodegenResult};
+use crate::{CodegenError, CodegenResult};
 
 /// Copy `size` bytes from `src_ptr + src_off` to `dst_ptr + dst_off`.
 ///
@@ -202,7 +202,6 @@ struct CodegenCtx<'a> {
     /// `rask_mir::transform::addr_taken`.
     addr_taken: &'a rask_mir::transform::addr_taken::AddrTaken,
     block_map: &'a HashMap<BlockId, Block>,
-    build_mode: BuildMode,
     source_file: Option<&'a str>,
     line_map: Option<&'a rask_ast::LineMap>,
     current_line: u32,
@@ -319,8 +318,6 @@ pub struct FunctionBuilder<'a> {
     fn_param_types: &'a HashMap<String, Vec<MirType>>,
     /// Declared return types, same keying (#1109).
     fn_ret_types: &'a HashMap<String, MirType>,
-    /// Debug vs Release — controls whether pool access is inlined
-    build_mode: BuildMode,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
@@ -389,7 +386,6 @@ impl<'a> FunctionBuilder<'a> {
         internal_fns: &'a HashSet<String>,
         fn_param_types: &'a HashMap<String, Vec<MirType>>,
         fn_ret_types: &'a HashMap<String, MirType>,
-        build_mode: BuildMode,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
@@ -408,7 +404,6 @@ impl<'a> FunctionBuilder<'a> {
             internal_fns,
             fn_param_types,
             fn_ret_types,
-            build_mode,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
             stack_slot_map: HashMap::new(),
@@ -697,7 +692,6 @@ impl<'a> FunctionBuilder<'a> {
             stack_slot_map: &self.stack_slot_map,
             addr_taken: &addr_taken,
             block_map: &self.block_map,
-            build_mode: self.build_mode,
             source_file: self.mir_fn.source_file.as_deref(),
             line_map: self.line_map,
             current_line: self.current_line,

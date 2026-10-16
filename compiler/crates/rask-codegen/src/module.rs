@@ -642,23 +642,7 @@ impl CodeGenerator {
             self.func_ids.insert(internal.to_string(), id);
         }
 
-        // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
-        {
-            let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64)); // pool
-            sig.params.push(AbiParam::new(types::I64)); // packed handle
-            sig.params.push(AbiParam::new(types::I64)); // file ptr
-            sig.params.push(AbiParam::new(types::I32)); // line
-            sig.params.push(AbiParam::new(types::I32)); // col
-            sig.returns.push(AbiParam::new(types::I64)); // element ptr
-            let id = self.module
-                .declare_function("rask_pool_get_checked", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("pool_get_checked".to_string(), id);
-        }
-
         // rask_panic_at(file: ptr, line: i32, col: i32, msg: ptr) -> noreturn
-        // Used by inline pool access (release mode) for bounds/generation failures.
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // file ptr
@@ -1357,7 +1341,6 @@ impl CodeGenerator {
             self.register_string(sym)?;
         }
 
-        // Pre-register panic message for inline pool access (release mode)
         for mir_fn in mir_functions {
             for block in &mir_fn.blocks {
                 for stmt in &block.statements {
@@ -1875,7 +1858,6 @@ impl CodeGenerator {
             &self.internal_fns,
             &self.fn_param_types,
             &self.fn_ret_types,
-            self.build_mode,
         )?;
         if let Some(lm) = &self.line_map {
             builder.set_line_map(lm);

@@ -1133,10 +1133,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("TcpListener_accept_handle", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
         // stdlib/sim.rk: turn on the faults a test asks for; false outside sim.
         StdlibEntry::simple("sim_enable_faults", "rask_sim_enable_faults", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpListener_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpConnection_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpListener_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpConnection_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I8), false),
+        StdlibEntry::simple("TcpConnection_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I8), false),
+        StdlibEntry::simple("TcpListener_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I8), false),
+        StdlibEntry::simple("TcpConnection_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I8), false),
         StdlibEntry::simple("TcpListener_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpListener_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry {
@@ -1392,7 +1392,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Handle_detach", "rask_handle_detach", &[types::I64], None, true),
         StdlibEntry::join_outcome("Handle_cancel", "rask_handle_cancel"),
         StdlibEntry::simple("cancelled", "rask_handle_cancelled", &[], Some(types::I8), false),
-        StdlibEntry::simple("rask_sleep_ns", "rask_sleep_ns", &[types::I64], None, false),
+        StdlibEntry::simple("rask_sleep_ns", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
 
         // ── Concurrency: runtime init/shutdown ───────────────────────
         StdlibEntry::simple("rask_runtime_init", "rask_runtime_init", &[types::I64], None, false),
@@ -1885,6 +1885,112 @@ mod tests {
                 entry.mir_name
             );
         }
+    }
+
+    /// The C prototypes in `rask_runtime.h`, by name: return type and
+    /// parameter types as written. A declaration this can't read is left out.
+    fn header_prototypes() -> HashMap<String, (String, Vec<String>)> {
+        let header = include_str!("../../../runtime/rask_runtime.h");
+        // Comments and preprocessor lines out, then one declaration per `;`.
+        let mut text = String::new();
+        let mut in_block = false;
+        for line in header.lines() {
+            let mut line = line;
+            if in_block {
+                match line.find("*/") {
+                    Some(end) => { line = &line[end + 2..]; in_block = false; }
+                    None => continue,
+                }
+            }
+            if let Some(start) = line.find("/*") {
+                if !line[start..].contains("*/") { in_block = true; }
+                line = &line[..start];
+            }
+            let line = line.split("//").next().unwrap_or("");
+            if line.trim_start().starts_with('#') { continue; }
+            text.push_str(line);
+            text.push(' ');
+        }
+        let mut out = HashMap::new();
+        for decl in text.split(|c| c == ';' || c == '{' || c == '}') {
+            let decl = decl.trim();
+            let (Some(open), Some(close)) = (decl.find('('), decl.rfind(')')) else { continue };
+            let head = decl[..open].trim();
+            let Some(name_at) = head.rfind(|c: char| !(c.is_alphanumeric() || c == '_')) else { continue };
+            let name = &head[name_at + 1..];
+            if !name.starts_with("rask_") || head.contains("typedef") { continue; }
+            let ret = head[..name_at + 1].trim().to_string();
+            let params: Vec<String> = decl[open + 1..close]
+                .split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty() && p != "void")
+                .collect();
+            out.insert(name.to_string(), (ret, params));
+        }
+        out
+    }
+
+    /// The register a C type travels in, or `None` for one the test can't say
+    /// (a struct by value). `void` is `Some(None)`.
+    fn c_register(ty: &str) -> Option<Option<Type>> {
+        if ty.contains('*') {
+            return Some(Some(types::I64));
+        }
+        // A parameter's name follows its type.
+        let words: Vec<&str> = ty.split_whitespace().filter(|w| *w != "const").collect();
+        let base = match words.as_slice() {
+            [] => return None,
+            [t] => *t,
+            [.., t, _name] if !matches!(*t, "unsigned" | "signed" | "long") => *t,
+            [.., t] => *t,
+        };
+        Some(match base {
+            "void" => None,
+            "int8_t" | "uint8_t" | "bool" | "char" => Some(types::I8),
+            "int16_t" | "uint16_t" => Some(types::I16),
+            "int32_t" | "uint32_t" | "int" | "unsigned" => Some(types::I32),
+            "int64_t" | "uint64_t" | "size_t" | "ssize_t" | "intptr_t" | "uintptr_t" | "long" => Some(types::I64),
+            "float" => Some(types::F32),
+            "double" => Some(types::F64),
+            _ => return None,
+        })
+    }
+
+    /// Every dispatch row's signature is the prototype `rask_runtime.h` has
+    /// for its symbol. The two were written separately and nothing compared
+    /// them: `rask_net_is_invalid` returns an `int8_t`, and its rows took an
+    /// `i64` back, so the answer's upper bytes were whatever the register held.
+    #[test]
+    fn dispatch_rows_match_the_header() {
+        let protos = header_prototypes();
+        let mut wrong = Vec::new();
+        let mut compared = 0;
+        // A symbol is declared to Cranelift once, so two rows sharing one
+        // have to agree as well.
+        let mut by_symbol: HashMap<&str, &StdlibEntry> = HashMap::new();
+        let entries = stdlib_entries();
+        for e in &entries {
+            if let Some(first) = by_symbol.insert(e.c_name, e) {
+                if first.params != e.params || first.ret_ty != e.ret_ty {
+                    wrong.push(format!("{} and {} both call {} with different signatures", first.mir_name, e.mir_name, e.c_name));
+                }
+            }
+            let Some((ret, params)) = protos.get(e.c_name) else { continue };
+            let want_params: Option<Vec<Type>> =
+                params.iter().map(|p| c_register(p).flatten()).collect();
+            let (Some(want_ret), Some(want_params)) = (c_register(ret), want_params) else { continue };
+            compared += 1;
+            if want_ret != e.ret_ty || want_params.as_slice() != e.params {
+                wrong.push(format!(
+                    "{} → {}: row says ({:?}) -> {:?}, header says ({:?}) -> {:?}",
+                    e.mir_name, e.c_name, e.params, e.ret_ty, want_params, want_ret
+                ));
+            }
+        }
+        // The prototype reader has to be reading the header, or this passes
+        // by comparing nothing.
+        assert!(compared > 200, "only {compared} rows matched a prototype");
+        assert!(wrong.is_empty(), "{} rows disagree with rask_runtime.h:\n  {}", wrong.len(), wrong.join("\n  "));
     }
 
     /// Every `@native("symbol")` in the stdlib names a symbol that exists.
