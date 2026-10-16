@@ -2755,16 +2755,15 @@ impl TypeChecker {
         let written = func.name().unwrap_or("this function").to_string();
         self.check_argument_lending(&written, None, args);
         self.note_arg_labels(call_id, written, args, span);
-        // A declared function the desugarer couldn't place (one from the
-        // stdlib or another package): its arguments in parameter order.
+        // A declared function: its arguments in parameter order, defaults
+        // included.
         let placed;
-        let args = match self
-            .resolved
-            .resolutions
-            .get(&func.id)
-            .and_then(|sym| self.function_param_names(*sym))
-            .and_then(|names| self.place_free_call(call_id, &names, args))
-        {
+        let callee = self.resolved.resolutions.get(&func.id).copied();
+        let args = match callee.and_then(|sym| {
+            let names = self.function_param_names(sym)?;
+            let defaults = self.fn_defaults.get(&sym).cloned().unwrap_or_default();
+            self.place_free_call(call_id, &names, &defaults, args)
+        }) {
             Some(v) => {
                 placed = v;
                 &placed[..]

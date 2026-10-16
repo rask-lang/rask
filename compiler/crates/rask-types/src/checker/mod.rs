@@ -310,6 +310,9 @@ pub struct TypeChecker {
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
+    /// Each declared function's parameter defaults, in parameter order, for
+    /// the ones that have any. Placed into a call that leaves them out.
+    pub(super) fn_defaults: HashMap<SymbolId, Vec<Option<rask_ast::expr::Expr>>>,
     /// SymbolId → (type param name → interface bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
     pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<TypeExpr>>>,
@@ -645,6 +648,7 @@ impl TypeChecker {
             operator_targets: HashMap::new(),
             operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
+            fn_defaults: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             annotation_types: std::collections::HashSet::new(),
             pending_bound_checks: Vec::new(),
@@ -1153,7 +1157,7 @@ impl TypeChecker {
                         .into_iter()
                         .map(|p| match p {
                             arg_labels::Placement::Written(i) => PlacedArg::Written(i),
-                            arg_labels::Placement::Default(e, _) => PlacedArg::Default(e),
+                            arg_labels::Placement::Default(e) => PlacedArg::Default(e),
                         })
                         .collect();
                     (call, placed)

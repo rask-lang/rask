@@ -462,12 +462,12 @@ impl StubRegistry {
     }
 
     /// The stdlib declarations desugaring needs from outside the program:
-    /// every struct and enum, and every function that has a defaulted
-    /// parameter.
+    /// every struct and enum, and every `extend` block declaring a `message`.
     ///
-    /// Filling an omitted argument needs the declaration it was omitted from
-    /// (#1276), and telling `Point(x: 1)` from a call needs to know `Point` is
-    /// a struct — the stdlib's `SourceLoc` as much as a program's own.
+    /// Telling `Point(x: 1)` from a call needs to know `Point` is a struct —
+    /// the stdlib's `SourceLoc` as much as a program's own — and a struct
+    /// literal leaving a field out takes the field's default. An error
+    /// variant delegates its message to a payload that has one (ER37).
     /// `rask-desugar` can't read this registry itself — this crate already
     /// depends on it — so the caller hands the list in.
     ///
@@ -477,18 +477,11 @@ impl StubRegistry {
         static CACHE: OnceLock<Vec<Decl>> = OnceLock::new();
         CACHE.get_or_init(|| {
             let mut decls = Vec::new();
-
-            let defaulted = |f: &FnDecl| f.params.iter().any(|p| p.default.is_some());
             for stub_index in 0..all_sources().len() {
                 let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
                 for decl in parsed {
                     let keep = match &decl.kind {
-                        DeclKind::Fn(f) => defaulted(f),
-                        // Desugar delegates a variant's message to a payload
-                        // that has one (type.errors/ER37).
-                        DeclKind::Impl(i) => {
-                            i.methods.iter().any(|m| defaulted(m) || m.name == "message")
-                        }
+                        DeclKind::Impl(i) => i.methods.iter().any(|m| m.name == "message"),
                         DeclKind::Enum(_) | DeclKind::Struct(_) => true,
                         _ => false,
                     };

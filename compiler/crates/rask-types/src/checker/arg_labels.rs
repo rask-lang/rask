@@ -2,16 +2,16 @@
 //! Named arguments. A label places its argument on the parameter it names,
 //! wherever it's written (SYNTAX.md, named arguments; `rask_ast::call`).
 //!
-//! Calls to free functions arrive placed: the desugarer did it by name. A
-//! call the desugarer couldn't place is placed here before its arguments are
-//! checked, and a method call where its method resolves. `attach_derived`
+//! A call to a free function is placed before its arguments are checked, on
+//! the function the resolver found; a method call where its method resolves.
+//! Both fill the parameters a call leaves out from their defaults. `attach_derived`
 //! then writes each placement into the call, so every pass after the checker
 //! sees arguments in parameter order. Arguments still run in written order:
 //! where placing moves one that runs code ahead of another, they're bound to
 //! temporaries first (`plan_hoist`).
 
 use rask_ast::call::{is_identity, place_args, runs_code, ArgSlot, ParamSpec, PlaceError};
-use rask_ast::expr::{CallArg, Expr};
+use rask_ast::expr::{ArgMode, CallArg, Expr};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
@@ -69,8 +69,8 @@ pub(super) struct HoistBind {
 pub(super) enum Placement {
     /// The argument written at this index.
     Written(usize),
-    /// The parameter's default, copied for this call, and its type.
-    Default(Expr, Type),
+    /// The parameter's default, copied for this call.
+    Default(Expr),
 }
 
 impl TypeChecker {
@@ -110,39 +110,71 @@ impl TypeChecker {
             .unwrap_or_else(|| vec![None; count])
     }
 
-    /// A free call the desugarer couldn't place — one reaching a package's
-    /// function, say. `names` are the callee's parameters. The arguments in
-    /// parameter order when the labels move any; `None` otherwise, including
-    /// when they don't fit, which `validate_arg_labels` reports.
-    pub(super) fn place_free_call(&mut self, call: NodeId, names: &[String], args: &[CallArg]) -> Option<Vec<CallArg>> {
-        if !args.iter().any(|a| a.name.is_some()) {
+    /// A free call's arguments in parameter order, with defaults in place for
+    /// the parameters it leaves out. `names` and `defaults` are the parameters
+    /// of the function the resolver found the call reaching.
+    ///
+    /// Desugaring used to fill defaults before there was a resolver, by the
+    /// callee's name, so a closure bound to a function's name got the
+    /// function's defaults pasted into its calls.
+    ///
+    /// `None` when the call is already in parameter order, or doesn't fit:
+    /// the arity and label checks report that.
+    pub(super) fn place_free_call(
+        &mut self,
+        call: NodeId,
+        names: &[String],
+        defaults: &[Option<Expr>],
+        args: &[CallArg],
+    ) -> Option<Vec<CallArg>> {
+        // A call can be inferred more than once; the first placement stands.
+        if let Some(placed) = self.arg_places.get(&call) {
+            return Self::placed_call_args(placed, args);
+        }
+        let labeled = args.iter().any(|a| a.name.is_some());
+        let defaulted = defaults.iter().any(Option::is_some);
+        if !labeled && (args.len() >= names.len() || !defaulted) {
             return None;
         }
-        let specs: Vec<ParamSpec> = names.iter().map(|n| ParamSpec { name: n, has_default: false }).collect();
+        let specs: Vec<ParamSpec> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| ParamSpec { name: n, has_default: defaults.get(i).is_some_and(Option::is_some) })
+            .collect();
         let labels: Vec<Option<&str>> = args.iter().map(|a| a.name.as_deref()).collect();
         let slots = place_args(&specs, &labels).ok()?;
         if is_identity(&slots) {
             return None;
         }
-        let placed: Vec<Placement> = slots
-            .iter()
-            .map(|s| match s {
-                ArgSlot::Written(i) => Placement::Written(*i),
-                ArgSlot::Default => unreachable!("no parameter here has a default"),
-            })
-            .collect();
-        let out = placed
+        let mut placed = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.iter().enumerate() {
+            placed.push(match slot {
+                ArgSlot::Written(a) => Placement::Written(*a),
+                ArgSlot::Default => {
+                    let mut expr = defaults[i].clone().expect("a defaulted slot has a default");
+                    self.renumber(&mut expr);
+                    // A compile-time constant (FD1), so it's computed while
+                    // compiling.
+                    Placement::Default(self.comptime_block(expr))
+                }
+            });
+        }
+        let out = Self::placed_call_args(&placed, args)?;
+        self.plan_hoist(call, &placed);
+        self.arg_places.insert(call, placed);
+        Some(out)
+    }
+
+    fn placed_call_args(placed: &[Placement], args: &[CallArg]) -> Option<Vec<CallArg>> {
+        placed
             .iter()
             .map(|p| match p {
-                Placement::Written(i) => args[*i].clone(),
-                Placement::Default(..) => unreachable!(),
+                Placement::Written(i) => args.get(*i).cloned(),
+                Placement::Default(expr) => {
+                    Some(CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() })
+                }
             })
-            .collect();
-        if !self.arg_places.contains_key(&call) {
-            self.plan_hoist(call, &placed);
-            self.arg_places.insert(call, placed);
-        }
-        Some(out)
+            .collect()
     }
 
     /// A method call's argument types in parameter order, with defaults in
@@ -159,7 +191,7 @@ impl TypeChecker {
         let Some(call) = call_node else { return args };
         // A call can be resolved more than once; the first placement stands.
         if let Some(placed) = self.arg_places.get(&call) {
-            return Self::apply_placement(placed, args);
+            return self.apply_placement(placed, args);
         }
         let labels = self.written_labels(call, args.len());
         let labeled = labels.iter().any(Option::is_some);
@@ -192,12 +224,12 @@ impl TypeChecker {
                     // in as a `comptime` block the way desugar fills in a
                     // free function's, so it's computed while compiling.
                     let expr = self.comptime_block(expr);
-                    let ty = self.infer_expr(&expr);
-                    Placement::Default(expr, ty)
+                    self.infer_expr(&expr);
+                    Placement::Default(expr)
                 }
             });
         }
-        let out = Self::apply_placement(&placed, args);
+        let out = self.apply_placement(&placed, args);
         self.plan_hoist(call, &placed);
         self.arg_places.insert(call, placed);
         out
@@ -256,7 +288,7 @@ impl TypeChecker {
         }
     }
 
-    fn apply_placement(placed: &[Placement], args: Vec<Type>) -> Vec<Type> {
+    fn apply_placement(&self, placed: &[Placement], args: Vec<Type>) -> Vec<Type> {
         if placed.iter().any(|p| matches!(p, Placement::Written(i) if *i >= args.len())) {
             return args;
         }
@@ -264,7 +296,7 @@ impl TypeChecker {
             .iter()
             .map(|p| match p {
                 Placement::Written(i) => args[*i].clone(),
-                Placement::Default(_, ty) => ty.clone(),
+                Placement::Default(expr) => self.node_types.get(&expr.id).cloned().unwrap_or(Type::Error),
             })
             .collect()
     }

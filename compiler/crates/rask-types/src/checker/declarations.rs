@@ -322,6 +322,17 @@ impl TypeChecker {
                 }
             }
             DeclKind::Fn(f) => {
+                if f.params.iter().any(|p| p.default.is_some()) {
+                    if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
+                        let defaults = f
+                            .params
+                            .iter()
+                            .filter(|p| p.name != "self")
+                            .map(|p| p.default.clone())
+                            .collect();
+                        self.fn_defaults.insert(sym_id, defaults);
+                    }
+                }
                 // PC1: explicit <T> declarations plus implicit single-letter
                 // type params from the signature.
                 let type_param_names = signature_type_param_names(f);

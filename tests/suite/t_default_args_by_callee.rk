@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A call gets the defaults of the function it actually reaches. Defaults used
+// to be filled before names were resolved, by the callee's name, so a closure
+// bound to a function's name had the function's defaults pasted into its
+// calls: `greet("b")` below was "expected 1 argument, found 2".
+
+func greet(name: string, loud: bool = false) -> string {
+    if loud {
+        return "HI {name}"
+    }
+    return "hi {name}"
+}
+
+func span(start: i64 = 0, end: i64 = 10, step: i64 = 1) -> i64 {
+    return (end - start) / step
+}
+
+test "a function's defaults fill what the call leaves out" {
+    assert greet("a") == "hi a"
+    assert greet("a", loud: true) == "HI a"
+    assert span() == 10
+    assert span(end: 20) == 20
+    assert span(4, step: 2) == 3
+}
+
+test "a closure with the function's name has no defaults" {
+    let greet = |n: string| -> string { return "closure {n}" }
+    assert greet("b") == "closure b"
+}
+
+test "defaults in a closure body still reach the function" {
+    let shout = |n: string| -> string { return greet(n, loud: true) }
+    let quiet = |n: string| -> string { return greet(n) }
+    assert shout("c") == "HI c"
+    assert quiet("c") == "hi c"
+}

@@ -72,12 +72,10 @@ pub fn desugar(decls: &mut Vec<Decl>) -> DesugarOutput {
 
 /// Desugar a single file that can call the stdlib.
 ///
-/// `stdlib` is the stdlib's defaulted signatures
-/// (`StubRegistry::desugar_declarations`). Filling an omitted argument needs
-/// the declaration it was omitted from, and the stdlib's declarations aren't
-/// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
-/// parsed and then unusable (#1276). This crate can't read the registry
-/// itself: `rask-stdlib` already depends on it.
+/// `stdlib` is the stdlib's types (`StubRegistry::desugar_declarations`):
+/// constructions, struct field defaults and error messages need the type's
+/// declaration, and the stdlib's aren't in `decls`. This crate can't read the
+/// registry itself: `rask-stdlib` already depends on it.
 pub fn desugar_with_stdlib(decls: &mut Vec<Decl>, stdlib: &[Decl]) -> DesugarOutput {
     desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
@@ -181,7 +179,7 @@ fn desugar_inner_from(
 
     // Defaults need the full declaration list to build their lookup table,
     // so they run as a second sweep rather than inline with the operators.
-    defaults::desugar_default_args(decls, default_args_id_base, stdlib);
+    defaults::desugar_struct_defaults(decls, default_args_id_base, stdlib);
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.
