@@ -95,7 +95,8 @@ extend TcpListener {
     /// runtime reports failure as -1, and the adapter that turned a negative
     /// return into the error side put that -1 in the payload. Reading -1 as an
     /// `IoError` tag is an out-of-range match, which traps: SIGILL on the first
-    /// refused connection (#863). Same shape as `File.is_null` (#858).
+    /// refused connection (#863). `fs.open` had this shape too (#858) until its
+    /// native returned `File?`.
     @native("rask_net_is_invalid")
     func is_invalid(self) -> bool {}
 

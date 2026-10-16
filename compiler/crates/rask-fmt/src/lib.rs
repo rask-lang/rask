@@ -102,6 +102,15 @@ mod tests {
         assert_eq!(format_source(input), input);
     }
 
+    /// An empty type body stays `{ }` under an attribute. The span starts at the
+    /// `@`, so the declaration always looked multiline and `@resource struct
+    /// File { }` came back split over two lines.
+    #[test]
+    fn keeps_an_attributed_empty_struct_on_one_line() {
+        let input = "@resource\npublic struct File { }\n";
+        assert_eq!(format_source(input), input);
+    }
+
     /// A comment between an attribute and its declaration stayed where it was
     /// written. The declaration's span starts at the `@`, so the comment sits
     /// inside it and the top-level flush skipped it — it came back out at the

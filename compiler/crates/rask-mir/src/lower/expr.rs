@@ -7383,10 +7383,7 @@ impl<'a> MirLowerer<'a> {
                 self.0.find_enum(name).is_some()
             }
             fn is_resource(&self, name: &str) -> bool {
-                // `File` is the compiler's own resource — no declaration carries
-                // the annotation for it, and the runtime tracks it as one.
-                name == "File"
-                    || matches!(self.def(name), Some(rask_types::TypeDef::Struct { is_resource: true, .. }))
+                matches!(self.def(name), Some(rask_types::TypeDef::Struct { is_resource: true, .. }))
             }
             fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>> {
                 let spell = |t: &rask_types::Type| {

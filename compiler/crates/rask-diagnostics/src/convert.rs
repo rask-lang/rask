@@ -1060,10 +1060,18 @@ impl ToDiagnostic for rask_types::TypeError {
                              extend blocks, and `{}` has no `{}`",
                             ty, method
                         )),
-                    _ => diag
-                        .with_help(format!("check available methods on `{}`", ty))
-                        .with_fix(format!("check available methods on `{}`", ty))
-                        .with_why("method calls are resolved at compile time against the type's extend blocks"),
+                    // Nothing close enough to guess at. A short list is still
+                    // better than sending the reader off to find it.
+                    _ => {
+                        let all = rask_stdlib::registry::type_method_names(type_base(&ty_name));
+                        let diag = if !all.is_empty() && all.len() <= 12 {
+                            diag.with_fix(format!("`{}` has `{}`", ty, all.join("`, `")))
+                        } else {
+                            diag.with_help(format!("check available methods on `{}`", ty))
+                                .with_fix(format!("check available methods on `{}`", ty))
+                        };
+                        diag.with_why("method calls are resolved at compile time against the type's extend blocks")
+                    }
                 }
             }
 
@@ -3821,7 +3829,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
             LinearInGenericInstance { chain, type_args, inner, inner_span } => {
                 let func = chain.last().map(String::as_str).unwrap_or("?");
                 let what = match inner.as_ref() {
-                    ResourceNotConsumed { name }
+                    ResourceNotConsumed { name, .. }
                     | ResourceNotConsumedOpaque { name, .. }
                     | OwnedNotConsumed { name } => format!("drops `{}` without consuming it", name),
                     LinearWildcardDiscard { .. } | ResourceDiscardedAsStatement { .. } => {
@@ -4002,8 +4010,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         ),
                     ),
                     MoveReason::Resource { type_name } => (
-                        format!("`{}` is @resource — must be consumed exactly once", type_name),
-                        "restructure so the resource is only used once".to_string(),
+                        format!(
+                            "`{}` is a resource: it's consumed exactly once, and it can't be copied or cloned",
+                            type_name
+                        ),
+                        format!("use `{}` before the line that consumes it, or not at all", name),
                     ),
                     MoveReason::LinkDeleted => (
                         // Unreachable — the guarded arm above handles it.
@@ -4309,7 +4320,21 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
-            ResourceNotConsumed { name } => {
+            ResourceNotConsumed { name, consume } => {
+                let fix = match consume.as_slice() {
+                    [] => format!(
+                        "pass `{}` to something that takes it, or `ensure` a call that does",
+                        name
+                    ),
+                    [c] => format!(
+                        "call `{0}` before the block ends, or `ensure {0}` right after acquiring it",
+                        c
+                    ),
+                    calls => format!(
+                        "call {} before the block ends, or `ensure` one of them right after acquiring it",
+                        either(calls, "")
+                    ),
+                };
                 Diagnostic::error(format!(
                     "resource `{}` must be consumed before scope exit",
                     name
@@ -4323,15 +4348,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     self.span,
                     format!("scope ends after this, and `{}` is still owed", name),
                 )
-                .with_help(format!(
-                    "call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup",
-                    name
-                ))
-                .with_fix(format!("call a consuming method (e.g. `.close()`) on `{}`, or use `ensure` for cleanup", name))
+                .with_fix(fix)
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
-            ResourceLeaksOnTry { name, acquired_at } => {
+            ResourceLeaksOnTry { name, acquired_at, consume } => {
                 Diagnostic::error(format!(
                     "`{}` would leak if this fails",
                     name
@@ -4342,21 +4363,16 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     format!("the error leaves the function here, with `{}` still open", name),
                 )
                 .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
-                .with_help(format!(
-                    "commit the cleanup where `{0}` is acquired, so every way out runs it: \
-                     `ensure {0}.<consume>()` (e.g. `.close()`, `.detach()`)",
-                    name
-                ))
                 .with_fix(format!(
-                    "add `ensure {}.<consuming method>()` right after acquiring it",
-                    name
+                    "add {} on the line after it's acquired",
+                    ensure_call(name, consume)
                 ))
                 .with_why(
                     "a resource has to be consumed on every way out of the scope, and `try` is one of them",
                 )
             }
 
-            ResourceCommitDeferred { name, acquired_at } => {
+            ResourceCommitDeferred { name, acquired_at, consume } => {
                 Diagnostic::error(format!("`{}` has no cleanup committed yet", name))
                     .with_code("E0882")
                     .with_primary(
@@ -4364,13 +4380,9 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         format!("this runs while `{}` has nothing scheduled to close it", name),
                     )
                     .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
-                    .with_help(format!(
-                        "commit the cleanup on the next line, then use `{0}` freely: \
-                         `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
-                        name
-                    ))
                     .with_fix(format!(
-                        "move `ensure {0}.<consuming method>()` up to directly after `{0}` is acquired",
+                        "add {} on the line after it's acquired, then use `{}` freely",
+                        ensure_call(name, consume),
                         name
                     ))
                     .with_why(
@@ -4378,7 +4390,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
             }
 
-            EnsureConsumesNothing { name, acquired_at } => {
+            EnsureConsumesNothing { name, acquired_at, consume } => {
                 Diagnostic::error(format!("nothing in this `ensure` consumes `{}`", name))
                     .with_code("E0908")
                     .with_primary(
@@ -4386,10 +4398,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         format!("this doesn't consume `{}`, so nothing closes it at scope exit", name),
                     )
                     .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
-                    .with_fix(format!(
-                        "call a method that takes `{0}`: `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
-                        name
-                    ))
+                    .with_fix(format!("call a method that takes `{}`: {}", name, ensure_call(name, consume)))
                     .with_why(
                         "`ensure` commits the cleanup its body runs, and a call that only borrows the resource is no cleanup",
                     )
@@ -4907,5 +4916,25 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
                     .with_primary(self.span, "control flow")
             }
         }
+    }
+}
+
+/// `` `ensure conn.close()` ``, or `` `ensure tx.commit()` or `ensure tx.rollback()` ``
+/// when the type has several consuming methods and nothing says which one
+/// cleans up.
+fn ensure_call(name: &str, consume: &[String]) -> String {
+    if consume.is_empty() {
+        return format!("`ensure {}.<consuming method>()`", name);
+    }
+    either(consume, "ensure ")
+}
+
+/// `` `a` ``, `` `a` or `b` ``, `` `a`, `b` or `c` `` — each call quoted and prefixed.
+fn either(calls: &[String], prefix: &str) -> String {
+    let quoted: Vec<String> = calls.iter().map(|c| format!("`{}{}`", prefix, c)).collect();
+    match quoted.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {}", rest.join(", "), last),
+        None => String::new(),
     }
 }

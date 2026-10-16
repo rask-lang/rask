@@ -1757,10 +1757,14 @@ impl<'a> MirLowerer<'a> {
         // Track stdlib type prefix for variables assigned from type constructors,
         // known module functions, or method calls on tracked variables,
         // so later method calls dispatch correctly.
-        // Unwrap try/unwrap wrappers to see the underlying expression.
+        // Unwrap try/unwrap/catch to see the underlying expression. A `catch`
+        // binds the ok side exactly as `try` does; without it a file opened
+        // with `fs.open(p) catch e => { … }` had no prefix, so `f.close()`
+        // never cancelled its `ensure` and the file was closed twice.
         let init_inner = match &init.kind {
             ExprKind::Try { expr, .. } => expr.as_ref(),
             ExprKind::Unwrap { expr, .. } => expr.as_ref(),
+            ExprKind::Catch { value, .. } => value.as_ref(),
             _ => init,
         };
         if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {

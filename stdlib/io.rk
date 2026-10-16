@@ -544,15 +544,12 @@ Buffer implements Seeker {
     }
 }
 
-/// A file handle for reading and writing.
+/// A file handle for reading and writing. A resource: every opened file is
+/// closed exactly once, and the compiler checks it.
+@resource
 public struct File { }
 
 extend File {
-    /// True when the handle is NULL — a failed `fopen`. `fs.open` uses it to
-    /// tell success from failure, since the runtime can't build an `IoError`.
-    @native("rask_file_is_null")
-    func is_null(self) -> bool {}
-
     /// The two halves of `Seeker`, as the backends see them: a position or -1.
     /// The interface methods below turn -1 into an `IoError` and take the
     /// `SeekFrom` apart, which is work neither backend should be doing.
@@ -611,10 +608,8 @@ extend File {
     }
 
     /// Close the file handle. Buffered bytes reach the disk here, so this is
-    /// where a full disk usually says so. `self`: closing doesn't change the
-    /// handle's value. `std.fs` declares it `take self`, which needs `File` to
-    /// be a `@resource` first.
-    public func close(self) -> void or IoError {
+    /// where a full disk usually says so.
+    public func close(take self) -> void or IoError {
         if self.close_raw() != 0 {
             return IoError.last_os_error()
         }

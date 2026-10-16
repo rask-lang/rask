@@ -11,6 +11,7 @@ import sim.Fault
 
 func write_via_handle(path: string, text: string) -> void or IoError {
     let f = try fs.create_file(path)
+    ensure f.close()
     try f.write_text(text)
     try f.close()
     return
