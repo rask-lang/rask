@@ -107,25 +107,8 @@ impl<'a> MirLowerer<'a> {
             let niche = inner.is_niche_payload();
             if !niche && !matches!(val_ty, MirType::Option(_)) {
                 let wrap_local = self.builder.alloc_temp(place_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: wrap_local,
-                    offset: 0,
-                    value: MirOperand::Constant(MirConst::Int(0)),
-                    store_size: Some(8),
-                    field: None,
-                }));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: wrap_local,
-                    offset: 8,
-                    value: val_op,
-                    // The payload slot is a word wide even for a narrower
-                    // scalar, and a copy of the whole option carries whatever
-                    // the rest of it holds — so a 4-byte store here left four
-                    // stale bytes inside every `i32?` built this way, and `==`
-                    // reads the payload as a word (#920).
-                    store_size: Some(val_ty.size().max(8)),
-                    field: None,
-                }));
+                self.store_wrapper_tag(wrap_local, place_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+                self.store_wrapper_payload(wrap_local, place_ty, val_op, inner);
                 return (MirOperand::Local(wrap_local), place_ty.clone());
             }
         }
@@ -3467,12 +3450,7 @@ impl<'a> MirLowerer<'a> {
         let err_local = self.builder.alloc_local(param_name.to_string(), err_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_local,
-            rvalue: MirRValue::Field {
-                base: MirOperand::Local(call_dst),
-                field_index: 0,
-                byte_offset: None,
-                access: FieldAccess::Word,
-            },
+            rvalue: self.payload_field(MirOperand::Local(call_dst), &MirType::Result { ok: Box::new(MirType::Void), err: Box::new(err_ty.clone()) }, &err_ty),
         }));
         self.locals.insert(param_name.to_string(), (err_local, err_ty));
         for s in handler_body {

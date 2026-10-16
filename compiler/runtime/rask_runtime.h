@@ -942,9 +942,6 @@ void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 // out; generated per field by the call site.
 typedef void (*RaskJsonFill)(void *slot);
 
-// Mirrors rask_mono::abi — an Option is [tag:8][payload], tag 0 = Some.
-#define RASK_OPTION_PAYLOAD_OFFSET 8
-
 typedef struct RaskJsonVal RaskJsonVal;
 typedef struct RaskJsonShape RaskJsonShape;
 
@@ -957,7 +954,8 @@ RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
                                    const int32_t *owned, int64_t n_owned);
 RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
                                    const int32_t *owned, int64_t n_owned);
-RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size);
+RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size,
+                                   int64_t payload_offset);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
                                      RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
 void           rask_json_shape_free(RaskJsonShape *s);

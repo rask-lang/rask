@@ -893,7 +893,7 @@ fn insert_aggregate_release(
                         }
                     }
                 }
-                MirStmtKind::Store { addr, offset, value, .. } => {
+                MirStmtKind::Store { addr, value, .. } => {
                     if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
                         if !aggregates.contains(&v) && !aggregates.contains(addr) {
                             // A handle parked in a buffer so a call can point
@@ -1295,16 +1295,19 @@ fn view_of_field(
 /// because that width is what codegen copies and a `None` there means "as wide
 /// as the value", which is not a claim this can act on.
 ///
-/// An enum's tag is the exception. It is one or two bytes, and writing it is
-/// how an enum value is made (or switched to another variant), whatever its
-/// width: `Thing.Plain` is that one store and nothing else. Read as a flag
-/// update, the value was never made on that path, owned on the other, and
-/// left unreleased at the join. The tag is always at offset 0 (E1), where no
-/// payload field can be.
+/// A tag is the exception: an enum's, a `T?`'s or `T or E`'s, a union's
+/// member index. It is a byte or two, and writing it is how the value is made
+/// (or switched to another variant), whatever its width: `Thing.Plain` and
+/// `none` are that one store and nothing else. Read as a flag update, the
+/// value was never made on that path, owned on the other, and left unreleased
+/// at the join. The tag is always at offset 0, where no payload can be.
 fn store_is_narrow(stmt: &MirStmt, ty_of: &HashMap<LocalId, MirType>) -> bool {
     match &stmt.kind {
         MirStmtKind::Store { addr, offset: 0, .. }
-            if matches!(ty_of.get(addr), Some(MirType::Enum(_))) => false,
+            if matches!(
+                ty_of.get(addr),
+                Some(MirType::Enum(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_))
+            ) => false,
         MirStmtKind::Store { store_size: Some(n), .. } => *n < 8,
         _ => false,
     }

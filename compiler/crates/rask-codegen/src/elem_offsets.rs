@@ -147,10 +147,10 @@ fn describe(
         // tag, and nothing it points at is the container's.
         MirType::Option(inner) if !inner.is_niche_payload() => {
             let none = MirType::Void;
-            wrapper_arms(Wrapper::Option, inner, &none, base, layouts, enums, names, depth, out)?;
+            wrapper_arms(ty, inner, &none, base, layouts, enums, names, depth, out)?;
         }
         MirType::Result { ok, err } => {
-            wrapper_arms(Wrapper::Result, ok, err, base, layouts, enums, names, depth, out)?;
+            wrapper_arms(ty, ok, err, base, layouts, enums, names, depth, out)?;
         }
         // Parts at their natural offsets, the packing tuple lowering uses.
         MirType::Tuple(parts) => {
@@ -173,16 +173,10 @@ fn describe(
     Some(())
 }
 
-#[derive(Clone, Copy)]
-enum Wrapper {
-    Result,
-    Option,
-}
-
 /// A `T or E` or tagged `T?`: one guard per side that owns anything, on the
 /// wrapper's own tag, with the side described at the payload offset.
 fn wrapper_arms(
-    kind: Wrapper,
+    wrapper: &MirType,
     ok: &MirType,
     err: &MirType,
     base: i32,
@@ -192,18 +186,16 @@ fn wrapper_arms(
     depth: u32,
     out: &mut Vec<i32>,
 ) -> Option<()> {
-    let (tag_offset, payload_offset) = match kind {
-        Wrapper::Result => (rask_mono::abi::RESULT_TAG_OFFSET, rask_mono::abi::RESULT_PAYLOAD_OFFSET),
-        Wrapper::Option => (rask_mono::abi::OPTION_TAG_OFFSET, rask_mono::abi::OPTION_PAYLOAD_OFFSET),
-    };
-    // Tag 0 is the ok side (`Some` for an option), tag 1 the error side.
-    for (tag_value, side) in [(0u64, ok), (1u64, err)] {
+    use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
+    let payload_offset = wrapper.payload_offset();
+    for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
         describe(side, base + payload_offset as i32, layouts, enums, names, depth + 1, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
-        out.push(tag_guard(base + tag_offset as i32, tag_value, arm.len(), 8)?);
+        let tag_offset = base + rask_mono::abi::TAG_OFFSET as i32;
+        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_mono::abi::TAG_BYTES)?);
         out.extend(arm);
     }
     Some(())

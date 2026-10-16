@@ -28,6 +28,9 @@ runtime_constants! {
     RASK_TAG_PRESENT = rask_stdlib::wrappers::PRESENT_TAG as i64;
     /// The tag of the absent or failed side (`None`, `Err`).
     RASK_TAG_ABSENT = rask_stdlib::wrappers::ABSENT_TAG as i64;
+    /// Where a `T or E` keeps the source line its error came from: a
+    /// `uint32_t`, zero for none (`crate::abi`).
+    RASK_RESULT_ORIGIN_LINE_OFFSET = crate::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
 
     /// A `RaskStr` holds up to this many bytes inline. Its last byte is the
     /// inline capacity left, so an empty string's is this.

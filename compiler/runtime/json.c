@@ -531,6 +531,7 @@ struct RaskJsonField {
 struct RaskJsonShape {
     int64_t kind;
     int64_t slot;                 // struct byte size, or element/value slot width
+    int64_t payload_offset;       // T?: where the payload sits, past the tag
     int      is_static;           // primitive singletons are never freed
     RaskJsonShape *elem;          // Vec element / Map value / T? payload
     // What a Vec element or Map value owns, in the form every container
@@ -600,9 +601,11 @@ RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
     return s;
 }
 
-RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size) {
+RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size,
+                                   int64_t payload_offset) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_OPT, total_size);
     s->elem = inner;
+    s->payload_offset = payload_offset;
     return s;
 }
 
@@ -682,22 +685,17 @@ static void json_store_int(void *dst, int64_t width, int64_t v) {
 static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
                                  RaskJsonVal *v, const char *path);
 
-// A `T?` slot is [tag:8][payload]. tag 0 = Some, 1 = none (rask_mono::abi).
+// A `T?` slot is [tag:1][payload at shape->payload_offset] (rask_mono::abi).
 static int json_decode_opt(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                            const char *path) {
-    int64_t tag;
+    int64_t at = shape->payload_offset;
     if (!v || v->kind == RASK_JSON_NULL) {
-        tag = 1;
-        memcpy(dst, &tag, 8);
-        memset((char *)dst + RASK_OPTION_PAYLOAD_OFFSET, 0,
-               (size_t)(shape->slot > RASK_OPTION_PAYLOAD_OFFSET
-                        ? shape->slot - RASK_OPTION_PAYLOAD_OFFSET : 0));
+        *(uint8_t *)dst = RASK_TAG_ABSENT;
+        memset((char *)dst + at, 0, (size_t)(shape->slot > at ? shape->slot - at : 0));
         return 1;
     }
-    tag = 0;
-    memcpy(dst, &tag, 8);
-    return json_decode_into_slot((char *)dst + RASK_OPTION_PAYLOAD_OFFSET,
-                                 shape->elem, v, path);
+    *(uint8_t *)dst = RASK_TAG_PRESENT;
+    return json_decode_into_slot((char *)dst + at, shape->elem, v, path);
 }
 
 static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
@@ -964,13 +962,11 @@ static void json_write_shaped(JsonStrBuf *b, const void *src, const RaskJsonShap
     }
     switch (shape->kind) {
         case RASK_JSHAPE_OPT: {
-            int64_t tag;
-            memcpy(&tag, src, 8);
-            if (tag != 0) {
+            if (*(const uint8_t *)src != RASK_TAG_PRESENT) {
                 jsb_push(b, "null", 4);
                 return;
             }
-            json_write_shaped(b, (const char *)src + RASK_OPTION_PAYLOAD_OFFSET, shape->elem);
+            json_write_shaped(b, (const char *)src + shape->payload_offset, shape->elem);
             return;
         }
         case RASK_JSHAPE_STRUCT:

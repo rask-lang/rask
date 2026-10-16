@@ -670,39 +670,21 @@ impl<'a> MirLowerer<'a> {
                 ],
             }));
         }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 8,
-            value: body_op,
-            store_size: Some(body_ty.size().max(1)),
-            field: None,
-        }));
+        // The slot's payload is what the closure answered, known only now.
+        let result_ty = MirType::Option(Box::new(body_ty));
+        self.builder.set_local_type(result, result_ty.clone());
+        self.fill_present(result, body_op);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
 
         self.builder.switch_to_block(absent_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_absent(result);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
 
         self.builder.switch_to_block(merge_block);
-        let result_ty = MirType::Option(Box::new(body_ty));
-        self.builder.set_local_type(result, result_ty.clone());
         Ok(Some((MirOperand::Local(result), result_ty)))
     }
 
@@ -819,39 +801,21 @@ impl<'a> MirLowerer<'a> {
                 ],
             }));
         }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 8,
-            value: body_op,
-            store_size: Some(body_ty.size().max(1)),
-            field: None,
-        }));
+        // The slot's payload is what the closure answered, known only now.
+        let result_ty = MirType::Option(Box::new(body_ty));
+        self.builder.set_local_type(result, result_ty.clone());
+        self.fill_present(result, body_op);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
 
         self.builder.switch_to_block(absent_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_absent(result);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
 
         self.builder.switch_to_block(merge_block);
-        let result_ty = MirType::Option(Box::new(body_ty));
-        self.builder.set_local_type(result, result_ty.clone());
         Ok(Some((MirOperand::Local(result), result_ty)))
     }
 
@@ -1176,14 +1140,16 @@ impl<'a> MirLowerer<'a> {
                         addr: tuple_local,
                         offset: 0,
                         value: MirOperand::Local(idx),
-                        store_size: None,
+                        store_size: Some(MirType::I64.size()),
                         field: None,
                     }));
+                    // The element follows the index at its own alignment,
+                    // which a word already satisfies.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
-                        offset: 8,
+                        offset: MirType::I64.size(),
                         value: current_op,
-                        store_size: None,
+                        store_size: Some(self.aggregate_size(&current_ty)),
                         field: None,
                     }));
                     current_op = MirOperand::Local(tuple_local);
@@ -1706,21 +1672,19 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         want_max: bool,
     ) -> Result<TypedOperand, LoweringError> {
+        // The slot holds the element as the loop produces it, after adapters,
+        // so its type is known only once they're applied. `none` until the
+        // first element lands.
         let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
-        // none until the first element lands (tag 1).
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_absent(result);
 
         let setup = self.setup_iter_chain_loop(chain)?;
-        let (final_op, _) = self.apply_iter_adapters(
+        let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
         )?;
+        let opt_ty = MirType::Option(Box::new(final_ty.clone()));
+        self.builder.set_local_type(result, opt_ty.clone());
 
         // Take this element when the slot is still empty, or when it beats what's
         // there. Reading the tag is how "still empty" is asked.
@@ -1738,15 +1702,10 @@ impl<'a> MirLowerer<'a> {
                 right: MirOperand::Constant(MirConst::Int(1)),
             },
         }));
-        let current = self.builder.alloc_temp(MirType::I64);
+        let current = self.builder.alloc_temp(final_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: current,
-            rvalue: MirRValue::Field {
-                base: MirOperand::Local(result),
-                field_index: 0,
-                byte_offset: Some(8),
-                access: FieldAccess::Word,
-            },
+            rvalue: self.payload_field(MirOperand::Local(result), &opt_ty, &final_ty),
         }));
         let beats = self.builder.alloc_temp(MirType::Bool);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1779,25 +1738,12 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(store_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)), // present
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 8,
-            value: final_op,
-            store_size: None,
-            field: None,
-        }));
+        self.fill_present(result, final_op);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(result), MirType::Option(Box::new(MirType::I64))))
+        Ok((MirOperand::Local(result), opt_ty))
     }
 
     /// .find(|x| pred) — fused loop, return Some on first match, None otherwise.
@@ -1811,13 +1757,7 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let opt_ty = MirType::Option(Box::new(MirType::I64));
         let result = self.builder.alloc_temp(opt_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)), // None
-            store_size: None,
-            field: None,
-        }));
+        self.fill_absent(result);
         let pos = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: pos,
@@ -1859,20 +1799,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(found_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)), // Some
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 8,
-            value: MirOperand::Local(here),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_present(result, MirOperand::Local(here));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.exit_block }));
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
@@ -1987,26 +1914,10 @@ impl<'a> MirLowerer<'a> {
             else_block: none_block,
         }));
         self.builder.switch_to_block(some_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result, offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result, offset: 8,
-            value: MirOperand::Local(acc),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_present(result, MirOperand::Local(acc));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
         self.builder.switch_to_block(none_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result, offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_absent(result);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
         self.builder.switch_to_block(done_block);
         Ok((MirOperand::Local(result), opt_ty))
@@ -2017,21 +1928,18 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         predicate: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
+        // `none` until a match; the payload type is the element's after
+        // adapters, known once they're applied.
         let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
-        // Start as None (tag = 1)
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
+        self.fill_absent(result);
 
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
         )?;
+        let opt_ty = MirType::Option(Box::new(final_ty.clone()));
+        self.builder.set_local_type(result, opt_ty.clone());
 
         let (pred_op, _) = self.inline_closure_body(predicate, final_op.clone(), final_ty)?;
         let found_block = self.builder.create_block();
@@ -2042,25 +1950,12 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(found_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)), // Some tag
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 8,
-            value: final_op,
-            store_size: None,
-            field: None,
-        }));
+        self.fill_present(result, final_op);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.exit_block }));
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(result), MirType::Option(Box::new(MirType::I64))))
+        Ok((MirOperand::Local(result), opt_ty))
     }
 
     /// `v.zip(other)` — pairs elements at matching indices, stopping at the

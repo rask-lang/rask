@@ -14,12 +14,9 @@
 use rask_comptime::{ComptimeValue, SerializedConst};
 use rask_mir::lower::MirContext;
 use rask_mir::MirType;
-use rask_mono::abi::{OPTION_PAYLOAD_OFFSET, OPTION_TAG_OFFSET, RESULT_PAYLOAD_OFFSET, RESULT_TAG_OFFSET};
+use rask_mono::abi::{TAG_BYTES, TAG_OFFSET};
+use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
 use rask_mono::{FieldLayout, MonoProgram};
-
-/// Tag of a present optional and of a success; absent and failure take 1.
-const TAG_PRESENT: u64 = 0;
-const TAG_ABSENT: u64 = 1;
 
 /// Why a value has no bytes.
 pub(crate) enum NoBytes {
@@ -134,27 +131,25 @@ impl Writer<'_, '_> {
                 if matches!(**inner, MirType::Link(_)) {
                     return Err(gap("a link"));
                 }
-                let tag_at = at + OPTION_TAG_OFFSET as usize;
-                let payload_at = at + OPTION_PAYLOAD_OFFSET as usize;
+                let payload_at = at + ty.payload_offset() as usize;
                 match v {
                     ComptimeValue::Enum { name, variant, data } if name == "Option" => match (variant.as_str(), data) {
-                        ("None", _) => self.put(tag_at, &TAG_ABSENT.to_le_bytes()),
+                        ("None", _) => self.put_tag(at, RASK_TAG_ABSENT),
                         (_, Some(payload)) => {
-                            self.put(tag_at, &TAG_PRESENT.to_le_bytes());
-                            self.payload(payload, inner, payload_at)?;
+                            self.put_tag(at, RASK_TAG_PRESENT);
+                            self.write(payload, inner, payload_at)?;
                         }
                         _ => return Err(gap("an optional with no value")),
                     },
                     // A value where an optional goes is a present one.
                     present => {
-                        self.put(tag_at, &TAG_PRESENT.to_le_bytes());
-                        self.payload(present, inner, payload_at)?;
+                        self.put_tag(at, RASK_TAG_PRESENT);
+                        self.write(present, inner, payload_at)?;
                     }
                 }
             }
             MirType::Result { ok, err } => {
-                let payload_at = at + RESULT_PAYLOAD_OFFSET as usize;
-                let tag_at = at + RESULT_TAG_OFFSET as usize;
+                let payload_at = at + ty.payload_offset() as usize;
                 let (failed, payload) = match v {
                     ComptimeValue::Enum { name, variant, data: Some(d) } if name == "Result" => {
                         (variant == "Err", d.as_ref())
@@ -163,8 +158,8 @@ impl Writer<'_, '_> {
                     // value itself; the error type's name says which side.
                     other => (self.names_type(other, err), other),
                 };
-                self.put(tag_at, &(if failed { TAG_ABSENT } else { TAG_PRESENT }).to_le_bytes());
-                self.payload(payload, if failed { err } else { ok }, payload_at)?;
+                self.put_tag(at, if failed { RASK_TAG_ABSENT } else { RASK_TAG_PRESENT });
+                self.write(payload, if failed { err } else { ok }, payload_at)?;
             }
             MirType::Tuple(parts) => {
                 let ComptimeValue::Tuple(items) = v else {
@@ -218,14 +213,11 @@ impl Writer<'_, '_> {
 
     /// An optional's or a result's payload. A scalar fills the whole word slot,
     /// sign-extended, the way every run-time writer of a payload stores it.
-    fn payload(&mut self, v: &ComptimeValue, ty: &MirType, at: usize) -> Result<(), NoBytes> {
-        self.write(v, ty, at)?;
-        let width = ty.size() as usize;
-        let signed = matches!(ty, MirType::I8 | MirType::I16 | MirType::I32);
-        if signed && width < 8 && self.bytes[at + width - 1] & 0x80 != 0 {
-            self.bytes[at + width..at + 8].fill(0xff);
-        }
-        Ok(())
+    /// A wrapper's tag, at its own offset and width. The origin of a
+    /// `T or E` stays zero: a constant has no `try` site.
+    fn put_tag(&mut self, wrapper_at: usize, tag: i64) {
+        let width = TAG_BYTES as usize;
+        self.put(wrapper_at + TAG_OFFSET as usize, &tag.to_le_bytes()[..width]);
     }
 
     /// Does `v` name the type `ty` lays out? Only a struct or an enum carries

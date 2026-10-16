@@ -593,13 +593,7 @@ impl<'a> MirLowerer<'a> {
             return Ok((MirOperand::Constant(MirConst::Int(sentinel)), option_ty.clone()));
         }
         let result_local = self.builder.alloc_temp(option_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result_local,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)), // tag = None
-            store_size: None,
-            field: None,
-        }));
+        self.store_wrapper_tag(result_local, &option_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
         Ok((MirOperand::Local(result_local), option_ty))
     }
 
@@ -761,21 +755,16 @@ impl<'a> MirLowerer<'a> {
         let Some(msg_fn) = self.ctx.call_rewrites.get(&outer.id).cloned() else {
             return Ok(false);
         };
-        let Some(crate::lower::Type::Result { err, .. }) = self.ctx.lookup_raw_type(inner.id)
+        let Some(result @ crate::lower::Type::Result { err, .. }) = self.ctx.lookup_raw_type(inner.id)
         else {
             return Ok(false);
         };
         let err_ty = self.ctx.type_to_mir(err);
-        let size = err_ty.size();
+        let result_ty = self.ctx.type_to_mir(result);
         let payload = self.builder.alloc_temp(err_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: payload,
-            rvalue: MirRValue::Field {
-                base: val.clone(),
-                field_index: 0,
-                byte_offset: self.payload_byte_offset(&err_ty),
-                access: FieldAccess::for_field(&err_ty, size),
-            },
+            rvalue: self.payload_field(val.clone(), &result_ty, &err_ty),
         }));
 
         let Some(text) = self.emit_error_message_text(&msg_fn, payload, &err_ty) else {
@@ -811,16 +800,7 @@ impl<'a> MirLowerer<'a> {
             let arms = self.union_message_arms(&members, &queued)?;
             // A union discriminates by the member index it carries at offset
             // 0, not by a one-byte tag — the same read `match` does.
-            let idx = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: idx,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(payload),
-                    field_index: 0,
-                    byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
-                    access: FieldAccess::Sized(8),
-                },
-            }));
+            let idx = self.emit_enum_tag(MirOperand::Local(payload));
             let merge = self.builder.create_block();
             let blocks: Vec<crate::BlockId> =
                 arms.iter().map(|_| self.builder.create_block()).collect();
@@ -844,7 +824,7 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Field {
                         base: MirOperand::Local(payload),
                         field_index: 0,
-                        byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                        byte_offset: Some(err_ty.payload_offset()),
                         access: FieldAccess::for_field(&member_ty, member_size),
                     },
                 }));
@@ -2254,12 +2234,7 @@ impl<'a> MirLowerer<'a> {
                     let inner_local = self.builder.alloc_temp(inner_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: inner_local,
-                        rvalue: MirRValue::Field {
-                            base: MirOperand::Local(id),
-                            field_index: 0,
-                            byte_offset: None,
-                            access: FieldAccess::Word,
-                        },
+                        rvalue: self.payload_field(MirOperand::Local(id), &ty, &inner_ty),
                     }));
                     return Ok((MirOperand::Local(inner_local), inner_ty));
                 }
@@ -2701,49 +2676,17 @@ impl<'a> MirLowerer<'a> {
                         })
                         .unwrap_or(fallback_ty);
                     let result_local = self.builder.alloc_temp(result_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(tag)),
-                        store_size: None,
-                        field: None,
-                    }));
-                    if let Some(payload) = arg_operands.first() {
-                        let payload_offset = if matches!(result_ty, MirType::Result { .. }) {
-                            crate::types::RESULT_PAYLOAD_OFFSET
-                        } else {
-                            8 // Option payload offset
+                    self.store_wrapper_tag(result_local, &result_ty, tag);
+                    if let Some(payload) = arg_operands.into_iter().next() {
+                        // The slot is sized by the wrapper's own arm, not by
+                        // whatever the argument lowered to.
+                        let arm_ty = match &result_ty {
+                            MirType::Option(inner) => (**inner).clone(),
+                            MirType::Result { err, .. } if func_name == "Err" => (**err).clone(),
+                            MirType::Result { ok, .. } => (**ok).clone(),
+                            _ => payload_ty,
                         };
-                        // Result: zero origin fields
-                        if matches!(result_ty, MirType::Result { .. }) {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                addr: result_local,
-                                offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
-                                value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
-                                store_size: None,
-                                field: None,
-                            }));
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                addr: result_local,
-                                offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
-                                value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
-                                store_size: None,
-                                field: None,
-                            }));
-                        }
-                        // Set store_size for aggregate payloads (strings are 16 bytes)
-                        let payload_store_size = if payload_ty.size() > 8 {
-                            Some(payload_ty.size())
-                        } else {
-                            None
-                        };
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                            addr: result_local,
-                            offset: payload_offset,
-                            value: payload.clone(),
-                            store_size: payload_store_size,
-                            field: None,
-                        }));
+                        self.store_wrapper_payload(result_local, &result_ty, payload, &arm_ty);
                     }
                     return Ok((MirOperand::Local(result_local), result_ty));
                 }
@@ -3900,12 +3843,7 @@ impl<'a> MirLowerer<'a> {
         let local = self.builder.alloc_temp(other_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local,
-            rvalue: MirRValue::Field {
-                base: val.clone(),
-                field_index: 0,
-                byte_offset: self.payload_byte_offset(&other_ty),
-                access: FieldAccess::Word,
-            },
+            rvalue: self.payload_field(val.clone(), val_ty, &other_ty),
         }));
         (MirOperand::Local(local), other_ty)
     }
@@ -3931,7 +3869,7 @@ impl<'a> MirLowerer<'a> {
         let none = self.builder.alloc_temp(rest_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: none,
-            offset: rask_mono::abi::OPTION_TAG_OFFSET,
+            offset: rask_mono::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: Some(8),
             field: None,
@@ -3966,12 +3904,7 @@ impl<'a> MirLowerer<'a> {
         let inner = self.builder.alloc_temp(opt_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: inner,
-            rvalue: MirRValue::Field {
-                base: val.clone(),
-                field_index: 0,
-                byte_offset: None,
-                access: FieldAccess::Word,
-            },
+            rvalue: self.payload_field(val.clone(), &MirType::Result { ok: Box::new(opt_ty.clone()), err: Box::new(err_ty.clone()) }, opt_ty),
         }));
         let t = self.emit_option_payload(MirOperand::Local(inner), payload_ty.clone(), false);
         let succeeded = self.coerce_into_wrapper(
@@ -4010,16 +3943,7 @@ impl<'a> MirLowerer<'a> {
         // A union carries its member index ahead of the member's bytes.
         self.builder.switch_to_block(err_blk);
         let union_val = self.emit_option_payload(val.clone(), union_ty.clone(), false);
-        let index = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: index,
-            rvalue: MirRValue::Field {
-                base: MirOperand::Local(union_val),
-                field_index: 0,
-                byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
-                access: FieldAccess::Sized(8),
-            },
-        }));
+        let index = self.emit_enum_tag(MirOperand::Local(union_val));
         let blocks: Vec<crate::BlockId> = rest.iter().map(|_| self.builder.create_block()).collect();
         let cases = rest.iter().zip(&blocks).map(|((i, _), b)| (*i as u64, *b)).collect();
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
@@ -4035,7 +3959,7 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Field {
                     base: MirOperand::Local(union_val),
                     field_index: 0,
-                    byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                    byte_offset: Some(union_ty.payload_offset()),
                     access: FieldAccess::for_field(member_ty, member_ty.size()),
                 },
             }));
@@ -4070,22 +3994,26 @@ impl<'a> MirLowerer<'a> {
             .wrap_err_branch(&err, err_ty, rest_ty)
             .expect("an error is the err side of its own result");
         if let MirOperand::Local(slot) = &failed {
-            for offset in [crate::types::RESULT_ORIGIN_FILE_OFFSET, crate::types::RESULT_ORIGIN_LINE_OFFSET] {
-                let word = self.builder.alloc_temp(MirType::I64);
+            for (offset, ty) in [
+                (crate::types::RESULT_ORIGIN_LINE_OFFSET, MirType::U32),
+                (crate::types::RESULT_ORIGIN_FILE_OFFSET, MirType::Ptr),
+            ] {
+                let size = ty.size();
+                let word = self.builder.alloc_temp(ty);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: word,
                     rvalue: MirRValue::Field {
                         base: from.clone(),
                         field_index: 0,
                         byte_offset: Some(offset),
-                        access: FieldAccess::Sized(8),
+                        access: FieldAccess::Sized(size),
                     },
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: *slot,
                     offset,
                     value: MirOperand::Local(word),
-                    store_size: Some(8),
+                    store_size: Some(size),
                     field: None,
                 }));
             }
@@ -4156,13 +4084,13 @@ impl<'a> MirLowerer<'a> {
             }));
 
             self.builder.switch_to_block(absent_block);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: taken,
-                offset: 0,
-                value: MirOperand::Constant(MirConst::Int(1)),
-                store_size: None,
-                field: None,
-            }));
+            match niche {
+                Some(sentinel) => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: taken,
+                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(sentinel))),
+                })),
+                None => self.store_wrapper_tag(taken, &ty, rask_mono::runtime_abi::RASK_TAG_ABSENT),
+            }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: merge_block,
             }));
@@ -4416,123 +4344,45 @@ impl<'a> MirLowerer<'a> {
             // Some branch: read field, then either copy through (flattened)
             // or wrap as Some.
             self.builder.switch_to_block(some_block);
-            if byte_offset.is_some() {
-                // Read payload struct, then field from struct layout.
-                let payload_local = self.builder.alloc_temp(payload_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: payload_local,
-                    rvalue: MirRValue::Field {
-                        base: obj.clone(),
-                        field_index: 0,
-                        byte_offset: None,
-                        access: FieldAccess::Word,
-                    },
-                }));
-                let field_local = self.builder.alloc_temp(field_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: field_local,
-                    rvalue: MirRValue::Field {
-                        base: MirOperand::Local(payload_local),
-                        field_index,
-                        byte_offset,
-                        access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
-                    },
-                }));
-                if field_is_option {
-                    // result_local is the same Option<X> shape — just copy
-                    // the bytes through. Codegen Assign(Option, Option)
-                    // hits the src_option_ty needs_copy branch.
+            let (value, value_ty) = if is_niche {
+                (obj.clone(), field_ty.clone())
+            } else {
+                let payload_local = self.emit_option_payload(obj.clone(), payload_ty.clone(), false);
+                if byte_offset.is_some() {
+                    let field_local = self.builder.alloc_temp(field_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(MirOperand::Local(field_local)),
+                        dst: field_local,
+                        rvalue: MirRValue::Field {
+                            base: MirOperand::Local(payload_local),
+                            field_index,
+                            byte_offset,
+                            access: field_size.map_or(FieldAccess::Word, FieldAccess::Sized),
+                        },
                     }));
+                    (MirOperand::Local(field_local), field_ty.clone())
                 } else {
-                    // Wrap as Some: tag=0, payload at offset 8.
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                    let value_size = field_size.unwrap_or(8);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 8,
-                        value: MirOperand::Local(field_local),
-                        store_size: Some(value_size),
-                        field: None,
-                    }));
+                    // Payload with no struct layout to find the field in. The
+                    // access can't be performed, so this keeps the older
+                    // "unwrap and pass the payload through" shape rather than
+                    // inventing a field read. No program in the corpus reaches
+                    // here and no reduction found one either (#367).
+                    (MirOperand::Local(payload_local), payload_ty.clone())
                 }
-            } else if is_niche {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: result_local,
-                    offset: 0,
-                    value: MirOperand::Constant(MirConst::Int(0)),
-                    store_size: Some(8),
-                    field: None,
-                }));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                    addr: result_local,
-                    offset: 8,
-                    value: obj.clone(),
-                    store_size: Some(field_ty.size()),
-                    field: None,
+            };
+            if field_is_option {
+                // The result is the same `X?` shape: copy it through.
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(value),
                 }));
             } else {
-                // Payload with no struct layout to find the field in. The
-                // access can't be performed, so this keeps the older
-                // "unwrap and pass the payload through" shape rather than
-                // inventing a field read.
-                //
-                // It used to write nothing at all — not even the tag — so
-                // the result was whatever the slot happened to hold. No
-                // program in the corpus reaches here and no reduction found
-                // one either (#367), but an empty branch under a `Some` is
-                // not something to leave sitting there.
-                let payload_local = self.builder.alloc_temp(payload_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: payload_local,
-                    rvalue: MirRValue::Field {
-                        base: obj.clone(),
-                        field_index: 0,
-                        byte_offset: None,
-                        access: FieldAccess::Word,
-                    },
-                }));
-                if field_is_option {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(MirOperand::Local(payload_local)),
-                    }));
-                } else {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 8,
-                        value: MirOperand::Local(payload_local),
-                        store_size: Some(payload_ty.size().max(1)),
-                        field: None,
-                    }));
-                }
+                self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+                self.store_wrapper_payload(result_local, &result_ty, value, &value_ty);
             }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
-            // None branch: write None-tag (1) at offset 0.
             self.builder.switch_to_block(none_block);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result_local,
-                offset: 0,
-                value: MirOperand::Constant(MirConst::Int(1)),
-                store_size: Some(8),
-                field: None,
-            }));
+            self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
             self.builder.switch_to_block(merge_block);
@@ -5347,18 +5197,6 @@ impl<'a> MirLowerer<'a> {
         }
 
         if let Some(r) = self.try_lower_to_string(object, method, args, &obj_op, &obj_ty)? {
-            return Ok(r);
-        }
-
-        if let Some(r) = self.try_lower_map_err(method, args, &obj_op, &obj_ty)? {
-            return Ok(r);
-        }
-
-        if let Some(r) = self.try_lower_ok_to_option(expr, object, method, args, &obj_op, &obj_ty)? {
-            return Ok(r);
-        }
-
-        if let Some(r) = self.try_lower_unwrap(object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -6277,16 +6115,6 @@ impl<'a> MirLowerer<'a> {
             !matches!((chars.next(), chars.next()),
                       (Some(c), None) if c.is_ascii_uppercase())
         });
-        // Inline Result/Option methods that have no runtime impl —
-        // `.map(f)`, `.ok()`, `.filter(f)`. These were dispatching
-        // to Vec_map et al. as a fallback and silently
-        // mis-computing on aggregate or non-i64 values.
-        if let Some(handled) = self.try_lower_result_option_method(
-            expr, object, method.as_str(), args, &obj_op, &obj_ty,
-        )? {
-            return Ok(handled);
-        }
-
         // `to_int` / `to_float` are one machine instruction, so lower them to a
         // Cast instead of hunting for a `f64_to_int` symbol that never existed.
         if let Some(handled) =
@@ -7012,7 +6840,6 @@ impl<'a> MirLowerer<'a> {
         };
         let (full_tag, payload_offset) = (full.tag, full.payload_offset);
         let full_field_size = full.fields.first().map(|f| f.size);
-        let err_size = err.size();
         let tag_offset = layout.tag_offset as u32;
         let tag_bytes = layout.tag_bytes();
 
@@ -7054,20 +6881,8 @@ impl<'a> MirLowerer<'a> {
             store_size: Some(full_field_size.unwrap_or(value_size)),
             field: None,
         }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result_local,
-            offset: crate::types::RESULT_TAG_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result_local,
-            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-            value: MirOperand::Local(err_local),
-            store_size: if err_size > 8 { Some(err_size) } else { None },
-            field: None,
-        }));
+        self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
+        self.store_wrapper_payload(result_local, &result_ty, MirOperand::Local(err_local), err);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
@@ -7080,13 +6895,7 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal("Vec_push".to_string()),
             args: vec![recv, value],
         }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result_local,
-            offset: crate::types::RESULT_TAG_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: None,
-            field: None,
-        }));
+        self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
@@ -7182,18 +6991,13 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(some_block);
+        self.store_wrapper_tag(slot, &opt_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+        // A fieldless enum is its tag: `n`, at the tag's width.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: rask_mono::abi::OPTION_TAG_OFFSET,
-            value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
-            store_size: Some(8),
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: rask_mono::abi::OPTION_PAYLOAD_OFFSET,
+            offset: opt_ty.payload_offset() + layout.tag_offset,
             value: n_op,
-            store_size: Some(8),
+            store_size: Some(layout.tag_bytes()),
             field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -7201,13 +7005,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(none_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: rask_mono::abi::OPTION_TAG_OFFSET,
-            value: MirOperand::Constant(crate::operand::MirConst::Int(1)),
-            store_size: Some(8),
-            field: None,
-        }));
+        self.store_wrapper_tag(slot, &opt_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: done_block,
         }));
@@ -8162,7 +7960,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(Some((MirOperand::Local(pair), pair_ty)));
         }
 
-        // `T?`: tag 0 with the answer at +8, or tag 1 and nothing.
+        // `T?`: present with the answer, or absent.
         let opt_ty = MirType::Option(Box::new(obj_ty.clone()));
         let result = self.builder.alloc_temp(opt_ty.clone());
         let none_block = self.builder.create_block();
@@ -8184,32 +7982,14 @@ impl<'a> MirLowerer<'a> {
                 right: rhs,
             },
         }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: None,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 8,
-            value: MirOperand::Local(value),
-            store_size: Some(obj_ty.size()),
-            field: None,
-        }));
+        self.store_wrapper_tag(result, &opt_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+        self.store_wrapper_payload(result, &opt_ty, MirOperand::Local(value), &obj_ty);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
 
         self.builder.switch_to_block(none_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: 0,
-            value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: None,
-            field: None,
-        }));
+        self.store_wrapper_tag(result, &opt_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,
         }));
@@ -8602,16 +8382,7 @@ impl<'a> MirLowerer<'a> {
         // members answer yes to that, so the member index decides which (#776).
         if let Some((union_ty, member_index)) = self.union_member_of_result(pattern, val_ty) {
             let payload = self.emit_option_payload(val.clone(), union_ty, is_niche);
-            let member = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: member,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(payload),
-                    field_index: 0,
-                    byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
-                    access: FieldAccess::Sized(8),
-                },
-            }));
+            let member = self.emit_enum_tag(MirOperand::Local(payload));
             let is_err = self.emit_eq_const(tag, 1);
             let is_member = self.emit_eq_const(member, member_index);
             let result = self.builder.alloc_temp(MirType::Bool);
@@ -8666,20 +8437,11 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: obj_op.clone(),
                 field_index: 0,
-                byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                byte_offset: Some(obj_ty.payload_offset()),
                 access: FieldAccess::InPlace(8),
             },
         }));
-        let member = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: member,
-            rvalue: MirRValue::Field {
-                base: obj_op.clone(),
-                field_index: 0,
-                byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
-                access: FieldAccess::Sized(8),
-            },
-        }));
+        let member = self.emit_enum_tag(obj_op.clone());
 
         // The checker typed the call, so the result slot is known before any arm
         // is built — the arms only have to agree with it, which ER4 guarantees.
@@ -9351,59 +9113,24 @@ impl<'a> MirLowerer<'a> {
         // One arm per tag value: its opening text, and what sits in the
         // payload slot when it does carry one.
         type Arm<'t> = (u64, String, Option<(MirType, Option<&'t rask_types::Type>)>);
-        let (tag_offset, payload_offset, arms): (u32, u32, Vec<Arm>) = match ty {
-            MirType::Option(inner) => (
-                0,
-                8,
-                vec![
-                    (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
-                    (1, "Option.None".to_string(), None),
-                ],
-            ),
-            MirType::Result { ok, err } => (
-                crate::types::RESULT_TAG_OFFSET,
-                crate::types::RESULT_PAYLOAD_OFFSET,
-                vec![
-                    (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
-                    (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
-                ],
-            ),
-            MirType::Union(members) => (
-                crate::types::UNION_MEMBER_OFFSET,
-                crate::types::UNION_PAYLOAD_OFFSET,
-                members
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| (i as u64, String::new(), Some((m.clone(), decl_member(i)))))
-                    .collect(),
-            ),
+        let arms: Vec<Arm> = match ty {
+            MirType::Option(inner) => vec![
+                (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
+                (1, "Option.None".to_string(), None),
+            ],
+            MirType::Result { ok, err } => vec![
+                (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
+                (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
+            ],
+            MirType::Union(members) => members
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (i as u64, String::new(), Some((m.clone(), decl_member(i)))))
+                .collect(),
             _ => unreachable!("debug_render_wrapper on a non-wrapper {ty:?}"),
         };
 
-        // Codegen places a `Field` on an Option base relative to the payload,
-        // whatever offset is passed, so the tag goes through `EnumTag` the way
-        // a match reads it. A union has no tag: its member index is a word at
-        // the front, read as a plain field.
-        let tag = if matches!(ty, MirType::Union(_)) {
-            let member = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: member,
-                rvalue: MirRValue::Field {
-                    base: op.clone(),
-                    field_index: 0,
-                    byte_offset: Some(tag_offset),
-                    access: FieldAccess::Sized(8),
-                },
-            }));
-            member
-        } else {
-            let tag = self.builder.alloc_temp(MirType::U16);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: tag,
-                rvalue: MirRValue::EnumTag { value: op.clone() },
-            }));
-            tag
-        };
+        let tag = self.emit_enum_tag(op.clone());
         let result = self.builder.alloc_temp(MirType::String);
         let merge = self.builder.create_block();
         let blocks: Vec<crate::BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
@@ -9421,17 +9148,10 @@ impl<'a> MirLowerer<'a> {
             let text = match payload {
                 None => lit(&open),
                 Some((payload_ty, payload_decl)) => {
-                    // Index 0: an Option's or Result's fields are counted from
-                    // the payload, and the offset says where that is.
                     let slot = self.builder.alloc_temp(payload_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: slot,
-                        rvalue: MirRValue::Field {
-                            base: op.clone(),
-                            field_index: 0,
-                            byte_offset: Some(payload_offset),
-                            access: FieldAccess::for_field(&payload_ty, payload_ty.size()),
-                        },
+                        rvalue: self.payload_field(op.clone(), ty, &payload_ty),
                     }));
                     let inner = self.debug_render_value(
                         &MirOperand::Local(slot), &payload_ty, payload_decl, depth,
@@ -10317,129 +10037,6 @@ impl<'a> MirLowerer<'a> {
         Ok(None)
     }
 
-    /// `.map_err(f)` / `.map_err(Variant)` — inline error-payload transform.
-    fn try_lower_map_err(
-        &mut self,
-        method: &String,
-        args: &[CallArg],
-        obj_op: &MirOperand,
-        obj_ty: &MirType,
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        // map_err: inline expansion — branch on tag, transform error payload
-        if method == "map_err" && args.len() == 1 {
-            if matches!(&args[0].expr.kind, ExprKind::Closure { params, .. } if params.len() == 1) {
-                return self.lower_map_err(obj_op.clone(), obj_ty, &args[0].expr).map(Some);
-            }
-            // Variant constructor: result.map_err(MyError) or
-            // result.map_err(ConfigError.Io)
-            if let ExprKind::Ident(name) = &args[0].expr.kind {
-                return self.lower_map_err_constructor(obj_op.clone(), obj_ty, name).map(Some);
-            }
-            // Qualified variant: EnumName.Variant
-            if let ExprKind::Field { object, field } = &args[0].expr.kind {
-                if matches!(&object.kind, ExprKind::Ident(_)) {
-                    return self.lower_map_err_constructor(obj_op.clone(), obj_ty, field).map(Some);
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    /// `.ok()` / `.to_option()`: Result -> Option.
-    fn try_lower_ok_to_option(
-        &mut self,
-        expr: &Expr,
-        object: &Expr,
-        method: &String,
-        args: &[CallArg],
-        obj_op: &MirOperand,
-        obj_ty: &MirType,
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        // .ok() / .to_option(): Result<T,E> → Option<T>.
-        // Try the inline lowering (try_lower_result_option_method)
-        // first so payload offsets are recomputed. The legacy
-        // pass-through here was lying about the layout — Result's
-        // origin fields between tag and payload don't exist in
-        // Option, so subsequent `.0` reads landed on the wrong
-        // bytes and `opt == none` checks compared stale pointers.
-        if (method == "ok" || method == "to_option") && args.is_empty() {
-            if let Some(handled) = self.try_lower_result_option_method(
-                expr, object, method.as_str(), args, obj_op, obj_ty,
-            )? {
-                return Ok(Some(handled));
-            }
-            // Fallback for cases the inline lowerer couldn't handle
-            // (no resolved receiver type, etc.) — pass the already-lowered
-            // receiver through. Re-lowering here would double any side
-            // effect in `object` (e.g. `tx.send(x).ok()` sending twice).
-            return Ok(Some((obj_op.clone(), obj_ty.clone())));
-        }
-        Ok(None)
-    }
-
-    /// `.unwrap()` on Option/Result — panic on None/Err. Includes the
-    /// `.get(i).unwrap()` collection special-cases.
-    fn try_lower_unwrap(
-        &mut self,
-        object: &Expr,
-        method: &String,
-        args: &[CallArg],
-        obj_op: &MirOperand,
-        obj_ty: &MirType,
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
-        // Special case: .get(i).unwrap() on collections.
-        // Vec_get panics on OOB → unwrap is a no-op.
-        // Map_get returns NULL on missing key → rewrite to Map_get_unwrap.
-        if method == "unwrap" && args.is_empty() {
-            if let ExprKind::MethodCall { method: inner_method, object: inner_obj, .. } = &object.kind {
-                if inner_method == "get" {
-                    // Only rewrite Map_get → Map_get_unwrap
-                    let is_map = if let Some(name) = inner_obj.name() {
-                        self.meta(name)
-                            .and_then(|m| m.type_prefix.as_deref())
-                            .map_or(false, |p| p == "Map")
-                    } else { false };
-                    if is_map {
-                        self.builder.rewrite_last_call("Map_get", "Map_get_unwrap");
-                        return Ok(Some((obj_op.clone(), obj_ty.clone())));
-                    }
-                }
-            }
-        }
-        if method == "unwrap" && args.is_empty() {
-            let niche = self.option_niche(object, &obj_ty);
-            let is_niche = niche.is_some();
-            let tag_local = self.emit_option_tag(obj_op, niche);
-
-            let ok_block = self.builder.create_block();
-            let panic_block = self.builder.create_block();
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                cond: MirOperand::Local(tag_local),
-                then_block: panic_block,
-                else_block: ok_block,
-            }));
-
-            self.builder.switch_to_block(panic_block);
-
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("panic_unwrap".to_string()),
-                args: vec![MirOperand::Constant(crate::operand::MirConst::Int(
-                    self.forced_operand_was_result(object) as i64,
-                ))],
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-
-            self.builder.switch_to_block(ok_block);
-            let payload_ty = self.extract_payload_type(object)
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:4941"));
-            let result_local = self.emit_option_payload(obj_op.clone(), payload_ty.clone(), is_niche);
-            return Ok(Some((MirOperand::Local(result_local), payload_ty)));
-        }
-        Ok(None)
-    }
-
     /// `reflect.fields<T>()` as a value: a real `Vec<FieldInfo>`, built from
     /// the same compile-time constants the `comptime for` unroller splices.
     ///
@@ -10971,16 +10568,7 @@ impl<'a> MirLowerer<'a> {
         let rvalue = if is_niche {
             MirRValue::Use(val.clone())
         } else {
-            // Scalar payloads need the explicit offset so codegen loads the
-            // value at RESULT_PAYLOAD_OFFSET. Without it, a `T or E` whose
-            // err side is an aggregate makes codegen guess "aggregate" and
-            // return the slot address instead of the ok scalar (#389).
-            MirRValue::Field {
-                base: val.clone(),
-                field_index: 0,
-                byte_offset: self.payload_byte_offset(payload_ty),
-                access: FieldAccess::Word,
-            }
+            self.payload_field(val.clone(), &MirType::Option(Box::new(payload_ty.clone())), payload_ty)
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
         if self.reads_borrowed_storage(inner) {
@@ -11067,12 +10655,7 @@ impl<'a> MirLowerer<'a> {
             let local = self.builder.alloc_local(name.clone(), err_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: local,
-                rvalue: MirRValue::Field {
-                    base: val.clone(),
-                    field_index: 0,
-                    byte_offset: self.payload_byte_offset(&err_ty),
-                    access: FieldAccess::Word,
-                },
+                rvalue: self.payload_field(val.clone(), &scrutinee_ty, &err_ty),
             }));
             self.locals.insert(name.clone(), (local, err_ty.clone()));
             if let Some(prefix) = self.mir_type_name(&err_ty) {

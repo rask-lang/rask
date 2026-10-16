@@ -887,37 +887,15 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
-    /// A Result's tag, zero origin words, and payload. Payload stored the way
-    /// `coerce_into_wrapper` stores one, since the reader expects that shape.
+    /// A Result's tag, zeroed origin, and payload, the way `coerce_into_wrapper`
+    /// builds one.
     fn store_result_arm(&mut self, result: crate::LocalId, tag: i64, val: MirOperand, ty: &MirType) {
-        for (offset, value) in [
-            (rask_mono::abi::RESULT_TAG_OFFSET, tag),
-            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 0),
-            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, 0),
-        ] {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result,
-                offset,
-                value: MirOperand::Constant(MirConst::Int(value)),
-                store_size: Some(8),
-                field: None,
-            }));
-        }
+        let result_ty = self.builder.local_type(result).unwrap_or(MirType::Void);
+        self.store_wrapper_tag(result, &result_ty, tag);
         if matches!(ty, MirType::Void) {
             return;
         }
-        let (payload, size) = if ty.passed_by_address() {
-            (val, self.aggregate_alloc_size(ty))
-        } else {
-            (self.widen_scalar_payload(val, ty), 8)
-        };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: rask_mono::abi::RESULT_PAYLOAD_OFFSET,
-            value: payload,
-            store_size: Some(size),
-            field: None,
-        }));
+        self.store_wrapper_payload(result, &result_ty, val, ty);
     }
 
     /// Element type behind a `Receiver<T>` expression, defaulting to a word.

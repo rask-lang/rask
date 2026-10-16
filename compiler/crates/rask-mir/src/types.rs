@@ -4,8 +4,8 @@
 
 /// Result layout offsets — single source of truth in `rask_mono::abi`.
 pub use rask_mono::abi::{
-    RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_OFFSET, RESULT_PAYLOAD_OFFSET, RESULT_TAG_OFFSET,
-    UNION_MEMBER_OFFSET, UNION_PAYLOAD_OFFSET,
+    RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_BYTES,
+    RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
 };
 
 /// Which container a handle points at. What frees it is codegen's to name;
@@ -273,34 +273,8 @@ impl MirType {
                 (offset + max_align - 1) & !(max_align - 1)
             }
             MirType::InterfaceObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
-            MirType::Option(inner) => {
-                // The niche is one word: the value *is* the option, and `none`
-                // is the null address. Everything else is tag (8 bytes,
-                // aligned) + payload.
-                //
-                // A payload narrower than a word still occupies one: every
-                // writer of a payload slot stores a whole word into it, so the
-                // slot has to be that wide. Counting an `i32?` as 12 bytes here
-                // while codegen gave the slot 16 is what made a copy of one
-                // leave four stale bytes behind, and `==` on an option reads
-                // its payload as a word (#920).
-                if matches!(**inner, MirType::Link(_)) {
-                    8
-                } else {
-                    8 + inner.size().max(8)
-                }
-            }
-            MirType::Result { ok, err } => {
-                // [tag:8][origin_file:8][origin_line:8][payload] — offsets in
-                // rask_mono::abi (ER15). Same word-wide payload rule as Option.
-                RESULT_PAYLOAD_OFFSET + ok.size().max(8).max(err.size().max(8))
-            }
-            // [member:8][member bytes] — the members are nominally distinct
-            // types with nothing in their bytes to tell them apart, so the index
-            // is stored (#776). `UNION_MEMBER_OFFSET` / `UNION_PAYLOAD_OFFSET`
-            // name the two halves.
-            MirType::Union(variants) => {
-                UNION_PAYLOAD_OFFSET + variants.iter().map(|v| v.size()).max().unwrap_or(0)
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.wrapper_layout().map_or(8, |l| l.size)
             }
             MirType::SimdVector { elem, lanes } => elem.size() * lanes,
         }
@@ -316,9 +290,40 @@ impl MirType {
             MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
             MirType::Struct(sid) => sid.align,
             MirType::Enum(eid) => eid.align,
-            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.wrapper_layout().map_or(8, |l| l.align)
+            }
+            MirType::Array { elem, .. } => elem.align(),
+            MirType::SimdVector { .. } => self.size().min(32),
             _ => 8,
         }
+    }
+
+    /// Where a `T?`, `T or E` or error union keeps its payload, and its size.
+    /// `rask_mono::abi` is the one definition; `None` for anything else, and
+    /// for a niche option, which is its payload.
+    pub fn wrapper_layout(&self) -> Option<rask_mono::abi::WrapperLayout> {
+        match self {
+            MirType::Option(inner) if inner.is_niche_payload() => None,
+            MirType::Option(inner) => {
+                Some(rask_mono::abi::option_layout(inner.size(), inner.align()))
+            }
+            MirType::Result { ok, err } => Some(rask_mono::abi::result_layout(
+                ok.size().max(err.size()),
+                ok.align().max(err.align()),
+            )),
+            MirType::Union(members) => Some(rask_mono::abi::union_layout(
+                members.iter().map(|m| m.size()).max().unwrap_or(0),
+                members.iter().map(|m| m.align()).max().unwrap_or(1),
+            )),
+            _ => None,
+        }
+    }
+
+    /// The byte offset of a wrapper's payload. A niche option is its payload,
+    /// at offset 0.
+    pub fn payload_offset(&self) -> u32 {
+        self.wrapper_layout().map_or(0, |l| l.payload_offset)
     }
 
     /// Does an array element of this type live *in* its slot?
@@ -434,6 +439,9 @@ pub struct SignatureId(pub u32);
 /// register, and the runtime calls the closure through `int64_t (*)(void *)`, so
 /// the value was never in the register it read (#963).
 ///
+/// A `T?` or `T or E` is boxed whatever its size: a function returns one
+/// through a destination pointer, never in a register (`returns_through_dst`).
+///
 /// Both sides ask this: MIR lowering when it decides to put a boxing thunk in
 /// front of the closure, and codegen when the join decides whether to copy
 /// through an address. One definition, so they can't drift apart.
@@ -441,6 +449,6 @@ pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
     match ty {
         MirType::Void => false,
         MirType::F32 | MirType::F64 => true,
-        other => other.size() > 8,
+        other => other.size() > 8 || other.wrapper_layout().is_some(),
     }
 }

@@ -2090,37 +2090,19 @@ impl<'a> MirLowerer<'a> {
         }
         let err_ty = (**err).clone();
         let slot = self.builder.alloc_temp(result_ty.clone());
-        for (offset, word) in [
-            (crate::types::RESULT_TAG_OFFSET, 1),
-            (crate::types::RESULT_ORIGIN_FILE_OFFSET, 0),
-            (crate::types::RESULT_ORIGIN_LINE_OFFSET, 0),
-        ] {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset,
-                value: MirOperand::Constant(MirConst::Int(word)),
-                store_size: Some(8),
-                field: None,
-            }));
-        }
-        let (payload, size) = if err_ty.passed_by_address() {
-            (val.clone(), self.aggregate_alloc_size(&err_ty))
-        } else {
-            (self.widen_scalar_payload(val.clone(), &err_ty), 8)
-        };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-            value: payload,
-            store_size: Some(size),
-            field: None,
-        }));
+        self.store_wrapper_tag(slot, result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
+        self.store_wrapper_payload(slot, result_ty, val.clone(), &err_ty);
         Some(MirOperand::Local(slot))
     }
 
     /// Byte size to copy for an aggregate const, rounded up to whole words.
     fn aggregate_alloc_size(&self, ty: &MirType) -> u32 {
-        let raw = match ty {
+        std::cmp::max(self.aggregate_size(ty), 8).div_ceil(8) * 8
+    }
+
+    /// An aggregate's own size, from its layout.
+    pub(crate) fn aggregate_size(&self, ty: &MirType) -> u32 {
+        match ty {
             MirType::Struct(StructLayoutId { id, .. }) => self
                 .ctx
                 .struct_layouts
@@ -2134,8 +2116,7 @@ impl<'a> MirLowerer<'a> {
                 .map(|l| l.size)
                 .unwrap_or(8),
             other => other.size(),
-        };
-        std::cmp::max(raw, 8).div_ceil(8) * 8
+        }
     }
 
     /// The MIR type a module-level const's slot holds, as measured by
@@ -2914,59 +2895,9 @@ impl<'a> MirLowerer<'a> {
             // there inwards is the type of the slot it builds.
             let layer_ty = Self::peel_layers(dst_ty, depth);
             let slot = self.builder.alloc_temp(layer_ty.clone());
-            let (tag_offset, payload_offset, is_result) = match &dst_layers[depth] {
-                WrapLayer::Option => (
-                    rask_mono::abi::OPTION_TAG_OFFSET,
-                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
-                    false,
-                ),
-                WrapLayer::Result { .. } => (
-                    rask_mono::abi::RESULT_TAG_OFFSET,
-                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
-                    true,
-                ),
-            };
-            // tag 0 — Some for an Option, Ok for a Result.
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: tag_offset,
-                value: MirOperand::Constant(MirConst::Int(0)),
-                store_size: Some(8),
-                field: None,
-            }));
-            if is_result {
-                // ER15 origin stays zero on the success side.
-                for off in [
-                    rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
-                    rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
-                ] {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: slot,
-                        offset: off,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                }
-            }
-            let (payload_op, store_size) = if cur_ty.passed_by_address() {
-                // A wrapper or struct payload lives at its own address; the store
-                // is a memcpy, which is why aggregates never had a depth problem.
-                (cur_op, self.aggregate_alloc_size(&cur_ty))
-            } else {
-                // A scalar payload fills the whole 8-byte slot: floats as f64,
-                // integers full-width. The read side picks the payload apart by
-                // that same rule, so storing a narrow f32 here left the reader
-                // taking 8 bytes of a 4-byte write (#629's rule, one layer up).
-                (self.widen_scalar_payload(cur_op, &cur_ty), 8)
-            };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: payload_offset,
-                value: payload_op,
-                store_size: Some(store_size),
-                field: None,
-            }));
+            // Some for an Option, Ok for a Result; a success carries no origin.
+            self.store_wrapper_tag(slot, &layer_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+            self.store_wrapper_payload(slot, &layer_ty, cur_op, &cur_ty);
             cur_op = MirOperand::Local(slot);
             cur_ty = layer_ty;
         }
@@ -3016,28 +2947,132 @@ impl<'a> MirLowerer<'a> {
         (left, right)
     }
 
-    /// Widen a scalar to what the payload slot holds it as — `rask_mono::abi`
-    /// owns that rule, this just applies it. Returns the operand unchanged when
-    /// it is already that wide.
-    fn widen_scalar_payload(&mut self, op: MirOperand, ty: &MirType) -> MirOperand {
-        let is_float = matches!(ty, MirType::F32 | MirType::F64);
-        let target = match rask_mono::abi::payload_repr(is_float, ty.passed_by_address()) {
-            rask_mono::abi::PayloadRepr::InPlace => return op,
-            rask_mono::abi::PayloadRepr::Float64 => MirType::F64,
-            rask_mono::abi::PayloadRepr::IntFullWidth => MirType::I64,
-        };
-        if ty == &target || ty.size() >= rask_mono::abi::PAYLOAD_SLOT_BYTES {
-            return op;
-        }
-        let tmp = self.builder.alloc_temp(target.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: tmp,
-            rvalue: MirRValue::Cast {
-                value: op,
-                target_ty: target,
-            },
+    /// Write a `T?`'s, a `T or E`'s or a union's tag (a union's member index),
+    /// one byte at the front. A `T or E`'s origin is zeroed with it: a success,
+    /// and an error made here rather than propagated, come from nowhere.
+    pub(crate) fn store_wrapper_tag(&mut self, slot: LocalId, wrapper_ty: &MirType, tag: i64) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::TAG_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(tag)),
+            store_size: Some(rask_mono::abi::TAG_BYTES),
+            field: None,
         }));
-        MirOperand::Local(tmp)
+        if matches!(wrapper_ty, MirType::Result { .. }) {
+            self.zero_result_origin(slot);
+        }
+    }
+
+    /// Fill `slot`, a local holding a `T?`, with a present `value`. A niche
+    /// option is its payload, so the value is the whole of it.
+    pub(crate) fn fill_present(&mut self, slot: LocalId, value: MirOperand) {
+        let ty = self.builder.local_type(slot).expect("an option slot has a type");
+        let MirType::Option(inner) = &ty else {
+            panic!("fill_present on a {ty:?}, not an option");
+        };
+        if ty.wrapper_layout().is_none() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::Use(value),
+            }));
+            return;
+        }
+        let inner = (**inner).clone();
+        self.store_wrapper_tag(slot, &ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+        self.store_wrapper_payload(slot, &ty, value, &inner);
+    }
+
+    /// Fill `slot`, a local holding a `T?`, with `none`.
+    pub(crate) fn fill_absent(&mut self, slot: LocalId) {
+        let ty = self.builder.local_type(slot).expect("an option slot has a type");
+        if ty.wrapper_layout().is_some() {
+            self.store_wrapper_tag(slot, &ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
+            return;
+        }
+        let sentinel = ty.niche_none().expect("an option with no layout is a niche");
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(sentinel))),
+        }));
+    }
+
+    /// Clear a `T or E`'s origin: no source line, no file.
+    pub(crate) fn zero_result_origin(&mut self, slot: LocalId) {
+        for (offset, size) in [
+            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, rask_mono::abi::RESULT_ORIGIN_LINE_BYTES),
+            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
+        ] {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: slot,
+                offset,
+                value: MirOperand::Constant(MirConst::Int(0)),
+                store_size: Some(size),
+                field: None,
+            }));
+        }
+    }
+
+    /// Write a wrapper's payload at its offset, as the side it fills: a scalar
+    /// converted to that side's type, an aggregate copied whole. `value_ty` is
+    /// the value's own type, which says which side of a `T or E` it is.
+    pub(crate) fn store_wrapper_payload(
+        &mut self,
+        slot: LocalId,
+        wrapper_ty: &MirType,
+        value: MirOperand,
+        value_ty: &MirType,
+    ) {
+        let arm = match wrapper_ty {
+            MirType::Option(inner) => (**inner).clone(),
+            MirType::Result { ok, err } => {
+                if value_ty.without_container_kinds() == err.without_container_kinds() {
+                    (**err).clone()
+                } else {
+                    (**ok).clone()
+                }
+            }
+            _ => value_ty.clone(),
+        };
+        let size = self.aggregate_size(&arm);
+        if size == 0 {
+            return;
+        }
+        // A scalar can arrive narrower than the payload: `let opt: i64? = big`
+        // with `big: u32` (CV1a). Stored at its own width into an 8-byte
+        // payload, it left four bytes of whatever was there above the value.
+        //
+        // Only a real change of width or of register class converts. A handle
+        // typed `i64` going into a `ptr` payload is the same word, and
+        // converting it through a temporary hid the move from the ownership
+        // pass, which then dropped the handle on the way out: `os.signals`
+        // handed back a receiver it had already freed.
+        let actual = match &value {
+            MirOperand::Local(id) => self.builder.local_type(*id),
+            _ => None,
+        };
+        let value = match actual {
+            Some(have)
+                if !have.passed_by_address()
+                    && !arm.passed_by_address()
+                    && have.size() > 0
+                    && (have.size() != arm.size() || have.is_float() != arm.is_float()) =>
+            {
+                let widened = self.builder.alloc_temp(arm.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: widened,
+                    rvalue: MirRValue::Cast { value, target_ty: arm.clone() },
+                }));
+                MirOperand::Local(widened)
+            }
+            _ => value,
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: wrapper_ty.payload_offset(),
+            value,
+            store_size: Some(size),
+            field: None,
+        }));
     }
 
     /// `ty` with `n` of its outermost wrapper layers removed.
@@ -4420,30 +4455,11 @@ impl<'a> MirLowerer<'a> {
                 // is inlined.
                 let return_value = if result_void_ok {
                     let wrap_local = lowerer.builder.alloc_temp(ret_ty.clone());
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: wrap_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                    // Zero the origin-file and origin-line fields so they
-                    // don't carry stale bytes when the caller copies the
-                    // whole slot.
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: wrap_local,
-                        offset: 8,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: wrap_local,
-                        offset: 16,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
+                    // The tag and a zeroed origin, so the caller's copy of
+                    // the whole slot carries no stale bytes.
+                    lowerer.store_wrapper_tag(
+                        wrap_local, &ret_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT,
+                    );
                     Some(MirOperand::Local(wrap_local))
                 } else {
                     None
@@ -4953,23 +4969,11 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         let index = self.union_member_index(union_ty, src_ty)?;
-        let member_size = members.get(index).map(|m| m.size()).unwrap_or(8);
+        let member = members.get(index)?.clone();
 
         let slot = self.builder.alloc_temp(union_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: crate::types::UNION_MEMBER_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(index as i64)),
-            store_size: Some(8),
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: crate::types::UNION_PAYLOAD_OFFSET,
-            value: val.clone(),
-            store_size: Some(member_size.max(8)),
-            field: None,
-        }));
+        self.store_wrapper_tag(slot, union_ty, index as i64);
+        self.store_wrapper_payload(slot, union_ty, val.clone(), &member);
         Some(MirOperand::Local(slot))
     }
 
@@ -4987,10 +4991,7 @@ impl<'a> MirLowerer<'a> {
         let bare = ty_name.rsplit('.').next().unwrap_or(ty_name);
         let idx = self.union_member_index_by_name(err.as_ref(), bare)?;
         let member = members.get(idx)?.clone();
-        Some((
-            member,
-            crate::types::RESULT_PAYLOAD_OFFSET + crate::types::UNION_PAYLOAD_OFFSET,
-        ))
+        Some((member, scrutinee_ty.payload_offset() + err.payload_offset()))
     }
 
     pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
@@ -5161,47 +5162,35 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Byte offset for extracting a scalar payload from a tagged Result/Option.
-    /// Scalars get the explicit `RESULT_PAYLOAD_OFFSET` so codegen loads the
-    /// value; aggregates get `None` so codegen returns the payload address.
-    /// (The Option codegen path ignores this offset and uses its own, so a
-    /// single Result-shaped offset is correct for both.)
-    /// True when a tagged payload of this type lives inline and is reached by
-    /// address rather than loaded as a value.
-    fn mir_payload_is_aggregate(ty: &MirType) -> bool {
-        matches!(
-            ty,
-            MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::String
-                // An error union lives in the payload area as
-                // `[member:8][member bytes]`, so it's addressed like any other
-                // aggregate. Loaded as a word instead, the member index came
-                // back as if it were the union's address (#776).
-                | MirType::Union(_)
-                // A `T?` or `T or E` in a payload is inline bytes too — tag
-                // plus payload — so it is reached by address like the rest.
-                // Loaded as a word instead, `maybe(0)!` on a `T? or E` read the
-                // inner option's *tag* and dereferenced it as the option's
-                // address (segfault at the unwrap).
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Array { .. }
-        )
-    }
-
-    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
-        let is_aggregate = Self::mir_payload_is_aggregate(payload_ty);
-        if is_aggregate {
-            None
-        } else {
-            Some(crate::types::RESULT_PAYLOAD_OFFSET)
+    /// Read a wrapper's payload as `arm`: at the offset the wrapper's layout
+    /// gives, in place for an aggregate and loaded at its own width for a
+    /// scalar. The offset is the base local's own when it is a wrapper, and
+    /// `wrapper_ty`'s otherwise.
+    ///
+    /// Saying both outright is the point. When `ok` and `err` disagree about
+    /// being an aggregate, codegen can't tell from the wrapper which one is
+    /// being read (#383/#389).
+    pub(crate) fn payload_field(
+        &self,
+        base: MirOperand,
+        wrapper_ty: &MirType,
+        arm: &MirType,
+    ) -> MirRValue {
+        let stored = match &base {
+            MirOperand::Local(id) => self.builder.local_type(*id).filter(|t| t.wrapper_layout().is_some()),
+            _ => None,
+        };
+        let wrapper = stored.as_ref().unwrap_or(wrapper_ty);
+        MirRValue::Field {
+            byte_offset: Some(wrapper.payload_offset()),
+            access: FieldAccess::for_field(arm, arm.size()),
+            base,
+            field_index: 0,
         }
     }
 
-    /// Extract payload from an option value into a new local.
-    /// Niche: the handle value IS the payload. Tagged: load field 0.
+    /// Extract the payload of a `T?` or one side of a `T or E` into a new
+    /// local. A niche option is its payload.
     fn emit_option_payload(
         &mut self,
         value: MirOperand,
@@ -5212,35 +5201,22 @@ impl<'a> MirLowerer<'a> {
         let rvalue = if is_niche {
             MirRValue::Use(value)
         } else {
-            // For non-aggregate payloads (scalars, Ptr to Vec/Map/etc.), pass an
-            // explicit byte_offset so codegen loads the value at
-            // RESULT_PAYLOAD_OFFSET instead of falling into the aggregate
-            // fast-path that returns the slot address.
             // The container has the last word on how the payload is *stored*.
             // `Map.get` returns `i64?` — a pointer to the map's own value — while
             // the checker calls the payload a `User`. Addressing the container
             // instead of loading that pointer handed back the address of the tag,
             // so `self.users.get(id) ?? …` read a User out of the option's own
             // first bytes and `/users/1` segfaulted.
-            let stored_scalar = match &value {
+            let stored = match &value {
                 MirOperand::Local(id) => self.builder.local_type(*id),
                 _ => None,
-            }
-            .and_then(|t| match t {
-                MirType::Option(inner) => Some((*inner).clone()),
-                _ => None,
-            })
-            .map(|stored| !Self::mir_payload_is_aggregate(&stored))
-            .unwrap_or(false);
-
-            let is_aggregate =
-                Self::mir_payload_is_aggregate(&payload_ty) && !stored_scalar;
-            let byte_offset = if is_aggregate {
-                None
-            } else {
-                Some(crate::types::RESULT_PAYLOAD_OFFSET)
             };
-            MirRValue::Field { base: value, field_index: 0, byte_offset, access: FieldAccess::Word }
+            let arm = match &stored {
+                Some(MirType::Option(inner)) => (**inner).clone(),
+                _ => payload_ty.clone(),
+            };
+            let wrapper = stored.unwrap_or_else(|| MirType::Option(Box::new(payload_ty)));
+            self.payload_field(value, &wrapper, &arm)
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: result, rvalue }));
         result
@@ -5380,13 +5356,7 @@ impl<'a> MirLowerer<'a> {
                 let err_local = self.builder.alloc_temp(err_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: err_local,
-                    rvalue: MirRValue::Field {
-                        base: value,
-                        field_index: 0,
-                        // An enum payload is an aggregate: this is its address.
-                        byte_offset: None,
-                        access: FieldAccess::Word,
-                    },
+                    rvalue: self.payload_field(value, scrutinee_ty, &err_ty),
                 }));
                 self.bind_pattern_fields(pattern, MirOperand::Local(err_local), payload_ty, false, &err_ty);
             }
@@ -5463,7 +5433,7 @@ impl<'a> MirLowerer<'a> {
                                 rvalue: MirRValue::Field {
                                     base: value.clone(),
                                     field_index: 0,
-                                    byte_offset: Some(crate::types::RESULT_PAYLOAD_OFFSET + *offset),
+                                    byte_offset: Some(scrutinee_ty.payload_offset() + *offset),
                                     access: FieldAccess::for_field(field_ty, *size),
                                 },
                             }));
@@ -5483,7 +5453,7 @@ impl<'a> MirLowerer<'a> {
                                         base: value.clone(),
                                         field_index: 0,
                                         byte_offset: Some(
-                                            crate::types::RESULT_PAYLOAD_OFFSET + *src_offset,
+                                            scrutinee_ty.payload_offset() + *src_offset,
                                         ),
                                         access: FieldAccess::for_field(field_ty, *size),
                                     },
@@ -5535,23 +5505,10 @@ impl<'a> MirLowerer<'a> {
                     crate::fallback::unknown_type("lower/mod:typepat_payload")
                 });
                 let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
-                let is_aggregate = matches!(
-                    bound_ty,
-                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-                );
                 let rvalue = if is_niche {
                     MirRValue::Use(value.clone())
                 } else {
-                    MirRValue::Field {
-                        base: value.clone(),
-                        field_index: 0,
-                        byte_offset: if !is_aggregate {
-                            Some(crate::types::RESULT_PAYLOAD_OFFSET)
-                        } else {
-                            None
-                        },
-                        access: FieldAccess::Word,
-                    }
+                    self.payload_field(value.clone(), scrutinee_ty, &bound_ty)
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: local,

@@ -958,13 +958,13 @@ fn fixup_return_values(
             continue;
         }
 
-        for (offset, value) in empty_return_stores(&callee.ret_ty) {
+        for (offset, value, size) in empty_return_stores(&callee.ret_ty) {
             block.statements.push(MirStmt::new(
                 MirStmtKind::Store {
                     addr: ret_dst,
                     offset,
                     value: MirOperand::Constant(MirConst::Int(value)),
-                    store_size: None,
+                    store_size: Some(size),
                     field: None,
                 },
                 span,
@@ -984,18 +984,17 @@ fn fixup_return_values(
 /// no value in a `-> T?` function (E0308) — but if a lowering path ever
 /// produces one, `none` is the only reading of it that isn't a fabricated
 /// payload.
-fn empty_return_stores(ret_ty: &MirType) -> Vec<(u32, i64)> {
-    use rask_mono::abi;
+fn empty_return_stores(ret_ty: &MirType) -> Vec<(u32, i64, u32)> {
+    use rask_mono::{abi, runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT}};
     match ret_ty {
-        // Ok: tag 0, no origin, zero payload.
+        // Ok, no origin. The payload is `void`: nothing to write.
         MirType::Result { .. } => vec![
-            (abi::OPTION_TAG_OFFSET, 0),
-            (abi::RESULT_ORIGIN_FILE_OFFSET, 0),
-            (abi::RESULT_ORIGIN_LINE_OFFSET, 0),
-            (abi::RESULT_PAYLOAD_OFFSET, 0),
+            (abi::TAG_OFFSET, RASK_TAG_PRESENT, abi::TAG_BYTES),
+            (abi::RESULT_ORIGIN_LINE_OFFSET, 0, abi::RESULT_ORIGIN_LINE_BYTES),
+            (abi::RESULT_ORIGIN_FILE_OFFSET, 0, 8),
         ],
-        // none: tag 1, payload dead.
-        MirType::Option(_) => vec![(abi::OPTION_TAG_OFFSET, 1)],
+        // none: the payload is dead.
+        MirType::Option(_) => vec![(abi::TAG_OFFSET, RASK_TAG_ABSENT, abi::TAG_BYTES)],
         _ => Vec::new(),
     }
 }
@@ -1227,7 +1226,7 @@ mod tests {
 
         fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| match &s.kind {
             MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
-                if *offset == rask_mono::abi::OPTION_TAG_OFFSET => Some((*addr, *v)),
+                if *offset == rask_mono::abi::TAG_OFFSET => Some((*addr, *v)),
             _ => None,
         })
     }

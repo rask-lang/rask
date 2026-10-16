@@ -12,6 +12,10 @@
 // The tag of the absent or failed side (`None`, `Err`).
 #define RASK_TAG_ABSENT 1
 
+// Where a `T or E` keeps the source line its error came from: a
+// `uint32_t`, zero for none (`crate::abi`).
+#define RASK_RESULT_ORIGIN_LINE_OFFSET 4
+
 // A `RaskStr` holds up to this many bytes inline. Its last byte is the
 // inline capacity left, so an empty string's is this.
 #define RASK_SSO_MAX 15

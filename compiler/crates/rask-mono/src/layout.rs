@@ -137,19 +137,48 @@ fn cached_generic_layout(
         .filter(|(size, _)| *size > 0)
 }
 
+fn is_link(ty: &Type) -> bool {
+    matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Link")
+}
+
+/// Where a `T?`, `T or E` or error union keeps its payload, and its size, by
+/// `crate::abi`'s rules. `None` for anything else and for a niche `Link<T>?`,
+/// which is its payload.
+///
+/// An error union is `[member:1][payload]`: the members are nominally distinct
+/// types with nothing in their bytes to tell them apart, so the index is
+/// stored (#776).
+pub fn wrapper_layout(ty: &Type, cache: &LayoutCache) -> Option<crate::abi::WrapperLayout> {
+    let widest = |types: &mut dyn Iterator<Item = &Type>| {
+        types.fold((0u32, 1u32), |(size, align), t| {
+            let (s, a) = type_size_align(t, cache);
+            (size.max(s), align.max(a))
+        })
+    };
+    match ty {
+        Type::Result { ok, err } if !ty.is_option() => {
+            let (size, align) = widest(&mut [ok.as_ref(), err.as_ref()].into_iter());
+            Some(crate::abi::result_layout(size, align))
+        }
+        Type::Union(members) => {
+            let (size, align) = widest(&mut members.iter());
+            Some(crate::abi::union_layout(size, align))
+        }
+        _ => {
+            let inner = ty.as_option().filter(|inner| !is_link(inner))?;
+            let (size, align) = type_size_align(inner, cache);
+            Some(crate::abi::option_layout(size, align))
+        }
+    }
+}
+
 /// Get size and alignment for a type (after monomorphization).
 /// `cache` maps type names to already-computed (size, align) for user-defined types.
 pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
     match ty {
-        // A struct field holds its declared width. Everything that reads one
-        // reads it at that width — `FieldLayout.size` is what says so, and
-        // `slot_scalar_bytes` turns it into a load.
-        //
-        // The aggregate *slots* below don't shrink with it: an `Option`
-        // payload, an enum tag and an enum payload field are word slots by
-        // codegen's convention, and each says so where it computes its own
-        // layout. That used to fall out of every scalar being eight bytes, so
-        // none of them had to state it (#1083).
+        // Every value holds its own width, wherever it sits: a struct field,
+        // an enum tag or payload field, a wrapper's payload. Nothing is padded
+        // out to a word.
         Type::Unit => (0, 1),
         // Widths live on the type (`Type::scalar_bytes`), so this pass and the
         // atomic-payload rule read the same numbers. Natural alignment.
@@ -161,34 +190,12 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (n, n)
         }
         Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
-        ty if ty.is_option() => {
-            let inner = ty.as_option().unwrap();
-            // Niche optimization: `Link<T>?` is the node's address with null
-            // for `none` — one word, no tag.
-            if matches!(inner, Type::UnresolvedGeneric { name, .. }
-                if name == "Link")
-            {
-                return (8, 8);
-            }
-            let (size, align) = type_size_align(inner, cache);
-            // The payload sits in a word slot, the same convention the `Result`
-            // arm below states: codegen writes a scalar payload full-width, so
-            // the slot is floored at a word however narrow the value is.
-            let size = size.max(crate::abi::PAYLOAD_SLOT_BYTES);
-            let align = align.max(crate::abi::PAYLOAD_SLOT_BYTES);
-            let tag_size = 1u32;
-            let payload_offset = align_up(tag_size, align);
-            (payload_offset + size, align)
-        }
-        Type::Result { ok, err } => {
-            let (ok_size, ok_align) = type_size_align(ok, cache);
-            let (err_size, err_align) = type_size_align(err, cache);
-            // Layout must match rask-codegen/rask-mir (ER15 origin fields):
-            // [tag:8][origin_file:8][origin_line:8][payload:max(ok,err)]. Scalars
-            // occupy 8-byte slots in codegen, so floor each side at 8.
-            let max_size = ok_size.max(8).max(err_size.max(8));
-            let max_align = ok_align.max(err_align).max(8);
-            (align_up(crate::abi::RESULT_PAYLOAD_OFFSET + max_size, max_align), max_align)
+        // Niche optimization: `Link<T>?` is the node's address with null
+        // for `none` — one word, no tag.
+        ty if ty.as_option().is_some_and(is_link) => (8, 8),
+        Type::Result { .. } => {
+            let l = wrapper_layout(ty, cache).expect("a result has a layout");
+            (l.size, l.align)
         }
         Type::Tuple(types) => {
             let mut offset = 0u32;
@@ -329,22 +336,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 }
             }
         }
-        // [member:8][member bytes] — the members are nominally distinct types
-        // with nothing in their bytes to tell them apart, so the index is
-        // stored (#776), the same layout `MirType::Union` sizes. Counting only
-        // the widest member here gave the slot eight bytes too few.
-        Type::Union(variants) => {
-            let mut max_size = 0u32;
-            let mut max_align = 8u32;
-            for v in variants {
-                let (s, a) = type_size_align(v, cache);
-                max_size = max_size.max(s);
-                max_align = max_align.max(a);
-            }
-            (
-                align_up(crate::abi::UNION_PAYLOAD_OFFSET + max_size, max_align),
-                max_align,
-            )
+        Type::Union(_) => {
+            let l = wrapper_layout(ty, cache).expect("a union has a layout");
+            (l.size, l.align)
         }
         Type::SimdVector { elem, lanes } => {
             let (elem_size, _) = type_size_align(elem, cache);
@@ -1092,18 +1086,18 @@ mod tests {
 
     #[test]
     fn option_i32_layout() {
-        // tag (8 bytes) + i32 payload (8 bytes, codegen uses i64) = 16
+        // [tag:1][pad:3][i32:4]
         let (size, align) = tsa(&Type::option(Type::I32));
-        assert_eq!(align, 8);
-        assert_eq!(size, 16);
+        assert_eq!(align, 4);
+        assert_eq!(size, 8);
     }
 
     #[test]
     fn option_i8_layout() {
-        // tag (8) + i8 payload (8, codegen uses i64) = 16
+        // [tag:1][i8:1]
         let (size, align) = tsa(&Type::option(Type::I8));
-        assert_eq!(align, 8);
-        assert_eq!(size, 16);
+        assert_eq!(align, 1);
+        assert_eq!(size, 2);
     }
 
     #[test]
@@ -1132,14 +1126,13 @@ mod tests {
 
     #[test]
     fn result_i32_i64_layout() {
-        // [tag:8][origin_file:8][origin_line:8][payload:8] — ER15 origin fields
-        // (must match rask-codegen; see rask_mono::abi).
+        // [tag:1][pad:3][origin_line:4][origin_file:8][payload:8]
         let (size, align) = tsa(&Type::Result {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I64),
         });
         assert_eq!(align, 8);
-        assert_eq!(size, 32); // 24 (tag + origin) + 8 payload
+        assert_eq!(size, 24);
     }
 
     #[test]
@@ -1148,8 +1141,9 @@ mod tests {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I32),
         });
+        // The 4-byte payload at 16, rounded up to the origin pointer's 8.
         assert_eq!(align, 8);
-        assert_eq!(size, 32); // 24 (tag + origin) + 8 payload
+        assert_eq!(size, 24);
     }
 
     #[test]

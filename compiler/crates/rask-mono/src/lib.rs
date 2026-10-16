@@ -17,7 +17,7 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
-    is_stdlib_span, ordering_layout, field_type, type_size_align,
+    is_stdlib_span, ordering_layout, field_type, type_size_align, wrapper_layout,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
@@ -410,10 +410,16 @@ fn lay_out_instance(
         _ => return,
     };
     let held = inline_params.get(base);
-    // Only when an argument the type holds by value overflows the shared slot...
+    // Only when an argument the type holds by value overflows the shared slot,
+    // or is a `T?` / `T or E` / union at any size. The shared slot is an `i64`,
+    // and a wrapper there isn't wrapped: `Holder<bool?>(v: true)` stored a bare
+    // `true` and the read found no tag. A `bool?` is two bytes now, so the size
+    // alone no longer catches it...
     let overflows = args.iter().enumerate().any(|(i, a)| {
         held.map_or(true, |flags| flags.get(i).copied().unwrap_or(true))
-            && inline_arg_size(a, inst.type_names, inst.types, layout_cache).is_some_and(|size| size > 8)
+            && (matches!(a, Type::Result { .. } | Type::Union(_))
+                || inline_arg_size(a, inst.type_names, inst.types, layout_cache)
+                    .is_some_and(|size| size > 8))
     });
     // ...or when it owns storage. A container argument fits the shared word
     // fine, and that is the problem: the shared layout says `i64`, the release

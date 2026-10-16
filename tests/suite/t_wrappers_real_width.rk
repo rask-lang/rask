@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `T?`, `T or E` and error unions hold a one-byte tag and their payload at its
+// own width and alignment. Both used to be a word each, so a `u8?` took 16
+// bytes and every payload was written widened and read back narrowed.
+
+struct BadInput {
+    public code: u16
+}
+
+extend BadInput {
+    public func message(self) -> string {
+        return "bad input {self.code}"
+    }
+}
+
+struct TooBig {
+    public limit: i64
+}
+
+extend TooBig {
+    public func message(self) -> string {
+        return "over {self.limit}"
+    }
+}
+
+struct Reading {
+    public level: u8?
+    public scale: f32?
+    public ok: bool?
+}
+
+func small(b: bool) -> u8? {
+    if b {
+        return 200
+    }
+    return none
+}
+
+func ratio(i: i64) -> f32? {
+    if i > 0 {
+        return 1.5
+    }
+    return none
+}
+
+func half(n: i32) -> i32 or BadInput {
+    if n % 2 != 0 {
+        return BadInput(code: 7)
+    }
+    return n / 2
+}
+
+func quarter(n: i32) -> i32 or BadInput {
+    let h = try half(n)
+    return try half(h)
+}
+
+func validate(n: i64) -> i64 or (BadInput | TooBig) {
+    if n < 0 {
+        return BadInput(code: 1)
+    }
+    if n > 100 {
+        return TooBig(limit: 100)
+    }
+    return n
+}
+
+test "narrow payloads round-trip" {
+    let a: u8? = 5
+    let b: u8? = none
+    assert (a ?? 0) == 5
+    assert (b ?? 9) == 9
+    assert (small(true) ?? 0) == 200
+    assert (small(false) ?? 1) == 1
+    let c: bool? = true
+    assert c ?? false
+    let d: i16? = -300
+    assert (d ?? 0) == -300
+}
+
+test "a float payload keeps its own width" {
+    assert (ratio(1) ?? 0.0) == 1.5
+    assert (ratio(0) ?? -1.0) == -1.0
+    let x: f32? = 2.25
+    assert (x ?? 0.0) == 2.25
+}
+
+test "optional struct fields sit at their own widths" {
+    let r = Reading(level: 3, scale: 0.5, ok: none)
+    assert (r.level ?? 0) == 3
+    assert (r.scale ?? 0.0) == 0.5
+    assert r.ok is none
+}
+
+test "equality compares tags, then the payload" {
+    let i: i32? = 42
+    let j: i32? = 42
+    let k: i32? = none
+    let m: i32? = none
+    assert i == j
+    assert i != k
+    assert k == m
+}
+
+test "a result carries its payload and propagates its error" {
+    assert (half(8) catch _ => -1) == 4
+    assert (quarter(8) catch _ => -1) == 2
+    let e = quarter(6) catch err => err.code as i32
+    assert e == 7
+}
+
+test "an error union says which member it holds" {
+    assert (validate(5) catch _ => -1) == 5
+    let low = validate(-1)
+    assert low is BadInput
+    let high = validate(500)
+    assert high is TooBig
+    mut limit = 0
+    if high is TooBig as t {
+        limit = t.limit
+    }
+    assert limit == 100
+}
+
+test "optionals in a vec" {
+    mut v: Vec<u8?> = Vec.new()
+    v.push(3)
+    v.push(none)
+    v.push(250)
+    mut sum = 0
+    for x in v {
+        sum += x ?? 0
+    }
+    assert sum == 253
+}
