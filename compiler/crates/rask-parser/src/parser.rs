@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -3471,7 +3471,7 @@ impl Parser {
                 // kind of rule that only shows up as a bug: it cost
                 // `examples/sensor_processor.rk` a reading of 2200.02 °C instead
                 // of 22.02 (#817).
-                let bp = 22;
+                let bp = binding::CAST;
                 if bp < min_bp { break; }
                 self.advance();
                 let ty = self.parse_type_name()?;
@@ -3488,7 +3488,7 @@ impl Parser {
             if (self.peek_is_word(0, "truncate")
                 || self.peek_is_word(0, "saturate")
                 || self.peek_is_word(0, "float"))
-                && 22 >= min_bp
+                && binding::CAST >= min_bp
             {
                 match self.try_parse_convert_suffix(lhs, start)? {
                     Ok(converted) => {
@@ -3505,7 +3505,7 @@ impl Parser {
 
             // Pattern test: expr is Pattern (evaluates to bool)
             if self.check(&TokenKind::Is) {
-                let bp = 5;
+                let bp = binding::IS;
                 if bp < min_bp { break; }
                 self.advance();
                 let pattern = self.parse_pattern()?;
@@ -5465,37 +5465,31 @@ impl Parser {
     // Operator Precedence
     // =========================================================================
 
-    const PREFIX_BP: u8 = 23;
+    // Binding powers come from `rask_ast::expr` (`BinOp::binding_power`,
+    // `binding`), which the formatter reads too.
+    const PREFIX_BP: u8 = binding::PREFIX;
 
     fn postfix_bp(&self) -> Option<u8> {
         match self.current_kind() {
-            TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => Some(25),
-            TokenKind::Question | TokenKind::Bang => Some(24),
-            TokenKind::ColonColon => Some(25), // Same precedence as dot for better error messages
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => Some(binding::MEMBER),
+            TokenKind::Question | TokenKind::Bang => Some(binding::POSTFIX),
+            TokenKind::ColonColon => Some(binding::MEMBER), // Same precedence as dot for better error messages
             _ => None,
         }
     }
 
     fn infix_bp(&self) -> Option<(u8, u8)> {
-        match self.current_kind() {
-            TokenKind::PipePipe => Some((1, 2)),
-            TokenKind::AmpAmp => Some((3, 4)),
-            TokenKind::EqEq | TokenKind::BangEq => Some((5, 6)),
-            TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => Some((7, 8)),
-            TokenKind::QuestionQuestion | TokenKind::Catch => Some((9, 10)),
-            TokenKind::Pipe => Some((11, 12)),
-            TokenKind::Caret => Some((13, 14)),
-            TokenKind::Amp => Some((15, 16)),
-            TokenKind::LtLt | TokenKind::GtGt => Some((17, 18)),
-            TokenKind::Plus | TokenKind::Minus => Some((19, 20)),
-            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some((21, 22)),
-            TokenKind::DotDot | TokenKind::DotDotEq => Some((3, 4)), // Low precedence for ranges
-            _ => None,
-        }
+        let left = match self.current_kind() {
+            TokenKind::QuestionQuestion | TokenKind::Catch => binding::COALESCE,
+            TokenKind::DotDot | TokenKind::DotDotEq => binding::RANGE,
+            kind => Self::token_binop(kind)?.binding_power(),
+        };
+        Some((left, left + 1))
     }
 
-    fn parse_binop(&mut self) -> Result<BinOp, ParseError> {
-        let op = match self.current_kind() {
+    /// The binary operator a token spells, if it spells one.
+    fn token_binop(kind: &TokenKind) -> Option<BinOp> {
+        Some(match kind {
             TokenKind::Plus => BinOp::Add,
             TokenKind::Minus => BinOp::Sub,
             TokenKind::Star => BinOp::Mul,
@@ -5514,11 +5508,17 @@ impl Parser {
             TokenKind::Caret => BinOp::BitXor,
             TokenKind::LtLt => BinOp::Shl,
             TokenKind::GtGt => BinOp::Shr,
-            _ => return Err(ParseError::expected(
+            _ => return None,
+        })
+    }
+
+    fn parse_binop(&mut self) -> Result<BinOp, ParseError> {
+        let Some(op) = Self::token_binop(self.current_kind()) else {
+            return Err(ParseError::expected(
                 "operator like '+' or '-'",
                 self.current_kind(),
                 self.current().span,
-            )),
+            ));
         };
         self.advance();
         Ok(op)

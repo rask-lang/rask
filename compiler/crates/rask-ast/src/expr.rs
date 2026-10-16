@@ -471,6 +471,88 @@ pub enum BinOp {
     Shr,
 }
 
+impl BinOp {
+    pub const ALL: [BinOp; 18] = [
+        BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Mod,
+        BinOp::Eq, BinOp::Ne, BinOp::Lt, BinOp::Gt, BinOp::Le, BinOp::Ge,
+        BinOp::And, BinOp::Or,
+        BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::Shl, BinOp::Shr,
+    ];
+
+    /// How the operator is written.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Le => "<=",
+            BinOp::Ge => ">=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+        }
+    }
+
+    /// How tightly it binds: higher binds tighter. Every binary operator is
+    /// left-associative, so its right operand is read at one more. The parser
+    /// reads expressions with this and the formatter puts parentheses back
+    /// with it. Each kept its own table once, the two disagreed about `&`
+    /// against `<`, and `rask fmt` turned `(a < b) & (c < d)` into code that
+    /// didn't compile (#1559).
+    pub fn binding_power(self) -> u8 {
+        match self {
+            BinOp::Or => 1,
+            BinOp::And => 3,
+            BinOp::Eq | BinOp::Ne => 5,
+            BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => 7,
+            BinOp::BitOr => 11,
+            BinOp::BitXor => 13,
+            BinOp::BitAnd => 15,
+            BinOp::Shl | BinOp::Shr => 17,
+            BinOp::Add | BinOp::Sub => 19,
+            BinOp::Mul | BinOp::Div | BinOp::Mod => 21,
+        }
+    }
+
+    /// Comparisons don't chain: `a < b < c` is an error, so one nested in
+    /// another always keeps its parentheses.
+    pub fn is_comparison(self) -> bool {
+        matches!(self, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge)
+    }
+}
+
+/// Binding powers of the operators that aren't a `BinOp`, on the same scale
+/// as `BinOp::binding_power`.
+pub mod binding {
+    /// `..` and `..=`, level with `&&`.
+    pub const RANGE: u8 = 3;
+    /// `x is Pattern`, level with `==`.
+    pub const IS: u8 = 5;
+    /// `??` and `catch`: looser than every arithmetic and bitwise operator,
+    /// tighter than comparison. A `catch` body reads greedily to the end.
+    pub const COALESCE: u8 = 9;
+    /// `as` and the conversion suffixes (`truncate`, `saturate`, `float`):
+    /// tighter than every binary operator, looser than prefix and postfix
+    /// (type.operators/P4).
+    pub const CAST: u8 = 22;
+    /// A prefix `-`, `!`, `~`.
+    pub const PREFIX: u8 = 23;
+    /// A postfix `?` or `!`.
+    pub const POSTFIX: u8 = 24;
+    /// A call, an index, a `.` or `?.`.
+    pub const MEMBER: u8 = 25;
+}
+
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
@@ -639,17 +721,11 @@ pub fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
 /// Is this method name one an operator desugars to? Derived from the two maps
 /// above, so a new operator can't be forgotten here.
 pub fn is_operator_method(name: &str) -> bool {
-    const BINOPS: &[BinOp] = &[
-        BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div, BinOp::Mod,
-        BinOp::Eq, BinOp::Ne, BinOp::Lt, BinOp::Gt, BinOp::Le, BinOp::Ge,
-        BinOp::BitAnd, BinOp::BitOr, BinOp::BitXor, BinOp::Shl, BinOp::Shr,
-        BinOp::And, BinOp::Or,
-    ];
     const UNOPS: &[UnaryOp] = &[
         UnaryOp::Neg, UnaryOp::BitNot, UnaryOp::Not,
         UnaryOp::Ref, UnaryOp::Deref, UnaryOp::Heap,
     ];
-    BINOPS.iter().any(|op| binary_op_method(*op) == Some(name))
+    BinOp::ALL.iter().any(|op| binary_op_method(*op) == Some(name))
         || UNOPS.iter().any(|op| unary_op_method(*op) == Some(name))
 }
 
