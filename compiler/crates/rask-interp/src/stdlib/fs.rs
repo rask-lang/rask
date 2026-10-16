@@ -127,38 +127,27 @@ impl Interpreter {
                 let path = self.expect_string(&args, 0)?;
                 Ok(Value::Bool(std::path::Path::new(&path).exists()))
             }
-            "open" => {
+            // `rask_fs_open` / `rask_fs_create`: the file, or `none` with the
+            // OS error recorded. `open` and `create_file` are the Rask bodies in
+            // fs.rk over these; their Rust copies here used to win (#1562).
+            "open_handle" | "create_handle" => {
                 let path = self.expect_string(&args, 0)?;
-                let mode = args.get(1)
-                    .and_then(|v| if let Value::String(s) = v { Some(s.lock().unwrap().clone()) } else { None })
-                    .unwrap_or_default();
-                let result = match mode.as_str() {
-                    "w" => std::fs::File::create(&path),
-                    "w+" => std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path),
-                    "a" => std::fs::OpenOptions::new().create(true).append(true).open(&path),
-                    "a+" => std::fs::OpenOptions::new().create(true).read(true).append(true).open(&path),
-                    _ => std::fs::File::open(&path),
+                let opened = if method == "open_handle" {
+                    std::fs::File::open(&path)
+                } else {
+                    std::fs::File::create(&path)
                 };
-                match result {
+                match opened {
                     Ok(file) => {
                         let arc = Arc::new(Mutex::new(Some(file)));
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker.register_file(ptr, self.env.scope_depth());
-                        Ok(Value::ok(Value::File(arc)))
+                        Ok(Value::some(Value::File(arc)))
                     }
-                    Err(e) => Ok(io_error_result(&e)),
-                }
-            }
-            "create_file" => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::File::create(&path) {
-                    Ok(file) => {
-                        let arc = Arc::new(Mutex::new(Some(file)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker.register_file(ptr, self.env.scope_depth());
-                        Ok(Value::ok(Value::File(arc)))
+                    Err(e) => {
+                        super::net::set_last_os_error(&e);
+                        Ok(Value::none())
                     }
-                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             "absolute_path" => {

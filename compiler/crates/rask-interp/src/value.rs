@@ -1180,10 +1180,8 @@ pub enum Value {
     Shared(Arc<RwLock<Value>>),
     /// Mutex<T> (exclusive lock wrapper)
     RaskMutex(Arc<Mutex<Value>>),
-    /// TCP listener socket (Option allows close to invalidate)
-    TcpListener(Arc<Mutex<Option<std::net::TcpListener>>>),
-    /// TCP connection (Option allows close to invalidate)
-    TcpConnection(Arc<Mutex<Option<std::net::TcpStream>>>),
+    TcpListener(Arc<Mutex<Socket<std::net::TcpListener>>>),
+    TcpConnection(Arc<Mutex<Socket<std::net::TcpStream>>>),
     /// SIMD f32x8 (8-wide f32 vector for SIMD operations)
     SimdF32x8([f32; 8]),
     /// Random number generator (xoshiro256++ state)
@@ -1342,6 +1340,45 @@ impl fmt::Debug for IteratorState {
             Self::FlatMap { .. } => write!(f, "FlatMapIter"),
             Self::Zip { .. } => write!(f, "ZipIter"),
             Self::PreComputed { index, items } => write!(f, "PreComputedIter({}/{})", index, items.len()),
+        }
+    }
+}
+
+/// A socket as the interpreter holds it. The raw `listen`/`connect`/`accept`
+/// seams in stdlib/net.rk answer a handle the Rask body then inspects: native's
+/// -1 is `Failed` (errno says why) and -2 is `Unresolved`. Closing leaves
+/// `Failed` too.
+#[derive(Debug)]
+pub enum Socket<T> {
+    Open(T),
+    Failed,
+    Unresolved,
+}
+
+impl<T> Socket<T> {
+    pub fn is_open(&self) -> bool {
+        matches!(self, Socket::Open(_))
+    }
+
+    pub fn as_ref(&self) -> Option<&T> {
+        match self {
+            Socket::Open(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Socket::Open(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The socket, leaving `Failed` behind.
+    pub fn take(&mut self) -> Option<T> {
+        match std::mem::replace(self, Socket::Failed) {
+            Socket::Open(s) => Some(s),
+            _ => None,
         }
     }
 }
@@ -1820,14 +1857,14 @@ impl fmt::Display for Value {
                 write!(f, "Atomic({})", inner)
             }
             Value::TcpListener(l) => {
-                if l.lock().unwrap().is_some() {
+                if l.lock().unwrap().is_open() {
                     write!(f, "<TcpListener>")
                 } else {
                     write!(f, "<closed TcpListener>")
                 }
             }
             Value::TcpConnection(c) => {
-                if c.lock().unwrap().is_some() {
+                if c.lock().unwrap().is_open() {
                     write!(f, "<TcpConnection>")
                 } else {
                     write!(f, "<closed TcpConnection>")

@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{Socket, Value};
 
 /// Build a Result.Ok(value).
 fn make_result_ok(value: Value) -> Value {
@@ -30,14 +30,6 @@ fn make_result_err(msg: &str) -> Value {
 
 fn is_cancelled(e: &std::io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<Cancelled>())
-}
-
-/// `IoError` for a failed socket call, `Cancelled` when a cancel ended it.
-fn io_err(e: &std::io::Error) -> Value {
-    if !is_cancelled(e) {
-        return make_result_err(&e.to_string());
-    }
-    Value::err(Value::stdlib_enum("IoError", "Cancelled", vec![]))
 }
 
 #[derive(Debug)]
@@ -400,77 +392,57 @@ fn sockaddr_of(sa: &std::net::SocketAddr) -> (libc::c_int, libc::sockaddr_storag
     }
 }
 
-/// The same address rules `net.check_addr` applies in stdlib/net.rk, so both
-/// backends reject the same strings with the same message.
-///
-/// The interpreter can't run the Rask body: it ends in
-/// `IoError.last_os_error()`, which calls into the C runtime. So the rules live
-/// in two places and this is the copy — keep it in step with the Rask one
-/// (#863).
-fn check_addr(addr: &str) -> Option<&'static str> {
-    let Some(at) = addr.rfind(':') else {
-        return Some("invalid socket address");
-    };
-    if at == 0 {
-        return Some("invalid socket address");
+/// What a failed `bind`/`connect` hands back: `Unresolved` when the address
+/// never became a socket address (no errno, native's -2), else `Failed` with
+/// the error recorded for `IoError.last_os_error()` (native's -1).
+fn failed_socket<T>(e: &std::io::Error) -> Socket<T> {
+    if e.raw_os_error().is_none() && !is_cancelled(e) {
+        return Socket::Unresolved;
     }
-    if addr[at + 1..].parse::<u16>().is_err() {
-        return Some("invalid port value");
-    }
-    None
-}
-
-/// An `io::Error` with no OS error code never became a socket address at all —
-/// that's a resolution failure, which native reports as -2 rather than through
-/// errno. Anything with an errno is a real syscall failure and keeps Rust's
-/// wording, which matches `IoError.last_os_error()`.
-fn net_error(addr: &str, e: &std::io::Error) -> String {
-    if e.raw_os_error().is_none() {
-        return format!("could not resolve {}", addr);
-    }
-    e.to_string()
+    set_last_os_error(e);
+    Socket::Failed
 }
 
 impl Interpreter {
-    /// Handle net module methods.
+    /// The raw seams under `net`'s module functions. `tcp_listen`,
+    /// `tcp_connect` and the address check are the Rask bodies in net.rk over
+    /// these; the Rust copies here used to win, with the check kept in step by
+    /// hand (#1562).
     pub(crate) fn call_net_method(
         &mut self,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "tcp_listen" => {
+            // `rask_net_tcp_listen`
+            "listen_handle" => {
                 let addr = self.expect_string(&args, 0)?;
-                if let Some(why) = check_addr(&addr) {
-                    return Ok(make_result_err(why));
+                let socket = match std::net::TcpListener::bind(&addr) {
+                    Ok(listener) => Socket::Open(listener),
+                    Err(e) => failed_socket(&e),
+                };
+                let open = socket.is_open();
+                let arc = Arc::new(Mutex::new(socket));
+                if open {
+                    let ptr = Arc::as_ptr(&arc) as usize;
+                    self.resource_tracker.register_file(ptr, self.env.scope_depth());
                 }
-                match std::net::TcpListener::bind(&addr) {
-                    Ok(listener) => {
-                        let arc = Arc::new(Mutex::new(Some(listener)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker
-                            .register_file(ptr, self.env.scope_depth());
-                        Ok(make_result_ok(Value::TcpListener(arc)))
-                    }
-                    Err(e) => Ok(make_result_err(&net_error(&addr, &e))),
-                }
+                Ok(Value::TcpListener(arc))
             }
-            "tcp_connect" => {
+            // `rask_net_tcp_connect`
+            "connect_handle" => {
                 let addr = self.expect_string(&args, 0)?;
-                if let Some(why) = check_addr(&addr) {
-                    return Ok(make_result_err(why));
+                let socket = match connect_cancellable(&addr) {
+                    Ok(stream) => Socket::Open(stream),
+                    Err(e) => failed_socket(&e),
+                };
+                let open = socket.is_open();
+                let arc = Arc::new(Mutex::new(socket));
+                if open {
+                    let ptr = Arc::as_ptr(&arc) as usize;
+                    self.resource_tracker.register_file(ptr, self.env.scope_depth());
                 }
-                match connect_cancellable(&addr) {
-                    Ok(stream) => {
-                        let arc = Arc::new(Mutex::new(Some(stream)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker
-                            .register_file(ptr, self.env.scope_depth());
-                        Ok(make_result_ok(Value::TcpConnection(arc)))
-                    }
-                    Err(e) if is_cancelled(&e) => Ok(io_err(&e)),
-                    Err(e) => Ok(make_result_err(&net_error(&addr, &e))),
-                }
+                Ok(Value::TcpConnection(arc))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "net".to_string(),
@@ -482,7 +454,7 @@ impl Interpreter {
     /// Handle TcpListener instance methods.
     pub(crate) fn call_tcp_listener_method(
         &mut self,
-        listener: &Arc<Mutex<Option<std::net::TcpListener>>>,
+        listener: &Arc<Mutex<Socket<std::net::TcpListener>>>,
         method: &str,
         _args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
@@ -497,7 +469,7 @@ impl Interpreter {
                 })?;
                 match accept_cancellable(l) {
                     Ok(stream) => {
-                        let arc = Arc::new(Mutex::new(Some(stream)));
+                        let arc = Arc::new(Mutex::new(Socket::Open(stream)));
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker
                             .register_file(ptr, self.env.scope_depth());
@@ -505,16 +477,16 @@ impl Interpreter {
                     }
                     Err(e) => {
                         set_last_os_error(&e);
-                        Ok(Value::TcpConnection(Arc::new(Mutex::new(None))))
+                        Ok(Value::TcpConnection(Arc::new(Mutex::new(Socket::Failed))))
                     }
                 }
             }
-            // `rask_net_is_invalid`: a failed syscall's handle. The interpreter
-            // can't fail to resolve an address it was handed a listener for.
-            "is_invalid" => Ok(Value::Bool(listener.lock().unwrap().is_none())),
-            "is_unresolved" => Ok(Value::Bool(false)),
+            // `rask_net_is_invalid` / `rask_net_is_unresolved`: what a failed
+            // seam handed back.
+            "is_invalid" => Ok(Value::Bool(matches!(*listener.lock().unwrap(), Socket::Failed))),
+            "is_unresolved" => Ok(Value::Bool(matches!(*listener.lock().unwrap(), Socket::Unresolved))),
             "close" => {
-                if listener.lock().unwrap().is_none() {
+                if !listener.lock().unwrap().is_open() {
                     return Ok(make_result_ok(Value::Unit));
                 }
                 let ptr = Arc::as_ptr(listener) as usize;
@@ -547,15 +519,15 @@ impl Interpreter {
     /// Handle TcpConnection instance methods.
     pub(crate) fn call_tcp_stream_method(
         &mut self,
-        stream: &Arc<Mutex<Option<std::net::TcpStream>>>,
+        stream: &Arc<Mutex<Socket<std::net::TcpStream>>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
             // `rask_net_is_invalid`: a failed syscall's handle, which is what
             // `accept_handle` hands back when the accept fails.
-            "is_invalid" => Ok(Value::Bool(stream.lock().unwrap().is_none())),
-            "is_unresolved" => Ok(Value::Bool(false)),
+            "is_invalid" => Ok(Value::Bool(matches!(*stream.lock().unwrap(), Socket::Failed))),
+            "is_unresolved" => Ok(Value::Bool(matches!(*stream.lock().unwrap(), Socket::Unresolved))),
             // `rask_net_read_bytes` / `rask_net_write_bytes`: the bytes or
             // `none`, a count or -1, with the OS error recorded. `read_bytes`,
             // `write_bytes`, `read_text` and `write_text` are the Rask bodies
@@ -612,7 +584,7 @@ impl Interpreter {
                 }
             }
             "close" => {
-                if stream.lock().unwrap().is_none() {
+                if !stream.lock().unwrap().is_open() {
                     return Ok(make_result_ok(Value::Unit));
                 }
                 let ptr = Arc::as_ptr(stream) as usize;

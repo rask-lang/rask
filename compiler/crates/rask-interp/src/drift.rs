@@ -49,8 +49,8 @@ fn dummy_value(type_name: &str) -> Value {
             IndexMap::new(),
             None,
         ),
-        "TcpListener" => Value::TcpListener(Arc::new(Mutex::new(None))),
-        "TcpConnection" => Value::TcpConnection(Arc::new(Mutex::new(None))),
+        "TcpListener" => Value::TcpListener(Arc::new(Mutex::new(crate::value::Socket::Failed))),
+        "TcpConnection" => Value::TcpConnection(Arc::new(Mutex::new(crate::value::Socket::Failed))),
         "JsonValue" => Value::Enum {
             name: "JsonValue".to_string(),
             variant: "Null".to_string(),
@@ -295,4 +295,47 @@ fn rust_built_enums_carry_the_declared_tags() {
     }
     assert_eq!(tag(&Value::none()), rask_stdlib::wrappers::ABSENT_TAG);
     assert_eq!(tag(&Value::err(Value::Unit)), rask_stdlib::wrappers::ABSENT_TAG);
+}
+
+/// Module functions whose Rask body calls libc through `extern "C"`, which the
+/// interpreter can't run, so it still answers them from a Rust copy. Only ever
+/// shrinks: each one leaves by gaining an `@native` seam the interpreter
+/// answers instead, as `fs.open` did (#1562).
+const MODULE_FUNCTIONS_WITH_A_RUST_COPY: &[&str] = &[
+    "fs.read_text", "fs.read_bytes", "fs.write_text", "fs.write_bytes",
+    "fs.exists", "fs.read_lines", "fs.absolute_path", "fs.copy", "fs.rename",
+    "fs.remove_file", "fs.create_dir", "fs.create_dir_all", "fs.append_text",
+    "fs.list_dir", "fs.metadata", "fs.current_dir", "fs.home_dir",
+];
+
+/// A module function written in Rask runs that body on the interpreter too.
+/// The interpreter tries its Rust arms first, so a Rust copy of a function that
+/// has a Rask body silently wins, and the two backends run different code:
+/// `net.tcp_connect` had its address rules copied "in step" by comment.
+#[test]
+fn module_functions_with_a_rask_body_have_no_rust_copy() {
+    let stubs = rask_stdlib::StubRegistry::load();
+    let interp = Interpreter::new();
+    let mut copies = Vec::new();
+    for &module in rask_stdlib::registry::REGISTERED_MODULES {
+        let kind = module_kind(module);
+        for m in stubs.methods(module) {
+            if m.has_body && interp.has_module_dispatch(&kind, &m.name) {
+                copies.push(format!("{module}.{}", m.name));
+            }
+        }
+    }
+    for copy in &copies {
+        assert!(
+            MODULE_FUNCTIONS_WITH_A_RUST_COPY.contains(&copy.as_str()),
+            "{copy} has a Rask body in stdlib/*.rk and a Rust copy in rask-interp. \
+             Answer its `@native` seam instead and delete the copy"
+        );
+    }
+    for listed in MODULE_FUNCTIONS_WITH_A_RUST_COPY {
+        assert!(
+            copies.iter().any(|c| c == listed),
+            "{listed} no longer has a Rust copy; take it off MODULE_FUNCTIONS_WITH_A_RUST_COPY"
+        );
+    }
 }

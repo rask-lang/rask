@@ -982,12 +982,12 @@ impl Interpreter {
         match module {
             Fs => matches!(method,
                 "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
-                | "append_text" | "exists" | "open" | "create_file" | "absolute_path" | "metadata"
+                | "append_text" | "exists" | "open_handle" | "create_handle" | "absolute_path" | "metadata"
                 | "remove_file" | "remove_dir" | "create_dir" | "create_dir_all"
                 | "rename" | "copy" | "list_dir" | "current_dir" | "home_dir"
             ),
             Io => matches!(method, "read_line"),
-            Net => matches!(method, "tcp_listen" | "tcp_connect"),
+            Net => matches!(method, "listen_handle" | "connect_handle"),
             Time => matches!(method, "sleep"),
             Random => matches!(method, "f32" | "f64" | "i64" | "bool" | "range"),
             Math => matches!(method,

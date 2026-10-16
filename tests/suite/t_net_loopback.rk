@@ -135,6 +135,18 @@ test "std.net — a refused connection is an error, not a trap" {
     }
 }
 
+// A name that resolves to nothing says so. The interpreter answers this from
+// the same Rask body as native since #1562; its Rust copy built the message
+// itself.
+test "std.net — an unresolvable host says it didn't resolve" {
+    let c = net.tcp_connect("no-such-host.invalid:80")
+    if c is TcpConnection as conn {
+        assert false
+    } else as e {
+        assert e.message() == "could not resolve no-such-host.invalid:80"
+    }
+}
+
 // An address is a host and a port. The runtime used to fill in the missing half.
 test "std.net — a malformed address is refused, not guessed at" {
     let no_colon = net.tcp_listen("not-an-address")
