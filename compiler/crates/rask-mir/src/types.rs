@@ -195,7 +195,16 @@ impl MirType {
     /// another, plus `Array` in a third. A tuple guard behind a `Mutex` was
     /// classified as word-sized on the strength of one of the short lists and
     /// got loaded as a single i64.
+    ///
+    /// A niche option — `Link<T>?` — is the exception that's spelled like an
+    /// aggregate: one word, the link itself or null for `none`, so it travels
+    /// in a register like the link does. Answered "by address", a
+    /// `Vec<Handle<T>?>` read every slot as present: an address is never the
+    /// sentinel (#959).
     pub fn passed_by_address(&self) -> bool {
+        if self.niche_none().is_some() {
+            return false;
+        }
         matches!(
             self,
             MirType::Struct(_)
@@ -216,6 +225,13 @@ impl MirType {
                 // segfaulted (#552).
                 | MirType::InterfaceObject { .. }
         )
+    }
+
+    /// The size of the stack slot a value of this type lives in, or `None`
+    /// for a value that travels in a register. A SIMD vector is addressed
+    /// too, but its buffer lives elsewhere and its local is the pointer.
+    pub fn slot_size(&self) -> Option<u32> {
+        (self.passed_by_address() && !matches!(self, MirType::SimdVector { .. })).then(|| self.size())
     }
 
     /// True for the one-word niche payload: a link.
@@ -258,7 +274,10 @@ impl MirType {
     pub fn niche_none(&self) -> Option<i64> {
         match self {
             MirType::Link(_) => Some(rask_mono::abi::LINK_NONE_SENTINEL),
-            MirType::Option(inner) => inner.niche_none(),
+            // Only an option directly over a link. `Link<T>??` is a tagged
+            // option whose payload happens to be a niche one, and its `none`
+            // is a tag, not the null address.
+            MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
             _ => None,
         }
     }

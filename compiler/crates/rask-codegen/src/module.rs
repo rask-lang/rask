@@ -1254,9 +1254,7 @@ impl CodeGenerator {
         // `StructReturn` signature to return nothing — the pointer the caller
         // passed *is* the answer, so there is nothing left to hand back (#1109).
         let through_dst = !is_main
-            && crate::builder::FunctionBuilder::returns_through_dst(
-                &mir_fn.ret_ty, &self.struct_layouts, &self.enum_layouts,
-            );
+            && crate::builder::FunctionBuilder::returns_through_dst(&mir_fn.ret_ty);
         if through_dst {
             sig.params.push(AbiParam::special(
                 cranelift_codegen::ir::types::I64,

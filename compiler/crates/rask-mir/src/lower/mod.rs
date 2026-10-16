@@ -318,24 +318,6 @@ fn const_init_is_literal(init: &Expr) -> bool {
     )
 }
 
-/// Does a value of this type live in memory, with the local holding a pointer
-/// to it? Those go on the heap so the init thunk's frame isn't captured.
-fn mir_ty_is_aggregate(ty: &MirType) -> bool {
-    matches!(
-        ty,
-        MirType::Struct(_)
-            | MirType::Enum(_)
-            | MirType::Tuple(_)
-            | MirType::Result { .. }
-            | MirType::Option(_)
-            | MirType::Union(_)
-            | MirType::Array { .. }
-            | MirType::SimdVector { .. }
-            | MirType::String
-            | MirType::InterfaceObject { .. }
-    )
-}
-
 /// Empty tables, for the fields a caller doesn't have. `'static`, so they
 /// satisfy any `MirContext<'a>`.
 mod empty {
@@ -2007,7 +1989,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let local_id = self.builder.alloc_local(name.to_string(), ty.clone());
-        if mir_ty_is_aggregate(&ty) {
+        if ty.passed_by_address() {
             let heap = self.builder.alloc_temp(MirType::Ptr);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: heap,
@@ -2035,7 +2017,7 @@ impl<'a> MirLowerer<'a> {
             name: const_slot_name(name),
         }));
 
-        let aggregate = mir_ty_is_aggregate(ty);
+        let aggregate = ty.passed_by_address();
         let stored = if aggregate {
             // The value sits in this thunk's frame, which is gone by the time
             // anything reads the slot. Copy it to the heap and share that.

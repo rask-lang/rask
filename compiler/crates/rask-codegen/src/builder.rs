@@ -473,9 +473,7 @@ impl<'a> FunctionBuilder<'a> {
             // and each site reads whichever of the two it happens to consult.
             .filter(|l| !addr_taken.borrowed.contains(&l.id))
             .filter_map(|l| {
-                let size = Self::resolve_type_alloc_size(
-                    &l.ty, self.struct_layouts, self.enum_layouts,
-                );
+                let size = l.ty.slot_size();
                 size.filter(|&s| s > 0).map(|s| (l.id, s, l.ty.align()))
             })
             .collect();
@@ -601,9 +599,7 @@ impl<'a> FunctionBuilder<'a> {
         // The destination pointer, when the caller supplies one, is block param
         // zero — the same position the signature puts it in (#1109).
         let dst_param = if self.mir_fn.name != "main"
-            && Self::returns_through_dst(
-                &self.mir_fn.ret_ty, self.struct_layouts, self.enum_layouts,
-            )
+            && Self::returns_through_dst(&self.mir_fn.ret_ty)
         {
             Some(builder.append_block_param(*entry_block, types::I64))
         } else {
@@ -809,9 +805,7 @@ impl<'a> FunctionBuilder<'a> {
             // (main is called from C as void — never returns a value)
             let is_main = self.mir_fn.name == "main";
             let through_dst = !is_main
-                && Self::returns_through_dst(
-                    &self.mir_fn.ret_ty, self.struct_layouts, self.enum_layouts,
-                );
+                && Self::returns_through_dst(&self.mir_fn.ret_ty);
             let ret_param = if !matches!(self.mir_fn.ret_ty, MirType::Void)
                 && !is_main
                 && !through_dst
@@ -2082,27 +2076,6 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// Get actual (size, align) for a MirType, looking up struct/enum layouts.
-    fn real_type_size_align(ty: &MirType, ctx: &CodegenCtx) -> (u32, u32) {
-        match ty {
-            MirType::Struct(id) => {
-                if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
-                    (layout.size as u32, layout.align as u32)
-                } else {
-                    (8, 8)
-                }
-            }
-            MirType::Enum(id) => {
-                if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
-                    (layout.size as u32, layout.align as u32)
-                } else {
-                    (8, 8)
-                }
-            }
-            _ => (ty.size(), ty.align()),
-        }
-    }
-
     fn lower_rvalue(
         builder: &mut ClifFunctionBuilder,
         rvalue: &MirRValue,
@@ -2499,7 +2472,7 @@ impl<'a> FunctionBuilder<'a> {
         // those bits back into 1e-323 (#608).
         let dst_ty = if wrap_as_some && !wrap_as_some_aggregate {
             match &dst_local.ty {
-                MirType::Option(inner) if !Self::is_boxed_payload(inner) => {
+                MirType::Option(inner) if !inner.passed_by_address() => {
                     mir_to_cranelift_type(inner)?
                 }
                 _ => container_ty,
@@ -2539,9 +2512,7 @@ impl<'a> FunctionBuilder<'a> {
                 // borrowing (#1038): `mut best: T? = none` written from inside
                 // a closure is an `Option`, which isn't on it, so `find`,
                 // `reduce`, `min_by` and `max_by` all answered `none`.
-                let size = Self::resolve_type_alloc_size(
-                    &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
-                ).unwrap_or(0);
+                let size = dst_local.ty.slot_size().unwrap_or(0);
                 if size > 0 {
                     let var = ctx.var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -2579,9 +2550,7 @@ impl<'a> FunctionBuilder<'a> {
             // Aggregate to aggregate through the pointer — an `Option` assigned
             // from another `Option`, say. `def_var` here would swap this
             // frame's pointer and leave the borrowed storage untouched.
-            let size = Self::resolve_type_alloc_size(
-                &dst_local.ty, ctx.struct_layouts, ctx.enum_layouts,
-            ).unwrap_or(dst_local.ty.size());
+            let size = dst_local.ty.size();
             Self::copy_bytes(builder, val, 0, addr, 0, size);
         } else {
             let var = ctx.var_map.get(dst)
@@ -2783,7 +2752,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             // As big as the aggregate the callee reads, and as the value
             // stored into it.
-            let (size, _) = Self::real_type_size_align(param_ty, ctx);
+            let (size, _) = (param_ty.size(), param_ty.align());
             let have = builder.func.dfg.value_type(arg_vals[i]).bytes();
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
@@ -2833,7 +2802,7 @@ impl<'a> FunctionBuilder<'a> {
         ) {
             return false;
         }
-        let (real_size, _) = Self::real_type_size_align(&local.ty, ctx);
+        let (real_size, _) = (local.ty.size(), local.ty.align());
         // Copy only what the value actually has.
         let size = store_size.min(real_size);
         if size == 0 {
@@ -2862,7 +2831,7 @@ impl<'a> FunctionBuilder<'a> {
         for c in captures {
             let local = ctx.locals.iter().chain(ctx.params.iter()).find(|l| l.id == c.local_id);
             let alloc_size = local.and_then(|l| {
-                Self::resolve_type_alloc_size(&l.ty, ctx.struct_layouts, ctx.enum_layouts)
+                l.ty.slot_size()
             });
             let is_aggregate = !c.by_ref && alloc_size.is_some();
             if let Some(size) = alloc_size.filter(|_| is_aggregate) {
@@ -2953,7 +2922,7 @@ impl<'a> FunctionBuilder<'a> {
                 // The closure body was declared with a destination parameter if
                 // its answer is wider than a word, so the call has to supply one
                 // (#1109). The destination's type is the closure's return type.
-                if Self::returns_through_dst(&local.ty, ctx.struct_layouts, ctx.enum_layouts) {
+                if Self::returns_through_dst(&local.ty) {
                     dst_ptr = Some(Self::call_dst_ptr(builder, Some(dst_id), &local.ty, ctx));
                 }
             }
@@ -3130,7 +3099,7 @@ impl<'a> FunctionBuilder<'a> {
         // through a pointer nobody passed (#1109).
         let dst_ptr = match &ret_mir {
             Some(ty)
-                if Self::returns_through_dst(ty, ctx.struct_layouts, ctx.enum_layouts) =>
+                if Self::returns_through_dst(ty) =>
             {
                 Some(Self::call_dst_ptr(builder, dst.as_ref(), ty, ctx))
             }
@@ -4546,7 +4515,7 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirType::Tuple(fields)) => {
                 let mut off = 0u32;
                 for (i, f) in fields.iter().enumerate() {
-                    let (elem_size, elem_align) = Self::real_type_size_align(f, ctx);
+                    let (elem_size, elem_align) = (f.size(), f.align());
                     off = (off + elem_align - 1) & !(elem_align - 1);
                     if i == *field_index as usize {
                         // Aggregate element: return pointer, don't load scalar.
@@ -4585,11 +4554,11 @@ impl<'a> FunctionBuilder<'a> {
                 // only when no arm is a scalar.
                 if matches!(access, FieldAccess::Word) && byte_offset.is_none() {
                     let all_aggregate = match w {
-                        MirType::Option(inner) => Self::is_boxed_payload(inner),
+                        MirType::Option(inner) => inner.passed_by_address(),
                         MirType::Result { ok, err } => {
-                            Self::is_boxed_payload(ok) && Self::is_boxed_payload(err)
+                            ok.passed_by_address() && err.passed_by_address()
                         }
-                        MirType::Union(members) => members.iter().all(Self::is_boxed_payload),
+                        MirType::Union(members) => members.iter().all(MirType::passed_by_address),
                         _ => false,
                     };
                     if all_aggregate {
@@ -6365,10 +6334,7 @@ impl<'a> FunctionBuilder<'a> {
         };
         match produced {
             Some(src) => {
-                let size = Self::resolve_type_alloc_size(
-                    ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts,
-                )
-                .unwrap_or(ctx.ret_ty.size());
+                let size = ctx.ret_ty.size();
                 Self::copy_aggregate_to_ptr(builder, src, dst, size);
             }
             // A bare `return` out of a `void or E` function. There is no value
@@ -6437,7 +6403,7 @@ impl<'a> FunctionBuilder<'a> {
                         // `f32 or E` built an integer (#629). An aggregate
                         // arrives as its address.
                         let want = match mir_to_cranelift_type(&arm) {
-                            Ok(t) if !Self::is_boxed_payload(&arm) => t,
+                            Ok(t) if !arm.passed_by_address() => t,
                             _ => types::I64,
                         };
                         Self::lower_operand_typed(builder, op, Some(want), ctx)?
@@ -6598,9 +6564,7 @@ impl<'a> FunctionBuilder<'a> {
         if !storage_is_the_callers {
             return None;
         }
-        let size = Self::resolve_type_alloc_size(
-            &local.ty, ctx.struct_layouts, ctx.enum_layouts,
-        )?;
+        let size = local.ty.slot_size()?;
         let var = ctx.var_map.get(id)?;
         Some((builder.use_var(*var), size))
     }
@@ -6672,8 +6636,7 @@ impl<'a> FunctionBuilder<'a> {
         if let Some((ss, _)) = dst.and_then(|d| ctx.stack_slot_map.get(d)) {
             return builder.ins().stack_addr(types::I64, *ss, 0);
         }
-        let size = Self::resolve_type_alloc_size(ret_ty, ctx.struct_layouts, ctx.enum_layouts)
-            .unwrap_or(ret_ty.size());
+        let size = ret_ty.size();
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, size, 3,
         ));
@@ -6701,58 +6664,14 @@ impl<'a> FunctionBuilder<'a> {
     /// bytes, and returned in a register it would look exactly like the bare
     /// payload a `return 5` hands back for wrapping — the return path tells
     /// the two apart by type, and the type is only there for a value in memory.
-    pub(crate) fn returns_through_dst(
-        ret_ty: &MirType,
-        struct_layouts: &[StructLayout],
-        enum_layouts: &[EnumLayout],
-    ) -> bool {
+    pub(crate) fn returns_through_dst(ret_ty: &MirType) -> bool {
         if matches!(ret_ty, MirType::Void) {
             return false;
         }
         if ret_ty.wrapper_layout().is_some() {
             return true;
         }
-        Self::resolve_type_alloc_size(ret_ty, struct_layouts, enum_layouts)
-            .is_some_and(|size| size > 8)
-    }
-
-    /// Compute the actual allocation size for a MirType, resolving struct/enum
-    /// sizes from layouts. Unlike MirType::size() which returns 8 for Struct/Enum
-    /// (pointer size), this returns the true layout size. Needed for stack slots
-    /// that store aggregate values inline (Result<Struct, Enum>, Option<Struct>, etc.).
-    pub(crate) fn resolve_type_alloc_size(
-        ty: &MirType,
-        struct_layouts: &[StructLayout],
-        enum_layouts: &[EnumLayout],
-    ) -> Option<u32> {
-        match ty {
-            MirType::Struct(id) => struct_layouts.get(id.id as usize).map(|sl| sl.size),
-            MirType::Enum(id) => enum_layouts.get(id.id as usize).map(|el| el.size),
-            MirType::Array { elem, len } => Some(elem.size() * len),
-            // `rask_mono::abi`'s layout, through the type. A niche option —
-            // `Handle<T>?` or `Link<T>?` — has none: it is one word with no tag
-            // and needs no slot. Giving it the tagged layout made the local
-            // hold a slot address, and comparing that against the sentinel was
-            // always false (#438).
-            MirType::Result { .. } | MirType::Option(_) | MirType::Union(_) => {
-                ty.wrapper_layout().map(|l| l.size)
-            }
-            MirType::Tuple(fields) => {
-                let mut offset = 0u32;
-                for f in fields {
-                    let f_size = Self::resolve_type_alloc_size(f, struct_layouts, enum_layouts)
-                        .unwrap_or(f.size());
-                    let align = f.align();
-                    offset = (offset + align - 1) & !(align - 1);
-                    offset += f_size;
-                }
-                let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
-                Some((offset + max_align - 1) & !(max_align - 1))
-            }
-            MirType::String => Some(16),
-            MirType::InterfaceObject { .. } => Some(ty.size()),
-            _ => None,
-        }
+        ret_ty.slot_size().is_some_and(|size| size > 8)
     }
 
     /// Copy `size` bytes from `src_ptr + src_off` to `dst_ptr + dst_off`.
@@ -6861,7 +6780,7 @@ impl<'a> FunctionBuilder<'a> {
         }
         let offset = wrapper.payload_offset() as i32;
         match mir_to_cranelift_type(arm) {
-            Ok(want) if !Self::is_boxed_payload(arm) => {
+            Ok(want) if !arm.passed_by_address() => {
                 let have = builder.func.dfg.value_type(payload);
                 let v = if have == want {
                     payload
@@ -7721,7 +7640,7 @@ impl<'a> FunctionBuilder<'a> {
             // one allocation per task, about 80 bytes, which no assertion can
             // see (#963).
             let src = builder.ins().stack_load(types::I64, value_ss, 0);
-            if Self::is_boxed_payload(&ok_ty) || ok_ty.size() == 0 {
+            if ok_ty.passed_by_address() || ok_ty.size() == 0 {
                 Self::build_wrapped_aggregate(builder, dst_ss, &wrapper, false, src);
             } else {
                 let want = mir_to_cranelift_type(&ok_ty).unwrap_or(types::I64);
@@ -7757,24 +7676,6 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(merge_block);
         builder.seal_block(merge_block);
-    }
-
-    /// Payload types that live in their own storage, so extracting one yields
-    /// an address rather than a loaded scalar: everything `passed_by_address`
-    /// except the niche. Spelled out as its own list, this one had no `Array`,
-    /// so `v.pop()` on a `Vec<[i32; 2]>` loaded the array's bytes and used
-    /// them as its address (#1450). Nested `Option`/`Result` (#493), interface
-    /// objects (#552) and error unions (#776) were each found the same way.
-    fn is_boxed_payload(ty: &MirType) -> bool {
-        // A niche option is one word — the value itself, with one reserved word
-        // meaning `none` — so it loads like a scalar even though it is spelled
-        // `Option`. Handing back its address instead made every slot of a
-        // `Vec<Handle<T>?>` read as present: an address is never the sentinel,
-        // and the address was then used as the handle (#959).
-        if matches!(ty, MirType::Option(inner) if inner.is_niche_payload()) {
-            return false;
-        }
-        ty.passed_by_address()
     }
 
     /// Wrap an aggregate payload, copied from `src_ptr`, into a `T?` or
@@ -7907,13 +7808,6 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
             _ => false,
         }
-    }
-
-    /// Check if destination local is a string type.
-    fn is_string_dst(dst: Option<&LocalId>, ctx: &CodegenCtx) -> bool {
-        dst.and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-            .map(|l| l.ty == MirType::String)
-            .unwrap_or(false)
     }
 
     /// Destination that owns storage the callee should write into directly —
@@ -8078,8 +7972,7 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirOperand::Local(arg_id)) => {
                 match ctx.locals.iter().find(|l| l.id == *arg_id).map(|l| &l.ty) {
                     Some(ty) => {
-                        let size = Self::resolve_type_alloc_size(ty, ctx.struct_layouts, ctx.enum_layouts)
-                            .unwrap_or(ty.size());
+                        let size = ty.size();
                         (size as i64, ty.passed_by_address())
                     }
                     None => (8, false),
@@ -8095,13 +7988,11 @@ impl<'a> FunctionBuilder<'a> {
 
     /// An atomic payload as the bits the runtime's cell takes: an integer
     /// extended by its sign, a float or an aggregate as its raw bytes.
-    fn atomic_bits(builder: &mut ClifFunctionBuilder, val: Value, ty: Option<&MirType>, ctx: &CodegenCtx) -> Value {
+    fn atomic_bits(builder: &mut ClifFunctionBuilder, val: Value, ty: Option<&MirType>) -> Value {
         let have = builder.func.dfg.value_type(val);
         match ty {
             Some(t) if t.passed_by_address() => {
-                let size = Self::resolve_type_alloc_size(t, ctx.struct_layouts, ctx.enum_layouts)
-                    .unwrap_or(t.size());
-                let int = Self::int_of_width(size);
+                let int = Self::int_of_width(t.size());
                 let word = builder.ins().load(int, MemFlags::new(), val, 0);
                 if int == types::I64 { word } else { builder.ins().uextend(types::I64, word) }
             }
@@ -8438,9 +8329,7 @@ impl<'a> FunctionBuilder<'a> {
                         mir_args.get(1),
                         Some(MirOperand::Local(id)) if ctx.locals.iter()
                             .find(|l| l.id == *id)
-                            .map(|l| Self::resolve_type_alloc_size(
-                                &l.ty, ctx.struct_layouts, ctx.enum_layouts,
-                            ).is_some())
+                            .map(|l| l.ty.slot_size().is_some())
                             .unwrap_or(false)
                     ) || Self::is_string_arg(mir_args, 1, ctx.locals);
                     if !is_aggregate {
@@ -8602,7 +8491,7 @@ impl<'a> FunctionBuilder<'a> {
                 for &i in values {
                     if i < args.len() {
                         let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
-                        args[i] = Self::atomic_bits(builder, args[i], ty.as_ref(), ctx);
+                        args[i] = Self::atomic_bits(builder, args[i], ty.as_ref());
                     }
                 }
                 if matches!(
