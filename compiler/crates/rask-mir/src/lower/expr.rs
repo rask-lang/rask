@@ -893,7 +893,7 @@ impl<'a> MirLowerer<'a> {
             addr: result_local,
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: Some(layout.tag_bytes()),
+            store_size: layout.tag_bytes(),
             field: None,
         }));
         Some((MirOperand::Local(result_local), enum_ty))
@@ -1067,15 +1067,7 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         let elem_ty = fields[idx].clone();
-        let mut offset = 0u32;
-        for (i, f) in fields.iter().enumerate() {
-            let align = f.align();
-            offset = (offset + align - 1) & !(align - 1);
-            if i == idx {
-                break;
-            }
-            offset += f.size();
-        }
+        let offset = crate::types::tuple_offsets(fields)[idx];
         let size = elem_ty.size();
         Some((idx as u32, elem_ty, Some(offset), Some(size)))
     }
@@ -2044,7 +2036,7 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i * elem_size,
                         value: val.clone(),
-                        store_size: None,
+                        store_size: elem_size,
                         field: None,
                     }));
                 }
@@ -2285,7 +2277,8 @@ impl<'a> MirLowerer<'a> {
                 // `Ordering` is registered by the compiler rather than
                 // declared, so there's no layout to read: the enum type
                 // comes from the checker, and a tag at offset 0 is what
-                // `Ordering.Relaxed` builds too.
+                // `Ordering.Relaxed` builds too. Fieldless, the tag is the
+                // whole value.
                 let ty = self
                     .ctx
                     .lookup_node_type(expr.id)
@@ -2297,7 +2290,7 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: 0,
                         value: MirOperand::Constant(MirConst::Int(tag)),
-                        store_size: None,
+                        store_size: ty.size(),
                         field: None,
                     }));
                     Ok((MirOperand::Local(result_local), ty))
@@ -2736,7 +2729,7 @@ impl<'a> MirLowerer<'a> {
             (MirType::Ptr, Some(t)) => self.ctx.payload_to_mir(t),
             _ => fty.clone(),
         };
-        let size = fsize.unwrap_or_else(|| fty.size());
+        let size = fsize;
         let addr = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: addr,
@@ -2814,7 +2807,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: layout.tag_offset,
                             value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: Some(layout.tag_bytes()),
+                            store_size: layout.tag_bytes(),
                             field: None,
                         }));
                         return Ok((MirOperand::Local(result_local), enum_ty));
@@ -3269,7 +3262,6 @@ impl<'a> MirLowerer<'a> {
                 })
                 .collect();
             let elem_size = elem_ty.size();
-            let elem_ty_for_store = elem_ty.clone();
             let array_ty = MirType::Array {
                 elem: Box::new(kept_elem),
                 len: elems.len() as u32,
@@ -3281,24 +3273,10 @@ impl<'a> MirLowerer<'a> {
                     addr: result_local,
                     offset: i as u32 * elem_size,
                     value: elem_op,
-                    // Two separate questions, and reusing one answer for both
-                    // is what broke `[f32; 3]`. `stored_inline_in_array` says
-                    // the element occupies its slot and is copied in whole; a
-                    // `string` or a niche `Handle<T>?` is a pointer and keeps
-                    // the word store. *Width* is the other question: an
-                    // element narrower than a word needs a store that narrow,
-                    // or each write spills over the elements after it. The
-                    // integer cases got away with it because writing in
-                    // ascending order overwrites the spill with the right
-                    // bytes — an f32 promoted to f64 does not, so `[1.5, 2.5,
-                    // 3.5]` read back as zeroes (#902).
-                    store_size: if elem_ty_for_store.stored_inline_in_array()
-                        || elem_size < 8
-                    {
-                        Some(elem_size)
-                    } else {
-                        None
-                    },
+                    // Exactly the element's width. Wider, each write spills
+                    // over the elements after it: an f32 promoted to f64 made
+                    // `[1.5, 2.5, 3.5]` read back as zeroes (#902).
+                    store_size: elem_size,
                     field: None,
                 }));
             }
@@ -3394,7 +3372,7 @@ impl<'a> MirLowerer<'a> {
                     addr: result_local,
                     offset,
                     value: elem_op,
-                    store_size: Some(elem_size),
+                    store_size: elem_size,
                     field: None,
                 }));
                 offset += elem_size;
@@ -3466,7 +3444,7 @@ impl<'a> MirLowerer<'a> {
                     addr: result_local,
                     offset: tag_offset,
                     value: MirOperand::Constant(MirConst::Int(tag as i64)),
-                    store_size: Some(tag_bytes),
+                    store_size: tag_bytes,
                     field: None,
                 }));
                 for field in fields.iter() {
@@ -3490,10 +3468,15 @@ impl<'a> MirLowerer<'a> {
                 self.field_type_hint = saved_hint;
                 let (val_op, val_ty) = lowered?;
                 // Look up field offset and size from layout
-                let field_layout = layout
-                    .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
-                let offset = field_layout.map(|f| f.offset).unwrap_or(0);
-                let store_size = field_layout.map(|f| f.size);
+                let Some(fl) = layout
+                    .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))
+                else {
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "`{name}` has no field `{}`", field.name
+                    )));
+                };
+                let offset = fl.offset;
+                let store_size = fl.size;
                 // A generic type gets one layout for every instantiation, laid
                 // out with a word-sized placeholder per type parameter. An
                 // aggregate type argument is bigger than that, so the store
@@ -3513,69 +3496,62 @@ impl<'a> MirLowerer<'a> {
                 //   `Link<T>?` is the same niche, and its `none` is often
                 //   still an untyped tagged option at this point — the
                 //   field's own declared type is what settles it.
-                let stores_a_reference = field_layout
-                    .is_some_and(|f| self.owned_payload(&f.ty).is_some())
-                    || field_layout.is_some_and(|f| super::is_niche_option_handle(&f.ty))
+                let stores_a_reference = self.owned_payload(&fl.ty).is_some()
+                    || super::is_niche_option_handle(&fl.ty)
                     || matches!(&val_ty, MirType::Option(inner) if inner.is_niche_payload())
                     || val_ty.is_niche_payload();
-                if let Some(fl) = field_layout {
-                    let value_size = val_ty.size();
-                    if !stores_a_reference
-                        && val_ty.passed_by_address()
-                        && !matches!(val_ty, MirType::String)
-                        && value_size > fl.size
-                    {
-                        // Only a field whose slot came from a substituted
-                        // type parameter has the generic explanation. Saying
-                        // it either way sent anyone reading it looking for a
-                        // generic that isn't there — a plain `[i32; 4]`
-                        // field the layout pass couldn't size reported
-                        // itself as a generic instantiation problem (#895).
-                        let cause = if fl.is_type_param {
-                            " — this instantiation is using the shared layout of a \
-                             generic type, which gives every type parameter one word, \
-                             and an aggregate that size doesn't fit. A settled \
-                             instantiation gets a layout of its own; this one wasn't \
-                             settled at the point the layout was picked. Hold the \
-                             aggregate behind a field of its own, or use a concrete \
-                             type here (#781, #814)"
-                        } else {
-                            ". The layout gave this field a slot too small for the \
-                             value being stored, so the store would run past it into \
-                             the next field. That is a compiler bug, not something \
-                             the program can be rewritten around — please report it \
-                             with this declaration"
-                        };
-                        return Err(LoweringError::InvalidConstruct(format!(
-                            "field `{}` holds {} bytes but its slot is {}{}",
-                            field.name, value_size, fl.size, cause
-                        )));
-                    }
+                let value_size = val_ty.size();
+                if !stores_a_reference
+                    && val_ty.passed_by_address()
+                    && !matches!(val_ty, MirType::String)
+                    && value_size > fl.size
+                {
+                    // Only a field whose slot came from a substituted
+                    // type parameter has the generic explanation. Saying
+                    // it either way sent anyone reading it looking for a
+                    // generic that isn't there — a plain `[i32; 4]`
+                    // field the layout pass couldn't size reported
+                    // itself as a generic instantiation problem (#895).
+                    let cause = if fl.is_type_param {
+                        " — this instantiation is using the shared layout of a \
+                         generic type, which gives every type parameter one word, \
+                         and an aggregate that size doesn't fit. A settled \
+                         instantiation gets a layout of its own; this one wasn't \
+                         settled at the point the layout was picked. Hold the \
+                         aggregate behind a field of its own, or use a concrete \
+                         type here (#781, #814)"
+                    } else {
+                        ". The layout gave this field a slot too small for the \
+                         value being stored, so the store would run past it into \
+                         the next field. That is a compiler bug, not something \
+                         the program can be rewritten around — please report it \
+                         with this declaration"
+                    };
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "field `{}` holds {} bytes but its slot is {}{}",
+                        field.name, value_size, fl.size, cause
+                    )));
                 }
+
                 // A `T?` or `T or E` field given a plain `T` has to be
                 // wrapped here. Stored bare, the value landed where the tag
                 // belongs — `Row { name: "bo" }` for a `string?` field put
                 // the string's first word in the tag slot and left the
                 // payload unwritten, so reading it back crashed (#376).
-                let field_mir_ty = field_layout.map(|f| {
-                    // A niche field is a sentinel where a tag would be.
-                    // `type_to_mir` doesn't always keep the payload inside
-                    // the option, so read the declared type — and keep
-                    // which niche it is, since a handle's `none` and a
-                    // link's `none` are different words.
-                    self.ctx.niche_option_mir_type(&f.ty)
-                        .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty))
-                });
-                let field_niche = field_layout
-                    .and_then(|f| self.ctx.niche_option_sentinel(&f.ty));
+                // A niche field is a sentinel where a tag would be.
+                // `type_to_mir` doesn't always keep the payload inside the
+                // option, so read the declared type — and keep which niche it
+                // is, since a handle's `none` and a link's `none` are
+                // different words.
+                let field_mir_ty = self.ctx.niche_option_mir_type(&fl.ty)
+                    .unwrap_or_else(|| self.ctx.type_to_mir(&fl.ty));
+                let field_niche = self.ctx.niche_option_sentinel(&fl.ty);
                 let val_op = self.wrap_sum_field_value(
-                    field_mir_ty.as_ref(), field_niche, &val_ty, val_op,
+                    Some(&field_mir_ty), field_niche, &val_ty, val_op,
                 );
                 // A field declared `Owned<T>` given a `T` goes on the heap —
                 // same boundary as an enum payload declared `Owned<T>` (#705).
-                let val_op = match field_layout
-                    .and_then(|f| self.owned_payload(&f.ty))
-                {
+                let val_op = match self.owned_payload(&fl.ty) {
                     Some(_) => self.box_into_owned_slot(val_op, &val_ty),
                     None => val_op,
                 };
@@ -3632,7 +3608,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset,
                             value: MirOperand::Local(tmp),
-                            store_size: Some(size),
+                            store_size: size,
                             field: match &result_ty {
                                 MirType::Struct(sid) => Some(crate::FieldSlot { layout: sid.id, field: idx as u32 }),
                                 _ => None,
@@ -3672,7 +3648,7 @@ impl<'a> MirLowerer<'a> {
         // The field's own width: an aggregate (a string's 16 bytes, an
         // embedded struct) is copied whole (#387), and a scalar is stored at
         // its declared size, never widened into the next field.
-        let store_size = Some(field_size);
+        let store_size = field_size;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset,
@@ -3870,7 +3846,7 @@ impl<'a> MirLowerer<'a> {
             addr: none,
             offset: rask_mono::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
-            store_size: Some(8),
+            store_size: 8,
             field: None,
         }));
         self.assign_and_goto(dst, MirOperand::Local(none), done_blk);
@@ -4012,7 +3988,7 @@ impl<'a> MirLowerer<'a> {
                     addr: *slot,
                     offset,
                     value: MirOperand::Local(word),
-                    store_size: Some(size),
+                    store_size: size,
                     field: None,
                 }));
             }
@@ -4266,7 +4242,7 @@ impl<'a> MirLowerer<'a> {
                     addr: result_local,
                     offset: *offset,
                     value,
-                    store_size: Some(*size),
+                    store_size: *size,
                     field: None,
                 }));
             }
@@ -5404,7 +5380,7 @@ impl<'a> MirLowerer<'a> {
                                 addr: result_local,
                                 offset: tag_offset,
                                 value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
-                                store_size: Some(tag_bytes),
+                                store_size: tag_bytes,
                                 field: None,
                             }));
 
@@ -5440,7 +5416,7 @@ impl<'a> MirLowerer<'a> {
                                         addr: value,
                                         offset: tag_offset,
                                         value: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
-                                        store_size: Some(tag_bytes),
+                                        store_size: tag_bytes,
                                         field: None,
                                     }));
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -5717,6 +5693,20 @@ impl<'a> MirLowerer<'a> {
                                     // Shared: data_size goes last → (data_ptr, data_size)
                                     arg_operands.push(size_op);
                                 }
+                            }
+                            // An atomic cell holds its payload at the payload's
+                            // width and does arithmetic by its kind, so the
+                            // constructor is told both: `(bits, size, kind)`.
+                            if base_name == "Atomic" && matches!(method.as_str(), "new" | "default") {
+                                let payload = self.container_elem_mir_type(expr.id, 0).ok_or_else(|| {
+                                    LoweringError::InvalidConstruct("`Atomic` with no payload type".into())
+                                })?;
+                                if let Some(value) = arg_operands.pop() {
+                                    let value = self.as_slot_value(value, &payload);
+                                    arg_operands.push(value);
+                                }
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(payload.size() as i64)));
+                                arg_operands.push(MirOperand::Constant(MirConst::Int(Self::atomic_kind(&payload))));
                             }
                             // A box owns its payload, and the payload can be a
                             // container: `Shared.mutex(Map.new())` moves the map
@@ -6220,6 +6210,10 @@ impl<'a> MirLowerer<'a> {
             "Sender_send" | "Sender_try_send" | "Rack_insert" => &[(0, 0)],
             "Shared_set" | "Shared_replace" | "Mutex_set" | "Mutex_replace" | "Cell_set"
             | "Cell_replace" => &[(0, 0)],
+            "Atomic_store" | "Atomic_swap" | "Atomic_fetch_add" | "Atomic_fetch_sub"
+            | "Atomic_fetch_and" | "Atomic_fetch_or" | "Atomic_fetch_xor" | "Atomic_fetch_nand"
+            | "Atomic_fetch_max" | "Atomic_fetch_min" => &[(0, 0)],
+            "Atomic_compare_exchange" | "Atomic_compare_exchange_weak" => &[(0, 0), (1, 0)],
             _ => &[],
         };
         // An entry is a `(key, value)` tuple, laid out by the caller.
@@ -6525,31 +6519,31 @@ impl<'a> MirLowerer<'a> {
                         // that address got stored where the value belongs, so a
                         // `priority: Priority` field cloned to a stack address
                         // and every later read of it saw an out-of-range tag.
+                        //
+                        // Every field is read and written at its own type and
+                        // width. A narrow one read as a word took the next
+                        // field's bytes with it.
+                        // A niche option is the one word it's loaded as.
                         let field_mir_ty = self.ctx.type_to_mir(&field.ty);
-                        let wide = field.size > 8 || super::mir_ty_is_aggregate(&field_mir_ty);
-                        let field_val = self.builder.alloc_temp(if wide {
-                            field_mir_ty.clone()
+                        let field_mir_ty = if field_mir_ty.niche_none().is_some() {
+                            MirType::Ptr
                         } else {
-                            MirType::I64
-                        });
+                            field_mir_ty
+                        };
+                        let field_val = self.builder.alloc_temp(field_mir_ty.clone());
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: field_val,
                             rvalue: MirRValue::Field {
                                 base: src.clone(),
                                 field_index: idx as u32,
                                 byte_offset: None,
-                                access: FieldAccess::Word,
+                                access: FieldAccess::for_field(&field_mir_ty, field.size),
                             },
                         }));
                         // Deep clone heap types
                         let clone_fn = Self::clone_fn_for_type(&field.ty);
                         let store_val = if let Some(cfn) = clone_fn {
-                            let cloned_ty = if wide {
-                                self.ctx.type_to_mir(&field.ty)
-                            } else {
-                                MirType::I64
-                            };
-                            let cloned = self.builder.alloc_temp(cloned_ty);
+                            let cloned = self.builder.alloc_temp(field_mir_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(cloned),
                                 func: FunctionRef::internal(cfn.to_string()),
@@ -6563,7 +6557,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: field.offset,
                             value: store_val,
-                            store_size: if wide { Some(field.size) } else { None },
+                            store_size: field.size,
                             field: None,
                         }));
                     }
@@ -6873,14 +6867,14 @@ impl<'a> MirLowerer<'a> {
             addr: err_local,
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(full_tag as i64)),
-            store_size: Some(tag_bytes),
+            store_size: tag_bytes,
             field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: err_local,
             offset: payload_offset,
             value: value.clone(),
-            store_size: Some(full_field_size.unwrap_or(value_size)),
+            store_size: full_field_size.unwrap_or(value_size),
             field: None,
         }));
         self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
@@ -7000,7 +6994,7 @@ impl<'a> MirLowerer<'a> {
             addr: slot,
             offset: opt_ty.payload_offset() + layout.tag_offset,
             value: n_op,
-            store_size: Some(layout.tag_bytes()),
+            store_size: layout.tag_bytes(),
             field: None,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -7538,7 +7532,7 @@ impl<'a> MirLowerer<'a> {
                         addr,
                         offset: 0,
                         value: val,
-                        store_size: Some(want.size()),
+                        store_size: want.size(),
                         field: None,
                     }));
                     return Ok(Some((MirOperand::Constant(MirConst::Int(0)), MirType::Void)));
@@ -7913,14 +7907,14 @@ impl<'a> MirLowerer<'a> {
                 addr: pair,
                 offset: 0,
                 value: MirOperand::Local(wrapped),
-                store_size: Some(value_size),
+                store_size: value_size,
                 field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: pair,
                 offset: value_size,
                 value: MirOperand::Local(flag),
-                store_size: Some(MirType::Bool.size()),
+                store_size: MirType::Bool.size(),
                 field: None,
             }));
             return Ok(Some((MirOperand::Local(pair), pair_ty)));
@@ -8113,16 +8107,15 @@ impl<'a> MirLowerer<'a> {
         };
         let ty = MirType::Enum(EnumLayoutId::new(id, layout.size, layout.align));
         let slot = self.builder.alloc_temp(ty.clone());
+        // The tag is the whole of a fieldless enum, so a tag-wide store fills
+        // the slot. Narrower, structural `==` compared bytes the store never
+        // wrote: three asserts in a row passed in `main` and the third failed
+        // in a `test` block, purely on what the stack happened to hold.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: 0,
+            offset: layout.tag_offset,
             value: tag,
-            // `None` — the value's natural width, which is what the enum
-            // literal path stores. A narrow store leaves the rest of the slot
-            // undefined, and structural `==` compares the whole slot: three
-            // asserts in a row passed in `main` and the third failed in a
-            // `test` block, purely on what the stack happened to hold.
-            store_size: None,
+            store_size: layout.tag_bytes(),
             field: None,
         }));
         (MirOperand::Local(slot), ty)
@@ -9768,6 +9761,12 @@ impl<'a> MirLowerer<'a> {
         })
     }
 
+    /// How an atomic cell does arithmetic on `payload`. A struct payload
+    /// (GA2) is bits, compared and swapped but never added.
+    fn atomic_kind(payload: &MirType) -> i64 {
+        Self::debug_elem_kind(payload).unwrap_or(rask_mono::runtime_abi::RASK_ELEM_KIND_UNSIGNED)
+    }
+
     /// Concatenate a list of string operands left to right.
     fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
         let mut iter = parts.into_iter();
@@ -10064,7 +10063,7 @@ impl<'a> MirLowerer<'a> {
                     // A string is 16 bytes of value and the operand is their
                     // address; a bool is one byte and a wider store would run
                     // over the field beside it.
-                    store_size: Some(ty.size()),
+                    store_size: ty.size(),
                     field: None,
                 }));
             }
@@ -10197,7 +10196,7 @@ impl<'a> MirLowerer<'a> {
                     addr: result,
                     offset,
                     value: MirOperand::Local(w),
-                    store_size: None,
+                    store_size: 8,
                     field: None,
                 }));
             }
@@ -10219,7 +10218,7 @@ impl<'a> MirLowerer<'a> {
                 addr: result,
                 offset: i * elem_size,
                 value: MirOperand::Local(slot),
-                store_size: Some(elem_size),
+                store_size: elem_size,
                 field: None,
             }));
         }

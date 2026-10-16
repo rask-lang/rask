@@ -57,17 +57,17 @@ impl ClosureEnvLayout {
         }
     }
 
-    /// Add a captured variable to the environment layout.
-    /// Returns the offset where the variable will be stored (relative to env start).
+    /// Add a captured variable at the offset MIR laid it out at
+    /// (`rask_mir::lay_out_captures`), which is where `LoadCapture`
+    /// reads it back.
     pub fn add_capture(
         &mut self,
         local_id: LocalId,
+        offset: u32,
         size: u32,
         is_aggregate: bool,
         by_ref: bool,
-    ) -> u32 {
-        // Align to 8 bytes
-        let offset = (self.size + 7) & !7;
+    ) {
         self.captures.push(CaptureInfo {
             local_id,
             offset,
@@ -75,8 +75,7 @@ impl ClosureEnvLayout {
             is_aggregate,
             by_ref,
         });
-        self.size = offset + size;
-        offset
+        self.size = self.size.max(offset + size);
     }
 }
 

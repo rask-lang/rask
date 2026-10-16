@@ -647,8 +647,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None, field: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: 4, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: 4, field: None }),
                     assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, access: FieldAccess::Word }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -970,8 +970,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None, field: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: 4, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: 4, field: None }),
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
@@ -1006,8 +1006,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None, field: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: 1, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: 4, field: None }),
                     assign(1, MirRValue::EnumTag { value: local_op(0) }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1264,22 +1264,24 @@ mod tests {
     fn closure_env_layout_sizing() {
         use crate::closures::ClosureEnvLayout;
 
+        // Offsets come from MIR's `lay_out_captures`; the layout records them
+        // and its size is where the last capture ends.
+        let caps = rask_mir::lay_out_captures([
+            (LocalId(0), MirType::I64, false, true),
+            (LocalId(1), MirType::U8, false, true),
+            (LocalId(2), MirType::I32, false, true),
+            (LocalId(3), MirType::F64, true, false),
+        ]);
+        let offsets: Vec<u32> = caps.iter().map(|c| c.offset).collect();
+        assert_eq!(offsets, vec![0, 8, 12, 16]);
+
         let mut layout = ClosureEnvLayout::new();
         assert_eq!(layout.size, 0);
-
-        let off0 = layout.add_capture(LocalId(0), 8, false, false);
-        assert_eq!(off0, 0);
-        assert_eq!(layout.size, 8);
-
-        let off1 = layout.add_capture(LocalId(1), 4, false, false);
-        assert_eq!(off1, 8); // aligned to 8
-        assert_eq!(layout.size, 12);
-
-        let off2 = layout.add_capture(LocalId(2), 8, false, false);
-        assert_eq!(off2, 16); // aligned up from 12 → 16
+        for c in &caps {
+            layout.add_capture(c.local_id, c.offset, c.size, false, c.by_ref);
+        }
         assert_eq!(layout.size, 24);
-
-        assert_eq!(layout.captures.len(), 3);
+        assert_eq!(layout.captures.len(), 4);
     }
 
     // ═══════════════════════════════════════════════════════════

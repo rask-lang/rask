@@ -2035,10 +2035,11 @@ impl<'a> MirLowerer<'a> {
             name: const_slot_name(name),
         }));
 
-        let stored = if mir_ty_is_aggregate(ty) {
+        let aggregate = mir_ty_is_aggregate(ty);
+        let stored = if aggregate {
             // The value sits in this thunk's frame, which is gone by the time
             // anything reads the slot. Copy it to the heap and share that.
-            let size = self.aggregate_alloc_size(ty);
+            let size = self.aggregate_size(ty);
             let heap = self.builder.alloc_temp(MirType::Ptr);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(heap),
@@ -2053,7 +2054,7 @@ impl<'a> MirLowerer<'a> {
                 addr: heap,
                 offset: 0,
                 value,
-                store_size: Some(size),
+                store_size: size,
                 field: None,
             }));
             MirOperand::Local(heap)
@@ -2061,11 +2062,13 @@ impl<'a> MirLowerer<'a> {
             value
         };
 
+        // The slot holds an aggregate's heap address, or a scalar at its own
+        // width.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr,
             offset: 0,
             value: stored,
-            store_size: None,
+            store_size: if aggregate { MirType::Ptr.size() } else { ty.size() },
             field: None,
         }));
     }
@@ -2095,11 +2098,6 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(slot))
     }
 
-    /// Byte size to copy for an aggregate const, rounded up to whole words.
-    fn aggregate_alloc_size(&self, ty: &MirType) -> u32 {
-        std::cmp::max(self.aggregate_size(ty), 8).div_ceil(8) * 8
-    }
-
     /// An aggregate's own size, from its layout.
     pub(crate) fn aggregate_size(&self, ty: &MirType) -> u32 {
         match ty {
@@ -2107,14 +2105,12 @@ impl<'a> MirLowerer<'a> {
                 .ctx
                 .struct_layouts
                 .get(*id as usize)
-                .map(|l| l.size)
-                .unwrap_or(8),
+                .map_or(ty.size(), |l| l.size),
             MirType::Enum(EnumLayoutId { id, .. }) => self
                 .ctx
                 .enum_layouts
                 .get(*id as usize)
-                .map(|l| l.size)
-                .unwrap_or(8),
+                .map_or(ty.size(), |l| l.size),
             other => other.size(),
         }
     }
@@ -2473,24 +2469,21 @@ impl<'a> MirLowerer<'a> {
     /// and a flag can't cross a carrier (#1234, #1256). The allocation is also
     /// what the source asked for — `Heap(…)` is written where the cost is.
     ///
-    /// The block is a word at minimum, so a narrow payload still has a whole
-    /// one behind it. The store writes the payload's own width, which is what
-    /// the load on the other side reads: an `f32` written eight bytes wide and
-    /// read four comes back 0.
+    /// The block is the payload's own size, written and read at that width:
+    /// an `f32` written eight bytes wide and read four comes back 0.
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
-        let width = val_ty.size().max(1);
-        let block = (width as i64).max(8);
+        let width = val_ty.size();
         let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(heap),
             func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(MirConst::Int(block))],
+            args: vec![MirOperand::Constant(MirConst::Int(width.max(1) as i64))],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,
             value: val,
-            store_size: Some(width),
+            store_size: width,
             field: None,
         }));
         MirOperand::Local(heap)
@@ -2951,7 +2944,7 @@ impl<'a> MirLowerer<'a> {
             addr: slot,
             offset: rask_mono::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: Some(rask_mono::abi::TAG_BYTES),
+            store_size: rask_mono::abi::TAG_BYTES,
             field: None,
         }));
         if matches!(wrapper_ty, MirType::Result { .. }) {
@@ -3074,7 +3067,7 @@ impl<'a> MirLowerer<'a> {
                 addr: slot,
                 offset,
                 value: MirOperand::Constant(MirConst::Int(0)),
-                store_size: Some(size),
+                store_size: size,
                 field: None,
             }));
         }
@@ -3113,7 +3106,7 @@ impl<'a> MirLowerer<'a> {
             addr: slot,
             offset: wrapper_ty.payload_offset(),
             value,
-            store_size: Some(size),
+            store_size: size,
             field: None,
         }));
     }
@@ -3758,6 +3751,9 @@ impl<'a> MirLowerer<'a> {
         let mut thunk_builder = BlockBuilder::new(thunk_name.clone(), MirType::Void);
         let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr);
 
+        let captures = crate::stmt::lay_out_captures(
+            caps.iter().map(|c| (c.outer, c.ty.clone(), c.by_ref, c.copy)),
+        );
         let mut thunk_locals: HashMap<String, (LocalId, MirType)> = HashMap::new();
         let mut thunk_res_local: Option<LocalId> = None;
         for (i, cap) in caps.iter().enumerate() {
@@ -3778,7 +3774,7 @@ impl<'a> MirLowerer<'a> {
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst,
                 env_ptr: env_param,
-                offset: (i as u32) * 8,
+                offset: captures[i].offset,
                 access: if cap.by_ref {
                     crate::CaptureAccess::Borrowed
                 } else {
@@ -3859,17 +3855,6 @@ impl<'a> MirLowerer<'a> {
         self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
-        let captures = caps
-            .iter()
-            .enumerate()
-            .map(|(i, c)| crate::stmt::ClosureCapture {
-                local_id: c.outer,
-                offset: (i as u32) * 8,
-                size: 8,
-                by_ref: c.by_ref,
-                copy: c.copy,
-            })
-            .collect();
         Some((thunk_name, captures))
     }
 
@@ -5505,7 +5490,7 @@ impl<'a> MirLowerer<'a> {
                                     addr: local,
                                     offset: tuple_offset,
                                     value: MirOperand::Local(read),
-                                    store_size: Some(field_ty.size()),
+                                    store_size: field_ty.size(),
                                     field: None,
                                 }));
                                 tuple_offset += field_ty.size();

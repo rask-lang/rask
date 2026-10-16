@@ -964,7 +964,7 @@ fn fixup_return_values(
                     addr: ret_dst,
                     offset,
                     value: MirOperand::Constant(MirConst::Int(value)),
-                    store_size: Some(size),
+                    store_size: size,
                     field: None,
                 },
                 span,

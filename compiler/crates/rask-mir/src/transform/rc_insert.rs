@@ -1308,7 +1308,7 @@ fn store_is_narrow(stmt: &MirStmt, ty_of: &HashMap<LocalId, MirType>) -> bool {
                 ty_of.get(addr),
                 Some(MirType::Enum(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_))
             ) => false,
-        MirStmtKind::Store { store_size: Some(n), .. } => *n < 8,
+        MirStmtKind::Store { store_size: n, .. } => *n < 8,
         _ => false,
     }
 }
@@ -1873,7 +1873,7 @@ mod tests {
                     addr: local(0),
                     offset: 0,
                     value: MirOperand::Local(local(1)),
-                    store_size: Some(16),
+                    store_size: 16,
                     field: None,
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
@@ -2098,7 +2098,7 @@ mod tests {
                             addr: local(0),
                             offset: 0,
                             value: MirOperand::Constant(MirConst::Int(1)),
-                            store_size: None,
+                            store_size: 1,
                             field: None,
                         }),
                     ],
@@ -2112,7 +2112,7 @@ mod tests {
                         addr: local(0),
                         offset: 24,
                         value: MirOperand::Local(local(1)),
-                        store_size: None,
+                        store_size: 8,
                         field: None,
                     })],
                     terminator: MirTerminator::dummy(MirTerminatorKind::Return {

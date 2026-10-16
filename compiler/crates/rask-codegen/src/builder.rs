@@ -247,10 +247,10 @@ enum CallAdapt {
     /// flag as the value, so `compare_exchange(5, 9, …)` reported that it had
     /// found 1.
     CasResult(StackSlot),
-    /// The call returned one machine word that IS the destination aggregate —
-    /// `Atomic<Slot>.load()` on a word-sized struct payload (mem.atomics/GA2).
-    /// Store it into the destination's own slot.
-    WordIntoAggregate,
+    /// An atomic handed back its payload's bits in a word: a float or a
+    /// struct (mem.atomics/GA2) as its raw bytes, an integer extended. Turn
+    /// them into the destination's value.
+    AtomicBits,
     /// Result is void* — wrap as Option: NULL→None(tag=1), non-NULL→Some(tag=0, deref)
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
@@ -464,8 +464,8 @@ impl<'a> FunctionBuilder<'a> {
         }
 
         // Pre-compute stack allocation sizes before builder borrows self.func.
-        // Entries: (local_id, byte size) for each aggregate local.
-        let mut stack_allocs: Vec<(LocalId, u32)> = self.mir_fn.locals.iter()
+        // Entries: (local_id, byte size, alignment) for each aggregate local.
+        let mut stack_allocs: Vec<(LocalId, u32, u32)> = self.mir_fn.locals.iter()
             .filter(|l| !l.is_param)
             // A borrowed local's storage is the frame that built the closure,
             // so it gets no slot here. Leaving it one puts a slot address in
@@ -476,7 +476,7 @@ impl<'a> FunctionBuilder<'a> {
                 let size = Self::resolve_type_alloc_size(
                     &l.ty, self.struct_layouts, self.enum_layouts,
                 );
-                size.filter(|&s| s > 0).map(|s| (l.id, s))
+                size.filter(|&s| s > 0).map(|s| (l.id, s, l.ty.align()))
             })
             .collect();
         // An owned address-taken scalar needs a slot of its own — that is the
@@ -485,7 +485,7 @@ impl<'a> FunctionBuilder<'a> {
         // a parameter twice.
         for local in self.mir_fn.locals.iter() {
             if addr_taken.owned.contains(&local.id) {
-                stack_allocs.push((local.id, local.ty.size().max(8)));
+                stack_allocs.push((local.id, local.ty.size().max(1), local.ty.align()));
             }
         }
 
@@ -620,11 +620,13 @@ impl<'a> FunctionBuilder<'a> {
         // Allocate stack slots for aggregate locals (structs, enums, arrays)
         // and for address-taken scalars. These are represented as pointers
         // (i64) — the variable holds the address of the storage.
-        for (local_id, size) in &stack_allocs {
+        // Cranelift aligns every slot to at least a word; a SIMD local asks
+        // for more.
+        for (local_id, size, align) in &stack_allocs {
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 *size,
-                0, // align_shift: natural alignment
+                align.max(&1).trailing_zeros() as u8,
             ));
             self.stack_slot_map.insert(*local_id, (ss, *size));
             let addr = builder.ins().stack_addr(types::I64, ss, 0);
@@ -984,7 +986,7 @@ impl<'a> FunctionBuilder<'a> {
         match &stmt.kind {
             MirStmtKind::Assign { dst, rvalue } => Self::lower_assign(builder, dst, rvalue, ctx)?,
 
-            MirStmtKind::Store { addr, offset, value, store_size, .. } => Self::lower_store(builder, addr, offset, value, store_size, ctx)?,
+            MirStmtKind::Store { addr, offset, value, store_size, .. } => Self::lower_store(builder, addr, offset, value, *store_size, ctx)?,
 
             // Array element store: base_ptr[index * elem_size] = value
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
@@ -1065,13 +1067,14 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Runtime ensure hooks (panic unwind) ────────────────────
             // Register a hook so the cleanup runs if the scope unwinds on a
-            // panic (ctrl.panic/U1). The env is a frame-local array of 8-byte
-            // slots holding each capture's value (aggregate → address).
+            // panic (ctrl.panic/U1). The env is a frame-local block laid out
+            // the way MIR's `lay_out_captures` says: each capture's value
+            // (aggregate → address) at its offset and width.
             MirStmtKind::EnsureHookRegister { thunk, captures } => {
-                let slots = captures.len().max(1) as u32;
+                let env_size = captures.iter().map(|c| c.offset + c.size).max().unwrap_or(0).max(8);
                 let env_ss = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
-                    slots * 8,
+                    env_size,
                     3, // 8-byte alignment
                 ));
                 for c in captures {
@@ -1079,15 +1082,7 @@ impl<'a> FunctionBuilder<'a> {
                         CodegenError::UnsupportedFeature("EnsureHookRegister capture not found".to_string())
                     })?;
                     let val = builder.use_var(*var);
-                    let vty = builder.func.dfg.value_type(val);
-                    let val64 = if vty == types::I64 {
-                        val
-                    } else if vty.is_int() && vty.bytes() < 8 {
-                        builder.ins().uextend(types::I64, val)
-                    } else {
-                        val
-                    };
-                    builder.ins().stack_store(val64, env_ss, c.offset as i32);
+                    builder.ins().stack_store(val, env_ss, c.offset as i32);
                 }
                 let env_addr = builder.ins().stack_addr(types::I64, env_ss, 0);
                 let thunk_ref = ctx.func_refs.get(thunk)
@@ -2303,7 +2298,7 @@ impl<'a> FunctionBuilder<'a> {
                     let ss = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         size,
-                        0, // align_shift: natural alignment
+                        0, // Cranelift word-aligns every slot
                     ));
                     let addr = builder.ins().stack_addr(types::I64, ss, 0);
                     builder.ins().store(MemFlags::new(), val, addr, 0);
@@ -2640,9 +2635,13 @@ impl<'a> FunctionBuilder<'a> {
         addr: &LocalId,
         offset: &u32,
         value: &MirOperand,
-        store_size: &Option<u32>,
+        store_size: u32,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
+        // A zero-sized value has nothing to write.
+        if store_size == 0 {
+            return Ok(());
+        }
         let addr_val = builder.use_var(*ctx.var_map.get(addr)
             .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
 
@@ -2653,11 +2652,7 @@ impl<'a> FunctionBuilder<'a> {
         // the variable may alias another slot (e.g., p = struct_literal result).
         let is_aggregate = if let MirOperand::Local(src_id) = value {
             if let Some((_src_slot, src_size)) = ctx.stack_slot_map.get(src_id) {
-                // Use store_size when available to avoid overflowing the
-                // destination.
-                let effective_size = store_size
-                    .map(|ss| ss.min(*src_size))
-                    .unwrap_or(*src_size);
+                let effective_size = store_size.min(*src_size);
                 // Copy the bytes even when the aggregate fits in 8 bytes.
                 // Storing the pointer instead left the field aimed at the
                 // constructing function's frame; it read back fine until
@@ -2699,25 +2694,23 @@ impl<'a> FunctionBuilder<'a> {
             // verifier rejected the function before anything ran — every
             // `struct S { balance: i128 }` and `Vec<i128>` failed to build
             // (#933). A plain store handles it, the same as any other scalar.
-            if store_size.map_or(false, |s| s > 8) && val_ty == types::I64 {
-                let size = store_size.unwrap();
-                Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, size);
+            if store_size > 8 && val_ty == types::I64 {
+                Self::copy_bytes(builder, val, 0, addr_val, *offset as i32, store_size);
             } else {
                 let flags = MemFlags::new();
 
-                // A field the layout packed into fewer than 8 bytes gets a
-                // store that wide. An 8-byte store into a 4-byte slot walks
-                // into whatever follows: a two-i32 tuple wrote its second
-                // element across the frame's edge and took the return address
-                // with it, so the test binary jumped into nowhere (#548).
-                if let Some(size @ (1 | 2 | 4)) = *store_size {
-                    Self::store_narrow(builder, val, addr_val, *offset as i32, size);
+                // A slot narrower than a word gets a store that wide. An
+                // 8-byte store into a 4-byte slot walks into whatever follows:
+                // a two-i32 tuple wrote its second element across the frame's
+                // edge and took the return address with it, so the test
+                // binary jumped into nowhere (#548).
+                if matches!(store_size, 1 | 2 | 4) {
+                    Self::store_narrow(builder, val, addr_val, *offset as i32, store_size);
                     return Ok(());
                 }
 
-                // Otherwise the slot is a full word. Widen sub-8-byte values to
-                // fill it — a 4-byte f32 store would leave stale upper bytes
-                // that corrupt the f64 read-back.
+                // Otherwise the slot is a full word (or an i128's two). Widen
+                // a narrower value to fill it, so no stale bytes sit above it.
                 let val = if val_ty == types::F32 {
                     builder.ins().fpromote(types::F64, val)
                 } else if val_ty.is_int() && val_ty.bits() < 64 {
@@ -2788,10 +2781,13 @@ impl<'a> FunctionBuilder<'a> {
             if arg_is_aggregate {
                 continue;
             }
+            // As big as the aggregate the callee reads, and as the value
+            // stored into it.
             let (size, _) = Self::real_type_size_align(param_ty, ctx);
+            let have = builder.func.dfg.value_type(arg_vals[i]).bytes();
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
-                size.max(8),
+                size.max(have),
                 0,
             ));
             builder.ins().stack_store(arg_vals[i], ss, 0);
@@ -2823,7 +2819,7 @@ impl<'a> FunctionBuilder<'a> {
         addr_val: Value,
         offset: u32,
         value: &MirOperand,
-        store_size: &Option<u32>,
+        store_size: u32,
         ctx: &CodegenCtx,
     ) -> bool {
         let MirOperand::Local(src_id) = value else { return false };
@@ -2838,9 +2834,8 @@ impl<'a> FunctionBuilder<'a> {
             return false;
         }
         let (real_size, _) = Self::real_type_size_align(&local.ty, ctx);
-        // Layout gives fields 8-byte slots, so store_size can exceed the type's
-        // real size. Copy only what the value actually has.
-        let size = store_size.map_or(real_size, |ss| ss.min(real_size));
+        // Copy only what the value actually has.
+        let size = store_size.min(real_size);
         if size == 0 {
             return false;
         }
@@ -2859,32 +2854,26 @@ impl<'a> FunctionBuilder<'a> {
         task_bound: bool,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        // Build environment layout from captures, using real aggregate
-        // sizes from codegen layouts instead of MIR fallbacks.
-        // MirType::Struct.size() returns 8 (pointer), but actual structs
-        // may be 16+ bytes. Escaping closures must deep-copy aggregate
-        // data so it survives after the parent's stack is reused.
+        // The environment is laid out by MIR, which is also where the
+        // closure body's `LoadCapture`s read it. An aggregate captured by
+        // value is copied in whole, so it survives the parent's stack slot
+        // being reused.
         let mut env_layout = crate::closures::ClosureEnvLayout::new();
         for c in captures {
-            let local = ctx.locals.iter().find(|l| l.id == c.local_id);
-            let (real_size, is_aggregate) = if c.by_ref {
-                // An address is a word whatever it points at, and MIR laid the
-                // env out on that basis. Re-deriving a real aggregate size here
-                // would put the next capture at a different offset than the
-                // `LoadCapture` that reads it.
-                (8, false)
-            } else if let Some(l) = local {
-                if let Some(alloc_size) = Self::resolve_type_alloc_size(
-                    &l.ty, ctx.struct_layouts, ctx.enum_layouts,
-                ) {
-                    (alloc_size, true)
-                } else {
-                    (c.size, false)
+            let local = ctx.locals.iter().chain(ctx.params.iter()).find(|l| l.id == c.local_id);
+            let alloc_size = local.and_then(|l| {
+                Self::resolve_type_alloc_size(&l.ty, ctx.struct_layouts, ctx.enum_layouts)
+            });
+            let is_aggregate = !c.by_ref && alloc_size.is_some();
+            if let Some(size) = alloc_size.filter(|_| is_aggregate) {
+                if size != c.size {
+                    return Err(CodegenError::UnsupportedFeature(format!(
+                        "capture {:?} in `{func_name}` is {size} bytes, but MIR laid out {}",
+                        c.local_id, c.size
+                    )));
                 }
-            } else {
-                (c.size, false)
-            };
-            env_layout.add_capture(c.local_id, real_size, is_aggregate, c.by_ref);
+            }
+            env_layout.add_capture(c.local_id, c.offset, c.size, is_aggregate, c.by_ref);
         }
 
         // Get function pointer for the closure function
@@ -3001,6 +2990,18 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
+    /// A scalar into an `any` box exactly `size` bytes big.
+    fn store_box_scalar(builder: &mut ClifFunctionBuilder, val: Value, data_ptr: Value, size: u32) {
+        if size == 0 {
+            return;
+        }
+        if matches!(size, 1 | 2 | 4) {
+            Self::store_narrow(builder, val, data_ptr, 0, size);
+        } else {
+            builder.ins().store(MemFlags::new(), val, data_ptr, 0);
+        }
+    }
+
     fn lower_interface_box(
         builder: &mut ClifFunctionBuilder,
         dst: &LocalId,
@@ -3015,7 +3016,7 @@ impl<'a> FunctionBuilder<'a> {
         // The block carries a reference count in the word before the value, so
         // a derived container can share it — see `rask_box_alloc`. The pointer
         // that comes back is the value's, so nothing downstream changes.
-        let alloc_size = std::cmp::max(*concrete_size, 8) as i64;
+        let alloc_size = (*concrete_size).max(1) as i64;
         let size_val = builder.ins().iconst(types::I64, alloc_size);
         let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
         let data_ptr = builder.inst_results(call_inst)[0];
@@ -3031,29 +3032,21 @@ impl<'a> FunctionBuilder<'a> {
                         "InterfaceBox: source variable not found".to_string()
                     ))?;
                 let src_ptr = builder.use_var(*src_var);
-                let sz = *concrete_size;
-                let mut off = 0i32;
-                while (off as u32) + 8 <= sz {
-                    let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
-                    builder.ins().store(MemFlags::new(), word, data_ptr, off);
-                    off += 8;
-                }
-                if (off as u32) < sz {
-                    let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
-                    builder.ins().store(MemFlags::new(), word, data_ptr, off);
-                }
+                // Exactly the value's bytes. Whole words with a whole-word
+                // tail read past the source and wrote past the box.
+                copy_bytes(builder, src_ptr, 0, data_ptr, 0, *concrete_size);
             } else {
                 // Scalar: load from variable, store to heap
                 let src_val = builder.use_var(*ctx.var_map.get(src_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "InterfaceBox: source variable not found".to_string()
                     ))?);
-                builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
+                Self::store_box_scalar(builder, src_val, data_ptr, *concrete_size);
             }
         } else {
             // Constant: lower and store
             let src_val = Self::lower_operand(builder, value, ctx)?;
-            builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
+            Self::store_box_scalar(builder, src_val, data_ptr, *concrete_size);
         }
 
         // Get vtable address
@@ -5469,25 +5462,30 @@ impl<'a> FunctionBuilder<'a> {
                         let tag = builder.ins().select(swapped, ok_tag, err_tag);
                         Self::store_tag(builder, *dst_ss, tag);
                         Self::zero_result_origin(builder, *dst_ss);
-                        // `T or T`: either side is the value it observed.
+                        // `T or CasFailed<T>`: either side is the value it
+                        // observed, as bits at the payload's width.
                         let arm = Self::wrapper_arm(&wrapper, false).clone();
-                        Self::store_payload(builder, *dst_ss, &wrapper, &arm, observed);
+                        let offset = wrapper.payload_offset() as i32;
+                        Self::store_atomic_bits(builder, *dst_ss, offset, &arm, observed);
                         slot_already_written = true;
                     }
                     observed
                 }
-                CallAdapt::WordIntoAggregate => {
+                CallAdapt::AtomicBits => {
                     let results = builder.inst_results(call_inst);
-                    let word = if !results.is_empty() {
+                    let bits = if !results.is_empty() {
                         results[0]
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
+                    let dst_ty = dst_local.map(|l| l.ty.clone()).unwrap_or(MirType::I64);
                     if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                        builder.ins().stack_store(word, *ss, 0);
+                        Self::store_atomic_bits(builder, *ss, 0, &dst_ty, bits);
                         slot_already_written = true;
+                        bits
+                    } else {
+                        Self::from_atomic_bits(builder, bits, &dst_ty)
                     }
-                    word
                 }
                 CallAdapt::DerefStringElement => {
                     // void* pointing to aggregate data in collection.
@@ -8095,6 +8093,66 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// An atomic payload as the bits the runtime's cell takes: an integer
+    /// extended by its sign, a float or an aggregate as its raw bytes.
+    fn atomic_bits(builder: &mut ClifFunctionBuilder, val: Value, ty: Option<&MirType>, ctx: &CodegenCtx) -> Value {
+        let have = builder.func.dfg.value_type(val);
+        match ty {
+            Some(t) if t.passed_by_address() => {
+                let size = Self::resolve_type_alloc_size(t, ctx.struct_layouts, ctx.enum_layouts)
+                    .unwrap_or(t.size());
+                let int = Self::int_of_width(size);
+                let word = builder.ins().load(int, MemFlags::new(), val, 0);
+                if int == types::I64 { word } else { builder.ins().uextend(types::I64, word) }
+            }
+            _ if have == types::F32 => {
+                let b = builder.ins().bitcast(types::I32, MemFlags::new(), val);
+                builder.ins().uextend(types::I64, b)
+            }
+            _ if have == types::F64 => builder.ins().bitcast(types::I64, MemFlags::new(), val),
+            _ if have.is_int() && have.bits() < 64 => {
+                Self::convert_value(builder, val, have, types::I64, ty)
+            }
+            _ => val,
+        }
+    }
+
+    /// The bits an atomic handed back, as a value of `ty`.
+    fn from_atomic_bits(builder: &mut ClifFunctionBuilder, bits: Value, ty: &MirType) -> Value {
+        match mir_to_cranelift_type(ty) {
+            Ok(types::F32) => {
+                let b = builder.ins().ireduce(types::I32, bits);
+                builder.ins().bitcast(types::F32, MemFlags::new(), b)
+            }
+            Ok(types::F64) => builder.ins().bitcast(types::F64, MemFlags::new(), bits),
+            Ok(t) if t.is_int() && t.bits() < 64 => builder.ins().ireduce(t, bits),
+            _ => bits,
+        }
+    }
+
+    /// Store an atomic's bits into a slot as a `ty`, at the payload's width.
+    fn store_atomic_bits(builder: &mut ClifFunctionBuilder, slot: StackSlot, offset: i32, ty: &MirType, bits: Value) {
+        if ty.passed_by_address() {
+            let int = Self::int_of_width(ty.size());
+            let v = if int == types::I64 { bits } else { builder.ins().ireduce(int, bits) };
+            builder.ins().stack_store(v, slot, offset);
+        } else {
+            let v = Self::from_atomic_bits(builder, bits, ty);
+            builder.ins().stack_store(v, slot, offset);
+        }
+    }
+
+    /// The integer type exactly `size` bytes wide (an atomic payload is 1, 2,
+    /// 4 or 8).
+    fn int_of_width(size: u32) -> Type {
+        match size {
+            1 => types::I8,
+            2 => types::I16,
+            4 => types::I32,
+            _ => types::I64,
+        }
+    }
+
     /// Adapt stdlib call args for the typed runtime API.
     /// Looks up adaptation from the dispatch table, applies mechanically.
     /// Custom entries fall through to hand-written code.
@@ -8529,22 +8587,22 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // GA2: a word-sized struct is a legal payload, and the runtime's
-            // atomic is one machine word — so the struct travels *as* that
-            // word. Codegen hands aggregates around by address, so the value
-            // has to be loaded out of its storage first; storing the pointer
-            // instead made `Atomic<Slot>` an atomic pointer to a temporary, and
-            // the load read whatever that address held (mem.atomics).
-            "Atomic_new" | "Atomic_store" | "Atomic_swap" | "Atomic_load"
-            | "Atomic_take" | "Atomic_compare_exchange"
-            | "Atomic_compare_exchange_weak" => {
-                // Argument side: load the word out of an aggregate payload. The
-                // ordering arguments are plain integers and answer `false` to
-                // the aggregate question, so this can sweep every argument.
-                for i in 0..args.len().min(mir_args.len()) {
-                    let (size, is_aggregate) = Self::struct_elem_size(mir_args, i, ctx);
-                    if is_aggregate && size <= 8 {
-                        args[i] = builder.ins().load(types::I64, MemFlags::new(), args[i], 0);
+            // An atomic's payload crosses the call as its bits in a word: an
+            // integer extended by its sign, a float or a word-sized struct
+            // (GA2) as its raw bytes. A numeric conversion would hand the
+            // runtime 1 for 1.5, and a struct is held by address.
+            f if f.starts_with("Atomic_") => {
+                let values: &[usize] = match f {
+                    "Atomic_new" => &[0],
+                    "Atomic_compare_exchange" | "Atomic_compare_exchange_weak" => &[1, 2],
+                    "Atomic_store" | "Atomic_swap" => &[1],
+                    f if f.starts_with("Atomic_fetch_") => &[1],
+                    _ => &[],
+                };
+                for &i in values {
+                    if i < args.len() {
+                        let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
+                        args[i] = Self::atomic_bits(builder, args[i], ty.as_ref(), ctx);
                     }
                 }
                 if matches!(
@@ -8559,15 +8617,10 @@ impl<'a> FunctionBuilder<'a> {
                     args.push(builder.ins().stack_addr(types::I64, ss, 0));
                     return CallAdapt::CasResult(ss);
                 }
-                // Return side: a word going back into an aggregate destination.
-                let dst_is_aggregate = dst
-                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-                    .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
-                    .unwrap_or(false);
-                if dst_is_aggregate {
-                    CallAdapt::WordIntoAggregate
-                } else {
-                    CallAdapt::None
+                match func_name {
+                    "Atomic_load" | "Atomic_swap" | "Atomic_take" => CallAdapt::AtomicBits,
+                    f if f.starts_with("Atomic_fetch_") => CallAdapt::AtomicBits,
+                    _ => CallAdapt::None,
                 }
             }
 

@@ -922,7 +922,6 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
     ) -> Result<IterLoopSetup, LoweringError> {
         let (source_op, source_ty) = self.lower_expr(chain.source)?;
-        let is_array = matches!(&source_ty, MirType::Array { .. });
         let (array_len, array_elem_size) = match &source_ty {
             MirType::Array { elem, len } => (Some(*len), Some(elem.size())),
             _ => (None, None),
@@ -1073,13 +1072,13 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| self.collection_elem_of_expr(chain.source))
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:chain_elem"));
         let elem_local = self.builder.alloc_temp(elem_ty.clone());
-        if is_array {
+        if let Some(elem_size) = array_elem_size {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: elem_local,
                 rvalue: MirRValue::ArrayIndex {
                     base: MirOperand::Local(collection),
                     index: MirOperand::Local(idx),
-                    elem_size: array_elem_size.unwrap_or(8),
+                    elem_size,
                 },
             }));
         } else {
@@ -1141,7 +1140,7 @@ impl<'a> MirLowerer<'a> {
                         addr: tuple_local,
                         offset: 0,
                         value: MirOperand::Local(idx),
-                        store_size: Some(MirType::I64.size()),
+                        store_size: MirType::I64.size(),
                         field: None,
                     }));
                     // The element follows the index at its own alignment,
@@ -1150,7 +1149,7 @@ impl<'a> MirLowerer<'a> {
                         addr: tuple_local,
                         offset: MirType::I64.size(),
                         value: current_op,
-                        store_size: Some(self.aggregate_size(&current_ty)),
+                        store_size: self.aggregate_size(&current_ty),
                         field: None,
                     }));
                     current_op = MirOperand::Local(tuple_local);
@@ -2120,7 +2119,7 @@ impl<'a> MirLowerer<'a> {
                 addr: result_local,
                 offset,
                 value: op,
-                store_size: Some(elem_size),
+                store_size: elem_size,
                 field: None,
             }));
             offset += elem_size;

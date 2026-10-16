@@ -172,7 +172,7 @@ impl<'a> MirLowerer<'a> {
             None => self.resolved_err_type(inner, &result_ty),
         };
         // The error goes into the payload slot at its own size.
-        let err_store_size = Some(self.aggregate_size(&err_ty));
+        let err_store_size = self.aggregate_size(&err_ty);
         // ER31a only applies when the error leaves this function, so a `try`
         // caught by an enclosing `try { … } else` handler keeps its own type.
         let wrap = match &handler {
@@ -245,17 +245,17 @@ impl<'a> MirLowerer<'a> {
                     addr: wrapped,
                     offset: w.tag_offset,
                     value: MirOperand::Constant(MirConst::Int(w.tag)),
-                    store_size: Some(w.tag_bytes),
+                    store_size: w.tag_bytes,
                     field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: wrapped,
                     offset: w.payload_offset,
                     value: MirOperand::Local(err_val),
-                    store_size: w.payload_size.or(err_store_size),
+                    store_size: w.payload_size.unwrap_or(err_store_size),
                     field: None,
                 }));
-                (wrapped, Some(w.enum_ty.size()))
+                (wrapped, w.enum_ty.size())
             }
             None => (err_val, err_store_size),
         };
@@ -270,7 +270,7 @@ impl<'a> MirLowerer<'a> {
                     interface_name,
                 );
                 match boxed {
-                    MirOperand::Local(id) => (id, Some(boxed_ty.size())),
+                    MirOperand::Local(id) => (id, boxed_ty.size()),
                     _ => (err_val, err_store_size),
                 }
             }
@@ -373,7 +373,7 @@ impl<'a> MirLowerer<'a> {
             addr: ret_result,
             offset: crate::types::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(rask_mono::runtime_abi::RASK_TAG_ABSENT)),
-            store_size: Some(crate::types::TAG_BYTES),
+            store_size: crate::types::TAG_BYTES,
             field: None,
         }));
         // Origin (ER15): copy from source Result, then set if not already set.
@@ -431,17 +431,17 @@ impl<'a> MirLowerer<'a> {
             addr: ret_result,
             offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
             value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: Some(8),
+            store_size: 8,
             field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: crate::types::RESULT_ORIGIN_LINE_OFFSET,
             value: MirOperand::Local(origin_line_local),
-            store_size: Some(crate::types::RESULT_ORIGIN_LINE_BYTES),
+            store_size: crate::types::RESULT_ORIGIN_LINE_BYTES,
             field: None,
         }));
-        // Payload — use store_size for aggregates (strings are 16 bytes)
+        // Payload, at the error's own size (a string is 16 bytes).
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: ret_result_ty.payload_offset(),
@@ -467,9 +467,9 @@ impl<'a> MirLowerer<'a> {
     fn wrap_union_member(
         &mut self,
         err_val: crate::LocalId,
-        err_store_size: Option<u32>,
+        err_store_size: u32,
         err_ty: &MirType,
-    ) -> (crate::LocalId, Option<u32>) {
+    ) -> (crate::LocalId, u32) {
         let MirType::Result { err: ret_err, .. } = self.builder.ret_ty() else {
             return (err_val, err_store_size);
         };
@@ -489,7 +489,7 @@ impl<'a> MirLowerer<'a> {
         let slot = self.builder.alloc_temp(union_ty.clone());
         self.store_wrapper_tag(slot, &union_ty, index as i64);
         self.store_wrapper_payload(slot, &union_ty, MirOperand::Local(err_val), &member);
-        (slot, Some(union_ty.size()))
+        (slot, union_ty.size())
     }
 
     /// The Ok side of a `try`: read the payload and continue at `merge_block`.

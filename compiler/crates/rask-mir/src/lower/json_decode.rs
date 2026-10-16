@@ -203,7 +203,7 @@ impl<'a> MirLowerer<'a> {
                 addr: err_val,
                 offset: 0,
                 value: MirOperand::Local(msg),
-                store_size: Some(16),
+                store_size: 16,
                 field: None,
             }));
             return err_val;
@@ -229,14 +229,14 @@ impl<'a> MirLowerer<'a> {
                 addr: err_val,
                 offset: tag_offset,
                 value: MirOperand::Constant(MirConst::Int(*tag as i64)),
-                store_size: Some(tag_bytes),
+                store_size: tag_bytes,
                 field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: err_val,
                 offset: *payload_offset,
                 value: MirOperand::Local(msg),
-                store_size: Some(16),
+                store_size: 16,
                 field: None,
             }));
             self.builder
@@ -378,7 +378,7 @@ impl<'a> MirLowerer<'a> {
             addr: slot,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: Some(field.size),
+            store_size: field.size,
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
@@ -498,7 +498,7 @@ impl<'a> MirLowerer<'a> {
                 addr: buf,
                 offset: 0,
                 value: MirOperand::Local(value),
-                store_size: Some(8),
+                store_size: 8,
                 field: None,
             }));
             buf

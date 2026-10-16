@@ -64,7 +64,7 @@ pub fn container_free_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> Opt
         // release pointing at a block that is already gone — which is a worse
         // answer than the leak.
         "Random" => Some("rask_rng_free"),
-        "Atomic" => Some("rask_atomic_int_free"),
+        "Atomic" => Some("rask_atomic_free"),
         "cstring" => Some("rask_cstring_free"),
         _ => None,
     }

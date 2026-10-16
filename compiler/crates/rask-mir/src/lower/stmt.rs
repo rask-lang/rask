@@ -120,11 +120,11 @@ impl<'a> MirLowerer<'a> {
     /// anything not rooted at an aggregate local (pool index, Vec element,
     /// function result), which the caller lowers separately.
     /// Root local, byte offset, type at the end of the chain, and the layout's
-    /// byte size for that field (`None` at the root, which is the whole local).
+    /// byte size for that field (the whole local's at the root).
     pub(crate) fn lower_place_chain(
         &self,
         expr: &Expr,
-    ) -> Option<(crate::LocalId, u32, MirType, Option<u32>)> {
+    ) -> Option<(crate::LocalId, u32, MirType, u32)> {
         match &expr.kind {
             ExprKind::Ident(name) => {
                 let (id, ty) = self.locals.get(name).cloned()?;
@@ -133,7 +133,8 @@ impl<'a> MirLowerer<'a> {
                     // thing an aggregate local holds — so it roots a place chain
                     // the same way, and `n.field = v` is one store rather than a
                     // write into a copy.
-                    MirType::Struct(_) | MirType::Tuple(_) | MirType::Link(_) => Some((id, 0, ty, None)),
+                    MirType::Link(ref sid) => Some((id, 0, ty.clone(), sid.byte_size)),
+                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty.clone(), ty.size())),
                     _ => None,
                 }
             }
@@ -242,7 +243,7 @@ impl<'a> MirLowerer<'a> {
             let (off, fty, fsize) = self.field_offset_ty_size(&ty, field)?;
             offset += off;
             ty = fty;
-            size = fsize;
+            size = Some(fsize);
         }
         Some((offset, size?, ty))
     }
@@ -291,7 +292,7 @@ impl<'a> MirLowerer<'a> {
         &self,
         oty: &MirType,
         field: &str,
-    ) -> Option<(u32, MirType, Option<u32>)> {
+    ) -> Option<(u32, MirType, u32)> {
         // A link is the node's address, so a field through it projects exactly
         // as it would through an aggregate local — same base, same offsets.
         let oty = match oty {
@@ -302,9 +303,9 @@ impl<'a> MirLowerer<'a> {
             let layout = self.ctx.struct_layouts.get(*id as usize)?;
             let fl = layout.fields.iter().find(|f| f.name == *field)?;
             let ty = self.ctx.type_to_mir(&fl.ty);
-            return Some((fl.offset, ty, Some(fl.size)));
+            return Some((fl.offset, ty, fl.size));
         }
-        if let Some((_, ety, Some(off), fsize)) = Self::resolve_tuple_field(oty, field) {
+        if let Some((_, ety, Some(off), Some(fsize))) = Self::resolve_tuple_field(oty, field) {
             return Some((off, ety, fsize));
         }
         None
@@ -619,11 +620,9 @@ impl<'a> MirLowerer<'a> {
                         let store_through_ptr = scalar_mutate.is_some()
                             || (assigns_through && mutate_param_by_pointer(&dst_ty));
                         if store_through_ptr {
-                            let store_size = match (&scalar_mutate, &dst_ty) {
-                                (Some(sty), _) => Some(sty.size()),
-                                (None, MirType::Struct(layout)) => Some(layout.byte_size),
-                                (None, MirType::Enum(layout)) => Some(layout.byte_size),
-                                (None, _) => Some(dst_ty.size()),
+                            let store_size = match &scalar_mutate {
+                                Some(sty) => sty.size(),
+                                None => dst_ty.size(),
                             };
                             let _ = val_ty;
                             // What the caller's slot is about to lose. Same
@@ -862,7 +861,7 @@ impl<'a> MirLowerer<'a> {
                                             addr: tmp,
                                             offset,
                                             value: val_op,
-                                            store_size: Some(fsize),
+                                            store_size: fsize,
                                             field: slot,
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -877,21 +876,13 @@ impl<'a> MirLowerer<'a> {
                         }
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
                         let slot = self.field_slot_of(&obj_ty, field);
-                        let offset = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
-                            if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
-                                layout.fields.iter()
-                                    .find(|f| f.name == *field)
-                                    .map(|f| f.offset)
-                                    .unwrap_or(0)
-                            } else { 0 }
-                        } else if let Some((_, _, Some(bo), _)) = Self::resolve_tuple_field(&obj_ty, field) {
-                            bo
-                        } else {
-                            // Base is a raw pointer (I64/Ptr) — field offset unknown.
-                            // With correct element type tracking, pool[h] and pool.get(h)
-                            // return Struct-typed results so this path shouldn't fire
-                            // for pool operations.
-                            0
+                        // A base with no layout to say where the field is gets
+                        // no store. It used to get one at offset 0, over
+                        // whatever field sits there.
+                        let Some((offset, _, fsize)) = self.field_offset_ty_size(&obj_ty, field) else {
+                            return Err(LoweringError::InvalidConstruct(format!(
+                                "no layout for `.{field}` on a {obj_ty:?} to assign through"
+                            )));
                         };
                         let base_local = match obj_op {
                             MirOperand::Local(id) => id,
@@ -908,7 +899,7 @@ impl<'a> MirLowerer<'a> {
                             addr: base_local,
                             offset,
                             value: val_op,
-                            store_size: None,
+                            store_size: fsize,
                             field: slot,
                         }));
                     }
@@ -965,25 +956,23 @@ impl<'a> MirLowerer<'a> {
                                 tmp
                             }
                         };
-                        // How wide the write is, when the pointee says. A raw
-                        // pointer's MIR type is a bare `Ptr` — the pointee only
-                        // survives in the checker's type — so this was `None`
-                        // and codegen stored a whole word: `*p = i.wrap<u8>()`
-                        // through a `*u8` wrote eight bytes, clobbering the
-                        // seven after it and running off the end of the
-                        // allocation on the last one (#1128). Only the narrow
-                        // widths are named; a word or wider keeps the store it
-                        // already had.
-                        let store_size = self
+                        // As wide as the pointee. A raw pointer's MIR type is
+                        // a bare `Ptr` — the pointee only survives in the
+                        // checker's type — and a whole-word store through a
+                        // `*u8` clobbered the seven bytes after it, running
+                        // off the end of the allocation on the last one
+                        // (#1128).
+                        let pointee = self
                             .ctx
                             .lookup_raw_type(operand.id)
                             .and_then(|t| match t {
-                                rask_types::Type::RawPtr(inner) => {
-                                    Some(self.ctx.type_to_mir(inner).size())
-                                }
+                                rask_types::Type::RawPtr(inner) => Some(self.ctx.type_to_mir(inner)),
                                 _ => None,
                             })
-                            .filter(|w| matches!(w, 1 | 2 | 4));
+                            .or_else(|| place_ty.clone())
+                            .unwrap_or_else(|| val_ty.clone());
+                        let val_op = self.as_slot_value(val_op, &pointee);
+                        let store_size = pointee.size();
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: addr_local,
                             offset: 0,
@@ -1679,7 +1668,7 @@ impl<'a> MirLowerer<'a> {
                 addr: cell,
                 offset: 0,
                 value: init_op,
-                store_size: Some(var_ty.size()),
+                store_size: var_ty.size(),
                 field: None,
             }));
             return Ok(());
@@ -2553,14 +2542,14 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        if is_array {
+        if let Some(elem_size) = array_elem_size {
             // Fixed-size array: direct memory load
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: elem_slot,
                 rvalue: MirRValue::ArrayIndex {
                     base: MirOperand::Local(collection),
                     index: MirOperand::Local(idx),
-                    elem_size: array_elem_size.unwrap_or(8),
+                    elem_size,
                 },
             }));
         } else {

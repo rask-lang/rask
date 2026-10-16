@@ -263,7 +263,7 @@ impl MirType {
         }
     }
 
-    /// Byte size of this type. Structs/enums use pointer size as fallback.
+    /// Byte size of this type, as it sits in memory.
     pub fn size(&self) -> u32 {
         match self {
             MirType::Void => 0,

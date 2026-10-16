@@ -1201,6 +1201,24 @@ impl Interpreter {
                 }),
             };
         }
+        // Floats add, subtract and order as floats, on their own width's grid
+        // (GA3).
+        if let (Value::Float(a, fk), Value::Float(b, _)) = (old, operand) {
+            let (a, b) = (*a, *b);
+            let n = match method {
+                "fetch_add" => a + b,
+                "fetch_sub" => a - b,
+                "fetch_max" => a.max(b),
+                "fetch_min" => a.min(b),
+                _ => {
+                    return Err(RuntimeError::NoSuchMethod {
+                        ty: "Atomic<float>".to_string(),
+                        method: method.to_string(),
+                    })
+                }
+            };
+            return Ok(Value::Float(fk.round(n), *fk));
+        }
         let (Value::Int(a, kind), Value::Int(b, _)) = (old, operand) else {
             return Err(RuntimeError::TypeError(format!(
                 "`{}` needs a countable payload, found {}",
@@ -1209,6 +1227,9 @@ impl Interpreter {
             )));
         };
         let (a, b, kind) = (*a, *b, *kind);
+        // An unsigned payload orders unsigned: a `u64` above `i64::MAX` is
+        // held as a negative i64.
+        let less = |x: i64, y: i64| if kind.signed() { x < y } else { (x as u64) < (y as u64) };
         let n = match method {
             "fetch_add" => a.wrapping_add(b),
             "fetch_sub" => a.wrapping_sub(b),
@@ -1216,8 +1237,8 @@ impl Interpreter {
             "fetch_or" => a | b,
             "fetch_xor" => a ^ b,
             "fetch_nand" => !(a & b),
-            "fetch_max" => a.max(b),
-            "fetch_min" => a.min(b),
+            "fetch_max" => if less(a, b) { b } else { a },
+            "fetch_min" => if less(b, a) { b } else { a },
             _ => {
                 return Err(RuntimeError::NoSuchMethod {
                     ty: "Atomic".to_string(),
@@ -1225,7 +1246,9 @@ impl Interpreter {
                 })
             }
         };
-        Ok(Value::Int(n, kind))
+        // AT5 wraps at the payload's width, not at 64 bits: a `u8` at 250
+        // plus 10 holds 4.
+        Ok(Value::Int(kind.wrap(n), kind))
     }
 
     fn parse_ordering(

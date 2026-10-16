@@ -1650,41 +1650,39 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
     // ── Atomic operations ──────────────────────────────────
     // mem.atomics/GA1: `Atomic<T>` is the only spelling, so there is one set of
-    // rows. Every payload — every integer width, `bool`, a word-sized struct —
-    // is a machine word to the runtime, which is why one C implementation
-    // covers them: `_Atomic(int64_t)`. The eleven `AtomicU64`-style names the
-    // table used to carry are gone with the types.
-
-    // Custom throughout: a word-sized struct payload (GA2) arrives as an
-    // address and has to travel as the word itself.
+    // rows. The cell holds the payload at its own width and knows its kind
+    // (lowering passes both to `new`), and values cross the call as the
+    // payload's bits in an int64_t. Custom throughout: codegen turns a float
+    // or a struct into those bits and back, which a numeric conversion would
+    // get wrong.
     let atomic = |mir_name: &'static str, c_name: &'static str, params: &'static [types::Type], ret: Option<types::Type>| StdlibEntry {
         mir_name, c_name, params, ret_ty: ret, can_panic: false,
         arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
     };
-    entries.push(atomic("Atomic_new", "rask_atomic_int_new", &[types::I64], Some(types::I64)));
-    entries.push(StdlibEntry::simple("Atomic_default", "rask_atomic_int_default", &[], Some(types::I64), false));
-    entries.push(atomic("Atomic_load", "rask_atomic_int_load", &[types::I64, types::I64], Some(types::I64)));
-    entries.push(atomic("Atomic_store", "rask_atomic_int_store", &[types::I64, types::I64, types::I64], None));
-    entries.push(atomic("Atomic_swap", "rask_atomic_int_swap", &[types::I64, types::I64, types::I64], Some(types::I64)));
+    entries.push(atomic("Atomic_new", "rask_atomic_new", &[types::I64, types::I64, types::I64], Some(types::I64)));
+    entries.push(StdlibEntry::simple("Atomic_default", "rask_atomic_default", &[types::I64, types::I64], Some(types::I64), false));
+    entries.push(atomic("Atomic_load", "rask_atomic_load", &[types::I64, types::I64], Some(types::I64)));
+    entries.push(atomic("Atomic_store", "rask_atomic_store", &[types::I64, types::I64, types::I64], None));
+    entries.push(atomic("Atomic_swap", "rask_atomic_swap", &[types::I64, types::I64, types::I64], Some(types::I64)));
     entries.push(atomic(
-        "Atomic_compare_exchange", "rask_atomic_int_compare_exchange",
+        "Atomic_compare_exchange", "rask_atomic_compare_exchange",
         &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
     ));
     entries.push(atomic(
-        "Atomic_compare_exchange_weak", "rask_atomic_int_compare_exchange_weak",
+        "Atomic_compare_exchange_weak", "rask_atomic_compare_exchange_weak",
         &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
     ));
     for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
-        entries.push(StdlibEntry::simple(
+        entries.push(atomic(
             leak_str(&format!("Atomic_{}", op)),
-            leak_str(&format!("rask_atomic_int_{}", op)),
-            &[types::I64, types::I64, types::I64], Some(types::I64), false,
+            leak_str(&format!("rask_atomic_{}", op)),
+            &[types::I64, types::I64, types::I64], Some(types::I64),
         ));
     }
-    entries.push(atomic("Atomic_take", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
+    entries.push(atomic("Atomic_take", "rask_atomic_into_inner", &[types::I64], Some(types::I64)));
     // The ordinary drop. `into_inner` frees too and hands the value out with
     // it; this is for an atomic that just goes out of scope.
-    entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_int_free", &[types::I64], None, false));
+    entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_free", &[types::I64], None, false));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));

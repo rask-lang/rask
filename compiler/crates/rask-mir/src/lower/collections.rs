@@ -79,7 +79,7 @@ impl<'a> MirLowerer<'a> {
                 addr: arr_local,
                 offset: i as u32 * elem_size,
                 value: op,
-                store_size: Some(elem_size),
+                store_size: elem_size,
                 field: None,
             }));
         }
@@ -1078,7 +1078,7 @@ impl<'a> MirLowerer<'a> {
             addr: result,
             offset: 0,
             value: src.clone(),
-            store_size: Some(layout.size),
+            store_size: layout.size,
             field: None,
         }));
 
@@ -1162,7 +1162,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result,
                             offset: abs_offset,
                             value: MirOperand::Local(cloned),
-                            store_size: None,
+                            store_size: MirType::Ptr.size(),
                             field: None,
                         }));
                     }

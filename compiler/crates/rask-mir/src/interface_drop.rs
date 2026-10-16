@@ -857,7 +857,7 @@ mod tests {
                         addr: local(1),
                         offset: 0,
                         value: MirOperand::Local(local(0)),
-                        store_size: None,
+                        store_size: 16,
                         field: None,
                     }),
                 ],

@@ -364,7 +364,7 @@ impl<'a> MirLowerer<'a> {
                 addr: slot,
                 offset: 0,
                 value: MirOperand::Local(guard_local),
-                store_size: Some(size),
+                store_size: size,
                 field: None,
             }));
         }
@@ -609,7 +609,7 @@ impl<'a> MirLowerer<'a> {
                         addr: buf,
                         offset: 0,
                         value,
-                        store_size: Some(elem.size()),
+                        store_size: elem.size(),
                         field: None,
                     }));
                     probes.push(Probe::Send { tx, buf, arm: i });

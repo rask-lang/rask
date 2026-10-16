@@ -1536,27 +1536,35 @@ impl CodeGenerator {
     }
 
     /// Register a writable slot for each module-level const, found by scanning
-    /// MIR for the slot names lowering emitted. Each holds 8 bytes: the value
-    /// for scalars, a heap pointer for aggregates. An init thunk fills it once
+    /// MIR for the slot names lowering emitted. A slot is as big as what the
+    /// const's init thunk stores into it: the value for a scalar (an `i128`
+    /// is 16 bytes), a heap pointer for an aggregate. The thunk fills it once
     /// before main; every reference loads from it (#470).
     pub fn register_const_slots(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
-        let mut names: Vec<&str> = mir_functions
-            .iter()
-            .flat_map(|f| f.blocks.iter())
-            .flat_map(|b| b.statements.iter())
-            .filter_map(|s| match &s.kind {
-                rask_mir::MirStmtKind::GlobalRef { name, .. }
-                    if name.starts_with(rask_mir::lower::CONST_SLOT_PREFIX) =>
-                {
-                    Some(name.as_str())
+        use rask_mir::MirStmtKind;
+        let mut sizes: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+        for f in mir_functions {
+            let mut slot_of: HashMap<rask_mir::LocalId, &str> = HashMap::new();
+            for s in f.blocks.iter().flat_map(|b| b.statements.iter()) {
+                match &s.kind {
+                    MirStmtKind::GlobalRef { dst, name }
+                        if name.starts_with(rask_mir::lower::CONST_SLOT_PREFIX) =>
+                    {
+                        slot_of.insert(*dst, name.as_str());
+                        sizes.entry(name.as_str()).or_insert(0);
+                    }
+                    MirStmtKind::Store { addr, offset, store_size, .. } => {
+                        if let Some(name) = slot_of.get(addr) {
+                            let end = sizes.entry(name).or_insert(0);
+                            *end = (*end).max(offset + store_size);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => None,
-            })
-            .collect();
-        names.sort_unstable();
-        names.dedup();
+            }
+        }
 
-        for name in names {
+        for (name, size) in sizes {
             if self.comptime_data.contains_key(name) {
                 continue;
             }
@@ -1565,7 +1573,10 @@ impl CodeGenerator {
                 .declare_data(name, Linkage::Local, true, false)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             let mut desc = DataDescription::new();
-            desc.define_zeroinit(8);
+            let size = size.max(1);
+            desc.define_zeroinit(size as usize);
+            // A scalar's natural alignment is its size; a pointer's is 8.
+            desc.set_align(size.next_power_of_two().min(16) as u64);
             self.module
                 .define_data(data_id, &desc)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
