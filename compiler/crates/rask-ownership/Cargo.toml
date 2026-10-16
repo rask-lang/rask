@@ -8,4 +8,5 @@ edition.workspace = true
 rask-ast = { path = "../rask-ast" }
 rask-resolve = { path = "../rask-resolve" }
 rask-types = { path = "../rask-types" }
+rask-stdlib = { path = "../rask-stdlib" }
 thiserror.workspace = true

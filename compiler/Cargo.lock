@@ -1605,6 +1605,7 @@ version = "0.5.0"
 dependencies = [
  "rask-ast",
  "rask-resolve",
+ "rask-stdlib",
  "rask-types",
  "thiserror",
 ]

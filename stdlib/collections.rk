@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 /// A dynamic, growable array.
+@handle(release: "rask_vec_free")
 public struct Vec<T> { }
 
 extend Vec<T> {
@@ -512,6 +513,7 @@ extend ReserveError {
 }
 
 /// A hash map from keys to values.
+@handle(release: "rask_map_free")
 public struct Map<K, V> { }
 
 extend Map<K, V> {

@@ -547,6 +547,7 @@ Buffer implements Seeker {
 /// A file handle for reading and writing. A resource: every opened file is
 /// closed exactly once, and the compiler checks it.
 @resource
+@handle
 public struct File { }
 
 extend File {

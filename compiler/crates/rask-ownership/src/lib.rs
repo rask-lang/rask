@@ -4624,7 +4624,7 @@ impl<'a> OwnershipChecker<'a> {
                 let base_name = self.program.types.type_name(*base);
                 // The compiler-native generics have no fields to blame — same
                 // gap `is_copy` has to work around for the same reason.
-                if rask_types::TypeTable::is_native_opaque_generic(&base_name) {
+                if rask_stdlib::is_runtime_handle(&base_name) {
                     if matches!(base_name.as_str(), "Vec" | "Map") {
                         MoveReason::OwnsHeapMemory { type_name }
                     } else {

@@ -73,6 +73,7 @@ extend net {
 /// Declared here rather than only in the type registry: without a struct
 /// declaration, `self.accept_handle()` inside `extend TcpListener` mangled to
 /// `Self_accept_handle` and codegen couldn't find it.
+@handle
 public struct TcpListener { }
 
 extend TcpListener {
@@ -121,6 +122,7 @@ extend TcpListener {
 }
 
 /// A TCP connection (socket).
+@handle
 public struct TcpConnection { }
 
 extend TcpConnection {

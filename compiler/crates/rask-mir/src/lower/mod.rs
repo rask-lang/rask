@@ -946,7 +946,7 @@ impl<'a> MirContext<'a> {
             // type rather than a fact about a binding. The payload keeps its
             // container kind, since `drop` has to free what it points at.
             ("Heap", [inner]) => MirType::Heap(Box::new(self.payload_of_expr(inner))),
-            ("Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared", _) => MirType::Ptr,
+            (head, _) if lowers_to_ptr(head) => MirType::Ptr,
             _ => {
                 // A generic instantiation whose type argument is an inline
                 // aggregate has a layout of its own, not found under the base
@@ -998,7 +998,7 @@ impl<'a> MirContext<'a> {
             }
         }
         match name {
-            "Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared" => MirType::Ptr,
+            name if lowers_to_ptr(name) => MirType::Ptr,
             _ => {
                 // An instantiation whose argument is an inline aggregate has a
                 // layout of its own, not found under the base name (#781).
@@ -1071,7 +1071,7 @@ impl<'a> MirContext<'a> {
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
-            "Vec" | "Map" | "Rack" => MirType::Ptr,
+            name if lowers_to_ptr(name) => MirType::Ptr,
             _ => {
                 // A nominal newtype has no layout — it is whatever it wraps.
                 if let Some(underlying) = self.nominal_underlying.get(name) {
@@ -7756,4 +7756,14 @@ mod tests {
         assert!(!find_call(&f, "rask_threadpool_init"), "Unknown context should not start a pool");
         assert!(find_call(&f, "work"));
     }
+}
+
+/// A runtime handle is one word, a pointer.
+///
+/// Workaround: `Handle` stays an `i64`. As a pointer, a `Handles` that
+/// `detach(take self)` has taken is no longer released again by its caller,
+/// and that stray release is all that frees the nodes `Handles` drains with
+/// `rest = *next` (#1585).
+fn lowers_to_ptr(name: &str) -> bool {
+    name != "Handle" && rask_stdlib::is_runtime_handle(name)
 }

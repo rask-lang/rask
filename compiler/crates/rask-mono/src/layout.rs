@@ -275,15 +275,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "u64" => scalar_by_name(&Type::U64),
                 "f64" => scalar_by_name(&Type::F64),
                 "char" => scalar_by_name(&Type::Char),
-                // Stdlib types backed by opaque runtime pointers
-                "TcpListener" | "TcpConnection" | "File" | "Handle"
-                | "Sender" | "Receiver" | "ThreadPool"
-                | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder"
-                // `cstring` is the malloc'd NUL-terminated buffer itself, so
-                // the handle *is* the `const char*` C receives (#949). Without
-                // a line here its empty declaration sized it at zero and every
-                // call returning one gave MIR nothing to work out a type from.
-                | "cstring" => (8, 8),
+                // One word: the address of storage the runtime made. Its
+                // declaration has no fields, so the layout cache says zero.
+                name if rask_stdlib::is_runtime_handle(name) => (8, 8),
                 // A word, but not for the reason the line above is: these two
                 // are an `int64_t` of nanoseconds in the runtime, not a pointer
                 // to anything. Their Rask declarations are empty structs, so
@@ -292,37 +286,15 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 // field no room at all (#924).
                 "Duration" | "Instant" => (8, 8),
                 _ => {
-                    // Look up user-defined types from the layout cache first — a user
-                    // struct can be named the same as a builtin container (e.g. `Wide`),
-                    // and its real, cached size must win over the builtin guess below.
-                    //
-                    // Except a zero. A container's stdlib declaration is an empty
-                    // struct standing in for an opaque runtime pointer, so the
-                    // cache reports `Vec` as nothing at all — and a `Vec<i64>?`
-                    // type argument, whose name loses its `<i64>` on the way here,
-                    // sized as one byte of tag with no payload. The instance
-                    // layout then came out smaller than the shared one, was
-                    // dropped as pointless, and the struct literal wrapped its
-                    // field against the shared layout's placeholder: a bare `Vec`
-                    // stored where a `Vec?` goes, tag never written, and the read
-                    // came back `none` (#1081). No user struct is zero-sized *and*
-                    // named after a container, so this costs nothing.
-                    let cached_size = cache
-                        .get(name.as_str())
-                        .filter(|(size, _)| *size > 0 || !is_opaque_container_name(name));
+                    // A declared type's layout. A handle never gets here: its
+                    // declaration is empty, so the cache would say zero for
+                    // `Vec` (#1081).
+                    let cached_size = cache.get(name.as_str());
                     if let Some(&cached) = cached_size {
                         cached
                     } else if is_typevar_name(name) {
                         // Unsubstituted type parameter — pointer-sized fallback,
                         // silent because mono always picks a concrete size on real call sites.
-                        (8, 8)
-                    } else if matches!(name.as_str(),
-                        // Generic containers/boxes written without their type args (e.g. a
-                        // type alias target like `type Counts = Map`) arrive here as a bare
-                        // name instead of `UnresolvedGeneric` — same opaque-pointer types as
-                        // the `UnresolvedGeneric` arm above, just missing their `<...>`.
-                        "Vec" | "Map"
-                        | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
@@ -534,31 +506,12 @@ pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&st
 }
 
 /// A builtin generic that is one pointer whatever its arguments are: a
-/// collection or box is a handle to runtime storage, a link is the node's
-/// address, a rack a pointer to its slab.
+/// runtime handle (`rask_stdlib::handles`).
 ///
 /// Laying out a type that holds one never needs its arguments' layouts, so
 /// `Vec<Expr>` inside `Wrapped` doesn't make `Wrapped` wait for `Expr`.
 pub(crate) fn generic_is_one_word(name: &str) -> bool {
-    matches!(
-        name,
-        "Link" | "Rack" | "Vec" | "Map" | "Random" | "Channel"
-            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
-            | "Sender" | "Receiver" | "Handle"
-    )
-}
-
-/// A builtin container or box, written without its type arguments.
-///
-/// Each is an opaque runtime pointer whose Rask declaration is an empty struct,
-/// so the layout cache holds a zero for it that isn't the truth.
-fn is_opaque_container_name(name: &str) -> bool {
-    matches!(
-        name,
-        "Vec" | "Map" | "Set" | "Rack" | "Link"
-            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
-            | "Sender" | "Receiver"
-    )
+    rask_stdlib::is_runtime_handle(name)
 }
 
 /// A type argument that owns storage of its own.
@@ -574,7 +527,7 @@ fn is_opaque_container_name(name: &str) -> bool {
 /// `string` argument is not here and doesn't need to be — a string is
 /// refcounted, so the frame's own name gives it back.
 pub fn arg_owns_storage(name: &str) -> bool {
-    is_opaque_container_name(name) || matches!(name, "Random" | "cstring" | "StringBuilder")
+    rask_stdlib::is_runtime_handle(name)
 }
 
 /// Check whether a struct has `@layout(C)` attribute.

@@ -86,6 +86,11 @@ fn stub_file_id(index: usize) -> u16 {
 /// resolver's symbol for `cancelled` and the checker's declaration of it agree on
 /// which node they mean. They used to be six separate parses, each numbering
 /// from its own base.
+/// Every stdlib declaration as parsed, in source order.
+pub(crate) fn parsed_decls() -> impl Iterator<Item = &'static Decl> {
+    parsed_stdlib().iter().flatten().flatten()
+}
+
 fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
     static PARSED: OnceLock<Vec<Option<Vec<Decl>>>> = OnceLock::new();
     PARSED.get_or_init(|| {

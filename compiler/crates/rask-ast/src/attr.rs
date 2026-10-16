@@ -71,6 +71,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm)] = &[
     // Stdlib declarations: structural effects (comp.advanced/EF1)
     ("grows", ArgForm::Exprs),
     ("shrinks", ArgForm::Exprs),
+    // Stdlib declarations: a one-word value the runtime owns the storage of
+    ("handle", ArgForm::Exprs),
     // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs),
     // Comptime

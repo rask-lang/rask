@@ -3,6 +3,7 @@
 /// Arena of nodes whose incoming edges are fixed when a node is deleted.
 /// `delete` walks every edge pointing at the dying node and sets it to `none`,
 /// so a dead link never exists to be checked.
+@handle(release: "rask_rack_free")
 public struct Rack<T> { }
 
 /// One edge to a node in a `Rack<T>`.
@@ -10,6 +11,7 @@ public struct Rack<T> { }
 /// A link is a reference, not a ticket: `l.field` reads the node with no
 /// generation check and no `using` context. An edge that can die is declared
 /// `Link<T>?` and becomes `none` at the moment its target is deleted.
+@handle
 public struct Link<T> { }
 
 extend Rack<T> {

@@ -27,6 +27,7 @@ extend random {
 }
 
 /// Random number generator.
+@handle(release: "rask_rng_free")
 public struct Random { }
 
 extend Random {

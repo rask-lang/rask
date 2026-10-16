@@ -34,43 +34,20 @@ pub fn container_free_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> Opt
         return Some("rask_closure_free");
     }
     match ty.head_name(names)? {
-        "Vec" => Some("rask_vec_free"),
-        // A map's tables are the same shape of ownership as a vector's buffer,
-        // and 72 suite files were leaking one: `Set<T>` is a struct holding a
-        // `Map<T, bool>`, so every set leaked its map too.
-        "Map" => Some("rask_map_free"),
-        // A rack owns its nodes' lifetime and a pool owns its slots
-        // (mem.racks/RK1), so whoever owns the arena frees it. A local already
-        // did; a *field* didn't, so every struct with a rack in it leaked the
-        // arena and everything in it — 252 allocations across six suite files,
-        // `p12_rack_link_churn.rk` alone 128.
-        //
-        // The links and handles that outlive a field read don't change that:
-        // they can't outlive the struct that holds the arena, and this release
-        // runs where that struct dies.
-        "Rack" => Some("rask_rack_free"),
         // A box in a field. The release is a decrement, so it is right whether
         // or not somebody else still holds one — which is what makes a box safe
         // to hand to a task and still free here.
-        "Shared" | "Cell" | "Mutex" => Some(box_release_for(ty, names)),
-        // One-word handles onto a heap block the runtime made. Not containers —
-        // they hold no elements — but the same ownership: the field owns the
-        // block, and nothing else was going to give it back. `Random.from_seed`
-        // in a struct field leaked its state on every construction, and an
-        // `Atomic` counter in one leaked eight bytes.
-        //
-        // `StringBuilder` is deliberately not here. `build()` takes the builder
-        // away, so a builder reached through a field and built would leave this
-        // release pointing at a block that is already gone — which is a worse
-        // answer than the leak.
-        "Random" => Some("rask_rng_free"),
-        "Atomic" => Some("rask_atomic_free"),
-        "cstring" => Some("rask_cstring_free"),
-        _ => None,
+        "Shared" => Some(box_release_for(ty, names)),
+        // Every other handle names its release on its declaration
+        // (`@handle(release: …)`). A container's buffer, a rack's arena, a
+        // `Random`'s state: the field owns the block, and nothing else was
+        // going to give it back. One without a release is closed explicitly
+        // or doesn't own what it points at.
+        head => rask_stdlib::runtime_handle(head)?.release,
     }
 }
 
-/// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs.
+/// Which of the three box releases a `Shared` field needs.
 ///
 /// Each strategy builds its own runtime object: `Shared<T, Local>` is a cell,
 /// `Shared<T, Mutex>` is a mutex, and a bare `Shared<T>` is `Readers`
@@ -83,9 +60,9 @@ pub fn box_release_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> &'stat
         },
         _ => None,
     };
-    match (ty.head_name(names), strategy) {
-        (Some("Cell"), _) | (_, Some("Local")) => "rask_cell_free",
-        (Some("Mutex"), _) | (_, Some("Mutex")) => "rask_mutex_drop",
+    match strategy {
+        Some("Local") => "rask_cell_free",
+        Some("Mutex") => "rask_mutex_drop",
         _ => "rask_shared_drop_i64",
     }
 }
