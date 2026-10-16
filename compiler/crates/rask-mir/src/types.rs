@@ -486,3 +486,35 @@ pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
         other => other.size() > 8 || other.wrapper_layout().is_some(),
     }
 }
+
+/// Each struct field's and each enum variant field's MIR type, indexed the way
+/// the layouts are: `structs[layout id][field]` and
+/// `variants[layout id][variant][field]`.
+///
+/// A layout carries its fields' *checker* types, and codegen has no way to turn
+/// those into MIR types. Its ownership walks used to keep a second, checker-typed
+/// copy of every arm for the fields of a struct or a variant, and the copy was
+/// missing arms the MIR walk had: a tuple, a closure or an optional field was
+/// never released. Lowering computes these once, with the same conversion every
+/// other MIR type comes from.
+#[derive(Debug, Clone, Default)]
+pub struct FieldTypes {
+    pub structs: Vec<Vec<MirType>>,
+    pub variants: Vec<Vec<Vec<MirType>>>,
+}
+
+impl FieldTypes {
+    /// The fields of struct layout `id`, in layout order. Empty when the table
+    /// doesn't cover it.
+    pub fn struct_fields(&self, id: u32) -> &[MirType] {
+        self.structs.get(id as usize).map_or(&[], Vec::as_slice)
+    }
+
+    /// The fields of variant `variant` of enum layout `id`, in layout order.
+    pub fn variant_fields(&self, id: u32, variant: usize) -> &[MirType] {
+        self.variants
+            .get(id as usize)
+            .and_then(|v| v.get(variant))
+            .map_or(&[], Vec::as_slice)
+    }
+}

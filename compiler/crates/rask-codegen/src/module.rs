@@ -79,6 +79,8 @@ pub struct CodeGenerator {
     source_file_name: Option<String>,
     /// DI5: inline region metadata from the inlining pass (caller name → regions)
     inline_regions: HashMap<String, Vec<rask_mir::InlineRegion>>,
+    /// Each layout's field types as MIR types, from lowering.
+    field_types: rask_mir::FieldTypes,
 }
 
 impl CodeGenerator {
@@ -135,6 +137,7 @@ impl CodeGenerator {
             line_map: None,
             source_file_name: None,
             inline_regions: HashMap::new(),
+            field_types: rask_mir::FieldTypes::default(),
         })
     }
 
@@ -204,6 +207,7 @@ impl CodeGenerator {
             line_map: None,
             source_file_name: None,
             inline_regions: HashMap::new(),
+            field_types: rask_mir::FieldTypes::default(),
         })
     }
 
@@ -220,6 +224,13 @@ impl CodeGenerator {
     /// Call before gen_function() in debug builds.
     pub fn set_inline_regions(&mut self, regions: HashMap<String, Vec<rask_mir::InlineRegion>>) {
         self.inline_regions = regions;
+    }
+
+    /// Each layout's field types as MIR types (`MirContext::field_types`), for
+    /// the walks over what a struct or a variant owns. Call before
+    /// gen_function().
+    pub fn set_field_types(&mut self, field_types: rask_mir::FieldTypes) {
+        self.field_types = field_types;
     }
 
     /// Declare runtime functions as external imports.
@@ -1742,14 +1753,22 @@ impl CodeGenerator {
 
         // Every offset list this function's container frees will ask for. Has
         // to happen before the borrow below, and before any body references one.
-        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts, &self.type_names) {
-            self.register_element_offsets(&offsets)?;
-        }
+        //
         // And one per `Heap<T>` field anywhere in the program. Not per function:
         // which frames release which aggregate is the release walk's business,
         // and the walk asks for the list by its contents — so the list has to
         // already be data. Registering is idempotent and the set is tiny.
-        for offsets in collect_heap_descriptors(&self.struct_layouts, &self.enum_layouts, &self.type_names) {
+        let lists: Vec<Vec<i32>> = {
+            let shapes = crate::elem_offsets::Shapes {
+                layouts: &self.struct_layouts,
+                enums: &self.enum_layouts,
+                fields: &self.field_types,
+            };
+            let mut lists = collect_element_offsets(mir_fn, shapes);
+            lists.extend(collect_heap_descriptors(shapes));
+            lists
+        };
+        for offsets in lists {
             self.register_element_offsets(&offsets)?;
         }
 
@@ -1862,6 +1881,7 @@ impl CodeGenerator {
             builder.set_line_map(lm);
         }
         builder.set_c_abi_args(&self.c_abi_args);
+        builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);
         }
@@ -2286,19 +2306,14 @@ impl crate::Backend for CodeGenerator {
 /// Keyed by the list's own contents, the way every other offset list is, so the
 /// release walk finds it again by calling `heap_field_descriptor` on the field
 /// it is looking at.
-fn collect_heap_descriptors(
-    struct_layouts: &[rask_mono::StructLayout],
-    enum_layouts: &[rask_mono::EnumLayout],
-    names: &HashMap<rask_types::TypeId, String>,
-) -> Vec<Vec<i32>> {
+fn collect_heap_descriptors(shapes: crate::elem_offsets::Shapes<'_>) -> Vec<Vec<i32>> {
+    let (struct_layouts, enum_layouts) = (shapes.layouts, shapes.enums);
     let mut out: Vec<Vec<i32>> = Vec::new();
-    let mut take = |ty: &rask_types::Type, out: &mut Vec<Vec<i32>>| {
+    let take = |ty: &rask_types::Type, out: &mut Vec<Vec<i32>>| {
         if !crate::elem_offsets::is_heap_field(ty) {
             return;
         }
-        if let Some(d) =
-            crate::elem_offsets::heap_field_descriptor(ty, struct_layouts, enum_layouts, names)
-        {
+        if let Some(d) = crate::elem_offsets::heap_field_descriptor(ty, shapes) {
             if !out.contains(&d) {
                 out.push(d);
             }
@@ -2324,9 +2339,7 @@ fn collect_heap_descriptors(
 /// data objects have to exist before any function body references one.
 fn collect_element_offsets(
     mir_fn: &MirFunction,
-    struct_layouts: &[rask_mono::StructLayout],
-    enum_layouts: &[rask_mono::EnumLayout],
-    names: &HashMap<rask_types::TypeId, String>,
+    shapes: crate::elem_offsets::Shapes<'_>,
 ) -> Vec<Vec<i32>> {
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
@@ -2340,9 +2353,7 @@ fn collect_element_offsets(
                     .chain(mir_fn.params.iter())
                     .find(|l| l.id == *local)
                     .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()));
-                if let Some(offs) = ty.and_then(|t| {
-                    crate::elem_offsets::owned_offsets(&t, struct_layouts, enum_layouts, names)
-                }) {
+                if let Some(offs) = ty.and_then(|t| crate::elem_offsets::owned_offsets(&t, shapes)) {
                     lists.push(offs);
                 }
                 continue;
@@ -2357,9 +2368,7 @@ fn collect_element_offsets(
                 else {
                     continue;
                 };
-                if let Some(offs) = crate::elem_offsets::owned_offsets(
-                    ty, struct_layouts, enum_layouts, names,
-                ) {
+                if let Some(offs) = crate::elem_offsets::owned_offsets(ty, shapes) {
                     lists.push(offs);
                 }
             }

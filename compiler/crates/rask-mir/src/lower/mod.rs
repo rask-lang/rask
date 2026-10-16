@@ -1257,6 +1257,29 @@ impl<'a> MirContext<'a> {
     /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
     /// what it is instead of collapsing to a bare pointer — see
     /// `MirType::Container`.
+    /// Every layout's field types as MIR types, for codegen's walks over a
+    /// struct's or a variant's fields.
+    ///
+    /// An instance layout's type-parameter field carries the substituted type,
+    /// so it converts like any other field. A shared layout's still names the
+    /// parameter, which resolves to no layout and comes out a bare word that
+    /// owns nothing.
+    pub fn field_types(&self) -> crate::FieldTypes {
+        let field = |f: &rask_mono::FieldLayout| self.payload_to_mir(&f.ty);
+        crate::FieldTypes {
+            structs: self
+                .struct_layouts
+                .iter()
+                .map(|l| l.fields.iter().map(field).collect())
+                .collect(),
+            variants: self
+                .enum_layouts
+                .iter()
+                .map(|l| l.variants.iter().map(|v| v.fields.iter().map(field).collect()).collect())
+                .collect(),
+        }
+    }
+
     pub fn payload_to_mir(&self, ty: &Type) -> MirType {
         let mir = self.type_to_mir(ty);
         if mir != MirType::Ptr {

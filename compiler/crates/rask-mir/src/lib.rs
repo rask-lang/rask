@@ -46,7 +46,7 @@ pub use rask_ast::expr::ConvertKind;
 pub use stmt::{lay_out_captures, CaptureAccess, ClosureCapture, FieldSlot, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
 pub use lower::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt, folded_symbol};
 pub use program::MirProgram;
-pub use types::{spawn_payload_is_boxed, tuple_offsets, ContainerKind, MirType, StructLayoutId, EnumLayoutId};
+pub use types::{spawn_payload_is_boxed, tuple_offsets, ContainerKind, FieldTypes, MirType, StructLayoutId, EnumLayoutId};
 
 /// The runtime entries a task block's closure is handed to (`lower_spawn`):
 /// a green task, an OS thread, a pool job. Each keeps the closure and frees it

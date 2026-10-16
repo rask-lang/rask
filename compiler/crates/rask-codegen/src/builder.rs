@@ -221,17 +221,12 @@ struct CodegenCtx<'a> {
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
     c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
+    /// Each layout's field types as MIR types (`MirContext::field_types`).
+    field_types: &'a rask_mir::FieldTypes,
     /// The frame's unwind record (ctrl.panic/U6), when it owns anything a
     /// panic would have to release: `[next | run | slot…]`, pushed on entry
     /// and popped before every return.
     unwind_rec: Option<StackSlot>,
-}
-
-/// How to compare one slot of an aggregate. Struct and enum-payload fields
-/// carry a Rask type from the layout; tuple and array elements carry a MIR one.
-enum FieldKind {
-    Rask(RaskType, u32),
-    Mir(MirType),
 }
 
 /// Result of adapting a stdlib call for the typed runtime API.
@@ -350,6 +345,9 @@ pub struct FunctionBuilder<'a> {
     /// C functions taking a struct by value, and how each argument goes.
     c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
 
+    /// Each layout's field types as MIR types, for the ownership walks.
+    field_types: &'a rask_mir::FieldTypes,
+
     /// `rask_preempt_requested`, when the runtime provides it. Every function
     /// entry and loop back-edge checks it (conc.runtime/P3).
     preempt_flag: Option<GlobalValue>,
@@ -358,6 +356,21 @@ pub struct FunctionBuilder<'a> {
 /// No C function in this program takes a struct by value.
 static NO_C_ABI_ARGS: std::sync::LazyLock<HashMap<String, Vec<crate::c_abi::CArg>>> =
     std::sync::LazyLock::new(HashMap::new);
+
+impl<'a> CodegenCtx<'a> {
+    /// The layouts and their field types, for `elem_offsets`.
+    fn shapes(&self) -> crate::elem_offsets::Shapes<'a> {
+        crate::elem_offsets::Shapes {
+            layouts: self.struct_layouts,
+            enums: self.enum_layouts,
+            fields: self.field_types,
+        }
+    }
+}
+
+/// No field types: a builder that wasn't handed lowering's table.
+static NO_FIELD_TYPES: rask_mir::FieldTypes =
+    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new() };
 
 impl<'a> FunctionBuilder<'a> {
     pub fn new(
@@ -404,8 +417,14 @@ impl<'a> FunctionBuilder<'a> {
             line_map: None,
             adapt_table: crate::dispatch::build_adapt_table(),
             c_abi_args: &NO_C_ABI_ARGS,
+            field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
         })
+    }
+
+    /// Each layout's field types as MIR types (`MirContext::field_types`).
+    pub fn set_field_types(&mut self, field_types: &'a rask_mir::FieldTypes) {
+        self.field_types = field_types;
     }
 
     /// Check for preemption at function entry and on loop back-edges.
@@ -690,6 +709,7 @@ impl<'a> FunctionBuilder<'a> {
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
+            field_types: self.field_types,
             unwind_rec: None,
         };
         // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
@@ -3747,17 +3767,22 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         // Snapshot field descriptors so no borrow of `ctx` is held across the
         // recursive field comparisons (which also read `ctx`).
-        let fields: Vec<(u32, RaskType, u32)> = {
+        let fields: Vec<(u32, MirType)> = {
             let layout = ctx.struct_layouts.get(idx).ok_or_else(|| {
                 CodegenError::UnsupportedFeature("struct layout missing for equality".into())
             })?;
-            layout.fields.iter().map(|f| (f.offset, f.ty.clone(), f.size)).collect()
+            layout
+                .fields
+                .iter()
+                .zip(ctx.field_types.struct_fields(idx as u32))
+                .map(|(f, ty)| (f.offset, ty.clone()))
+                .collect()
         };
         let mut acc = builder.ins().iconst(types::I8, 1);
-        for (off, fty, sz) in fields {
+        for (off, fty) in fields {
             let l = builder.ins().iadd_imm(lhs, off as i64);
             let r = builder.ins().iadd_imm(rhs, off as i64);
-            let feq = Self::emit_field_eq_rask(builder, ctx, l, r, &fty, sz)?;
+            let feq = Self::emit_field_eq_mir(builder, ctx, l, r, &fty)?;
             acc = builder.ins().band(acc, feq);
         }
         Ok(acc)
@@ -3808,21 +3833,20 @@ impl<'a> FunctionBuilder<'a> {
         rhs: Value,
         idx: usize,
     ) -> CodegenResult<Value> {
-        // (tag value, payload offset, [(field offset, field type, field size)])
-        let (tag_off, variants): (i32, Vec<(u64, u32, Vec<(u32, RaskType, u32)>)>) = {
+        // (tag value, payload offset, [(field offset, field type)])
+        let variants: Vec<(u64, u32, Vec<(u32, MirType)>)> = {
             let layout = ctx.enum_layouts.get(idx).ok_or_else(|| {
                 CodegenError::UnsupportedFeature("enum layout missing for equality".into())
             })?;
-            let vs = layout.variants.iter().map(|v| {
+            layout.variants.iter().enumerate().map(|(i, v)| {
                 let fields = v.fields.iter()
-                    .map(|f| (f.offset, f.ty.clone(), f.size))
+                    .zip(ctx.field_types.variant_fields(idx as u32, i))
+                    .map(|(f, ty)| (f.offset, ty.clone()))
                     .collect::<Vec<_>>();
                 (v.tag, v.payload_offset, fields)
-            }).collect();
-            (layout.tag_offset as i32, vs)
+            }).collect()
         };
 
-        let _ = tag_off;
         let tag_l = Self::load_enum_tag(builder, ctx, lhs, idx);
         let tag_r = Self::load_enum_tag(builder, ctx, rhs, idx);
         let tags_eq = builder.ins().icmp(IntCC::Equal, tag_l, tag_r);
@@ -3855,11 +3879,11 @@ impl<'a> FunctionBuilder<'a> {
             builder.switch_to_block(var_block);
             builder.seal_block(var_block);
             let mut acc = builder.ins().iconst(types::I8, 1);
-            for (foff, fty, sz) in fields {
+            for (foff, fty) in fields {
                 let field_off = (*poff + *foff) as i64;
                 let l = builder.ins().iadd_imm(lhs, field_off);
                 let r = builder.ins().iadd_imm(rhs, field_off);
-                let feq = Self::emit_field_eq_rask(builder, ctx, l, r, fty, *sz)?;
+                let feq = Self::emit_field_eq_mir(builder, ctx, l, r, fty)?;
                 acc = builder.ins().band(acc, feq);
             }
             builder.ins().jump(merge, &[acc]);
@@ -3934,50 +3958,6 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    fn emit_field_eq_rask(
-        builder: &mut ClifFunctionBuilder,
-        ctx: &CodegenCtx,
-        lhs: Value,
-        rhs: Value,
-        ty: &RaskType,
-        size: u32,
-    ) -> CodegenResult<Value> {
-        match ty {
-            RaskType::F32 | RaskType::F64 => {
-                let lty = Self::field_scalar_type(true, size);
-                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
-                Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
-            }
-            RaskType::Bool
-            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
-            | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64
-            | RaskType::Char => {
-                let lty = Self::field_scalar_type(false, size);
-                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
-                Ok(builder.ins().icmp(IntCC::Equal, a, b))
-            }
-            RaskType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
-            // Nested struct or enum — look it up by name and recurse.
-            RaskType::UnresolvedNamed(name) => {
-                if let Some(sidx) = ctx.struct_layouts.iter().position(|l| l.name == *name) {
-                    Self::emit_struct_eq(builder, ctx, lhs, rhs, sidx)
-                } else if let Some(eidx) = ctx.enum_layouts.iter().position(|l| l.name == *name) {
-                    Self::emit_enum_eq(builder, ctx, lhs, rhs, eidx)
-                } else {
-                    // Opaque named type (runtime pointer) — compare the slot.
-                    Ok(Self::emit_bytes_eq(builder, lhs, rhs, size))
-                }
-            }
-            // Tuples/arrays/options/opaque pointers: the field occupies exactly
-            // `size` bytes and equal values produce identical bytes, so a byte
-            // compare is a safe default. Heap contents nested here aren't
-            // content-compared yet.
-            _ => Ok(Self::emit_bytes_eq(builder, lhs, rhs, size)),
-        }
-    }
-
     /// Aggregate types with a defined ordering: structs lexicographically by
     /// declaration order (CO3), enums by variant order then payload (CO1),
     /// tuples and arrays elementwise. Unions have no active-variant tag, so
@@ -4016,7 +3996,7 @@ impl<'a> FunctionBuilder<'a> {
                 for e in &elems {
                     let align = e.align().max(1);
                     offset = (offset + align - 1) & !(align - 1);
-                    parts.push((offset as i64, FieldKind::Mir(e.clone())));
+                    parts.push((offset as i64, e.clone()));
                     offset += e.size();
                 }
                 Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)
@@ -4024,7 +4004,7 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Array { elem, len } => {
                 let stride = elem.size();
                 let parts = (0..*len)
-                    .map(|i| ((i * stride) as i64, FieldKind::Mir((**elem).clone())))
+                    .map(|i| ((i * stride) as i64, (**elem).clone()))
                     .collect::<Vec<_>>();
                 Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)
             }
@@ -4044,12 +4024,13 @@ impl<'a> FunctionBuilder<'a> {
         rhs: Value,
         idx: usize,
     ) -> CodegenResult<Value> {
-        let parts: Vec<(i64, FieldKind)> = {
+        let parts: Vec<(i64, MirType)> = {
             let layout = ctx.struct_layouts.get(idx).ok_or_else(|| {
                 CodegenError::UnsupportedFeature("struct layout missing for ordering".into())
             })?;
             layout.fields.iter()
-                .map(|f| (f.offset as i64, FieldKind::Rask(f.ty.clone(), f.size)))
+                .zip(ctx.field_types.struct_fields(idx as u32))
+                .map(|(f, ty)| (f.offset as i64, ty.clone()))
                 .collect()
         };
         Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)
@@ -4062,21 +4043,16 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
         lhs: Value,
         rhs: Value,
-        parts: &[(i64, FieldKind)],
+        parts: &[(i64, MirType)],
     ) -> CodegenResult<Value> {
         let merge = builder.create_block();
         builder.append_block_param(merge, types::I64);
 
         let mut pending = Vec::new();
-        for (off, kind) in parts {
+        for (off, ty) in parts {
             let l = builder.ins().iadd_imm(lhs, *off);
             let r = builder.ins().iadd_imm(rhs, *off);
-            let c = match kind {
-                FieldKind::Rask(fty, sz) => {
-                    Self::emit_field_cmp_rask(builder, ctx, l, r, fty, *sz)?
-                }
-                FieldKind::Mir(mty) => Self::emit_field_cmp_mir(builder, ctx, l, r, mty)?,
-            };
+            let c = Self::emit_field_cmp_mir(builder, ctx, l, r, ty)?;
             let next = builder.create_block();
             let is_eq = builder.ins().icmp_imm(IntCC::Equal, c, 0);
             builder.ins().brif(is_eq, next, &[], merge, &[c]);
@@ -4102,20 +4078,19 @@ impl<'a> FunctionBuilder<'a> {
         rhs: Value,
         idx: usize,
     ) -> CodegenResult<Value> {
-        let (tag_off, variants): (i32, Vec<(u64, u32, Vec<(u32, RaskType, u32)>)>) = {
+        let variants: Vec<(u64, u32, Vec<(u32, MirType)>)> = {
             let layout = ctx.enum_layouts.get(idx).ok_or_else(|| {
                 CodegenError::UnsupportedFeature("enum layout missing for ordering".into())
             })?;
-            let vs = layout.variants.iter().map(|v| {
+            layout.variants.iter().enumerate().map(|(i, v)| {
                 let fields = v.fields.iter()
-                    .map(|f| (f.offset, f.ty.clone(), f.size))
+                    .zip(ctx.field_types.variant_fields(idx as u32, i))
+                    .map(|(f, ty)| (f.offset, ty.clone()))
                     .collect::<Vec<_>>();
                 (v.tag, v.payload_offset, fields)
-            }).collect();
-            (layout.tag_offset as i32, vs)
+            }).collect()
         };
 
-        let _ = tag_off;
         let tag_l = Self::load_enum_tag(builder, ctx, lhs, idx);
         let tag_r = Self::load_enum_tag(builder, ctx, rhs, idx);
         let tag_cmp = Self::emit_signed_three_way(builder, tag_l, tag_r);
@@ -4144,7 +4119,7 @@ impl<'a> FunctionBuilder<'a> {
             builder.seal_block(var_block);
             let parts = fields
                 .iter()
-                .map(|(foff, fty, sz)| ((*poff + *foff) as i64, FieldKind::Rask(fty.clone(), *sz)))
+                .map(|(foff, fty)| ((*poff + *foff) as i64, fty.clone()))
                 .collect::<Vec<_>>();
             let c = Self::emit_lexicographic_cmp(builder, ctx, lhs, rhs, &parts)?;
             builder.ins().jump(merge, &[c]);
@@ -4171,99 +4146,6 @@ impl<'a> FunctionBuilder<'a> {
         let gt = builder.ins().uextend(types::I64, gt);
         let lt = builder.ins().uextend(types::I64, lt);
         builder.ins().isub(gt, lt)
-    }
-
-    /// Three-way compare of a struct/enum field of Rask type `ty`. Scalars sit
-    /// in 8-byte slots, same as `emit_field_eq_rask`.
-    fn emit_field_cmp_rask(
-        builder: &mut ClifFunctionBuilder,
-        ctx: &CodegenCtx,
-        lhs: Value,
-        rhs: Value,
-        ty: &RaskType,
-        size: u32,
-    ) -> CodegenResult<Value> {
-        match ty {
-            RaskType::F32 | RaskType::F64 => {
-                let lty = Self::field_scalar_type(true, size);
-                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
-                let gt = builder.ins().fcmp(FloatCC::GreaterThan, a, b);
-                let lt = builder.ins().fcmp(FloatCC::LessThan, a, b);
-                let gt = builder.ins().uextend(types::I64, gt);
-                let lt = builder.ins().uextend(types::I64, lt);
-                Ok(builder.ins().isub(gt, lt))
-            }
-            RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 => {
-                let lty = Self::field_scalar_type(false, size);
-                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
-                // The compare works at a word; a narrower field is zero-extended
-                // so the ordering is the field type's, not its bits'.
-                let (a, b) = if lty == types::I64 {
-                    (a, b)
-                } else {
-                    (
-                        builder.ins().uextend(types::I64, a),
-                        builder.ins().uextend(types::I64, b),
-                    )
-                };
-                let gt = builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b);
-                let lt = builder.ins().icmp(IntCC::UnsignedLessThan, a, b);
-                let gt = builder.ins().uextend(types::I64, gt);
-                let lt = builder.ins().uextend(types::I64, lt);
-                Ok(builder.ins().isub(gt, lt))
-            }
-            RaskType::Bool
-            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64
-            | RaskType::Char => {
-                let lty = Self::field_scalar_type(false, size);
-                let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
-                // Sign-extended for the same reason, at the field's signedness.
-                let (a, b) = if lty == types::I64 {
-                    (a, b)
-                } else {
-                    (
-                        builder.ins().sextend(types::I64, a),
-                        builder.ins().sextend(types::I64, b),
-                    )
-                };
-                Ok(Self::emit_signed_three_way(builder, a, b))
-            }
-            // Every arm above reads its field as an i64, because a scalar
-            // narrower than a word sits in one and one comparison shape then
-            // covers all of them. The 128-bit pair is the exception and has to
-            // be compared at its own width. Falling through to the catch-all
-            // instead meant a struct with an `i128` field had no derivable
-            // `compare`, so it couldn't be sorted or ordered at all (#933).
-            RaskType::I128 | RaskType::U128 => {
-                let a = builder.ins().load(types::I128, MemFlags::new(), lhs, 0);
-                let b = builder.ins().load(types::I128, MemFlags::new(), rhs, 0);
-                let (gt_cc, lt_cc) = if matches!(ty, RaskType::U128) {
-                    (IntCC::UnsignedGreaterThan, IntCC::UnsignedLessThan)
-                } else {
-                    (IntCC::SignedGreaterThan, IntCC::SignedLessThan)
-                };
-                let gt = builder.ins().icmp(gt_cc, a, b);
-                let lt = builder.ins().icmp(lt_cc, a, b);
-                let gt = builder.ins().uextend(types::I64, gt);
-                let lt = builder.ins().uextend(types::I64, lt);
-                Ok(builder.ins().isub(gt, lt))
-            }
-            RaskType::String => Self::emit_string_cmp(builder, ctx, lhs, rhs),
-            RaskType::UnresolvedNamed(name) => {
-                if let Some(sidx) = ctx.struct_layouts.iter().position(|l| l.name == *name) {
-                    Self::emit_struct_cmp(builder, ctx, lhs, rhs, sidx)
-                } else if let Some(eidx) = ctx.enum_layouts.iter().position(|l| l.name == *name) {
-                    Self::emit_enum_cmp(builder, ctx, lhs, rhs, eidx)
-                } else {
-                    let _ = size;
-                    Err(Self::unorderable_field(&format!("`{}`", name)))
-                }
-            }
-            other => Err(Self::unorderable_field(&format!("`{:?}`", other))),
-        }
     }
 
     /// Three-way compare of a value of MIR type `ty` at `lhs`/`rhs`.
@@ -6966,7 +6848,7 @@ impl<'a> FunctionBuilder<'a> {
     /// What one container element owns, and where. `None` means "leave the
     /// elements alone".
     fn element_owned_offsets(elem: Option<&MirType>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
-        crate::elem_offsets::owned_offsets(elem?, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
+        crate::elem_offsets::owned_offsets(elem?, ctx.shapes())
     }
 
     /// The offsets as read-only data, one object per distinct list.
@@ -7021,15 +6903,18 @@ impl<'a> FunctionBuilder<'a> {
                 Self::holds_string_mir(ok, ctx, depth + 1)
                     || Self::holds_string_mir(err, ctx, depth + 1)
             }
-            MirType::Struct(id) => ctx
-                .struct_layouts
-                .get(id.id as usize)
-                .is_some_and(|l| {
-                    l.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
-                }),
+            MirType::Struct(id) => ctx.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields
+                    .iter()
+                    .zip(ctx.field_types.struct_fields(id.id))
+                    .any(|(f, ty)| Self::field_owns(&f.ty, ty, ctx, depth + 1))
+            }),
             MirType::Enum(id) => ctx.enum_layouts.get(id.id as usize).is_some_and(|l| {
-                l.variants.iter().any(|v| {
-                    v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
+                l.variants.iter().enumerate().any(|(i, v)| {
+                    v.fields
+                        .iter()
+                        .zip(ctx.field_types.variant_fields(id.id, i))
+                        .any(|(f, ty)| Self::field_owns(&f.ty, ty, ctx, depth + 1))
                 })
             }),
             MirType::Tuple(elems) => {
@@ -7048,50 +6933,6 @@ impl<'a> FunctionBuilder<'a> {
             ContainerKind::Vec => "rask_vec_free",
             ContainerKind::Map => "rask_map_free",
             ContainerKind::Rack => "rask_rack_free",
-        }
-    }
-
-    fn holds_string_ty(ty: &RaskType, ctx: &CodegenCtx, depth: u32) -> bool {
-        if depth > Self::RC_WALK_DEPTH {
-            return false;
-        }
-        if crate::drop_fields::container_free_for(ty, ctx.type_names).is_some() {
-            return true;
-        }
-        // A box a field holds is the aggregate's: it was moved in, so the block
-        // and the value's own contents go when the aggregate does.
-        if crate::drop_fields::is_interface_object(ty) {
-            return true;
-        }
-        // The block is the aggregate's whatever is inside it, so a `Heap<i32>`
-        // field counts as much as a `Heap<Record>` does.
-        if crate::elem_offsets::is_heap_field(ty) {
-            return true;
-        }
-        if let Some(named) =
-            crate::elem_offsets::generic_as_layout(ty, ctx.struct_layouts, ctx.enum_layouts)
-        {
-            return Self::holds_string_ty(&named, ctx, depth);
-        }
-        match ty {
-            RaskType::String => true,
-
-            RaskType::Result { ok, err } => {
-                Self::holds_string_ty(ok, ctx, depth + 1)
-                    || Self::holds_string_ty(err, ctx, depth + 1)
-            }
-            RaskType::UnresolvedNamed(name) => {
-                if let Some(l) = ctx.struct_layouts.iter().find(|l| &l.name == name) {
-                    return l.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1));
-                }
-                if let Some(l) = ctx.enum_layouts.iter().find(|l| &l.name == name) {
-                    return l.variants.iter().any(|v| {
-                        v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, depth + 1))
-                    });
-                }
-                false
-            }
-            _ => false,
         }
     }
 
@@ -7180,17 +7021,12 @@ impl<'a> FunctionBuilder<'a> {
                 let fields: Vec<_> = layout
                     .fields
                     .iter()
-                    .map(|f| (f.offset as i32, f.ty.clone()))
+                    .zip(ctx.field_types.struct_fields(id.id))
+                    .map(|(f, ty)| (f.offset as i32, ty.clone(), f.ty.clone()))
                     .collect();
-                for (field_offset, field_ty) in fields {
-                    if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty, ctx.type_names) {
-                        Self::emit_container_release(
-                            builder, base, offset + field_offset, free_fn, ctx,
-                        )?;
-                        continue;
-                    }
-                    Self::release_strings_ty(
-                        builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
+                for (field_offset, field_ty, declared) in fields {
+                    Self::release_field(
+                        builder, base, offset + field_offset, &field_ty, &declared, ctx, depth + 1,
                     )?;
                 }
                 Ok(())
@@ -7223,106 +7059,6 @@ impl<'a> FunctionBuilder<'a> {
             }
             _ => Ok(()),
         }
-    }
-
-    fn release_strings_ty(
-        builder: &mut ClifFunctionBuilder,
-        base: Value,
-        offset: i32,
-        ty: &RaskType,
-        ctx: &CodegenCtx,
-        depth: u32,
-    ) -> CodegenResult<()> {
-        if depth > Self::RC_WALK_DEPTH || !Self::holds_string_ty(ty, ctx, 0) {
-            return Ok(());
-        }
-        // The value *is* a container. Only a struct's fields used to be checked
-        // for one, so a container reached any other way was walked and nothing
-        // came of it — and the way that matters is a wrapper's payload:
-        //
-        //     json.decode<Vec<Point>>(text) catch e => …
-        //
-        // hands back `Vec<Point> or JsonError`, and releasing the wrapper
-        // released neither side. `holds_string_ty` has always answered "yes" to
-        // this shape, so the walk ran and did nothing at all.
-        if let Some(free_fn) = crate::drop_fields::container_free_for(ty, ctx.type_names) {
-            return Self::emit_container_release(builder, base, offset, free_fn, ctx);
-        }
-        // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
-        // the runtime's own entry walker reads both words and the vtable's
-        // release hook.
-        if crate::drop_fields::is_interface_object(ty) {
-            return Self::emit_boxed_field_release(builder, base, offset, ctx);
-        }
-        // Before the match for the same reason: a `Heap<T>` field reaches here
-        // as a name, and what is inside the block is the runtime's to walk.
-        if crate::elem_offsets::is_heap_field(ty) {
-            return Self::emit_heap_field_release(builder, base, offset, ty, ctx);
-        }
-        if let Some(named) =
-            crate::elem_offsets::generic_as_layout(ty, ctx.struct_layouts, ctx.enum_layouts)
-        {
-            return Self::release_strings_ty(builder, base, offset, &named, ctx, depth);
-        }
-        match ty {
-            RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
-            RaskType::Result { ok, err } => {
-                let payload = Self::rask_payload_offset(ty, ctx);
-                let (ok, err) = ((**ok).clone(), (**err).clone());
-                Self::release_either(
-                    builder, base, offset, payload, ctx,
-                    |b, p, ctx| Self::release_strings_ty(b, p, 0, &ok, ctx, depth + 1),
-                    |b, p, ctx| Self::release_strings_ty(b, p, 0, &err, ctx, depth + 1),
-                )
-            }
-            RaskType::UnresolvedNamed(name) => {
-                if let Some(l) = ctx.struct_layouts.iter().find(|l| &l.name == name) {
-                    let fields: Vec<_> =
-                        l.fields.iter().map(|f| (f.offset as i32, f.ty.clone())).collect();
-                    for (field_offset, field_ty) in fields {
-                        // A struct's own container field, and only that. The
-                        // handle comes out of the struct in one `Field` read,
-                        // which is the shape MIR's own analysis follows — a
-                        // container behind an `Option`'s tag is reached through
-                        // the wrapper instead, and freeing it here ran before
-                        // the reads (`h.v!.len()` gave 1361822157891490808).
-                        if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty, ctx.type_names) {
-                            Self::emit_container_release(
-                                builder, base, offset + field_offset, free_fn, ctx,
-                            )?;
-                            continue;
-                        }
-                        Self::release_strings_ty(
-                            builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
-                        )?;
-                    }
-                    return Ok(());
-                }
-                if let Some(idx) = ctx.enum_layouts.iter().position(|l| &l.name == name) {
-                    let id = rask_mir::EnumLayoutId::new(
-                        idx as u32,
-                        ctx.enum_layouts[idx].size,
-                        ctx.enum_layouts[idx].align,
-                    );
-                    return Self::release_enum_variants(builder, base, offset, id, ctx, depth);
-                }
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Where a mono-typed `T?` / `T or E` / union keeps its payload. The
-    /// layout is `rask_mono::wrapper_layout`'s, sized against this program's
-    /// structs and enums.
-    fn rask_payload_offset(ty: &RaskType, ctx: &CodegenCtx) -> i32 {
-        let cache: rask_mono::LayoutCache = ctx
-            .struct_layouts
-            .iter()
-            .map(|l| (l.name.clone(), (l.size, l.align)))
-            .chain(ctx.enum_layouts.iter().map(|l| (l.name.clone(), (l.size, l.align))))
-            .collect();
-        rask_mono::wrapper_layout(ty, &cache).map_or(0, |l| l.payload_offset as i32)
     }
 
     fn emit_string_release(
@@ -7373,9 +7109,7 @@ impl<'a> FunctionBuilder<'a> {
         ty: &RaskType,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        let Some(desc) = crate::elem_offsets::heap_field_descriptor(
-            ty, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names,
-        ) else {
+        let Some(desc) = crate::elem_offsets::heap_field_descriptor(ty, ctx.shapes()) else {
             return Ok(());
         };
         let release = ctx
@@ -7509,6 +7243,41 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// One tag comparison per variant that actually holds a string.
+    /// Does a field of declared type `declared` and MIR type `ty` own
+    /// anything? A runtime handle — a `Shared`, an `Atomic`, a `File` — is a
+    /// bare pointer to MIR, and only its declared type says it has a free.
+    fn field_owns(declared: &RaskType, ty: &MirType, ctx: &CodegenCtx, depth: u32) -> bool {
+        crate::drop_fields::container_free_for(declared, ctx.type_names).is_some()
+            || Self::holds_string_mir(ty, ctx, depth)
+    }
+
+    /// Release what one field of a struct or a variant holds.
+    ///
+    /// A runtime handle is freed by what its declared type names: MIR sees a
+    /// bare pointer there.
+    ///
+    /// A `Heap<T>` field goes to the runtime, which walks the block with the
+    /// descriptor `heap_field_descriptor` built: a recursive payload restarts
+    /// the list against each block, where this walk would stop at its depth
+    /// bound and leak the rest of a long list (#1202).
+    fn release_field(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        ty: &MirType,
+        declared: &RaskType,
+        ctx: &CodegenCtx,
+        depth: u32,
+    ) -> CodegenResult<()> {
+        if matches!(ty, MirType::Heap(_)) {
+            return Self::emit_heap_field_release(builder, base, offset, declared, ctx);
+        }
+        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names) {
+            return Self::emit_container_release(builder, base, offset, free_fn, ctx);
+        }
+        Self::release_strings_mir(builder, base, offset, ty, ctx, depth)
+    }
+
     fn release_enum_variants(
         builder: &mut ClifFunctionBuilder,
         base: Value,
@@ -7528,19 +7297,22 @@ impl<'a> FunctionBuilder<'a> {
         };
         // Snapshot first: emitting reborrows the builder, and the layout lives
         // in `ctx`.
-        let arms: Vec<(u64, Vec<(i32, RaskType)>)> = layout
+        let arms: Vec<(u64, Vec<(i32, MirType, RaskType)>)> = layout
             .variants
             .iter()
-            .filter(|v| v.fields.iter().any(|f| Self::holds_string_ty(&f.ty, ctx, 0)))
-            .map(|v| {
+            .enumerate()
+            .map(|(i, v)| {
+                let tys = ctx.field_types.variant_fields(id.id, i);
                 (
                     v.tag,
                     v.fields
                         .iter()
-                        .map(|f| ((v.payload_offset + f.offset) as i32, f.ty.clone()))
-                        .collect(),
+                        .zip(tys)
+                        .map(|(f, ty)| ((v.payload_offset + f.offset) as i32, ty.clone(), f.ty.clone()))
+                        .collect::<Vec<_>>(),
                 )
             })
+            .filter(|(_, fields)| fields.iter().any(|(_, ty, declared)| Self::field_owns(declared, ty, ctx, 0)))
             .collect();
         if arms.is_empty() {
             return Ok(());
@@ -7564,20 +7336,9 @@ impl<'a> FunctionBuilder<'a> {
 
             builder.switch_to_block(hit);
             builder.seal_block(hit);
-            for (field_offset, field_ty) in fields {
-                // A variant's own container field, the same as a struct's. Only
-                // `release_strings_ty`'s *nested struct* arm looked for one, so
-                // `enum Shape { Many(Vec<i64>) }` released nothing and every
-                // vector inside one leaked — which is most of what a decoded
-                // `JsonValue` holds.
-                if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty, ctx.type_names) {
-                    Self::emit_container_release(
-                        builder, base, offset + field_offset, free_fn, ctx,
-                    )?;
-                    continue;
-                }
-                Self::release_strings_ty(
-                    builder, base, offset + field_offset, &field_ty, ctx, depth + 1,
+            for (field_offset, field_ty, declared) in fields {
+                Self::release_field(
+                    builder, base, offset + field_offset, &field_ty, &declared, ctx, depth + 1,
                 )?;
             }
             builder.ins().jump(next, &[]);
@@ -7926,7 +7687,7 @@ impl<'a> FunctionBuilder<'a> {
         if !matches!(local.ty, MirType::Struct(_)) {
             return Vec::new();
         }
-        crate::elem_offsets::owned_offsets(&local.ty, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
+        crate::elem_offsets::owned_offsets(&local.ty, ctx.shapes())
             .unwrap_or_default()
     }
 

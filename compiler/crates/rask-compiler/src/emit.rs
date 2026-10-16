@@ -67,6 +67,8 @@ impl Entry<'_> {
 pub struct Lowered {
     pub functions: Vec<MirFunction>,
     pub pipeline: rask_mir::PipelineResult,
+    /// Every layout's field types as MIR types, for codegen.
+    pub field_types: rask_mir::FieldTypes,
 }
 
 /// Lower to MIR and run the pass pipeline.
@@ -168,7 +170,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
             .collect());
     }
 
-    Ok(Lowered { functions, pipeline })
+    Ok(Lowered { functions, pipeline, field_types: ctx.field_types() })
 }
 
 /// What `emit` produced besides the object file.
@@ -210,7 +212,7 @@ fn emit_inner(
     obj_path: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(), Vec<String>> {
-    let Lowered { functions, pipeline } = lower(input, entry)?;
+    let Lowered { functions, pipeline, field_types } = lower(input, entry)?;
     let has_errors = pipeline.diagnostics.iter().any(|d| d.severity == Severity::Error);
     diagnostics.extend(pipeline.diagnostics);
     if has_errors {
@@ -251,6 +253,7 @@ fn emit_inner(
         codegen.set_debug_context(file, rask_ast::LineMap::new(text));
     }
     codegen.set_inline_regions(pipeline.inline_regions);
+    codegen.set_field_types(field_types);
 
     let interface_methods = rask_types::interface_vtable_methods(&input.typed.types);
     let vtables = collect_vtables(&functions, &interface_methods, input.mono);
