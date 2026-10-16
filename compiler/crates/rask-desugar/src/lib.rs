@@ -167,7 +167,7 @@ fn desugar_inner_from(
 
     let mut desugarer = Desugarer::new(id_base);
     desugarer.binary_sizes = binary_methods::sizes(decls);
-    desugarer.scan_error_message_types(decls);
+    desugarer.scan_error_message_types(decls, stdlib);
     for (index, decl) in decls.iter_mut().enumerate() {
         desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
         desugarer.desugar_decl(decl);
@@ -222,6 +222,10 @@ struct Desugarer {
     /// one by hand. A single-payload variant whose payload is in this set
     /// auto-delegates to `inner.message()`.
     error_message_types: std::collections::HashSet<String>,
+    /// The stdlib's types with a `message()`.
+    stdlib_message_types: std::collections::HashSet<String>,
+    /// Struct and enum names the program declares.
+    declared_types: std::collections::HashSet<String>,
     /// Types that spell out `message()` themselves, in the declaration body or
     /// in an `extend` block. ER6's derive skips these: a hand-written message
     /// is the override, so generating one alongside it would shadow the prose
@@ -241,6 +245,8 @@ impl Desugarer {
             errors: Vec::new(),
             operator_calls: std::collections::HashSet::new(),
             error_message_types: std::collections::HashSet::new(),
+            stdlib_message_types: std::collections::HashSet::new(),
+            declared_types: std::collections::HashSet::new(),
             hand_written_message: std::collections::HashSet::new(),
             binary_sizes: std::collections::HashMap::new(),
         }
@@ -255,8 +261,32 @@ impl Desugarer {
     /// delegates: `Auth(AuthError)` renders as `inner.message()` only if
     /// `AuthError` has one. Listing a type that never gets a `message()` would
     /// generate a call to a method nobody declares.
-    fn scan_error_message_types(&mut self, decls: &[Decl]) {
+    ///
+    /// The stdlib's types go in `stdlib_message_types`: `Read(IoError)`
+    /// delegates because the stdlib declares `IoError.message()`. A program
+    /// that declares its own `ParseError` means its own, so that set only
+    /// answers for names the program doesn't declare.
+    fn scan_error_message_types(&mut self, decls: &[Decl], stdlib: &[Decl]) {
         let has_message = |methods: &[FnDecl]| methods.iter().any(|m| m.name == "message");
+
+        // Every stdlib enum has one (ER6 derives it where the stdlib didn't
+        // write it), and so does a struct with a `message` method.
+        for decl in stdlib {
+            let named = match &decl.kind {
+                DeclKind::Enum(e) => Some(e.name.clone()),
+                DeclKind::Struct(s) if has_message(&s.methods) => Some(s.name.clone()),
+                DeclKind::Impl(i) if has_message(&i.methods) => i.target_ty.name(),
+                _ => None,
+            };
+            self.stdlib_message_types.extend(named);
+        }
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Enum(e) => _ = self.declared_types.insert(e.name.clone()),
+                DeclKind::Struct(s) => _ = self.declared_types.insert(s.name.clone()),
+                _ => {}
+            }
+        }
 
         for decl in decls {
             match &decl.kind {
@@ -308,6 +338,18 @@ impl Desugarer {
     /// stands aside rather than shadowing it. An enum carrying a `@resource` is
     /// no exception — the derived method borrows `self`, so what its arms bind
     /// are views the body doesn't owe anything for.
+    /// Does this payload type have a `message()` (ER37)? The program's own
+    /// declaration of the name answers first; otherwise a qualified
+    /// `io.IoError` is the stdlib's `IoError`, or a dependency's type.
+    fn has_message(&self, ty: &rask_ast::ty::TypeExpr) -> bool {
+        if let Some(name) = ty.name().filter(|n| self.declared_types.contains(n)) {
+            return self.error_message_types.contains(&name);
+        }
+        ty.last_segment().is_some_and(|n| {
+            self.stdlib_message_types.contains(n) || self.error_message_types.contains(n)
+        })
+    }
+
     fn derives_message(&self, e: &EnumDecl) -> bool {
         !self.hand_written_message.contains(&e.name)
     }
@@ -555,16 +597,9 @@ impl Desugarer {
             rask_ast::rewrite::rewrite_expr(&mut expr, &mut FreshIds(&mut self.next_id));
             return MessageTemplate::Format(expr);
         }
-        // ER37: single payload that implements Error delegates to it. The
-        // `ends_with("Error")` check keeps cross-module error types working when
-        // their declaration isn't in this compilation unit's decl set.
-        if variant.fields.len() == 1 {
-            let payload_ty = &variant.fields[0].ty;
-            let delegates = payload_ty.name().is_some_and(|n| self.error_message_types.contains(&n))
-                || payload_ty.last_segment().is_some_and(is_error_type_name);
-            if delegates {
-                return MessageTemplate::Delegate(variant.fields[0].name.clone());
-            }
+        // ER37: single payload that implements Error delegates to it.
+        if variant.fields.len() == 1 && self.has_message(&variant.fields[0].ty) {
+            return MessageTemplate::Delegate(variant.fields[0].name.clone());
         }
         // ER6: humanized variant name, interpolating any payload fields.
         MessageTemplate::Format(self.humanize_variant(&variant.name, &variant.fields))
@@ -1499,12 +1534,6 @@ enum MessageTemplate {
     Format(Expr),
     /// Delegate to inner value: `inner.message()`
     Delegate(String),
-}
-
-/// Heuristic: does this type name look like an error type?
-/// Matches names ending in "Error" (e.g., IoError, ManifestError).
-fn is_error_type_name(ty: &str) -> bool {
-    ty.ends_with("Error")
 }
 
 /// ER6 fallback message: humanize the variant name (`NotFound` → "not found")

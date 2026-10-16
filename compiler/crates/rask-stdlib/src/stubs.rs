@@ -484,7 +484,11 @@ impl StubRegistry {
                 for decl in parsed {
                     let keep = match &decl.kind {
                         DeclKind::Fn(f) => defaulted(f),
-                        DeclKind::Impl(i) => i.methods.iter().any(defaulted),
+                        // Desugar delegates a variant's message to a payload
+                        // that has one (type.errors/ER37).
+                        DeclKind::Impl(i) => {
+                            i.methods.iter().any(|m| defaulted(m) || m.name == "message")
+                        }
                         DeclKind::Enum(_) | DeclKind::Struct(_) => true,
                         _ => false,
                     };
