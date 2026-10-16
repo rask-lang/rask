@@ -37,7 +37,7 @@ func add(mutate cart: Cart, item: string, price: i64) {
 }
 
 func main() {
-    mut cart = Cart { items: Vec.new(), total: 0 }
+    mut cart = Cart(items: Vec.new(), total: 0)
 
     add(mutate cart, "coffee", 45)
     add(mutate cart, "beans", 120)

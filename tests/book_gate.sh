@@ -268,6 +268,37 @@ if [ -d "$PANICS_DIR" ]; then
     done < <(find "$PANICS_DIR" -name '*.rk' | sort)
 fi
 
+# ── 4. The front page's code runs ─────────────────────────────────────────────
+#
+# The landing page shows code in two places the book's checks never reach: the
+# static examples in its HTML and the program the Try box opens with. When value
+# literals moved from braces to parens, both stopped compiling and nothing said
+# so. Each one has to run on the interpreter, which is what the Try box uses.
+
+LANDING_DIR="$(mktemp -d)"
+python3 - "$ROOT/docs/landing" "$LANDING_DIR" <<'PY'
+import html, re, sys
+src, out = sys.argv[1], sys.argv[2]
+page = open(f"{src}/index.html").read()
+for n, block in enumerate(re.findall(r"<pre><code>(.*?)</code></pre>", page, re.S)):
+    open(f"{out}/index_{n}.rk", "w").write(html.unescape(re.sub(r"<[^>]+>", "", block)))
+script = open(f"{src}/try.js").read()
+m = re.search(r"const SNIPPET = `(.*?)`;", script, re.S)
+if m:
+    open(f"{out}/try_box.rk", "w").write(m.group(1))
+PY
+for rk in "$LANDING_DIR"/*.rk; do
+    [ -e "$rk" ] || continue
+    if ! "$RASK" run --interp "$rk" > "$LANDING_DIR/out" 2>&1; then
+        echo "FAIL: docs/landing: $(basename "$rk" .rk) doesn't run"
+        sed 's/^/    /' "$LANDING_DIR/out" | head -12
+        fails=$((fails + 1))
+    else
+        ok=$((ok + 1))
+    fi
+done
+rm -rf "$LANDING_DIR"
+
 echo "──────────────────────────────────────────────────"
 if [ $fails -eq 0 ]; then
     echo "book gate: $ok ok, 0 failed"
