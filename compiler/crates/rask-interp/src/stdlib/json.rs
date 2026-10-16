@@ -1003,10 +1003,10 @@ fn json_to_typed(
     match name {
         "string" => extract_string(raw).map_err(|_| type_err(path, "string", json)),
         "bool" => extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
-        "f32" | "f64" | "float" => extract_float(raw).map_err(|_| type_err(path, name, json)),
-        _ if rask_ast::primitives::is_machine_integer(name)
-            || rask_ast::primitives::INT_ALIASES.contains(&name) => {
-            extract_int(raw, int_kind(name)).map_err(|_| type_err(path, "an integer", json))
+        "f32" | "f64" => extract_float(raw).map_err(|_| type_err(path, name, json)),
+        _ if rask_ast::primitives::is_machine_integer(name) => {
+            let kind = crate::value::IntKind::from_name(name).expect("every machine integer has a kind");
+            extract_int(raw, kind).map_err(|_| type_err(path, "an integer", json))
         }
         _ => {
             let decl = cx.decls.get(name).ok_or_else(|| JsonErr {
@@ -1055,23 +1055,6 @@ fn json_to_typed(
             // Keys the struct doesn't declare are skipped (J10).
             Ok(Value::new_struct(name.to_string(), fields, None))
         }
-    }
-}
-
-fn int_kind(ty: &str) -> crate::value::IntKind {
-    use crate::value::IntKind;
-    match ty {
-        "i8" => IntKind::I8,
-        "i16" => IntKind::I16,
-        "i32" => IntKind::I32,
-        "i64" => IntKind::I64,
-        "isize" => IntKind::isize_kind(),
-        "u8" => IntKind::U8,
-        "u16" => IntKind::U16,
-        "u32" => IntKind::U32,
-        "u64" => IntKind::U64,
-        "usize" => IntKind::usize_kind(),
-        _ => IntKind::Untyped,
     }
 }
 

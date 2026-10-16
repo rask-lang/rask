@@ -439,6 +439,19 @@ impl TypeChecker {
 
     /// Closest declared type name by edit distance, for "did you mean" hints.
     fn closest_type_name(&self, name: &str) -> Option<String> {
+        // Another language's name for a primitive is nowhere near Rask's by
+        // edit distance — `int` is three edits from `i64`.
+        let foreign = match name {
+            "int" | "long" => Some("i64"),
+            "uint" | "ulong" => Some("u64"),
+            "float" | "double" => Some("f64"),
+            "boolean" => Some("bool"),
+            "String" => Some("string"),
+            _ => None,
+        };
+        if let Some(rask) = foreign {
+            return Some(rask.to_string());
+        }
         let max_dist = (name.len() / 3).max(1);
         self.types
             .type_names

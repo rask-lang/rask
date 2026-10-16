@@ -2470,13 +2470,13 @@ impl Interpreter {
                     // here made the interpreter answer 16777217 where native
                     // (which really has an f32) answered 16777216 (#334).
                     (Value::Int(n, _), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
-                    (Value::Int(n, _), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
-                    (Value::Float(n, _), t @ ("i64" | "i32" | "int" | "i16" | "i8"
+                    (Value::Int(n, _), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Float(n, _), t @ ("i64" | "i32" | "i16" | "i8"
                         | "u64" | "u32" | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n as i64), kind))
                     }
-                    (Value::Int(n, _), t @ ("i64" | "i32" | "int" | "i16" | "i8" | "u64" | "u32"
+                    (Value::Int(n, _), t @ ("i64" | "i32" | "i16" | "i8" | "u64" | "u32"
                         | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n), kind))
@@ -2487,7 +2487,7 @@ impl Interpreter {
                     (Value::Float(n, _), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
-                    (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8" | "u64" | "usize") => {
+                    (Value::Char(c), "i32" | "i64" | "u32" | "u8" | "u64" | "usize") => {
                         Ok(Value::int(c as i64))
                     }
                     (Value::Int(n, _), "char") => {
@@ -2508,18 +2508,18 @@ impl Interpreter {
                     } else {
                         n as u64 as u128
                     })),
-                    (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
+                    (Value::Int128(n), "i64" | "i32" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
-                    (Value::Int128(n), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Int128(n), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Int128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     // u128 conversions
-                    (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
+                    (Value::Uint128(n), "i64" | "i32" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
                     (Value::Uint128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
-                    (Value::Uint128(n), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Uint128(n), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
                     (Value::Uint128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
@@ -2529,15 +2529,14 @@ impl Interpreter {
                     // float → float: retag, and round if the target is
                     // narrower. Without this the cast fell through the
                     // catch-all below and kept the source's width.
-                    (Value::Float(n, _), t @ ("f32" | "f64" | "float")) => {
+                    (Value::Float(n, _), t @ ("f32" | "f64")) => {
                         let k = FloatKind::from_name(t).unwrap_or(FloatKind::F64);
                         Ok(Value::Float(k.round(n), k))
                     }
                     // E18: fieldless enum to integer cast
                     (Value::Enum { name, variant, fields, variant_index, .. }, target)
                         if fields.is_empty()
-                        && (rask_ast::primitives::is_machine_integer(target)
-                            || rask_ast::primitives::INT_ALIASES.contains(&target)) =>
+                        && rask_ast::primitives::is_machine_integer(target) =>
                     {
                         let disc = if let Some(enum_decl) = self.enums.get(&name) {
                             enum_decl.variants.iter()

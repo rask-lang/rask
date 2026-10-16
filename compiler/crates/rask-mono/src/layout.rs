@@ -834,7 +834,7 @@ fn enum_layout(
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
-            "i64" | "int" => Type::I64,
+            "i64" => Type::I64,
             _ => if variant_count <= 256 { Type::U8 } else { Type::U16 },
         }
     } else if variant_count <= 256 {

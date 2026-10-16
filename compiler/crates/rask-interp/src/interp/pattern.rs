@@ -657,10 +657,7 @@ fn runtime_type_matches(value: &Value, ty: &TypeExpr) -> bool {
         Value::String(_) => bare == "string",
         // `Value::Int` holds the register-width integers; 128-bit ones are
         // `Int128`/`Uint128` and match their own arms.
-        Value::Int(_, _) => {
-            rask_ast::primitives::is_machine_integer(bare)
-                || rask_ast::primitives::INT_ALIASES.contains(&bare)
-        }
+        Value::Int(_, _) => rask_ast::primitives::is_machine_integer(bare),
         Value::Float(_, _) => rask_ast::primitives::is_float(bare),
         // A user type compares on its base name. The value carries `Wrap`; the
         // test can be written `Wrap<i64>`, and nothing at runtime records which

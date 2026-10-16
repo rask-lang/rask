@@ -208,9 +208,9 @@ fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> 
     answer
 }
 
-/// mem.relocatable/FL2, plus the widths and aliases the spec's list implies.
+/// mem.relocatable/FL2, plus the widths the spec's list implies.
 fn is_flat_primitive(name: &str) -> bool {
-    is_integer(name) || matches!(name, "bool" | "f32" | "f64" | "char" | "int" | "uint")
+    is_integer(name) || matches!(name, "bool" | "f32" | "f64" | "char")
 }
 
 /// FL1's list: the types that own or point at heap memory.
