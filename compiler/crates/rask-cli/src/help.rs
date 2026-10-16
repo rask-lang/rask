@@ -339,6 +339,7 @@ pub fn print_test_help() {
     println!("  {} {}    Run each test under n seeds", output::arg("--seeds"), output::arg("<n>"));
     println!("  {} Keep searching after a test fails", output::arg("--keep-going"));
     println!("  {} {} Fail a sim test that runs longer than n scheduling steps", output::arg("--max-steps"), output::arg("<n>"));
+    println!("  {} {} Write one test's sim schedule, step by step, as JSON", output::arg("--trace"), output::arg("<file>"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}        Run all tests in file",

@@ -129,6 +129,11 @@ void rask_panic_set_task_id(int64_t id) {
     tl_task_id = id;
 }
 
+// The running task's id, 0 outside one (the test body, main).
+int64_t rask_panic_task_id(void) {
+    return tl_task_id;
+}
+
 // ─── Unwind stack (ctrl.panic/U1, U6) ──────────────────────
 //
 // Per-thread LIFO list of what a panic has to do on the way out, two kinds of
