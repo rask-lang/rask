@@ -919,7 +919,7 @@ impl<'a> MirLowerer<'a> {
             addr: result_local,
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: None,
+            store_size: Some(layout.tag_bytes()),
             field: None,
         }));
         Some((MirOperand::Local(result_local), enum_ty))
@@ -2872,7 +2872,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: layout.tag_offset,
                             value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: None,
+                            store_size: Some(layout.tag_bytes()),
                             field: None,
                         }));
                         return Ok((MirOperand::Local(result_local), enum_ty));
@@ -3496,7 +3496,7 @@ impl<'a> MirLowerer<'a> {
                         el.name
                     )));
                 };
-                let info = (el.tag_offset, v.tag, v.payload_offset, v.fields.clone());
+                let info = ((el.tag_offset, el.tag_bytes()), v.tag, v.payload_offset, v.fields.clone());
                 (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, Some(info))
             } else if let Some((idx, sl)) = self
                 .ctx
@@ -3519,12 +3519,12 @@ impl<'a> MirLowerer<'a> {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result_local }));
 
             // For enum variants, store the tag first
-            if let Some((tag_offset, tag, payload_offset, ref variant_fields)) = enum_variant_info {
+            if let Some(((tag_offset, tag_bytes), tag, payload_offset, ref variant_fields)) = enum_variant_info {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: result_local,
                     offset: tag_offset,
                     value: MirOperand::Constant(MirConst::Int(tag as i64)),
-                    store_size: None,
+                    store_size: Some(tag_bytes),
                     field: None,
                 }));
                 for field in fields.iter() {
@@ -3727,10 +3727,10 @@ impl<'a> MirLowerer<'a> {
             Some(_) => self.box_into_owned_slot(val, &val_ty),
             None => val,
         };
-        // Aggregate payloads (string = 16 bytes, embedded structs) must copy
-        // the full value. Without store_size a string constant stores only its
-        // 8-byte data pointer and the length word is left uninitialized (#387).
-        let store_size = if field_size > 8 { Some(field_size) } else { None };
+        // The field's own width: an aggregate (a string's 16 bytes, an
+        // embedded struct) is copied whole (#387), and a scalar is stored at
+        // its declared size, never widened into the next field.
+        let store_size = Some(field_size);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset,
@@ -5596,14 +5596,14 @@ impl<'a> MirLowerer<'a> {
                                 idx,
                                 layout.size,
                                 layout.align,
-                                layout.tag_offset,
+                                (layout.tag_offset, layout.tag_bytes()),
                                 variant.tag,
                                 variant.payload_offset,
                                 variant.fields.clone(),
                             ))
                         });
 
-                        if let Some((idx, enum_size, enum_align, tag_offset, tag_val, payload_offset, fields)) =
+                        if let Some((idx, enum_size, enum_align, (tag_offset, tag_bytes), tag_val, payload_offset, fields)) =
                             enum_variant
                         {
                             let enum_ty = MirType::Enum(EnumLayoutId::new(idx, enum_size, enum_align));
@@ -5617,7 +5617,7 @@ impl<'a> MirLowerer<'a> {
                                 addr: result_local,
                                 offset: tag_offset,
                                 value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
-                                store_size: None,
+                                store_size: Some(tag_bytes),
                                 field: None,
                             }));
 
@@ -7011,8 +7011,10 @@ impl<'a> MirLowerer<'a> {
             return Ok(None);
         };
         let (full_tag, payload_offset) = (full.tag, full.payload_offset);
+        let full_field_size = full.fields.first().map(|f| f.size);
         let err_size = err.size();
         let tag_offset = layout.tag_offset as u32;
+        let tag_bytes = layout.tag_bytes();
 
         let (value, value_ty) = self.lower_expr(&args[0].expr)?;
         let value_size = value_ty.size();
@@ -7042,14 +7044,14 @@ impl<'a> MirLowerer<'a> {
             addr: err_local,
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(full_tag as i64)),
-            store_size: None,
+            store_size: Some(tag_bytes),
             field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: err_local,
             offset: payload_offset,
             value: value.clone(),
-            store_size: if value_size > 8 { Some(value_size) } else { None },
+            store_size: Some(full_field_size.unwrap_or(value_size)),
             field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -8777,7 +8779,7 @@ impl<'a> MirLowerer<'a> {
         Some((err_ty, tag))
     }
 
-    fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
+    pub(super) fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {
         let tag = self.builder.alloc_temp(MirType::U16);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: tag,
@@ -9061,16 +9063,9 @@ impl<'a> MirLowerer<'a> {
                 // One block per variant, each building its own string, joined by
                 // a phi-free write into a shared slot — the same shape the union
                 // method dispatch uses.
-                let tag = self.builder.alloc_temp(MirType::I64);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: tag,
-                    rvalue: MirRValue::Field {
-                        base: obj_op.clone(),
-                        field_index: 0,
-                        byte_offset: Some(layout.tag_offset),
-                        access: FieldAccess::Sized(8),
-                    },
-                }));
+                // The tag at its own width: a word read took the payload's
+                // first bytes along with it.
+                let tag = self.emit_enum_tag(obj_op.clone());
                 let result = self.builder.alloc_temp(MirType::String);
                 let merge = self.builder.create_block();
                 let arms: Vec<crate::BlockId> =

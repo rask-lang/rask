@@ -1104,54 +1104,24 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let result = self.builder.alloc_temp(obj_ty.clone());
 
-        // Shallow copy: copy each 8-byte word
-        let num_words = (layout.size as u32 + 7) / 8;
-        for i in 0..num_words {
-            let offset = i * 8;
-            let word = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: word,
-                rvalue: MirRValue::Field {
-                    base: src.clone(),
-                    field_index: offset,
-                    // These are byte offsets, so say so. Left as `None`,
-                    // codegen read `field_index` as a *field* index, found no
-                    // variant with that many fields, and fell back to the first
-                    // variant's payload offset — so every word of the "copy"
-                    // came from the same place.
-                    byte_offset: Some(offset),
-                    access: FieldAccess::Word,
-                },
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result,
-                offset,
-                value: MirOperand::Local(word),
-                store_size: None,
-                field: None,
-            }));
-        }
+        // Shallow copy: the whole value, at its real size. Copying it a word
+        // at a time read and wrote past the end of any enum whose size isn't
+        // a multiple of eight.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: 0,
+            value: src.clone(),
+            store_size: Some(layout.size),
+            field: None,
+        }));
 
         let needs_switch = layout.variants.iter().any(|v| {
             v.fields.iter().any(|f| Self::clone_fn_for_type(&f.ty).is_some())
         });
 
         if needs_switch {
-            // At the tag's own offset and width. Without the byte offset
-            // codegen read `field_index` as a field index and loaded the first
-            // variant's payload instead, so `Leaf(1).clone()` took tag 1 —
-            // `Node` — and cloned the map at address 0x1.
-            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
-            let tag = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: tag,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(result),
-                    field_index: 0,
-                    byte_offset: Some(layout.tag_offset),
-                    access: FieldAccess::Sized(tag_size),
-                },
-            }));
+            // The tag at its own offset and width, the way a match reads it.
+            let tag = self.emit_enum_tag(MirOperand::Local(result));
 
             // The switch belongs on the block that read the tag. Building the
             // variant blocks below moves the builder's cursor onto the last of

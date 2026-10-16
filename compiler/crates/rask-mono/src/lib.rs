@@ -1575,10 +1575,10 @@ mod tests {
         assert_eq!(result.struct_layouts.len(), 1);
         let container = &result.struct_layouts[0];
         assert_eq!(container.name, "Container");
-        // Kind enum: tag(8) + field_x(8) + field_y(8) = 24 bytes
+        // Kind enum: tag(1) + padding(3) + x(4) + y(4) = 12 bytes.
         // Container should embed Kind at its full size, not the (8,8) default.
         let kind_field = container.fields.iter().find(|f| f.name == "kind").unwrap();
-        assert_eq!(kind_field.size, 24, "Kind field should be 24 bytes (tag + 2 fields), not 8");
+        assert_eq!(kind_field.size, 12, "Kind field should be 12 bytes (tag + 2 fields), not 8");
     }
 
     // ── Instantiation ───────────────────────────────────────────

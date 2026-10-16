@@ -4633,29 +4633,33 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
             Some(MirType::Enum(id)) => {
-                // A float payload sits in its slot as an f64, same as anywhere
-                // else a float occupies a word (#629). This arm never said so,
-                // so an f32 payload was read four bytes wide and came back as
-                // the double's zero low half — `Has(1.5)` printed 0. The
-                // narrowing tail below demotes it. f64 was right by coincidence:
-                // the width the caller asked for happened to be the storage
-                // width (#973).
-                if load_ty.is_float() {
-                    load_ty = match rask_mono::abi::slot_scalar_bytes(
-                        true, load_ty.bytes(), rask_mono::abi::PAYLOAD_SLOT_BYTES,
-                    ) {
-                        8 => types::F64,
-                        _ => types::F32,
-                    };
-                }
                 // Prefer the exact payload offset match_lower computed for this
                 // arm's variant. Guessing "first variant with enough fields"
                 // picks the wrong payload shape when variants differ at the same
                 // field index (e.g. Pos(Pt) vs Scalar(i32)). An aggregate payload
                 // returns a pointer via the field_size > 8 check below (#347).
+                let layout = ctx.enum_layouts.get(id.id as usize);
+                // A payload field holds its declared width, the same as a
+                // struct's (#1083), and MIR says how wide in `access`: read
+                // that much. Reading at the binding's width took the bytes of
+                // whatever field followed. The width can't come from the
+                // layout here: without the variant, a field index or an
+                // offset names a field in several of them.
+                if let Some(size) = access.size().filter(|s| *s <= 8) {
+                    load_ty = if load_ty.is_float() {
+                        if size == 4 { types::F32 } else { types::F64 }
+                    } else {
+                        match size {
+                            0 | 1 => types::I8,
+                            2 => types::I16,
+                            3 | 4 => types::I32,
+                            _ => types::I64,
+                        }
+                    };
+                }
                 if let Some(off) = byte_offset {
                     *off as i32
-                } else if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
+                } else if let Some(layout) = layout {
                     let variant = layout.variants.iter()
                         .find(|v| v.fields.len() > *field_index as usize);
                     match variant {

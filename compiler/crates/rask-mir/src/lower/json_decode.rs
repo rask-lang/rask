@@ -245,11 +245,11 @@ impl<'a> MirLowerer<'a> {
             return err_val;
         }
 
-        let tag_offset = self
+        let (tag_offset, tag_bytes) = self
             .ctx
             .find_enum("JsonError")
-            .map(|(_, l)| l.tag_offset)
-            .unwrap_or(0);
+            .map(|(_, l)| (l.tag_offset, l.tag_bytes()))
+            .unwrap_or((0, 1));
 
         // The switch belongs on the block we're standing in now — filling the
         // case blocks moves the builder, and terminating afterwards would
@@ -265,7 +265,7 @@ impl<'a> MirLowerer<'a> {
                 addr: err_val,
                 offset: tag_offset,
                 value: MirOperand::Constant(MirConst::Int(*tag as i64)),
-                store_size: Some(8),
+                store_size: Some(tag_bytes),
                 field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {

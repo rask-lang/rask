@@ -86,6 +86,13 @@ pub struct EnumLayout {
     pub attrs: Vec<rask_ast::attr::Attr>,
 }
 
+impl EnumLayout {
+    /// How many bytes the tag occupies: its declared width, never a word.
+    pub fn tag_bytes(&self) -> u32 {
+        self.tag_ty.scalar_bytes().unwrap_or(1)
+    }
+}
+
 /// Variant layout within enum
 #[derive(Debug, Clone)]
 pub struct VariantLayout {
@@ -772,15 +779,11 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
 /// bare integer (#729).
 ///
 /// Built from `ORDERING_VARIANTS` so the variant list stays in one place, and
-/// sized through `type_size_align` rather than by hand, because a `u8` tag does
-/// not occupy one byte here: codegen gives every scalar an 8-byte slot, so
-/// `compute_enum_layout` gives a fieldless enum size 8, align 8. Written as
-/// `size: 1` this layout was the only enum in the program whose stack slot was
-/// narrower than the stores and loads aimed at it — `Ordering.Less` wrote eight
-/// bytes into a one-byte slot, a returned `Ordering` was copied one byte out of
-/// eight, and `==` read all eight back, so two equal values compared equal or
-/// not depending on what was next to them on the stack. It moved when a test
-/// was added above the one that used it.
+/// sized like any other fieldless enum: a one-byte tag. Every store of its tag
+/// has to be one byte too. When stores were a word and this slot one byte,
+/// `Ordering.Less` wrote eight bytes into it and `==` read eight back, so two
+/// equal values compared equal or not depending on what was next to them on
+/// the stack.
 pub fn ordering_layout() -> EnumLayout {
     let (tag_size, tag_align) = type_size_align(&Type::U8, &LayoutCache::new());
     EnumLayout {
@@ -845,14 +848,9 @@ fn enum_layout(
     } else {
         Type::U16
     };
-    // The tag and every payload field sit in word slots, the same convention
-    // `Option` and `Result` state: codegen writes a scalar full-width and the
-    // match paths read a word. Struct fields hold their real widths (#1083);
-    // an enum's don't.
-    let (tag_size, tag_align) = {
-        let (s, a) = type_size_align(&tag_ty, cache);
-        (s.max(crate::abi::PAYLOAD_SLOT_BYTES), a.max(crate::abi::PAYLOAD_SLOT_BYTES))
-    };
+    // The tag and every payload field hold their real widths, the same as a
+    // struct's fields (#1083).
+    let (tag_size, tag_align) = type_size_align(&tag_ty, cache);
 
     // Compute size and alignment of each variant payload
     let mut max_payload_size = 0u32;
@@ -873,8 +871,6 @@ fn enum_layout(
                 let sized = substitute_inside(&field_ty, &subst);
                 let (size, align) = type_size_align(&sized, cache);
                 let field_ty = if record_arguments { sized } else { field_ty };
-                let size = size.max(crate::abi::PAYLOAD_SLOT_BYTES);
-                let align = align.max(crate::abi::PAYLOAD_SLOT_BYTES);
 
                 payload_align = payload_align.max(align);
                 field_offset = align_up(field_offset, align);
@@ -1267,8 +1263,8 @@ mod tests {
         assert_eq!(layout.variants[0].tag, 0);
         assert_eq!(layout.variants[1].tag, 1);
         assert_eq!(layout.variants[2].tag, 2);
-        // No payload → size is just tag (U8 stored as i64 = 8 bytes)
-        assert_eq!(layout.size, 8);
+        // No payload: the one-byte tag is the whole value.
+        assert_eq!(layout.size, 1);
     }
 
     #[test]
@@ -1282,17 +1278,17 @@ mod tests {
         assert_eq!(layout.tag_offset, 0);
         assert!(matches!(layout.tag_ty, Type::U8)); // <=256 variants
 
-        // Circle payload: 1 field × 8 bytes = 8 (i32 stored as i64)
-        assert_eq!(layout.variants[0].payload_size, 8);
-        // Rect payload: 2 fields × 8 bytes = 16
-        assert_eq!(layout.variants[1].payload_size, 16);
+        // Each field at its own width.
+        assert_eq!(layout.variants[0].payload_size, 4);
+        assert_eq!(layout.variants[1].payload_size, 8);
 
-        // All variants share the same payload_offset
+        // All variants share the same payload_offset, aligned for an i32.
         assert_eq!(layout.variants[0].payload_offset, layout.variants[1].payload_offset);
+        assert_eq!(layout.variants[0].payload_offset, 4);
 
-        // Total: tag (8) + max_payload (16) = 24
-        assert_eq!(layout.size, 24);
-        assert_eq!(layout.align, 8);
+        // Tag (1) + padding (3) + max payload (8).
+        assert_eq!(layout.size, 12);
+        assert_eq!(layout.align, 4);
     }
 
     #[test]
@@ -1309,11 +1305,11 @@ mod tests {
         let layout = compute_enum_layout(&decl, &[], &empty_cache());
 
         assert_eq!(layout.variants[0].payload_size, 0);
-        assert_eq!(layout.variants[1].payload_size, 8);
-        assert_eq!(layout.variants[2].payload_size, 16);
+        assert_eq!(layout.variants[1].payload_size, 4);
+        assert_eq!(layout.variants[2].payload_size, 8);
 
-        // Size = tag (8) + max_payload (16) = 24
-        assert_eq!(layout.size, 24);
+        // Tag (1) + padding (3) + max payload (8).
+        assert_eq!(layout.size, 12);
     }
 
     // ── Field reordering (S1/L4) ──────────────────────────────────

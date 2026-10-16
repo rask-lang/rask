@@ -329,7 +329,7 @@ fn retain_views_handed_over(
                 // struct literal's field, an array slot.
                 MirStmtKind::Store { value: MirOperand::Local(v), .. }
                 | MirStmtKind::ArrayStore { value: MirOperand::Local(v), .. }
-                    if views.contains(v) && !store_is_narrow(stmt) =>
+                    if views.contains(v) && !store_is_narrow(stmt, &ty_of) =>
                 {
                     insertions.push((si, *v));
                 }
@@ -910,7 +910,7 @@ fn insert_aggregate_release(
                     }
                     if aggregates.contains(addr)
                         && !replaces
-                        && !store_is_narrow(stmt)
+                        && !store_is_narrow(stmt, &ty_of)
                     {
                         ev.push(ownership::Event::Fill(*addr));
                     }
@@ -1294,8 +1294,20 @@ fn view_of_field(
 /// Asked of the store's own recorded width rather than the operand's type,
 /// because that width is what codegen copies and a `None` there means "as wide
 /// as the value", which is not a claim this can act on.
-fn store_is_narrow(stmt: &MirStmt) -> bool {
-    matches!(&stmt.kind, MirStmtKind::Store { store_size: Some(n), .. } if *n < 8)
+///
+/// An enum's tag is the exception. It is one or two bytes, and writing it is
+/// how an enum value is made (or switched to another variant), whatever its
+/// width: `Thing.Plain` is that one store and nothing else. Read as a flag
+/// update, the value was never made on that path, owned on the other, and
+/// left unreleased at the join. The tag is always at offset 0 (E1), where no
+/// payload field can be.
+fn store_is_narrow(stmt: &MirStmt, ty_of: &HashMap<LocalId, MirType>) -> bool {
+    match &stmt.kind {
+        MirStmtKind::Store { addr, offset: 0, .. }
+            if matches!(ty_of.get(addr), Some(MirType::Enum(_))) => false,
+        MirStmtKind::Store { store_size: Some(n), .. } => *n < 8,
+        _ => false,
+    }
 }
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would

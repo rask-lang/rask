@@ -19,9 +19,12 @@ pub use rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE;
 struct ErrorWrapTarget {
     enum_ty: MirType,
     tag_offset: u32,
+    tag_bytes: u32,
     tag: i64,
     /// Byte offset of the variant's single payload field.
     payload_offset: u32,
+    /// That field's width.
+    payload_size: Option<u32>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -93,8 +96,10 @@ impl<'a> MirLowerer<'a> {
         Some(ErrorWrapTarget {
             enum_ty: MirType::Enum(crate::types::EnumLayoutId::new(idx, layout.size, layout.align)),
             tag_offset: layout.tag_offset,
+            tag_bytes: layout.tag_bytes(),
             tag: variant.tag as i64,
             payload_offset: variant.payload_offset + field.map_or(0, |f| f.offset),
+            payload_size: field.map(|f| f.size),
         })
     }
 
@@ -263,14 +268,14 @@ impl<'a> MirLowerer<'a> {
                     addr: wrapped,
                     offset: w.tag_offset,
                     value: MirOperand::Constant(MirConst::Int(w.tag)),
-                    store_size: None,
+                    store_size: Some(w.tag_bytes),
                     field: None,
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: wrapped,
                     offset: w.payload_offset,
                     value: MirOperand::Local(err_val),
-                    store_size: err_store_size,
+                    store_size: w.payload_size.or(err_store_size),
                     field: None,
                 }));
                 let size = w.enum_ty.size();
