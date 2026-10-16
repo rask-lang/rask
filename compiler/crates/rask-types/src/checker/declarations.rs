@@ -1890,7 +1890,7 @@ impl TypeChecker {
 
         MethodSig {
             param_names,
-            derived: false,
+            origin: crate::MethodOrigin::Declared,
             is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
             // stored name is `tag<E>`. Method lookup compares against what the
@@ -2128,7 +2128,7 @@ impl TypeChecker {
             let declared = |name: &str| methods.iter().any(|m| m.name == name);
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
-                derived: true,
+                origin: crate::MethodOrigin::Structural,
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),

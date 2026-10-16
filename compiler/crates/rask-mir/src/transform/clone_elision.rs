@@ -3,9 +3,12 @@
 //! Last-use clone elision — replace `.clone()` with move when the original
 //! value is unused after the clone site.
 //!
-//! Detects MIR `Call` statements targeting clone functions (e.g. `string_clone`,
-//! `Vec_clone`). When the source local has no subsequent use on any control
-//! flow path, the clone is replaced with a simple copy (move semantics).
+//! Acts on the `Call`s lowering marked `elidable_clone`: a `.clone()` that runs
+//! no code the program wrote. When the source local has no subsequent use on
+//! any control flow path, the clone is replaced with a simple copy (move
+//! semantics). Which calls qualify is lowering's to say, from the receiver's
+//! checked type. A name ending in `_clone` used to be enough, so a program's
+//! own `make_clone(s)` was deleted along with its side effects (#1557).
 //!
 //! See `comp.clone-elision` spec for the full algorithm.
 
@@ -16,29 +19,12 @@ use crate::analysis::uses;
 use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
 
-/// Clone function suffixes that indicate a heap-allocating clone (CE1).
-const CLONE_SUFFIXES: &[&str] = &[
-    "_clone",
-];
-
-/// Standalone clone function names.
-const CLONE_NAMES: &[&str] = &[
-    "rask_clone",
-    "string_clone",
-    "sender_clone",
-];
-
 /// Elide unnecessary clone calls across all functions. `own` is the program's
 /// own function names, for asking which calls hand back a view.
 pub fn elide_clones(fns: &mut [MirFunction], own: &HashSet<String>) {
     for func in fns.iter_mut() {
         elide_clones_with(func, own);
     }
-}
-
-fn is_clone_call(name: &str) -> bool {
-    CLONE_NAMES.iter().any(|n| *n == name)
-        || CLONE_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
 #[cfg(test)]
@@ -53,7 +39,7 @@ fn elide_clones_with(func: &mut MirFunction, own: &HashSet<String>) {
         .flat_map(|(bi, block)| {
             block.statements.iter().enumerate().filter_map(move |(si, stmt)| {
                 if let MirStmtKind::Call { dst: Some(dst), func: fref, args } = &stmt.kind {
-                    if is_clone_call(&fref.name) && args.len() == 1 {
+                    if fref.elidable_clone && args.len() == 1 {
                         if let MirOperand::Local(source) = &args[0] {
                             return Some((bi, si, *dst, *source));
                         }
@@ -214,10 +200,16 @@ mod tests {
         }])
     }
 
+    fn clone_fn(name: &str) -> FunctionRef {
+        let mut f = FunctionRef::internal(name.to_string());
+        f.elidable_clone = true;
+        f
+    }
+
     fn clone_call(dst: u32, src: u32) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
-            func: FunctionRef::internal("string_clone".to_string()),
+            func: clone_fn("string_clone"),
             args: vec![MirOperand::Local(local(src))],
         })
     }
@@ -227,7 +219,7 @@ mod tests {
     }
 
     fn is_clone(stmt: &MirStmt) -> bool {
-        matches!(&stmt.kind, MirStmtKind::Call { func, .. } if is_clone_call(&func.name))
+        matches!(&stmt.kind, MirStmtKind::Call { func, .. } if func.elidable_clone)
     }
 
     // ── Basic elision ─────────────────────────────────────────────
@@ -399,11 +391,24 @@ mod tests {
     fn vec_clone_detected() {
         let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(1)),
-            func: FunctionRef::internal("Vec_clone".to_string()),
+            func: clone_fn("Vec_clone"),
             args: vec![MirOperand::Local(local(0))],
         })]);
         elide_clones_in_function(&mut f);
         assert!(is_move(&f.blocks[0].statements[0]));
+    }
+
+    /// A program's function whose name ends in `_clone` is an ordinary call
+    /// (#1557). Only lowering's mark makes a call a clone.
+    #[test]
+    fn unmarked_call_named_like_a_clone_is_kept() {
+        let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(local(1)),
+            func: FunctionRef::internal("make_clone".to_string()),
+            args: vec![MirOperand::Local(local(0))],
+        })]);
+        elide_clones_in_function(&mut f);
+        assert!(matches!(&f.blocks[0].statements[0].kind, MirStmtKind::Call { .. }));
     }
 
     #[test]

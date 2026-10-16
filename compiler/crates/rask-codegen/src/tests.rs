@@ -40,7 +40,7 @@ mod tests {
     fn call(dst: Option<u32>, name: &str, args: Vec<MirOperand>) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: dst.map(LocalId),
-            func: FunctionRef { name: name.to_string(), is_extern: false },
+            func: FunctionRef::internal(name.to_string()),
             args,
         })
     }

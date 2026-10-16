@@ -29,12 +29,13 @@ mod resolve;
 pub mod operators;
 mod validate;
 mod derive;
+mod clone_rule;
 mod arg_labels;
 mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, MethodOrigin, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};

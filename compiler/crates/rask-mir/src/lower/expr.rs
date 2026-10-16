@@ -392,18 +392,10 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| self.ctx.shared_elem_types.borrow().get(key).cloned())
     }
 
-    /// Is this receiver a Copy scalar — a number, a bool, a char?
-    ///
-    /// Asked of the checker rather than of MIR, because MIR types a channel's
-    /// `Sender<T>` and several other runtime handles as `I64`, and `.clone()`
-    /// on one of those is a reference count rather than nothing.
-    ///
-    /// `false` for a receiver whose type isn't recorded: that answer keeps the
-    /// call, which is what happened before this question was asked at all.
     /// Whether the call's receiver type declares `method` with a body: one
     /// somebody wrote, or one the checker derived and wrote (`eq`, `hash`,
-    /// `clone`). A method still marked `derived` has no body, and the call is
-    /// answered in place.
+    /// `clone`). A `Structural` method has no body, and the call is answered
+    /// in place.
     fn receiver_declares_method(&self, call: rask_ast::NodeId, method: &str) -> bool {
         self.ctx
             .call_targets
@@ -414,12 +406,20 @@ impl<'a> MirLowerer<'a> {
                 rask_types::TypeDef::Struct { methods, .. }
                 | rask_types::TypeDef::Enum { methods, .. }
                 | rask_types::TypeDef::NominalAlias { methods, .. } => {
-                    methods.iter().any(|m| m.name == method && !m.derived)
+                    methods.iter().any(|m| m.name == method && m.origin.has_body())
                 }
                 _ => false,
             })
     }
 
+    /// Is this receiver a Copy scalar — a number, a bool, a char?
+    ///
+    /// Asked of the checker rather than of MIR, because MIR types a channel's
+    /// `Sender<T>` and several other runtime handles as `I64`, and `.clone()`
+    /// on one of those is a reference count rather than nothing.
+    ///
+    /// `false` for a receiver whose type isn't recorded: that answer keeps the
+    /// call, which is what happened before this question was asked at all.
     fn receiver_is_copy_scalar(&self, object: &Expr) -> bool {
         use rask_types::Type;
         matches!(
@@ -6850,9 +6850,16 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
+        let mut func = FunctionRef::internal(final_name.clone());
+        func.elidable_clone = method == "clone"
+            && final_args.len() == 1
+            && self
+                .ctx
+                .lookup_raw_type(object.id)
+                .is_some_and(|ty| !self.ctx.type_defs.clone_runs_program_code(&ty));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
-            func: FunctionRef::internal(final_name.clone()),
+            func,
             args: final_args,
         }));
         // A link put into a container is an edge like any other, so the target

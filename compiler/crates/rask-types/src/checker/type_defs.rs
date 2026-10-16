@@ -307,15 +307,34 @@ pub struct MethodSig {
     /// whose argument doesn't meet it is an error: `sort` lives in
     /// `extend Vec<T> where T: Comparable`, and a `Vec<i64?>` can't call it.
     pub owner_bounds: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
-    /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
-    /// no body behind it, which the backends answer structurally.
-    pub derived: bool,
+    /// Who wrote it, and whether it has a body.
+    pub origin: MethodOrigin,
     /// Declared `public`. A checker-supplied signature has no declaration and
     /// is callable from anywhere, so it counts as public.
     pub is_public: bool,
     /// Each parameter's declared default, positionally matching `params`.
     /// Empty for a signature with no declaration behind it.
     pub defaults: Vec<Option<rask_ast::expr::Expr>>,
+}
+
+/// Where a method came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodOrigin {
+    /// Written in the program or the stdlib.
+    Declared,
+    /// The checker supplied it (EQ1, HA1, ORD1 and the rest) and the backends
+    /// answer it structurally: there is no body behind it.
+    Structural,
+    /// The checker supplied it and wrote its body (`derive.rs`). Runs no code
+    /// the program wrote beyond what its fields' own methods run.
+    Derived,
+}
+
+impl MethodOrigin {
+    /// A call to it is a call: there is a body to run.
+    pub fn has_body(self) -> bool {
+        self != MethodOrigin::Structural
+    }
 }
 
 /// How self is passed to a method.

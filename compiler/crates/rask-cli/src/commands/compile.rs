@@ -868,7 +868,7 @@ fn insert_bench_cleanup(mir_fn: &mut rask_mir::MirFunction) {
             for (local_id, free_fn) in to_free.iter().rev() {
                 block.statements.push(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef { name: free_fn.clone(), is_extern: false },
+                    func: FunctionRef::internal(free_fn.clone()),
                     args: vec![MirOperand::Local(*local_id)],
                 }));
             }
