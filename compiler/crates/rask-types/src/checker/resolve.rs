@@ -7,6 +7,7 @@ use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
 use super::type_defs::{Callee, MethodSig, TypeDef};
+use super::type_table::TypeOwner;
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
 use super::TypeChecker;
@@ -14,29 +15,34 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
 /// Which parameters of a stdlib sequence method are positions or counts
-/// (`std.collections/V8`, `V9`). Those take **any** integer type: the value is
-/// range-checked at the access, so a negative or oversized index panics or
-/// answers `none` rather than wrapping.
+/// (`std.collections/V8`, `V9`): every integer parameter its declaration has.
+/// Those take **any** integer type. The value is range-checked at the access,
+/// so a negative or oversized index panics or answers `none` rather than
+/// wrapping, and the declared width is what the runtime receives, not a
+/// constraint on the caller.
 ///
 /// Without this the signatures pinned an index to one integer type while
-/// `len()` answers `usize`, so `for i in 0..v.len() { v.get(i) }` — the most
-/// ordinary loop there is — didn't compile. `v[i]` never had the problem,
-/// because indexing was always checked this way; only the method spelling was.
+/// `len()` answers `usize`, so `for i in 0..v.len() { v.get(i) }`, the most
+/// ordinary loop there is, didn't compile.
 ///
-/// Positions, not a blanket rule: a `u64` parameter elsewhere in the stdlib
-/// (`Duration.from_millis`) still means that type, and still gets checked.
-fn sequence_index_params(recv: &str, method: &str) -> &'static [usize] {
-    match recv {
-        "Vec" | "string" | "Array" => match method {
-            // `set`/`insert` are (index, value) — only the index is a position.
-            "get" | "get_clone" | "remove" | "remove_at" | "skip" | "take" | "limit"
-            | "chunks" | "truncate" | "split_at" | "repeat" | "with_capacity"
-            | "set" | "insert" => &[0],
-            "swap" | "slice" => &[0, 1],
-            _ => &[],
-        },
-        _ => &[],
+/// Read off the declaration, for sequences only: a `u64` parameter elsewhere
+/// in the stdlib (`Duration.from_millis`) still means that type. This used to
+/// be a list of method names, which `char_at` and `byte_at` were missing
+/// from, so `s.char_at(i)` with an `i64` became an error the day string
+/// arguments started being checked (#1561).
+fn position_params(recv: &str, method: &str) -> Vec<usize> {
+    if !matches!(recv, "Vec" | "string" | "Sequence" | "Array") {
+        return Vec::new();
     }
+    let Some(stub) = rask_stdlib::lookup_method(recv, method) else {
+        return Vec::new();
+    };
+    stub.params
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, ty))| ty.bare_name().is_some_and(|n| rask_ast::primitives::is_integer(n)))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 impl TypeChecker {
@@ -508,9 +514,13 @@ impl TypeChecker {
         // shared across params and return so they line up.
         let mut method_params: HashMap<String, Type> = HashMap::new();
 
-        let index_params = super::receiver_name(ty, &self.types)
-            .map(|n| sequence_index_params(&n, method))
-            .unwrap_or(&[]);
+        let index_params = match self.ctx.apply(ty) {
+            Type::Named(id) | Type::Generic { base: id, .. }
+                if self.types.declared_by(id) != TypeOwner::Stdlib => Vec::new(),
+            receiver => super::receiver_name(&receiver, &self.types)
+                .map(|n| position_params(&n, method))
+                .unwrap_or_default(),
+        };
 
         let mut progress = false;
         for (i, ((param_ty, _mode), arg)) in method_sig.params.iter().zip(args.iter()).enumerate() {
