@@ -19,11 +19,13 @@ impl Interpreter {
     /// falling through to bind.
     fn is_known_type_name(&self, name: &str) -> bool {
         let base = name;
-        // The wide set here on purpose: a match arm can name `string`, and the
-        // interpreter still accepts the `int`/`uint` spellings.
+        // The wide set here on purpose: a match arm can name `string`. A
+        // nominal type missing from this list made `r is Meters` bind a new
+        // variable called `Meters`, which always matches.
         rask_ast::primitives::is_builtin_scalar_or_string(base)
             || self.enums.contains_key(base)
             || self.struct_decls.contains_key(base)
+            || self.nominal_targets.contains_key(base)
             || matches!(base, "Vec" | "Map")
     }
 
@@ -666,6 +668,9 @@ fn runtime_type_matches(value: &Value, ty: &TypeExpr) -> bool {
         // false here while native took the branch (#871).
         Value::Enum { name, .. } => *name == head,
         Value::Struct(s) => s.lock().unwrap().name == head,
+        // `type Meters = i64` is its own type. Its generic runtime name is
+        // "nominal", so the catch-all below never matched `r is Meters`.
+        Value::Nominal { type_name, .. } => *type_name == head,
         // Generic containers: compare the base name only — the interpreter
         // doesn't track element types at runtime, so it can't verify `<i32>`
         // matches. rask#217 generic type patterns.
