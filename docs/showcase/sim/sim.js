@@ -19,15 +19,15 @@ const OBJECTS = { 1: 'bank' };
 const TRACES = {
     fail: {
         file: 'bank.trace.json',
-        note: 'Both transfers read 100 before either one writes. Each passes its check, each debits 80.',
+        note: 'to_bob and to_carol both read 100 before either one subtracts, so both send 80.',
     },
     pass: {
         file: 'bank.pass.trace.json',
-        note: 'The same program, another seed. to_carol finishes before to_bob reads, so to_bob sees 20 and stops.',
+        note: 'Same program, different seed. to_carol finishes first, so to_bob reads 20 and stops.',
     },
     fixed: {
         file: 'bank_fixed.trace.json',
-        note: 'The fixed program on seed 1. Check and debit happen under one write lock, so the second transfer sees what the first left.',
+        note: 'The fixed program on seed 1. The read and the subtraction happen inside one write lock, so the second transfer reads 20.',
     },
 };
 

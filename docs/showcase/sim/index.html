@@ -4,10 +4,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sim mode — a race, caught and replayed · Rask</title>
-<meta name="description" content="A bank transfer race that fails one run in eight. Rask's sim mode finds it, replays it from a seed, and shows the interleaving step by step.">
-<meta property="og:title" content="A race, caught and replayed">
-<meta property="og:description" content="Rask's sim mode finds a concurrency bug, replays it from one number, and shows you the interleaving.">
+<title>Finding a race with sim mode · Rask</title>
+<meta name="description" content="Two tasks withdraw from one account at the same time and sometimes overdraw it. rask test --sim finds the bug, gives you a seed that reproduces it, and shows what each task did.">
+<meta property="og:title" content="Finding a race with sim mode">
+<meta property="og:description" content="rask test --sim finds a concurrency bug, gives you a seed that reproduces it, and shows what each task did.">
 <meta property="og:type" content="article">
 <meta property="og:url" content="https://rask-lang.dev/showcase/sim/">
 <link rel="icon" type="image/png" href="/book/assets/rask32.png">
@@ -38,15 +38,15 @@
 
 <div class="page intro">
     <span class="pill">showcase · sim mode</span>
-    <h1>A race, caught and replayed</h1>
-    <p class="lede prose">Two transfers leave one account at the same time. Every read and write of the balance holds the lock, so there is no data race. The test still fails about one run in eight. This page finds the failing run, replays it from a single number, and shows you what each task did.</p>
+    <h1>Finding a race with sim mode</h1>
+    <p class="lede prose">This program has a bug. Two tasks take money out of the same account at the same time, and sometimes the account ends up negative. A normal test run catches it about once in eight runs. <code>rask test --sim</code> catches it within a few seeds and gives you one that reproduces it every time.</p>
 </div>
 
 <section class="page">
-    <h2>The bank</h2>
+    <h2>The program</h2>
     <div class="prose">
-        <p>Alice has 100. One task sends 80 to Bob, another sends 80 to Carol. Only one of them should get through.</p>
-        <p>The balances live in a <code>Shared</code>, and the only way into one is a <code>with</code> block that holds its lock. That rules out two tasks touching <code>balances</code> at once. It says nothing about the gap <em>between</em> two blocks, and <code>transfer</code> checks the balance in one and debits it in the next.</p>
+        <p>Alice has 100. One task sends 80 to Bob and another sends 80 to Carol. One of them should fail.</p>
+        <p><code>transfer</code> reads the balance in one <code>with</code> block and subtracts in another. Each block holds the lock, so the two tasks never touch the balance at the same moment. But between the two blocks the other task can run, read the same 100, and subtract too.</p>
     </div>
     <figure class="window code-window" id="bank-source">
         <figcaption><span>bank.rk</span></figcaption>
@@ -55,9 +55,9 @@
 </section>
 
 <section class="page">
-    <h2>Run it the usual way</h2>
+    <h2>A normal test run</h2>
     <div class="prose">
-        <p>It passes. Run it two hundred times on a four-core machine and it fails about twenty-five of them, each time on whatever interleaving the hardware happened to pick. By the time you look, that interleaving is gone.</p>
+        <p>It passes most of the time. I ran it 400 times on a four-core machine and it failed 47 times. When it fails, all you get is the assertion, and running it again usually passes.</p>
     </div>
     <figure class="window terminal">
         <figcaption><span>terminal</span></figcaption>
@@ -73,10 +73,10 @@
 </section>
 
 <section class="page">
-    <h2>Run it under sim</h2>
+    <h2>A sim test run</h2>
     <div class="prose">
-        <p>With <code>--sim</code> the program runs on one OS thread, and every decision the hardware used to make comes from a seed instead: which task runs next, where a running task gets cut off, what the clock says. The scheduler, the run queues and the work stealing are the ones that ship. Only the choices are drawn from the seed.</p>
-        <p>The same seed takes the same path every time, so a failure comes with the command that brings it back. Seeds 1, 2 and 3 all fail. Of the first hundred, 43 do.</p>
+        <p><code>--sim</code> runs all the tasks on one thread, and a seed decides which task runs at each switch point. It's the same scheduler as a normal run. Only the choices come from the seed.</p>
+        <p>The same seed always gives the same order, so a failure always comes with a command that reproduces it. Seeds 1, 2 and 3 fail here, and 43 of the first 100 seeds do.</p>
     </div>
     <figure class="window terminal">
         <figcaption><span>terminal</span></figcaption>
@@ -85,9 +85,9 @@
 </section>
 
 <section class="page" id="watch">
-    <h2>Watch it happen</h2>
+    <h2>What happened</h2>
     <div class="prose">
-        <p>Add <code>--trace bank.json</code> to that replay line and sim writes down what every task did at every step: each lock it took, each line it printed, when it started and finished. This is that file, drawn one task to a column.</p>
+        <p>Add <code>--trace bank.json</code> to the replay command and sim records what each task did at each step: the locks it took, what it printed, and when it started and finished. Here's that file, one column per task.</p>
     </div>
 
     <div class="viewer">
@@ -104,7 +104,7 @@
             <span class="viewer-pos" id="viewer-pos"></span>
         </div>
         <div class="lanes" id="lanes"></div>
-        <p class="viewer-legend" id="viewer-legend" hidden><span class="chip stale">read bank</span> a read that went stale before its task wrote, and that write</p>
+        <p class="viewer-legend" id="viewer-legend" hidden><span class="chip stale">read bank</span> a read that was out of date by the time its task wrote, and that write</p>
         <p class="viewer-result" id="viewer-result"></p>
     </div>
 </section>
@@ -112,7 +112,7 @@
 <section class="page">
     <h2>The fix</h2>
     <div class="prose">
-        <p>The check and the debit go in one block, so no other transfer can land between them. Two thousand seeds pass.</p>
+        <p>Do the check and the subtraction in the same <code>with</code> block. Then no other task can run in between, and 2000 seeds pass.</p>
     </div>
     <figure class="window code-window" id="fixed-source">
         <figcaption><span>bank_fixed.rk, the changed function</span></figcaption>
@@ -129,10 +129,11 @@
 </section>
 
 <section class="page">
-    <h2>What this is</h2>
+    <h2>About sim mode</h2>
     <div class="prose">
-        <p>Deterministic simulation is how FoundationDB and TigerBeetle earn trust in their concurrent code. Each built its own. In Rask it's part of the test runner: the same program, linked against a runtime that takes its orders from a seed.</p>
-        <p>Beyond scheduling, sim runs a virtual clock (a 30-day <code>sleep</code> takes no wall time), keeps file writes in an overlay, and can inject I/O errors, dropped connections and clock jumps when a test asks for them. The rules are in the <a href="https://github.com/rask-lang/rask/blob/main/specs/sim.md">sim spec</a>. The programs and traces on this page are the files next to it, and a test in the compiler's suite regenerates the traces and fails if they change.</p>
+        <p>FoundationDB and TigerBeetle test their concurrent code this way, with simulators they built themselves. In Rask it's a flag on <code>rask test</code>.</p>
+        <p>Sim also runs a virtual clock, so a 30-day <code>sleep</code> returns right away. It keeps file writes in memory, and it can inject I/O errors, dropped connections and clock jumps when a test asks for them. Details are in the <a href="https://github.com/rask-lang/rask/blob/main/specs/sim.md">sim spec</a>.</p>
+        <p>The programs and traces on this page are checked in next to it. The compiler's test suite regenerates the traces and fails if they change.</p>
     </div>
 </section>
 
