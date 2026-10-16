@@ -382,26 +382,39 @@ impl Interpreter {
         }
     }
 
-    /// Handle File instance methods (close, read_bytes, read_text, write, write_line).
+    /// The raw `@native` half of `File` (stdlib/io.rk): the symbols the Rask
+    /// bodies of `write`, `write_text`, `write_bytes`, `write_line`, `close`,
+    /// `read_bytes`, `seek` and `position` call. Each answers what the C
+    /// runtime does: 0 or -1 with the OS error recorded for
+    /// `IoError.last_os_error`, a position or -1, the bytes or `none`.
+    ///
+    /// The public methods were answered here too once, ahead of their Rask
+    /// bodies, and a failed write came back as `Err(<a string>)` where the
+    /// body builds an `IoError` (#1562).
     pub(crate) fn call_file_method(
         &mut self,
         file: &Arc<Mutex<Option<std::fs::File>>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
+        use std::io::Write;
+        let status = |r: std::io::Result<()>| match r {
+            Ok(()) => Value::int(0),
+            Err(e) => {
+                super::net::set_last_os_error(&e);
+                Value::int(-1)
+            }
+        };
+        let closed = |operation: &str| RuntimeError::ResourceClosed {
+            resource_type: "File".to_string(),
+            operation: operation.to_string(),
+        };
         match method {
-            // `void or IoError`, as the native one is. `std::fs::File` buffers
-            // nothing, so every write has already reported its error and
-            // closing has none left to give.
-            "close" => {
-                let ok = Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0, origin: None,
-                };
+            // `std::fs::File` buffers nothing, so every write has already
+            // reported its error and closing has none left to give.
+            "close_raw" => {
                 if file.lock().unwrap().is_none() {
-                    return Ok(ok);
+                    return Ok(Value::int(0));
                 }
                 let ptr = Arc::as_ptr(file) as usize;
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
@@ -409,7 +422,33 @@ impl Interpreter {
                         .map_err(|msg| RuntimeError::Panic(msg))?;
                 }
                 let _ = file.lock().unwrap().take();
-                Ok(ok)
+                Ok(Value::int(0))
+            }
+            "write_raw" | "write_line_raw" => {
+                let content = self.expect_string(&args, 0)?;
+                let mut file_opt = file.lock().unwrap();
+                let f = file_opt.as_mut().ok_or_else(|| closed("write to"))?;
+                let r = if method == "write_line_raw" {
+                    writeln!(f, "{}", content)
+                } else {
+                    f.write_all(content.as_bytes())
+                };
+                Ok(status(r))
+            }
+            "write_bytes_raw" => {
+                let bytes: Vec<u8> = match args.first() {
+                    Some(Value::Vec(v)) => v.lock().unwrap().iter().map(|val| match val {
+                        Value::Int(n, _) => *n as u8,
+                        _ => 0,
+                    }).collect(),
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "File.write_bytes: expected Vec<u8>, got {}",
+                        args.first().map(|v| v.type_name()).unwrap_or("missing")
+                    ))),
+                };
+                let mut file_opt = file.lock().unwrap();
+                let f = file_opt.as_mut().ok_or_else(|| closed("write to"))?;
+                Ok(status(f.write_all(&bytes)))
             }
             // std.io/K1, K3. The two halves of `Seeker` as the backends see
             // them: a position, or -1. The `SeekFrom` is taken apart by the
@@ -447,16 +486,10 @@ impl Interpreter {
                     Err(_) => Ok(Value::int(-1)),
                 }
             }
-            // `File.read_bytes` and `read_text` are Rask bodies over this one
-            // (stdlib/io.rk): the bytes, or `none` with the OS error recorded
-            // for `IoError.last_os_error`. Answering the public methods here
-            // instead handed `read_bytes` a string where an `IoError` belonged.
             "read_bytes_raw" => {
                 use std::io::Read;
                 let mut file_opt = file.lock().unwrap();
-                let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "read from".to_string() }
-                })?;
+                let f = file_opt.as_mut().ok_or_else(|| closed("read from"))?;
                 let mut content = Vec::new();
                 match f.read_to_end(&mut content) {
                     Ok(_) => {
@@ -477,93 +510,6 @@ impl Interpreter {
                             variant_index: 1, origin: None,
                         })
                     }
-                }
-            }
-            "write" => {
-                use std::io::Write;
-                let mut file_opt = file.lock().unwrap();
-                let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
-                })?;
-                let content = self.expect_string(&args, 0)?;
-                match f.write_all(content.as_bytes()) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(e) => Ok(io_error_result(&e)),
-                }
-            }
-            "write_text" => {
-                use std::io::Write;
-                let mut file_opt = file.lock().unwrap();
-                let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
-                })?;
-                let content = self.expect_string(&args, 0)?;
-                match f.write_all(content.as_bytes()) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
-                }
-            }
-            "write_bytes" => {
-                use std::io::Write;
-                let mut file_opt = file.lock().unwrap();
-                let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
-                })?;
-                let bytes: Vec<u8> = match args.first() {
-                    Some(Value::Vec(v)) => v.lock().unwrap().iter().map(|val| match val {
-                        Value::Int(n, _) => *n as u8,
-                        _ => 0,
-                    }).collect(),
-                    _ => return Err(RuntimeError::TypeError(format!(
-                        "File.write_bytes: expected Vec<u8>, got {}",
-                        args.first().map(|v| v.type_name()).unwrap_or("missing")
-                    ))),
-                };
-                match f.write_all(&bytes) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
-                }
-            }
-            "write_line" => {
-                use std::io::Write;
-                let mut file_opt = file.lock().unwrap();
-                let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
-                })?;
-                let content = self.expect_string(&args, 0)?;
-                match writeln!(f, "{}", content) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(e) => Ok(io_error_result(&e)),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {

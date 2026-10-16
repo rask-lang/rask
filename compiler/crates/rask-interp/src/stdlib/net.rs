@@ -524,7 +524,10 @@ impl Interpreter {
         _args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "accept" => {
+            // `rask_net_tcp_accept`: the connection, or one with no socket
+            // behind it and the OS error recorded. `accept` is the Rask body
+            // in net.rk that turns the second into an `IoError` (#1562).
+            "accept_handle" => {
                 let guard = listener.lock().unwrap();
                 let l = guard.as_ref().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpListener".to_string(), operation: "accept on".to_string() }
@@ -535,11 +538,18 @@ impl Interpreter {
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker
                             .register_file(ptr, self.env.scope_depth());
-                        Ok(make_result_ok(Value::TcpConnection(arc)))
+                        Ok(Value::TcpConnection(arc))
                     }
-                    Err(e) => Ok(io_err(&e)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::TcpConnection(Arc::new(Mutex::new(None))))
+                    }
                 }
             }
+            // `rask_net_is_invalid`: a failed syscall's handle. The interpreter
+            // can't fail to resolve an address it was handed a listener for.
+            "is_invalid" => Ok(Value::Bool(listener.lock().unwrap().is_none())),
+            "is_unresolved" => Ok(Value::Bool(false)),
             "close" => {
                 if listener.lock().unwrap().is_none() {
                     return Ok(make_result_ok(Value::Unit));
@@ -579,21 +589,16 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "read_text" => {
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
-                })?;
-                let mut bytes = Vec::new();
-                match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut bytes)) {
-                    Ok(_) => match String::from_utf8(bytes) {
-                        Ok(buf) => Ok(make_result_ok(Value::String(Arc::new(Mutex::new(buf))))),
-                        Err(_) => Ok(make_result_err("stream did not contain valid UTF-8")),
-                    },
-                    Err(e) => Ok(io_err(&e)),
-                }
-            }
-            "read_bytes" => {
+            // `rask_net_is_invalid`: a failed syscall's handle, which is what
+            // `accept_handle` hands back when the accept fails.
+            "is_invalid" => Ok(Value::Bool(stream.lock().unwrap().is_none())),
+            "is_unresolved" => Ok(Value::Bool(false)),
+            // `rask_net_read_bytes` / `rask_net_write_bytes`: the bytes or
+            // `none`, a count or -1, with the OS error recorded. `read_bytes`,
+            // `write_bytes`, `read_text` and `write_text` are the Rask bodies
+            // in net.rk over these; their Rust copies here used to win, and a
+            // failure came back as `Err(<a string>)` (#1562).
+            "read_bytes_raw" => {
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
@@ -602,23 +607,27 @@ impl Interpreter {
                 match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut buf)) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
-                        Ok(make_result_ok(Value::vec(bytes)))
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![Value::vec(bytes)],
+                            variant_index: 0,
+                            origin: None,
+                        })
                     }
-                    Err(e) => Ok(io_err(&e)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                            variant_index: 1,
+                            origin: None,
+                        })
+                    }
                 }
             }
-            "write_text" => {
-                let data = self.expect_string(&args, 0)?;
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
-                })?;
-                match Cancellable::new(s).and_then(|mut c| c.write_all(data.as_bytes()).and_then(|_| c.flush())) {
-                    Ok(()) => Ok(make_result_ok(Value::Unit)),
-                    Err(e) => Ok(io_err(&e)),
-                }
-            }
-            "write_bytes" => {
+            "write_bytes_raw" => {
                 let bytes: Vec<u8> = match args.first() {
                     Some(Value::Vec(v)) => v.lock().unwrap().iter().map(|val| match val {
                         Value::Int(n, _) => *n as u8,
@@ -634,8 +643,11 @@ impl Interpreter {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
                 })?;
                 match Cancellable::new(s).and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
-                    Ok(()) => Ok(make_result_ok(Value::Unit)),
-                    Err(e) => Ok(io_err(&e)),
+                    Ok(()) => Ok(Value::int(bytes.len() as i64)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::int(-1))
+                    }
                 }
             }
             "remote_addr" => {

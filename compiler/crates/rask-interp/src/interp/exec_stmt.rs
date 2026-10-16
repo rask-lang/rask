@@ -498,9 +498,14 @@ impl Interpreter {
                             scope: self.env.capture_shared(),
                             lent: self.env.lent_names(),
                         });
+                        // Blame the line inside the sequence that failed, not
+                        // this loop, as a method call does (#1110).
+                        let outer = self.failed_call_span.take();
                         let driven = self.call_value(seq, vec![Value::Builtin(
                             crate::value::BuiltinKind::SequenceYield,
                         )]);
+                        let inner = self.failed_call_span.take();
+                        self.failed_call_span = outer;
                         let frame = self.yield_stack.pop();
                         // The body's own escape wins over anything the sequence
                         // says on the way out: a `return` in the loop body is
@@ -511,7 +516,7 @@ impl Interpreter {
                         }
                         driven
                             .map(|_| Value::Unit)
-                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))
+                            .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(stmt.span)))
                     }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(

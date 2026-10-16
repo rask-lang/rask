@@ -92,37 +92,6 @@ impl Interpreter {
                 crate::rack::register_element(v, &pushed);
                 Ok(Value::Unit)
             }
-            // C2: hands the value back rather than panicking. Native lowers the
-            // same shape inline at the call site (stdlib generic bodies aren't
-            // monomorphized, so the element can't cross a call boundary there).
-            // `NoMemory` has no path on either backend — the allocator panics on
-            // OOM rather than reporting it.
-            "try_push" => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
-                let mut guard = v.lock().unwrap();
-                if guard.is_full() {
-                    return Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
-                            name: "GrowError".to_string(),
-                            variant: "Full".to_string(),
-                            fields: vec![item],
-                            variant_index: 0,
-                            origin: None,
-                        }],
-                        variant_index: 0,
-                        origin: None,
-                    });
-                }
-                guard.push(item);
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0, origin: None,
-                })
-            }
             // `as_mut_ptr` differs only in taking `mutate self`, which the
             // checker enforces — both hand back the same buffer.
             "as_ptr" | "as_mut_ptr" => Ok(Value::RawPtr(RawPtr::elements(v))),
@@ -380,20 +349,6 @@ impl Interpreter {
                 }
                 Ok(Value::vec(mapped))
             }
-            "flat_map" => {
-                let closure = args.into_iter().next().unwrap_or(Value::Unit);
-                let vec = v.lock().unwrap();
-                let mut result = Vec::new();
-                for item in vec.iter() {
-                    let mapped = self.call_value(closure.clone(), vec![item.clone()])?;
-                    if let Value::Vec(inner) = mapped {
-                        result.extend(inner.lock().unwrap().items.clone());
-                    } else {
-                        result.push(mapped);
-                    }
-                }
-                Ok(Value::vec(result))
-            }
             "fold" => {
                 let init = args.get(0).cloned().unwrap_or(Value::Unit);
                 let closure = args.get(1).cloned().unwrap_or(Value::Unit);
@@ -455,18 +410,6 @@ impl Interpreter {
                 let vec = v.lock().unwrap();
                 let taken: Vec<Value> = vec.iter().take(n).cloned().collect();
                 Ok(Value::vec(taken))
-            }
-            "flatten" => {
-                let vec = v.lock().unwrap();
-                let mut flattened = Vec::new();
-                for item in vec.iter() {
-                    if let Value::Vec(inner) = item {
-                        flattened.extend(inner.lock().unwrap().items.clone());
-                    } else {
-                        flattened.push(item.clone());
-                    }
-                }
-                Ok(Value::vec(flattened))
             }
             "sort" => {
                 // std.collections/SO3: `sort()` is `T: Comparable`, so a type
@@ -954,20 +897,6 @@ impl Interpreter {
             }
             // Deep, for the same reason as `Vec.clone`.
             "clone" => Ok(Value::Map(Arc::clone(m)).clone_as_element()),
-            "insert_if_missing" => {
-                let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
-                    expected: 2,
-                    got: args.len(),
-                })?;
-
-                if !self.map_contains(&m, key.clone())? {
-                    let new_value = self.call_closure_no_args(factory)?;
-                    self.map_insert(&m, key, new_value)?;
-                }
-
-                Ok(Value::Unit)
-            }
             "modify_with_default" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {

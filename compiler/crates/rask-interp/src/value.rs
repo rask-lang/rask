@@ -1348,6 +1348,28 @@ impl fmt::Debug for IteratorState {
 
 impl Value {
     /// An unbounded vector holding `items`.
+    /// The success side of a `T or E`.
+    pub fn ok(value: Value) -> Value {
+        Value::Enum {
+            name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            fields: vec![value],
+            variant_index: 0,
+            origin: None,
+        }
+    }
+
+    /// The error side of a `T or E`.
+    pub fn err(error: Value) -> Value {
+        Value::Enum {
+            name: "Result".to_string(),
+            variant: "Err".to_string(),
+            fields: vec![error],
+            variant_index: 1,
+            origin: None,
+        }
+    }
+
     pub fn vec(items: Vec<Value>) -> Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
     }
