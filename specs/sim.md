@@ -13,7 +13,7 @@ Sim is a **link choice, not a dialect** (`determinism/D2`, `D3`). `rask test --s
 
 | Rule | Description |
 |------|-------------|
-| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime — one file, or every file in a directory of loose files. v1 is test-only — `rask run --sim` is not part of it, and neither is a package directory |
+| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime — one file, every file in a directory of loose files, or a package, built as one program with the C its `build.rk` links. v1 is test-only — `rask run --sim` is not part of it |
 | **I2: Run seed** | `--seed N` fixes the run seed (u64, decimal). Without it the runner draws from system entropy and prints it in the header |
 | **I3: Per-test seed** | Each test's seed derives from (run seed, module name, test name), where a file's module name is its stem. A test replays identically no matter which other tests ran, in what order, or whether they ran at all |
 | **I4: Replay line** | Every failure prints the exact command that reproduces it. The printed line is the repro — that's the whole point |
@@ -169,7 +169,7 @@ A replay line reproduces a failure; a trace shows it. It's the schedule the seed
 
 | Rule | Description |
 |------|-------------|
-| **TR1: One schedule** | `--trace FILE` writes the schedule of one test under one seed to FILE. It's refused with `--seeds` above 1, with a directory, and when the filter leaves more than one test: a trace is something to replay, so it starts from a replay line |
+| **TR1: One schedule** | `--trace FILE` writes the schedule of one test under one seed to FILE. It's refused with `--seeds` above 1, with a directory of loose files, and when the filter leaves more than one test: a trace is something to replay, so it starts from a replay line |
 | **TR2: What's in it** | Per event: the step it happened at, the task, and what it did. Spawning a task, finishing or panicking, joining one; acquiring and releasing a `Shared` or `Shared<T, Mutex>` the program made; sending and receiving on a channel; and each line the task printed. The objects tasks meet on are numbered by first appearance, so a trace reads the same on every machine |
 | **TR3: Written either way** | The trace is written when the test reports, pass or fail. A deadlock and a spent step budget are failures like any other and leave a trace too. It carries the test's name, its outcome and error, the step count and the replay line |
 | **TR4: Observing doesn't steer** | Recording draws nothing from any stream and adds no scheduling point, so a traced replay takes exactly the schedule the untraced one did |

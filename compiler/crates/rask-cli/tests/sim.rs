@@ -391,6 +391,24 @@ fn a_trace_shows_the_interleaving_that_overdrew_the_account() {
     assert_eq!(saw_100, 2, "each task's printed line is in its lane:\n{text}");
 }
 
+/// A package runs under sim as one program, with the C its `build.rk`
+/// compiles: that C's `getrandom` and `clock_gettime` answer from the seed.
+#[test]
+fn a_package_with_linked_c_runs_under_sim() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("sim_cpkg");
+    let dir = std::env::temp_dir().join(format!("rask_sim_cpkg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+    }
+    let first = printed(&dir, "3", ".");
+    assert!(first[0].ends_with("wall 1577836800"), "the virtual wall clock: {first:?}");
+    assert_eq!(first, printed(&dir, "3", "."), "same seed, same answers");
+    assert_ne!(first, printed(&dir, "4", "."), "another seed, other random bytes");
+}
+
 /// sim/N1: a datagram link is healthy (delayed, in order) or, on some seeds,
 /// bad for the whole run: datagrams lost, repeated and reordered. A protocol
 /// that trusts UDP passes the healthy seeds and fails a bad one, the report
@@ -416,7 +434,7 @@ fn a_bad_link_breaks_a_protocol_that_trusts_udp() {
 
 /// What a run printed, read off its trace (a passing run's output isn't shown).
 fn printed(dir: &Path, seed: &str, file: &str) -> Vec<String> {
-    let trace_file = format!("{file}.{seed}.json");
+    let trace_file = format!("trace.{seed}.json");
     let (out, code) = sim_in(dir, &["--seed", seed, "--trace", &trace_file, file]);
     assert_eq!(code, 0, "{out}");
     let text = std::fs::read_to_string(dir.join(&trace_file)).unwrap();
