@@ -850,6 +850,15 @@ int64_t rask_sim_time_ns(void) {
     return g.now_ns;
 }
 
+// `SystemTime` starts at 2020-01-01T00:00:00Z (sim/C1) and moves with the
+// virtual clock, plus whatever ClockJump has added. Not a scheduling step:
+// time.c takes the step itself, and linked C reads this from the middle of
+// code that can't be switched away from (sim_libc.c).
+#define SIM_WALL_CLOCK_START_NS (1577836800LL * 1000000000LL)
+int64_t rask_sim_wall_ns(void) {
+    return SIM_WALL_CLOCK_START_NS + g.now_ns + rask_sim_wall_jump_ns();
+}
+
 #endif // RASK_SIM
 
 #ifndef RASK_SIM

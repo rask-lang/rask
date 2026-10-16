@@ -391,6 +391,37 @@ fn a_trace_shows_the_interleaving_that_overdrew_the_account() {
     assert_eq!(saw_100, 2, "each task's printed line is in its lane:\n{text}");
 }
 
+/// What a run printed, read off its trace (a passing run's output isn't shown).
+fn printed(dir: &Path, seed: &str, file: &str) -> Vec<String> {
+    let trace_file = format!("{file}.{seed}.json");
+    let (out, code) = sim_in(dir, &["--seed", seed, "--trace", &trace_file, file]);
+    assert_eq!(code, 0, "{out}");
+    let text = std::fs::read_to_string(dir.join(&trace_file)).unwrap();
+    let trace: serde_json::Value = serde_json::from_str(&text).unwrap();
+    trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "print")
+        .map(|e| e["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// sim/B7, B8: C asking libc for the time, randomness, its pid or memory gets
+/// answers from the seed — a fixed pid, the virtual clocks, a poisoned block
+/// from the fixed-address heap — and random bytes that follow the seed.
+#[test]
+fn linked_c_gets_answers_from_the_seed() {
+    let dir = fixture_copy();
+    let first = printed(&dir, "7", "libc.rk");
+    assert_eq!(first[0], "pid 1000 wall 1577836800 mono 0", "{first:?}");
+    // glibc would hand back 24 usable bytes and leave them as it found them.
+    assert_eq!(first[1], "fresh byte 170, usable 16", "{first:?}");
+    assert_eq!(first, printed(&dir, "7", "libc.rk"), "same seed, same answers");
+    let other = printed(&dir, "8", "libc.rk");
+    assert_ne!(first[2], other[2], "random bytes follow the seed: {first:?} {other:?}");
+}
+
 #[test]
 fn trace_takes_one_schedule() {
     let (out, code) = sim(&["--seeds", "5", "--trace", "x.json", "overdraft.rk"]);

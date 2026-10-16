@@ -120,6 +120,7 @@ void rask_sim_task_join(void *task);
 void rask_sim_begin(uint64_t seed, int64_t max_steps);
 int64_t rask_sim_step(void);
 int64_t rask_sim_time_ns(void);
+int64_t rask_sim_wall_ns(void);
 _Noreturn void rask_test_sim_fail(const char *msg);
 
 // A call sim has no model for (sim/B3). Panics under sim with "no simulated
