@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `with … as b` name is a fresh binding for the block, whatever `b` meant
+// outside it.
+//
+// The ownership pass never registered the `as` name, so inside the block `b`
+// read the state of the outer `b`. An outer `b` that had been moved made every
+// use of the new one "use of moved value", pointing at the move of the other.
+import sync.Shared
+
+struct Ledger {
+    entries: Vec<i64>
+}
+
+test "mem.borrowing — a with-as name shadows a moved binding" {
+    let b = Ledger(entries: [1, 2])
+    let kept = b
+    let shared = Shared.new(Ledger(entries: [3, 4, 5]))
+    let n = with shared.read() as b { b.entries.len() }
+    assert n == 3
+    assert kept.entries.len() == 2
+}
