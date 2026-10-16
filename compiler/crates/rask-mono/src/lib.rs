@@ -9,6 +9,7 @@
 
 pub mod drop_names;
 pub mod abi;
+pub mod runtime_abi;
 mod instantiate;
 mod layout;
 mod reachability;

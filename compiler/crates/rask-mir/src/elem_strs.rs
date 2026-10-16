@@ -19,6 +19,7 @@
 //! tuple fit nowhere in that, so `Vec<(string, i64)>` described its elements
 //! as owning nothing and every string in it leaked (#1395).
 
+use rask_mono::runtime_abi;
 use crate::{MirConst, MirOperand, MirType};
 
 /// The constructor argument describing elements of type `ty`. Pass the type
@@ -40,20 +41,18 @@ pub fn elem(ty: MirType) -> MirOperand {
 /// An arena is not a box's payload, and a string is refcounted and released
 /// by whoever put it in.
 ///
-/// These values are duplicated in `rask_runtime.h` as `RASK_BOX_PAYLOAD_*`.
-/// They are a handful of integers with no other reader; keeping them in step
-/// is a comment because generating them would be more machinery than the
-/// thing itself.
-pub const BOX_PAYLOAD_NONE: i64 = 0;
-pub const BOX_PAYLOAD_VEC: i64 = 1;
-pub const BOX_PAYLOAD_MAP: i64 = 2;
+/// The `RASK_BOX_PAYLOAD_*` kinds in `rask_mono::runtime_abi`, which the
+/// runtime reads from the generated rask_abi.h.
+pub const BOX_PAYLOAD_NONE: i64 = runtime_abi::RASK_BOX_PAYLOAD_NONE;
+pub const BOX_PAYLOAD_VEC: i64 = runtime_abi::RASK_BOX_PAYLOAD_VEC;
+pub const BOX_PAYLOAD_MAP: i64 = runtime_abi::RASK_BOX_PAYLOAD_MAP;
 /// A closure block. Same reason as the two byte stores: the box holds the
 /// address and the frame that built the closure gave it away, so the block
 /// comes back when the box's last reference does (#1253).
-pub const BOX_PAYLOAD_CLOSURE: i64 = 3;
+pub const BOX_PAYLOAD_CLOSURE: i64 = runtime_abi::RASK_BOX_PAYLOAD_CLOSURE;
 /// Another box. Its strategy isn't this box's to know: every box starts with
 /// its own release, and the runtime calls that (#1302).
-pub const BOX_PAYLOAD_BOX: i64 = 4;
+pub const BOX_PAYLOAD_BOX: i64 = runtime_abi::RASK_BOX_PAYLOAD_BOX;
 
 /// The payload kind for a checker type and its head name.
 ///

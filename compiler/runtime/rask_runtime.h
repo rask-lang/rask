@@ -9,6 +9,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Status codes, kind tags and encodings shared with the compiler.
+#include "rask_abi.h"
+
 // ─── Allocator ──────────────────────────────────────────────
 // Swappable allocator with optional stats tracking.
 // Default uses malloc/realloc/free. Call rask_allocator_set() before any
@@ -124,20 +127,12 @@ typedef struct {
 // container payload is a handle in the box's slot rather than bytes the box can
 // free, and only the runtime knows when the last reference goes.
 //
-// Same integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
-// comment names this one back.
-#define RASK_BOX_PAYLOAD_NONE 0
-#define RASK_BOX_PAYLOAD_VEC  1
-#define RASK_BOX_PAYLOAD_MAP  2
-#define RASK_BOX_PAYLOAD_CLOSURE 3
-#define RASK_BOX_PAYLOAD_BOX  4   // another box: freed through its own header
+// The `RASK_BOX_PAYLOAD_*` values are in rask_abi.h.
 
-#define RASK_OWNED_KIND_SHIFT 28
-#define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
-#define RASK_OWNED_STRING 0
-#define RASK_OWNED_VEC    1
-#define RASK_OWNED_MAP    2
-// A guard, not a thing to free: the entries that follow apply only when the
+// Owned-entry kinds, `RASK_OWNED_*` in rask_abi.h. An entry is the byte offset
+// in the low `RASK_OWNED_KIND_SHIFT` bits and the kind above them.
+//
+// `RASK_OWNED_TAG_IF`: a guard, not a thing to free: the entries that follow apply only when the
 // tag at some offset holds a particular value.
 //
 // This is what lets an *enum* be described. Where an enum's string or vector
@@ -162,8 +157,7 @@ typedef struct {
 // inside it: one entry at offset zero. The block describes itself —
 // `rask_closure_free` reads its size and its environment-drop glue out of the
 // header words before the pointer — so releasing one needs nothing type-specific
-// and retaining one is a count on the same header (#1149).
-#define RASK_OWNED_CLOSURE 4
+// and retaining one is a count on the same header (#1149). `RASK_OWNED_CLOSURE`.
 
 // A trait box element: the 16 bytes are `[data, vtable]`, and the block `data`
 // names belongs to the container. Its size is the vtable's first word, so a
@@ -174,12 +168,10 @@ typedef struct {
 // answer yet: a box inside a container has no frame outliving it, and #1144's
 // rule is that a boxed value's contents belong to the frame. So a `Vec<any
 // Trait>` of values with containers in them still leaks those — as every box
-// did before #1144 — minus the block.
-#define RASK_OWNED_TRAITBOX 5
+// did before #1144 — minus the block. `RASK_OWNED_TRAITBOX`.
 
-// Word index of the vtable's `owned_release`, which has to agree with
-// `rask_mir::vtable_layout` — byte offset 16, so the third word.
-#define RASK_VTABLE_OWNED_RELEASE_WORD 2
+// `RASK_VTABLE_OWNED_RELEASE_WORD` is the word index of the vtable's
+// `owned_release`, byte offset 16 in `rask_mir::vtable_layout`.
 
 // A `Heap<T>` at this offset: the slot holds a pointer to a block, the block
 // holds a `T`, and the aggregate owns both. The entries after this one describe
@@ -193,8 +185,7 @@ typedef struct {
 // element would need `retain` to deep-copy the block on a clone, and a block
 // carries no size for that — so the constructors never see this kind, and a
 // `Heap` in a container element is still nobody's, the way a boxed value's
-// contents are.
-#define RASK_OWNED_HEAP 6
+// contents are. `RASK_OWNED_HEAP`.
 #define RASK_OWNED_HEAP_OFFSET(e) ((e) & 0xFFFF)
 #define RASK_OWNED_HEAP_COUNT(e)  (((e) >> 16) & 0xFFF)
 
@@ -210,10 +201,8 @@ typedef struct {
 // Direct self-reference only. `A` holding a `Heap<B>` holding a `Heap<A>` has
 // no entry that can name A from inside B's list, so codegen describes nothing
 // for that shape and it leaks — the same answer this file gives everywhere else
-// it can't describe something exactly.
-#define RASK_OWNED_SELF 7
+// it can't describe something exactly. `RASK_OWNED_SELF`.
 
-#define RASK_OWNED_TAG_IF 3
 #define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
 #define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
 #define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
@@ -718,10 +707,7 @@ int64_t   rask_rack_len(const RaskRack *r);
 int64_t   rask_rack_is_empty(const RaskRack *r);
 int64_t   rask_rack_contains(const RaskRack *r, const void *link);
 // What a link-bearing field of the node type holds. Packed into the descriptor
-// alongside the byte offset, two int32s per field.
-#define RASK_RACK_FIELD_LINK 0
-#define RASK_RACK_FIELD_VEC  1
-#define RASK_RACK_FIELD_MAP  2
+// alongside the byte offset, two int32s per field: `RASK_RACK_FIELD_*`.
 
 // The node type's shape arrives here rather than at `new`: `Rack.new()` has no
 // argument to read `T` off. `fields` is `field_count` pairs of
@@ -834,9 +820,8 @@ int64_t     rask_file_close(int64_t file);
 const char *rask_io_error_text(int32_t err);
 void rask_io_error_message(RaskStr *out, int32_t err);
 
-#define RASK_STROUT_OK    0
-#define RASK_STROUT_ERROR 1   // *err_out holds the message → IoError.Other(msg)
-#define RASK_STROUT_EOF   2   // input ran out → IoError.UnexpectedEof
+// How a string-out-param call ended: `RASK_STROUT_*`. ERROR means *err_out
+// holds the message (IoError.Other), EOF that the input ran out.
 
 int64_t     rask_file_read_bytes(int64_t file);
 int64_t     rask_file_write(int64_t file, const RaskStr *content);
@@ -940,44 +925,18 @@ void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 // input to rask_json_decode_into, read back the error kind. The shape is what
 // stands in for reflection — codegen has no type info at runtime.
 
-// Parsed value kinds.
-#define RASK_JSON_NULL 0
-#define RASK_JSON_BOOL 1
-#define RASK_JSON_NUM  2
-#define RASK_JSON_STR  3
-#define RASK_JSON_ARR  4
-#define RASK_JSON_OBJ  5
+// Parsed value kinds: `RASK_JSON_NULL` … `RASK_JSON_OBJ`.
 
-// Decode outcomes. Nonzero maps onto a JsonError variant at the call site.
-#define RASK_JSON_OK          0
-#define RASK_JSON_ERR_PARSE   1
-#define RASK_JSON_ERR_TYPE    2
-#define RASK_JSON_ERR_MISSING 3
+// Decode outcomes, `RASK_JSON_OK` and `RASK_JSON_ERR_*`. Nonzero maps onto a
+// JsonError variant at the call site.
 
 // Shape kinds. The primitives come first and their order is the index into the
 // singleton table, so keep them contiguous and keep PRIM_COUNT last of them.
-#define RASK_JSHAPE_BOOL   0
-#define RASK_JSHAPE_I8     1
-#define RASK_JSHAPE_I16    2
-#define RASK_JSHAPE_I32    3
-#define RASK_JSHAPE_I64    4
-#define RASK_JSHAPE_U8     5
-#define RASK_JSHAPE_U16    6
-#define RASK_JSHAPE_U32    7
-#define RASK_JSHAPE_U64    8
-#define RASK_JSHAPE_F32    9
-#define RASK_JSHAPE_F64    10
-#define RASK_JSHAPE_STRING 11
-#define RASK_JSHAPE_PRIM_COUNT 12
-#define RASK_JSHAPE_VEC    12
-#define RASK_JSHAPE_MAP    13
-#define RASK_JSHAPE_OPT    14
-#define RASK_JSHAPE_STRUCT 15
+// `RASK_JSHAPE_*`.
 
 // Shape field flags.
 // Not in the serialized form (`@no_serialize`): encode leaves it out, and
-// decode never looks for it and always runs its fill.
-#define RASK_JFIELD_NOT_SERIALIZED 1
+// decode never looks for it and always runs its fill. `RASK_JFIELD_NOT_SERIALIZED`.
 
 // Writes a field's default into its slot. Called for a field the input leaves
 // out; generated per field by the call site.
@@ -1178,9 +1137,7 @@ typedef int64_t (*RaskTaskFn)(void *env);
 
 // How a joined task ended. Codegen turns this into the Result tag, so the
 // numbering here is the only thing the two sides have to agree on besides the
-// offsets.
-#define RASK_JOIN_OK        0
-#define RASK_JOIN_PANICKED  1
+// offsets. `RASK_JOIN_OK`, `RASK_JOIN_PANICKED`.
 
 // Wait, and report how it ended separately from the value, so a task that
 // legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
@@ -1297,14 +1254,8 @@ typedef struct RaskChannel RaskChannel;
 typedef struct RaskSender  RaskSender;
 typedef struct RaskRecver  RaskRecver;
 
-// Status codes for channel operations.
-#define RASK_CHAN_OK     0
-#define RASK_CHAN_CLOSED -1
-#define RASK_CHAN_FULL   -2
-#define RASK_CHAN_EMPTY  -3
-// The task was cancelled while it waited (conc.async/CN3). The same code
-// ends a sleep early.
-#define RASK_CHAN_CANCELLED -4
+// Status codes for channel operations, `RASK_CHAN_*`. CANCELLED: the task was
+// cancelled while it waited (conc.async/CN3). The same code ends a sleep early.
 #define RASK_CANCELLED RASK_CHAN_CANCELLED
 
 // Create a channel. capacity=0 for rendezvous (unbuffered).

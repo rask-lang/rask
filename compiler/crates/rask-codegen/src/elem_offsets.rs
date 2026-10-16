@@ -21,6 +21,7 @@
 //! particular value, and one enum contributes a guard per variant that owns
 //! anything. The header describes the packing; `owned_walk` in `vec.c` reads it.
 
+use rask_mono::runtime_abi;
 use rask_mir::{ContainerKind, MirType};
 use rask_mono::{EnumLayout, FieldLayout, StructLayout};
 use std::collections::HashMap;
@@ -33,25 +34,25 @@ use rask_types::{Type as RaskType, TypeId};
 /// hang.
 const MAX_DEPTH: u32 = 8;
 
-/// What kind of owned thing an entry points at. Mirrors `RASK_OWNED_*` in
-/// `rask_runtime.h`, which is the only other place that reads these.
-const KIND_SHIFT: u32 = 28;
-const KIND_STRING: i32 = 0;
-const KIND_VEC: i32 = 1;
-const KIND_MAP: i32 = 2;
-const KIND_TAG_IF: i32 = 3;
+// What kind of owned thing an entry points at: `rask_mono::runtime_abi`'s
+// `RASK_OWNED_*`, which the runtime reads from the generated rask_abi.h.
+const KIND_SHIFT: u32 = runtime_abi::RASK_OWNED_KIND_SHIFT as u32;
+const KIND_STRING: i32 = runtime_abi::RASK_OWNED_STRING as i32;
+const KIND_VEC: i32 = runtime_abi::RASK_OWNED_VEC as i32;
+const KIND_MAP: i32 = runtime_abi::RASK_OWNED_MAP as i32;
+const KIND_TAG_IF: i32 = runtime_abi::RASK_OWNED_TAG_IF as i32;
 /// The element is a pointer to a closure block, which describes itself: its
 /// size and its environment-drop glue are the header words before it (#1149).
-const KIND_CLOSURE: i32 = 4;
+const KIND_CLOSURE: i32 = runtime_abi::RASK_OWNED_CLOSURE as i32;
 /// The element is a `[data, vtable]` fat pointer; the block `data` names is the
 /// container's to free, and its size is the vtable's first word (#1149).
-const KIND_TRAITBOX: i32 = 5;
+const KIND_TRAITBOX: i32 = runtime_abi::RASK_OWNED_TRAITBOX as i32;
 /// A `Heap<T>` at this offset: a pointer to a block the aggregate owns, with
 /// the entries after it describing what is inside.
-const KIND_HEAP: i32 = 6;
+const KIND_HEAP: i32 = runtime_abi::RASK_OWNED_HEAP as i32;
 /// The value at this offset is described by the list being walked, from its
 /// start — how a type that reaches itself is described at all (#1202).
-const KIND_SELF: i32 = 7;
+const KIND_SELF: i32 = runtime_abi::RASK_OWNED_SELF as i32;
 
 /// One interface-box entry at offset zero: what to hand `rask_owned_release` when
 /// the slot *is* the fat pointer, which is the shape of an interface-object field.

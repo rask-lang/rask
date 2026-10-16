@@ -24,28 +24,15 @@ use crate::{
     MirTerminatorKind, MirType,
 };
 
-// Shape kinds — must match the RASK_JSHAPE_* defines in runtime/rask_runtime.h.
-const JSHAPE_BOOL: i64 = 0;
-const JSHAPE_I8: i64 = 1;
-const JSHAPE_I16: i64 = 2;
-const JSHAPE_I32: i64 = 3;
-const JSHAPE_I64: i64 = 4;
-const JSHAPE_U8: i64 = 5;
-const JSHAPE_U16: i64 = 6;
-const JSHAPE_U32: i64 = 7;
-const JSHAPE_U64: i64 = 8;
-const JSHAPE_F32: i64 = 9;
-const JSHAPE_F64: i64 = 10;
-const JSHAPE_STRING: i64 = 11;
-
-/// Shape field flags — must match RASK_JFIELD_* in runtime/rask_runtime.h.
-/// `@no_serialize`: never read from the input, always filled from its default.
-const FIELD_NOT_SERIALIZED: i64 = 1;
-
-/// Status codes from `rask_json_decode_into`, in JsonError variant order.
-const ERR_PARSE: i64 = 1;
-const ERR_TYPE: i64 = 2;
-const ERR_MISSING: i64 = 3;
+use rask_mono::runtime_abi::{
+    RASK_JFIELD_NOT_SERIALIZED as FIELD_NOT_SERIALIZED, RASK_JSHAPE_BOOL as JSHAPE_BOOL,
+    RASK_JSHAPE_F32 as JSHAPE_F32, RASK_JSHAPE_F64 as JSHAPE_F64, RASK_JSHAPE_I16 as JSHAPE_I16,
+    RASK_JSHAPE_I32 as JSHAPE_I32, RASK_JSHAPE_I64 as JSHAPE_I64, RASK_JSHAPE_I8 as JSHAPE_I8,
+    RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
+    RASK_JSHAPE_U32 as JSHAPE_U32, RASK_JSHAPE_U64 as JSHAPE_U64, RASK_JSHAPE_U8 as JSHAPE_U8,
+    RASK_JSON_ERR_MISSING as ERR_MISSING, RASK_JSON_ERR_PARSE as ERR_PARSE,
+    RASK_JSON_ERR_TYPE as ERR_TYPE,
+};
 
 impl<'a> MirLowerer<'a> {
     /// Expand `json.decode<T>(input)` into shape construction + one decode call

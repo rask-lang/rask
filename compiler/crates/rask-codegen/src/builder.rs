@@ -293,23 +293,9 @@ enum CallAdapt {
     JoinOutcome(StackSlot, StackSlot),
 }
 
-/// `IoError.UnexpectedEof`'s variant index, counting the declaration order in
-/// stdlib/io.rk. Reordering that enum has to be reflected here.
-const IO_ERROR_UNEXPECTED_EOF: i64 = 6;
-
-/// How a joined task ended, as the runtime reports it. Mirrors the
-/// `RASK_JOIN_*` defines in runtime/rask_runtime.h.
-const RASK_JOIN_OK: i64 = 0;
-const RASK_JOIN_PANICKED: i64 = 1;
-
-/// Channel statuses a receive or send can fail with. Mirrors the
-/// `RASK_CHAN_*` defines in runtime/rask_runtime.h.
-const RASK_CHAN_EMPTY: i64 = -3;
-const RASK_CHAN_CANCELLED: i64 = -4;
-
-/// How a string-out-param call ended, as the runtime reports it. Mirrors the
-/// `RASK_STROUT_*` defines in runtime/rask_runtime.h.
-const RASK_STROUT_EOF: i64 = 2;
+use rask_mono::runtime_abi::{
+    RASK_CHAN_CANCELLED, RASK_CHAN_EMPTY, RASK_JOIN_OK, RASK_JOIN_PANICKED, RASK_STROUT_EOF,
+};
 
 pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
@@ -1949,8 +1935,8 @@ impl<'a> FunctionBuilder<'a> {
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, 16, 0,
         ));
-        let some_tag = builder.ins().iconst(types::I64, 0);
-        let none_tag = builder.ins().iconst(types::I64, 1);
+        let some_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
+        let none_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
         let tag = builder.ins().select(present, some_tag, none_tag);
         builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
         // Store the payload at its natural width; widen scalars < 8 bytes to I64 slot.
@@ -2588,7 +2574,7 @@ impl<'a> FunctionBuilder<'a> {
             } else { 0 };
             match (ctx.stack_slot_map.get(dst), borrowed_addr) {
                 (Some((dst_ss, _)), _) => {
-                    Self::build_wrapped_aggregate(builder, *dst_ss, false, 0, val, inner_size);
+                    Self::build_wrapped_aggregate(builder, *dst_ss, false, false, val, inner_size);
                 }
                 (None, Some(addr)) => {
                     let tag = builder.ins().iconst(types::I64, 0);
@@ -5555,7 +5541,7 @@ impl<'a> FunctionBuilder<'a> {
                         // half — `m.get(k)` on a `Map<K, f32>` answered 0 for every
                         // hit (#629).
                         let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
-                        Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
+                        Self::build_wrapped_aggregate(builder, *ss, false, false, ptr, payload_size);
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -5631,8 +5617,8 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
-                    let some_tag = builder.ins().iconst(types::I64, 0);
-                    let none_tag = builder.ins().iconst(types::I64, 1);
+                    let some_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
+                    let none_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
                     let tag = builder.ins().select(wrote, some_tag, none_tag);
                     builder.ins().stack_store(tag, ss, crate::layouts::TAG_OFFSET);
                     if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
@@ -5661,8 +5647,8 @@ impl<'a> FunctionBuilder<'a> {
                     };
                     let swapped = builder.ins().stack_load(types::I64, ok_ss, 0);
                     if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                        let ok_tag = builder.ins().iconst(types::I64, 0);
-                        let err_tag = builder.ins().iconst(types::I64, 1);
+                        let ok_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
+                        let err_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
                         let tag = builder.ins().select(swapped, ok_tag, err_tag);
                         builder.ins().stack_store(tag, *dst_ss, crate::layouts::TAG_OFFSET);
                         Self::zero_result_origin(builder, *dst_ss);
@@ -5720,7 +5706,7 @@ impl<'a> FunctionBuilder<'a> {
                         builder.seal_block(ok_block);
                         let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
                         Self::build_wrapped_aggregate(
-                            builder, dst_ss, true, 0, payload_addr, elem_size,
+                            builder, dst_ss, true, false, payload_addr, elem_size,
                         );
                         builder.ins().jump(merge_block, &[]);
 
@@ -5807,8 +5793,8 @@ impl<'a> FunctionBuilder<'a> {
                         // so the tag is the status minus one.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let one = builder.ins().iconst(types::I64, 1);
-                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        let err_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
+                        builder.ins().stack_store(err_tag, dst_ss, crate::layouts::TAG_OFFSET);
                         let err_tag = builder.ins().iadd_imm(status, -1);
                         builder.ins().stack_store(
                             err_tag, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET,
@@ -5844,7 +5830,7 @@ impl<'a> FunctionBuilder<'a> {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let tag = builder.ins().iconst(types::I64, 0);
+                        let tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
                         builder.ins().stack_store(tag, dst_ss, crate::layouts::TAG_OFFSET);
                         Self::zero_result_origin(builder, dst_ss);
                         let src = builder.ins().stack_addr(types::I64, value_ss, 0);
@@ -5863,8 +5849,8 @@ impl<'a> FunctionBuilder<'a> {
                         // "unexpected end of file" every failure used to get.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let one = builder.ins().iconst(types::I64, 1);
-                        builder.ins().stack_store(one, dst_ss, crate::layouts::TAG_OFFSET);
+                        let err_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
+                        builder.ins().stack_store(err_tag, dst_ss, crate::layouts::TAG_OFFSET);
                         Self::zero_result_origin(builder, dst_ss);
                         Self::build_io_error_payload(
                             builder, dst_ss, status, err_ss, dst_id, ctx,
@@ -6720,7 +6706,7 @@ impl<'a> FunctionBuilder<'a> {
                     ));
                     let src = builder.ins().stack_addr(types::I64, ss, 0);
                     Self::build_wrapped_aggregate(
-                        builder, ret_ss, is_result, if is_err { 1 } else { 0 }, src, size,
+                        builder, ret_ss, is_result, is_err, src, size,
                     );
                     let addr = builder.ins().stack_addr(types::I64, ret_ss, 0);
                     return Ok(Some(addr));
@@ -6796,7 +6782,7 @@ impl<'a> FunctionBuilder<'a> {
                 ).unwrap_or(inner.size());
                 let is_result = matches!(ctx.ret_ty, MirType::Result { .. });
                 Self::build_wrapped_aggregate(
-                    builder, ss, is_result, if is_err_value { 1 } else { 0 }, val, inner_size,
+                    builder, ss, is_result, is_err_value, val, inner_size,
                 );
             } else if is_err_value {
                 Self::build_err(builder, ss, val);
@@ -7141,7 +7127,7 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Ok(scalar) into a Result slot.
     fn build_ok(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
-        let tag = builder.ins().iconst(types::I64, 0);
+        let tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, slot);
         builder.ins().stack_store(payload, slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
@@ -7180,7 +7166,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     fn build_err(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
-        let tag = builder.ins().iconst(types::I64, 1);
+        let tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, slot);
         builder.ins().stack_store(payload, slot, crate::layouts::RESULT_PAYLOAD_OFFSET);
@@ -7189,14 +7175,14 @@ impl<'a> FunctionBuilder<'a> {
     /// Some(scalar) into an Option slot. Option layout has no origin fields —
     /// using the Result constructor here would write past the end of the slot.
     fn build_some(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
-        let tag = builder.ins().iconst(types::I64, 0);
+        let tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
         builder.ins().stack_store(payload, slot, crate::layouts::PAYLOAD_OFFSET);
     }
 
     /// none into an Option slot (tag only — payload is dead).
     fn build_none(builder: &mut ClifFunctionBuilder, slot: StackSlot) {
-        let tag = builder.ins().iconst(types::I64, 1);
+        let tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
     }
 
@@ -7237,7 +7223,7 @@ impl<'a> FunctionBuilder<'a> {
                 .unwrap_or((fallback, 8))
         };
         let (other_tag, msg_offset) = variant("Other", 7);
-        let (eof_tag, _) = variant("UnexpectedEof", IO_ERROR_UNEXPECTED_EOF);
+        let (eof_tag, _) = variant("UnexpectedEof", io_error_unexpected_eof());
 
         let eof_block = builder.create_block();
         let other_block = builder.create_block();
@@ -7942,7 +7928,7 @@ impl<'a> FunctionBuilder<'a> {
         let ok_size = Self::resolve_type_alloc_size(
             &ok_ty, ctx.struct_layouts, ctx.enum_layouts,
         ).unwrap_or(8);
-        let tag = builder.ins().iconst(types::I64, 0);
+        let tag = builder.ins().iconst(types::I64, crate::layouts::TAG_PRESENT);
         builder.ins().stack_store(tag, dst_ss, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, dst_ss);
         // Whether the task boxed its answer. The same question the task side
@@ -7974,7 +7960,7 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(fail_block);
         builder.seal_block(fail_block);
-        let err_tag = builder.ins().iconst(types::I64, 1);
+        let err_tag = builder.ins().iconst(types::I64, crate::layouts::TAG_ABSENT);
         builder.ins().stack_store(err_tag, dst_ss, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, dst_ss);
         // The only way a join fails is a panic: JoinError.Panicked(msg).
@@ -8054,15 +8040,16 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Wrap an aggregate payload (copied from `src_ptr`) into an Option/Result
     /// slot. `is_result` picks the payload offset and whether origin is zeroed;
-    /// `tag` is 0 (Ok/Some) or 1 (Err/none).
+    /// `absent` picks the Err/none tag over the Ok/Some one.
     fn build_wrapped_aggregate(
         builder: &mut ClifFunctionBuilder,
         slot: StackSlot,
         is_result: bool,
-        tag: i64,
+        absent: bool,
         src_ptr: Value,
         size: u32,
     ) {
+        let tag = if absent { crate::layouts::TAG_ABSENT } else { crate::layouts::TAG_PRESENT };
         let tag_v = builder.ins().iconst(types::I64, tag);
         builder.ins().stack_store(tag_v, slot, crate::layouts::TAG_OFFSET);
         let payload_off = if is_result {
@@ -8302,8 +8289,8 @@ impl<'a> FunctionBuilder<'a> {
     }
 
 
-    /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
-    /// Must agree with the `RASK_RACK_FIELD_*` defines in rask_runtime.h.
+    /// `Link<T>` / `Link<T>?`, `Vec<Link<T>>` or `Map<K, Link<T>>`: the
+    /// `RASK_RACK_FIELD_*` kind.
     fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
         use rask_types::{GenericArg, Type};
         let bare = ty.as_option().unwrap_or(ty);
@@ -8312,7 +8299,7 @@ impl<'a> FunctionBuilder<'a> {
             _ => return None,
         };
         if name == "Link" {
-            return Some(0);
+            return Some(rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32);
         }
         // The value type is the last type argument: `Vec<T>`'s only one, and
         // `Map<K, V>`'s second.
@@ -8328,8 +8315,8 @@ impl<'a> FunctionBuilder<'a> {
             return None;
         }
         match name {
-            "Vec" => Some(1),
-            "Map" => Some(2),
+            "Vec" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_VEC as i32),
+            "Map" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_MAP as i32),
             _ => None,
         }
     }
@@ -9225,4 +9212,10 @@ fn sso_words(s: &str) -> Option<(i64, i64)> {
         i64::from_le_bytes(raw[0..8].try_into().unwrap()),
         i64::from_le_bytes(raw[8..16].try_into().unwrap()),
     ))
+}
+
+/// `IoError.UnexpectedEof`'s tag, from its declaration in stdlib/io.rk.
+fn io_error_unexpected_eof() -> i64 {
+    rask_stdlib::modules::variant_tag("IoError", "UnexpectedEof")
+        .expect("stdlib/io.rk declares IoError.UnexpectedEof") as i64
 }
