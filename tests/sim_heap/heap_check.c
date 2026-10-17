@@ -13,6 +13,9 @@
 //   - the same calls give the same addresses in two processes
 //   - requests too big to fit fail with ENOMEM instead of wrapping
 //   - a double free and a wild free abort
+//   - a core dump would cover the heap in use, not the whole 64 GiB
+//     reservation: a CI runner pipes cores to a collector that reads every
+//     byte, and one aborted test held the job for minutes
 //
 // sim_libc.c answers from the seed only while a sim run is active. Here none
 // is, so the stubs below say so and the clock and random calls pass through.
@@ -23,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -212,8 +216,11 @@ static uint64_t hash_in_child(void) {
 static int aborts(void (*f)(void)) {
     pid_t pid = fork();
     if (pid == 0) {
-        // The death message is expected; keep the gate's output clean.
+        // The death message is expected; keep the gate's output clean, and
+        // don't leave a core behind for an abort we asked for.
         if (!freopen("/dev/null", "w", stderr)) _exit(2);
+        struct rlimit none = {0, 0};
+        setrlimit(RLIMIT_CORE, &none);
         f();
         _exit(0);
     }
@@ -243,6 +250,28 @@ static void wild_free(void) {
     free(p + 24);
 }
 
+// Bytes of the arena a core dump would include: its mappings in
+// /proc/self/smaps without the "dd" (don't dump) flag.
+static unsigned long long dumpable_arena_bytes(void) {
+    FILE *f = fopen("/proc/self/smaps", "r");
+    if (!f) return 0;
+    char line[512];
+    unsigned long long total = 0, lo = 0, hi = 0;
+    int in_arena = 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long long a, b;
+        if (sscanf(line, "%llx-%llx ", &a, &b) == 2 && strchr(line, '-') < strchr(line, ' ')) {
+            lo = a;
+            hi = b;
+            in_arena = a >= ARENA_BASE && a < ARENA_BASE + (1ULL << 36);
+        } else if (in_arena && strncmp(line, "VmFlags:", 8) == 0 && !strstr(line, " dd")) {
+            total += hi - lo;
+        }
+    }
+    fclose(f);
+    return total;
+}
+
 int main(void) {
     workload(1);
 
@@ -268,6 +297,10 @@ int main(void) {
     CHECK(aborts(double_free), "a double free didn't abort");
     CHECK(aborts(double_free_aligned), "a double free of an aligned block didn't abort");
     CHECK(aborts(wild_free), "freeing a pointer into the middle of a block didn't abort");
+
+    unsigned long long dumpable = dumpable_arena_bytes();
+    CHECK(dumpable > 0 && dumpable <= (1ULL << 30),
+          "a core dump would include %llu bytes of the heap's reservation", dumpable);
 
     if (failures) return 1;
     printf("heap_check: ok\n");

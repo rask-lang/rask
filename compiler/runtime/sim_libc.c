@@ -214,6 +214,8 @@ long syscall(long number, ...) {
 
 #define ARENA_BASE ((uintptr_t)0x100000000000ULL)  // 16 TiB, clear of the heap and mmap areas
 #define ARENA_SIZE ((size_t)1 << 36)               // 64 GiB of address space, reserved lazily
+// How much of the arena a core dump includes at a time (see arena_init).
+#define DUMP_STEP ((size_t)64 << 20)
 #define HEADER 16
 #define MIN_BLOCK 32
 #define CLASSES 32
@@ -238,6 +240,7 @@ typedef struct FreeBlock { struct FreeBlock *next; } FreeBlock;
 static struct {
     unsigned char *base;
     size_t used;
+    size_t dumpable;   // bytes from base that a core dump includes
     FreeBlock *free[CLASSES];
     int lock;
 } arena;
@@ -264,6 +267,18 @@ static void arena_init(void) {
         die("rask sim: couldn't reserve the fixed-address heap (sim/B8)\n");
     }
     arena.base = (unsigned char *)p;
+    // A core dump of the whole reservation is 64 GiB of zeros. Written to a
+    // file that's a sparse hole, but CI runners pipe cores to a collector,
+    // which reads every byte: one aborted test held a job for minutes. So
+    // the dump covers what's in use, a step at a time (grow_dumpable).
+    madvise(p, ARENA_SIZE, MADV_DONTDUMP);
+}
+
+static void grow_dumpable(void) {
+    while (arena.dumpable < arena.used && arena.dumpable < ARENA_SIZE) {
+        madvise(arena.base + arena.dumpable, DUMP_STEP, MADV_DODUMP);
+        arena.dumpable += DUMP_STEP;
+    }
 }
 
 static int in_arena(const void *p) {
@@ -297,6 +312,7 @@ static void *alloc_locked(size_t n) {
         if (arena.used + size > ARENA_SIZE) return NULL;
         block = arena.base + arena.used;
         arena.used += size;
+        grow_dumpable();
     }
     Header *h = (Header *)block;
     h->cls = (uint32_t)cls;
