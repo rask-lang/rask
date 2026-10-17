@@ -136,6 +136,7 @@ go down.
 | [small_size_fence.rk](small_size_fence.rk) | `@small` types over the 16-byte copy threshold (SM2, E0374) — a three-`i64` struct and a two-`string` one; plus the generic half, where `Pair<i64>` fits and `Pair<string>` doesn't (SM3, E0375) (#587) |
 | [ensure_cancellation.rk](ensure_cancellation.rk) | `ensure` cancellation must be statically definite (C3/C4): resource consumed on some merging paths but not all — if-without-else, single match arm, nested block (E0821) |
 | [ensure_consumes_nothing.rk](ensure_consumes_nothing.rk) | An `ensure` whose body only reads the resource — a borrowing method, a field read (L4, E0908). What it commits is what its body consumes, found by the same walk as any other consume. The receiver slot used to count whatever was called on it, so `ensure c.peek()` leaked silently while `ensure log.record(c.release())` was rejected (#1301) |
+| [shared_linear_payload.rk](shared_linear_payload.rk) | A `Shared` holding a resource is single-owner (conc.sync/SH9, #1591): cloning the resource or its box (E0917), dropping the box with the connection inside (E0805), giving a `with` binding away (E0919), and `take` on a box whose value isn't a resource (E0918). It was an ordinary box: dropping it leaked, and `take` on two of the three strategies copied the value out and left the original behind |
 
 ### Pattern Matching
 

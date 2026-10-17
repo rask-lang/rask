@@ -1534,13 +1534,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // `into_inner` consumes the cell and yields what it held. It used to be
-        // `rask_cell_get` — the same read as `get`, just the last one — and
-        // freeing the cell would have dangled the pointer that came back, so
-        // every `into_inner` left the whole cell behind. The value goes to the
-        // caller's own destination now and the cell is freed with it.
+        // `take` consumes the box and yields what it held. The value goes to
+        // the caller's own destination and the box is freed with it.
         StdlibEntry {
-            mir_name: "Cell_into_inner", c_name: "rask_cell_into_inner",
+            mir_name: "Cell_take", c_name: "rask_cell_take",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Shared_take", c_name: "rask_shared_take",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_take", c_name: "rask_mutex_take",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::FromArgAdapt,
         },

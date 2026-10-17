@@ -548,6 +548,9 @@ pub struct TypeChecker {
     /// Checked once solving (and literal defaulting) is done, against
     /// whatever the success type actually settled to.
     pub(super) pending_catch_void_checks: Vec<(Type, rask_ast::Span)>,
+    /// conc.sync/SH9: payloads of `Shared.take()` calls, checked for
+    /// linearity once `Shared.new(5)` has defaulted its literal.
+    pub(super) pending_shared_takes: Vec<(Type, rask_ast::Span)>,
 }
 
 impl TypeChecker {
@@ -712,6 +715,7 @@ impl TypeChecker {
             arg_hoists: HashMap::new(),
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
+            pending_shared_takes: Vec::new(),
         }
     }
 
@@ -887,6 +891,7 @@ impl TypeChecker {
         // (from another catch, a `try`, literal defaults, anything else),
         // instead of having decided it on the spot.
         self.validate_pending_catch_void_checks();
+        self.validate_pending_shared_takes();
 
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).

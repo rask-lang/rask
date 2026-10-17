@@ -6329,6 +6329,23 @@ impl TypeChecker {
         }
     }
 
+    /// conc.sync/SH9: `take` empties the box, so it's only for a payload that
+    /// makes the box single-handle. Asked after defaulting: at the call,
+    /// `Shared.new(5)` still holds an open literal.
+    pub(super) fn validate_pending_shared_takes(&mut self) {
+        let pending = std::mem::take(&mut self.pending_shared_takes);
+        for (payload, span) in pending {
+            let payload = self.ctx.apply(&payload);
+            if matches!(payload, Type::Var(_) | Type::Error) || self.types.is_linear_value(&payload) {
+                continue;
+            }
+            self.errors.push(TypeError::TakeFromSharedBox {
+                payload: self.types.resolve_type_names(&payload).to_string(),
+                span,
+            });
+        }
+    }
+
     /// Check every integer literal against the type it ended up with. Deferred
     /// to here because at the literal itself the type is usually still a var.
     ///

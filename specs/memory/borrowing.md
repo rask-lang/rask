@@ -178,6 +178,7 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 | **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation; the modified value writes back to the source at block exit. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), and plain reads use inline access |
 | **W6: Value production** | Block can produce a value (last expression) — `with` works in expression context |
 | **W7: One-liner shorthand** | `with X as v: expr` — no braces for single expressions (parallels `if cond: expr`) |
+| **W8: Lent, not given** | The source still holds the value when the block ends, so a binding can't be handed to a `take` parameter, stored, or moved (E0919). Change it in place; to give the value away, take it out of the source first |
 
 ### Syntax
 

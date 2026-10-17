@@ -531,16 +531,17 @@ void rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out) {
     }
 }
 
-// `into_inner` consumes the cell and yields what it held. The payload goes to
-// the caller's destination first, then the cell goes away — which is why it
-// needs the out-param: it used to be `rask_cell_get`, handing back a pointer
-// into the block, and the block had to stay allocated forever to keep that
-// pointer valid.
+// `take` consumes the box and yields what it held (conc.sync/SH9). The payload
+// goes to the caller's destination first, then the box goes away, which is why
+// it needs the out-param: handing back a pointer into the block would need the
+// block kept alive to keep the pointer valid.
 //
-// No `box_payload_free` here: whatever the payload owns is the caller's now.
-void rask_cell_into_inner(int64_t cell, int64_t out) {
+// Only a box holding a linear value can be taken, and such a box can't be
+// cloned, so this is the last handle. No `box_payload_free`: whatever the
+// payload owns is the caller's now.
+void rask_cell_take(int64_t cell, int64_t out) {
     RaskCell *c = (RaskCell *)(intptr_t)cell;
-    RASK_CHECK_NONNULL(c, "Cell.into_inner: cell is null");
+    RASK_CHECK_NONNULL(c, "Shared.take: box is null");
     if (out) memcpy((void *)(intptr_t)out, c->data, (size_t)c->data_size);
     rask_free(c->data);
     rask_free(c);
@@ -626,6 +627,24 @@ void rask_mutex_replace(int64_t mutex, int64_t data_ptr, int64_t out) {
         memcpy(m->data, (const void *)(intptr_t)data_ptr, (size_t)m->data_size);
     }
     user_unlock(&m->lock);
+}
+
+void rask_shared_take(int64_t shared, int64_t out) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RASK_CHECK_NONNULL(s, "Shared.take: box is null");
+    if (out) memcpy((void *)(intptr_t)out, s->data, (size_t)s->data_size);
+    pthread_rwlock_destroy(&s->lock);
+    rask_free(s->data);
+    rask_free(s);
+}
+
+void rask_mutex_take(int64_t mutex, int64_t out) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    RASK_CHECK_NONNULL(m, "Shared.take: box is null");
+    if (out) memcpy((void *)(intptr_t)out, m->data, (size_t)m->data_size);
+    pthread_mutex_destroy(&m->lock);
+    rask_free(m->data);
+    rask_free(m);
 }
 
 // The three releases a box header points at.

@@ -133,6 +133,9 @@ pub struct OwnershipChecker<'a> {
     /// binding can't be given away any more than a borrowed parameter can
     /// (LP6). Scoped to the loop body.
     borrowed_loop_items: HashMap<String, (Span, String)>,
+    /// `with … as name` bindings: the source still holds the value, the
+    /// block only reaches into it. Name → (the `with` source, what it reads).
+    borrowed_with: HashMap<String, (Span, String)>,
     /// Type parameters in scope bounded by `Copy`, whose values copy.
     copy_params: HashSet<String>,
     /// Loops being walked, innermost last: the label, and the join of the
@@ -378,6 +381,7 @@ impl<'a> OwnershipChecker<'a> {
             field_views: HashMap::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
+            borrowed_with: HashMap::new(),
             copy_params: HashSet::new(),
             loop_exits: Vec::new(),
             refills: HashMap::new(),
@@ -1065,6 +1069,7 @@ impl<'a> OwnershipChecker<'a> {
         self.field_views.clear();
         self.store_target = None;
         self.borrowed_loop_items.clear();
+        self.borrowed_with.clear();
         self.loop_exits.clear();
         self.refills.clear();
         self.mutate_params.clear();
@@ -3160,7 +3165,13 @@ impl<'a> OwnershipChecker<'a> {
                         (b.name.clone(), state, ty)
                     })
                     .collect();
+                let saved_with = self.borrowed_with.clone();
+                for b in bindings.iter() {
+                    let from = Self::with_source_text(&b.source).unwrap_or_else(|| "its source".to_string());
+                    self.borrowed_with.insert(b.name.clone(), (b.source.span, from));
+                }
                 self.check_block(body);
+                self.borrowed_with = saved_with;
                 for (name, state, ty) in shadowed.into_iter().rev() {
                     match state {
                         Some(s) => self.bindings.insert(name.clone(), s),
@@ -6198,6 +6209,20 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
+            // A compiler-provided generic (`Shared`, `Vec`, `Heap`) keeps its
+            // methods in the stdlib declarations, not the type table. Unasked,
+            // `s.take()` left the box owed after emptying it.
+            let base = match ty {
+                Type::Generic { base, .. } => Some(self.program.types.type_name(*base)),
+                Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+                _ => None,
+            };
+            if base
+                .and_then(|b| rask_stdlib::mir_metadata::lookup(&format!("{}_{}", b, method_name)))
+                .is_some_and(|m| m.takes_self && m.take_self)
+            {
+                return Some(rask_types::SelfParam::Take);
+            }
         }
         None
     }
@@ -6674,6 +6699,17 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// What a `with` source reaches into: `s` for `s.write()`, `items` for
+    /// `items[i]`.
+    fn with_source_text(source: &Expr) -> Option<String> {
+        match &source.kind {
+            ExprKind::MethodCall { object, .. } | ExprKind::Index { object, .. } => {
+                Self::place_text(object)
+            }
+            _ => Self::place_text(source),
+        }
+    }
+
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
         // O11: a const is not the function's to give away. Every function sees
         // the same one, so a move would leave the others holding nothing —
@@ -6725,6 +6761,18 @@ impl<'a> OwnershipChecker<'a> {
                     name: name.to_string(),
                     from,
                     loop_at,
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
+        if let Some((with_at, from)) = self.borrowed_with.get(name).cloned() {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeWithBinding {
+                    name: name.to_string(),
+                    from,
+                    with_at,
                     sink: sink.map(str::to_string),
                 },
                 span,
@@ -7112,6 +7160,7 @@ impl<'a> OwnershipChecker<'a> {
             || self.borrowed_params.contains_key(name)
             || self.borrowed_parts.contains_key(name)
             || self.borrowed_loop_items.contains_key(name)
+            || self.borrowed_with.contains_key(name)
             || self.borrowed_captures.contains_key(name)
     }
 

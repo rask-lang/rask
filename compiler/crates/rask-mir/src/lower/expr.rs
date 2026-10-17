@@ -6686,7 +6686,7 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Local, "get") => "Cell_get",
             (SharedStrategy::Local, "set") => "Cell_set",
             (SharedStrategy::Local, "replace") => "Cell_replace",
-            (SharedStrategy::Local, "take") => "Cell_into_inner",
+            (SharedStrategy::Local, "take") => "Cell_take",
             (SharedStrategy::Local, "clone") => "Cell_clone",
             (SharedStrategy::Mutex, "try_read" | "try_write") => "Mutex_try_lock",
             (SharedStrategy::Mutex, "clone") => "Mutex_clone",
@@ -6695,10 +6695,12 @@ impl<'a> MirLowerer<'a> {
             // type-checked and then failed to link on `Shared_get`.
             (SharedStrategy::Mutex, "get") => "Mutex_get",
             (SharedStrategy::Mutex, "set") => "Mutex_set",
-            (SharedStrategy::Mutex, "replace" | "take") => "Mutex_replace",
+            (SharedStrategy::Mutex, "replace") => "Mutex_replace",
+            (SharedStrategy::Mutex, "take") => "Mutex_take",
             (SharedStrategy::Readers, "get") => "Shared_get",
             (SharedStrategy::Readers, "set") => "Shared_set",
-            (SharedStrategy::Readers, "replace" | "take") => "Shared_replace",
+            (SharedStrategy::Readers, "replace") => "Shared_replace",
+            (SharedStrategy::Readers, "take") => "Shared_take",
             _ => return qualified.to_string(),
         };
         name.to_string()

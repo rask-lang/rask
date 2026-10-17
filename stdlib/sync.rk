@@ -92,7 +92,9 @@ extend Shared<T, S> {
     @builtin
     public func replace(self, take value: T) -> T {}
 
-    /// Consume the `Shared`, return what it held.
+    /// Consume the `Shared`, return what it held. Only for a box holding a
+    /// resource or a `Heap`, which can't be cloned, so this is the last handle
+    /// (SH9). Any other payload comes out with `replace`.
     ///
     /// `take` is the parameter mode this method's own receiver uses, and
     /// `Vec.take_all` is the same idea one level down. `into_inner` was `Cell`'s

@@ -1480,6 +1480,12 @@ impl TypeTable {
         if ty.heap_payload().is_some() {
             return true;
         }
+        // conc.sync/SH9: a box holding something consumed exactly once is
+        // consumed exactly once itself, by `take()`. Otherwise dropping the
+        // box leaked what it held, and a second handle was a second owner.
+        if let Some(payload) = self.shared_payload(ty) {
+            return self.is_linear_value(payload);
+        }
         match ty {
             Type::Named(id) => self.is_transitive_resource_by_id(*id),
             Type::Generic { base, args } => {
@@ -1512,6 +1518,14 @@ impl TypeTable {
             Type::Tuple(elems) => elems.iter().any(|t| self.slot_owes(t)),
             Type::Array { elem, .. } => self.slot_owes(elem),
             _ => false,
+        }
+    }
+
+    /// The value a `Shared<T, S>` holds.
+    pub fn shared_payload<'t>(&self, ty: &'t Type) -> Option<&'t Type> {
+        match self.shared_args(ty)?.first()? {
+            GenericArg::Type(t) => Some(t),
+            _ => None,
         }
     }
 

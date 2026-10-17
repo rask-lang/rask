@@ -8155,9 +8155,9 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // `into_inner` has no value argument — it only reads — so it takes
-            // the out-param and nothing else.
-            "Cell_into_inner" => Self::append_out_param(builder, args, dst, ctx),
+            // `take` has no value argument, so it takes the out-param and
+            // nothing else.
+            "Cell_take" | "Shared_take" | "Mutex_take" => Self::append_out_param(builder, args, dst, ctx),
             // `set` and `replace` both take the new value by pointer, so a
             // scalar spills to a slot first. `replace` also gives the old value
             // back, through an out-param of its own.

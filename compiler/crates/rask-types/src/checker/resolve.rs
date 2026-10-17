@@ -712,6 +712,23 @@ impl TypeChecker {
             return Ok(self.poison(&ret));
         }
 
+        // mem.linear/L8: a value consumed exactly once has no copy. `clone`
+        // answers on every type, so a `@resource` struct cloned into two
+        // obligations for one file, and a `Shared` holding one handed out a
+        // second owner (conc.sync/SH9).
+        if method == "clone" && args.is_empty() && self.types.is_linear_value(&ty) {
+            self.errors.push(TypeError::CloneLinear {
+                ty: self.types.resolve_type_names(&ty).to_string(),
+                payload: self
+                    .types
+                    .shared_payload(&ty)
+                    .map(|p| self.types.resolve_type_names(p).to_string()),
+                span,
+            });
+            let _ = self.unify(&ty, &ret, span);
+            return Ok(true);
+        }
+
         // `v == opt`: the bare value made present, the way `opt == v` makes
         // its right side present, and compared with the optional's `eq`.
         // Equality doesn't care which side was written first.
@@ -2454,7 +2471,15 @@ impl TypeChecker {
                 self.unify_accessor_closure(&args[0], &inner_type, ret, span)
             }
             // The single-expression shorthands `Cell` had (conc.sync API table).
-            ("Shared", "get" | "take") if args.is_empty() => {
+            ("Shared", "get") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            // conc.sync/SH9: `take` is how a value consumed exactly once gets
+            // out of its box, and the box is single-handle then, so it's the
+            // last one. Any other payload comes out with `replace`, which
+            // leaves the other handles a value.
+            ("Shared", "take") if args.is_empty() => {
+                self.pending_shared_takes.push((inner_type.clone(), span));
                 self.unify(ret, &inner_type, span)
             }
             ("Shared", "set") if args.len() == 1 => {
