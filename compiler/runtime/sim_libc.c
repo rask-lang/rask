@@ -218,13 +218,18 @@ long syscall(long number, ...) {
 #define MIN_BLOCK 32
 #define CLASSES 32
 #define POISON 0xAA
+// Largest request a class can hold.
+#define MAX_REQUEST (((size_t)MIN_BLOCK << (CLASSES - 1)) - HEADER)
 // Marks the header in front of an aligned pointer; its `offset` leads back to
 // the payload it was carved from.
 #define ALIGNED_MARK 0xFFFFFFFFu
+// Marks a block's own header while the block is on a free list, so a second
+// free of it is caught rather than putting it on the list twice.
+#define FREED_MARK 0xF7EEF7EEu
 
 typedef struct {
     uint32_t cls;     // block size is MIN_BLOCK << cls, header included
-    uint32_t mark;    // ALIGNED_MARK in the header in front of an aligned pointer
+    uint32_t mark;    // ALIGNED_MARK or FREED_MARK, else 0
     uint64_t offset;  // aligned pointer minus the payload it was carved from
 } Header;
 
@@ -279,6 +284,8 @@ static size_t capacity(int cls) {
 
 static void *alloc_locked(size_t n) {
     if (!arena.base) arena_init();
+    // Checked first: `n + HEADER` would wrap and pick a tiny class.
+    if (n > MAX_REQUEST) return NULL;
     int cls = class_for(n);
     if (cls >= CLASSES) return NULL;
     unsigned char *block;
@@ -298,29 +305,43 @@ static void *alloc_locked(size_t n) {
     return block + HEADER;
 }
 
-// The payload a pointer from this allocator was carved from, and how far into
-// it the pointer sits.
-static unsigned char *payload_of(void *p, size_t *skip) {
+// The live block a pointer from this allocator sits in, and how far into its
+// payload the pointer is. Dies on a pointer to a freed block or one whose
+// header makes no sense: both are a double free or a wild pointer, and
+// carrying on would hand the same memory out twice.
+static Header *block_of(void *p, size_t *skip) {
     Header *h = (Header *)((unsigned char *)p - HEADER);
+    *skip = 0;
+    if (!in_arena(h)) {
+        die("rask sim: free or realloc of a pointer the sim heap didn't hand out (sim/B8)\n");
+    }
     if (h->mark == ALIGNED_MARK) {
         *skip = h->offset;
-        return (unsigned char *)p - h->offset;
+        h = (Header *)((unsigned char *)p - h->offset - HEADER);
     }
-    *skip = 0;
-    return (unsigned char *)p;
+    if (!in_arena(h) || h->cls >= CLASSES || h->mark != 0 ||
+        *skip > capacity((int)h->cls)) {
+        die(h->mark == FREED_MARK
+                ? "rask sim: a block was freed twice (sim/B8)\n"
+                : "rask sim: free or realloc of a pointer the sim heap didn't hand out (sim/B8)\n");
+    }
+    return h;
 }
 
 static size_t usable_locked(void *p) {
     size_t skip;
-    unsigned char *payload = payload_of(p, &skip);
-    Header *h = (Header *)(payload - HEADER);
+    Header *h = block_of(p, &skip);
     return capacity((int)h->cls) - skip;
 }
 
+// The block goes back on its list, and its payload is poisoned so a read
+// after the free sees 0xAA rather than whatever was there.
 static void free_locked(void *p) {
     size_t skip;
-    unsigned char *payload = payload_of(p, &skip);
-    Header *h = (Header *)(payload - HEADER);
+    Header *h = block_of(p, &skip);
+    unsigned char *payload = (unsigned char *)h + HEADER;
+    memset(payload, POISON, capacity((int)h->cls));
+    h->mark = FREED_MARK;
     FreeBlock *f = (FreeBlock *)payload;
     f->next = arena.free[h->cls];
     arena.free[h->cls] = f;
@@ -392,10 +413,17 @@ void *reallocarray(void *p, size_t count, size_t size) {
 
 static void *aligned(size_t align, size_t n) {
     if (align <= HEADER) return malloc(n);
+    if (n > MAX_REQUEST || align > MAX_REQUEST - n - HEADER) {
+        errno = ENOMEM;
+        return NULL;
+    }
     lock();
     unsigned char *payload = (unsigned char *)alloc_locked(n + align + HEADER);
     unlock();
-    if (!payload) return NULL;
+    if (!payload) {
+        errno = ENOMEM;
+        return NULL;
+    }
     uintptr_t at = ((uintptr_t)payload + HEADER + align - 1) & ~(uintptr_t)(align - 1);
     Header *h = (Header *)(at - HEADER);
     h->cls = 0;
