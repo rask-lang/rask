@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: two owners for a value that must be consumed exactly once
+//
+// Spec: conc.sync (SH9), mem.linear (L8), mem.borrowing (W8)
+//
+// A `Shared` holding a resource is a resource itself. It used to be an
+// ordinary box: dropping it leaked the connection, `clone` handed out a second
+// owner, and `take` on two of the three strategies copied the value out and
+// left the box behind with the original inside.
+
+import sync.Shared
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+func cloned_resource() {
+    let c = Conn(id: 1)
+    // ERROR: one connection, two obligations [E0917]
+    let d = c.clone()
+    println("{c.close()} {d.close()}")
+}
+
+func cloned_box() {
+    let s = Shared.new(Conn(id: 2))
+    // ERROR: the box is single-owner while it holds a resource [E0917]
+    let t = s.clone()
+    println("{s.take().close()} {t.take().close()}")
+}
+
+func dropped_box() {
+    let s = Shared.new(Conn(id: 3))
+    // ERROR: the box goes out of scope with the connection still in it [E0805]
+    println("{s.read().id}")
+}
+
+func consumed_through_with() {
+    let s = Shared.new(Conn(id: 4))
+    ensure s.take().close()
+    with s.write() as c {
+        // ERROR: `s` still holds the connection after the block [E0919]
+        println("{c.close()}")
+    }
+}
+
+func took_a_plain_value() {
+    let s = Shared.new(5)
+    // ERROR: another handle could still be reading `s` [E0918]
+    println("{s.take()}")
+}
+
+// FIX: take the resource out of the box, once
+func fixed() -> i64 {
+    let s = Shared.new(Conn(id: 6))
+    return s.take().close()
+}
+
+func main() {
+    println("{fixed()}")
+}

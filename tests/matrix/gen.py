@@ -387,13 +387,15 @@ func escaping() -> func() -> {decl} {{
 
 def c_shared_box(t, ty):
     """Inside a box, read through `with` — the box family's access shape
-    (mem.boxes)."""
+    (mem.boxes). A box holding a linear payload is linear itself, and `take()`
+    is how it's consumed (conc.sync/SH9)."""
+    cleanup = "    ensure drop(b.take())\n" if ty.get("linear") else ""
     return "", """\
     let b: Shared<{decl}, Local> = Shared.local({val})
-    with b.read() as v {{
+{cleanup}    with b.read() as v {{
         println("got={show}")
     }}
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "v"))
+""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "v"), cleanup=cleanup)
 
 
 def c_heap_box(t, ty):

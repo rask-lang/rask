@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A runtime handle is one word that owns runtime storage, whatever its empty
+// declaration looks like. `Random` wasn't on the copy rule's list, so its empty
+// field list made it a zero-byte Copy: a struct holding one was Copy too,
+// `let e = d` gave the generator two owners, and native freed it twice.
+//
+// Each handle now says so on its declaration (`@handle`), and every pass reads
+// that instead of a list of its own.
+
+import random.Random
+
+struct Dice {
+    public rng: Random
+    public sides: i64
+}
+
+struct Bag {
+    public items: Set<string>
+    public count: i64
+}
+
+test "a struct holding a handle moves" {
+    let d = Dice(rng: Random.from_seed(7), sides: 6)
+    mut e = d
+    assert e.sides == 6
+    let roll = e.rng.range(1, e.sides + 1)
+    assert roll >= 1 && roll <= 6
+}
+
+test "a struct holding a set keeps its contents" {
+    mut b = Bag(items: Set.new(), count: 3)
+    b.items.insert("a long enough string to live on the heap")
+    b.items.insert("another one, also long enough for the heap")
+    assert b.items.len() == 2
+    assert b.items.contains("a long enough string to live on the heap")
+    assert b.count == 3
+}

@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `comptime func` may build a `Vec` (ctrl.comptime/CT26). It was rejected as
+// "reaches a pool insert at compile time": `Vec.push` is declared `@grows` so
+// a `with` binding knows it moves elements, and the compile-time check read
+// any size change as a pool. A helper that pushes onto its own local `Vec`
+// was rejected the same way, one call removed.
+
+func squares(n: i64) -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    for i in 0..n {
+        v.push(i * i)
+    }
+    return v
+}
+
+comptime func total(n: i64) -> i64 {
+    mut sum = 0
+    for x in squares(n) {
+        sum += x
+    }
+    return sum
+}
+
+comptime func cubes(n: i64) -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    for i in 0..n {
+        v.push(i * i * i)
+    }
+    return v
+}
+
+const TOTAL: i64 = comptime total(4)
+const CUBES: Vec<i64> = comptime cubes(4)
+
+func main() {
+    println("{TOTAL} {CUBES.len()} {CUBES[3]}")
+}
+
+test "tables built while compiling" {
+    assert TOTAL == 14
+    assert CUBES.len() == 4
+    assert CUBES[3] == 27
+}

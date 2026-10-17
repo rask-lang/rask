@@ -216,6 +216,27 @@ pub fn enum_decls() -> &'static HashMap<String, rask_ast::decl::EnumDecl> {
     })
 }
 
+/// The tag a stdlib enum's variant carries: its position in the declaration.
+/// `Ordering`, `T?` and `T or E` aren't declared in the stub files and answer
+/// from their own one definition.
+///
+/// For Rust code that builds a stdlib enum value by hand. Each such site used
+/// to spell the tag itself, and every `Ordering` that `compare` answered was
+/// built with tag 0, so the interpreter sorted a `Vec<Ordering>` as if all its
+/// elements were equal (#1562).
+pub fn variant_tag(enum_name: &str, variant: &str) -> Option<u32> {
+    match enum_name {
+        "Option" | "Result" => crate::wrappers::wrapper_tag(variant),
+        "Ordering" => crate::ordering_tag(variant).map(|t| t as u32),
+        _ => enum_decls()
+            .get(enum_name)?
+            .variants
+            .iter()
+            .position(|v| v.name == variant)
+            .map(|i| i as u32),
+    }
+}
+
 static IMPL_METHODS: OnceLock<HashMap<String, Vec<rask_ast::decl::FnDecl>>> = OnceLock::new();
 
 /// Stdlib `extend` methods on stdlib **enums** that carry a real body, by enum

@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Declaration registration, test runners, and benchmark runners.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FieldVisibility, FnDecl, TestDecl, Variant, Field};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FnDecl, TestDecl, Variant};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
-use rask_ast::Span;
-use rask_ast::ty::TypeExpr;
 
 use crate::value::{BuiltinKind, ModuleKind, Value};
 
@@ -74,7 +72,7 @@ impl Interpreter {
     /// and dropping those left them uncallable: `IoError.message()` is written
     /// out in io.rk and native runs it, while the interpreter answered "method
     /// not found on `IoError`".
-    fn register_stdlib_enums(&mut self) {
+    pub(crate) fn register_stdlib_enums(&mut self) {
         for (name, decl) in rask_stdlib::modules::enum_decls() {
             let entry = self.enums.entry(name.clone()).or_insert_with(|| {
                 let mut implemented = decl.clone();
@@ -89,6 +87,31 @@ impl Interpreter {
                 }
             }
         }
+        // `Ordering` isn't declared in the stub files; its variant list is
+        // `rask_stdlib::ORDERING_VARIANTS`. `T?` and `T or E` need no entry:
+        // their values are built by `Value::some`/`none`/`ok`/`err`.
+        self.enums.insert(
+            "Ordering".to_string(),
+            EnumDecl {
+                name: "Ordering".to_string(),
+                type_params: vec![],
+                variants: rask_stdlib::ORDERING_VARIANTS
+                    .iter()
+                    .map(|name| Variant {
+                        name: name.to_string(),
+                        name_span: rask_ast::Span::new(0, 0),
+                        fields: vec![],
+                        attrs: vec![],
+                        discriminant: None,
+                    })
+                    .collect(),
+                methods: vec![],
+                is_pub: true,
+                attrs: vec![],
+                doc: None,
+                backing_type: None,
+            },
+        );
         // Same rule for `extend` blocks — the body is where most of the
         // stdlib's real Rask code lives (`IoError.message`, `Method.to_string`).
         for (type_name, methods) in rask_stdlib::modules::impl_methods() {
@@ -344,17 +367,12 @@ impl Interpreter {
                 enum_name: "Option".to_string(),
                 variant_name: "Some".to_string(),
                 field_count: 1,
-                variant_index: 0,
+                variant_index: rask_stdlib::wrappers::PRESENT_TAG,
             },
         );
         self.env.define(
             "None".to_string(),
-            Value::Enum {
-                name: "Option".to_string(),
-                variant: "None".to_string(),
-                fields: vec![],
-                variant_index: 1, origin: None,
-            },
+            Value::none(),
         );
         self.env.define(
             "Ok".to_string(),
@@ -362,7 +380,7 @@ impl Interpreter {
                 enum_name: "Result".to_string(),
                 variant_name: "Ok".to_string(),
                 field_count: 1,
-                variant_index: 0,
+                variant_index: rask_stdlib::wrappers::PRESENT_TAG,
             },
         );
         self.env.define(
@@ -371,112 +389,10 @@ impl Interpreter {
                 enum_name: "Result".to_string(),
                 variant_name: "Err".to_string(),
                 field_count: 1,
-                variant_index: 1,
+                variant_index: rask_stdlib::wrappers::ABSENT_TAG,
             },
         );
 
-        self.enums.insert(
-            "Option".to_string(),
-            EnumDecl {
-                name: "Option".to_string(),
-                type_params: vec![],
-                variants: vec![
-                    Variant {
-                        name: "Some".to_string(),
-                        name_span: rask_ast::Span::new(0, 0),
-                        fields: vec![Field {
-                            name: rask_ast::decl::positional_field_name(0),
-                            name_span: Span::new(0, 0),
-                            ty: TypeExpr::named("T"),
-                            visibility: FieldVisibility::Package,
-                            attrs: vec![],
-                            default: None,
-                            doc: None,
-                        }],
-                        attrs: vec![],
-                        discriminant: None,
-                    },
-                    Variant {
-                        name: "None".to_string(),
-                        name_span: rask_ast::Span::new(0, 0),
-                        fields: vec![],
-                        attrs: vec![],
-                        discriminant: None,
-                    },
-                ],
-                methods: vec![],
-                is_pub: true,
-                attrs: vec![],
-                doc: None,
-                backing_type: None,
-            },
-        );
-        self.enums.insert(
-            "Result".to_string(),
-            EnumDecl {
-                name: "Result".to_string(),
-                type_params: vec![],
-                variants: vec![
-                    Variant {
-                        name: "Ok".to_string(),
-                        name_span: rask_ast::Span::new(0, 0),
-                        fields: vec![Field {
-                            name: rask_ast::decl::positional_field_name(0),
-                            name_span: Span::new(0, 0),
-                            ty: TypeExpr::named("T"),
-                            visibility: FieldVisibility::Package,
-                            attrs: vec![],
-                            default: None,
-                            doc: None,
-                        }],
-                        attrs: vec![],
-                        discriminant: None,
-                    },
-                    Variant {
-                        name: "Err".to_string(),
-                        name_span: rask_ast::Span::new(0, 0),
-                        fields: vec![Field {
-                            name: rask_ast::decl::positional_field_name(0),
-                            name_span: Span::new(0, 0),
-                            ty: TypeExpr::named("E"),
-                            visibility: FieldVisibility::Package,
-                            attrs: vec![],
-                            default: None,
-                            doc: None,
-                        }],
-                        attrs: vec![],
-                        discriminant: None,
-                    },
-                ],
-                methods: vec![],
-                is_pub: true,
-                attrs: vec![],
-                doc: None,
-                backing_type: None,
-            },
-        );
-        self.enums.insert(
-            "Ordering".to_string(),
-            EnumDecl {
-                name: "Ordering".to_string(),
-                type_params: vec![],
-                variants: vec![
-                    Variant { name: "Less".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Equal".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Greater".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Relaxed".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Acquire".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "Release".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "AcqRel".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    Variant { name: "SeqCst".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                ],
-                methods: vec![],
-                is_pub: true,
-                attrs: vec![],
-                doc: None,
-                backing_type: None,
-            },
-        );
 
         for (name, kind) in imports {
             self.env.define(name.clone(), Value::Module(kind));

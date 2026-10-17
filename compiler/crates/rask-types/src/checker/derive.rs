@@ -80,7 +80,7 @@ impl TypeChecker {
             }
             let program_type = !matches!(self.types.declared_by(id), TypeOwner::Stdlib);
             let derived = |methods: &[super::MethodSig], name: &str| {
-                methods.iter().any(|m| m.name == name && m.derived)
+                methods.iter().any(|m| m.name == name && m.origin == super::MethodOrigin::Structural)
             };
             let mut written = Vec::new();
             let mut params: &[String] = &[];
@@ -155,15 +155,16 @@ impl TypeChecker {
                 continue;
             }
             // `eq`, `hash` and `clone` have a body now, and a call to one is a
-            // call: `derived` is what lowering reads as "no body, do it in place".
-            // `compare` keeps the flag; `<` on a struct still lowers through it.
+            // call: `Structural` is what lowering reads as "no body, do it in
+            // place". `compare` stays structural; `<` on a struct still lowers
+            // through it.
             let names: Vec<String> = written.iter().map(|f| f.name.clone()).collect();
             if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. }) =
                 self.types.get_mut(id)
             {
                 for m in methods.iter_mut() {
                     if names.contains(&m.name) && m.name != "compare" {
-                        m.derived = false;
+                        m.origin = super::MethodOrigin::Derived;
                     }
                 }
             }
@@ -437,7 +438,7 @@ impl TypeChecker {
                                 self.types.get_mut(id)
                             {
                                 for m in methods.iter_mut().filter(|m| m.name == "clone") {
-                                    m.derived = true;
+                                    m.origin = super::MethodOrigin::Structural;
                                 }
                             }
                             if imp.methods.is_empty() {

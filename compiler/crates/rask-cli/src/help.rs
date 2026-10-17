@@ -373,6 +373,7 @@ pub fn print_benchmark_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}       Output as structured JSON", output::arg("--json"));
+    println!("  {}     Run a file's benchmarks on the interpreter", output::arg("--interp"));
     println!("  {} {} Filter benchmarks by name pattern", output::arg("-f"), output::arg("<pattern>"));
     println!("  {} {}  Save results as a baseline", output::arg("--save"), output::arg("<file>"));
     println!("  {} {} Compare against a saved baseline", output::arg("--compare"), output::arg("<file>"));

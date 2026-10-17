@@ -13,6 +13,39 @@ pub struct Decl {
     pub span: Span,
 }
 
+impl Decl {
+    /// The name this declaration introduces at module level. `None` for one
+    /// that introduces none: an `extend` block, an import, a test.
+    pub fn name(&self) -> Option<&str> {
+        match &self.kind {
+            DeclKind::Fn(f) => Some(&f.name),
+            DeclKind::Struct(s) => Some(&s.name),
+            DeclKind::Enum(e) => Some(&e.name),
+            DeclKind::Interface(t) => Some(&t.name),
+            DeclKind::Const(c) => Some(&c.name),
+            DeclKind::TypeAlias(a) => Some(&a.name),
+            DeclKind::Annotation(a) => Some(&a.name),
+            DeclKind::Union(u) => Some(&u.name),
+            _ => None,
+        }
+    }
+
+    /// `name`, to write.
+    pub fn name_mut(&mut self) -> Option<&mut String> {
+        match &mut self.kind {
+            DeclKind::Fn(f) => Some(&mut f.name),
+            DeclKind::Struct(s) => Some(&mut s.name),
+            DeclKind::Enum(e) => Some(&mut e.name),
+            DeclKind::Interface(t) => Some(&mut t.name),
+            DeclKind::Const(c) => Some(&mut c.name),
+            DeclKind::TypeAlias(a) => Some(&mut a.name),
+            DeclKind::Annotation(a) => Some(&mut a.name),
+            DeclKind::Union(u) => Some(&mut u.name),
+            _ => None,
+        }
+    }
+}
+
 /// The kind of declaration.
 #[derive(Debug, Clone)]
 pub enum DeclKind {
@@ -131,6 +164,9 @@ pub struct ExternDecl {
     pub ret_ty: Option<crate::ty::TypeExpr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+    /// Attributes written before `extern`. In the block form they cover every
+    /// member: `@pure extern "C" { … }`.
+    pub attrs: Vec<crate::attr::Attr>,
     /// Byte offset of the `extern` keyword when this came from the block form,
     /// `extern "C" { func …; func … }`.
     ///
@@ -177,6 +213,60 @@ impl FnDecl {
         self.attrs.iter().any(|a| a.is("native") || a.is("builtin") || a.is("unimplemented"))
     }
 
+    /// The effects the stdlib declares on a function it can't show in a body:
+    /// `@grows`, `@shrinks`, `@blocks`, `@external`.
+    pub fn declared_effects(&self) -> DeclaredEffects {
+        let has = |name| self.attrs.iter().any(|a| a.is(name));
+        DeclaredEffects {
+            grows: has("grows"),
+            shrinks: has("shrinks"),
+            blocks: has("blocks"),
+            external: has("external"),
+        }
+    }
+}
+
+/// What a stdlib function does that its body can't show, as its declaration
+/// says. Read by the checker, ownership and effects.
+///
+/// `grows`/`shrinks` (comp.advanced/EF1): the method changes how many elements
+/// its receiver holds, or moves them to new storage. Either one invalidates a
+/// `with` binding or a `for mutate` loop over the receiver (mem.borrowing/W2,
+/// ctrl.loops/LP14), and neither is possible on a fixed array. It was five
+/// name lists once, and the with-block rule's list didn't know `remove_where`
+/// (#1560).
+///
+/// `blocks`/`external` (comp.effects/FX1): on a native, the bottom of a call
+/// chain, where no body says what happens. Every other function's are
+/// inferred from what it calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeclaredEffects {
+    /// Adds elements, or may move them to a bigger buffer (`push`, `reserve`).
+    pub grows: bool,
+    /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
+    pub shrinks: bool,
+    /// Can park the thread until something outside it happens: a syscall,
+    /// `sleep`, a channel op, a `join`.
+    pub blocks: bool,
+    /// Reads or changes state outside the program without blocking: the
+    /// clock, the environment, the process.
+    pub external: bool,
+}
+
+impl DeclaredEffects {
+    /// Changes the number of elements in the receiver, or where they live.
+    pub fn changes_size(self) -> bool {
+        self.grows || self.shrinks
+    }
+}
+
+/// What the checker resolved a method call to, for the passes after it:
+/// `"Type.method"` with the receiver's declared type (`Handle.join` for
+/// `t.join()` on a `Handle<i64>`), and the method's declared effect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodTarget {
+    pub name: String,
+    pub effect: DeclaredEffects,
 }
 
 /// A function parameter.
@@ -341,23 +431,11 @@ pub mod field_attrs {
     }
 
     /// The static method desugar writes for a field's decode default. Both
-    /// decoders call it for a field the input leaves out, so the default runs
-    /// as ordinary code: `2 + 3`, `Status.Closed` and `Vec.new()` all work.
+    /// decoders call it for a field the input leaves out. Its body is the
+    /// default as a `comptime` block, so what it hands back was computed
+    /// while compiling (type.structs/FD1, std.encoding/E21).
     pub fn decode_default_method(field_name: &str) -> String {
         format!("__decode_default_{field_name}")
-    }
-
-    /// The `comptime func` desugar writes for a declared default that
-    /// `@default` overrides on decode, so it's checked like the other one.
-    pub fn declared_default_method(field_name: &str) -> String {
-        format!("__default_{field_name}")
-    }
-
-    /// The field a generated default method belongs to, from its name.
-    pub fn field_of_default_method(method: &str) -> Option<&str> {
-        method
-            .strip_prefix("__decode_default_")
-            .or_else(|| method.strip_prefix("__default_"))
     }
 
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in

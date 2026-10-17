@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an assignment whose left side is a value, not a place
+//
+// `=` stores into a variable, a field, an element by index, or through a
+// pointer. A call is a value with nowhere to put the new one. The checker let
+// these through, and each backend then failed in its own words: "invalid
+// assignment target" on the interpreter, a lowering error natively.
+
+import sync.Shared
+
+func seven() -> i64 {
+    return 7
+}
+
+func main() {
+    mut items = Vec.from([1, 2])
+
+    // ERROR: a method call isn't a place [E0916]
+    items.len() = 3
+
+    // ERROR: nor is a function call [E0916]
+    seven() += 1
+
+    // ERROR: a `Shared` is written through `with`, not by assigning to the guard [E0339]
+    let hits = Shared.new(0)
+    hits.write() += 1
+
+    // FIX: change what the call reads, or write inside the scope that holds the lock
+    items.push(3)
+    with hits.write() as h {
+        h += 1
+    }
+    println("{items.len()} {hits.get()}")
+}

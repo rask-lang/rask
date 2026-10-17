@@ -57,8 +57,11 @@ const SQUARES = comptime {
 // Factorials grow absurdly fast — 20! is already 2.4 quintillion.
 // Stirling's approximation (n! ≈ √(2πn) · (n/e)^n) is how physicists
 // deal with factorials of large numbers without actually computing them.
+// A `comptime` value has to exist when the program compiles, so this one
+// starts as an empty table rather than a `todo()`. Fill it in.
 const FACTORIALS = comptime {
-    todo("build a Vec of factorials")
+    let v: Vec<i64> = Vec.new()
+    v
 }
 
 // --- Puzzle 2: Standard atmosphere ---
@@ -77,7 +80,8 @@ const FACTORIALS = comptime {
 // just above the weather. The Concorde cruised at 18,000m —
 // so high that pilots could see the curvature of the Earth.
 const STD_ATMOSPHERE = comptime {
-    todo("build a Vec of temperatures in Kelvin")
+    let v: Vec<f64> = Vec.new()
+    v
 }
 
 // Look up temperature for a given altitude (rounded to nearest 1000m)
@@ -95,7 +99,8 @@ func std_temperature(altitude_m: i32) -> f64 {
 // is 0x61. This wasn't an accident — it made case conversion
 // trivial on early hardware that could only flip individual bits.
 const IS_UPPER = comptime {
-    todo("build a Vec<bool> for ASCII 0-127")
+    let v: Vec<bool> = Vec.new()
+    v
 }
 
 func is_uppercase(c: i32) -> bool {

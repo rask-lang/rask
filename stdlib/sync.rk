@@ -24,26 +24,30 @@ public struct Mutex { }
 // they build. A bare `Shared<T>` in a *user's* annotation means
 // `Shared<T, Readers>`; leaving it bare here would have pinned every method to
 // Readers and turned the other two strategies away at the door.
+//
+// Every method is `@builtin`. The strategy picks the runtime family a call
+// lands in (`Readers`, `Mutex` or `Local`), so no one symbol is right for all
+// three, and the compiler chooses it from the type argument.
 extend Shared<T, S> {
     /// Many tasks, concurrent reads. The default — what you write unless you
     /// have a reason not to.
-    @native("rask_shared_new_ptr")
+    @builtin
     public func new(take value: T) -> Shared<T, Readers> {}
 
     /// Many tasks, one at a time — reader or writer. Cheaper than `Readers`
     /// when writes dominate, since there is no reader count to keep.
-    @native("rask_mutex_new_ptr")
+    @builtin
     public func mutex(take value: T) -> Shared<T, Mutex> {}
 
     /// No lock at all. One task, several accessors — what `Cell` used to be.
     /// Sending one is a compile error (SH7), which is what makes it safe to
     /// reach for.
-    @native("rask_cell_new")
+    @builtin
     public func local(take value: T) -> Shared<T, Local> {}
 
-    // `read`, `write` and `staged` are `@builtin`: there is no function to
-    // call. The compiler takes the lock, runs the `with` block or the rest of
-    // the expression in the caller's frame, and releases it.
+    // `read`, `write` and `staged` have no function to call: the compiler
+    // takes the lock, runs the `with` block or the rest of the expression in
+    // the caller's frame, and releases it.
 
     /// Shared access, scoped to the expression or the `with` block.
     /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would
@@ -68,32 +72,34 @@ extend Shared<T, S> {
     public func staged(self) -> T {}
 
     /// Non-blocking read. `none` if contended; always succeeds under `Local`.
-    @native("rask_shared_try_read_ptr")
+    @builtin
     public func try_read(self, f: func(T)) -> Option<T> {}
 
     /// Non-blocking write. `none` if contended; always succeeds under `Local`.
-    @native("rask_shared_try_write_ptr")
+    @builtin
     public func try_write(self, f: func(T)) -> Option<T> {}
 
     /// Copy the inner value out. Copy types only — the single-expression
     /// shorthand `Cell` had.
-    @native("rask_cell_get")
+    @builtin
     public func get(self) -> T {}
 
     /// Replace the inner value.
-    @native("rask_cell_set")
+    @builtin
     public func set(self, take value: T) {}
 
     /// Swap in a new value, return the old one.
-    @native("rask_cell_replace")
+    @builtin
     public func replace(self, take value: T) -> T {}
 
-    /// Consume the `Shared`, return what it held.
+    /// Consume the `Shared`, return what it held. Only for a box holding a
+    /// resource or a `Heap`, which can't be cloned, so this is the last handle
+    /// (SH9). Any other payload comes out with `replace`.
     ///
     /// `take` is the parameter mode this method's own receiver uses, and
     /// `Vec.take_all` is the same idea one level down. `into_inner` was `Cell`'s
     /// name, carried forward from a type Rask no longer has.
-    @native("rask_cell_get")
+    @builtin
     public func take(take self) -> T {}
 }
 

@@ -72,12 +72,10 @@ pub fn desugar(decls: &mut Vec<Decl>) -> DesugarOutput {
 
 /// Desugar a single file that can call the stdlib.
 ///
-/// `stdlib` is the stdlib's defaulted signatures
-/// (`StubRegistry::desugar_declarations`). Filling an omitted argument needs
-/// the declaration it was omitted from, and the stdlib's declarations aren't
-/// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
-/// parsed and then unusable (#1276). This crate can't read the registry
-/// itself: `rask-stdlib` already depends on it.
+/// `stdlib` is the stdlib's types (`StubRegistry::desugar_declarations`):
+/// constructions, struct field defaults and error messages need the type's
+/// declaration, and the stdlib's aren't in `decls`. This crate can't read the
+/// registry itself: `rask-stdlib` already depends on it.
 pub fn desugar_with_stdlib(decls: &mut Vec<Decl>, stdlib: &[Decl]) -> DesugarOutput {
     desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
@@ -167,7 +165,7 @@ fn desugar_inner_from(
 
     let mut desugarer = Desugarer::new(id_base);
     desugarer.binary_sizes = binary_methods::sizes(decls);
-    desugarer.scan_error_message_types(decls);
+    desugarer.scan_error_message_types(decls, stdlib);
     for (index, decl) in decls.iter_mut().enumerate() {
         desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
         desugarer.desugar_decl(decl);
@@ -181,7 +179,7 @@ fn desugar_inner_from(
 
     // Defaults need the full declaration list to build their lookup table,
     // so they run as a second sweep rather than inline with the operators.
-    defaults::desugar_default_args(decls, default_args_id_base, stdlib);
+    defaults::desugar_struct_defaults(decls, default_args_id_base, stdlib);
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.
@@ -222,6 +220,10 @@ struct Desugarer {
     /// one by hand. A single-payload variant whose payload is in this set
     /// auto-delegates to `inner.message()`.
     error_message_types: std::collections::HashSet<String>,
+    /// The stdlib's types with a `message()`.
+    stdlib_message_types: std::collections::HashSet<String>,
+    /// Struct and enum names the program declares.
+    declared_types: std::collections::HashSet<String>,
     /// Types that spell out `message()` themselves, in the declaration body or
     /// in an `extend` block. ER6's derive skips these: a hand-written message
     /// is the override, so generating one alongside it would shadow the prose
@@ -241,6 +243,8 @@ impl Desugarer {
             errors: Vec::new(),
             operator_calls: std::collections::HashSet::new(),
             error_message_types: std::collections::HashSet::new(),
+            stdlib_message_types: std::collections::HashSet::new(),
+            declared_types: std::collections::HashSet::new(),
             hand_written_message: std::collections::HashSet::new(),
             binary_sizes: std::collections::HashMap::new(),
         }
@@ -255,8 +259,32 @@ impl Desugarer {
     /// delegates: `Auth(AuthError)` renders as `inner.message()` only if
     /// `AuthError` has one. Listing a type that never gets a `message()` would
     /// generate a call to a method nobody declares.
-    fn scan_error_message_types(&mut self, decls: &[Decl]) {
+    ///
+    /// The stdlib's types go in `stdlib_message_types`: `Read(IoError)`
+    /// delegates because the stdlib declares `IoError.message()`. A program
+    /// that declares its own `ParseError` means its own, so that set only
+    /// answers for names the program doesn't declare.
+    fn scan_error_message_types(&mut self, decls: &[Decl], stdlib: &[Decl]) {
         let has_message = |methods: &[FnDecl]| methods.iter().any(|m| m.name == "message");
+
+        // Every stdlib enum has one (ER6 derives it where the stdlib didn't
+        // write it), and so does a struct with a `message` method.
+        for decl in stdlib {
+            let named = match &decl.kind {
+                DeclKind::Enum(e) => Some(e.name.clone()),
+                DeclKind::Struct(s) if has_message(&s.methods) => Some(s.name.clone()),
+                DeclKind::Impl(i) if has_message(&i.methods) => i.target_ty.name(),
+                _ => None,
+            };
+            self.stdlib_message_types.extend(named);
+        }
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Enum(e) => _ = self.declared_types.insert(e.name.clone()),
+                DeclKind::Struct(s) => _ = self.declared_types.insert(s.name.clone()),
+                _ => {}
+            }
+        }
 
         for decl in decls {
             match &decl.kind {
@@ -308,6 +336,18 @@ impl Desugarer {
     /// stands aside rather than shadowing it. An enum carrying a `@resource` is
     /// no exception — the derived method borrows `self`, so what its arms bind
     /// are views the body doesn't owe anything for.
+    /// Does this payload type have a `message()` (ER37)? The program's own
+    /// declaration of the name answers first; otherwise a qualified
+    /// `io.IoError` is the stdlib's `IoError`, or a dependency's type.
+    fn has_message(&self, ty: &rask_ast::ty::TypeExpr) -> bool {
+        if let Some(name) = ty.name().filter(|n| self.declared_types.contains(n)) {
+            return self.error_message_types.contains(&name);
+        }
+        ty.last_segment().is_some_and(|n| {
+            self.stdlib_message_types.contains(n) || self.error_message_types.contains(n)
+        })
+    }
+
     fn derives_message(&self, e: &EnumDecl) -> bool {
         !self.hand_written_message.contains(&e.name)
     }
@@ -380,30 +420,20 @@ impl Desugarer {
         self.renumber = false;
     }
 
-    /// A field's defaults as `comptime func`s: `__decode_default_n` for what a
-    /// decode fills a missing field with (std.encoding/E20, type.structs/FD6),
-    /// and `__default_n` for the declared default when `@default` overrides it
-    /// on decode, so that one is held to the same rule.
+    /// `__decode_default_n`: what a decode fills a missing field with
+    /// (std.encoding/E20, type.structs/FD6). Its body is `return comptime { e }`,
+    /// so the value is computed while compiling like every compile-time value
+    /// (FD1, E21, ctrl.comptime/CT2) and the decoders read a constant.
     ///
-    /// A default is a compile-time constant (FD1, E21). As a `comptime func`
-    /// it can't reach I/O, transitively (CT60). Its value is folded at compile
-    /// time like any `let … = comptime`, so an overflow is a compile error at
-    /// the field's own width (CT1) and native carries the value as constant
-    /// data: a scalar, a string, a list, or a struct or enum built of those.
-    ///
-    /// Methods rather than copies, so a decode can call one: the decoders used
+    /// A method rather than a copy, so a decode can call one: the decoders used
     /// to read a default as a literal, and `@default(2 + 3)` made the field
     /// required (#1528).
     fn default_methods(&mut self, field: &rask_ast::decl::Field) -> Vec<FnDecl> {
         use rask_ast::decl::field_attrs;
-        let mut out = Vec::new();
-        if let Some(value) = field_attrs::decode_default(field) {
-            out.push(self.default_method(field_attrs::decode_default_method(&field.name), &field.ty, value));
-        }
-        if let (Some(_), Some(declared)) = (field_attrs::default_value(&field.attrs), &field.default) {
-            out.push(self.default_method(field_attrs::declared_default_method(&field.name), &field.ty, declared));
-        }
-        out
+        field_attrs::decode_default(field)
+            .map(|value| self.default_method(field_attrs::decode_default_method(&field.name), &field.ty, value))
+            .into_iter()
+            .collect()
     }
 
     fn default_method(&mut self, name: String, ty: &TypeExpr, value: &Expr) -> FnDecl {
@@ -417,19 +447,7 @@ impl Desugarer {
             },
             span: sp,
         };
-        let binding = "__default".to_string();
-        let body = vec![
-            Stmt {
-                id: self.fresh_id(),
-                kind: StmtKind::Let { name: binding.clone(), name_span: sp, ty: Some(ty.clone()), init: folded },
-                span: sp,
-            },
-            Stmt {
-                id: self.fresh_id(),
-                kind: StmtKind::Return(Some(Expr { id: self.fresh_id(), kind: ExprKind::Ident(binding), span: sp })),
-                span: sp,
-            },
-        ];
+        let body = vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }];
         FnDecl {
             name,
             type_params: vec![],
@@ -438,7 +456,7 @@ impl Desugarer {
             body,
             is_pub: false,
             is_private: false,
-            is_comptime: true,
+            is_comptime: false,
             is_unsafe: false,
             abi: None,
             attrs: vec![],
@@ -577,16 +595,9 @@ impl Desugarer {
             rask_ast::rewrite::rewrite_expr(&mut expr, &mut FreshIds(&mut self.next_id));
             return MessageTemplate::Format(expr);
         }
-        // ER37: single payload that implements Error delegates to it. The
-        // `ends_with("Error")` check keeps cross-module error types working when
-        // their declaration isn't in this compilation unit's decl set.
-        if variant.fields.len() == 1 {
-            let payload_ty = &variant.fields[0].ty;
-            let delegates = payload_ty.name().is_some_and(|n| self.error_message_types.contains(&n))
-                || payload_ty.last_segment().is_some_and(is_error_type_name);
-            if delegates {
-                return MessageTemplate::Delegate(variant.fields[0].name.clone());
-            }
+        // ER37: single payload that implements Error delegates to it.
+        if variant.fields.len() == 1 && self.has_message(&variant.fields[0].ty) {
+            return MessageTemplate::Delegate(variant.fields[0].name.clone());
         }
         // ER6: humanized variant name, interpolating any payload fields.
         MessageTemplate::Format(self.humanize_variant(&variant.name, &variant.fields))
@@ -1521,12 +1532,6 @@ enum MessageTemplate {
     Format(Expr),
     /// Delegate to inner value: `inner.message()`
     Delegate(String),
-}
-
-/// Heuristic: does this type name look like an error type?
-/// Matches names ending in "Error" (e.g., IoError, ManifestError).
-fn is_error_type_name(ty: &str) -> bool {
-    ty.ends_with("Error")
 }
 
 /// ER6 fallback message: humanize the variant name (`NotFound` → "not found")

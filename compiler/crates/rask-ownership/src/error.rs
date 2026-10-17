@@ -463,6 +463,18 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// A `with` binding given away. The block reaches into its source; the
+    /// source still holds the value when the block ends.
+    #[error("cannot give away `{name}` — `with` only lends it out of `{from}`")]
+    ConsumeWithBinding {
+        name: String,
+        /// What the `with` reads: `s` for `s.write()`.
+        from: String,
+        /// The `with` source expression.
+        with_at: Span,
+        sink: Option<String>,
+    },
+
     /// A closure body gave away something it captured (mem.closures/CM4).
     ///
     /// The parameter version of this is `ConsumeBorrowedParam` (#804). What

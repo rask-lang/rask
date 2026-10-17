@@ -7,6 +7,7 @@
 mod builtins;
 pub mod types;
 pub mod float_methods;
+pub mod handles;
 pub mod ptr_methods;
 pub mod registry;
 pub mod forwarders;
@@ -15,6 +16,7 @@ pub mod modules;
 pub mod mir_metadata;
 pub mod ordering;
 pub mod panic_messages;
+pub mod wrappers;
 
 pub use ordering::{
     ordering_tag, ORDERING_EQUAL, ORDERING_GREATER, ORDERING_LESS, ORDERING_VARIANTS,
@@ -28,6 +30,7 @@ pub use registry::{
     StdlibLayer, type_layer, module_layer,
 };
 pub use float_methods::{FloatMethod, FloatSig, FLOAT_METHODS};
+pub use handles::{is_runtime_handle, runtime_handle, RuntimeHandle};
 pub use ptr_methods::{PtrMethod, PtrSig, PTR_METHODS};
 
 /// Information about a built-in function for the resolver

@@ -307,15 +307,36 @@ pub struct MethodSig {
     /// whose argument doesn't meet it is an error: `sort` lives in
     /// `extend Vec<T> where T: Comparable`, and a `Vec<i64?>` can't call it.
     pub owner_bounds: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
-    /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
-    /// no body behind it, which the backends answer structurally.
-    pub derived: bool,
+    /// Who wrote it, and whether it has a body.
+    pub origin: MethodOrigin,
+    /// What it does to its receiver's size, as declared (`@grows`, `@shrinks`).
+    pub effect: rask_ast::decl::DeclaredEffects,
     /// Declared `public`. A checker-supplied signature has no declaration and
     /// is callable from anywhere, so it counts as public.
     pub is_public: bool,
     /// Each parameter's declared default, positionally matching `params`.
     /// Empty for a signature with no declaration behind it.
     pub defaults: Vec<Option<rask_ast::expr::Expr>>,
+}
+
+/// Where a method came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodOrigin {
+    /// Written in the program or the stdlib.
+    Declared,
+    /// The checker supplied it (EQ1, HA1, ORD1 and the rest) and the backends
+    /// answer it structurally: there is no body behind it.
+    Structural,
+    /// The checker supplied it and wrote its body (`derive.rs`). Runs no code
+    /// the program wrote beyond what its fields' own methods run.
+    Derived,
+}
+
+impl MethodOrigin {
+    /// A call to it is a call: there is a body to run.
+    pub fn has_body(self) -> bool {
+        self != MethodOrigin::Structural
+    }
 }
 
 /// How self is passed to a method.
@@ -370,16 +391,39 @@ impl TypeBinding {
 }
 
 impl TypedProgram {
-    /// Each method call the checker resolved, named `Type.method` after the
-    /// receiver's declared type — `Handle.join` for `t.join()` on a
-    /// `Handle<i64>`. What the effects pass classifies a call by.
-    pub fn method_call_names(&self) -> HashMap<NodeId, String> {
+    /// What a method call's declaration says it does (`@grows`, `@shrinks`,
+    /// `@io`, `@waits`). Nothing for a call that isn't a method call or whose
+    /// method declares none.
+    pub fn declared_effects(&self, call: NodeId) -> rask_ast::decl::DeclaredEffects {
+        let Some(callee @ Callee::Method { method, .. }) = self.call_targets.get(&call) else {
+            return Default::default();
+        };
+        callee
+            .recv_type_id()
+            .and_then(|id| self.types.get(id))
+            .and_then(|def| match def {
+                TypeDef::Struct { methods, .. }
+                | TypeDef::Enum { methods, .. }
+                | TypeDef::NominalAlias { methods, .. } => {
+                    methods.iter().find(|m| m.name == *method).map(|m| m.effect)
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Each method call the checker resolved, keyed by the call's node: what
+    /// it calls and what the method declares it does to its receiver's size.
+    pub fn method_targets(&self) -> HashMap<NodeId, rask_ast::decl::MethodTarget> {
         self.call_targets
             .iter()
             .filter_map(|(node, callee)| match callee {
                 Callee::Method { recv, method, .. } => {
                     let ty = receiver_name(recv, &self.types)?;
-                    Some((*node, format!("{ty}.{method}")))
+                    Some((*node, rask_ast::decl::MethodTarget {
+                        name: format!("{ty}.{method}"),
+                        effect: self.declared_effects(*node),
+                    }))
                 }
                 Callee::Free(_) => None,
             })
@@ -709,6 +753,11 @@ pub struct TypedProgram {
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
     pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER9: the value of each `return` that goes to the error side of the
+    /// function's `T or E`. The checker picked the side by type when it
+    /// accepted the return; the backends wrap by this instead of comparing
+    /// types again — a `type Code = i64` error is an `i64` to both of them.
+    pub err_returns: std::collections::HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them, so their
     /// captures travel with them instead of being pointed at. Worked out by the
     /// ownership pass and written back here, because lowering and the
@@ -755,10 +804,6 @@ pub struct TypedProgram {
     /// Keyed by span because FnDecl has no NodeId, and spans survive the clone
     /// monomorphization makes of each generic instantiation.
     pub mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
-    /// T1: method-call spans that resolved to a channel `Sender.send`. Read by
-    /// the ownership checker to transfer ownership of the sent value even when
-    /// inference leaves the receiver as a type variable in `node_types`.
-    pub channel_send_sites: std::collections::HashSet<rask_ast::Span>,
     /// Bare names in a pattern that the checker read as a type test rather
     /// than as a variant or a binding — `r is ParseError` — keyed by the span
     /// of the statement or expression the pattern sits in.

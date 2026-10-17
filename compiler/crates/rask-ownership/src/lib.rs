@@ -133,6 +133,9 @@ pub struct OwnershipChecker<'a> {
     /// binding can't be given away any more than a borrowed parameter can
     /// (LP6). Scoped to the loop body.
     borrowed_loop_items: HashMap<String, (Span, String)>,
+    /// `with … as name` bindings: the source still holds the value, the
+    /// block only reaches into it. Name → (the `with` source, what it reads).
+    borrowed_with: HashMap<String, (Span, String)>,
     /// Type parameters in scope bounded by `Copy`, whose values copy.
     copy_params: HashSet<String>,
     /// Loops being walked, innermost last: the label, and the join of the
@@ -378,6 +381,7 @@ impl<'a> OwnershipChecker<'a> {
             field_views: HashMap::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
+            borrowed_with: HashMap::new(),
             copy_params: HashSet::new(),
             loop_exits: Vec::new(),
             refills: HashMap::new(),
@@ -1065,6 +1069,7 @@ impl<'a> OwnershipChecker<'a> {
         self.field_views.clear();
         self.store_target = None;
         self.borrowed_loop_items.clear();
+        self.borrowed_with.clear();
         self.loop_exits.clear();
         self.refills.clear();
         self.mutate_params.clear();
@@ -2320,10 +2325,9 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_to_vec_has_owned_items(expr, object);
                 }
                 self.note_link_into_container(object, method, args);
-                // #296/PM3: consume arguments bound to `take` parameters of user
-                // methods. T1: a channel `send` transfers ownership of its value.
-                let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(object, method);
-                let channel_send = self.is_channel_send(object, method, expr.span);
+                // #296/PM3: consume arguments bound to `take` parameters. T1: a
+                // channel `send` is one (`send(self, take value: T)`).
+                let method_takes: Option<Vec<ParamMode>> = self.method_param_modes(expr.id, object, method);
                 let mut rack_args = self.rack_arg_roots(args);
                 // For a method call the receiver is an argument too.
                 if let Some(root) = Self::extract_root_and_fields(object).0 {
@@ -2355,12 +2359,12 @@ impl<'a> OwnershipChecker<'a> {
                     let is_take_param = matches!(
                         method_takes.as_ref().and_then(|t| t.get(i)),
                         Some(ParamMode::Take)
-                    ) || (channel_send && i == 0);
+                    );
                     // SL4, as above: only a `take` parameter keeps it.
                     let known_mode = method_takes
                         .as_ref()
                         .and_then(|t| t.get(i))
-                        .map(|m| matches!(m, ParamMode::Take) || (channel_send && i == 0));
+                        .map(|m| matches!(m, ParamMode::Take));
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
                     if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
@@ -2443,8 +2447,13 @@ impl<'a> OwnershipChecker<'a> {
                 for rack_arg in &method_deleting_args {
                     self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
+                // What the method's declaration says it does to the
+                // receiver's size (`@grows`, `@shrinks`). A name list here
+                // didn't know `remove_where`, and a `with v[0]` binding
+                // outlived the element it named (#1560).
+                let structural = self.program.declared_effects(expr.id).changes_size();
                 // W2: Check structural mutations inside `with` blocks
-                if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop") {
+                if structural {
                     if let Some(coll_name) = object.name() {
                         for wb in &self.active_with_bindings {
                             if wb.collection_name == *coll_name {
@@ -2464,7 +2473,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 // LP14: Check structural mutations on collection during `for mutate`
-                if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop" | "drain") {
+                if structural {
                     if let Some(coll_name) = object.name() {
                         for fm in &self.active_for_mutates {
                             if fm.collection_name == *coll_name {
@@ -3156,7 +3165,13 @@ impl<'a> OwnershipChecker<'a> {
                         (b.name.clone(), state, ty)
                     })
                     .collect();
+                let saved_with = self.borrowed_with.clone();
+                for b in bindings.iter() {
+                    let from = Self::with_source_text(&b.source).unwrap_or_else(|| "its source".to_string());
+                    self.borrowed_with.insert(b.name.clone(), (b.source.span, from));
+                }
                 self.check_block(body);
+                self.borrowed_with = saved_with;
                 for (name, state, ty) in shadowed.into_iter().rev() {
                     match state {
                         Some(s) => self.bindings.insert(name.clone(), s),
@@ -4585,9 +4600,7 @@ impl<'a> OwnershipChecker<'a> {
             "u128" => Type::U128,
             "f32" => Type::F32,
             "f64" => Type::F64,
-            "int" => Type::I64,
             "isize" => Type::isize_ty(),
-            "uint" => Type::U64,
             "usize" => Type::usize_ty(),
             _ => return self.program.types.get_type_id(name).map(Type::Named),
         })
@@ -4644,7 +4657,7 @@ impl<'a> OwnershipChecker<'a> {
                 let base_name = self.program.types.type_name(*base);
                 // The compiler-native generics have no fields to blame — same
                 // gap `is_copy` has to work around for the same reason.
-                if rask_types::TypeTable::is_native_opaque_generic(&base_name) {
+                if rask_stdlib::is_runtime_handle(&base_name) {
                     if matches!(base_name.as_str(), "Vec" | "Map") {
                         MoveReason::OwnsHeapMemory { type_name }
                     } else {
@@ -5234,7 +5247,7 @@ impl<'a> OwnershipChecker<'a> {
                     true
                 }
                 ExprKind::MethodCall { object, method, args, .. } => {
-                    let modes = self.method_param_modes(object, method);
+                    let modes = self.method_param_modes(e.id, object, method);
                     for (i, arg) in args.iter().enumerate() {
                         let takes = matches!(
                             modes.as_ref().and_then(|m| m.get(i)),
@@ -6196,6 +6209,20 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
+            // A compiler-provided generic (`Shared`, `Vec`, `Heap`) keeps its
+            // methods in the stdlib declarations, not the type table. Unasked,
+            // `s.take()` left the box owed after emptying it.
+            let base = match ty {
+                Type::Generic { base, .. } => Some(self.program.types.type_name(*base)),
+                Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+                _ => None,
+            };
+            if base
+                .and_then(|b| rask_stdlib::mir_metadata::lookup(&format!("{}_{}", b, method_name)))
+                .is_some_and(|m| m.takes_self && m.take_self)
+            {
+                return Some(rask_types::SelfParam::Take);
+            }
         }
         None
     }
@@ -6672,6 +6699,17 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// What a `with` source reaches into: `s` for `s.write()`, `items` for
+    /// `items[i]`.
+    fn with_source_text(source: &Expr) -> Option<String> {
+        match &source.kind {
+            ExprKind::MethodCall { object, .. } | ExprKind::Index { object, .. } => {
+                Self::place_text(object)
+            }
+            _ => Self::place_text(source),
+        }
+    }
+
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
         // O11: a const is not the function's to give away. Every function sees
         // the same one, so a move would leave the others holding nothing —
@@ -6729,6 +6767,18 @@ impl<'a> OwnershipChecker<'a> {
             });
             return;
         }
+        if let Some((with_at, from)) = self.borrowed_with.get(name).cloned() {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeWithBinding {
+                    name: name.to_string(),
+                    from,
+                    with_at,
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
         if let Some(&closure_at) = self.borrowed_captures.get(name) {
             let ty = self.binding_types.get(name);
             self.errors.push(OwnershipError {
@@ -6771,16 +6821,26 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Parameter modes of a user method on the receiver's type, if resolvable.
-    fn method_param_modes(&self, object: &Expr, method_name: &str) -> Option<Vec<ParamMode>> {
-        let ty = self.node_ty(&object.id)?;
-        let id = match ty {
-            Type::Named(id) => *id,
-            Type::Generic { base, .. } => *base,
-            // A stdlib type named as the receiver of a static method arrives
-            // as its name.
-            Type::UnresolvedNamed(name) => self.program.types.get_type_id(name)?,
-            _ => return None,
+    /// Parameter modes of the method a call resolved to, as its declaration
+    /// says: the checker's resolved receiver first, the receiver's own type
+    /// when the checker recorded none.
+    ///
+    /// The declaration is the whole answer. A channel `send` was a special
+    /// case once, recognised by its name and a span the checker recorded,
+    /// because no declaration was read for it; `Sender.send` declares
+    /// `take value: T` like any other keeping parameter.
+    fn method_param_modes(&self, call: rask_ast::NodeId, object: &Expr, method_name: &str) -> Option<Vec<ParamMode>> {
+        let resolved = self.program.call_targets.get(&call).and_then(|c| c.recv_type_id());
+        let id = match resolved {
+            Some(id) => id,
+            None => match self.node_ty(&object.id)? {
+                Type::Named(id) => *id,
+                Type::Generic { base, .. } => *base,
+                // A stdlib type named as the receiver of a static method arrives
+                // as its name.
+                Type::UnresolvedNamed(name) => self.program.types.get_type_id(name)?,
+                _ => return None,
+            },
         };
         let methods = match self.program.types.get(id)? {
             rask_types::TypeDef::Struct { methods, .. } => methods,
@@ -6791,24 +6851,6 @@ impl<'a> OwnershipChecker<'a> {
             .iter()
             .find(|m| m.name == method_name)
             .map(|m| m.params.iter().map(|(_, mode)| *mode).collect())
-    }
-
-    /// T1: a channel `send` transfers ownership of the sent value.
-    /// `send` is a builtin (no user MethodSig), so recognize it structurally.
-    fn is_channel_send(&self, object: &Expr, method_name: &str, call_span: Span) -> bool {
-        if method_name != "send" {
-            return false;
-        }
-        // Type checker recorded this call as a `Sender.send` — authoritative even
-        // when inference left the receiver as a bare var in node_types (T1).
-        if self.program.channel_send_sites.contains(&call_span) {
-            return true;
-        }
-        // Fallback: receiver type is concrete. TypeDef names carry their generic
-        // params ("Sender<T>"); match the base.
-        self.receiver_type_name(object)
-            .map(|n| n == "Sender")
-            .unwrap_or(false)
     }
 
     /// L1/ER42: a type-name annotation refers to a transitively-linear type.
@@ -7118,6 +7160,7 @@ impl<'a> OwnershipChecker<'a> {
             || self.borrowed_params.contains_key(name)
             || self.borrowed_parts.contains_key(name)
             || self.borrowed_loop_items.contains_key(name)
+            || self.borrowed_with.contains_key(name)
             || self.borrowed_captures.contains_key(name)
     }
 

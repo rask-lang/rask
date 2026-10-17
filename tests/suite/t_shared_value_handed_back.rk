@@ -31,6 +31,25 @@ struct Point {
     public y: i64
 }
 
+// `take` is only for a box holding a resource (conc.sync/SH9), so the payloads
+// it hands back are these.
+@resource
+struct Ticket {
+    id: i64
+    holder: string
+    seat: Point
+}
+
+extend Ticket {
+    func redeem(take self) -> string {
+        return format("{self.holder} {self.id} {self.seat.x},{self.seat.y}")
+    }
+}
+
+func ticket(id: i64) -> Ticket {
+    return Ticket(id: id, holder: "a holder name long enough to allocate", seat: Point(x: id, y: id + 1))
+}
+
 test "mem.shared-rack-heap — replace hands back a number" {
     let c = Shared<i64>.local(1)
     assert c.replace(2) == 1
@@ -68,54 +87,38 @@ test "mem.shared-rack-heap — replace in a loop" {
 }
 
 test "mem.shared-rack-heap — take consumes the Shared" {
-    let c = Shared<i64>.local(7)
-    assert c.take() == 7
-}
-
-test "mem.shared-rack-heap — take of a string" {
-    let c = Shared<string>.local("what the box held, long enough to allocate")
-    assert c.take() == "what the box held, long enough to allocate"
-}
-
-test "mem.shared-rack-heap — take of a struct" {
-    let c = Shared<Point>.local(Point(x: 5, y: 6))
-    let p = c.take()
-    assert p.x == 5
-    assert p.y == 6
+    let c = Shared.local(ticket(7))
+    assert c.take().redeem() == "a holder name long enough to allocate 7 7,8"
 }
 
 // One consumed and one dropped in the same frame, so the frame's own drop
 // doesn't free a cell `take` already gave back.
 test "mem.shared-rack-heap — one consumed, one dropped" {
-    let a = Shared<i64>.local(1)
     let b = Shared<i64>.local(2)
-    assert a.take() == 1
+    let a = Shared.local(ticket(1))
+    assert a.take().redeem() == "a holder name long enough to allocate 1 1,2"
     assert b.get() == 2
 }
 
 // A box per turn, consumed each time: a double free lands on one the next turn
-// has reused.
+// has reused. The string inside passes to the caller, so the box's own free
+// must not release it too; a second release lands on a buffer the next turn
+// has taken and the comparison says so.
 test "mem.shared-rack-heap — a Shared consumed per turn" {
-    mut total = 0
-    for i in 1..6 {
-        let c = Shared<i64>.local(i)
-        total = total + c.take()
-    }
-    assert total == 15
-}
-
-// A string payload consumed per turn: the buffer's reference passes to the
-// caller, so the cell's own free must not release it too — a second release
-// lands on a buffer the next turn has taken and the comparison says so.
-test "mem.shared-rack-heap — a string payload consumed per turn" {
     mut n = 0
     for i in 0..8 {
-        let c = Shared<string>.local("a string long enough to allocate its own buffer")
-        if c.take() == "a string long enough to allocate its own buffer" {
+        let c = Shared.local(ticket(i))
+        if c.take().redeem() == format("a holder name long enough to allocate {i} {i},{i + 1}") {
             n = n + 1
         }
     }
     assert n == 8
+}
+
+// The locking strategies have their own boxes and their own `take`.
+test "mem.shared-rack-heap — take under every strategy" {
+    assert Shared.new(ticket(3)).take().redeem() == "a holder name long enough to allocate 3 3,4"
+    assert Shared.mutex(ticket(4)).take().redeem() == "a holder name long enough to allocate 4 4,5"
 }
 
 test "mem.shared-rack-heap — a string payload replaced per turn" {
@@ -158,15 +161,6 @@ test "mem.shared-rack-heap — replace at every primitive width" {
     let c = Shared<char>.local('x')
     assert c.replace('y') == 'x'
     assert c.get() == 'y'
-}
-
-test "mem.shared-rack-heap — take at every primitive width" {
-    assert Shared<f64>.local(9.25).take() == 9.25
-    assert Shared<f32>.local(3.25).take() == 3.25
-    assert Shared<i32>.local(5).take() == 5
-    assert Shared<u8>.local(250).take() == 250
-    assert Shared<bool>.local(true).take()
-    assert Shared<char>.local('z').take() == 'z'
 }
 
 // The mutex strategy takes the same two paths under a lock.

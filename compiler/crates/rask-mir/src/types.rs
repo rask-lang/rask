@@ -4,9 +4,26 @@
 
 /// Result layout offsets — single source of truth in `rask_mono::abi`.
 pub use rask_mono::abi::{
-    RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_OFFSET, RESULT_PAYLOAD_OFFSET, RESULT_TAG_OFFSET,
-    UNION_MEMBER_OFFSET, UNION_PAYLOAD_OFFSET,
+    RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_BYTES,
+    RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
 };
+
+/// Where each field of a tuple sits: in order, each at its own alignment.
+/// The runtime builds tuples too — a map's `(key, value)` entries — and takes
+/// the offsets from here.
+pub fn tuple_offsets(fields: &[MirType]) -> Vec<u32> {
+    let mut offset = 0u32;
+    fields
+        .iter()
+        .map(|f| {
+            let align = f.align().max(1);
+            offset = (offset + align - 1) & !(align - 1);
+            let at = offset;
+            offset += f.size();
+            at
+        })
+        .collect()
+}
 
 /// Which container a handle points at. What frees it is codegen's to name;
 /// this is the vocabulary both ends share.
@@ -178,7 +195,16 @@ impl MirType {
     /// another, plus `Array` in a third. A tuple guard behind a `Mutex` was
     /// classified as word-sized on the strength of one of the short lists and
     /// got loaded as a single i64.
+    ///
+    /// A niche option — `Link<T>?` — is the exception that's spelled like an
+    /// aggregate: one word, the link itself or null for `none`, so it travels
+    /// in a register like the link does. Answered "by address", a
+    /// `Vec<Handle<T>?>` read every slot as present: an address is never the
+    /// sentinel (#959).
     pub fn passed_by_address(&self) -> bool {
+        if self.niche_none().is_some() {
+            return false;
+        }
         matches!(
             self,
             MirType::Struct(_)
@@ -199,6 +225,13 @@ impl MirType {
                 // segfaulted (#552).
                 | MirType::InterfaceObject { .. }
         )
+    }
+
+    /// The size of the stack slot a value of this type lives in, or `None`
+    /// for a value that travels in a register. A SIMD vector is addressed
+    /// too, but its buffer lives elsewhere and its local is the pointer.
+    pub fn slot_size(&self) -> Option<u32> {
+        (self.passed_by_address() && !matches!(self, MirType::SimdVector { .. })).then(|| self.size())
     }
 
     /// True for the one-word niche payload: a link.
@@ -241,12 +274,15 @@ impl MirType {
     pub fn niche_none(&self) -> Option<i64> {
         match self {
             MirType::Link(_) => Some(rask_mono::abi::LINK_NONE_SENTINEL),
-            MirType::Option(inner) => inner.niche_none(),
+            // Only an option directly over a link. `Link<T>??` is a tagged
+            // option whose payload happens to be a niche one, and its `none`
+            // is a tag, not the null address.
+            MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
             _ => None,
         }
     }
 
-    /// Byte size of this type. Structs/enums use pointer size as fallback.
+    /// Byte size of this type, as it sits in memory.
     pub fn size(&self) -> u32 {
         match self {
             MirType::Void => 0,
@@ -262,45 +298,17 @@ impl MirType {
             MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
             MirType::Tuple(fields) => {
-                let mut offset = 0u32;
-                for f in fields {
-                    let align = f.align();
-                    offset = (offset + align - 1) & !(align - 1);
-                    offset += f.size();
-                }
+                let end = match (tuple_offsets(fields).last(), fields.last()) {
+                    (Some(off), Some(f)) => off + f.size(),
+                    _ => 0,
+                };
                 // Round up to max alignment
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
-                (offset + max_align - 1) & !(max_align - 1)
+                (end + max_align - 1) & !(max_align - 1)
             }
             MirType::InterfaceObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
-            MirType::Option(inner) => {
-                // The niche is one word: the value *is* the option, and `none`
-                // is the null address. Everything else is tag (8 bytes,
-                // aligned) + payload.
-                //
-                // A payload narrower than a word still occupies one: every
-                // writer of a payload slot stores a whole word into it, so the
-                // slot has to be that wide. Counting an `i32?` as 12 bytes here
-                // while codegen gave the slot 16 is what made a copy of one
-                // leave four stale bytes behind, and `==` on an option reads
-                // its payload as a word (#920).
-                if matches!(**inner, MirType::Link(_)) {
-                    8
-                } else {
-                    8 + inner.size().max(8)
-                }
-            }
-            MirType::Result { ok, err } => {
-                // [tag:8][origin_file:8][origin_line:8][payload] — offsets in
-                // rask_mono::abi (ER15). Same word-wide payload rule as Option.
-                RESULT_PAYLOAD_OFFSET + ok.size().max(8).max(err.size().max(8))
-            }
-            // [member:8][member bytes] — the members are nominally distinct
-            // types with nothing in their bytes to tell them apart, so the index
-            // is stored (#776). `UNION_MEMBER_OFFSET` / `UNION_PAYLOAD_OFFSET`
-            // name the two halves.
-            MirType::Union(variants) => {
-                UNION_PAYLOAD_OFFSET + variants.iter().map(|v| v.size()).max().unwrap_or(0)
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.wrapper_layout().map_or(8, |l| l.size)
             }
             MirType::SimdVector { elem, lanes } => elem.size() * lanes,
         }
@@ -316,9 +324,40 @@ impl MirType {
             MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
             MirType::Struct(sid) => sid.align,
             MirType::Enum(eid) => eid.align,
-            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
+            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
+                self.wrapper_layout().map_or(8, |l| l.align)
+            }
+            MirType::Array { elem, .. } => elem.align(),
+            MirType::SimdVector { .. } => self.size().min(32),
             _ => 8,
         }
+    }
+
+    /// Where a `T?`, `T or E` or error union keeps its payload, and its size.
+    /// `rask_mono::abi` is the one definition; `None` for anything else, and
+    /// for a niche option, which is its payload.
+    pub fn wrapper_layout(&self) -> Option<rask_mono::abi::WrapperLayout> {
+        match self {
+            MirType::Option(inner) if inner.is_niche_payload() => None,
+            MirType::Option(inner) => {
+                Some(rask_mono::abi::option_layout(inner.size(), inner.align()))
+            }
+            MirType::Result { ok, err } => Some(rask_mono::abi::result_layout(
+                ok.size().max(err.size()),
+                ok.align().max(err.align()),
+            )),
+            MirType::Union(members) => Some(rask_mono::abi::union_layout(
+                members.iter().map(|m| m.size()).max().unwrap_or(0),
+                members.iter().map(|m| m.align()).max().unwrap_or(1),
+            )),
+            _ => None,
+        }
+    }
+
+    /// The byte offset of a wrapper's payload. A niche option is its payload,
+    /// at offset 0.
+    pub fn payload_offset(&self) -> u32 {
+        self.wrapper_layout().map_or(0, |l| l.payload_offset)
     }
 
     /// Does an array element of this type live *in* its slot?
@@ -434,6 +473,9 @@ pub struct SignatureId(pub u32);
 /// register, and the runtime calls the closure through `int64_t (*)(void *)`, so
 /// the value was never in the register it read (#963).
 ///
+/// A `T?` or `T or E` is boxed whatever its size: a function returns one
+/// through a destination pointer, never in a register (`returns_through_dst`).
+///
 /// Both sides ask this: MIR lowering when it decides to put a boxing thunk in
 /// front of the closure, and codegen when the join decides whether to copy
 /// through an address. One definition, so they can't drift apart.
@@ -441,6 +483,38 @@ pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
     match ty {
         MirType::Void => false,
         MirType::F32 | MirType::F64 => true,
-        other => other.size() > 8,
+        other => other.size() > 8 || other.wrapper_layout().is_some(),
+    }
+}
+
+/// Each struct field's and each enum variant field's MIR type, indexed the way
+/// the layouts are: `structs[layout id][field]` and
+/// `variants[layout id][variant][field]`.
+///
+/// A layout carries its fields' *checker* types, and codegen has no way to turn
+/// those into MIR types. Its ownership walks used to keep a second, checker-typed
+/// copy of every arm for the fields of a struct or a variant, and the copy was
+/// missing arms the MIR walk had: a tuple, a closure or an optional field was
+/// never released. Lowering computes these once, with the same conversion every
+/// other MIR type comes from.
+#[derive(Debug, Clone, Default)]
+pub struct FieldTypes {
+    pub structs: Vec<Vec<MirType>>,
+    pub variants: Vec<Vec<Vec<MirType>>>,
+}
+
+impl FieldTypes {
+    /// The fields of struct layout `id`, in layout order. Empty when the table
+    /// doesn't cover it.
+    pub fn struct_fields(&self, id: u32) -> &[MirType] {
+        self.structs.get(id as usize).map_or(&[], Vec::as_slice)
+    }
+
+    /// The fields of variant `variant` of enum layout `id`, in layout order.
+    pub fn variant_fields(&self, id: u32, variant: usize) -> &[MirType] {
+        self.variants
+            .get(id as usize)
+            .and_then(|v| v.get(variant))
+            .map_or(&[], Vec::as_slice)
     }
 }

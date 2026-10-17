@@ -41,11 +41,16 @@ pub fn branch<'a>(taken: bool, then_branch: &'a Expr, else_branch: Option<&'a Ex
 }
 
 /// A condition built from tests only the loop iteration can answer, combined
-/// with `!`, `&&` and `||`. `test` answers one method call (`item.has<A>()`)
-/// or gives `None`; any other shape is `None` too.
+/// with `!`, `&&` and `||`. `test` answers one fact about the field — a method
+/// call (`item.has<A>()`) or a property (`item.is_skipped`) — or gives `None`;
+/// any other shape is `None` too.
 pub fn decide(cond: &Expr, test: &mut impl FnMut(&Expr) -> Option<bool>) -> Option<bool> {
     match &cond.kind {
-        ExprKind::MethodCall { .. } => test(cond),
+        // `!x` after desugaring.
+        ExprKind::MethodCall { object, method, args, .. } if method == "not" && args.is_empty() => {
+            Some(!decide(object, test)?)
+        }
+        ExprKind::MethodCall { .. } | ExprKind::Field { .. } => test(cond),
         ExprKind::Unary { op: UnaryOp::Not, operand } => Some(!decide(operand, test)?),
         ExprKind::Binary { op, left, right } => {
             let (l, r) = (decide(left, test)?, decide(right, test)?);

@@ -32,6 +32,7 @@ concepts — they're the same type with different synchronization — so they're
 | **SH6: Bare access forbidden** | `with s as v { }` is a compile error. Say `read()` or `write()`, so the page shows which one you meant |
 | **SH7: `Local` can't cross a task** | Sending a `Shared<T, Local>` to another task is a compile error. `Local` takes no lock, so two tasks touching it would race. This rule is what makes the opt-out safe to reach for. A closure that captured one and reaches `spawn` through a return, a field or a container, where the spawn site doesn't show what it captured, is refused when the task starts: a runtime panic, the same answer `conc.async/CC3` gives for a spawn target the compiler can't see. The same holds for a closure holding a link (`mem.ownership/T2`). A closure in a generic body whose capture has a type parameter's type is judged per instantiation: `keep<T>(x: T)`'s closure is refused for `T = Link<Node>` and crosses for `T = i64` |
 | **SH8: The default serves the common case** | Most shared values are reached by more than one task, so the default locks. Opting out is a word (`Shared.local`) and the compiler catches you if you were wrong; not opting out costs some time you can measure. The direction that can't be caught is the one that isn't the default |
+| **SH9: A linear payload makes the box linear** | A `Shared` holding a `@resource` or a `Heap` must be consumed exactly once itself (`mem.linear`), and `take()` is how: it empties the box and hands the value back. Such a box can't be cloned (E0917), so the `take` is always on the last handle. `take` exists only for these boxes (E0918); any other payload comes out with `replace`, which leaves the other handles something to read |
 
 | Strategy | Who reaches it | Synchronization | Crosses tasks | Constructor |
 |---|---|---|---|---|
@@ -110,7 +111,21 @@ extend Shared<T, S> {
 
 `get`/`set`/`replace`/`take` are the single-expression shorthands `Cell`
 had. They work under every strategy and take the appropriate access for one
-operation.
+operation. `take` is the odd one: it's for a box holding a resource (SH9).
+
+I kept `take` for that case and nothing else. `Cell.into_inner` was the only
+way to get a connection back out of a box, and on an ordinary box it is a trap:
+it frees what clones are still pointing at. Making the resource box single-owner
+is what makes `take` sound, so the two go together.
+
+<!-- test: skip -->
+```rask
+let conn = Shared.new(open_conn())
+ensure conn.take().close()
+with conn.write() as c {
+    c.retries = 3
+}
+```
 
 ### Sending one across a task boundary
 
@@ -120,7 +135,7 @@ it's safe to reach for:
 <!-- test: skip -->
 ```rask
 let counter = Shared.local(0)
-spawn { counter.write() += 1 }     // compile error, SH7
+spawn { with counter.write() as c { c += 1 } }     // compile error, SH7
 ```
 
 ```

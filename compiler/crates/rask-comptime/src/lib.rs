@@ -247,27 +247,6 @@ pub struct SerializedConst {
     pub string_relocs: Vec<(usize, String)>,
 }
 
-/// The Rask type name of a scalar or string, spelled the way an annotation
-/// would be. `None` for anything with no constant form.
-fn scalar_type_name(v: &ComptimeValue) -> Option<&'static str> {
-    Some(match v {
-        ComptimeValue::String(_) => "string",
-        ComptimeValue::Bool(_) => "bool",
-        ComptimeValue::Char(_) => "char",
-        ComptimeValue::I8(_) => "i8",
-        ComptimeValue::I16(_) => "i16",
-        ComptimeValue::I32(_) => "i32",
-        ComptimeValue::I64(_) => "i64",
-        ComptimeValue::U8(_) => "u8",
-        ComptimeValue::U16(_) => "u16",
-        ComptimeValue::U32(_) => "u32",
-        ComptimeValue::U64(_) => "u64",
-        ComptimeValue::F32(_) => "f32",
-        ComptimeValue::F64(_) => "f64",
-        _ => return None,
-    })
-}
-
 /// Whether two comptime values are the same map key.
 ///
 /// A key is a scalar or a string — the things a map can hash — so this is
@@ -492,26 +471,6 @@ impl ComptimeValue {
         }
     }
 
-    /// The Rask type name of what an Array holds, spelled the way a type
-    /// annotation would be.
-    ///
-    /// A comptime global keeps its bytes and its length but used to drop what
-    /// those bytes *are*, so `SQUARES[i]` on a `const SQUARES = comptime { … }`
-    /// had nothing to go on and lowering guessed i64 — right for these, wrong
-    /// the moment a comptime block builds floats or strings.
-    pub fn elem_type_name(&self) -> Option<&'static str> {
-        let ComptimeValue::Array(elems) = self else { return None };
-        let first = elems.first()?;
-        Some(match first {
-            // `type_name` spells this one for error messages, not as a type.
-            ComptimeValue::String(_) => "string",
-            ComptimeValue::Array(_) | ComptimeValue::Tuple(_) | ComptimeValue::Map(_)
-            | ComptimeValue::Struct { .. } | ComptimeValue::Enum { .. }
-            | ComptimeValue::Closure { .. } | ComptimeValue::Unit => return None,
-            other => other.type_name(),
-        })
-    }
-
     /// Convert to bool if possible.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
@@ -563,64 +522,6 @@ impl ComptimeValue {
         }
     }
 
-    /// Serialize to bytes for embedding in Cranelift data sections.
-    ///
-    /// Primitives, strings, and arrays of either. Anything else has no constant
-    /// form and the const is left to run where it's used.
-    pub fn serialize(&self) -> Option<SerializedConst> {
-        let mut out = SerializedConst::default();
-        match self {
-            ComptimeValue::Array(elems) => {
-                for elem in elems {
-                    elem.write_array_element(&mut out)?;
-                }
-            }
-            // The characters, not a `RaskStr`. Lowering turns a whole-value
-            // string back into a string literal, which is already emitted as
-            // const data with a sentinel refcount — so a folded string const
-            // costs nothing at startup and needs no layout knowledge here. An
-            // *element* is different: it sits in a slot next to its neighbours,
-            // so it has to be a real `RaskStr` (see `write_element`).
-            ComptimeValue::String(s) => out.bytes.extend_from_slice(s.as_bytes()),
-            // Entries back to back, key then value, each in a slot of its own.
-            // Lowering reads them at the same offsets and inserts them into a
-            // real map: a hash table seeds its layout per process, so there is
-            // no static table to emit, only the entries to put in one (#1075).
-            ComptimeValue::Map(entries) => {
-                for (k, v) in entries {
-                    k.write_map_slot(&mut out)?;
-                    v.write_map_slot(&mut out)?;
-                }
-            }
-            _ => out.bytes.extend(self.serialize_element()?),
-        }
-        Some(out)
-    }
-
-    /// The Rask type names of a map's keys and values, taken from the first
-    /// entry. `None` for an empty map, or one holding something with no
-    /// constant form.
-    pub fn map_types(&self) -> Option<(&'static str, &'static str)> {
-        let ComptimeValue::Map(entries) = self else { return None };
-        let (k, v) = entries.first()?;
-        Some((scalar_type_name(k)?, scalar_type_name(v)?))
-    }
-
-    /// One map slot: the value, then padding out to the next eight bytes.
-    ///
-    /// Every slot is a whole number of words, so a sixteen-byte string never
-    /// lands at a four-byte offset. Lowering computes the same offsets from the
-    /// type names in the metadata, so the two sides can't drift.
-    fn write_map_slot(&self, out: &mut SerializedConst) -> Option<()> {
-        scalar_type_name(self)?;
-        let start = out.bytes.len();
-        self.write_element(out)?;
-        let written = out.bytes.len() - start;
-        let padded = written.div_ceil(8) * 8;
-        out.bytes.resize(start + padded, 0);
-        Some(())
-    }
-
     /// Append one array element to `out`.
     ///
     /// A string element is a full sixteen-byte `RaskStr`: up to fifteen
@@ -645,33 +546,6 @@ impl ComptimeValue {
             }
             _ => out.bytes.extend(self.serialize_element()?),
         }
-        Some(())
-    }
-
-    /// One vector element: a string as a `RaskStr`, anything else in the
-    /// machine word the runtime's vector holds it in, signed integers
-    /// sign-extended. Packed at its own width, a folded `Vec<bool>` put eight
-    /// flags in the word the reader takes as one (18_comptime). Wider than a
-    /// word has no folded form here.
-    fn write_array_element(&self, out: &mut SerializedConst) -> Option<()> {
-        let word: i64 = match self {
-            ComptimeValue::String(_) => return self.write_element(out),
-            ComptimeValue::I8(v) => *v as i64,
-            ComptimeValue::I16(v) => *v as i64,
-            ComptimeValue::I32(v) => *v as i64,
-            ComptimeValue::I64(v) => *v,
-            _ => {
-                let raw = self.serialize_element()?;
-                if raw.len() > 8 {
-                    return None;
-                }
-                let mut w = [0u8; 8];
-                w[..raw.len()].copy_from_slice(&raw);
-                out.bytes.extend_from_slice(&w);
-                return Some(());
-            }
-        };
-        out.bytes.extend_from_slice(&word.to_le_bytes());
         Some(())
     }
 
@@ -989,6 +863,84 @@ enum CtInt { I8, I16, I32, I64, I128, U8, U16, U32, U64, U128 }
 #[derive(Clone, Copy)]
 pub(crate) enum CtOp { Add, Sub, Mul, Div, Rem, Shl, Shr, BitAnd, BitOr, BitXor }
 
+/// `wrapping_*` and `saturating_*` at `kind`'s width. `method` is one of
+/// those; the caller has checked.
+fn ct_hatch(method: &str, kind: CtInt, a: CtNum, b: CtNum) -> ComptimeValue {
+    let bits = kind.bits();
+    let mask: u128 = if bits == 128 { u128::MAX } else { (1u128 << bits) - 1 };
+    let pattern = |n: CtNum| -> u128 {
+        match n {
+            CtNum::Signed(v) => v as u128,
+            CtNum::Big(v) => v,
+        }
+    };
+    // A bit pattern of `bits` bits as the value of `kind`.
+    let from_bits = |p: u128| -> ComptimeValue {
+        let p = p & mask;
+        if kind.signed() && bits < 128 && p >> (bits - 1) & 1 == 1 {
+            kind.make((p | !mask) as i128)
+        } else if kind.signed() {
+            kind.make(p as i128)
+        } else {
+            kind.make_u128(p)
+        }
+    };
+    let (pa, pb) = (pattern(a), pattern(b));
+    match method {
+        "wrapping_add" => from_bits(pa.wrapping_add(pb)),
+        "wrapping_sub" => from_bits(pa.wrapping_sub(pb)),
+        "wrapping_mul" => from_bits(pa.wrapping_mul(pb)),
+        "wrapping_shl" => from_bits(pa << (pb % bits as u128) as u32),
+        "wrapping_shr" => {
+            let n = (pb % bits as u128) as u32;
+            if kind.signed() {
+                // Sign-extend to the full word first, so the shift brings in
+                // copies of the sign bit.
+                let wide = if bits < 128 && pa >> (bits - 1) & 1 == 1 { pa | !mask } else { pa & mask };
+                from_bits(((wide as i128) >> n) as u128)
+            } else {
+                from_bits((pa & mask) >> n)
+            }
+        }
+        _ => {
+            // Saturating: the exact answer, pinned to the type's range.
+            let exact = |x: CtNum| -> Option<i128> {
+                match x {
+                    CtNum::Signed(v) => Some(v),
+                    CtNum::Big(v) => i128::try_from(v).ok(),
+                }
+            };
+            let (Some(x), Some(y)) = (exact(a), exact(b)) else {
+                // Only a `u128` past `i128::MAX` lands here.
+                let (ua, ub) = (pa, pb);
+                return kind.make_u128(match method {
+                    "saturating_add" => ua.saturating_add(ub),
+                    "saturating_sub" => ua.saturating_sub(ub),
+                    _ => ua.saturating_mul(ub),
+                });
+            };
+            let r = match method {
+                "saturating_add" => x.checked_add(y),
+                "saturating_sub" => x.checked_sub(y),
+                _ => x.checked_mul(y),
+            };
+            let high = match method {
+                "saturating_add" => y > 0,
+                "saturating_sub" => y < 0,
+                _ => (x < 0) == (y < 0),
+            };
+            match r {
+                Some(v) if v > kind.max() => kind.make(kind.max()),
+                Some(v) if v < kind.min() => kind.make(kind.min()),
+                Some(v) => kind.make(v),
+                None if kind == CtInt::U128 && high => kind.make_u128(u128::MAX),
+                None if high => kind.make(kind.max()),
+                None => kind.make(kind.min()),
+            }
+        }
+    }
+}
+
 /// A comptime integer operand.
 ///
 /// An `i128` carries every width exactly except the top half of `u128`. That half
@@ -1302,6 +1254,13 @@ impl ComptimeInterpreter {
     /// CT35: set the backwards-branch quota for the next evaluation.
     pub fn set_quota(&mut self, quota: usize) {
         self.env.set_quota(quota);
+    }
+
+    /// Bind a name every evaluation can see: a module const.
+    pub fn define_global(&mut self, name: String, value: ComptimeValue) {
+        if let Some(globals) = self.env.scopes.first_mut() {
+            globals.insert(name, value);
+        }
     }
 
     /// Inject the `cfg` build configuration into the comptime environment.
@@ -2915,6 +2874,23 @@ impl ComptimeInterpreter {
                     Ok(v) => Self::ct_some(v),
                     Err(_) => Self::ct_none(),
                 })
+            }
+            // The wrapping and saturating hatches (type.overflow): the same
+            // answers the run time gives, at the receiver's own width.
+            "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "wrapping_shl" | "wrapping_shr"
+            | "saturating_add" | "saturating_sub" | "saturating_mul" => {
+                let (a, kind) = obj.as_int().ok_or_else(|| ComptimeError::TypeMismatch {
+                    expected: "integer".to_string(),
+                    found: obj.type_name().to_string(),
+                })?;
+                let (b, _) = args
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .ok_or_else(|| ComptimeError::TypeMismatch {
+                        expected: "integer".to_string(),
+                        found: "non-integer argument".to_string(),
+                    })?;
+                Ok(ct_hatch(method, kind, a, b))
             }
             "len" => {
                 match obj {

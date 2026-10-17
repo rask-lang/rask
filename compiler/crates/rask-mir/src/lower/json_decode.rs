@@ -24,28 +24,15 @@ use crate::{
     MirTerminatorKind, MirType,
 };
 
-// Shape kinds — must match the RASK_JSHAPE_* defines in runtime/rask_runtime.h.
-const JSHAPE_BOOL: i64 = 0;
-const JSHAPE_I8: i64 = 1;
-const JSHAPE_I16: i64 = 2;
-const JSHAPE_I32: i64 = 3;
-const JSHAPE_I64: i64 = 4;
-const JSHAPE_U8: i64 = 5;
-const JSHAPE_U16: i64 = 6;
-const JSHAPE_U32: i64 = 7;
-const JSHAPE_U64: i64 = 8;
-const JSHAPE_F32: i64 = 9;
-const JSHAPE_F64: i64 = 10;
-const JSHAPE_STRING: i64 = 11;
-
-/// Shape field flags — must match RASK_JFIELD_* in runtime/rask_runtime.h.
-/// `@no_serialize`: never read from the input, always filled from its default.
-const FIELD_NOT_SERIALIZED: i64 = 1;
-
-/// Status codes from `rask_json_decode_into`, in JsonError variant order.
-const ERR_PARSE: i64 = 1;
-const ERR_TYPE: i64 = 2;
-const ERR_MISSING: i64 = 3;
+use rask_mono::runtime_abi::{
+    RASK_JFIELD_NOT_SERIALIZED as FIELD_NOT_SERIALIZED, RASK_JSHAPE_BOOL as JSHAPE_BOOL,
+    RASK_JSHAPE_F32 as JSHAPE_F32, RASK_JSHAPE_F64 as JSHAPE_F64, RASK_JSHAPE_I16 as JSHAPE_I16,
+    RASK_JSHAPE_I32 as JSHAPE_I32, RASK_JSHAPE_I64 as JSHAPE_I64, RASK_JSHAPE_I8 as JSHAPE_I8,
+    RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
+    RASK_JSHAPE_U32 as JSHAPE_U32, RASK_JSHAPE_U64 as JSHAPE_U64, RASK_JSHAPE_U8 as JSHAPE_U8,
+    RASK_JSON_ERR_MISSING as ERR_MISSING, RASK_JSON_ERR_PARSE as ERR_PARSE,
+    RASK_JSON_ERR_TYPE as ERR_TYPE,
+};
 
 impl<'a> MirLowerer<'a> {
     /// Expand `json.decode<T>(input)` into shape construction + one decode call
@@ -150,7 +137,7 @@ impl<'a> MirLowerer<'a> {
             }));
 
         self.builder.switch_to_block(ok_block);
-        self.store_result_header(result, 0);
+        self.store_wrapper_tag(result, &result_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
         let payload = if scalar_dst {
             // Read the scalar the runtime wrote back out of the scratch buffer.
             let v = self.builder.alloc_temp(target_mir.clone());
@@ -167,13 +154,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             dst
         };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-            value: MirOperand::Local(payload),
-            store_size: Some(target_mir.size()),
-            field: None,
-        }));
+        self.store_wrapper_payload(result, &result_ty, MirOperand::Local(payload), &target_mir);
         self.builder
             .terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: done_block,
@@ -181,14 +162,8 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(err_block);
         let err_val = self.emit_json_error(status, &err_ty);
-        self.store_result_header(result, 1);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-            value: MirOperand::Local(err_val),
-            store_size: Some(err_ty.size()),
-            field: None,
-        }));
+        self.store_wrapper_tag(result, &result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
+        self.store_wrapper_payload(result, &result_ty, MirOperand::Local(err_val), &err_ty);
         self.builder
             .terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: done_block,
@@ -196,30 +171,6 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(done_block);
         Ok((MirOperand::Local(result), result_ty.without_container_kinds()))
-    }
-
-    /// Result tag plus the two ER15 origin words. Decode doesn't attribute an
-    /// origin — the `try` site fills that in when it propagates.
-    fn store_result_header(&mut self, result: crate::LocalId, tag: i64) {
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: crate::types::RESULT_TAG_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: Some(8),
-            field: None,
-        }));
-        for offset in [
-            crate::types::RESULT_ORIGIN_FILE_OFFSET,
-            crate::types::RESULT_ORIGIN_LINE_OFFSET,
-        ] {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result,
-                offset,
-                value: MirOperand::Constant(MirConst::Int(0)),
-                store_size: Some(8),
-                field: None,
-            }));
-        }
     }
 
     /// Turn the runtime's status code into a `JsonError` carrying its message.
@@ -252,17 +203,17 @@ impl<'a> MirLowerer<'a> {
                 addr: err_val,
                 offset: 0,
                 value: MirOperand::Local(msg),
-                store_size: Some(16),
+                store_size: 16,
                 field: None,
             }));
             return err_val;
         }
 
-        let tag_offset = self
+        let (tag_offset, tag_bytes) = self
             .ctx
             .find_enum("JsonError")
-            .map(|(_, l)| l.tag_offset)
-            .unwrap_or(0);
+            .map(|(_, l)| (l.tag_offset, l.tag_bytes()))
+            .unwrap_or((0, 1));
 
         // The switch belongs on the block we're standing in now — filling the
         // case blocks moves the builder, and terminating afterwards would
@@ -278,14 +229,14 @@ impl<'a> MirLowerer<'a> {
                 addr: err_val,
                 offset: tag_offset,
                 value: MirOperand::Constant(MirConst::Int(*tag as i64)),
-                store_size: Some(8),
+                store_size: tag_bytes,
                 field: None,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: err_val,
                 offset: *payload_offset,
                 value: MirOperand::Local(msg),
-                store_size: Some(16),
+                store_size: 16,
                 field: None,
             }));
             self.builder
@@ -314,14 +265,15 @@ impl<'a> MirLowerer<'a> {
             ]));
         }
 
-        // `T?` — [tag:8][payload].
+        // `T?`: its size and where its payload sits.
         if let Type::Result { ok, err } = ty {
             if **err == Type::None {
                 let inner = self.emit_shape(ok)?;
-                let total = self.ctx.type_to_mir(ty).size() as i64;
+                let opt = self.ctx.type_to_mir(ty);
                 return Some(self.emit_shape_call("json_shape_opt", vec![
                     MirOperand::Local(inner),
-                    MirOperand::Constant(MirConst::Int(total)),
+                    MirOperand::Constant(MirConst::Int(opt.size() as i64)),
+                    MirOperand::Constant(MirConst::Int(opt.payload_offset() as i64)),
                 ]));
             }
             return None;
@@ -329,7 +281,7 @@ impl<'a> MirLowerer<'a> {
 
         if let Some(elem) = self.collection_arg(ty, "Vec", 0) {
             let elem_shape = self.emit_shape(&elem)?;
-            let slot = self.slot_size_for_type(&elem).unwrap_or(8);
+            let slot = self.slot_size_for_type(&elem)?;
             let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&elem));
             return Some(self.emit_shape_call("json_shape_vec", vec![
                 MirOperand::Local(elem_shape),
@@ -346,7 +298,7 @@ impl<'a> MirLowerer<'a> {
             }
             let val = self.collection_arg(ty, "Map", 1)?;
             let val_shape = self.emit_shape(&val)?;
-            let slot = self.slot_size_for_type(&val).unwrap_or(8);
+            let slot = self.slot_size_for_type(&val)?;
             let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&val));
             return Some(self.emit_shape_call("json_shape_map", vec![
                 MirOperand::Local(val_shape),
@@ -426,7 +378,7 @@ impl<'a> MirLowerer<'a> {
             addr: slot,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: Some(field.size),
+            store_size: field.size,
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
@@ -546,7 +498,7 @@ impl<'a> MirLowerer<'a> {
                 addr: buf,
                 offset: 0,
                 value: MirOperand::Local(value),
-                store_size: Some(8),
+                store_size: 8,
                 field: None,
             }));
             buf

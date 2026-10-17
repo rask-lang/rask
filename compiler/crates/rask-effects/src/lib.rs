@@ -2,14 +2,21 @@
 
 //! Effect tracking for Rask (comp.effects).
 //!
-//! Infers IO, Async, and Mutation effects per function via transitive
-//! call graph analysis. Effects are metadata — visible through IDE ghost
-//! text and linter warnings, not enforced in the type system.
+//! Infers what each function does beyond computing its result, via
+//! transitive call graph analysis. Effects are metadata — visible through IDE
+//! ghost text and linter warnings, not enforced in the type system.
 //!
-//! Three categories (FX1):
-//! - IO: syscalls, file/network/stdio operations
-//! - Async: spawn, sleep, channel ops
-//! - Mutation: pool structural changes (Grow/Shrink)
+//! Categories (FX1):
+//! - Blocks: the thread can park until something outside it happens — a
+//!   syscall, `sleep`, a channel op, a `join`
+//! - External: reads or changes state outside the program without blocking —
+//!   the clock, the environment, the process
+//! - Async: spawns a task
+//! - Mutation: changes a collection's size (Grow/Shrink)
+//!
+//! The stdlib's bodies are inferred like the program's, so only the natives at
+//! the bottom say anything themselves (`@blocks`, `@external`), and an
+//! `extern` C function is assumed to do both unless it says `@no_io`.
 //!
 //! Run after type checking. No AST modifications — annotation only.
 
@@ -31,7 +38,11 @@ use rask_ast::ty::TypeExpr;
 /// `mutation()` is a convenience that returns true if either is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Effects {
-    pub io: bool,
+    /// Can park the thread until something outside it happens.
+    pub blocks: bool,
+    /// Reads or changes state outside the program without blocking.
+    pub external: bool,
+    /// Spawns a task.
     pub async_: bool,
     /// Grow effect: pool.insert, pool.alloc (EF1).
     pub grow: bool,
@@ -46,7 +57,7 @@ pub struct Effects {
 impl Effects {
     /// PU1: A function is pure if it has no effects.
     pub fn is_pure(&self) -> bool {
-        !self.io && !self.async_ && !self.grow && !self.shrink
+        !self.blocks && !self.external && !self.async_ && !self.grow && !self.shrink
     }
 
     /// Whether this function performs structural pool mutations.
@@ -56,25 +67,29 @@ impl Effects {
 
     /// Merge another effect set into this one.
     pub fn union(&mut self, other: Effects) {
-        self.io |= other.io;
+        self.blocks |= other.blocks;
+        self.external |= other.external;
         self.async_ |= other.async_;
         self.grow |= other.grow;
         self.shrink |= other.shrink;
     }
 
-    /// Ghost text label for IDE display (IDE1).
-    pub fn label(&self) -> &'static str {
-        let mutation = self.mutation();
-        match (self.io, self.async_, mutation) {
-            (false, false, false) => "[pure]",
-            (true, false, false) => "[io]",
-            (true, true, false) => "[io, async]",
-            (false, false, true) => "[mutation]",
-            (true, false, true) => "[io, mutation]",
-            (true, true, true) => "[io, async, mutation]",
-            // A function that only spawns: concurrency, nothing waited on.
-            (false, true, false) => "[async]",
-            (false, true, true) => "[async, mutation]",
+    /// Ghost text label for IDE display (IDE1): `[pure]`, or the effects
+    /// present, in a fixed order.
+    pub fn label(&self) -> String {
+        let parts: Vec<&str> = [
+            (self.blocks, "blocks"),
+            (self.external, "external"),
+            (self.async_, "async"),
+            (self.mutation(), "mutation"),
+        ]
+        .into_iter()
+        .filter_map(|(on, name)| on.then_some(name))
+        .collect();
+        if parts.is_empty() {
+            "[pure]".to_string()
+        } else {
+            format!("[{}]", parts.join(", "))
         }
     }
 }
@@ -104,18 +119,43 @@ pub struct EffectWarning {
 }
 
 /// The checker's answer for each method call it resolved, keyed by the
-/// call's node: `"Type.method"`, with the receiver's declared type
-/// (`Handle.join` for `t.join()` on a `Handle<i64>`).
-pub type MethodTargets = HashMap<NodeId, String>;
+/// call's node.
+pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
 
-/// Run effect inference on a set of declarations.
+/// Run effect inference on a program and the stdlib it was checked with.
 ///
-/// Returns the per-function effect map and any warnings (CW1/CW2).
-/// Call after type checking, with what it resolved — no AST modifications.
-pub fn infer_effects(decls: &[Decl], targets: &MethodTargets) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(decls, targets);
-    let warnings = warnings::detect(decls, &effects, &runtime_only, targets);
+/// The stdlib's bodies are inferred too, so a call into it carries what the
+/// body does; warnings (CW1/CW2) are only about the program's own code.
+/// Returns the per-function effect map and those warnings. Call after type
+/// checking, with what it resolved — no AST modifications.
+pub fn infer_effects(
+    program: &[Decl],
+    stdlib: &[Decl],
+    targets: &MethodTargets,
+) -> (EffectMap, Vec<EffectWarning>) {
+    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets);
+    let warnings = warnings::detect(program, &effects, &runtime_only, targets);
     (effects, warnings)
+}
+
+/// The effect-map key of every function the declarations hold, the way
+/// inference files them.
+pub(crate) fn decl_keys(decls: &[Decl]) -> Vec<String> {
+    use rask_ast::decl::DeclKind;
+    let mut keys = Vec::new();
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => keys.push(f.name.clone()),
+            DeclKind::Struct(s) => keys.extend(s.methods.iter().map(|m| format!("{}.{}", s.name, m.name))),
+            DeclKind::Enum(e) => keys.extend(e.methods.iter().map(|m| format!("{}.{}", e.name, m.name))),
+            DeclKind::Impl(i) => keys.extend(i.methods.iter().map(|m| method_key(&i.target_ty, &m.name))),
+            DeclKind::Interface(t) => keys.extend(t.methods.iter().map(|m| format!("{}.{}", t.name, m.name))),
+            DeclKind::Test(t) => keys.push(format!("test {:?}", t.name)),
+            DeclKind::Benchmark(b) => keys.push(format!("benchmark {:?}", b.name)),
+            _ => {}
+        }
+    }
+    keys
 }
 
 /// The effect-map key for a method declared in `extend Target`.
@@ -129,19 +169,22 @@ pub(crate) fn method_key(target: &TypeExpr, method: &str) -> String {
 /// The checker's `Type.method` when it resolved the call. A call it didn't
 /// resolve falls back to how it's spelled: `recv.method` plus the bare
 /// method name. Spelling alone classed `t.join()` by the variable `t`, so a
-/// call through any variable missed every `Type.method` source (#1418).
+/// call through any variable missed every `Type.method` source (#1418). The
+/// spelled form goes through the imports, so `f.exists` under `import fs as f`
+/// is `fs.exists`.
 pub(crate) fn method_callees(
     call: NodeId,
     object: &Expr,
     method: &str,
     targets: &MethodTargets,
+    imports: &sources::ImportedNames,
 ) -> Vec<String> {
-    if let Some(name) = targets.get(&call) {
-        return vec![name.clone()];
+    if let Some(target) = targets.get(&call) {
+        return vec![target.name.clone()];
     }
     let mut names = Vec::new();
     if let Some(recv) = object.name() {
-        names.push(format!("{recv}.{method}"));
+        names.push(imports.qualify(&format!("{recv}.{method}")));
     }
     names.push(method.to_string());
     names
@@ -153,10 +196,11 @@ mod tests {
 
     #[test]
     fn effects_union() {
-        let mut a = Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false };
-        let b = Effects { io: false, async_: true, grow: true, shrink: true, needs_runtime: false };
+        let mut a = Effects { blocks: true, ..Default::default() };
+        let b = Effects { external: true, async_: true, grow: true, shrink: true, ..Default::default() };
         a.union(b);
-        assert!(a.io);
+        assert!(a.blocks);
+        assert!(a.external);
         assert!(a.async_);
         assert!(a.grow);
         assert!(a.shrink);
@@ -165,7 +209,8 @@ mod tests {
     #[test]
     fn pure_detection() {
         assert!(Effects::default().is_pure());
-        assert!(!Effects { io: true, ..Default::default() }.is_pure());
+        assert!(!Effects { blocks: true, ..Default::default() }.is_pure());
+        assert!(!Effects { external: true, ..Default::default() }.is_pure());
         assert!(!Effects { grow: true, ..Default::default() }.is_pure());
     }
 
@@ -179,9 +224,9 @@ mod tests {
     #[test]
     fn label_format() {
         assert_eq!(Effects::default().label(), "[pure]");
-        assert_eq!(Effects { io: true, ..Default::default() }.label(), "[io]");
-        assert_eq!(Effects { io: true, async_: true, ..Default::default() }.label(), "[io, async]");
+        assert_eq!(Effects { blocks: true, ..Default::default() }.label(), "[blocks]");
+        assert_eq!(Effects { blocks: true, async_: true, ..Default::default() }.label(), "[blocks, async]");
         assert_eq!(Effects { grow: true, ..Default::default() }.label(), "[mutation]");
-        assert_eq!(Effects { io: true, shrink: true, ..Default::default() }.label(), "[io, mutation]");
+        assert_eq!(Effects { external: true, shrink: true, ..Default::default() }.label(), "[external, mutation]");
     }
 }

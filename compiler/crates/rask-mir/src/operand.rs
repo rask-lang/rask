@@ -224,16 +224,20 @@ pub struct FunctionRef {
     pub name: String,
     /// True for extern "C" functions — bypasses stdlib dispatch adaptation.
     pub is_extern: bool,
+    /// A `.clone()` that runs no code the program wrote, so clone elision may
+    /// turn it into a move (comp.clone-elision CE3). Lowering says so from
+    /// the receiver's checked type; nothing else may decide it from the name.
+    pub elidable_clone: bool,
 }
 
 impl FunctionRef {
     /// Internal Rask or stdlib call.
     pub fn internal(name: String) -> Self {
-        Self { name, is_extern: false }
+        Self { name, is_extern: false, elidable_clone: false }
     }
 
     /// Extern "C" call.
     pub fn extern_c(name: String) -> Self {
-        Self { name, is_extern: true }
+        Self { name, is_extern: true, elidable_clone: false }
     }
 }

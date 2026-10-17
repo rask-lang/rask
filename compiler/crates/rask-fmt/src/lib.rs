@@ -546,6 +546,26 @@ func main() {
         // `-(3)` used to print as `-(3` — the folded literal's span stopped
         // before the closing paren and the printer echoes that span.
         keeps("func main() {\n    let n = -(-7)\n}\n", "-(-7)", "a negated folded literal");
+        // Bitwise binds tighter than comparison. The printer's own table said
+        // the opposite, and this came out as `a < b & c < d` (#1559).
+        keeps(
+            "func main() {\n    let n = (a < b) & (c < d)\n}\n",
+            "(a < b) & (c < d)",
+            "comparisons under a bitwise and",
+        );
+        // Not needed by the parser, kept for the reader: in C this is
+        // `crc & (128 != 0)`.
+        keeps("func main() {\n    let n = (crc & 128) != 0\n}\n", "(crc & 128) != 0", "a mask under a comparison");
+        // `??` binds tighter than `||`: unparenthesised this reads back as
+        // `(a ?? b) || c`.
+        keeps("func main() {\n    let n = a ?? (b || c)\n}\n", "a ?? (b || c)", "an or under `??`");
+        // A `catch` body reads to the end, so a `catch` under `+` keeps its
+        // parentheses.
+        keeps(
+            "func main() {\n    let n = (f() catch e => 0) + 1\n}\n",
+            "(f() catch e => 0) + 1",
+            "a catch under a sum",
+        );
     }
 
     #[test]

@@ -21,29 +21,14 @@ impl Interpreter {
             "env" => {
                 let name = self.expect_string(&args, 0)?;
                 match std::env::var(&name) {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(val)))],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(val) => Ok(Value::some(Value::String(Arc::new(Mutex::new(val))))),
+                    Err(_) => Ok(Value::none()),
                 }
             }
             #[cfg(target_arch = "wasm32")]
             "env" => {
                 // Always return None in browser
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::none())
             }
 
             #[cfg(not(target_arch = "wasm32"))]
@@ -645,13 +630,7 @@ fn start_signal_reader() -> Result<(), std::io::Error> {
                     let Some(tx) = listeners[i].as_ref() else { continue };
                     // A full channel drops the signal rather than block every
                     // other listener behind a slow one.
-                    let sent = tx.try_send(Value::Enum {
-                        name: "Signal".to_string(),
-                        variant: SIGNAL_NAMES[i].to_string(),
-                        fields: vec![],
-                        variant_index: i as u32,
-                        origin: None,
-                    });
+                    let sent = tx.try_send(Value::stdlib_enum("Signal", SIGNAL_NAMES[i], vec![]));
                     // SG3: the receiver is gone, so the signal does what it
                     // would have done had nobody registered.
                     if let Err(crate::chan::SendError::Closed(_)) = sent {

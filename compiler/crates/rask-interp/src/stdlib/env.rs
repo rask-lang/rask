@@ -19,18 +19,8 @@ impl Interpreter {
             "var" => {
                 let name = self.expect_string(&args, 0)?;
                 match std::env::var(&name) {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(val)))],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(val) => Ok(Value::some(Value::String(Arc::new(Mutex::new(val))))),
+                    Err(_) => Ok(Value::none()),
                 }
             }
             "vars" => {

@@ -1235,19 +1235,12 @@ int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
     return n == (size_t)len ? len : -1;
 }
 
-// The bytes are gathered first: a `Vec<u8>` gives every element its own 8-byte
-// slot, so its buffer isn't a byte string (#863).
+// A `Vec<u8>`'s buffer is its bytes, one per element.
 int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
-    size_t n = fwrite(bytes, 1, (size_t)len, std_stream(which));
-    rask_free(bytes);
+    size_t n = fwrite(rask_vec_get(v, 0), 1, (size_t)len, std_stream(which));
     return n == (size_t)len ? len : -1;
 }
 
@@ -1259,12 +1252,12 @@ int64_t rask_io_std_flush(int64_t which) {
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
     RASK_SIM_UNSIMULATED("reading stdin");
-    RaskVec *v = rask_vec_new(8, NULL, 0);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
         if (c == EOF) break;
-        int64_t byte = (unsigned char)c;   // one 8-byte slot, as rask_vec_from_bytes
+        uint8_t byte = (uint8_t)c;
         rask_vec_push(v, &byte);
     }
     return (int64_t)(uintptr_t)v;
@@ -1345,31 +1338,17 @@ int64_t rask_net_read_bytes(int64_t fd) {
 }
 
 // Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
-//
-// The bytes are gathered before the write because a `Vec<u8>` gives every
-// element its own 8-byte slot, so taking element 0's address as the start of a
-// byte buffer sent every second byte as seven NULs: "hello" left as
-// "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
-// per-element read `rask_fwrite_vec` does for files.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
+    const char *bytes = (const char *)rask_vec_get(v, 0);
     int64_t written = 0;
     while (written < len) {
         ssize_t n = sock_write(fd, bytes + written, (size_t)(len - written));
-        if (n < 0) {
-            rask_free(bytes);
-            return -1;
-        }
+        if (n < 0) return -1;
         written += n;
     }
-    rask_free(bytes);
     return 0;
 }
 
@@ -1757,14 +1736,14 @@ void rask_set_origin_file(const char *file) {
     rask_origin_file = file;
 }
 
-// Read the origin_line field from a Result and format as a string.
-// Result layout: [tag:8][origin_file:8][origin_line:8][payload:...]
+// Read the origin line out of a `T or E` and format it as `file:line`.
 void rask_result_origin(RaskStr *out, const void *result_ptr) {
-    const int64_t *fields = (const int64_t *)result_ptr;
-    int64_t origin_line = fields[2]; // offset 16 = origin_line
+    uint32_t origin_line;
+    memcpy(&origin_line, (const char *)result_ptr + RASK_RESULT_ORIGIN_LINE_OFFSET,
+           sizeof(origin_line));
     if (origin_line > 0) {
         char buf[256];
-        snprintf(buf, sizeof(buf), "%s:%lld", rask_origin_file, (long long)origin_line);
+        snprintf(buf, sizeof(buf), "%s:%u", rask_origin_file, (unsigned)origin_line);
         rask_string_from(out, buf);
     } else {
         rask_string_from(out, "<no origin>");

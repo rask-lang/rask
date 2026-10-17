@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A type pattern naming a nominal type matches a value of it. On the
+// interpreter `r is Meters` was always false: the test compared the value's
+// runtime type name with the pattern, and every nominal value's runtime name
+// was "nominal". Native took the branch.
+
+type Meters = i64
+
+enum Bad {
+    Nope
+}
+
+func get(ok: bool) -> Meters or Bad {
+    if ok {
+        return Meters(5)
+    }
+    return Bad.Nope
+}
+
+func describe(r: Meters or Bad) -> string {
+    match r {
+        Meters as m => return "meters {m.value}"
+        Bad as b => return "bad"
+    }
+}
+
+test "is names a nominal type" {
+    let r = get(true)
+    mut seen = 0
+    if r is Meters as m {
+        seen = m.value
+    }
+    assert seen == 5
+    assert !(get(false) is Meters)
+}
+
+test "match arms name a nominal type" {
+    assert describe(get(true)) == "meters 5"
+    assert describe(get(false)) == "bad"
+}

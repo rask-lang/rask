@@ -108,24 +108,12 @@ fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
 
 /// The absent value an emptied optional slot is left holding (OPT32).
 fn absent_value() -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "None".to_string(),
-        fields: vec![],
-        variant_index: 0,
-        origin: None,
-    }
+    Value::none()
 }
 
 /// The present counterpart — an optional holding `payload`.
 fn present_value(payload: Value) -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "Some".to_string(),
-        fields: vec![payload],
-        variant_index: 0,
-        origin: None,
-    }
+    Value::some(payload)
 }
 
 /// ER31a: build the boundary-enum variant around a propagated error.
@@ -862,16 +850,10 @@ impl Interpreter {
                         // ER31a: the caller declared a boundary enum, so the
                         // error leaves wearing it.
                         let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                        let wrapped = Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![set_error_origin(
-                                self.wrap_propagated_error(&wrap, inner),
-                                &origin,
-                            )],
-                            variant_index: 0,
-                            origin: Some(origin),
-                        };
+                        let wrapped = set_result_origin(
+                            Value::err(self.wrap_propagated_error(&wrap, inner)),
+                            &origin,
+                        );
                         Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), span))
                     } else {
                         let propagated = set_result_origin(val, &origin);
@@ -1023,13 +1005,7 @@ impl Interpreter {
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             // OPT3: `none` is Option::None — a stateless sentinel, cheaply cloned.
-            ExprKind::None => Ok(Value::Enum {
-                name: "Option".to_string(),
-                variant: "None".to_string(),
-                fields: vec![],
-                variant_index: 1,
-                origin: None,
-            }),
+            ExprKind::None => Ok(Value::none()),
 
             // The null pointer. This used to fall through to the catch-all
             // and evaluate to unit, so `null.is_null()` was "method not found
@@ -1083,13 +1059,7 @@ impl Interpreter {
                 // `import sync.Relaxed` brings the ordering into scope under
                 // its bare name, which is how mem.atomics writes its examples.
                 if rask_stdlib::ordering_tag(base_name).is_some() {
-                    return Ok(Value::Enum {
-                        name: "Ordering".to_string(),
-                        variant: base_name.to_string(),
-                        fields: vec![],
-                        variant_index: rask_stdlib::ordering_tag(base_name).unwrap_or(0) as u32,
-                        origin: None,
-                    });
+                    return Ok(Value::stdlib_enum("Ordering", base_name, vec![]));
                 }
                 Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
@@ -1129,20 +1099,10 @@ impl Interpreter {
                                     let generics = self.call_generics(expr.id);
                                     let result = self.call_method(inner, field, arg_vals, generics)
                                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                                    return Ok(Value::Enum {
-                                        name: "Option".to_string(),
-                                        variant: "Some".to_string(),
-                                        fields: vec![result],
-                                        variant_index: 0, origin: None,
-                                    });
+                                    return Ok(Value::some(result));
                                 }
                                 "None" => {
-                                    return Ok(Value::Enum {
-                                        name: "Option".to_string(),
-                                        variant: "None".to_string(),
-                                        fields: vec![],
-                                        variant_index: 0, origin: None,
-                                    });
+                                    return Ok(Value::none());
                                 }
                                 _ => {}
                             }
@@ -1277,28 +1237,16 @@ impl Interpreter {
                             for (idx, v) in enum_decl.variants.iter().enumerate() {
                                 let disc = v.discriminant.unwrap_or(idx as i128);
                                 if disc == target_val as i128 {
-                                    return Ok(Value::Enum {
-                                        name: "Option".to_string(),
-                                        variant: "Some".to_string(),
-                                        fields: vec![Value::Enum {
+                                    return Ok(Value::some(Value::Enum {
                                             name: name.clone(),
                                             variant: v.name.clone(),
                                             fields: vec![],
                                             variant_index: idx as u32,
                                             origin: None,
-                                        }],
-                                        variant_index: 0,
-                                        origin: None,
-                                    });
+                                        }));
                                 }
                             }
-                            return Ok(Value::Enum {
-                                name: "Option".to_string(),
-                                variant: "None".to_string(),
-                                fields: vec![],
-                                variant_index: 1,
-                                origin: None,
-                            });
+                            return Ok(Value::none());
                         }
 
                         if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == method)
@@ -1402,13 +1350,7 @@ impl Interpreter {
                     let want = self.container_elem_option_depth(object.id, type_arg_index);
                     if let (Some(want), Some(slot)) = (want, arg_vals.get_mut(arg_index)) {
                         for _ in super::call::option_depth(slot)..want {
-                            *slot = Value::Enum {
-                                name: "Option".to_string(),
-                                variant: "Some".to_string(),
-                                fields: vec![slot.clone()],
-                                variant_index: 0,
-                                origin: None,
-                            };
+                            *slot = Value::some(slot.clone());
                         }
                     }
                 }
@@ -2133,20 +2075,10 @@ impl Interpreter {
                             }
                         }
                         // Wrap in Some
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![field_val],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(field_val))
                     }
                     Value::Enum { variant, .. } if variant == "None" => {
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::none())
                     }
                     _ => {
                         Err(RuntimeDiagnostic::new(
@@ -2538,13 +2470,13 @@ impl Interpreter {
                     // here made the interpreter answer 16777217 where native
                     // (which really has an f32) answered 16777216 (#334).
                     (Value::Int(n, _), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
-                    (Value::Int(n, _), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
-                    (Value::Float(n, _), t @ ("i64" | "i32" | "int" | "i16" | "i8"
+                    (Value::Int(n, _), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Float(n, _), t @ ("i64" | "i32" | "i16" | "i8"
                         | "u64" | "u32" | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n as i64), kind))
                     }
-                    (Value::Int(n, _), t @ ("i64" | "i32" | "int" | "i16" | "i8" | "u64" | "u32"
+                    (Value::Int(n, _), t @ ("i64" | "i32" | "i16" | "i8" | "u64" | "u32"
                         | "u16" | "u8" | "usize")) => {
                         let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n), kind))
@@ -2555,7 +2487,7 @@ impl Interpreter {
                     (Value::Float(n, _), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
-                    (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8" | "u64" | "usize") => {
+                    (Value::Char(c), "i32" | "i64" | "u32" | "u8" | "u64" | "usize") => {
                         Ok(Value::int(c as i64))
                     }
                     (Value::Int(n, _), "char") => {
@@ -2576,18 +2508,18 @@ impl Interpreter {
                     } else {
                         n as u64 as u128
                     })),
-                    (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
+                    (Value::Int128(n), "i64" | "i32" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
                     (Value::Int128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
-                    (Value::Int128(n), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Int128(n), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Int128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     // u128 conversions
-                    (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::int(n as i64)),
+                    (Value::Uint128(n), "i64" | "i32" | "i16" | "i8") => Ok(Value::int(n as i64)),
                     (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
                     (Value::Uint128(n), "f32") => Ok(Value::Float(n as f32 as f64, FloatKind::F32)),
-                    (Value::Uint128(n), "f64" | "float") => Ok(Value::Float(n as f64, FloatKind::F64)),
+                    (Value::Uint128(n), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
                     (Value::Uint128(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
@@ -2597,15 +2529,14 @@ impl Interpreter {
                     // float → float: retag, and round if the target is
                     // narrower. Without this the cast fell through the
                     // catch-all below and kept the source's width.
-                    (Value::Float(n, _), t @ ("f32" | "f64" | "float")) => {
+                    (Value::Float(n, _), t @ ("f32" | "f64")) => {
                         let k = FloatKind::from_name(t).unwrap_or(FloatKind::F64);
                         Ok(Value::Float(k.round(n), k))
                     }
                     // E18: fieldless enum to integer cast
                     (Value::Enum { name, variant, fields, variant_index, .. }, target)
                         if fields.is_empty()
-                        && (rask_ast::primitives::is_machine_integer(target)
-                            || rask_ast::primitives::INT_ALIASES.contains(&target)) =>
+                        && rask_ast::primitives::is_machine_integer(target) =>
                     {
                         let disc = if let Some(enum_decl) = self.enums.get(&name) {
                             enum_decl.variants.iter()
@@ -2894,12 +2825,11 @@ impl Interpreter {
                     let obj = self.eval_expr(object)?;
                     // `read`/`write` are the verbs on every strategy
                     // (conc.sync/SH5); which lock they take — if any — is the
-                    // strategy's business. `lock` is the `Mutex` strategy's
-                    // older spelling.
+                    // strategy's business.
                     match (&obj, method.as_str()) {
                         (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
                         (Value::Shared(s), "write" | "staged") => WithSource::SharedWrite(Arc::clone(s)),
-                        (Value::RaskMutex(m), "lock" | "read" | "write" | "staged") => {
+                        (Value::RaskMutex(m), "read" | "write" | "staged") => {
                             WithSource::Mutex(Arc::clone(m))
                         }
                         (Value::Cell(c), "read" | "write") => WithSource::Cell(Arc::clone(c)),
@@ -3215,20 +3145,7 @@ impl Interpreter {
                 if default_idx.is_some() {
                     return v;
                 }
-                Value::Enum {
-                    name: "Result".to_string(),
-                    variant: if ok { "Ok" } else { "Err" }.to_string(),
-                    fields: vec![v],
-                    variant_index: if ok { 0 } else { 1 },
-                    origin: None,
-                }
-            };
-            let select_err = |variant: &str, index: u32| Value::Enum {
-                name: "SelectError".to_string(),
-                variant: variant.to_string(),
-                fields: vec![],
-                variant_index: index,
-                origin: None,
+                if ok { Value::ok(v) } else { Value::err(v) }
             };
             let token = crate::value::current_cancel();
 
@@ -3269,10 +3186,14 @@ impl Interpreter {
                     return self.eval_expr(&arms[idx].body);
                 }
                 if all_closed {
-                    return Ok(wrap(select_err("Closed", 0), false));
+                    let closed = self.enum_variant("SelectError", "Closed", vec![])
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    return Ok(wrap(closed, false));
                 }
                 if crate::chan::select_wait(seen, token.as_ref()) {
-                    return Ok(wrap(select_err("Cancelled", 1), false));
+                    let cancelled = self.enum_variant("SelectError", "Cancelled", vec![])
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    return Ok(wrap(cancelled, false));
                 }
             }
     }

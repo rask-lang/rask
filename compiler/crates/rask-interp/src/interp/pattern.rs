@@ -19,11 +19,13 @@ impl Interpreter {
     /// falling through to bind.
     fn is_known_type_name(&self, name: &str) -> bool {
         let base = name;
-        // The wide set here on purpose: a match arm can name `string`, and the
-        // interpreter still accepts the `int`/`uint` spellings.
+        // The wide set here on purpose: a match arm can name `string`. A
+        // nominal type missing from this list made `r is Meters` bind a new
+        // variable called `Meters`, which always matches.
         rask_ast::primitives::is_builtin_scalar_or_string(base)
             || self.enums.contains_key(base)
             || self.struct_decls.contains_key(base)
+            || self.nominal_targets.contains_key(base)
             || matches!(base, "Vec" | "Map")
     }
 
@@ -45,18 +47,11 @@ impl Interpreter {
             return value;
         }
         let payload = fields.first().cloned().unwrap_or(Value::Unit);
-        let wrap = |name: &str, variant: &str, field: Value| Value::Enum {
-            name: name.to_string(),
-            variant: variant.to_string(),
-            fields: vec![field],
-            variant_index: 0,
-            origin: None,
-        };
         match rest_ty {
             // `E?` or `T?` out of a flat value: the error moves into an
             // option; the success side already is one.
             Some(rest) if rest.is_option() => {
-                if variant == "Err" { wrap("Option", "Some", payload) } else { payload }
+                if variant == "Err" { Value::some(payload) } else { payload }
             }
             Some(Type::Result { ok: rest_ok, .. }) => {
                 let had_option = matches!(scrutinee_ty, Some(Type::Result { ok, .. }) if ok.is_option());
@@ -66,7 +61,7 @@ impl Interpreter {
                         Value::Enum { fields, .. } => fields.first().cloned().unwrap_or(Value::Unit),
                         other => other.clone(),
                     };
-                    wrap("Result", "Ok", inner)
+                    Value::ok(inner)
                 } else {
                     value
                 }
@@ -664,10 +659,7 @@ fn runtime_type_matches(value: &Value, ty: &TypeExpr) -> bool {
         Value::String(_) => bare == "string",
         // `Value::Int` holds the register-width integers; 128-bit ones are
         // `Int128`/`Uint128` and match their own arms.
-        Value::Int(_, _) => {
-            rask_ast::primitives::is_machine_integer(bare)
-                || rask_ast::primitives::INT_ALIASES.contains(&bare)
-        }
+        Value::Int(_, _) => rask_ast::primitives::is_machine_integer(bare),
         Value::Float(_, _) => rask_ast::primitives::is_float(bare),
         // A user type compares on its base name. The value carries `Wrap`; the
         // test can be written `Wrap<i64>`, and nothing at runtime records which
@@ -676,6 +668,9 @@ fn runtime_type_matches(value: &Value, ty: &TypeExpr) -> bool {
         // false here while native took the branch (#871).
         Value::Enum { name, .. } => *name == head,
         Value::Struct(s) => s.lock().unwrap().name == head,
+        // `type Meters = i64` is its own type. Its generic runtime name is
+        // "nominal", so the catch-all below never matched `r is Meters`.
+        Value::Nominal { type_name, .. } => *type_name == head,
         // Generic containers: compare the base name only — the interpreter
         // doesn't track element types at runtime, so it can't verify `<i32>`
         // matches. rask#217 generic type patterns.

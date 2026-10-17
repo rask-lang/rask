@@ -329,7 +329,7 @@ fn retain_views_handed_over(
                 // struct literal's field, an array slot.
                 MirStmtKind::Store { value: MirOperand::Local(v), .. }
                 | MirStmtKind::ArrayStore { value: MirOperand::Local(v), .. }
-                    if views.contains(v) && !store_is_narrow(stmt) =>
+                    if views.contains(v) && !store_is_narrow(stmt, &ty_of) =>
                 {
                     insertions.push((si, *v));
                 }
@@ -893,7 +893,7 @@ fn insert_aggregate_release(
                         }
                     }
                 }
-                MirStmtKind::Store { addr, offset, value, .. } => {
+                MirStmtKind::Store { addr, value, .. } => {
                     if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
                         if !aggregates.contains(&v) && !aggregates.contains(addr) {
                             // A handle parked in a buffer so a call can point
@@ -910,7 +910,7 @@ fn insert_aggregate_release(
                     }
                     if aggregates.contains(addr)
                         && !replaces
-                        && !store_is_narrow(stmt)
+                        && !store_is_narrow(stmt, &ty_of)
                     {
                         ev.push(ownership::Event::Fill(*addr));
                     }
@@ -1294,8 +1294,23 @@ fn view_of_field(
 /// Asked of the store's own recorded width rather than the operand's type,
 /// because that width is what codegen copies and a `None` there means "as wide
 /// as the value", which is not a claim this can act on.
-fn store_is_narrow(stmt: &MirStmt) -> bool {
-    matches!(&stmt.kind, MirStmtKind::Store { store_size: Some(n), .. } if *n < 8)
+///
+/// A tag is the exception: an enum's, a `T?`'s or `T or E`'s, a union's
+/// member index. It is a byte or two, and writing it is how the value is made
+/// (or switched to another variant), whatever its width: `Thing.Plain` and
+/// `none` are that one store and nothing else. Read as a flag update, the
+/// value was never made on that path, owned on the other, and left unreleased
+/// at the join. The tag is always at offset 0, where no payload can be.
+fn store_is_narrow(stmt: &MirStmt, ty_of: &HashMap<LocalId, MirType>) -> bool {
+    match &stmt.kind {
+        MirStmtKind::Store { addr, offset: 0, .. }
+            if matches!(
+                ty_of.get(addr),
+                Some(MirType::Enum(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_))
+            ) => false,
+        MirStmtKind::Store { store_size: n, .. } => *n < 8,
+        _ => false,
+    }
 }
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would
@@ -1858,7 +1873,7 @@ mod tests {
                     addr: local(0),
                     offset: 0,
                     value: MirOperand::Local(local(1)),
-                    store_size: Some(16),
+                    store_size: 16,
                     field: None,
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
@@ -2083,7 +2098,7 @@ mod tests {
                             addr: local(0),
                             offset: 0,
                             value: MirOperand::Constant(MirConst::Int(1)),
-                            store_size: None,
+                            store_size: 1,
                             field: None,
                         }),
                     ],
@@ -2097,7 +2112,7 @@ mod tests {
                         addr: local(0),
                         offset: 24,
                         value: MirOperand::Local(local(1)),
-                        store_size: None,
+                        store_size: 8,
                         field: None,
                     })],
                     terminator: MirTerminator::dummy(MirTerminatorKind::Return {

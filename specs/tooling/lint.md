@@ -71,12 +71,12 @@ Check `@pure` annotations against compiler-inferred effects (see `comp.effects`)
 
 | Rule | Check | Severity |
 |------|-------|----------|
-| **P1: pure-io** | `@pure` function transitively calls an IO source | warning |
+| **P1: pure-blocking** | `@pure` function transitively calls something that blocks or touches outside state | warning |
 | **P2: pure-async** | `@pure` function transitively calls an Async source | warning |
 | **P3: pure-mutation** | `@pure` function performs pool Grow/Shrink (`comp.advanced/EF4`) | warning |
 | **P4: pure-allows-errors** | `@pure` functions MAY return `T or E` — errors are values, not effects | — |
 
-`@pure` asserts that a function has no IO, Async, or Mutation effects. The compiler infers effects transitively (`comp.effects/FX2`). Violations are lint warnings, not compile errors — no function coloring.
+`@pure` asserts that a function has none of the effects in `comp.effects/FX1`. The compiler infers effects transitively (`comp.effects/FX2`). Violations are lint warnings, not compile errors — no function coloring. On an `extern` there's no body to check, so `@pure` is taken at its word (`comp.effects/INF5`).
 
 <!-- test: skip -->
 ```rask
@@ -225,7 +225,7 @@ FIX: delete `duck`. 3 types already match by shape; the "harden duck interface"
 | Private `from_*` method | N1 | Still checked — conventions apply regardless of visibility |
 | `into_*` with `mutate self` | N2 | Violation — must be `take self` |
 | `@pure` on `comptime func` | P1 | Redundant — comptime is already pure. No warning (harmless) |
-| `@pure` on function with `unsafe` block | P1 | Warning: unsafe is conservatively IO (`comp.effects/IO3`). Suppress with `@allow(purity/io)` if known-pure |
+| `@pure` on function with `unsafe` block | P1 | The block is what it calls (`comp.effects/BL3`): pointer work alone is pure, and a C call in it is the one that counts |
 | `@pure` on public vs private function | P1-P3 | Same check — purity annotation applies regardless of visibility |
 | `@pure` with a `mutate` rack parameter | P3 | Warning only if the function actually performs Grow/Shrink. Reading through links is fine |
 

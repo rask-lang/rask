@@ -26,9 +26,9 @@ pub enum MirStmtKind {
         addr: LocalId,
         offset: u32,
         value: MirOperand,
-        /// Byte size of the store (e.g. 4 for f32, 1 for bool).
-        /// When None, codegen uses the natural size of the value.
-        store_size: Option<u32>,
+        /// How many bytes the store writes: the size of the type the slot
+        /// holds (4 for an f32, 1 for a bool, 16 for a string).
+        store_size: u32,
         /// The struct field this writes, when lowering wrote one: a struct
         /// literal's field, or the last step of `a.b.c = v`. The offset alone
         /// can't say — `o.inner.run = f` is a store at `Outer`'s byte 16, and
@@ -299,6 +299,26 @@ pub struct ClosureCapture {
     /// heap environment's copy needs references of its own to the strings in
     /// it, the way a captured string does (`rc_insert`).
     pub copy: bool,
+}
+
+/// Lay out a closure environment: each capture at its own alignment, in
+/// order. A by-ref capture is an address, so a word. This is the one layout:
+/// codegen stores captures at these offsets and `LoadCapture` reads them back.
+///
+/// `items` is (local, type, by_ref, copy) per capture.
+pub fn lay_out_captures(
+    items: impl IntoIterator<Item = (LocalId, crate::MirType, bool, bool)>,
+) -> Vec<ClosureCapture> {
+    let mut end = 0u32;
+    items
+        .into_iter()
+        .map(|(local_id, ty, by_ref, copy)| {
+            let (size, align) = if by_ref { (8, 8) } else { (ty.size(), ty.align().max(1)) };
+            let offset = end.next_multiple_of(align);
+            end = offset + size;
+            ClosureCapture { local_id, offset, size, by_ref, copy }
+        })
+        .collect()
 }
 
 /// How a closure body reaches one of its captures.

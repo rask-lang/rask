@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Values that live somewhere other than a local keep their own width there
+// too: a closure's captures sit at their own alignment, a `Heap<u8>` is one
+// byte, an `any I` box holds exactly its value, and a store writes exactly the
+// bytes of the slot it targets. Each used to be rounded up to a word.
+
+import memory.Heap
+
+interface Area {
+    func area(self) -> i64
+}
+
+struct Odd {
+    public a: i32
+    public b: i32
+    public c: i32
+}
+
+Odd implements Area {
+    func area(self) -> i64 {
+        return (self.a + self.b + self.c) as i64
+    }
+}
+
+struct Mixed {
+    public flag: bool
+    public small: u8
+    public mid: i16
+    public word: i32
+    public big: i64
+}
+
+func area_of(s: any Area) -> i64 {
+    return s.area()
+}
+
+func sum_captures(a: u8, b: i16, c: f32, d: i64, e: bool) -> i64 {
+    let f = || {
+        let base = a as i64 + b as i64 + d
+        if e {
+            return base + (c * 2.0).to<i64>()!
+        }
+        return base
+    }
+    return f()
+}
+
+test "narrow captures keep their values" {
+    assert sum_captures(200, -300, 1.5, 1000, true) == 903
+    assert sum_captures(1, 2, 0.0, 3, false) == 6
+}
+
+test "a narrow heap value" {
+    let h: Heap<u8> = Heap(250)
+    ensure drop(h)
+    assert *h == 250
+    let f: Heap<f32> = Heap(2.5)
+    ensure drop(f)
+    assert *f == 2.5
+}
+
+test "an any box holds an odd-sized struct" {
+    assert area_of(Odd(a: 1, b: 2, c: 3)) == 6
+    assert area_of(Odd(a: 10, b: 20, c: 30)) == 60
+}
+
+test "field stores write their own width" {
+    mut m = Mixed(flag: true, small: 7, mid: -2, word: 100000, big: -1)
+    m.small = 255
+    m.mid = 300
+    m.flag = false
+    assert m.small == 255
+    assert m.mid == 300
+    assert !m.flag
+    assert m.word == 100000
+    assert m.big == -1
+    let copy = m.clone()
+    assert copy.small == 255
+    assert copy.word == 100000
+}

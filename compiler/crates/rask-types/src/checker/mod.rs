@@ -29,12 +29,13 @@ mod resolve;
 pub mod operators;
 mod validate;
 mod derive;
+mod clone_rule;
 mod arg_labels;
 mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, MethodOrigin, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -309,6 +310,9 @@ pub struct TypeChecker {
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
+    /// Each declared function's parameter defaults, in parameter order, for
+    /// the ones that have any. Placed into a call that leaves them out.
+    pub(super) fn_defaults: HashMap<SymbolId, Vec<Option<rask_ast::expr::Expr>>>,
     /// SymbolId → (type param name → interface bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
     pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<TypeExpr>>>,
@@ -362,6 +366,8 @@ pub struct TypeChecker {
     /// expression keeps the optional shape. Both backends read this to know
     /// whether the present path yields the payload or the operand as-is.
     pub(super) fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER9: values handed back by a `return` that land on the error side.
+    pub(super) err_returns: std::collections::HashSet<NodeId>,
     /// The solver's last retry of the shape constraints: nothing else will
     /// move, so a constraint that would rather wait has to commit now.
     pub(super) final_shape_pass: bool,
@@ -515,11 +521,6 @@ pub struct TypeChecker {
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
     pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
-    /// T1: method-call spans that resolved to a channel `Sender.send`. The
-    /// ownership checker reads these to consume the sent value (`mem.ownership/T1`),
-    /// even when inference leaves the receiver as a bare type variable in
-    /// `node_types` (deferred `Sender.send` resolution).
-    pub(super) channel_send_sites: std::collections::HashSet<rask_ast::Span>,
     /// Bare names in patterns read as a type test (`r is ParseError`), by the
     /// span `check_pattern` was handed. See `TypedProgram::type_test_patterns`.
     pub(super) type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
@@ -547,6 +548,9 @@ pub struct TypeChecker {
     /// Checked once solving (and literal defaulting) is done, against
     /// whatever the success type actually settled to.
     pub(super) pending_catch_void_checks: Vec<(Type, rask_ast::Span)>,
+    /// conc.sync/SH9: payloads of `Shared.take()` calls, checked for
+    /// linearity once `Shared.new(5)` has defaulted its literal.
+    pub(super) pending_shared_takes: Vec<(Type, rask_ast::Span)>,
 }
 
 impl TypeChecker {
@@ -647,6 +651,7 @@ impl TypeChecker {
             operator_targets: HashMap::new(),
             operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
+            fn_defaults: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             annotation_types: std::collections::HashSet::new(),
             pending_bound_checks: Vec::new(),
@@ -662,6 +667,7 @@ impl TypeChecker {
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             final_shape_pass: false,
             carried_coalesce: Vec::new(),
             late_coalesce: false,
@@ -703,13 +709,13 @@ impl TypeChecker {
             closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
-            channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: HashMap::new(),
             arg_hoists: HashMap::new(),
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
+            pending_shared_takes: Vec::new(),
         }
     }
 
@@ -885,6 +891,7 @@ impl TypeChecker {
         // (from another catch, a `try`, literal defaults, anything else),
         // instead of having decided it on the spot.
         self.validate_pending_catch_void_checks();
+        self.validate_pending_shared_takes();
 
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).
@@ -1080,6 +1087,7 @@ impl TypeChecker {
         let interface_coercions = self.interface_coercions.clone();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        let err_returns = self.err_returns.clone();
         let try_chain_placement = self.try_chain_placement.clone();
         let else_binding_types: HashMap<_, _> = self
             .else_binding_types
@@ -1125,6 +1133,7 @@ impl TypeChecker {
             conformance_interfaces: self.conformance_interfaces,
             error_wraps,
             fallback_keeps_shape,
+            err_returns,
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
@@ -1135,7 +1144,6 @@ impl TypeChecker {
             unsafe_ops,
             span_types,
             mutate_self_fns: self.mutate_self_fns,
-            channel_send_sites: self.channel_send_sites,
             type_test_patterns: self.type_test_patterns,
             struct_shorthand_patterns: self.struct_shorthand_patterns,
             arg_hoists: self
@@ -1154,7 +1162,7 @@ impl TypeChecker {
                         .into_iter()
                         .map(|p| match p {
                             arg_labels::Placement::Written(i) => PlacedArg::Written(i),
-                            arg_labels::Placement::Default(e, _) => PlacedArg::Default(e),
+                            arg_labels::Placement::Default(e) => PlacedArg::Default(e),
                         })
                         .collect();
                     (call, placed)

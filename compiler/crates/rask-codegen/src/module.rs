@@ -79,6 +79,8 @@ pub struct CodeGenerator {
     source_file_name: Option<String>,
     /// DI5: inline region metadata from the inlining pass (caller name → regions)
     inline_regions: HashMap<String, Vec<rask_mir::InlineRegion>>,
+    /// Each layout's field types as MIR types, from lowering.
+    field_types: rask_mir::FieldTypes,
 }
 
 impl CodeGenerator {
@@ -135,6 +137,7 @@ impl CodeGenerator {
             line_map: None,
             source_file_name: None,
             inline_regions: HashMap::new(),
+            field_types: rask_mir::FieldTypes::default(),
         })
     }
 
@@ -204,6 +207,7 @@ impl CodeGenerator {
             line_map: None,
             source_file_name: None,
             inline_regions: HashMap::new(),
+            field_types: rask_mir::FieldTypes::default(),
         })
     }
 
@@ -220,6 +224,13 @@ impl CodeGenerator {
     /// Call before gen_function() in debug builds.
     pub fn set_inline_regions(&mut self, regions: HashMap<String, Vec<rask_mir::InlineRegion>>) {
         self.inline_regions = regions;
+    }
+
+    /// Each layout's field types as MIR types (`MirContext::field_types`), for
+    /// the walks over what a struct or a variant owns. Call before
+    /// gen_function().
+    pub fn set_field_types(&mut self, field_types: rask_mir::FieldTypes) {
+        self.field_types = field_types;
     }
 
     /// Declare runtime functions as external imports.
@@ -631,23 +642,7 @@ impl CodeGenerator {
             self.func_ids.insert(internal.to_string(), id);
         }
 
-        // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
-        {
-            let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64)); // pool
-            sig.params.push(AbiParam::new(types::I64)); // packed handle
-            sig.params.push(AbiParam::new(types::I64)); // file ptr
-            sig.params.push(AbiParam::new(types::I32)); // line
-            sig.params.push(AbiParam::new(types::I32)); // col
-            sig.returns.push(AbiParam::new(types::I64)); // element ptr
-            let id = self.module
-                .declare_function("rask_pool_get_checked", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("pool_get_checked".to_string(), id);
-        }
-
         // rask_panic_at(file: ptr, line: i32, col: i32, msg: ptr) -> noreturn
-        // Used by inline pool access (release mode) for bounds/generation failures.
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // file ptr
@@ -1254,9 +1249,7 @@ impl CodeGenerator {
         // `StructReturn` signature to return nothing — the pointer the caller
         // passed *is* the answer, so there is nothing left to hand back (#1109).
         let through_dst = !is_main
-            && crate::builder::FunctionBuilder::returns_through_dst(
-                &mir_fn.ret_ty, &self.struct_layouts, &self.enum_layouts,
-            );
+            && crate::builder::FunctionBuilder::returns_through_dst(&mir_fn.ret_ty);
         if through_dst {
             sig.params.push(AbiParam::special(
                 cranelift_codegen::ir::types::I64,
@@ -1348,7 +1341,6 @@ impl CodeGenerator {
             self.register_string(sym)?;
         }
 
-        // Pre-register panic message for inline pool access (release mode)
         for mir_fn in mir_functions {
             for block in &mir_fn.blocks {
                 for stmt in &block.statements {
@@ -1362,56 +1354,15 @@ impl CodeGenerator {
     }
 
     fn collect_string_constants(&mut self, stmt: &rask_mir::MirStmt, counter: &mut usize) -> CodegenResult<()> {
-        // Walk operands looking for string constants
-        match &stmt.kind {
-            rask_mir::MirStmtKind::Assign { rvalue, .. } => {
-                self.scan_rvalue_strings(rvalue, counter)?;
-            }
-            rask_mir::MirStmtKind::Store { value, .. } => {
-                self.register_operand_string(value, counter)?;
-            }
-            rask_mir::MirStmtKind::Call { args, .. }
-            | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
-                for arg in args {
-                    self.register_operand_string(arg, counter)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
+        let mut ops = Vec::new();
+        rask_mir::analysis::uses::visit_stmt_operands(stmt, &mut |op| ops.push(op));
+        ops.into_iter().try_for_each(|op| self.register_operand_string(op, counter))
     }
 
     fn collect_terminator_strings(&mut self, term: &rask_mir::MirTerminator, counter: &mut usize) -> CodegenResult<()> {
-        match &term.kind {
-            rask_mir::MirTerminatorKind::Return { value: Some(op) } => {
-                self.register_operand_string(op, counter)?;
-            }
-            rask_mir::MirTerminatorKind::Switch { value, .. } => {
-                self.register_operand_string(value, counter)?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn scan_rvalue_strings(&mut self, rvalue: &rask_mir::MirRValue, counter: &mut usize) -> CodegenResult<()> {
-        match rvalue {
-            rask_mir::MirRValue::Use(op) => self.register_operand_string(op, counter),
-            rask_mir::MirRValue::BinaryOp { left, right, .. } => {
-                self.register_operand_string(left, counter)?;
-                self.register_operand_string(right, counter)
-            }
-            rask_mir::MirRValue::UnaryOp { operand, .. } => self.register_operand_string(operand, counter),
-            rask_mir::MirRValue::Cast { value, .. } | rask_mir::MirRValue::Convert { value, .. } => self.register_operand_string(value, counter),
-            rask_mir::MirRValue::Field { base, .. } => self.register_operand_string(base, counter),
-            rask_mir::MirRValue::EnumTag { value } => self.register_operand_string(value, counter),
-            rask_mir::MirRValue::Deref(op) => self.register_operand_string(op, counter),
-            rask_mir::MirRValue::Ref(_) | rask_mir::MirRValue::FuncAddr(_) => Ok(()),
-            rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
-                self.register_operand_string(base, counter)?;
-                self.register_operand_string(index, counter)
-            }
-        }
+        let mut ops = Vec::new();
+        rask_mir::analysis::uses::visit_terminator_operands(term, &mut |op| ops.push(op));
+        ops.into_iter().try_for_each(|op| self.register_operand_string(op, counter))
     }
 
     fn register_operand_string(&mut self, op: &MirOperand, counter: &mut usize) -> CodegenResult<()> {
@@ -1577,27 +1528,35 @@ impl CodeGenerator {
     }
 
     /// Register a writable slot for each module-level const, found by scanning
-    /// MIR for the slot names lowering emitted. Each holds 8 bytes: the value
-    /// for scalars, a heap pointer for aggregates. An init thunk fills it once
+    /// MIR for the slot names lowering emitted. A slot is as big as what the
+    /// const's init thunk stores into it: the value for a scalar (an `i128`
+    /// is 16 bytes), a heap pointer for an aggregate. The thunk fills it once
     /// before main; every reference loads from it (#470).
     pub fn register_const_slots(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
-        let mut names: Vec<&str> = mir_functions
-            .iter()
-            .flat_map(|f| f.blocks.iter())
-            .flat_map(|b| b.statements.iter())
-            .filter_map(|s| match &s.kind {
-                rask_mir::MirStmtKind::GlobalRef { name, .. }
-                    if name.starts_with(rask_mir::lower::CONST_SLOT_PREFIX) =>
-                {
-                    Some(name.as_str())
+        use rask_mir::MirStmtKind;
+        let mut sizes: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+        for f in mir_functions {
+            let mut slot_of: HashMap<rask_mir::LocalId, &str> = HashMap::new();
+            for s in f.blocks.iter().flat_map(|b| b.statements.iter()) {
+                match &s.kind {
+                    MirStmtKind::GlobalRef { dst, name }
+                        if name.starts_with(rask_mir::lower::CONST_SLOT_PREFIX) =>
+                    {
+                        slot_of.insert(*dst, name.as_str());
+                        sizes.entry(name.as_str()).or_insert(0);
+                    }
+                    MirStmtKind::Store { addr, offset, store_size, .. } => {
+                        if let Some(name) = slot_of.get(addr) {
+                            let end = sizes.entry(name).or_insert(0);
+                            *end = (*end).max(offset + store_size);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => None,
-            })
-            .collect();
-        names.sort_unstable();
-        names.dedup();
+            }
+        }
 
-        for name in names {
+        for (name, size) in sizes {
             if self.comptime_data.contains_key(name) {
                 continue;
             }
@@ -1606,7 +1565,10 @@ impl CodeGenerator {
                 .declare_data(name, Linkage::Local, true, false)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             let mut desc = DataDescription::new();
-            desc.define_zeroinit(8);
+            let size = size.max(1);
+            desc.define_zeroinit(size as usize);
+            // A scalar's natural alignment is its size; a pointer's is 8.
+            desc.set_align(size.next_power_of_two().min(16) as u64);
             self.module
                 .define_data(data_id, &desc)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
@@ -1774,14 +1736,22 @@ impl CodeGenerator {
 
         // Every offset list this function's container frees will ask for. Has
         // to happen before the borrow below, and before any body references one.
-        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts, &self.type_names) {
-            self.register_element_offsets(&offsets)?;
-        }
+        //
         // And one per `Heap<T>` field anywhere in the program. Not per function:
         // which frames release which aggregate is the release walk's business,
         // and the walk asks for the list by its contents — so the list has to
         // already be data. Registering is idempotent and the set is tiny.
-        for offsets in collect_heap_descriptors(&self.struct_layouts, &self.enum_layouts, &self.type_names) {
+        let lists: Vec<Vec<i32>> = {
+            let shapes = crate::elem_offsets::Shapes {
+                layouts: &self.struct_layouts,
+                enums: &self.enum_layouts,
+                fields: &self.field_types,
+            };
+            let mut lists = collect_element_offsets(mir_fn, shapes);
+            lists.extend(collect_heap_descriptors(shapes));
+            lists
+        };
+        for offsets in lists {
             self.register_element_offsets(&offsets)?;
         }
 
@@ -1888,12 +1858,12 @@ impl CodeGenerator {
             &self.internal_fns,
             &self.fn_param_types,
             &self.fn_ret_types,
-            self.build_mode,
         )?;
         if let Some(lm) = &self.line_map {
             builder.set_line_map(lm);
         }
         builder.set_c_abi_args(&self.c_abi_args);
+        builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);
         }
@@ -1958,43 +1928,11 @@ fn collect_used_strings(mir_fn: &MirFunction) -> HashSet<String> {
 }
 
 fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<String>) {
-    match &stmt.kind {
-        rask_mir::MirStmtKind::Assign { rvalue, .. } => collect_rvalue_strings(rvalue, out),
-        rask_mir::MirStmtKind::Store { value, .. } => collect_operand_string(value, out),
-        rask_mir::MirStmtKind::Call { args, .. }
-        | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
-            for arg in args { collect_operand_string(arg, out); }
-        }
-        _ => {}
-    }
+    rask_mir::analysis::uses::visit_stmt_operands(stmt, &mut |op| collect_operand_string(op, out));
 }
 
 fn collect_operand_strings_term(term: &rask_mir::MirTerminator, out: &mut HashSet<String>) {
-    match &term.kind {
-        rask_mir::MirTerminatorKind::Return { value: Some(op) } => collect_operand_string(op, out),
-        rask_mir::MirTerminatorKind::Switch { value, .. } => collect_operand_string(value, out),
-        _ => {}
-    }
-}
-
-fn collect_rvalue_strings(rvalue: &rask_mir::MirRValue, out: &mut HashSet<String>) {
-    match rvalue {
-        rask_mir::MirRValue::Use(op) => collect_operand_string(op, out),
-        rask_mir::MirRValue::BinaryOp { left, right, .. } => {
-            collect_operand_string(left, out);
-            collect_operand_string(right, out);
-        }
-        rask_mir::MirRValue::UnaryOp { operand, .. } => collect_operand_string(operand, out),
-        rask_mir::MirRValue::Cast { value, .. } | rask_mir::MirRValue::Convert { value, .. } => collect_operand_string(value, out),
-        rask_mir::MirRValue::Field { base, .. } => collect_operand_string(base, out),
-        rask_mir::MirRValue::EnumTag { value } => collect_operand_string(value, out),
-        rask_mir::MirRValue::Deref(op) => collect_operand_string(op, out),
-        rask_mir::MirRValue::Ref(_) | rask_mir::MirRValue::FuncAddr(_) => {}
-        rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
-            collect_operand_string(base, out);
-            collect_operand_string(index, out);
-        }
-    }
+    rask_mir::analysis::uses::visit_terminator_operands(term, &mut |op| collect_operand_string(op, out));
 }
 
 fn collect_operand_string(op: &MirOperand, out: &mut HashSet<String>) {
@@ -2350,19 +2288,14 @@ impl crate::Backend for CodeGenerator {
 /// Keyed by the list's own contents, the way every other offset list is, so the
 /// release walk finds it again by calling `heap_field_descriptor` on the field
 /// it is looking at.
-fn collect_heap_descriptors(
-    struct_layouts: &[rask_mono::StructLayout],
-    enum_layouts: &[rask_mono::EnumLayout],
-    names: &HashMap<rask_types::TypeId, String>,
-) -> Vec<Vec<i32>> {
+fn collect_heap_descriptors(shapes: crate::elem_offsets::Shapes<'_>) -> Vec<Vec<i32>> {
+    let (struct_layouts, enum_layouts) = (shapes.layouts, shapes.enums);
     let mut out: Vec<Vec<i32>> = Vec::new();
-    let mut take = |ty: &rask_types::Type, out: &mut Vec<Vec<i32>>| {
+    let take = |ty: &rask_types::Type, out: &mut Vec<Vec<i32>>| {
         if !crate::elem_offsets::is_heap_field(ty) {
             return;
         }
-        if let Some(d) =
-            crate::elem_offsets::heap_field_descriptor(ty, struct_layouts, enum_layouts, names)
-        {
+        if let Some(d) = crate::elem_offsets::heap_field_descriptor(ty, shapes) {
             if !out.contains(&d) {
                 out.push(d);
             }
@@ -2388,9 +2321,7 @@ fn collect_heap_descriptors(
 /// data objects have to exist before any function body references one.
 fn collect_element_offsets(
     mir_fn: &MirFunction,
-    struct_layouts: &[rask_mono::StructLayout],
-    enum_layouts: &[rask_mono::EnumLayout],
-    names: &HashMap<rask_types::TypeId, String>,
+    shapes: crate::elem_offsets::Shapes<'_>,
 ) -> Vec<Vec<i32>> {
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
@@ -2404,9 +2335,7 @@ fn collect_element_offsets(
                     .chain(mir_fn.params.iter())
                     .find(|l| l.id == *local)
                     .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()));
-                if let Some(offs) = ty.and_then(|t| {
-                    crate::elem_offsets::owned_offsets(&t, struct_layouts, enum_layouts, names)
-                }) {
+                if let Some(offs) = ty.and_then(|t| crate::elem_offsets::owned_offsets(&t, shapes)) {
                     lists.push(offs);
                 }
                 continue;
@@ -2421,9 +2350,7 @@ fn collect_element_offsets(
                 else {
                     continue;
                 };
-                if let Some(offs) = crate::elem_offsets::owned_offsets(
-                    ty, struct_layouts, enum_layouts, names,
-                ) {
+                if let Some(offs) = crate::elem_offsets::owned_offsets(ty, shapes) {
                     lists.push(offs);
                 }
             }

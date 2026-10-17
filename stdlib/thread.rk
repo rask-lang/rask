@@ -17,4 +17,5 @@ public struct Thread { }
 ///     let j = ThreadPool.spawn { compute(x) }
 ///
 /// `ThreadPool.spawn { … }` is a task block (conc.async/S2).
+@handle
 public struct ThreadPool { }

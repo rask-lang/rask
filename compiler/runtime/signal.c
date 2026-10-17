@@ -77,7 +77,10 @@ static void *signal_reader(void *arg) {
             RaskSender *tx = listeners[i];
             // A full channel drops the signal rather than block every other
             // listener behind a slow one.
-            int64_t status = tx ? rask_channel_try_send(tx, &i) : RASK_CHAN_OK;
+            // A `Signal` is a fieldless enum: one tag byte, the channel's
+            // whole element.
+            uint8_t sig = (uint8_t)i;
+            int64_t status = tx ? rask_channel_try_send(tx, &sig) : RASK_CHAN_OK;
             int orphaned = status == RASK_CHAN_CLOSED;
             if (orphaned) {
                 listeners[i] = NULL;
@@ -126,7 +129,7 @@ int64_t rask_os_signal_forward(int64_t tx_handle, const RaskVec *list) {
     int64_t len = rask_vec_len(list);
     pthread_mutex_lock(&listeners_lock);
     for (int64_t k = 0; k < len; k++) {
-        int64_t i = *(const int64_t *)rask_vec_get(list, k);
+        int64_t i = *(const uint8_t *)rask_vec_get(list, k);
         if (i < 0 || i >= SIGNAL_COUNT) continue;
         RaskSender *old = listeners[i];
         listeners[i] = rask_sender_clone(tx);

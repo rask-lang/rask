@@ -14,6 +14,9 @@
 // for every enum in the program cost more than it gave, and tripped #1062 in
 // the bargain.
 
+import io.IoError
+import error.ContextError
+
 enum Bare {
     Empty
     UnexpectedEnd(ctx: string)
@@ -42,6 +45,42 @@ Inner implements Error {
 enum Outer {
     Nested(e: Inner)
     Own(n: i64)
+}
+
+// Its name ends in "Error", but it has no `message()`. Desugar used to guess
+// from the name and generate `inner.message()`, which didn't compile.
+struct ParseError {
+    line: i64
+}
+
+struct Failure {
+    code: i64
+}
+
+extend Failure {
+    func message(self) -> string {
+        return "failure {self.code}"
+    }
+}
+
+enum Wraps {
+    Parse(p: ParseError)
+    Fail(f: Failure)
+    Io(e: IoError)
+    Context(c: ContextError)
+}
+
+func wraps_msg(which: i64) -> string {
+    if which == 0 {
+        return Wraps.Parse(p: ParseError(line: 3)).message()
+    }
+    if which == 1 {
+        return Wraps.Fail(f: Failure(code: 7)).message()
+    }
+    if which == 2 {
+        return Wraps.Io(e: IoError.TimedOut).message()
+    }
+    return Wraps.Context(c: ContextError(context: "loading", source: "gone")).message()
 }
 
 enum WritesItsOwn {
@@ -156,4 +195,11 @@ test "a hand-written message in the enum body wins" {
 
 test "a hand-written message in an extend block wins" {
     assert extended_msg() == "from the extend block"
+}
+
+test "delegation asks whether the payload has a message, not what it's called" {
+    assert wraps_msg(0) == "parse: ParseError(line: 3)"
+    assert wraps_msg(1) == "failure 7"
+    assert wraps_msg(2) == "timed out"
+    assert wraps_msg(3) == "loading: gone"
 }

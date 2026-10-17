@@ -2225,7 +2225,7 @@ impl TypeChecker {
                             if matches!(method.as_str(), "read" | "write" | "staged")
                     );
                     let unwraps = |name: &str| {
-                        !names_a_lock && matches!(name, "Mutex" | "Shared" | "Cell")
+                        !names_a_lock && name == "Shared"
                     };
                     let inner_of = |args: &[GenericArg]| match args.first() {
                         Some(GenericArg::Type(inner)) => Some((**inner).clone()),
@@ -2755,16 +2755,15 @@ impl TypeChecker {
         let written = func.name().unwrap_or("this function").to_string();
         self.check_argument_lending(&written, None, args);
         self.note_arg_labels(call_id, written, args, span);
-        // A declared function the desugarer couldn't place (one from the
-        // stdlib or another package): its arguments in parameter order.
+        // A declared function: its arguments in parameter order, defaults
+        // included.
         let placed;
-        let args = match self
-            .resolved
-            .resolutions
-            .get(&func.id)
-            .and_then(|sym| self.function_param_names(*sym))
-            .and_then(|names| self.place_free_call(call_id, &names, args))
-        {
+        let callee = self.resolved.resolutions.get(&func.id).copied();
+        let args = match callee.and_then(|sym| {
+            let names = self.function_param_names(sym)?;
+            let defaults = self.fn_defaults.get(&sym).cloned().unwrap_or_default();
+            self.place_free_call(call_id, &names, &defaults, args)
+        }) {
             Some(v) => {
                 placed = v;
                 &placed[..]
@@ -3904,17 +3903,18 @@ impl TypeChecker {
             return ret;
         }
 
-        // Check if this is a builtin module method call (e.g., fs.open). A local
-        // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
-        // and routing `fs.len()` to the filesystem module reported "no method
-        // `len` found for type `fs`".
-        if let Some(name) = object.name() {
-            if self.types.builtin_modules.is_module(name) && !self.local_shadows_namespace(name) {
-                if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(name, method) {
+        // A builtin module method call (e.g., fs.open), by the module the
+        // resolver bound the name to, so `import fs as files` makes
+        // `files.open` the same call. A local of the same name wins — `let fs =
+        // Vec.new()` is an ordinary variable, and routing `fs.len()` to the
+        // filesystem module reported "no method `len` found for type `fs`".
+        if let Some(module) = self.module_named_by(object) {
+            if self.types.builtin_modules.is_module(module) {
+                if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(module, method) {
                     let names = stub.params.iter().map(|(n, _)| n.clone()).collect();
                     self.note_param_names(call_id, names);
                 }
-                return self.check_module_method(name, method, args, type_args, span);
+                return self.check_module_method(module, method, args, type_args, span);
             }
         }
 
@@ -5194,6 +5194,12 @@ impl TypeChecker {
     /// module the resolver bound (an alias counts). The module's declaration,
     /// never the program's type of the same name (#1470).
     fn module_member_type(&self, head: &Expr, member: &str) -> Option<crate::types::TypeId> {
+        self.types.module_type_id(self.module_named_by(head)?, member)
+    }
+
+    /// The stdlib module `head` names, by what the resolver bound it to: its
+    /// own name or an `import m as alias`. `None` when a local shadows it.
+    fn module_named_by(&self, head: &Expr) -> Option<&'static str> {
         let name = head.name()?;
         if self.local_shadows_namespace(name) {
             return None;
@@ -5202,7 +5208,7 @@ impl TypeChecker {
         let SymbolKind::BuiltinModule { module } = &self.resolved.symbols.get(sym)?.kind else {
             return None;
         };
-        self.types.module_type_id(module.name(), member)
+        Some(module.name())
     }
 
     /// Does a declared type named `name` have a variant or field called
@@ -5922,7 +5928,7 @@ impl TypeChecker {
     /// The stdlib types whose static methods `resolve_method` matches by their
     /// bare name (`Type::UnresolvedNamed("Vec")`).
     fn resolved_by_name(name: &str) -> bool {
-        matches!(name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
+        matches!(name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Shared" | "Channel" | "Atomic" | "Heap")
     }
 
     /// A stdlib static method's parameter types, one per parameter, `None`
@@ -6048,10 +6054,6 @@ impl TypeChecker {
         }
     }
 
-    /// Is this expression's inferred type `Shared<...>`? (Receiver must have
-    /// been inferred already — with-binding sources are.)
-    /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
-    /// for a place that already has the type in hand.
     /// Report every task-local `Shared` (SH7) and every value carrying a link
     /// (`mem.ownership/T2`) a task block reaches.
     ///
@@ -6210,7 +6212,7 @@ impl TypeChecker {
         let ExprKind::MethodCall { object, method, args, .. } = &binding.source.kind else {
             return;
         };
-        if !args.is_empty() || !matches!(method.as_str(), "write" | "lock") {
+        if !args.is_empty() || method != "write" {
             return;
         }
         let Some(recv_ty) = self
@@ -6299,13 +6301,10 @@ impl TypeChecker {
         }
     }
 
-    fn expr_is_shared(&mut self, e: &Expr) -> bool {
-        let Some(t) = self.node_types.get(&e.id).cloned() else { return false };
-        match self.ctx.apply(&t) {
-            Type::Generic { base, .. } => self.types.type_name(base) == "Shared",
-            Type::UnresolvedGeneric { name, .. } => name == "Shared",
-            _ => false,
-        }
+    /// Is this expression's inferred type `Shared<...>`? (Receiver must have
+    /// been inferred already — with-binding sources are.)
+    fn expr_is_shared(&self, e: &Expr) -> bool {
+        self.node_types.get(&e.id).is_some_and(|t| self.is_shared_box(&self.ctx.apply(t)))
     }
 
     /// Check every void-bodied `catch` whose scrutinee's success type was
@@ -6327,6 +6326,23 @@ impl TypeChecker {
                     });
                 }
             }
+        }
+    }
+
+    /// conc.sync/SH9: `take` empties the box, so it's only for a payload that
+    /// makes the box single-handle. Asked after defaulting: at the call,
+    /// `Shared.new(5)` still holds an open literal.
+    pub(super) fn validate_pending_shared_takes(&mut self) {
+        let pending = std::mem::take(&mut self.pending_shared_takes);
+        for (payload, span) in pending {
+            let payload = self.ctx.apply(&payload);
+            if matches!(payload, Type::Var(_) | Type::Error) || self.types.is_linear_value(&payload) {
+                continue;
+            }
+            self.errors.push(TypeError::TakeFromSharedBox {
+                payload: self.types.resolve_type_names(&payload).to_string(),
+                span,
+            });
         }
     }
 
@@ -6812,7 +6828,7 @@ impl TypeChecker {
             _ => return false,
         };
         name.starts_with("Atomic")
-            || matches!(name.as_str(), "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver")
+            || matches!(name.as_str(), "Shared" | "Channel" | "Sender" | "Receiver")
     }
 
     pub(super) fn validate_pending_mutations(&mut self) {

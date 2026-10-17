@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Local` box's clone is another handle on the same cell. Natively the
+// clone took the `Readers` runtime's refcount bump, on a cell that had no
+// refcount: it wrote past the start of the allocation, and the first handle
+// to drop freed the cell under the second.
+
+import sync.Shared
+import sync.Local
+
+struct Tally {
+    hits: Shared<i64, Local>,
+}
+
+func bump(t: Tally) {
+    with t.hits.write() as h {
+        h += 1
+    }
+}
+
+func main() {
+    let a = Shared.local(1)
+    let b = a.clone()
+    b.set(5)
+    println("{a.get()} {b.get()}")
+
+    let t = Tally(hits: a.clone())
+    bump(t)
+    bump(t)
+    println("{a.get()}")
+}
+
+test "clones of a Local box share one cell" {
+    let a = Shared.local(Vec.from([1, 2]))
+    let b = a.clone()
+    b.write().push(3)
+    assert a.read().len() == 3
+}

@@ -87,8 +87,3 @@ pub fn lookup(name: &str) -> Option<&'static PtrMethod> {
 pub fn mir_name(name: &str) -> String {
     format!("RawPtr_{}", name)
 }
-
-/// Method names, for the drift registry.
-pub fn method_names() -> Vec<&'static str> {
-    PTR_METHODS.iter().map(|m| m.name).collect()
-}

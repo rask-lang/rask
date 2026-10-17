@@ -668,7 +668,7 @@ impl TypeChecker {
     }
 
     /// Is this the `Shared<T, S>` box, however the checker spells it?
-    fn is_shared_box(&self, ty: &Type) -> bool {
+    pub(super) fn is_shared_box(&self, ty: &Type) -> bool {
         match ty {
             Type::Generic { base, .. } => self.types.type_name(*base) == "Shared",
             Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => name == "Shared",

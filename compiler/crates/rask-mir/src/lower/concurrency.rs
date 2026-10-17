@@ -364,7 +364,7 @@ impl<'a> MirLowerer<'a> {
                 addr: slot,
                 offset: 0,
                 value: MirOperand::Local(guard_local),
-                store_size: Some(size),
+                store_size: size,
                 field: None,
             }));
         }
@@ -381,28 +381,24 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(continue_block);
     }
 
-    /// True when `object` has type `{box_name}<T>` (e.g. "Mutex", "Shared").
-    /// Resolves the prefix from the checker's type (resolved `Generic` or
-    /// `UnresolvedGeneric`, generics stripped) so it covers a field receiver
-    /// like `self.store`; falls back to a tracked `type_prefix` on a local.
-    pub(super) fn is_sync_box_expr(&self, object: &Expr, box_name: &str) -> bool {
+    /// True when `object` is a `Shared<T, S>`. Reads the checker's type
+    /// (resolved `Generic` or `UnresolvedGeneric`) so it covers a field
+    /// receiver like `self.store`; falls back to a tracked `type_prefix` on a
+    /// local.
+    pub(super) fn is_shared_expr(&self, object: &Expr) -> bool {
         let from_type = self.ctx.lookup_raw_type(object.id)
             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .map(|p| p.as_str().trim() == box_name)
-            .unwrap_or(false);
-        let from_prefix = if let Some(var_name) = object.name() {
-            self.meta(var_name)
+            .is_some_and(|p| p.trim() == "Shared");
+        from_type
+            || object
+                .name()
+                .and_then(|var_name| self.meta(var_name))
                 .and_then(|m| m.type_prefix.as_deref())
-                .map(|p| p == box_name)
-                .unwrap_or(false)
-        } else {
-            false
-        };
-        from_type || from_prefix
+                .is_some_and(|p| p == "Shared")
     }
 
-    /// If `object` is a no-arg guard access on a sync box —
-    /// `mutex.lock()`, `shared.read()`, `shared.write()` — return the box
+    /// If `object` is a no-arg guard access on a `Shared` — `shared.read()`,
+    /// `shared.write()` — return the box
     /// expression and the acquire/release runtime functions for it. The caller
     /// runs the trailing method or field access on the guard between them.
     pub(super) fn sync_guard<'e>(
@@ -416,14 +412,11 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         match method.as_str() {
-            "lock" if self.is_sync_box_expr(box_obj, "Mutex") => {
-                Some((box_obj, "Mutex_acquire", Some("Mutex_release")))
-            }
             // `read`/`write` on a `Shared<T, S>`: which lock, if any, is the
             // strategy's business (SH5). All three answer to both verbs — a
             // `read()` under `Mutex` takes the exclusive lock, slower than
             // `Readers` would be there and never wrong.
-            "read" | "write" if self.is_sync_box_expr(box_obj, "Shared") => {
+            "read" | "write" if self.is_shared_expr(box_obj) => {
                 let (acquire, release) = self
                     .shared_strategy(box_obj)
                     .guard_syms(method == "write");
@@ -571,7 +564,7 @@ impl<'a> MirLowerer<'a> {
         // loop — polling must not re-run them each round.
         enum Probe {
             Recv { rx: MirOperand, buf: crate::LocalId, elem: MirType, binding: String, arm: usize },
-            Send { tx: MirOperand, value: MirOperand, arm: usize },
+            Send { tx: MirOperand, buf: crate::LocalId, arm: usize },
         }
         let mut probes = Vec::new();
         let mut default_arm: Option<usize> = None;
@@ -592,8 +585,27 @@ impl<'a> MirLowerer<'a> {
                 }
                 SelectArmKind::Send { channel, value } => {
                     let (tx, _) = self.lower_expr(channel)?;
-                    let (value, _) = self.lower_expr(value)?;
-                    probes.push(Probe::Send { tx, value, arm: i });
+                    let elem = self.channel_elem_type(channel);
+                    let (value, value_ty) = self.lower_expr(value)?;
+                    // The runtime copies the element out of a buffer, at the
+                    // channel's element size — the same one-element slot the
+                    // receive arm reads into.
+                    let value = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Argument, value, &value_ty, &elem,
+                    );
+                    let value = self.as_slot_value(value, &elem);
+                    let buf = self.builder.alloc_temp(MirType::Array {
+                        elem: Box::new(elem.clone()),
+                        len: 1,
+                    });
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr: buf,
+                        offset: 0,
+                        value,
+                        store_size: elem.size(),
+                        field: None,
+                    }));
+                    probes.push(Probe::Send { tx, buf, arm: i });
                 }
                 SelectArmKind::Default => default_arm = Some(i),
             }
@@ -691,12 +703,17 @@ impl<'a> MirLowerer<'a> {
                     }));
                     (status, *match probe { Probe::Recv { arm, .. } => arm, _ => unreachable!() })
                 }
-                Probe::Send { tx, value, arm } => {
+                Probe::Send { tx, buf, arm } => {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::Ref(*buf),
+                    }));
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_send_i64".to_string()),
-                        args: vec![tx.clone(), value.clone()],
+                        func: FunctionRef::internal("rask_channel_try_send_ptr".to_string()),
+                        args: vec![tx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *arm)
                 }
@@ -887,37 +904,15 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
-    /// A Result's tag, zero origin words, and payload. Payload stored the way
-    /// `coerce_into_wrapper` stores one, since the reader expects that shape.
+    /// A Result's tag, zeroed origin, and payload, the way `coerce_into_wrapper`
+    /// builds one.
     fn store_result_arm(&mut self, result: crate::LocalId, tag: i64, val: MirOperand, ty: &MirType) {
-        for (offset, value) in [
-            (rask_mono::abi::RESULT_TAG_OFFSET, tag),
-            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 0),
-            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, 0),
-        ] {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result,
-                offset,
-                value: MirOperand::Constant(MirConst::Int(value)),
-                store_size: Some(8),
-                field: None,
-            }));
-        }
+        let result_ty = self.builder.local_type(result).unwrap_or(MirType::Void);
+        self.store_wrapper_tag(result, &result_ty, tag);
         if matches!(ty, MirType::Void) {
             return;
         }
-        let (payload, size) = if ty.passed_by_address() {
-            (val, self.aggregate_alloc_size(ty))
-        } else {
-            (self.widen_scalar_payload(val, ty), 8)
-        };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: result,
-            offset: rask_mono::abi::RESULT_PAYLOAD_OFFSET,
-            value: payload,
-            store_size: Some(size),
-            field: None,
-        }));
+        self.store_wrapper_payload(result, &result_ty, val, ty);
     }
 
     /// Element type behind a `Receiver<T>` expression, defaulting to a word.

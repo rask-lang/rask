@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A folded list or map is laid out the way the running program holds it: each
+// element at its own width, a map's entries as `(key, value)` pairs. The data
+// used to put every scalar in a word of its own.
+
+const BYTES: Vec<u8> = comptime {
+    mut v: Vec<u8> = Vec.new()
+    for i in 0..5 {
+        v.push(i * 60)
+    }
+    v
+}
+
+const FLAGS: Vec<bool> = comptime {
+    mut v = Vec.new()
+    v.push(true)
+    v.push(false)
+    v.push(true)
+    v
+}
+
+const HALVES: Vec<f32> = comptime {
+    mut v = Vec.new()
+    v.push(0.5)
+    v.push(-1.25)
+    v
+}
+
+const LETTERS: Vec<char> = comptime {
+    mut v = Vec.new()
+    v.push('a')
+    v.push('é')
+    v
+}
+
+const WEIGHTS: Map<u8, f32> = comptime {
+    mut m = Map.new()
+    m.insert(1, 0.5)
+    m.insert(200, 2.25)
+    m
+}
+
+const LABELS: Map<i16, string> = comptime {
+    mut m = Map.new()
+    m.insert(-3, "minus three")
+    m.insert(7, "a label well past the fifteen byte inline limit")
+    m
+}
+
+test "a folded list of narrow values" {
+    assert BYTES.len() == 5
+    assert BYTES[4] == 240
+    assert BYTES.join(",") == "0,60,120,180,240"
+    assert FLAGS.join(" ") == "true false true"
+    assert HALVES[1] == -1.25
+    assert LETTERS[1] == 'é'
+}
+
+test "a folded map of narrow keys and values" {
+    assert (WEIGHTS.get(200) ?? 0.0) == 2.25
+    assert (WEIGHTS.get(1) ?? 0.0) == 0.5
+    assert LABELS.get(-3) == "minus three"
+    assert LABELS.get(7) == "a label well past the fifteen byte inline limit"
+}

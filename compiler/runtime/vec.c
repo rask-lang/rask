@@ -273,21 +273,15 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
     return v;
 }
 
-// A `Vec<u8>` holding `n` raw bytes, laid out the way compiled code lays one
-// out: an 8-byte slot per element, zero-extended (the slot-size rule in
-// rask-mir's lower/collections.rs). The runtime used to pack them one byte per
-// element, so the same type had two layouts: an optional read (`v.get(i)`)
-// copied a whole slot and ran seven bytes past the end of the buffer, and a
-// `CString`'s bytes came back with elements as wide as the string.
+// A `Vec<u8>` holding `n` raw bytes, one byte per element — the layout
+// compiled code gives a `Vec<u8>`.
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n) {
-    RaskVec *v = rask_vec_new(8, NULL, 0);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     if (n <= 0) return v;
-    v->data = (char *)rask_alloc(rask_safe_mul(8, n));
+    v->data = (char *)rask_alloc(n);
     v->cap = n;
     v->len = n;
-    const unsigned char *src = (const unsigned char *)data;
-    int64_t *slots = (int64_t *)(void *)v->data;
-    for (int64_t i = 0; i < n; i++) slots[i] = src[i];
+    memcpy(v->data, data, (size_t)n);
     return v;
 }
 
@@ -295,7 +289,7 @@ RaskVec *rask_vec_from_bytes(const void *data, int64_t n) {
 // objects, slices) has 16-byte elements, not 8.
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
                               const int32_t *str_offs, int64_t n_str_offs) {
-    if (elem_size <= 0) elem_size = 8;
+    if (elem_size <= 0) rask_panic("vector element size must be positive");
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     *v = (RaskVec){
         .len = count,
@@ -330,7 +324,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
 // over, two calls on one `[string; 3]` released every string twice (#1405).
 RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
                        const int32_t *str_offs, int64_t n_str_offs) {
-    if (elem_size <= 0) elem_size = 8;
+    if (elem_size <= 0) rask_panic("vector element size must be positive");
     RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
     *v = (RaskVec){
         .len = count,
@@ -353,14 +347,11 @@ void rask_vec_free_view(RaskVec *v) {
 }
 
 // Copy a view's elements back into the array it was made from, after a
-// `mutate self` method reordered or replaced them. `stride` is the array's:
-// a narrow scalar sits in the low bytes of the view's 8-byte slot. The methods
-// an array may call never change the length.
-void rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride) {
-    if (!v || !dst) return;
-    for (int64_t i = 0; i < v->len; i++) {
-        memcpy(dst + i * stride, v->data + i * v->elem_size, (size_t)stride);
-    }
+// `mutate self` method reordered or replaced them. The two share a layout, and
+// the methods an array may call never change the length.
+void rask_vec_copy_back(const RaskVec *v, char *dst) {
+    if (!v || !dst || v->len <= 0) return;
+    memcpy(dst, v->data, (size_t)(v->len * v->elem_size));
 }
 
 // Releases every string the elements hold, then the vector itself.
@@ -742,13 +733,69 @@ void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
     }
 }
 
-// join(vec_of_ints, separator) — convert integers to strings and concatenate.
-//
-// The element's own width, not a machine word. Reading eight bytes at a
-// four-byte stride returned each pair of elements packed into one number: a
-// `Vec<i32>` of 1, 2, 3 joined as `8589934593,12884901890,3`, where that first
-// value is `(2<<32)|1`.
-void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
+// One element as text, read at its own width as what `kind`
+// (RASK_ELEM_KIND_*) says it is. `quoted` is the `debug` form: a string or a
+// char comes out quoted and escaped, the way it does inside a derived struct
+// rendering. Without it, the form `join` and `to_string` write.
+static void vec_scalar_text(RaskStr *out, int64_t kind, const uint8_t *p, int64_t size,
+                            int quoted) {
+    switch (kind) {
+        case RASK_ELEM_KIND_UNSIGNED: {
+            uint64_t val;
+            switch (size) {
+                case 1:  val = *(const uint8_t *)p; break;
+                case 2:  val = *(const uint16_t *)p; break;
+                case 4:  val = *(const uint32_t *)p; break;
+                default: val = *(const uint64_t *)p; break;
+            }
+            rask_u64_to_string(out, val);
+            return;
+        }
+        case RASK_ELEM_KIND_FLOAT:
+            if (size == 4) {
+                rask_f64_to_string(out, (double)*(const float *)p);
+            } else {
+                rask_f64_to_string(out, *(const double *)p);
+            }
+            return;
+        case RASK_ELEM_KIND_BOOL:
+            rask_bool_to_string(out, *(const uint8_t *)p != 0);
+            return;
+        case RASK_ELEM_KIND_STRING:
+            if (quoted) {
+                rask_string_debug(out, (const RaskStr *)p);
+            } else {
+                *out = *(const RaskStr *)p;
+                rask_string_clone(out);
+            }
+            return;
+        case RASK_ELEM_KIND_CHAR:
+            if (quoted) {
+                rask_char_debug(out, *(const int32_t *)p);
+            } else {
+                rask_char_to_string(out, *(const int32_t *)p);
+            }
+            return;
+        default: {
+            int64_t val;
+            switch (size) {
+                case 1:  val = *(const int8_t *)p; break;
+                case 2:  val = *(const int16_t *)p; break;
+                case 4:  val = *(const int32_t *)p; break;
+                default: val = *(const int64_t *)p; break;
+            }
+            rask_i64_to_string(out, val);
+            return;
+        }
+    }
+}
+
+// join(vec, separator) for anything but strings: each element as it prints,
+// `kind` (RASK_ELEM_KIND_*) saying what the bytes are. The width can't: a
+// one-byte element is a u8, an i8 or a bool, and reading every element as a
+// signed integer printed a `u8` 200 as -56 and a float as its bits.
+void rask_vec_join_scalar(RaskStr *out, const RaskVec *src, const RaskStr *sep,
+                          int64_t kind) {
     rask_string_new(out);
     if (!src || src->len == 0) return;
     for (int64_t i = 0; i < src->len; i++) {
@@ -757,16 +804,8 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
             rask_string_append(&tmp, out, sep);
             *out = tmp;
         }
-        const uint8_t *p = src->data + i * src->elem_size;
-        int64_t val;
-        switch (src->elem_size) {
-            case 1:  val = *(const int8_t *)p; break;
-            case 2:  val = *(const int16_t *)p; break;
-            case 4:  val = *(const int32_t *)p; break;
-            default: val = *(const int64_t *)p; break;
-        }
         RaskStr s;
-        rask_i64_to_string(&s, val);
+        vec_scalar_text(&s, kind, src->data + i * src->elem_size, src->elem_size, 0);
         RaskStr tmp;
         rask_string_append(&tmp, out, &s);
         rask_string_free(&s);
@@ -776,11 +815,7 @@ void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
 
 // debug(vec) — `[1, 2, 3]`, the developer-facing rendering (std.fmt/G2).
 //
-// `kind` says how to read one element, because the header only carries a width:
-// a four-byte slot is an i32, a u32 or an f32, and they print differently.
-// Strings and chars come out quoted and escaped, the same as they do inside a
-// derived struct rendering, so a `Vec<string>` reads `["a", "b"]`.
-//
+// `kind` says how to read one element, for the reason `join_scalar` takes it.
 // Elements the caller can't classify never reach here — lowering renders those
 // as `[…]` rather than guessing, so there is no kind meaning "unknown".
 void rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind) {
@@ -797,52 +832,8 @@ void rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind) {
                 rask_string_append(&t, out, &comma);
                 *out = t;
             }
-            const uint8_t *p = src->data + i * src->elem_size;
             RaskStr elem;
-            switch (kind) {
-                case RASK_DEBUG_ELEM_U64: {
-                    uint64_t val;
-                    switch (src->elem_size) {
-                        case 1:  val = *(const uint8_t *)p; break;
-                        case 2:  val = *(const uint16_t *)p; break;
-                        case 4:  val = *(const uint32_t *)p; break;
-                        default: val = *(const uint64_t *)p; break;
-                    }
-                    rask_u64_to_string(&elem, val);
-                    break;
-                }
-                case RASK_DEBUG_ELEM_F64: {
-                    if (src->elem_size == 4) {
-                        rask_f64_to_string(&elem, (double)*(const float *)p);
-                    } else {
-                        rask_f64_to_string(&elem, *(const double *)p);
-                    }
-                    break;
-                }
-                case RASK_DEBUG_ELEM_BOOL: {
-                    rask_bool_to_string(&elem, *(const uint8_t *)p != 0);
-                    break;
-                }
-                case RASK_DEBUG_ELEM_STRING: {
-                    rask_string_debug(&elem, (const RaskStr *)p);
-                    break;
-                }
-                case RASK_DEBUG_ELEM_CHAR: {
-                    rask_char_debug(&elem, *(const int32_t *)p);
-                    break;
-                }
-                default: {
-                    int64_t val;
-                    switch (src->elem_size) {
-                        case 1:  val = *(const int8_t *)p; break;
-                        case 2:  val = *(const int16_t *)p; break;
-                        case 4:  val = *(const int32_t *)p; break;
-                        default: val = *(const int64_t *)p; break;
-                    }
-                    rask_i64_to_string(&elem, val);
-                    break;
-                }
-            }
+            vec_scalar_text(&elem, kind, src->data + i * src->elem_size, src->elem_size, 1);
             RaskStr t;
             rask_string_append(&t, out, &elem);
             rask_string_free(&elem);
@@ -885,63 +876,9 @@ RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {
     return result;
 }
 
-// A closure argument is a pointer to `[ func_ptr | captures... ]`, and the
-// compiled body takes the environment — the captures, at closure+8 — as an
-// implicit first parameter. See crates/rask-codegen/src/closures.rs.
-//
-// Casting that block straight to a function pointer jumps into data. Most
-// adapters never noticed because MIR inlines them when the receiver is a plain
-// local; a receiver reached through a struct field takes the call instead, and
-// segfaulted (rask-lang/rask#866).
-// The return width has to match what the body actually returns, or the upper
-// bits of the return register are read as data. A predicate returns `bool`,
-// which codegen lowers to I8 — reading that as an i64 kept elements a `false`
-// should have dropped.
-typedef int8_t  (*RaskClosurePred)(void *env, int64_t arg);
-typedef int64_t (*RaskClosureMap)(void *env, int64_t arg);
-
-static inline int closure_call_pred(int64_t closure, int64_t arg) {
-    RaskClosurePred fn = *(RaskClosurePred *)(uintptr_t)closure;
-    return fn((char *)(uintptr_t)closure + 8, arg) != 0;
-}
-
-// A mapping closure returns through a full word. Narrower element types come
-// back correctly on x86-64 because a 32-bit result is written through `eax`,
-// which clears the rest of the register; `i32` maps round-trip, negatives
-// included. Worth revisiting for a target where that does not hold.
-static inline int64_t closure_call_map(int64_t closure, int64_t arg) {
-    RaskClosureMap fn = *(RaskClosureMap *)(uintptr_t)closure;
-    return fn((char *)(uintptr_t)closure + 8, arg);
-}
-
-// map(vec, closure) — apply fn to each element, returning new Vec.
-RaskVec *rask_vec_map(const RaskVec *src, int64_t closure) {
-    if (!src || !closure) return rask_vec_new(8, NULL, 0);
-    RaskVec *dst = rask_vec_with_capacity(8, src->len, NULL, 0);
-    for (int64_t i = 0; i < src->len; i++) {
-        int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
-        int64_t result = closure_call_map(closure, elem);
-        rask_vec_push(dst, &result);
-    }
-    return dst;
-}
-
 // collect — identity (Vec is already materialized).
 RaskVec *rask_vec_collect(const RaskVec *src) {
     return rask_vec_clone(src);
-}
-
-// filter(vec, closure) — keep elements where fn returns non-zero.
-RaskVec *rask_vec_filter(const RaskVec *src, int64_t closure) {
-    if (!src || !closure) return rask_vec_new(8, NULL, 0);
-    RaskVec *dst = rask_vec_new(src->elem_size, src->strs.offsets, src->strs.count);
-    for (int64_t i = 0; i < src->len; i++) {
-        int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
-        if (closure_call_pred(closure, elem)) {
-            rask_vec_push(dst, &elem);
-        }
-    }
-    return dst;
 }
 
 // as_ptr(vec) — raw pointer to underlying buffer (unsafe).
@@ -1001,25 +938,10 @@ static void rask_stable_sort(void *base, int64_t n, int64_t size,
     rask_realloc(buf, rask_safe_mul(n, size), 0);
 }
 
-static int rask_i64_compare(const void *a, const void *b) {
-    int64_t va = *(const int64_t *)a;
-    int64_t vb = *(const int64_t *)b;
-    if (va < vb) return -1;
-    if (va > vb) return 1;
-    return 0;
-}
-
-void rask_vec_sort(RaskVec *v) {
-    vec_check_no_borrows(v, "sort");
-    if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
-}
-
 // sort(vec) for Vec<string> — lexicographic, the same order `<` gives.
 //
-// The default sort reads each element's first 8 bytes as an int64_t. A string
-// is a 16-byte RaskStr, so that compared inline character bytes as a
-// little-endian number for a short string and a heap pointer for a long one:
+// Compared as raw bytes, a 16-byte RaskStr ordered short strings by their
+// inline characters as a little-endian number and long ones by heap pointer:
 // ["pear", "apple"] came back unsorted, and which order you got depended on the
 // allocator. Compare the contents instead.
 static int rask_str_compare_elem(const void *a, const void *b) {
@@ -1027,6 +949,7 @@ static int rask_str_compare_elem(const void *a, const void *b) {
 }
 
 void rask_vec_sort_str(RaskVec *v) {
+    vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_str_compare_elem);
 }
@@ -1055,7 +978,7 @@ static int rask_f64_compare(const void *a, const void *b) {
 }
 
 // Sort by the scalar at offset 0 of each element, read as `key_kind` (one of
-// the `RASK_DEBUG_ELEM_*` codes) of `key_size` bytes.
+// the `RASK_ELEM_KIND_*` codes) of `key_size` bytes.
 //
 // Two callers. `sort()` on a Vec of scalars, where that scalar is the element:
 // the width and signedness have to come from lowering, because the header only
@@ -1089,18 +1012,18 @@ static uint64_t pair_key_unsigned(const void *p) {
 
 static int rask_pair_key_compare(const void *a, const void *b) {
     switch (tl_pair_key_kind) {
-        case RASK_DEBUG_ELEM_STRING:
+        case RASK_ELEM_KIND_STRING:
             return rask_str_compare_elem(a, b);
-        case RASK_DEBUG_ELEM_F64: {
+        case RASK_ELEM_KIND_FLOAT: {
             if (tl_pair_key_size == 4) {
                 double da = *(const float *)a, db = *(const float *)b;
                 return rask_f64_compare(&da, &db);
             }
             return rask_f64_compare(a, b);
         }
-        case RASK_DEBUG_ELEM_U64:
-        case RASK_DEBUG_ELEM_CHAR:
-        case RASK_DEBUG_ELEM_BOOL: {
+        case RASK_ELEM_KIND_UNSIGNED:
+        case RASK_ELEM_KIND_CHAR:
+        case RASK_ELEM_KIND_BOOL: {
             if (tl_pair_key_size == 16) {
                 RaskU128 va, vb;
                 memcpy(&va, a, sizeof va);
@@ -1153,8 +1076,9 @@ int64_t rask_f64_compare_total(double a, double b) {
 //
 // `pass` says how the two elements are handed over, and lowering decides it
 // from the element type (RASK_SORT_PASS_*): an aggregate or a string is a
-// pointer to its slot, a 128-bit integer is the slot's two words, anything
-// else is the slot's word. That matches what the closure body compiles to —
+// pointer to its slot, a 128-bit integer is the slot's two words, a float goes
+// in a float register, and any other integer is read at its own width and
+// passed in a word. That matches what the closure body compiles to —
 // `|a, b| a.rank.compare(b.rank)` reads fields through a pointer, while
 // `Vec<i64>` compares plain integers. It used to be guessed here from the slot
 // width, and an eight-byte struct had its field passed where its address
@@ -1168,9 +1092,13 @@ typedef int64_t (*RaskCmpFn)(int64_t env, int64_t a, int64_t b);
 // A 128-bit value is one C argument; the ABI splits it over two registers the
 // same way Cranelift splits an `i128` parameter.
 typedef int64_t (*RaskCmpFn128)(int64_t env, __int128 a, __int128 b);
+typedef int64_t (*RaskCmpFnF64)(int64_t env, double a, double b);
+typedef int64_t (*RaskCmpFnF32)(int64_t env, float a, float b);
 
 static __thread int64_t rask_sort_comparator;
 static __thread int64_t rask_sort_pass;
+// The width of what `a` and `b` point at.
+static __thread int64_t rask_sort_size;
 
 // Call the comparator on the elements stored at `a` and `b`, the way
 // `rask_sort_pass` says it takes them; returns the Ordering tag.
@@ -1186,8 +1114,19 @@ static int64_t rask_sort_call(const char *a, const char *b) {
         memcpy(&wb, b, sizeof wb);
         return ((RaskCmpFn128)code)(env, wa, wb);
     }
-    default:
-        return ((RaskCmpFn)code)(env, *(const int64_t *)a, *(const int64_t *)b);
+    case RASK_SORT_PASS_F64:
+        return ((RaskCmpFnF64)code)(env, *(const double *)a, *(const double *)b);
+    case RASK_SORT_PASS_F32:
+        return ((RaskCmpFnF32)code)(env, *(const float *)a, *(const float *)b);
+    default: {
+        // The comparator reads only the low bytes of the register its
+        // parameter type names, so zero-filling the rest is enough.
+        size_t n = rask_sort_size > 0 && rask_sort_size < 8 ? (size_t)rask_sort_size : 8;
+        int64_t wa = 0, wb = 0;
+        memcpy(&wa, a, n);
+        memcpy(&wb, b, n);
+        return ((RaskCmpFn)code)(env, wa, wb);
+    }
     }
 }
 
@@ -1209,6 +1148,7 @@ void rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass) {
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
     rask_sort_pass = pass;
+    rask_sort_size = v->elem_size;
     rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
@@ -1255,6 +1195,7 @@ void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_
     rask_sort_pass = pass;
     rask_key_data = keys->data;
     rask_key_size = keys->elem_size;
+    rask_sort_size = keys->elem_size;
     rask_stable_sort(order, n, (int64_t)sizeof(int64_t), rask_sort_keys_adapter);
     rask_key_data = NULL;
 
@@ -1394,10 +1335,8 @@ RaskVec *rask_iter_take(const RaskVec *src, int64_t n) {
     return dst;
 }
 
-// Write Vec data to a FILE*. Used by self-hosted fs.write_bytes.
 // A `Vec<u8>`'s bytes to a file: 0, or -1 with errno set, like the other File
-// writes (runtime.c). Gathered through `rask_vec_get`, which knows the
-// element size, as the socket write does (#863).
+// writes (runtime.c). Used by self-hosted fs.write_bytes.
 int64_t rask_fwrite_vec(int64_t fptr, const RaskVec *v) {
     FILE *f = (FILE *)(uintptr_t)fptr;
     if (!f) {
@@ -1406,12 +1345,5 @@ int64_t rask_fwrite_vec(int64_t fptr, const RaskVec *v) {
     }
     int64_t len = v ? v->len : 0;
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
-    int64_t rc = rask_fwrite_all(f, bytes, (size_t)len);
-    rask_free(bytes);
-    return rc;
+    return rask_fwrite_all(f, v->data, (size_t)len);
 }

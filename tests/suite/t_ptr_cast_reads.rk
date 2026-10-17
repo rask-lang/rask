@@ -7,6 +7,9 @@
 // read as 65534, an `*i8` as 254. The interpreter ignored `cast` entirely and
 // read the whole element, so `*p.cast<u8>()` on 300 was 300 where native says
 // 44, its low byte (#1012).
+//
+// An element is its own width on both: a view walks the bytes the elements
+// actually take, and can span several of them.
 
 test "a signed narrow read keeps its sign" {
     mut v: Vec<i64> = Vec.new()
@@ -55,4 +58,26 @@ test "a write through a narrow view changes only its bytes" {
         b.write(7)
         assert v[0] == 263
     }
+}
+
+test "a byte view walks a narrow element's own bytes" {
+    let v: Vec<i16> = Vec.from([258, -1])
+    unsafe {
+        let b = v.as_ptr().cast<u8>()
+        assert *b == 2
+        assert *b.offset(1) == 1
+        assert *b.offset(2) == 255
+        assert *v.as_ptr().offset(1).cast<u8>() == 255
+    }
+}
+
+test "a wide view reads across several narrow elements" {
+    mut v: Vec<u8> = Vec.from([1, 2, 3, 4])
+    unsafe {
+        let w = v.as_mut_ptr().cast<u32>()
+        assert *w == 67305985
+        w.write(0x0a0b0c0d)
+    }
+    assert v[0] == 13
+    assert v[3] == 10
 }

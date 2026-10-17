@@ -536,9 +536,8 @@ void rask_recver_drop(RaskRecver *rx) {
     channel_end_gone(ch);
 }
 
-// ─── i64-based codegen wrappers ────────────────────────────
-// The dispatch table passes all values as i64. These wrappers bridge
-// between i64 calling convention and the typed channel API.
+// ─── Codegen wrappers ──────────────────────────────────────
+// Handles travel as int64_t; elements travel by address at their own width.
 
 // `let (tx, rx) = Channel<T>.buffered(n)` reaches codegen as three calls: one
 // to make the channel, then one for each half. What travels between them is the
@@ -551,9 +550,6 @@ void rask_recver_drop(RaskRecver *rx) {
 // each accessor makes the one handle of its kind: `channel_alloc` initialises
 // both counts to 1, so the handle it returns *is* that count, and dropping it
 // is what closes that end.
-int64_t rask_channel_new_i64(int64_t capacity) {
-    return (int64_t)(intptr_t)channel_alloc(sizeof(int64_t), capacity);
-}
 
 int64_t rask_channel_get_tx(int64_t chan) {
     RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
@@ -567,10 +563,6 @@ int64_t rask_channel_get_rx(int64_t chan) {
     return (int64_t)(intptr_t)rx;
 }
 
-int64_t rask_channel_send_i64(int64_t tx, int64_t value) {
-    return rask_channel_send((RaskSender *)(intptr_t)tx, &value);
-}
-
 // Blocking receive that reports a closed channel instead of killing the task.
 // `Receiver.receive` is declared `T or ReceiveError`, and while the recv
 // wrappers panicked, that error branch was unreachable — a consumer that
@@ -580,15 +572,6 @@ int64_t rask_channel_send_i64(int64_t tx, int64_t value) {
 // gone and the buffer is drained.
 int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr) {
     return rask_channel_recv((RaskRecver *)(intptr_t)rx, (void *)(intptr_t)out_ptr);
-}
-
-int64_t rask_channel_recv_i64(int64_t rx) {
-    int64_t data = 0;
-    int64_t status = rask_channel_recv((RaskRecver *)(intptr_t)rx, &data);
-    if (status != RASK_CHAN_OK) {
-        rask_panic("recv on closed channel");
-    }
-    return data;
 }
 
 void rask_sender_drop_i64(int64_t tx) {
@@ -614,23 +597,15 @@ int64_t rask_sender_clone_i64(int64_t tx) {
     return (int64_t)(intptr_t)rask_sender_clone((RaskSender *)(intptr_t)tx);
 }
 
-int64_t rask_channel_try_send_i64(int64_t tx, int64_t value) {
-    return rask_channel_try_send((RaskSender *)(intptr_t)tx, &value);
-}
-
-int64_t rask_channel_try_recv_i64(int64_t rx) {
-    int64_t data = 0;
-    int64_t status = rask_channel_try_recv((RaskRecver *)(intptr_t)rx, &data);
-    if (status != RASK_CHAN_OK) {
-        return status;
-    }
-    return data;
+// Non-blocking send of the element at `data_ptr`, which is the channel's
+// element size. The status: RASK_CHAN_OK, or a negative RASK_CHAN_* code.
+int64_t rask_channel_try_send_ptr(int64_t tx, int64_t data_ptr) {
+    return rask_channel_try_send((RaskSender *)(intptr_t)tx, (const void *)(intptr_t)data_ptr);
 }
 
 // Non-blocking recv into a caller buffer of the element's real size. Returns
 // the status (RASK_CHAN_OK / _EMPTY / _CLOSED); codegen turns that into the
-// `T or E` Result. Unlike the _i64 form this handles elements >8 bytes and
-// never conflates a status with a legitimate value.
+// `T or E` Result.
 int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr) {
     return rask_channel_try_recv((RaskRecver *)(intptr_t)rx, (void *)(intptr_t)out_ptr);
 }
