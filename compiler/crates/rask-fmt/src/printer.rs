@@ -421,11 +421,12 @@ impl<'a> Printer<'a> {
     /// beside it rather than below the block — which is what the flattened form
     /// could not express.
     fn format_extern_block(&mut self, members: &[Decl]) {
-        let abi = match &members[0].kind {
-            DeclKind::Extern(e) => e.abi.clone(),
+        let (abi, attrs) = match &members[0].kind {
+            DeclKind::Extern(e) => (e.abi.clone(), e.attrs.clone()),
             _ => return,
         };
         self.emit_indent();
+        self.emit_extern_attrs(&attrs);
         self.emit("extern \"");
         self.emit(&abi);
         self.emit("\" {");
@@ -1275,10 +1276,20 @@ impl<'a> Printer<'a> {
 
     fn format_extern_decl(&mut self, e: &ExternDecl) {
         self.emit_indent();
+        self.emit_extern_attrs(&e.attrs);
         self.emit("extern \"");
         self.emit(&e.abi);
         self.emit("\" ");
         self.format_extern_signature(e);
+    }
+
+    /// Attributes before `extern`, one per line, leaving the cursor indented.
+    fn emit_extern_attrs(&mut self, attrs: &[rask_ast::attr::Attr]) {
+        for attr in attrs {
+            self.emit_attr(attr);
+            self.emit_newline();
+            self.emit_indent();
+        }
     }
 
     /// One member of an `extern "C" { … }` — no `extern "C"` of its own, the

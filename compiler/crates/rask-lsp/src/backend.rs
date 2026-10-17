@@ -358,12 +358,13 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
         }
     }
 
-    // --- Effects (IO propagation + frozen check) ---
-    let (_effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls, &typed.method_targets());
+    // --- Effects (CW1/CW2) ---
+    let (_effects, effect_warnings) =
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &typed.method_targets());
     for w in &effect_warnings {
         let d = rask_diagnostics::Diagnostic::warning(&w.message)
             .with_code(w.code)
-            .with_primary(w.span, format!("`{}` has IO effect", w.callee_name));
+            .with_primary(w.span, w.label.clone());
         if is_current_file_diagnostic(&d, &current_file_spans) {
             diags.push(d);
         }

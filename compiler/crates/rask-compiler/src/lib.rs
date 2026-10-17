@@ -482,16 +482,18 @@ pub fn check_loaded(
     );
 
     // --- Effects (non-blocking metadata) ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls, &typed.method_targets());
+    let method_targets = typed.method_targets();
+    let (effects, effect_warnings) =
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
 
     // --- CT60: a `comptime func` keeps its promise where it is written ---
-    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
+    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects, &method_targets) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects) {
+    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects, &method_targets) {
         diags.push(compile_time_value_to_diagnostic(&e));
     }
 
@@ -833,16 +835,18 @@ fn check_package_scoped(
     );
 
     // --- Effects ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls, &typed.method_targets());
+    let method_targets = typed.method_targets();
+    let (effects, effect_warnings) =
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
 
     // --- CT60: a `comptime func` keeps its promise where it is written ---
-    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
+    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects, &method_targets) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects) {
+    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects, &method_targets) {
         diags.push(compile_time_value_to_diagnostic(&e));
     }
 
@@ -1328,9 +1332,9 @@ fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePuri
     .with_code("E0875")
     .with_primary(e.span, format!("{} isn't available while compiling", e.effect))
     .with_fix(format!(
-        "drop `comptime` from `{}` and let its callers decide, or move the \
-         {} out and pass the result in",
-        e.func, e.effect
+        "drop `comptime` from `{}` and let its callers decide, or do that \
+         part at run time and pass the result in",
+        e.func
     ))
     .with_why(
         "`comptime func` asserts at the definition what CT6 otherwise checks at \

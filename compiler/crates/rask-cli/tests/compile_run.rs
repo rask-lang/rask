@@ -3144,7 +3144,7 @@ fn check_output(source: &str) -> String {
 }
 
 // Starting a thread or handing work to a pool returns at once, but `spawn` was
-// classed as I/O, so every spawn loop got CW2's "blocks thread on each
+// classed as blocking, so every spawn loop got CW2's "blocks thread on each
 // iteration" and an advice to wrap it in `using Multitasking`, which doesn't
 // change what `Thread.spawn` does (#1362). Real I/O in a loop of the same
 // concurrent program still warns.
@@ -3167,14 +3167,14 @@ fn spawn_in_a_loop_is_not_blocking_io() {
          }\n",
     );
     assert!(output.contains("Typecheck OK"), "{}", output);
-    assert!(!output.contains("`spawn` in loop"), "a spawn doesn't block: {}", output);
-    assert!(output.contains("`println` in loop"), "real I/O still warns: {}", output);
+    assert!(!output.contains("`spawn` can block"), "a spawn doesn't block: {}", output);
+    assert!(output.contains("`println` can block, in a loop"), "a print still warns: {}", output);
 }
 
 // A method call is classed by the receiver's type, not by how the variable is
 // spelled. `t.join()` only matched the `Handle.join` source when the variable
 // itself was named `Handle`, so a join in a loop carried no I/O and CW2 never
-// fired (#1418). A `join` on a `Vec<string>` is still no I/O at all.
+// fired (#1418). A `join` on a `Vec<string>` blocks on nothing.
 #[test]
 fn join_through_a_variable_is_io() {
     let output = check_output(
@@ -3191,8 +3191,8 @@ fn join_through_a_variable_is_io() {
          }\n",
     );
     assert!(output.contains("Typecheck OK"), "{}", output);
-    assert!(output.contains("`Handle.join` in loop"), "a join waits: {}", output);
-    assert_eq!(output.matches("in loop without").count(), 1, "only the handle's join: {}", output);
+    assert!(output.contains("`Handle.join` can block, in a loop"), "a join waits: {}", output);
+    assert_eq!(output.matches("in a loop with no").count(), 1, "only the handle's join: {}", output);
 }
 
 #[test]

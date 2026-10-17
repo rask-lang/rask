@@ -17,8 +17,10 @@ use crate::{EffectMap, EffectWarning, MethodTargets};
 ///
 /// CW2 ("IO in loop blocks thread") is only relevant when the program actually
 /// uses concurrency. In a single-threaded program there is no other thread to
-/// starve, so the warning is noise. We check the effect map: if any function
-/// has the `async_` effect, the program is concurrent and CW2 applies.
+/// starve, so the warning is noise. We check the effect map: if any of the
+/// program's own functions has the `async_` effect, the program is concurrent
+/// and CW2 applies. The stdlib's functions are in the map too, and some of them
+/// spawn, so asking all of them would call every program concurrent.
 pub fn detect(
     decls: &[Decl],
     effects: &EffectMap,
@@ -26,7 +28,9 @@ pub fn detect(
     targets: &MethodTargets,
 ) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
-    let program_is_concurrent = effects.values().any(|e| e.async_);
+    let program_is_concurrent = crate::decl_keys(decls)
+        .iter()
+        .any(|k| effects.get(k).is_some_and(|e| e.async_));
     let imports = crate::sources::ImportedNames::from_decls(decls);
     let mut ctx = WarnContext {
         effects,
@@ -196,7 +200,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::Call { func, args } => {
                 let callee_name = extract_callee_name(func);
                 if let Some(ref name) = callee_name {
-                    self.maybe_warn_io_call(name, expr.span, warnings);
+                    self.maybe_warn_blocking_call(name, expr.span, warnings);
                     // CC2: calling a needs_runtime function outside any using Multitasking block
                     if !self.in_multitasking {
                         if let Some(callee_effects) = self.effects.get(name.as_str()) {
@@ -286,7 +290,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let names = crate::method_callees(expr.id, object, method, self.targets, self.imports);
                 for name in &names {
-                    self.maybe_warn_io_call(name, expr.span, warnings);
+                    self.maybe_warn_blocking_call(name, expr.span, warnings);
                 }
                 self.check_expr(object, warnings);
                 for arg in args {
@@ -421,57 +425,55 @@ impl<'a> WarnContext<'a> {
         }
     }
 
-    /// Check if a callee has IO effects and we're in a warning context.
-    fn maybe_warn_io_call(
+    /// Warn about a call that can block, where blocking costs other work.
+    fn maybe_warn_blocking_call(
         &self,
         callee: &str,
         span: rask_ast::Span,
         warnings: &mut Vec<EffectWarning>,
     ) {
-        let has_io = self.effects.get(callee)
-            .map_or(false, |e| e.io)
-            || crate::sources::classify_call(&self.imports.qualify(callee)).io;
+        let blocks = self.effects.get(&self.imports.qualify(callee)).is_some_and(|e| e.blocks);
 
-        if !has_io {
+        if !blocks {
             return;
         }
 
-        // CW1: IO in ThreadPool context
+        // CW1: blocking on a pool thread
         if self.in_thread_pool {
             warnings.push(EffectWarning {
                 code: "comp.effects/CW1",
                 message: format!(
-                    "I/O function `{}` called in thread pool context — blocks pool thread",
+                    "`{}` can block, and this runs on a thread pool — it holds the pool thread while it waits",
                     callee,
                 ),
                 span,
                 callee_name: callee.to_string(),
                 is_error: false,
-                label: format!("`{}` has IO effect", callee),
+                label: format!("`{}` can block", callee),
                 fix: Some("hand the blocking work to `using Multitasking { }` and keep pool threads for CPU work".to_string()),
                 why: Some(
-                    "a pool thread that blocks on I/O is unavailable to every other \
+                    "a pool thread that blocks is unavailable to every other \
                      task queued behind it — the pool's whole point is that its \
                      threads keep moving [comp.effects/CW1]".to_string(),
                 ),
             });
         }
 
-        // CW2: IO in loop without Multitasking (only in concurrent programs)
+        // CW2: blocking in a loop without Multitasking (only in concurrent programs)
         if self.in_loop && !self.in_multitasking && !self.under_runtime && self.program_is_concurrent {
             warnings.push(EffectWarning {
                 code: "comp.effects/CW2",
                 message: format!(
-                    "I/O function `{}` in loop without `using Multitasking` — blocks thread on each iteration",
+                    "`{}` can block, in a loop with no `using Multitasking` — each iteration holds the thread while it waits",
                     callee,
                 ),
                 span,
                 callee_name: callee.to_string(),
                 is_error: false,
-                label: format!("`{}` has IO effect", callee),
-                fix: Some("wrap the loop in `using Multitasking { }` so each I/O pauses the task instead of the thread".to_string()),
+                label: format!("`{}` can block", callee),
+                fix: Some("wrap the loop in `using Multitasking { }` so each wait pauses the task instead of the thread".to_string()),
                 why: Some(
-                    "outside a runtime, I/O blocks the calling thread (conc.async/IO2), \
+                    "outside a runtime, a call that blocks holds the calling thread (conc.async/IO2), \
                      so a loop of them costs the whole program one wait after another \
                      [comp.effects/CW2]".to_string(),
                 ),
@@ -599,16 +601,16 @@ mod tests {
 
     fn effects_with_io(name: &str) -> EffectMap {
         let mut m = HashMap::new();
-        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false });
+        m.insert(name.into(), crate::Effects { blocks: true, ..Default::default() });
         m
     }
 
-    /// Effect map that marks a function as IO AND marks the program as concurrent.
-    fn effects_with_io_concurrent(name: &str) -> EffectMap {
+    /// Effect map that marks a function as blocking, and the program's
+    /// `caller` as one that spawns, which makes the program concurrent.
+    fn effects_with_io_concurrent(name: &str, caller: &str) -> EffectMap {
         let mut m = HashMap::new();
-        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false });
-        // Some other function uses concurrency, making the program concurrent.
-        m.insert("_concurrent_marker".into(), crate::Effects { io: false, async_: true, grow: false, shrink: false, needs_runtime: false });
+        m.insert(name.into(), crate::Effects { blocks: true, ..Default::default() });
+        m.insert(caller.into(), crate::Effects { async_: true, ..Default::default() });
         m
     }
 
@@ -666,7 +668,7 @@ mod tests {
             span: sp(),
         }];
         let decls = vec![make_fn("process", body)];
-        let effects = effects_with_io_concurrent("println");
+        let effects = effects_with_io_concurrent("println", "process");
         let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
@@ -716,7 +718,7 @@ mod tests {
             span: sp(),
         })];
         let decls = vec![make_fn("process", body)];
-        let effects = effects_with_io_concurrent("println");
+        let effects = effects_with_io_concurrent("println", "process");
         let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
@@ -752,7 +754,7 @@ mod tests {
             span: sp(),
         })];
         let decls = vec![make_fn("bad", body)];
-        let effects = effects_with_io("File.read");
+        let effects = effects_with_io("fs.read_text");
         let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
@@ -781,7 +783,7 @@ mod tests {
             span: sp(),
         })]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &Default::default());
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
         assert!(
             warnings.iter().all(|w| w.code != "comp.effects/CW2"),
             "CW2 fired inside a spawn-only function: {:?}",
@@ -803,7 +805,7 @@ mod tests {
             expr_stmt(task_spawn(vec![])),
         ]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &Default::default());
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
         assert!(
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
@@ -825,7 +827,7 @@ mod tests {
             },
             span: sp(),
         })]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &Default::default());
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
         assert!(
             warnings.iter().all(|w| w.code != "E0353"),
             "E0353 fired inside a spawned closure: {:?}",
@@ -839,7 +841,7 @@ mod tests {
     fn cc2_still_fires_for_the_call_that_starts_the_tree() {
         let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
         let main = make_fn("main", vec![expr_stmt(call("tree"))]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &Default::default());
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
         assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }

@@ -36,6 +36,7 @@ extend sim {
 
     /// True when this run is under sim and the faults are now on.
     @native("rask_sim_enable_faults")
+    @external
     func enable_faults(mask: i64) -> bool {}
 }
 

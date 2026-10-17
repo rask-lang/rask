@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! What a call to the stdlib does that its callee's body can't show.
+//! What a call site says by itself, before propagation: the size changes a
+//! method's declaration states (`@grows`, `@shrinks`, comp.advanced/EF1), and
+//! what a name means under the file's imports.
 //!
-//! The stdlib declares it: `@io` on an I/O source, `@waits` on one that blocks
-//! until another task or the clock moves (comp.effects/IO1, AS3), `@grows` and
-//! `@shrinks` on a method that changes its receiver's size (EF1). This reads
-//! the declarations; the effects of everything else come from propagation.
+//! Everything else comes from the callee: the stdlib's bodies are inferred
+//! like the program's, and a native's declaration says the rest.
 
 use std::collections::HashMap;
 
@@ -13,42 +13,10 @@ use rask_ast::decl::DeclaredEffects;
 
 use crate::Effects;
 
-/// What the stdlib declares about `callee`: a free function's name, a module
-/// function as `module.name`, or a method as `Type.method` with the
-/// receiver's declared type, the form the checker resolves a method call to.
-/// Anything the stdlib doesn't declare is pure here, and gets its effects
-/// from what it calls.
-pub fn classify_call(callee: &str) -> Effects {
-    from_declared(declared(callee))
-}
-
-/// Classify a method call, given what the method's declaration says. The
-/// checker read it from the method it resolved; the name only matters for a
-/// call it didn't resolve.
-pub fn classify_method(callee: &str, effect: DeclaredEffects) -> Effects {
-    let mut e = classify_call(callee);
-    e.union(from_declared(effect));
-    e
-}
-
-fn declared(callee: &str) -> DeclaredEffects {
-    let reg = rask_stdlib::StubRegistry::load();
-    let found = match callee.split_once('.') {
-        Some((owner, name)) => reg.lookup_method(owner, name).map(|m| m.effects),
-        None => reg.functions().iter().find(|f| f.name == callee).map(|f| f.effects),
-    };
-    found.unwrap_or_default()
-}
-
-/// AS3: waiting is I/O as well as async.
-fn from_declared(d: DeclaredEffects) -> Effects {
-    Effects {
-        io: d.io || d.waits,
-        async_: d.waits,
-        grow: d.grows,
-        shrink: d.shrinks,
-        needs_runtime: false,
-    }
+/// What a method call does to its receiver's size, as the method's
+/// declaration says. The checker read it from the method it resolved.
+pub fn size_effects(effect: DeclaredEffects) -> Effects {
+    Effects { grow: effect.grows, shrink: effect.shrinks, ..Default::default() }
 }
 
 /// What a name at a call site stands for, by the program's imports:
@@ -101,64 +69,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn io_sources_classified() {
-        let e = classify_call("fs.open");
-        assert!(e.io);
-        assert!(!e.async_);
-        assert!(!e.mutation());
-        assert!(classify_call("TcpConnection.read_text").io);
-
-        assert!(classify_call("println").io);
-        assert!(classify_call("fs.read_text").io);
-        assert!(classify_call("TcpListener.accept").io);
-    }
-
-    /// The ones the name list missed: they are marked where they are declared.
-    #[test]
-    fn io_the_old_list_missed() {
-        assert!(classify_call("fs.current_dir").io);
-        assert!(classify_call("Command.run").io);
-        assert!(classify_call("Process.wait").io);
-        assert!(classify_call("http.get").io);
-        assert!(classify_call("HttpClient.request").io);
-    }
-
-    #[test]
-    fn waiting_async_sources_are_io() {
-        let e = classify_call("Handle.join");
-        assert!(e.io, "AS3: an async source that waits is IO");
-        assert!(e.async_);
-
-        let e = classify_call("Sender.send");
-        assert!(e.io);
-        assert!(e.async_);
-    }
-
-    /// A method's effects are what its declaration says; the name only finds
-    /// the declaration.
-    #[test]
-    fn method_classification() {
+    fn size_effects_come_from_the_declaration() {
         let shrinks = DeclaredEffects { shrinks: true, ..Default::default() };
-        assert!(classify_method("Vec.remove", shrinks).shrink);
-        assert!(!classify_method("Vec.remove", shrinks).io);
-        assert!(classify_method("Handle.join", DeclaredEffects::default()).io);
-        assert!(!classify_method("Vec.join", DeclaredEffects::default()).io);
-        assert!(classify_method("Foo.insert", DeclaredEffects::default()).is_pure());
+        assert!(size_effects(shrinks).shrink);
+        assert!(!size_effects(shrinks).blocks);
+        assert!(size_effects(DeclaredEffects::default()).is_pure());
     }
 
     #[test]
-    fn undeclared_function_is_pure() {
-        assert!(classify_call("add").is_pure());
-        assert!(classify_call("json.decode").is_pure());
-        assert!(classify_call("Vec.len").is_pure());
-        assert!(classify_call("Buffer.write").is_pure());
-    }
-
-    #[test]
-    fn sleep_is_both_io_and_async() {
-        let e = classify_call("time.sleep");
-        assert!(e.io);
-        assert!(e.async_);
-        assert!(!e.mutation());
+    fn imports_name_the_callee() {
+        use rask_ast::decl::{Decl, DeclKind, ImportDecl};
+        let import = |path: &[&str], alias: Option<&str>| Decl {
+            id: rask_ast::NodeId(0),
+            kind: DeclKind::Import(ImportDecl {
+                path: path.iter().map(|p| p.to_string()).collect(),
+                alias: alias.map(str::to_string),
+                is_glob: false,
+                is_lazy: false,
+            }),
+            span: rask_ast::Span::new(0, 0),
+        };
+        let names = ImportedNames::from_decls(&[import(&["fs", "exists"], None), import(&["fs"], Some("files"))]);
+        assert_eq!(names.qualify("exists"), "fs.exists");
+        assert_eq!(names.qualify("files.exists"), "fs.exists");
+        assert_eq!(names.qualify("helper"), "helper");
     }
 }

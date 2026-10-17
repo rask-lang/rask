@@ -8,43 +8,52 @@ struct os { }
 extend os {
     /// Get an environment variable by name.
     @native("rask_os_env")
+    @external
     public func env(name: string) -> Option<string> {}
 
     /// Get an environment variable or a default value.
     @native("rask_os_env_or")
+    @external
     public func env_or(name: string, default: string) -> string {}
 
     /// Set an environment variable.
     @native
+    @external
     public func set_env(name: string, value: string) {}
 
     /// Remove an environment variable.
     @native
+    @external
     public func remove_env(name: string) {}
 
     /// Get all environment variables as key-value pairs.
     @native("rask_os_env_vars")
+    @external
     public func env_vars() -> Vec<(string, string)> {}
 
     /// Get command-line arguments.
     @native
+    @external
     public func args() -> Vec<string> {}
 
     /// Exit the process with a status code.
     @native
-    @io
+    @external
     public func exit(code: i64) {}
 
     /// Get the current process ID.
     @native("rask_os_pid")
+    @external
     public func pid() -> i64 {}
 
     /// Get the operating system name.
     @native
+    @external
     public func platform() -> string {}
 
     /// Get the CPU architecture.
     @native
+    @external
     public func arch() -> string {}
 
     /// Deliver each signal in `list` to the returned receiver instead of
@@ -63,53 +72,67 @@ extend os {
     /// Hand `tx` to the runtime's signal reader for every signal in `list`.
     /// 0, or a negative errno if the reader couldn't start.
     @native("rask_os_signal_forward")
+    @external
     func signal_forward(take tx: Sender<Signal>, list: Vec<Signal>) -> i64 {}
 
     /// Fork, exec, drain the pipes, wait. The child's exit status, or -1 if it
     /// couldn't be started at all. Not public: `Command.run` is the surface,
     /// and this is the one part of it that needs the OS.
     @native("rask_process_run")
+    @blocks
     func process_run(program: string, args: Vec<string>, envs: Vec<string>, dir: string, stdin_mode: i64, stdout_mode: i64, stderr_mode: i64) -> i64 {}
 
     /// What the last `process_run` on this thread captured. `Command.run`
     /// reads both on the next two lines, so nothing can overwrite them first.
     @native("rask_process_stdout")
+    @external
     func process_stdout() -> string {}
     @native("rask_process_stderr")
+    @external
     func process_stderr() -> string {}
 
     /// Start a child and hand back a handle, or a negative errno if it never
     /// started (C3). A piped stream stays open in the parent, which is the
     /// whole difference from `process_run`.
     @native("rask_process_spawn")
+    @external
     func process_spawn(program: string, args: Vec<string>, envs: Vec<string>, dir: string, stdin_mode: i64, stdout_mode: i64, stderr_mode: i64) -> i64 {}
     @native("rask_process_pid")
+    @external
     func process_pid(handle: i64) -> i64 {}
 
     /// Wait for the child, closing its stdin first — one that reads to EOF
     /// would never exit otherwise, and waiting is what "done writing" means.
     @native("rask_process_wait")
+    @blocks
     func process_wait(handle: i64) -> i64 {}
     @native("rask_process_kill_and_wait")
+    @blocks
     func process_kill_and_wait(handle: i64) -> i64 {}
 
     /// `-1` while the child is still running; its status once it has exited.
     @native("rask_process_poll")
+    @external
     func process_poll(handle: i64) -> i64 {}
     @native("rask_process_write_stdin")
+    @blocks
     func process_write_stdin(handle: i64, data: string) -> i64 {}
 
     /// Everything the child has written to stdout, up to EOF.
     @native("rask_process_read_stdout")
+    @blocks
     func process_read_stdout(handle: i64) -> string {}
 
     /// What `wait` collected, read separately for the same reason `run`'s two
     /// readers are separate: no struct crosses the FFI boundary.
     @native("rask_process_captured_stdout")
+    @external
     func process_captured_stdout(handle: i64) -> string {}
     @native("rask_process_captured_stderr")
+    @external
     func process_captured_stderr(handle: i64) -> string {}
     @native("rask_process_release")
+    @external
     func process_release(handle: i64) -> void {}
 }
 
@@ -215,7 +238,6 @@ extend Command {
     /// A program that never started is an error, not a status — the child
     /// reports why through a close-on-exec pipe, so "no such program" and "the
     /// program ran and exited 127" stay apart.
-    @io
     public func run(take self) -> Output or IoError {
         let status = os.process_run(self.program, self.argv, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
         if status < 0 {
@@ -236,7 +258,6 @@ extend Command {
     ///
     /// Unlike `run`, the piped streams stay open: stdout so `read_stdout` has
     /// something to read, stdin so `write_stdin` has somewhere to write.
-    @io
     public func spawn(take self) -> Process or IoError {
         let h = os.process_spawn(self.program, self.argv, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
         if h < 0 {
@@ -307,7 +328,6 @@ extend Process {
     /// and waiting for it is exactly the point at which nothing more will be
     /// written. Anything `read_stdout` already took is not in `Output.stdout` —
     /// the two read the same pipe.
-    @io
     public func wait(take self) -> Output or IoError {
         let status = os.process_wait(self.handle)
         return self.finish(status)
@@ -315,7 +335,6 @@ extend Process {
 
     /// Kill the process and wait for it to finish. The consumption method for
     /// an `ensure`, which is why it exists next to `wait`.
-    @io
     public func kill_and_wait(take self) -> Output or IoError {
         let status = os.process_kill_and_wait(self.handle)
         return self.finish(status)
@@ -340,7 +359,6 @@ extend Process {
     /// Has it exited? `none` while it is still running (C5). The handle is
     /// still yours afterwards — `wait` is what consumes it, and on an exited
     /// child it answers immediately.
-    @io
     public func poll(self) -> Output? or IoError {
         let status = os.process_poll(self.handle)
         if status < 0 {
@@ -361,7 +379,6 @@ extend Process {
     /// Write to the child's stdin. Needs `Stdio.Piped` on stdin — otherwise
     /// there is no pipe to write to and this is an error rather than a silent
     /// discard.
-    @io
     public func write_stdin(self, data: string) -> void or IoError {
         if !self.stdin_piped {
             return IoError.Other("stdin not piped")
@@ -375,7 +392,6 @@ extend Process {
 
     /// Everything the child has written to stdout, up to EOF. Needs
     /// `Stdio.Piped`; blocks until the child closes the stream.
-    @io
     public func read_stdout(self) -> string or IoError {
         if !self.stdout_piped {
             return IoError.Other("stdout not piped")

@@ -21,7 +21,7 @@ type FuncName = String;
 
 /// Run effect inference on declarations.
 pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
-    infer_with_reach(decls, targets).0
+    infer_with_reach(decls, &[], targets).0
 }
 
 /// Effects, plus the functions that can only ever run with a runtime installed.
@@ -31,9 +31,13 @@ pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
 /// runtime whatever its own body looks like, so telling its author to install
 /// one is wrong twice over — the block is already there, and entering a second
 /// one segfaults (rask-lang/rask#524).
-pub fn infer_with_reach(decls: &[Decl], targets: &MethodTargets) -> (EffectMap, HashSet<FuncName>) {
+pub fn infer_with_reach(
+    program: &[Decl],
+    stdlib: &[Decl],
+    targets: &MethodTargets,
+) -> (EffectMap, HashSet<FuncName>) {
     let mut pass = InferPass::new(targets);
-    pass.run(decls);
+    pass.run(program, stdlib);
     let runtime_only = pass.runtime_only();
     (pass.effects, runtime_only)
 }
@@ -47,8 +51,13 @@ struct Cx<'a> {
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
     targets: &'t MethodTargets,
-    /// The program's imports, for what a name at a call site means.
+    /// The imports of the unit being collected, for what a name at a call
+    /// site means.
     imports: sources::ImportedNames,
+    /// Whether the unit being collected is the program. CW2's reachability
+    /// walk is about the program's own call paths, so the stdlib's bodies
+    /// aren't scanned for it.
+    scan_reach: bool,
     /// Per-function direct effects (before transitive propagation).
     effects: EffectMap,
     /// Call graph: caller → callees.
@@ -73,6 +82,7 @@ impl<'t> InferPass<'t> {
         Self {
             targets,
             imports: sources::ImportedNames::default(),
+            scan_reach: true,
             effects: HashMap::new(),
             call_graph: HashMap::new(),
             direct_needs_runtime: HashSet::new(),
@@ -83,13 +93,18 @@ impl<'t> InferPass<'t> {
         }
     }
 
-    fn run(&mut self, decls: &[Decl]) {
-        self.imports = sources::ImportedNames::from_decls(decls);
-        // Phase 1: Classify direct effects and build call graph
-        self.collect(decls);
-
-        // Phase 2: Mark extern functions conservatively (INF5)
-        self.mark_externs(decls);
+    fn run(&mut self, program: &[Decl], stdlib: &[Decl]) {
+        // The stdlib first, so a program declaration of the same name is the
+        // one its own calls reach. Each unit reads its own imports: a name
+        // means what that file's imports say.
+        for (decls, is_program) in [(stdlib, false), (program, true)] {
+            self.imports = sources::ImportedNames::from_decls(decls);
+            self.scan_reach = is_program;
+            // Phase 1: Classify direct effects and build call graph
+            self.collect(decls);
+            // Phase 2: Mark extern functions conservatively (INF5)
+            self.mark_externs(decls);
+        }
 
         // Phase 3: Fixed-point propagation (FX2)
         self.propagate();
@@ -154,9 +169,18 @@ impl<'t> InferPass<'t> {
 
     fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
+        // A stdlib native has no body to read, so its declaration says what
+        // it does (`@blocks`, `@external`, `@grows`, `@shrinks`).
+        let declared = f.declared_effects();
+        if let Some(e) = self.effects.get_mut(qname) {
+            e.blocks |= declared.blocks;
+            e.external |= declared.external;
+            e.grow |= declared.grows;
+            e.shrink |= declared.shrinks;
+        }
     }
 
-    fn collect_body(&mut self, qname: &str, body: &[Stmt], attrs: &[rask_ast::attr::Attr], is_pub: bool) {
+    fn collect_body(&mut self, qname: &str, body: &[Stmt], _attrs: &[rask_ast::attr::Attr], is_pub: bool) {
         // PU2 says a `comptime func` is pure and that "effect inference
         // confirms this". It used to *assert* it: stamp `Effects::default()`
         // on anything wearing the keyword and skip the body, so the map could
@@ -172,12 +196,6 @@ impl<'t> InferPass<'t> {
         let cx = Cx { targets: self.targets, imports: &self.imports };
         classify_body(body, &mut direct, &mut callees, &cx);
 
-        // @no_io suppresses conservative IO marking
-        let has_no_io = attrs.iter().any(|a| a.is("no_io"));
-        if has_no_io {
-            direct.io = false;
-        }
-
         self.effects.insert(qname.to_string(), direct);
 
         if !callees.is_empty() {
@@ -186,6 +204,10 @@ impl<'t> InferPass<'t> {
 
         if is_pub {
             self.reachable_from_outside.insert(qname.to_string());
+        }
+
+        if !self.scan_reach {
+            return;
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
@@ -313,18 +335,18 @@ impl<'t> InferPass<'t> {
 
     // ── Phase 2: Extern declarations ────────────────────────────────
 
-    /// INF5: extern functions are conservatively IO unless @no_io.
+    /// INF5: a C function could do anything, so it blocks and touches state
+    /// outside the program unless its declaration says `@pure`.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
-                // Skip if already registered (shouldn't happen, but defensive)
-                if self.effects.contains_key(&e.name) {
-                    continue;
-                }
-                self.effects.insert(
-                    e.name.clone(),
-                    Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false },
-                );
+                let pure = e.attrs.iter().any(|a| a.is("pure"));
+                let effects = if pure {
+                    Effects::default()
+                } else {
+                    Effects { blocks: true, external: true, ..Default::default() }
+                };
+                self.effects.insert(e.name.clone(), effects);
             }
         }
     }
@@ -332,35 +354,31 @@ impl<'t> InferPass<'t> {
     // ── Phase 3: Fixed-point propagation ────────────────────────────
 
     fn propagate(&mut self) {
-        loop {
-            let mut changed = false;
-
-            let graph_snapshot: Vec<(FuncName, HashSet<FuncName>)> =
-                self.call_graph.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-
-            for (caller, callees) in &graph_snapshot {
-                for callee in callees {
-                    let callee_effects = self.effects.get(callee).copied()
-                        .unwrap_or_default();
-
-                    if callee_effects.is_pure() {
-                        continue;
-                    }
-
-                    let caller_effects = self.effects.entry(caller.clone())
-                        .or_default();
-
-                    let before = *caller_effects;
-                    caller_effects.union(callee_effects);
-
-                    if *caller_effects != before {
-                        changed = true;
-                    }
-                }
+        // Callee → callers, once. A function whose effects grow hands them to
+        // its callers, and only those are looked at again; walking the whole
+        // graph per round was quadratic once the stdlib's bodies were in it.
+        let mut callers: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (caller, callees) in &self.call_graph {
+            for callee in callees {
+                callers.entry(callee.as_str()).or_default().push(caller.as_str());
             }
-
-            if !changed {
-                break;
+        }
+        let mut work: Vec<String> = self
+            .effects
+            .iter()
+            .filter(|(_, e)| !e.is_pure())
+            .map(|(k, _)| k.clone())
+            .collect();
+        while let Some(callee) = work.pop() {
+            let callee_effects = self.effects.get(&callee).copied().unwrap_or_default();
+            let Some(cs) = callers.get(callee.as_str()) else { continue };
+            for &caller in cs {
+                let caller_effects = self.effects.entry(caller.to_string()).or_default();
+                let before = *caller_effects;
+                caller_effects.union(callee_effects);
+                if *caller_effects != before {
+                    work.push(caller.to_string());
+                }
             }
         }
     }
@@ -423,11 +441,9 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = extract_callee_name(func) {
-                // A stdlib source by what the name means here: `exists`
-                // is `fs.exists` only where the program imported it.
-                let direct = sources::classify_call(&t.imports.qualify(&name));
-                effects.union(direct);
-                callees.insert(name);
+                // By what the name means here: `exists` is `fs.exists` only
+                // where the file imported it.
+                callees.insert(t.imports.qualify(&name));
             }
             classify_expr(func, effects, callees, t);
             for arg in args {
@@ -437,8 +453,8 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
 
         ExprKind::MethodCall { object, method, args, .. } => {
             let effect = t.targets.get(&expr.id).map(|target| target.effect).unwrap_or_default();
+            effects.union(sources::size_effects(effect));
             for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
-                effects.union(sources::classify_method(&name, effect));
                 callees.insert(name);
             }
 
@@ -448,11 +464,10 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             }
         }
 
-        // IO3: unsafe blocks conservatively get IO
-        ExprKind::Unsafe { body } => {
-            effects.io = true;
-            classify_body(body, effects, callees, t);
-        }
+        // IO3: an `unsafe` block is what it calls. A C function in it is
+        // conservative on its own (INF5); raw pointer work touches nothing
+        // outside the program.
+        ExprKind::Unsafe { body } => classify_body(body, effects, callees, t),
 
         // Spawn is an async source (AS1)
 
@@ -871,6 +886,13 @@ mod tests {
     use rask_ast::stmt::{Stmt, StmtKind};
     use rask_ast::{NodeId, Span};
 
+    /// Inference over `decls` as the program, with the real stdlib beside it,
+    /// the way the compiler runs it.
+    fn infer_std(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
+        let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
+        infer_with_reach(decls, &stdlib, targets).0
+    }
+
     fn target(name: &str) -> rask_ast::decl::MethodTarget {
         rask_ast::decl::MethodTarget { name: name.to_string(), effect: Default::default() }
     }
@@ -1006,6 +1028,7 @@ mod tests {
                 params: vec![],
                 ret_ty: None,
                 doc: None,
+                attrs: vec![],
                 block_start: None,
             }),
             span: sp(),
@@ -1015,7 +1038,7 @@ mod tests {
     #[test]
     fn pure_function() {
         let decls = vec![make_fn("add", vec![return_stmt(Some(ident("x")))])];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer_std(&decls, &Default::default());
         assert!(effects["add"].is_pure());
     }
 
@@ -1024,8 +1047,8 @@ mod tests {
         let decls = vec![make_fn("load", vec![
             expr_stmt(call("println", vec![])),
         ])];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["load"].io);
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["load"].blocks);
         assert!(!effects["load"].async_);
     }
 
@@ -1034,8 +1057,8 @@ mod tests {
         let decls = vec![make_fn("run", vec![
             expr_stmt(spawn_block()),
         ])];
-        let effects = infer(&decls, &Default::default());
-        assert!(!effects["run"].io, "spawning waits on nothing, so it isn't IO (#1362)");
+        let effects = infer_std(&decls, &Default::default());
+        assert!(!effects["run"].blocks, "spawning waits on nothing (#1362)");
         assert!(effects["run"].async_);
     }
 
@@ -1044,8 +1067,8 @@ mod tests {
         let decls = vec![make_fn("read", vec![
             expr_stmt(field_call("fs", "open")),
         ])];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["read"].io);
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["read"].blocks);
     }
 
     /// A method call is classed by the receiver's type as the checker resolved
@@ -1054,14 +1077,13 @@ mod tests {
     fn method_call_classed_by_resolved_receiver() {
         let decls = vec![make_fn("wait", vec![expr_stmt(method_call("t", "join"))])];
         let targets: MethodTargets = [(NodeId(0), target("Handle.join"))].into();
-        let effects = infer(&decls, &targets);
-        assert!(effects["wait"].io);
-        assert!(effects["wait"].async_);
+        let effects = infer_std(&decls, &targets);
+        assert!(effects["wait"].blocks);
 
         // A variable spelled like a source type, holding something else.
         let decls = vec![make_fn("words", vec![expr_stmt(method_call("Handle", "join"))])];
         let targets: MethodTargets = [(NodeId(0), target("Vec.join"))].into();
-        assert!(infer(&decls, &targets)["words"].is_pure());
+        assert!(infer_std(&decls, &targets)["words"].is_pure());
     }
 
     #[test]
@@ -1069,9 +1091,8 @@ mod tests {
         let decls = vec![make_fn("net", vec![
             expr_stmt(method_call("Sender", "send")),
         ])];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["net"].io);
-        assert!(effects["net"].async_);
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["net"].blocks);
     }
 
     #[test]
@@ -1082,9 +1103,9 @@ mod tests {
             make_fn("load", vec![expr_stmt(call("println", vec![]))]),
             make_fn("process", vec![expr_stmt(call("load", vec![]))]),
         ];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["load"].io);
-        assert!(effects["process"].io, "Transitive IO via call to load");
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["load"].blocks);
+        assert!(effects["process"].blocks, "Transitive IO via call to load");
     }
 
     #[test]
@@ -1095,10 +1116,10 @@ mod tests {
             make_fn("b", vec![expr_stmt(call("c", vec![]))]),
             make_fn("a", vec![expr_stmt(call("b", vec![]))]),
         ];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["a"].io);
-        assert!(effects["b"].io);
-        assert!(effects["c"].io);
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["a"].blocks);
+        assert!(effects["b"].blocks);
+        assert!(effects["c"].blocks);
     }
 
     #[test]
@@ -1111,13 +1132,17 @@ mod tests {
             ]),
             make_fn("b", vec![expr_stmt(call("a", vec![]))]),
         ];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["a"].io);
-        assert!(effects["b"].io, "b inherits IO from a via mutual recursion");
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["a"].blocks);
+        assert!(effects["b"].blocks, "b inherits IO from a via mutual recursion");
     }
 
     #[test]
-    fn unsafe_block_conservative_io() {
+    /// IO3: an `unsafe` block is what it calls. Raw pointer work touches
+    /// nothing outside the program, and a C call is conservative on its own
+    /// (INF5). Counting the block itself made every stdlib body that
+    /// allocates through one a blocking call.
+    fn an_unsafe_block_is_what_it_calls() {
         let decls = vec![make_fn("ffi_call", vec![
             Stmt {
                 id: NodeId(0),
@@ -1129,8 +1154,8 @@ mod tests {
                 span: sp(),
             },
         ])];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["ffi_call"].io, "IO3: unsafe blocks conservative IO");
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["ffi_call"].is_pure());
     }
 
     /// PU2 says a `comptime func` is pure and that "effect inference confirms
@@ -1141,15 +1166,15 @@ mod tests {
     #[test]
     fn a_comptime_func_is_measured_not_assumed() {
         let decls = vec![make_comptime_fn("table_gen")];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer_std(&decls, &Default::default());
         assert!(
-            effects["table_gen"].io,
+            effects["table_gen"].blocks,
             "PU2: inference confirms purity rather than granting it"
         );
-        let violations = crate::comptime_purity::check(&decls, &effects);
+        let violations = crate::comptime_purity::check(&decls, &effects, &Default::default());
         assert_eq!(violations.len(), 1, "CT60 rejects the marking the body doesn't earn");
         assert_eq!(violations[0].func, "table_gen");
-        assert_eq!(violations[0].effect, "I/O");
+        assert_eq!(violations[0].effect, "a call that blocks");
     }
 
     /// The other half: a body that stays inside the subset keeps the promise,
@@ -1161,16 +1186,44 @@ mod tests {
             f.body = vec![];
         }
         let decls = vec![decl];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer_std(&decls, &Default::default());
         assert!(effects["adds"].is_pure());
-        assert!(crate::comptime_purity::check(&decls, &effects).is_empty());
+        assert!(crate::comptime_purity::check(&decls, &effects, &Default::default()).is_empty());
     }
 
     #[test]
     fn extern_conservative_io() {
         let decls = vec![make_extern("c_function")];
-        let effects = infer(&decls, &Default::default());
-        assert!(effects["c_function"].io, "INF5: extern is conservative IO");
+        let effects = infer_std(&decls, &Default::default());
+        assert!(effects["c_function"].blocks, "INF5: a C function could block");
+        assert!(effects["c_function"].external, "INF5: and could touch anything");
+    }
+
+    /// `@pure` on an `extern` is the author's word that it does neither.
+    #[test]
+    fn a_pure_extern_is_pure() {
+        let mut decl = make_extern("strlen");
+        if let DeclKind::Extern(e) = &mut decl.kind {
+            e.attrs = vec![rask_ast::attr::Attr { path: vec!["pure".into()], args: None, span: sp() }];
+        }
+        let effects = infer_std(&[decl], &Default::default());
+        assert!(effects["strlen"].is_pure());
+    }
+
+    /// The stdlib's bodies are inferred, so a public function gets its
+    /// effects from the native at the bottom: `fs.current_dir` calls the C
+    /// `getcwd`, which the name list it replaced didn't know about.
+    #[test]
+    fn stdlib_bodies_carry_their_natives_effects() {
+        let effects = infer_std(&[], &Default::default());
+        assert!(effects["fs.current_dir"].blocks);
+        assert!(effects["fs.exists"].blocks);
+        assert!(effects["Instant.now"].external);
+        assert!(!effects["Instant.now"].blocks);
+        assert!(effects["println"].blocks);
+        assert!(effects["Vec.push"].grow);
+        assert!(!effects["Vec.push"].blocks, "allocation isn't blocking");
+        assert!(!effects["string.split"].blocks);
     }
 
     /// The checker resolved `insert` to a method declared `@grows`.
@@ -1184,9 +1237,9 @@ mod tests {
         let decls = vec![make_fn("grow", vec![
             expr_stmt(method_call("pool", "insert")),
         ])];
-        let effects = infer(&decls, &growing(0));
+        let effects = infer_std(&decls, &growing(0));
         assert!(effects["grow"].mutation());
-        assert!(!effects["grow"].io, "Mutation is orthogonal to IO");
+        assert!(!effects["grow"].blocks, "Mutation is orthogonal to IO");
     }
 
     /// The method's declaration decides, not its name: a program's own
@@ -1196,7 +1249,7 @@ mod tests {
         let decls = vec![make_fn("own", vec![
             expr_stmt(method_call("thing", "insert")),
         ])];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer_std(&decls, &Default::default());
         assert!(!effects["own"].mutation());
     }
 
@@ -1207,8 +1260,8 @@ mod tests {
             expr_stmt(spawn_block()),
             expr_stmt(method_call("pool", "insert")),
         ])];
-        let effects = infer(&decls, &growing(0));
-        assert!(effects["complex"].io);
+        let effects = infer_std(&decls, &growing(0));
+        assert!(effects["complex"].blocks);
         assert!(effects["complex"].async_);
         assert!(effects["complex"].mutation());
     }
@@ -1218,7 +1271,7 @@ mod tests {
         let decls = vec![make_fn("caller", vec![
             expr_stmt(call("some_unknown_fn", vec![])),
         ])];
-        let effects = infer(&decls, &Default::default());
+        let effects = infer_std(&decls, &Default::default());
         // Unknown function isn't in our source table, and there's no
         // declaration to propagate from → stays pure
         assert!(effects["caller"].is_pure());

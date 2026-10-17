@@ -3,14 +3,14 @@
 //
 // Spec: type.annotations (AN5), comp.effects (INF4)
 //
-// `@native`, `@builtin`, `@grows`, `@io` and the rest say how a stdlib
+// `@native`, `@builtin`, `@grows`, `@blocks` and the rest say how a stdlib
 // declaration is implemented, or what it does that no body shows. A program
 // could write them, and the compiler either ignored one (`@native` on a body)
-// or believed it: `@io` made a function an I/O source to effect inference,
+// or believed it: `@blocks` made a function a blocking call to effect inference,
 // whose rule is that a program's effects come from its code.
 
 // ERROR: the stdlib's effect mark [E0854]
-@io
+@blocks
 func log_line(s: string) -> u64 {
     return s.len()
 }

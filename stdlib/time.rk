@@ -6,14 +6,14 @@ struct time { }
 extend time {
     /// Sleep for the given duration.
     @native("rask_sleep_ns")
-    @io
-    @waits
+    @blocks
     public func sleep(duration: Duration) -> void or SysError {}
 
     /// Nanoseconds since the UNIX epoch, straight off the OS wall clock.
     /// The one thing `SystemTime` can't compute for itself; everything else
     /// about it is arithmetic on this number.
     @native("rask_time_wall_clock_nanos")
+    @external
     func wall_clock_nanos() -> i64 {}
 }
 
@@ -68,10 +68,12 @@ public struct Instant { }
 extend Instant {
     /// Capture the current instant.
     @native("rask_time_Instant_now")
+    @external
     public func now() -> Instant {}
 
     /// Duration elapsed since this instant was captured.
     @native("rask_time_Instant_elapsed")
+    @external
     public func elapsed(self) -> Duration {}
 }
 

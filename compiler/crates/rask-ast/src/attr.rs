@@ -41,8 +41,8 @@ pub enum Writer {
     Anyone,
     /// Only the stdlib's own declarations. These say how a declaration is
     /// implemented, or what it does that its body can't show, and a program
-    /// writing one would be believed: `@io` on a program function made it an
-    /// I/O source (#1593).
+    /// writing one would be believed: `@blocks` on a program function made it
+    /// a blocking call (#1593).
     Stdlib,
 }
 
@@ -75,18 +75,17 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // Functions
     ("entry", ArgForm::Exprs, Writer::Anyone),
     ("no_alloc", ArgForm::Exprs, Writer::Anyone),
-    ("no_io", ArgForm::Exprs, Writer::Anyone),
     ("test", ArgForm::Exprs, Writer::Anyone),
     // Stdlib declarations: where the body lives
     ("native", ArgForm::Exprs, Writer::Stdlib),
     ("builtin", ArgForm::Exprs, Writer::Stdlib),
     ("unimplemented", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: effects a body can't show (comp.advanced/EF1,
-    // comp.effects/IO1, AS3)
+    // comp.effects/FX1)
     ("grows", ArgForm::Exprs, Writer::Stdlib),
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
-    ("io", ArgForm::Exprs, Writer::Stdlib),
-    ("waits", ArgForm::Exprs, Writer::Stdlib),
+    ("blocks", ArgForm::Exprs, Writer::Stdlib),
+    ("external", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
@@ -105,7 +104,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("bitfield", ArgForm::Exprs, Writer::Anyone),           // struct.c-interop
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
-    ("pure", ArgForm::Exprs, Writer::Anyone),               // tool.lint/P1
+    ("pure", ArgForm::Exprs, Writer::Anyone),               // tool.lint/P1; on an `extern`, comp.effects/INF5
     ("checked_unsafe", ArgForm::Exprs, Writer::Anyone),     // mem.unsafe
     ("unchecked_unsafe", ArgForm::Exprs, Writer::Anyone),   // mem.unsafe
     ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)

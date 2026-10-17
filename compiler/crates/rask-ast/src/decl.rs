@@ -164,6 +164,9 @@ pub struct ExternDecl {
     pub ret_ty: Option<crate::ty::TypeExpr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+    /// Attributes written before `extern`. In the block form they cover every
+    /// member: `@pure extern "C" { … }`.
+    pub attrs: Vec<crate::attr::Attr>,
     /// Byte offset of the `extern` keyword when this came from the block form,
     /// `extern "C" { func …; func … }`.
     ///
@@ -211,14 +214,14 @@ impl FnDecl {
     }
 
     /// The effects the stdlib declares on a function it can't show in a body:
-    /// `@grows`, `@shrinks`, `@io`, `@waits`.
+    /// `@grows`, `@shrinks`, `@blocks`, `@external`.
     pub fn declared_effects(&self) -> DeclaredEffects {
         let has = |name| self.attrs.iter().any(|a| a.is(name));
         DeclaredEffects {
             grows: has("grows"),
             shrinks: has("shrinks"),
-            io: has("io"),
-            waits: has("waits"),
+            blocks: has("blocks"),
+            external: has("external"),
         }
     }
 }
@@ -233,19 +236,21 @@ impl FnDecl {
 /// name lists once, and the with-block rule's list didn't know `remove_where`
 /// (#1560).
 ///
-/// `io`/`waits` (comp.effects/IO1, AS3): the function is an I/O source, and
-/// one that blocks until something else happens. It was a list of names in
-/// the effects crate, which missed `fs.current_dir`, processes and `http`.
+/// `blocks`/`external` (comp.effects/FX1): on a native, the bottom of a call
+/// chain, where no body says what happens. Every other function's are
+/// inferred from what it calls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeclaredEffects {
     /// Adds elements, or may move them to a bigger buffer (`push`, `reserve`).
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
-    /// Reaches outside the program: files, sockets, stdio, processes.
-    pub io: bool,
-    /// Waits on another task or the clock: `sleep`, a channel op, a `join`.
-    pub waits: bool,
+    /// Can park the thread until something outside it happens: a syscall,
+    /// `sleep`, a channel op, a `join`.
+    pub blocks: bool,
+    /// Reads or changes state outside the program without blocking: the
+    /// clock, the environment, the process.
+    pub external: bool,
 }
 
 impl DeclaredEffects {

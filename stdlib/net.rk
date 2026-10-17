@@ -5,7 +5,6 @@ struct net { }
 
 extend net {
     /// Listen for TCP connections on the given address.
-    @io
     public func tcp_listen(addr: string) -> TcpListener or IoError {
         try net.check_addr(addr)
         let l = net.listen_handle(addr)
@@ -19,7 +18,6 @@ extend net {
     }
 
     /// Connect to a remote TCP address. Returns a connection or error.
-    @io
     public func tcp_connect(addr: string) -> TcpConnection or IoError {
         try net.check_addr(addr)
         let c = net.connect_handle(addr)
@@ -63,10 +61,12 @@ extend net {
     /// The raw `bind`/`listen` pair. -1 means the syscall failed and errno says
     /// why; -2 means the address named nothing that resolves.
     @native("rask_net_tcp_listen")
+    @blocks
     func listen_handle(addr: string) -> TcpListener {}
 
     /// The raw `connect`. Same -1/-2 convention as `listen_handle`.
     @native("rask_net_tcp_connect")
+    @blocks
     func connect_handle(addr: string) -> TcpConnection {}
 }
 
@@ -80,7 +80,6 @@ public struct TcpListener { }
 
 extend TcpListener {
     /// Accept an incoming TCP connection.
-    @io
     public func accept(self) -> TcpConnection or IoError {
         let c = self.accept_handle()
         if c.is_invalid() {
@@ -91,6 +90,7 @@ extend TcpListener {
 
     /// The raw `accept`, -1 on failure.
     @native("rask_net_tcp_accept")
+    @blocks
     func accept_handle(self) -> TcpConnection {}
 
     /// True when the handle is a failed syscall's -1.
@@ -113,11 +113,12 @@ extend TcpListener {
 
     /// Get the local address the listener is bound to.
     @native("rask_net_local_addr")
+    @external
     public func local_addr(self) -> string {}
 
     /// Close the listener.
     @native("rask_net_close")
-    @io
+    @blocks
     public func close(take self) -> void or IoError {}
 
     /// Clone the listener handle.
@@ -131,7 +132,6 @@ public struct TcpConnection { }
 
 extend TcpConnection {
     /// Read until the peer closes the connection.
-    @io
     public func read_bytes(self) -> Vec<u8> or IoError {
         if self.read_bytes_raw() is Vec<u8> as bytes {
             return bytes
@@ -140,7 +140,6 @@ extend TcpConnection {
     }
 
     /// Write every byte of `data`.
-    @io
     public func write_bytes(self, data: Vec<u8>) -> void or IoError {
         if self.write_bytes_raw(data) < 0 {
             return IoError.last_os_error()
@@ -155,8 +154,10 @@ extend TcpConnection {
     /// (SIGILL) on the first write to a peer that had hung up. Same fix as
     /// `accept` (#863).
     @native("rask_net_read_bytes")
+    @blocks
     func read_bytes_raw(self) -> Vec<u8>? {}
     @native("rask_net_write_bytes")
+    @blocks
     func write_bytes_raw(self, data: Vec<u8>) -> i64 {}
 
     /// Read all available data, decoding as UTF-8 text.
@@ -166,7 +167,6 @@ extend TcpConnection {
     /// must not decide separately. Before this there was no native entry point
     /// at all — `conn.read_text()` failed in codegen with "Function not found:
     /// TcpConnection_read_text" while the interpreter ran it (#863).
-    @io
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
         let text = string.from_utf8(bytes) catch e => {
@@ -176,7 +176,6 @@ extend TcpConnection {
     }
 
     /// Write text to the connection — its UTF-8 bytes, nothing added.
-    @io
     public func write_text(self, data: string) -> void or IoError {
         mut bytes: Vec<u8> = Vec.new()
         let len = data.len().wrap<i64>()
@@ -191,6 +190,7 @@ extend TcpConnection {
 
     /// Get the remote address as "ip:port".
     @native("rask_net_remote_addr")
+    @external
     public func remote_addr(self) -> string {}
 
     // `read_http_request` and `write_http_response` are in http.rk, next to
@@ -202,11 +202,12 @@ extend TcpConnection {
     /// own on (http.rk's messages), which `read_bytes` can't be: it waits for
     /// the peer to close.
     @native("rask_net_read_some")
+    @blocks
     func read_some_raw(self, max: i64) -> Vec<u8>? {}
 
     /// Close the connection.
     @native("rask_net_close")
-    @io
+    @blocks
     public func close(take self) -> void or IoError {}
 
     /// Clone the connection handle.

@@ -16,12 +16,16 @@ extern "C" func ftell(stream: *u8) -> i64
 
 extern "C" func ferror(stream: *u8) -> i32
 
+@pure
 extern "C" func rask_alloc(size: i64) -> *u8
 
+@pure
 extern "C" func rask_free(ptr: *u8)
 
+@pure
 extern "C" func rask_realloc(ptr: *u8, old_size: i64, new_size: i64) -> *u8
 
+@pure
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 
 extern "C" func rask_libc_access(path: *u8, mode: i32) -> i32
@@ -36,6 +40,7 @@ extern "C" func rask_libc_mkdir_or_dir(path: *u8, mode: u32) -> i32
 
 extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
+@pure
 extern "C" func strlen(s: *u8) -> u64
 
 extern "C" func rask_libc_opendir(path: *u8) -> *u8
@@ -46,10 +51,13 @@ extern "C" func rask_libc_closedir(dir: *u8) -> i32
 
 extern "C" func rask_stat_load(path: *u8) -> i32
 
+@pure
 extern "C" func rask_stat_loaded_size() -> u64
 
+@pure
 extern "C" func rask_stat_loaded_mtime() -> i64
 
+@pure
 extern "C" func rask_stat_loaded_atime() -> i64
 
 extern "C" func rask_stat_size(path: *u8) -> i64
@@ -72,7 +80,6 @@ extend fs {
     /// build an `IoError` — it's a Rask enum. A failed `fopen` used to come
     /// back as a NULL `File` and sail through as a success: the failure only
     /// surfaced on the first read, as "file handle is closed" (#858).
-    @io
     public func open(path: string) -> File or IoError {
         if fs.open_handle(path) is File as f {
             return f
@@ -84,7 +91,6 @@ extend fs {
     ///
     /// Named for what it makes, beside `create_dir` and `remove_file`. Bare
     /// `create` in a filesystem module doesn't say which of the two it is.
-    @io
     public func create_file(path: string) -> File or IoError {
         if fs.create_handle(path) is File as f {
             return f
@@ -95,14 +101,15 @@ extend fs {
     /// The raw `fopen`: `none` when it failed, with the OS error left for
     /// `IoError.last_os_error`. `open` is the one to call.
     @native("rask_fs_open")
+    @blocks
     func open_handle(path: string) -> File? {}
 
     /// The raw `fopen` in write mode. `create_file` is the one to call.
     @native("rask_fs_create")
+    @blocks
     func create_handle(path: string) -> File? {}
 
     /// Read the entire contents of a file as a string.
-    @io
     public func read_text(path: string) -> string or IoError {
         let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
         if unsafe f.is_null() {
@@ -115,7 +122,6 @@ extend fs {
     }
 
     /// Read the entire contents of a file as bytes.
-    @io
     public func read_bytes(path: string) -> Vec<u8> or IoError {
         let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
         if unsafe f.is_null() {
@@ -134,7 +140,6 @@ extend fs {
     }
 
     /// Write a string to a file, replacing its contents.
-    @io
     public func write_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
         let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr())
@@ -145,7 +150,6 @@ extend fs {
     }
 
     /// Write bytes to a file, replacing its contents.
-    @io
     public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {
         let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr())
         if unsafe f.is_null() {
@@ -165,7 +169,6 @@ extend fs {
     }
 
     /// Check if a file or directory exists at the path.
-    @io
     public func exists(path: string) -> bool {
         let p = unsafe path.as_ptr()
         return (unsafe {
@@ -174,7 +177,6 @@ extend fs {
     }
 
     /// Read a file and split into lines.
-    @io
     public func read_lines(path: string) -> Vec<string> or IoError {
         let content = try fs.read_text(path)
         mut lines: Vec<string> = Vec.new()
@@ -185,7 +187,6 @@ extend fs {
     }
 
     /// Return the canonical, absolute form of a path.
-    @io
     public func absolute_path(path: string) -> string or IoError {
         let buf = unsafe rask_alloc(4096)
         let result = unsafe realpath(path.as_ptr(), buf)
@@ -200,7 +201,6 @@ extend fs {
     }
 
     /// Copy a file from one path to another.
-    @io
     public func copy(from: string, to: string) -> void or IoError {
         let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr())
         if unsafe src.is_null() {
@@ -238,7 +238,6 @@ extend fs {
     }
 
     /// Rename a file or directory.
-    @io
     public func rename(from: string, to: string) -> void or IoError {
         let r = unsafe rask_libc_rename(from.as_ptr(), to.as_ptr())
         if r != 0 {
@@ -248,7 +247,6 @@ extend fs {
     }
 
     /// Remove a file.
-    @io
     public func remove_file(path: string) -> void or IoError {
         let r = unsafe rask_libc_remove(path.as_ptr())
         if r != 0 {
@@ -258,7 +256,6 @@ extend fs {
     }
 
     /// Create a directory.
-    @io
     public func create_dir(path: string) -> void or IoError {
         let r = unsafe rask_libc_mkdir(path.as_ptr(), 493)
         if r != 0 {
@@ -269,7 +266,6 @@ extend fs {
 
     /// Create a directory and all parent directories. One that already exists
     /// is fine; a file in the way is an error.
-    @io
     public func create_dir_all(path: string) -> void or IoError {
         mut prefix = if path.starts_with("/") { "/" } else { "" }
         for part in path.split("/") {
@@ -285,7 +281,6 @@ extend fs {
     }
 
     /// Append a string to a file.
-    @io
     public func append_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
         let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr())
@@ -296,7 +291,6 @@ extend fs {
     }
 
     /// List entries in a directory.
-    @io
     public func list_dir(path: string) -> Vec<string> or IoError {
         let dir = unsafe rask_libc_opendir(path.as_ptr())
         if unsafe dir.is_null() {
@@ -325,7 +319,6 @@ extend fs {
     /// failure by returning a nullptr pointer that codegen handed back as a
     /// `Metadata` — so the `catch` never ran and `meta.size` read through nullptr.
     /// A `T or E` needs the error built on this side (#674).
-    @io
     public func metadata(path: string) -> Metadata or IoError {
         let p = unsafe path.as_ptr()
         if (unsafe {
@@ -341,7 +334,6 @@ extend fs {
     }
 
     /// Current working directory.
-    @io
     public func current_dir() -> Path {
         let buf = unsafe rask_alloc(4096)
         let result = unsafe getcwd(buf, 4096)
@@ -356,7 +348,6 @@ extend fs {
     }
 
     /// User home directory. none if unknown.
-    @io
     public func home_dir() -> Path? {
         let ptr = unsafe getenv("HOME\0".as_ptr())
         if unsafe ptr.is_null() {
