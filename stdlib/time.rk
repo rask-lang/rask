@@ -13,7 +13,7 @@ extend time {
     /// The one thing `SystemTime` can't compute for itself; everything else
     /// about it is arithmetic on this number.
     @native("rask_time_wall_clock_nanos")
-    @external
+    @ambient
     func wall_clock_nanos() -> i64 {}
 }
 
@@ -68,12 +68,12 @@ public struct Instant { }
 extend Instant {
     /// Capture the current instant.
     @native("rask_time_Instant_now")
-    @external
+    @ambient
     public func now() -> Instant {}
 
     /// Duration elapsed since this instant was captured.
     @native("rask_time_Instant_elapsed")
-    @external
+    @ambient
     public func elapsed(self) -> Duration {}
 }
 

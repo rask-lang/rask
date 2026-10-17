@@ -7,27 +7,27 @@ struct random { }
 extend random {
     /// Generate a random signed 64-bit integer.
     @native("rask_random_i64")
-    @external
+    @ambient
     public func i64() -> i64 {}
 
     /// Generate a random f64 in [0, 1).
     @native("rask_random_f64")
-    @external
+    @ambient
     public func f64() -> f64 {}
 
     /// Generate a random f32 in [0, 1).
     @native("rask_random_f32")
-    @external
+    @ambient
     public func f32() -> f64 {}
 
     /// Generate a random boolean.
     @native("rask_random_bool")
-    @external
+    @ambient
     public func bool() -> bool {}
 
     /// Generate a random integer in [low, high).
     @native("rask_random_range")
-    @external
+    @ambient
     public func range(low: i64, high: i64) -> i64 {}
 }
 
@@ -38,7 +38,7 @@ public struct Random { }
 extend Random {
     /// Create a new RNG with a random seed.
     @native("rask_rng_new")
-    @external
+    @ambient
     public func new() -> Random {}
 
     /// Create an RNG with a specific seed (deterministic).

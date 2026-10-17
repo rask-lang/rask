@@ -170,11 +170,11 @@ impl<'t> InferPass<'t> {
     fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
         // A stdlib native has no body to read, so its declaration says what
-        // it does (`@blocks`, `@external`, `@grows`, `@shrinks`).
+        // it does (`@blocks`, `@ambient`, `@grows`, `@shrinks`).
         let declared = f.declared_effects();
         if let Some(e) = self.effects.get_mut(qname) {
             e.blocks |= declared.blocks;
-            e.external |= declared.external;
+            e.ambient |= declared.ambient;
             e.grow |= declared.grows;
             e.shrink |= declared.shrinks;
         }
@@ -344,7 +344,7 @@ impl<'t> InferPass<'t> {
                 let effects = if pure {
                     Effects::default()
                 } else {
-                    Effects { blocks: true, external: true, ..Default::default() }
+                    Effects { blocks: true, ambient: true, ..Default::default() }
                 };
                 self.effects.insert(e.name.clone(), effects);
             }
@@ -1196,7 +1196,7 @@ mod tests {
         let decls = vec![make_extern("c_function")];
         let effects = infer_std(&decls, &Default::default());
         assert!(effects["c_function"].blocks, "INF5: a C function could block");
-        assert!(effects["c_function"].external, "INF5: and could touch anything");
+        assert!(effects["c_function"].ambient, "INF5: and could touch anything");
     }
 
     /// `@pure` on an `extern` is the author's word that it does neither.
@@ -1218,7 +1218,7 @@ mod tests {
         let effects = infer_std(&[], &Default::default());
         assert!(effects["fs.current_dir"].blocks);
         assert!(effects["fs.exists"].blocks);
-        assert!(effects["Instant.now"].external);
+        assert!(effects["Instant.now"].ambient);
         assert!(!effects["Instant.now"].blocks);
         assert!(effects["println"].blocks);
         assert!(effects["Vec.push"].grow);

@@ -14,7 +14,7 @@ import memory.Heap
 /// Whether the task, pooled job or thread running this has been asked to stop.
 /// Use in long-running loops.
 @native("rask_handle_cancelled")
-@external
+@ambient
 public func cancelled() -> bool {}
 
 // --- Handles ---
@@ -40,7 +40,7 @@ extend Handle<T> {
     /// Ask it to stop, then wait. It stops only where it checks `cancelled()`,
     /// and whatever it returns then is the result.
     @native("rask_handle_cancel")
-    @external
+    @ambient
     public func cancel(take self) -> T or JoinError {}
 }
 

@@ -85,7 +85,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("grows", ArgForm::Exprs, Writer::Stdlib),
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
-    ("external", ArgForm::Exprs, Writer::Stdlib),
+    ("ambient", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written

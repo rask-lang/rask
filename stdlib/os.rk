@@ -8,52 +8,52 @@ struct os { }
 extend os {
     /// Get an environment variable by name.
     @native("rask_os_env")
-    @external
+    @ambient
     public func env(name: string) -> Option<string> {}
 
     /// Get an environment variable or a default value.
     @native("rask_os_env_or")
-    @external
+    @ambient
     public func env_or(name: string, default: string) -> string {}
 
     /// Set an environment variable.
     @native
-    @external
+    @ambient
     public func set_env(name: string, value: string) {}
 
     /// Remove an environment variable.
     @native
-    @external
+    @ambient
     public func remove_env(name: string) {}
 
     /// Get all environment variables as key-value pairs.
     @native("rask_os_env_vars")
-    @external
+    @ambient
     public func env_vars() -> Vec<(string, string)> {}
 
     /// Get command-line arguments.
     @native
-    @external
+    @ambient
     public func args() -> Vec<string> {}
 
     /// Exit the process with a status code.
     @native
-    @external
+    @ambient
     public func exit(code: i64) {}
 
     /// Get the current process ID.
     @native("rask_os_pid")
-    @external
+    @ambient
     public func pid() -> i64 {}
 
     /// Get the operating system name.
     @native
-    @external
+    @ambient
     public func platform() -> string {}
 
     /// Get the CPU architecture.
     @native
-    @external
+    @ambient
     public func arch() -> string {}
 
     /// Deliver each signal in `list` to the returned receiver instead of
@@ -72,7 +72,7 @@ extend os {
     /// Hand `tx` to the runtime's signal reader for every signal in `list`.
     /// 0, or a negative errno if the reader couldn't start.
     @native("rask_os_signal_forward")
-    @external
+    @ambient
     func signal_forward(take tx: Sender<Signal>, list: Vec<Signal>) -> i64 {}
 
     /// Fork, exec, drain the pipes, wait. The child's exit status, or -1 if it
@@ -85,20 +85,20 @@ extend os {
     /// What the last `process_run` on this thread captured. `Command.run`
     /// reads both on the next two lines, so nothing can overwrite them first.
     @native("rask_process_stdout")
-    @external
+    @ambient
     func process_stdout() -> string {}
     @native("rask_process_stderr")
-    @external
+    @ambient
     func process_stderr() -> string {}
 
     /// Start a child and hand back a handle, or a negative errno if it never
     /// started (C3). A piped stream stays open in the parent, which is the
     /// whole difference from `process_run`.
     @native("rask_process_spawn")
-    @external
+    @ambient
     func process_spawn(program: string, args: Vec<string>, envs: Vec<string>, dir: string, stdin_mode: i64, stdout_mode: i64, stderr_mode: i64) -> i64 {}
     @native("rask_process_pid")
-    @external
+    @ambient
     func process_pid(handle: i64) -> i64 {}
 
     /// Wait for the child, closing its stdin first — one that reads to EOF
@@ -112,7 +112,7 @@ extend os {
 
     /// `-1` while the child is still running; its status once it has exited.
     @native("rask_process_poll")
-    @external
+    @ambient
     func process_poll(handle: i64) -> i64 {}
     @native("rask_process_write_stdin")
     @blocks
@@ -126,13 +126,13 @@ extend os {
     /// What `wait` collected, read separately for the same reason `run`'s two
     /// readers are separate: no struct crosses the FFI boundary.
     @native("rask_process_captured_stdout")
-    @external
+    @ambient
     func process_captured_stdout(handle: i64) -> string {}
     @native("rask_process_captured_stderr")
-    @external
+    @ambient
     func process_captured_stderr(handle: i64) -> string {}
     @native("rask_process_release")
-    @external
+    @ambient
     func process_release(handle: i64) -> void {}
 }
 

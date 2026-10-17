@@ -72,7 +72,7 @@ extend IoError {
 
     /// errno, which is a macro over a thread-local, so Rask can't name it.
     @native("rask_io_errno")
-    @external
+    @ambient
     func errno_now() -> i32 {}
 
     /// The variant index for an errno, in declaration order. The E* values

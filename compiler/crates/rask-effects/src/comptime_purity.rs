@@ -229,7 +229,7 @@ fn names_the_effect(e: &Effects) -> Option<&'static str> {
         Some("concurrency")
     } else if e.blocks {
         Some("a call that blocks")
-    } else if e.external {
+    } else if e.ambient {
         Some("state outside the program")
     } else {
         None

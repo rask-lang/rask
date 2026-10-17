@@ -214,14 +214,14 @@ impl FnDecl {
     }
 
     /// The effects the stdlib declares on a function it can't show in a body:
-    /// `@grows`, `@shrinks`, `@blocks`, `@external`.
+    /// `@grows`, `@shrinks`, `@blocks`, `@ambient`.
     pub fn declared_effects(&self) -> DeclaredEffects {
         let has = |name| self.attrs.iter().any(|a| a.is(name));
         DeclaredEffects {
             grows: has("grows"),
             shrinks: has("shrinks"),
             blocks: has("blocks"),
-            external: has("external"),
+            ambient: has("ambient"),
         }
     }
 }
@@ -236,7 +236,7 @@ impl FnDecl {
 /// name lists once, and the with-block rule's list didn't know `remove_where`
 /// (#1560).
 ///
-/// `blocks`/`external` (comp.effects/FX1): on a native, the bottom of a call
+/// `blocks`/`ambient` (comp.effects/FX1): on a native, the bottom of a call
 /// chain, where no body says what happens. Every other function's are
 /// inferred from what it calls.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -248,9 +248,11 @@ pub struct DeclaredEffects {
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,
-    /// Reads or changes state outside the program without blocking: the
-    /// clock, the environment, the process.
-    pub external: bool,
+    /// Reads or changes state nobody passed in and the program doesn't own:
+    /// the clock, environment variables, the process, the random source, the
+    /// task runtime. Its result isn't fixed by its arguments, and it doesn't
+    /// wait.
+    pub ambient: bool,
 }
 
 impl DeclaredEffects {

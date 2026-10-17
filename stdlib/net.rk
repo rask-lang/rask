@@ -113,7 +113,7 @@ extend TcpListener {
 
     /// Get the local address the listener is bound to.
     @native("rask_net_local_addr")
-    @external
+    @ambient
     public func local_addr(self) -> string {}
 
     /// Close the listener.
@@ -190,7 +190,7 @@ extend TcpConnection {
 
     /// Get the remote address as "ip:port".
     @native("rask_net_remote_addr")
-    @external
+    @ambient
     public func remote_addr(self) -> string {}
 
     // `read_http_request` and `write_http_response` are in http.rk, next to

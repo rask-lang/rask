@@ -11,7 +11,7 @@ The compiler infers which functions can block, touch state outside the program, 
 
 | Rule | Description |
 |------|-------------|
-| **FX1: Four categories** | Blocks (the thread can park until something outside it happens: a syscall, `sleep`, a channel op, a `join`), External (reads or changes state outside the program without blocking: the clock, environment variables, the process), Async (spawns a task), Mutation (Grow/Shrink — see `comp.advanced/EF1`, EF3, EF4) |
+| **FX1: Four categories** | Blocks (the thread can park until something outside it happens: a syscall, `sleep`, a channel op, a `join`), Ambient (reads or changes state nobody passed in and the program doesn't own, without waiting: the clock, environment variables, the process, the random source, the task runtime), Async (spawns a task), Mutation (Grow/Shrink — see `comp.advanced/EF1`, EF3, EF4) |
 | **FX2: Transitive inference** | A function has effect X if it or any callee transitively has effect X |
 | **FX3: Not in the type system** | Effects are compiler metadata. They don't appear in function signatures, don't constrain calling, don't split ecosystems |
 
@@ -19,11 +19,13 @@ Effects don't restrict what you can call. A function that doesn't block can call
 
 I split what used to be one "IO" effect in two because its two readers ask different questions. The warnings (CW1, CW2) care whether a thread can park; a channel `receive` does and isn't I/O. Compile-time evaluation (`ctrl.comptime/CT7`) cares whether the compiler can run the call at all; `Instant.now()` can't, and doesn't block.
 
-## Blocks and External
+"Ambient" is the word for what `Instant.now()` reads: state that is just there, reachable without anyone handing it over. Its arguments don't fix its answer, so the compiler can't compute it ahead of time and a replay has to record it. I didn't call it "external" because that reads as `extern`, which is about calling convention, not about what the call touches.
+
+## Blocks and Ambient
 
 | Rule | Description |
 |------|-------------|
-| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@external`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless declared `@pure` (INF5) |
+| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless declared `@pure` (INF5) |
 | **BL2: Transitive** | Any function that transitively calls a source has its effect |
 | **BL3: Unsafe is what it calls** | An `unsafe` block has the effects of the calls in it. Raw pointer work touches nothing outside the program; a C call in the block is conservative on its own (INF5) |
 
@@ -53,7 +55,7 @@ calls the native that writes.
 | Mark | Natives |
 |------|---------|
 | `@blocks` | the print functions; `fs`'s open and create; `File`'s raw read, write, seek and close; stdio reads, writes and flush; socket listen, connect, accept, read, write and close; process run, wait and pipe I/O; `time.sleep`; `Handle.join`, `Sender.send`, `Receiver.receive` |
-| `@external` | environment variables, args, `os.pid`, `os.exit`, platform and arch; process spawn and poll; signals; `cli.args`, `cli.parse`; the clock (`Instant.now`, `elapsed`, wall time); the global random source and `Random.new`; socket addresses; `errno`; `async.cancelled`, `Handle.cancel` |
+| `@ambient` | environment variables, args, `os.pid`, `os.exit`, platform and arch; process spawn and poll; signals; `cli.args`, `cli.parse`; the clock (`Instant.now`, `elapsed`, wall time); the global random source and `Random.new`; socket addresses; `errno`; `async.cancelled`, `Handle.cancel` |
 | none | everything else: strings, collections, math, json, reflection, `Duration`, a seeded `Random` |
 
 A call is matched on the callee the type checker resolved, not on how the call is spelled. `t.join()` on a `Handle<i64>` is `Handle.join` whatever the variable is called, and `parts.join(",")` on a `Vec<string>` is `Vec.join`, which blocks on nothing.
@@ -88,7 +90,7 @@ A call is matched on the callee the type checker resolved, not on how the call i
 ```
 infer_effects(program, stdlib):
     for func in stdlib ++ program:
-        effects[func] = declared(func)             // @blocks, @external on a native
+        effects[func] = declared(func)             // @blocks, @ambient on a native
         for call in func.body.calls:
             if call.target is a spawn:     effects[func].add(Async)
             if call.target grows/shrinks:  effects[func].add(Mutation)
@@ -163,7 +165,7 @@ func run_server() -> void or Error {                      // ghost: [blocks, asy
 | Effects | Ghost text |
 |---------|-----------|
 | No effects | `[pure]` |
-| Any others | the ones present, in the order `blocks`, `external`, `async`, `mutation`: `[blocks]`, `[blocks, async]`, `[external]`, `[mutation]` |
+| Any others | the ones present, in the order `blocks`, `ambient`, `async`, `mutation`: `[blocks]`, `[blocks, async]`, `[ambient]`, `[mutation]` |
 
 Ghost text appears after the return type (or after `{` if no return type). Same position as inferred `using` clauses — they don't overlap because `using` is declared, effects are inferred.
 
