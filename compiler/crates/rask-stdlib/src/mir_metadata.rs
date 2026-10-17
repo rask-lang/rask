@@ -376,7 +376,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Map_lend", Internal::LendsElement),
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
-    ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),
@@ -484,7 +483,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // frame must not free it again.
     ("Atomic_take", Internal::ConsumesReceiver),
     ("Atomic_free", Internal::ConsumesReceiver),
-    ("Pool_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
     // if nobody else holds one (#1099).
@@ -784,7 +782,6 @@ const TRANSFERS_OUT: &[&str] = &[
     "Field_take",
     "Map_insert",
     "Map_remove",
-    "Pool_remove",
 ];
 
 /// Does this call take an element out of its receiver and hand it over?
