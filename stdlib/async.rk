@@ -29,6 +29,8 @@ public struct Handle<T> {
 extend Handle<T> {
     /// Wait for the result.
     @native("rask_handle_join")
+    @io
+    @waits
     public func join(take self) -> T or JoinError {}
 
     /// Let it run on without waiting.
@@ -92,6 +94,8 @@ extend Handles<T> {
 
     /// Wait for every one. Results come back in add order, one per handle, so
     /// one that panicked doesn't cost the others theirs.
+    @io
+    @waits
     public func join_all(take self) -> Vec<T or JoinError> {
         mut results: Vec<T or JoinError> = Vec.new()
         mut rest = self.list
@@ -141,6 +145,8 @@ public struct Sender<T> { }
 extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
     @native("rask_channel_send_ptr")
+    @io
+    @waits
     public func send(self, take value: T) -> void or SendError {}
 
     /// Non-blocking send. Returns error if full or closed.
@@ -161,6 +167,8 @@ public struct Receiver<T> { }
 extend Receiver<T> {
     /// Receive a value. Pauses/blocks if buffer empty.
     @native("rask_channel_recv_into")
+    @io
+    @waits
     public func receive(self) -> T or ReceiveError {}
 
     /// Non-blocking receive. Returns error if empty or closed.

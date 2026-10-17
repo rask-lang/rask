@@ -1175,7 +1175,7 @@ mod tests {
 
     /// The checker resolved `insert` to a method declared `@grows`.
     fn growing(node: u32) -> MethodTargets {
-        let effect = rask_ast::decl::StructuralEffect { grows: true, shrinks: false };
+        let effect = rask_ast::decl::DeclaredEffects { grows: true, ..Default::default() };
         [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into()
     }
 

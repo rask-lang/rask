@@ -2150,7 +2150,7 @@ impl TypeChecker {
         };
         match self.types.get(id) {
             Some(TypeDef::Struct { methods, .. }) => {
-                methods.iter().any(|m| m.name == method && m.effect.any())
+                methods.iter().any(|m| m.name == method && m.effect.changes_size())
             }
             _ => false,
         }

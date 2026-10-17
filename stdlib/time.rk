@@ -6,6 +6,8 @@ struct time { }
 extend time {
     /// Sleep for the given duration.
     @native("rask_sleep_ns")
+    @io
+    @waits
     public func sleep(duration: Duration) -> void or SysError {}
 
     /// Nanoseconds since the UNIX epoch, straight off the OS wall clock.

@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 rask-ast = { path = "../rask-ast" }
+rask-stdlib = { path = "../rask-stdlib" }

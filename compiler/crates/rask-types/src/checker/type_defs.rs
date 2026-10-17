@@ -310,7 +310,7 @@ pub struct MethodSig {
     /// Who wrote it, and whether it has a body.
     pub origin: MethodOrigin,
     /// What it does to its receiver's size, as declared (`@grows`, `@shrinks`).
-    pub effect: rask_ast::decl::StructuralEffect,
+    pub effect: rask_ast::decl::DeclaredEffects,
     /// Declared `public`. A checker-supplied signature has no declaration and
     /// is callable from anywhere, so it counts as public.
     pub is_public: bool,
@@ -391,10 +391,10 @@ impl TypeBinding {
 }
 
 impl TypedProgram {
-    /// What a method call does to the size of its receiver, as the method's
-    /// declaration says (`@grows`, `@shrinks`). Nothing for a call that isn't
-    /// a method call or whose method declares neither.
-    pub fn structural_effect(&self, call: NodeId) -> rask_ast::decl::StructuralEffect {
+    /// What a method call's declaration says it does (`@grows`, `@shrinks`,
+    /// `@io`, `@waits`). Nothing for a call that isn't a method call or whose
+    /// method declares none.
+    pub fn declared_effects(&self, call: NodeId) -> rask_ast::decl::DeclaredEffects {
         let Some(callee @ Callee::Method { method, .. }) = self.call_targets.get(&call) else {
             return Default::default();
         };
@@ -422,7 +422,7 @@ impl TypedProgram {
                     let ty = receiver_name(recv, &self.types)?;
                     Some((*node, rask_ast::decl::MethodTarget {
                         name: format!("{ty}.{method}"),
-                        effect: self.structural_effect(*node),
+                        effect: self.declared_effects(*node),
                     }))
                 }
                 Callee::Free(_) => None,

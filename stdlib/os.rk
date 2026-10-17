@@ -32,6 +32,7 @@ extend os {
 
     /// Exit the process with a status code.
     @native
+    @io
     public func exit(code: i64) {}
 
     /// Get the current process ID.
@@ -214,6 +215,7 @@ extend Command {
     /// A program that never started is an error, not a status — the child
     /// reports why through a close-on-exec pipe, so "no such program" and "the
     /// program ran and exited 127" stay apart.
+    @io
     public func run(take self) -> Output or IoError {
         let status = os.process_run(self.program, self.argv, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
         if status < 0 {
@@ -234,6 +236,7 @@ extend Command {
     ///
     /// Unlike `run`, the piped streams stay open: stdout so `read_stdout` has
     /// something to read, stdin so `write_stdin` has somewhere to write.
+    @io
     public func spawn(take self) -> Process or IoError {
         let h = os.process_spawn(self.program, self.argv, self.envs, self.dir, stdio_code(self.stdin_cfg), stdio_code(self.stdout_cfg), stdio_code(self.stderr_cfg))
         if h < 0 {
@@ -304,6 +307,7 @@ extend Process {
     /// and waiting for it is exactly the point at which nothing more will be
     /// written. Anything `read_stdout` already took is not in `Output.stdout` —
     /// the two read the same pipe.
+    @io
     public func wait(take self) -> Output or IoError {
         let status = os.process_wait(self.handle)
         return self.finish(status)
@@ -311,6 +315,7 @@ extend Process {
 
     /// Kill the process and wait for it to finish. The consumption method for
     /// an `ensure`, which is why it exists next to `wait`.
+    @io
     public func kill_and_wait(take self) -> Output or IoError {
         let status = os.process_kill_and_wait(self.handle)
         return self.finish(status)
@@ -335,6 +340,7 @@ extend Process {
     /// Has it exited? `none` while it is still running (C5). The handle is
     /// still yours afterwards — `wait` is what consumes it, and on an exited
     /// child it answers immediately.
+    @io
     public func poll(self) -> Output? or IoError {
         let status = os.process_poll(self.handle)
         if status < 0 {
@@ -355,6 +361,7 @@ extend Process {
     /// Write to the child's stdin. Needs `Stdio.Piped` on stdin — otherwise
     /// there is no pipe to write to and this is an error rather than a silent
     /// discard.
+    @io
     public func write_stdin(self, data: string) -> void or IoError {
         if !self.stdin_piped {
             return IoError.Other("stdin not piped")
@@ -368,6 +375,7 @@ extend Process {
 
     /// Everything the child has written to stdout, up to EOF. Needs
     /// `Stdio.Piped`; blocks until the child closes the stream.
+    @io
     public func read_stdout(self) -> string or IoError {
         if !self.stdout_piped {
             return IoError.Other("stdout not piped")

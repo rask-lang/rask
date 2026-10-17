@@ -126,6 +126,7 @@ struct io { }
 extend io {
     /// Read a line of text from standard input.
     @native("rask_io_read_line")
+    @io
     public func read_line() -> string or IoError {}
 
     /// Acquire a handle to standard input.
@@ -190,6 +191,7 @@ public struct Stdin {
 
 Stdin implements Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
+    @io
     public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
         let want = buf.len().wrap<i64>()
         if want == 0 {
@@ -206,6 +208,7 @@ Stdin implements Reader {
     }
 
     /// Read all remaining bytes.
+    @io
     public func read_bytes(self) -> Vec<u8> or IoError {
         // Standard input has no length to ask for, so "everything" needs a
         // bound. 16 MiB is far past any interactive or piped input, and small
@@ -214,6 +217,7 @@ Stdin implements Reader {
     }
 
     /// Read all remaining bytes as UTF-8 string.
+    @io
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
         let text = string.from_utf8(bytes) catch e => {
@@ -226,6 +230,7 @@ Stdin implements Reader {
 extend Stdin {
     /// Read a single line from stdin.
     @native("rask_io_read_line")
+    @io
     public func read_line(self) -> string or IoError {}
 
     /// Close the handle.
@@ -235,6 +240,7 @@ extend Stdin {
     /// consumes nothing. Every program that acquired a standard stream failed
     /// to compile with "resource must be consumed before scope exit" even with
     /// `close()` right there (#859).
+    @io
     public func close(take self) -> void {
         return
     }
@@ -248,6 +254,7 @@ public struct Stdout {
 
 Stdout implements Writer {
     /// Write bytes. Returns number of bytes written.
+    @io
     public func write(self, data: Vec<u8>) -> i64 or IoError {
         let n = io.write_std_bytes(self.stream, data)
         if n < 0 {
@@ -257,12 +264,14 @@ Stdout implements Writer {
     }
 
     /// Write all bytes, retrying partial writes.
+    @io
     public func write_bytes(self, data: Vec<u8>) -> void or IoError {
         let _ = try self.write(data)
         return
     }
 
     /// Write a string.
+    @io
     public func write_text(self, s: string) -> void or IoError {
         let n = io.write_std_text(self.stream, s)
         if n < 0 {
@@ -274,6 +283,7 @@ Stdout implements Writer {
 
 extend Stdout {
     /// Flush buffered output.
+    @io
     public func flush(self) -> void or IoError {
         if io.flush_std(self.stream) < 0 {
             return IoError.last_os_error()
@@ -287,6 +297,7 @@ extend Stdout {
     /// what `close` on a borrowed standard stream should mean. What it does is
     /// discharge the linearity obligation, and flush, so nothing written
     /// through the handle is still sitting in a buffer when it goes away.
+    @io
     public func close(take self) -> void {
         let _ = io.flush_std(self.stream)
         return
@@ -301,6 +312,7 @@ public struct Stderr {
 
 Stderr implements Writer {
     /// Write bytes. Returns number of bytes written.
+    @io
     public func write(self, data: Vec<u8>) -> i64 or IoError {
         let n = io.write_std_bytes(self.stream, data)
         if n < 0 {
@@ -310,12 +322,14 @@ Stderr implements Writer {
     }
 
     /// Write all bytes, retrying partial writes.
+    @io
     public func write_bytes(self, data: Vec<u8>) -> void or IoError {
         let _ = try self.write(data)
         return
     }
 
     /// Write a string.
+    @io
     public func write_text(self, s: string) -> void or IoError {
         let n = io.write_std_text(self.stream, s)
         if n < 0 {
@@ -327,6 +341,7 @@ Stderr implements Writer {
 
 extend Stderr {
     /// Flush buffered output.
+    @io
     public func flush(self) -> void or IoError {
         if io.flush_std(self.stream) < 0 {
             return IoError.last_os_error()
@@ -340,6 +355,7 @@ extend Stderr {
     /// what `close` on a borrowed standard stream should mean. What it does is
     /// discharge the linearity obligation, and flush, so nothing written
     /// through the handle is still sitting in a buffer when it goes away.
+    @io
     public func close(take self) -> void {
         let _ = io.flush_std(self.stream)
         return
@@ -470,6 +486,7 @@ extend Buffer {
 /// K1–K3 for a file: the position the OS keeps, with the `SeekFrom` taken
 /// apart here rather than in each backend.
 File implements Seeker {
+    @io
     public func seek(self, pos: SeekFrom) -> i64 or IoError {
         mut whence: i64 = 0
         mut offset: i64 = 0
@@ -499,6 +516,7 @@ File implements Seeker {
         }
         return at
     }
+    @io
     public func position(self) -> i64 or IoError {
         let at = self.position_raw()
         if at < 0 {
@@ -560,6 +578,7 @@ extend File {
     func position_raw(self) -> i64 {}
 
     /// Read from the current position to the end.
+    @io
     public func read_bytes(self) -> Vec<u8> or IoError {
         if self.read_bytes_raw() is Vec<u8> as bytes {
             return bytes
@@ -568,6 +587,7 @@ extend File {
     }
 
     /// Read from the current position to the end, as UTF-8.
+    @io
     public func read_text(self) -> string or IoError {
         let bytes = try self.read_bytes()
         let text = string.from_utf8(bytes) catch e => {
@@ -577,6 +597,7 @@ extend File {
     }
 
     /// Write a string to the file.
+    @io
     public func write(self, data: string) -> void or IoError {
         if self.write_raw(data) != 0 {
             return IoError.last_os_error()
@@ -585,6 +606,7 @@ extend File {
     }
 
     /// Write all bytes, retrying partial writes.
+    @io
     public func write_bytes(self, data: Vec<u8>) -> void or IoError {
         if self.write_bytes_raw(data) != 0 {
             return IoError.last_os_error()
@@ -593,6 +615,7 @@ extend File {
     }
 
     /// Write a string.
+    @io
     public func write_text(self, data: string) -> void or IoError {
         if self.write_raw(data) != 0 {
             return IoError.last_os_error()
@@ -601,6 +624,7 @@ extend File {
     }
 
     /// Write a string followed by a newline.
+    @io
     public func write_line(self, data: string) -> void or IoError {
         if self.write_line_raw(data) != 0 {
             return IoError.last_os_error()
@@ -610,6 +634,7 @@ extend File {
 
     /// Close the file handle. Buffered bytes reach the disk here, so this is
     /// where a full disk usually says so.
+    @io
     public func close(take self) -> void or IoError {
         if self.close_raw() != 0 {
             return IoError.last_os_error()

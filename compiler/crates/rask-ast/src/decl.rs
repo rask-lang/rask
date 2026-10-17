@@ -210,34 +210,47 @@ impl FnDecl {
         self.attrs.iter().any(|a| a.is("native") || a.is("builtin") || a.is("unimplemented"))
     }
 
-    /// What the method does to the size of the collection it's called on,
-    /// as its declaration says (`@grows`, `@shrinks`).
-    pub fn structural_effect(&self) -> StructuralEffect {
-        StructuralEffect {
-            grows: self.attrs.iter().any(|a| a.is("grows")),
-            shrinks: self.attrs.iter().any(|a| a.is("shrinks")),
+    /// The effects the stdlib declares on a function it can't show in a body:
+    /// `@grows`, `@shrinks`, `@io`, `@waits`.
+    pub fn declared_effects(&self) -> DeclaredEffects {
+        let has = |name| self.attrs.iter().any(|a| a.is(name));
+        DeclaredEffects {
+            grows: has("grows"),
+            shrinks: has("shrinks"),
+            io: has("io"),
+            waits: has("waits"),
         }
     }
 }
 
-/// A method that changes how many elements its receiver holds, or moves them
-/// to new storage (comp.advanced/EF1). Either one invalidates a `with` binding
-/// or a `for mutate` loop over the receiver (mem.borrowing/W2,
-/// ctrl.loops/LP14), and neither is possible on a fixed array.
+/// What a stdlib function does that its body can't show, as its declaration
+/// says. Read by the checker, ownership and effects.
 ///
-/// Declared on the stdlib method (`@grows`, `@shrinks`) and read from there by
-/// the checker, ownership and effects. It was five name lists once, and the
-/// with-block rule's list didn't know `remove_where` (#1560).
+/// `grows`/`shrinks` (comp.advanced/EF1): the method changes how many elements
+/// its receiver holds, or moves them to new storage. Either one invalidates a
+/// `with` binding or a `for mutate` loop over the receiver (mem.borrowing/W2,
+/// ctrl.loops/LP14), and neither is possible on a fixed array. It was five
+/// name lists once, and the with-block rule's list didn't know `remove_where`
+/// (#1560).
+///
+/// `io`/`waits` (comp.effects/IO1, AS3): the function is an I/O source, and
+/// one that blocks until something else happens. It was a list of names in
+/// the effects crate, which missed `fs.current_dir`, processes and `http`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct StructuralEffect {
+pub struct DeclaredEffects {
     /// Adds elements, or may move them to a bigger buffer (`push`, `reserve`).
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
+    /// Reaches outside the program: files, sockets, stdio, processes.
+    pub io: bool,
+    /// Waits on another task or the clock: `sleep`, a channel op, a `join`.
+    pub waits: bool,
 }
 
-impl StructuralEffect {
-    pub fn any(self) -> bool {
+impl DeclaredEffects {
+    /// Changes the number of elements in the receiver, or where they live.
+    pub fn changes_size(self) -> bool {
         self.grows || self.shrinks
     }
 }
@@ -248,7 +261,7 @@ impl StructuralEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodTarget {
     pub name: String,
-    pub effect: StructuralEffect,
+    pub effect: DeclaredEffects,
 }
 
 /// A function parameter.

@@ -43,12 +43,18 @@ func parse_header(raw: string) -> Header or ParseError {
 
 ### IO Source Functions
 
-From `conc.io-context`:
+The stdlib marks each source on its declaration: `@io`, and `@waits` as well
+for one that blocks until another task or the clock moves (AS3). Inference
+reads the mark off the function the call resolved to. The marks are what this
+table says, from `conc.io-context`:
 
 | Module | Functions | IO? |
 |--------|-----------|-----|
 | `fs` | every `fs` function (`fs.open`, `fs.read_text`, `fs.exists`, …); `File.read_text/read_bytes`, `File.write/write_text/write_bytes/write_line`, `File.close` | Yes |
-| `net` | `net.tcp_listen`, `net.tcp_connect`, `TcpListener.accept`, `TcpConnection.read_text/read_bytes/write_text/write_bytes` | Yes |
+| `net` | `net.tcp_listen`, `net.tcp_connect`, `TcpListener.accept/close`, `TcpConnection.read_text/read_bytes/write_text/write_bytes/close` | Yes |
+| `os` | `Command.run/spawn`, `Process.wait/kill_and_wait/poll/write_stdin/read_stdout`, `os.exit` | Yes |
+| `http` | `http.listen/serve/get/post/put/delete/request`, the `HttpClient` methods, `HttpServer.accept/close`, `Responder.respond` | Yes |
+| `async` | `Handle.join`, `Handles.join_all`, `Sender.send`, `Receiver.receive` | Yes (also Async) |
 | `io` | `Stdin.read/read_text/read_line`, `Stdout.write`, `Stderr.write`, `println` and the other print functions | Yes |
 | `time` | `time.sleep` | Yes (also Async) |
 | `io` | `Buffer.read`, `Buffer.write` | No |

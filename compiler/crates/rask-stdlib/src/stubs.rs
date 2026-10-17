@@ -285,6 +285,8 @@ pub struct MethodStub {
     /// `json.decode<WithPtr>` type-checked clean and failed later, in MIR
     /// lowering on native and as a bogus "missing field" on interp.
     pub type_param_bounds: Vec<(String, TypeExpr)>,
+    /// `@grows`, `@shrinks`, `@io`, `@waits`.
+    pub effects: rask_ast::decl::DeclaredEffects,
 }
 
 /// A type extracted from a stub file.
@@ -334,6 +336,8 @@ pub struct FunctionStub {
     pub source_file: String,
     /// Byte offset span of the function name within the stub source.
     pub span: Span,
+    /// `@io`, `@waits` and the rest, as on a method.
+    pub effects: rask_ast::decl::DeclaredEffects,
 }
 
 /// Registry of all stub data, lazily loaded.
@@ -621,6 +625,7 @@ impl StubRegistry {
                     doc: f.doc.clone(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
+                    effects: f.declared_effects(),
                 });
             }
             _ => {}
@@ -781,6 +786,7 @@ fn fn_to_method_stub(
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
+        effects: f.declared_effects(),
     }
 }
 

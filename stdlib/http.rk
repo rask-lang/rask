@@ -777,6 +777,7 @@ extend TcpConnection {
     /// parser of its own that laid its result out unlike `Request`, so every
     /// request arrived with an empty url, and a failed or cut-off read came
     /// back as a blank `GET /` instead of an error (#1377).
+    @io
     public func read_http_request(self) -> Request or IoError {
         let raw = read_message(self, 65536, false) catch e => {
             return e.io_error()
@@ -794,6 +795,7 @@ extend TcpConnection {
     /// be sent by something that then closes it, or the client waits for an EOF
     /// that never comes and the server keeps the descriptor (#1055). Same shape
     /// as `Responder.respond`, which is the path `HttpServer.accept` hands out.
+    @io
     public func write_http_response(take self, response: Response) -> void or IoError {
         let sent = self.write_text(format_http_response(response))
         let closed = self.close()
@@ -812,6 +814,7 @@ public struct HttpServer {
 }
 
 extend HttpServer {
+    @io
     public func accept(self) -> (Request, Responder) or HttpError {
         let conn = self.listener.accept() catch _ => {
             return HttpError.Io("accept failed")
@@ -832,6 +835,7 @@ extend HttpServer {
     public func local_addr(self) -> string {
         return self.addr
     }
+    @io
     public func close(take self) -> void or IoError {
         return self.listener.close()
     }
@@ -848,6 +852,7 @@ public struct Responder {
 }
 
 extend Responder {
+    @io
     public func respond(take self, response: Response) -> void or HttpError {
         // `format_http_response` writes `Connection: close`, so close it. A
         // client that believes the header waits for an EOF that never arrives
@@ -871,6 +876,7 @@ extend http {
     /// Parallel to `net.tcp_listen`. The server is a linear resource — close it
     /// with `ensure server.close()`. Each accepted request yields a linear
     /// `Responder` that must send exactly one response.
+    @io
     public func listen(addr: string) -> HttpServer or HttpError {
         let listener = net.tcp_listen(addr) catch _ => {
             return HttpError.ConnectionFailed("failed to bind {addr}")
@@ -884,6 +890,7 @@ extend http {
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires an active `using Multitasking { ... }` scope in the process
     /// (transitively reaches `spawn`).
+    @io
     public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError {
         mut server = http.listen(addr) catch _ => {
             return HttpError.Io("listen failed")
@@ -902,18 +909,21 @@ extend http {
             }.detach()
         }
     }
+    @io
     public func get(url: string) -> Response or HttpError {
         return _send_request_impl(Method.Get, url, "", Headers.new())
     }
     public func post(url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Post, url, body, Headers.new())
     }
+    @io
     public func put(url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Put, url, body, Headers.new())
     }
     public func delete(url: string) -> Response or HttpError {
         return _send_request_impl(Method.Delete, url, "", Headers.new())
     }
+    @io
     public func request(request: Request) -> Response or HttpError {
         return _send_request_impl(request.method, request.url, request.body, request.headers)
     }
@@ -941,18 +951,21 @@ extend HttpClient {
         // Redirect following not yet implemented
         return self
     }
+    @io
     public func get(self, url: string) -> Response or HttpError {
         return _send_request_impl(Method.Get, url, "", self.default_headers)
     }
     public func post(self, url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Post, url, body, self.default_headers)
     }
+    @io
     public func put(self, url: string, body: string) -> Response or HttpError {
         return _send_request_impl(Method.Put, url, body, self.default_headers)
     }
     public func delete(self, url: string) -> Response or HttpError {
         return _send_request_impl(Method.Delete, url, "", self.default_headers)
     }
+    @io
     public func request(self, request: Request) -> Response or HttpError {
         return _send_request_impl(request.method, request.url, request.body, self.default_headers)
     }

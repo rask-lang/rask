@@ -2446,7 +2446,7 @@ impl<'a> OwnershipChecker<'a> {
                 // receiver's size (`@grows`, `@shrinks`). A name list here
                 // didn't know `remove_where`, and a `with v[0]` binding
                 // outlived the element it named (#1560).
-                let structural = self.program.structural_effect(expr.id).any();
+                let structural = self.program.declared_effects(expr.id).changes_size();
                 // W2: Check structural mutations inside `with` blocks
                 if structural {
                     if let Some(coll_name) = object.name() {
