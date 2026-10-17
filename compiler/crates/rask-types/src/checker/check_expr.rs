@@ -3903,17 +3903,18 @@ impl TypeChecker {
             return ret;
         }
 
-        // Check if this is a builtin module method call (e.g., fs.open). A local
-        // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
-        // and routing `fs.len()` to the filesystem module reported "no method
-        // `len` found for type `fs`".
-        if let Some(name) = object.name() {
-            if self.types.builtin_modules.is_module(name) && !self.local_shadows_namespace(name) {
-                if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(name, method) {
+        // A builtin module method call (e.g., fs.open), by the module the
+        // resolver bound the name to, so `import fs as files` makes
+        // `files.open` the same call. A local of the same name wins — `let fs =
+        // Vec.new()` is an ordinary variable, and routing `fs.len()` to the
+        // filesystem module reported "no method `len` found for type `fs`".
+        if let Some(module) = self.module_named_by(object) {
+            if self.types.builtin_modules.is_module(module) {
+                if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(module, method) {
                     let names = stub.params.iter().map(|(n, _)| n.clone()).collect();
                     self.note_param_names(call_id, names);
                 }
-                return self.check_module_method(name, method, args, type_args, span);
+                return self.check_module_method(module, method, args, type_args, span);
             }
         }
 
@@ -5193,6 +5194,12 @@ impl TypeChecker {
     /// module the resolver bound (an alias counts). The module's declaration,
     /// never the program's type of the same name (#1470).
     fn module_member_type(&self, head: &Expr, member: &str) -> Option<crate::types::TypeId> {
+        self.types.module_type_id(self.module_named_by(head)?, member)
+    }
+
+    /// The stdlib module `head` names, by what the resolver bound it to: its
+    /// own name or an `import m as alias`. `None` when a local shadows it.
+    fn module_named_by(&self, head: &Expr) -> Option<&'static str> {
         let name = head.name()?;
         if self.local_shadows_namespace(name) {
             return None;
@@ -5201,7 +5208,7 @@ impl TypeChecker {
         let SymbolKind::BuiltinModule { module } = &self.resolved.symbols.get(sym)?.kind else {
             return None;
         };
-        self.types.module_type_id(module.name(), member)
+        Some(module.name())
     }
 
     /// Does a declared type named `name` have a variant or field called

@@ -2746,10 +2746,12 @@ impl TypeChecker {
                     // to the other, so `c.bump()` came back "no method `bump`
                     // found for type `Counter`" (#1124).
 
-                    if !self.types.builtin_modules.is_module(&module_name) {
+                    // The marker names the module, not the alias, so `import
+                    // time as tm` checks `tm.sleep` as `time.sleep`.
+                    if !self.types.builtin_modules.is_module(pkg_name) {
                         self.define_local(
                             module_name.clone(),
-                            Type::UnresolvedNamed(format!("__module_{}", module_name)),
+                            Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
                         );
                     }
                 }

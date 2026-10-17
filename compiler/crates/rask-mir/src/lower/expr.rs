@@ -5295,13 +5295,17 @@ impl<'a> MirLowerer<'a> {
             //
             // Done once here rather than at each mangling site below: the alias
             // is a property of the name, not of which call shape found it.
+            //
+            // A module alias is the same: `import fs as files` makes
+            // `files.exists` the call `fs.exists`.
             let aliased = self
                 .ctx
                 .type_defs
                 .alias_target_name(name);
             let name = match &aliased {
-                Some(target) if !self.locals.contains_key(name) => target.as_str(),
-                _ => name,
+                _ if self.locals.contains_key(name) => name,
+                Some(target) => target.as_str(),
+                None => self.ctx.type_defs.module_named(name).unwrap_or(name),
             };
             if !self.locals.contains_key(name) {
                         // Cross-package call: pkg.func() → direct call to func
