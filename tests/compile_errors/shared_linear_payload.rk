@@ -56,12 +56,28 @@ func took_a_plain_value() {
     println("{s.take()}")
 }
 
+// A generic body can't know its `T`, so each call is asked.
+func unbox<T>(take s: Shared<T>) -> T {
+    return s.take()
+}
+
+func generic_take_of_a_plain_value() {
+    // ERROR: this call makes `T` an integer, and `unbox` empties the box [E0920]
+    let n = unbox(Shared.new(5))
+    println("{n}")
+}
+
 // FIX: take the resource out of the box, once
 func fixed() -> i64 {
     let s = Shared.new(Conn(id: 6))
     return s.take().close()
 }
 
+// FIX: the same generic, called with a resource
+func fixed_generic() -> i64 {
+    return unbox(Shared.new(Conn(id: 7))).close()
+}
+
 func main() {
-    println("{fixed()}")
+    println("{fixed()} {fixed_generic()}")
 }

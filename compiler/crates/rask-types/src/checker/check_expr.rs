@@ -6339,6 +6339,11 @@ impl TypeChecker {
             if matches!(payload, Type::Var(_) | Type::Error) || self.types.is_linear_value(&payload) {
                 continue;
             }
+            // A type parameter is asked per call, by ownership's instance walk:
+            // the body can't know, each caller's `T` can.
+            if matches!(&payload, Type::UnresolvedNamed(n) if super::declarations::is_type_param_name(n)) {
+                continue;
+            }
             self.errors.push(TypeError::TakeFromSharedBox {
                 payload: self.types.resolve_type_names(&payload).to_string(),
                 span,

@@ -623,6 +623,7 @@ impl<'a> OwnershipChecker<'a> {
         self.check_size_fences(decls);
         self.check_generic_size_fences(decls);
         self.check_linear_instantiations(decls);
+        self.check_generic_takes(decls);
         OwnershipResult {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
@@ -787,47 +788,7 @@ impl<'a> OwnershipChecker<'a> {
     /// passes the obligation on, so the inner call is queued with the outer
     /// substitution applied and still blamed on the outer call.
     fn check_linear_instantiations(&mut self, decls: &[Decl]) {
-        let mut generic_fns: GenericBodies = HashMap::new();
-        for d in decls {
-            match &d.kind {
-                DeclKind::Fn(f) if !f.type_params.is_empty() => {
-                    generic_fns.insert((None, f.name.clone()), (f, None));
-                }
-                DeclKind::Impl(i) => {
-                    let Some(ty) = i.target_ty.name() else { continue };
-                    let header_generic = !i.target_ty.args().is_empty();
-                    for m in &i.methods {
-                        if header_generic || !m.type_params.is_empty() {
-                            generic_fns.insert(
-                                (Some(ty.clone()), m.name.clone()),
-                                (m, Some(i.target_ty.clone())),
-                            );
-                        }
-                    }
-                }
-                DeclKind::Struct(st) => {
-                    for m in &st.methods {
-                        if !st.type_params.is_empty() || !m.type_params.is_empty() {
-                            generic_fns.insert(
-                                (Some(st.name.clone()), m.name.clone()),
-                                (m, Some(owner_header(&st.name, &st.type_params))),
-                            );
-                        }
-                    }
-                }
-                DeclKind::Enum(en) => {
-                    for m in &en.methods {
-                        if !en.type_params.is_empty() || !m.type_params.is_empty() {
-                            generic_fns.insert(
-                                (Some(en.name.clone()), m.name.clone()),
-                                (m, Some(owner_header(&en.name, &en.type_params))),
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        let generic_fns = generic_bodies(decls);
         if generic_fns.is_empty() {
             return;
         }
@@ -836,7 +797,7 @@ impl<'a> OwnershipChecker<'a> {
         for decl in decls {
             for stmt in decl_body(decl) {
                 rask_ast::visit::walk_stmt(stmt, &mut |e| {
-                    if let Some(job) = self.linear_instance_at(e, &generic_fns, &HashMap::new(), None) {
+                    if let Some(job) = self.instance_at(e, &generic_fns, &HashMap::new(), None, true) {
                         queue.push_back(job);
                     }
                 });
@@ -861,7 +822,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             for stmt in &job.func.body {
                 rask_ast::visit::walk_stmt(stmt, &mut |e| {
-                    if let Some(inner) = self.linear_instance_at(e, &generic_fns, &job.subst, Some(&job)) {
+                    if let Some(inner) = self.instance_at(e, &generic_fns, &job.subst, Some(&job), true) {
                         queue.push_back(inner);
                     }
                 });
@@ -869,15 +830,92 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// A call to a program generic with a linear type argument, once `outer`
-    /// (the caller's own substitution, if it is a generic being re-checked) is
-    /// applied.
-    fn linear_instance_at<'d>(
+    /// conc.sync/SH9 in a generic body. `take` on a `Shared<T>` empties the
+    /// box, which is sound only when `T` is consumed exactly once. The body
+    /// can't promise that, so each call that fixes `T` is asked instead, and a
+    /// call supplying an `i64` is the one reported. A generic calling a generic
+    /// passes its `T` on, the same way `check_linear_instantiations` does.
+    fn check_generic_takes(&mut self, decls: &[Decl]) {
+        let generic_fns = generic_bodies(decls);
+        let mut takes: HashMap<*const FnDecl, Vec<(String, Span)>> = HashMap::new();
+        for (func, _) in generic_fns.values() {
+            for stmt in &func.body {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    let ExprKind::MethodCall { object, method, args, .. } = &e.kind else { return };
+                    if method != "take" || !args.is_empty() {
+                        return;
+                    }
+                    let payload = self
+                        .node_ty(&object.id)
+                        .and_then(|t| self.program.types.shared_payload(t));
+                    if let Some(Type::UnresolvedNamed(p)) = payload {
+                        if is_type_param_name(p) {
+                            takes.entry(*func as *const FnDecl).or_default().push((p.clone(), e.span));
+                        }
+                    }
+                });
+            }
+        }
+        if takes.is_empty() {
+            return;
+        }
+
+        let mut queue: std::collections::VecDeque<InstanceJob> = std::collections::VecDeque::new();
+        for decl in decls {
+            for stmt in decl_body(decl) {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(job) = self.instance_at(e, &generic_fns, &HashMap::new(), None, false) {
+                        queue.push_back(job);
+                    }
+                });
+            }
+        }
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        while let Some(job) = queue.pop_front() {
+            if !seen.insert((callee_label(&job), render_subst(&job.subst, self.program))) {
+                continue;
+            }
+            for (param, take_at) in takes.get(&(job.func as *const FnDecl)).into_iter().flatten() {
+                let Some(arg) = job.subst.get(param) else { continue };
+                // Still a parameter: the caller is generic itself, and its
+                // own callers are the ones that fix it.
+                // An error or an open variable was reported where it came from.
+                if matches!(arg, Type::UnresolvedNamed(n) if is_type_param_name(n))
+                    || matches!(arg, Type::Error | Type::Var(_))
+                    || self.program.types.is_linear_value(arg)
+                {
+                    continue;
+                }
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::TakeInGenericInstance {
+                        chain: job.chain.clone(),
+                        param: param.clone(),
+                        type_arg: format!("{}", self.program.types.resolve_type_names(arg)),
+                        take_at: *take_at,
+                    },
+                    span: job.call_span,
+                });
+            }
+            for stmt in &job.func.body {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(inner) = self.instance_at(e, &generic_fns, &job.subst, Some(&job), false) {
+                        queue.push_back(inner);
+                    }
+                });
+            }
+        }
+    }
+
+    /// A call to a program generic, once `outer` (the caller's own
+    /// substitution, if it is a generic being re-checked) is applied. With
+    /// `linear_only`, only one that has a linear type argument.
+    fn instance_at<'d>(
         &self,
         e: &Expr,
         generic_fns: &GenericBodies<'d>,
         outer: &HashMap<String, Type>,
         from: Option<&InstanceJob>,
+        linear_only: bool,
     ) -> Option<InstanceJob<'d>> {
         if !matches!(e.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             return None;
@@ -915,7 +953,7 @@ impl<'a> OwnershipChecker<'a> {
                 subst.insert(b.param.clone(), rask_types::substitute_type(&b.ty, outer));
             }
         }
-        if !subst.values().any(|t| self.program.types.is_linear_value(t)) {
+        if linear_only && !subst.values().any(|t| self.program.types.is_linear_value(t)) {
             return None;
         }
         let label = match owner.as_ref().and_then(TypeExpr::name) {
@@ -7657,6 +7695,52 @@ fn decl_body(decl: &Decl) -> Vec<&Stmt> {
 /// the body, and the header of the type it's declared on.
 type GenericBodies<'d> = HashMap<(Option<String>, String), (&'d FnDecl, Option<TypeExpr>)>;
 
+/// Every generic function and method body in `decls`, keyed by owner and name.
+fn generic_bodies(decls: &[Decl]) -> GenericBodies<'_> {
+    let mut generic_fns: GenericBodies = HashMap::new();
+    for d in decls {
+        match &d.kind {
+            DeclKind::Fn(f) if !f.type_params.is_empty() => {
+                generic_fns.insert((None, f.name.clone()), (f, None));
+            }
+            DeclKind::Impl(i) => {
+                let Some(ty) = i.target_ty.name() else { continue };
+                let header_generic = !i.target_ty.args().is_empty();
+                for m in &i.methods {
+                    if header_generic || !m.type_params.is_empty() {
+                        generic_fns.insert(
+                            (Some(ty.clone()), m.name.clone()),
+                            (m, Some(i.target_ty.clone())),
+                        );
+                    }
+                }
+            }
+            DeclKind::Struct(st) => {
+                for m in &st.methods {
+                    if !st.type_params.is_empty() || !m.type_params.is_empty() {
+                        generic_fns.insert(
+                            (Some(st.name.clone()), m.name.clone()),
+                            (m, Some(owner_header(&st.name, &st.type_params))),
+                        );
+                    }
+                }
+            }
+            DeclKind::Enum(en) => {
+                for m in &en.methods {
+                    if !en.type_params.is_empty() || !m.type_params.is_empty() {
+                        generic_fns.insert(
+                            (Some(en.name.clone()), m.name.clone()),
+                            (m, Some(owner_header(&en.name, &en.type_params))),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    generic_fns
+}
+
 /// How a re-checked body is named to the reader: `forget`, `Holder.drop_it`.
 fn callee_label(job: &InstanceJob) -> String {
     job.chain.last().cloned().unwrap_or_else(|| job.func.name.clone())
@@ -7766,4 +7850,10 @@ fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
 /// A parameter declared as `Link<T>`.
 fn is_written_link(ty: &Option<TypeExpr>) -> bool {
     ty.as_ref().is_some_and(|t| t.name().as_deref() == Some("Link") && !t.args().is_empty())
+}
+
+/// PC1: a single uppercase letter names a type parameter.
+fn is_type_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
 }

@@ -3857,6 +3857,27 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            TakeInGenericInstance { chain, param, type_arg, take_at } => {
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let via = if chain.len() > 1 {
+                    format!(" (reached through {})", chain.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(" → "))
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!(
+                    "`{}` takes a `Shared<{}>` apart, and this call gives it `{}` = `{}`",
+                    func, param, param, type_arg
+                ))
+                .with_code("E0920")
+                .with_primary(self.span, format!("`{}` = `{}` here{}", param, type_arg, via))
+                .with_secondary(*take_at, format!("`take` empties the box, in `{}`", func))
+                .with_fix(format!(
+                    "use `replace` in `{}` if any `{}` should work, or call it with a box holding a resource",
+                    func, param
+                ))
+                .with_why("`take` empties the box, which is only sound on the last handle. A `Shared` is single-handle only when its value must be consumed, and the body is checked against each type it's called with [conc.sync/SH9]")
+            }
+
             LinearInGenericInstance { chain, type_args, inner, inner_span } => {
                 let func = chain.last().map(String::as_str).unwrap_or("?");
                 let what = match inner.as_ref() {

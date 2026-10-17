@@ -46,6 +46,20 @@ func local() -> i64 {
     return c.close()
 }
 
+// Checked per call: `T` is a `Conn` at every call here.
+func unbox<T>(take s: Shared<T>) -> T {
+    return s.take()
+}
+
+func relay<U>(take s: Shared<U>) -> U {
+    return unbox(s)
+}
+
+test "conc.sync — take in a generic body" {
+    assert unbox(Shared.new(Conn(id: 3))).close() == 3
+    assert relay(Shared.new(Conn(id: 4))).close() == 4
+}
+
 test "conc.sync — take under each strategy" {
     assert readers() == 2
     assert mutex() == 20

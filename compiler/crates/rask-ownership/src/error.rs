@@ -608,6 +608,17 @@ pub enum OwnershipErrorKind {
         type_name: String,
     },
 
+    /// conc.sync/SH9: a generic body `take`s a `Shared<T>`, and this call
+    /// fixes `T` to a value that isn't consumed exactly once.
+    #[error("`take` needs a `Shared` holding a resource, and this call gives `{param}` = `{type_arg}`")]
+    TakeInGenericInstance {
+        /// Generic functions from the call down to the one that takes.
+        chain: Vec<String>,
+        param: String,
+        type_arg: String,
+        take_at: Span,
+    },
+
     /// mem.linear/L1–L2 per instantiation (#1366): a generic body that is fine
     /// for an ordinary `T` drops or reuses one, and this call makes `T` linear.
     /// Reported at the call, since the call is what made it wrong.
