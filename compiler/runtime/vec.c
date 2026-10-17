@@ -1009,18 +1009,15 @@ static void rask_stable_sort(void *base, int64_t n, int64_t size,
     rask_realloc(buf, rask_safe_mul(n, size), 0);
 }
 
-static int rask_i64_compare(const void *a, const void *b) {
-    int64_t va = *(const int64_t *)a;
-    int64_t vb = *(const int64_t *)b;
-    if (va < vb) return -1;
-    if (va > vb) return 1;
-    return 0;
-}
+void rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 
+// sort(vec) when lowering knows nothing better: by the signed integer at the
+// front of each element, no wider than the element itself.
 void rask_vec_sort(RaskVec *v) {
-    vec_check_no_borrows(v, "sort");
-    if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
+    if (!v) return;
+    int64_t width = 8;
+    while (width > v->elem_size && width > 1) width /= 2;
+    rask_vec_sort_scalar(v, RASK_DEBUG_ELEM_I64, width);
 }
 
 // sort(vec) for Vec<string> — lexicographic, the same order `<` gives.
@@ -1179,6 +1176,9 @@ typedef int64_t (*RaskCmpFn128)(int64_t env, __int128 a, __int128 b);
 
 static __thread int64_t rask_sort_comparator;
 static __thread int64_t rask_sort_pass;
+// How wide one compared value is. A narrow element is only that wide, so a
+// word read of it takes its neighbour's bytes too (#985).
+static __thread int64_t rask_sort_width;
 
 // Call the comparator on the elements stored at `a` and `b`, the way
 // `rask_sort_pass` says it takes them; returns the Ordering tag.
@@ -1194,8 +1194,13 @@ static int64_t rask_sort_call(const char *a, const char *b) {
         memcpy(&wb, b, sizeof wb);
         return ((RaskCmpFn128)code)(env, wa, wb);
     }
-    default:
-        return ((RaskCmpFn)code)(env, *(const int64_t *)a, *(const int64_t *)b);
+    default: {
+        int64_t wa = 0, wb = 0;
+        size_t n = rask_sort_width < 8 ? (size_t)rask_sort_width : 8;
+        memcpy(&wa, a, n);
+        memcpy(&wb, b, n);
+        return ((RaskCmpFn)code)(env, wa, wb);
+    }
     }
 }
 
@@ -1217,6 +1222,7 @@ void rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass) {
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
     rask_sort_pass = pass;
+    rask_sort_width = v->elem_size;
     rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
@@ -1263,6 +1269,7 @@ void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_
     rask_sort_pass = pass;
     rask_key_data = keys->data;
     rask_key_size = keys->elem_size;
+    rask_sort_width = keys->elem_size;
     rask_stable_sort(order, n, (int64_t)sizeof(int64_t), rask_sort_keys_adapter);
     rask_key_data = NULL;
 
