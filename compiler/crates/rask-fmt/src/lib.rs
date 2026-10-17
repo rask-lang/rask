@@ -299,6 +299,13 @@ mod tests {
     }
 
     #[test]
+    fn extern_attributes_stay_where_they_were_written() {
+        let input = "@no_io\nextern \"C\" func a()\n\n@no_io\nextern \"C\" {\n    func b()\n    @deny(x)\n    func c()\n}\n";
+        let output = format_source(input);
+        assert_eq!(output, input, "a block's attributes go above it, a member's beside it: {}", output);
+    }
+
+    #[test]
     fn returns_original_on_parse_error() {
         let broken = "func {{{ invalid syntax";
         let output = format_source(broken);

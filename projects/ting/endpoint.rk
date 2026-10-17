@@ -13,34 +13,27 @@
 // Native only. `extern "C"` needs a C ABI, which the interpreter doesn't have.
 
 import net
-import net.Datagram
 import net.UdpSocket
 import io.IoError
 import string.cstring
 
-extern "C" func ting_quic_new(local: *u8, remote: *u8) -> *u8
+// None of these touch a file or a socket: ngtcp2 is a state machine, and the
+// socket is this file's.
+@no_io
+extern "C" {
+    func ting_quic_new(local: *u8, remote: *u8) -> *u8
+    func ting_quic_free(quic: *u8)
+    func ting_quic_receive(quic: *u8, pkt: *u8, len: i64, from: *u8) -> i64
+    func ting_quic_send(quic: *u8, peer: *u8, data: *u8, len: i64, reliable: i64) -> i64
+    func ting_quic_next_packet(quic: *u8, out: *u8, cap: i64, to: *u8, to_cap: i64) -> i64
+    func ting_quic_next_message(quic: *u8, out: *u8, cap: i64, from: *u8, from_cap: i64, reliable: *i64) -> i64
+    func ting_quic_connected(quic: *u8, peer: *u8) -> i64
+    func ting_quic_unacked(quic: *u8, peer: *u8) -> i64
+}
 
-extern "C" func ting_quic_free(quic: *u8)
-
-extern "C" func ting_quic_receive(quic: *u8, pkt: *u8, len: i64, from: *u8) -> i64
-
-extern "C" func ting_quic_send(quic: *u8, peer: *u8, data: *u8, len: i64, reliable: i64) -> i64
-
-extern "C" func ting_quic_next_packet(quic: *u8, out: *u8, cap: i64, to: *u8, to_cap: i64) -> i64
-
-extern "C" func ting_quic_next_message(quic: *u8, out: *u8, cap: i64, from: *u8, from_cap: i64, reliable: *i64) -> i64
-
-extern "C" func ting_quic_connected(quic: *u8, peer: *u8) -> i64
-
-extern "C" func ting_quic_unacked(quic: *u8, peer: *u8) -> i64
-
-extern "C" func malloc(size: usize) -> *u8
-
-extern "C" func free(ptr: *u8)
-
-/// Scratch for one datagram or one message.
+/// Room for one datagram or one message.
 const BUF: i64 = 65536
-/// Scratch for one "ip:port".
+/// Room for one "ip:port".
 const ADDR: i64 = 64
 /// The largest UDP payload ngtcp2 is told to write.
 const PACKET: i64 = 1200
@@ -51,13 +44,19 @@ public struct Message {
     public reliable: bool
 }
 
+/// Where C writes what it hands back: a packet or a message, the address it
+/// goes to or came from, and whether a message was reliable.
+struct Scratch {
+    bytes: Vec<u8>
+    addr: Vec<u8>
+    reliable: Vec<i64>
+}
+
 @resource
 public struct Endpoint {
     socket: UdpSocket
     quic: *u8
-    buf: *u8
-    addr: *u8
-    flag: *i64
+    out: Scratch
 }
 
 extend Endpoint {
@@ -75,20 +74,16 @@ extend Endpoint {
     }
 
     func start(take socket: UdpSocket, server: string) -> Endpoint or IoError {
-        mut ep = Endpoint(socket: socket, quic: nullptr, buf: nullptr, addr: nullptr, flag: nullptr)
+        mut ep = Endpoint(
+            socket: socket
+            quic: nullptr
+            out: Scratch(bytes: zeroed(BUF), addr: zeroed(ADDR), reliable: [0])
+        )
         ensure ep.close()
         let local = ep.socket.local_addr()
-        ep.buf = unsafe malloc(BUF.wrap<usize>())
-        ep.addr = unsafe malloc(ADDR.wrap<usize>())
-        ep.flag = unsafe malloc(8).cast<i64>()
         let here = c_text(local)
         let there = c_text(server)
-        if server.is_empty() {
-            let none_ptr: *u8 = nullptr
-            ep.quic = unsafe ting_quic_new(here.as_ptr(), none_ptr)
-        } else {
-            ep.quic = unsafe ting_quic_new(here.as_ptr(), there.as_ptr())
-        }
+        ep.quic = unsafe ting_quic_new(here.as_ptr(), if server.is_empty() { nullptr } else { there.as_ptr() })
         if ep.quic.is_null() {
             return IoError.Other("not an address QUIC can use: {local} / {server}")
         }
@@ -100,13 +95,8 @@ extend Endpoint {
     }
 
     public func close(take self) -> void or IoError {
-        unsafe {
-            if !self.quic.is_null() {
-                ting_quic_free(self.quic)
-            }
-            free(self.buf)
-            free(self.addr)
-            free(self.flag.cast<u8>())
+        if !self.quic.is_null() {
+            unsafe ting_quic_free(self.quic)
         }
         try self.socket.close()
         return
@@ -114,17 +104,11 @@ extend Endpoint {
 
     /// Queue `data` for `to`. It leaves on the next `flush`. Fails when there
     /// is no connection to `to`: a server has one once that client has sent.
-    public func send(mutate self, to: string, take data: Vec<u8>, reliable: bool) -> void or IoError {
-        if data.len().wrap<i64>() > BUF {
-            return IoError.Other("a message of {data.len()} bytes is more than {BUF}")
-        }
-        put_bytes(self.buf, data)
+    @no_io
+    public func send(mutate self, to: string, data: Vec<u8>, reliable: bool) -> void or IoError {
         let peer = c_text(to)
-        mut kind: i64 = 0
-        if reliable {
-            kind = 1
-        }
-        let r = unsafe ting_quic_send(self.quic, peer.as_ptr(), self.buf, data.len().wrap<i64>(), kind)
+        let kind: i64 = if reliable { 1 } else { 0 }
+        let r = unsafe ting_quic_send(self.quic, peer.as_ptr(), data.as_ptr(), data.len().wrap<i64>(), kind)
         if r < 0 {
             return IoError.Other("no connection to {to}")
         }
@@ -135,12 +119,12 @@ extend Endpoint {
     /// acks, timers that came due.
     public func flush(mutate self) -> void or IoError {
         loop {
-            let n = unsafe ting_quic_next_packet(self.quic, self.buf, PACKET, self.addr, ADDR)
+            let n = unsafe ting_quic_next_packet(self.quic, self.out.bytes.as_mut_ptr(), PACKET, self.out.addr.as_mut_ptr(), ADDR)
             if n <= 0 {
                 return
             }
-            let to = read_text(self.addr)
-            try self.socket.send_to(get_bytes(self.buf, n), to)
+            let to = unsafe string.from_c(self.out.addr.as_ptr())
+            try self.socket.send_to(self.out.bytes.take(n.wrap<usize>()).to_vec(), to)
         }
     }
 
@@ -148,86 +132,54 @@ extend Endpoint {
     /// return the messages that are now delivered.
     public func poll(mutate self) -> Vec<Message> or IoError {
         loop {
-            let next = try self.socket.try_receive_from()
-            if next is Datagram as d {
-                put_bytes(self.buf, d.data)
-                let from = c_text(d.from)
-                // A packet ngtcp2 can't read is dropped, as QUIC drops them.
-                unsafe ting_quic_receive(self.quic, self.buf, d.data.len().wrap<i64>(), from.as_ptr())
-            } else {
+            let d = try self.socket.try_receive_from() ?? {
                 break
             }
+            let from = c_text(d.from)
+            // A packet ngtcp2 can't read is dropped, as QUIC drops them.
+            unsafe ting_quic_receive(self.quic, d.data.as_ptr(), d.data.len().wrap<i64>(), from.as_ptr())
         }
-        mut out: Vec<Message> = []
+        mut got: Vec<Message> = []
         loop {
-            let n = unsafe ting_quic_next_message(self.quic, self.buf, BUF, self.addr, ADDR, self.flag)
+            let n = unsafe ting_quic_next_message(self.quic, self.out.bytes.as_mut_ptr(), BUF, self.out.addr.as_mut_ptr(), ADDR, self.out.reliable.as_mut_ptr())
             if n < 0 {
-                return out
+                return got
             }
-            let reliable = unsafe *self.flag == 1
-            out.push(Message(from: read_text(self.addr), data: get_bytes(self.buf, n), reliable: reliable))
+            got.push(Message(
+                from: unsafe string.from_c(self.out.addr.as_ptr())
+                data: self.out.bytes.take(n.wrap<usize>()).to_vec()
+                reliable: self.out.reliable[0] == 1
+            ))
         }
     }
 
     /// Whether the handshake with `peer` is done.
+    @no_io
     public func connected(self, peer: string) -> bool {
         let p = c_text(peer)
         return unsafe ting_quic_connected(self.quic, p.as_ptr()) == 1
     }
 
     /// Reliable messages to `peer` not yet acknowledged.
+    @no_io
     public func unacked(self, peer: string) -> i64 {
         let p = c_text(peer)
         return unsafe ting_quic_unacked(self.quic, p.as_ptr())
     }
 }
 
-// ─── Bytes across the C boundary ────────────────────────────
-// A Vec<u8> isn't laid out as C bytes, so they're copied one at a time.
-
-func put_bytes(p: *u8, data: Vec<u8>) -> void {
-    mut i: i64 = 0
-    for b in data {
-        unsafe {
-            let q = p.offset(i)
-            *q = b
-        }
-        i = i + 1
+/// `n` zero bytes, for C to write into.
+func zeroed(n: i64) -> Vec<u8> {
+    mut v: Vec<u8> = Vec.with_capacity(n.wrap<usize>())
+    for _ in 0..n {
+        v.push(0)
     }
-    return
-}
-
-func get_bytes(p: *u8, n: i64) -> Vec<u8> {
-    mut out: Vec<u8> = []
-    mut i: i64 = 0
-    while i < n {
-        out.push(unsafe *p.offset(i))
-        i = i + 1
-    }
-    return out
-}
-
-/// The NUL-terminated text C wrote at `p`.
-func read_text(p: *u8) -> string {
-    mut bytes: Vec<u8> = []
-    mut i: i64 = 0
-    loop {
-        let b = unsafe *p.offset(i)
-        if b == 0u8 {
-            break
-        }
-        bytes.push(b)
-        i = i + 1
-    }
-    let text = string.from_utf8(bytes) catch e => {
-        return ""
-    }
-    return text
+    return v
 }
 
 /// `s` as a C string. An address never holds a NUL, so this can't fail.
 func c_text(s: string) -> cstring {
-    let c = s.to_cstring() catch e => {
+    let c = s.to_cstring() catch _ => {
         panic("an address held a NUL byte: {s}")
     }
     return c
