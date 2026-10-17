@@ -50,6 +50,24 @@ mod tests {
         Parser::new(lex_result.tokens).parse()
     }
 
+    /// An attribute above `extern` reaches the declaration, and one above a
+    /// block reaches every member. They used to be parsed and dropped, so
+    /// `@no_io` on a C function did nothing.
+    #[test]
+    fn extern_declarations_keep_their_attributes() {
+        let result = parse("@no_io\nextern \"C\" func a()\n\n@no_io\nextern \"C\" {\n    func b()\n    @deny(x)\n    func c()\n}\n");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let attrs: Vec<(String, Vec<String>)> = result.decls.iter().filter_map(|d| match &d.kind {
+            DeclKind::Extern(e) => Some((e.name.clone(), e.attrs.iter().map(|a| a.name().to_string()).collect())),
+            _ => None,
+        }).collect();
+        assert_eq!(attrs, vec![
+            ("a".to_string(), vec!["no_io".to_string()]),
+            ("b".to_string(), vec!["no_io".to_string()]),
+            ("c".to_string(), vec!["no_io".to_string(), "deny".to_string()]),
+        ]);
+    }
+
     /// Parse source and return the statements from the first function body.
     fn parse_body(src: &str) -> Vec<rask_ast::stmt::Stmt> {
         let wrapped = format!("func __test__() {{\n{}\n}}", src);

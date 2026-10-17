@@ -141,6 +141,8 @@ pub struct ExternDecl {
     /// blocks in a row have different offsets, so this groups members without
     /// merging blocks that were written apart.
     pub block_start: Option<usize>,
+    /// Attributes written above it, or above its `extern` block: `@no_io`.
+    pub attrs: Vec<crate::attr::Attr>,
 }
 
 /// A function declaration.

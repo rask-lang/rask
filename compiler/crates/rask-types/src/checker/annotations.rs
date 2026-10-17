@@ -228,6 +228,9 @@ impl TypeChecker {
                     self.check_attachment_site(&f.attrs, "func", decl.span, &declared);
                     self.check_signature_types(f, &declared);
                 }
+                DeclKind::Extern(e) => {
+                    self.check_attachment_site(&e.attrs, "func", decl.span, &declared);
+                }
                 DeclKind::Impl(i) => {
                     for m in &i.methods {
                         self.check_attachment_site(&m.attrs, "method", m.span, &declared);
@@ -258,6 +261,7 @@ impl TypeChecker {
                 DeclKind::Test(t) => (&t.attrs, decl.span),
                 DeclKind::Benchmark(b) => (&b.attrs, decl.span),
                 DeclKind::Const(c) => (&c.attrs, decl.span),
+                DeclKind::Extern(e) => (&e.attrs, decl.span),
                 _ => (&[], decl.span),
             };
             self.check_allow_attrs(attrs, span);

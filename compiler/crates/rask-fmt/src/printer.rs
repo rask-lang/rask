@@ -1274,6 +1274,7 @@ impl<'a> Printer<'a> {
     }
 
     fn format_extern_decl(&mut self, e: &ExternDecl) {
+        self.emit_extern_attrs(e);
         self.emit_indent();
         self.emit("extern \"");
         self.emit(&e.abi);
@@ -1284,8 +1285,19 @@ impl<'a> Printer<'a> {
     /// One member of an `extern "C" { … }` — no `extern "C"` of its own, the
     /// block already said it.
     fn format_extern_member(&mut self, e: &ExternDecl) {
+        self.emit_extern_attrs(e);
         self.emit_indent();
         self.format_extern_signature(e);
+    }
+
+    /// One line per attribute, above the declaration. Attributes written
+    /// above a block were given to each member, so they come back on each.
+    fn emit_extern_attrs(&mut self, e: &ExternDecl) {
+        for attr in &e.attrs {
+            self.emit_indent();
+            self.emit_attr(attr);
+            self.emit_newline();
+        }
     }
 
     fn format_extern_signature(&mut self, e: &ExternDecl) {
