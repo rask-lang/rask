@@ -261,17 +261,7 @@ impl MirType {
             MirType::Struct(sid) => sid.byte_size,
             MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
-            MirType::Tuple(fields) => {
-                let mut offset = 0u32;
-                for f in fields {
-                    let align = f.align();
-                    offset = (offset + align - 1) & !(align - 1);
-                    offset += f.size();
-                }
-                // Round up to max alignment
-                let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
-                (offset + max_align - 1) & !(max_align - 1)
-            }
+            MirType::Tuple(fields) => Self::tuple_layout(fields).1,
             MirType::InterfaceObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(inner) => {
                 // The niche is one word: the value *is* the option, and `none`
@@ -304,6 +294,21 @@ impl MirType {
             }
             MirType::SimdVector { elem, lanes } => elem.size() * lanes,
         }
+    }
+
+    /// Where each field of a tuple sits, and the tuple's size: each field at
+    /// its own alignment, the whole rounded up to the widest.
+    pub fn tuple_layout(fields: &[MirType]) -> (Vec<u32>, u32) {
+        let mut offsets = Vec::with_capacity(fields.len());
+        let mut offset = 0u32;
+        for f in fields {
+            let align = f.align();
+            offset = (offset + align - 1) & !(align - 1);
+            offsets.push(offset);
+            offset += f.size();
+        }
+        let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
+        (offsets, (offset + max_align - 1) & !(max_align - 1))
     }
 
     /// Alignment of this type in bytes.

@@ -5547,15 +5547,34 @@ impl<'a> FunctionBuilder<'a> {
                         // non-NULL path: Some(payload copied from ptr)
                         builder.switch_to_block(else_block);
                         builder.seal_block(else_block);
-                        // A plain byte copy is right for every payload now that the
-                        // runtime slot and the Option payload agree on width: both
-                        // hold a float as f64. This used to need a load-and-demote
-                        // special case for f32, because the two sides disagreed and
-                        // the copy handed an f32 read the stored double's zero low
-                        // half — `m.get(k)` on a `Map<K, f32>` answered 0 for every
-                        // hit (#629).
-                        let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
-                        Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, payload_size);
+                        // A scalar sits in the collection at its own width and
+                        // in the Option payload as a full word (an f32 as an
+                        // f64), so it's loaded and widened. A byte copy of the
+                        // payload's width ran past a narrow element into its
+                        // neighbours (#985). Anything else is the same bytes in
+                        // both places, as wide as the element.
+                        let inner = ctx.locals.iter()
+                            .find(|l| l.id == *dst_id)
+                            .and_then(|l| match &l.ty {
+                                MirType::Option(inner) => Some(inner.as_ref().clone()),
+                                _ => None,
+                            });
+                        // An i128 is a scalar wider than the word an integer
+                        // payload otherwise widens to, and keeps its width.
+                        let scalar = inner.as_ref().and_then(|t| {
+                            let store = Self::scalar_payload_store_type(t).ok()??;
+                            let elem = mir_to_cranelift_type(t).ok()?;
+                            Some((elem, if elem.bits() > store.bits() { elem } else { store }))
+                        });
+                        if let (Some((elem_ty, store_ty)), Some(inner)) = (scalar, inner.as_ref()) {
+                            let loaded = builder.ins().load(elem_ty, MemFlags::new(), ptr, 0);
+                            let widened = Self::convert_value(builder, loaded, elem_ty, store_ty, Some(inner));
+                            Self::build_some(builder, *ss, widened);
+                        } else {
+                            let payload_size = *slot_size - crate::layouts::PAYLOAD_OFFSET as u32;
+                            let elem_size = inner.as_ref().map_or(payload_size, |t| t.size().min(payload_size));
+                            Self::build_wrapped_aggregate(builder, *ss, false, 0, ptr, elem_size);
+                        }
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -5596,31 +5615,13 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 CallAdapt::PopOutParam(ss) => {
-                    // Value was written to stack slot by callee.
-                    //
-                    // A float has to be loaded as one. The widening below reads
-                    // a mismatched type as a *number* to convert, not as bits to
-                    // reinterpret, so an integer load of a double came out as
-                    // its bit pattern: `Shared<f64>.local(1.5).replace(2.5)`
-                    // answered 4609434218613702700. Integers keep the word load
-                    // — the callee always writes a full one — and narrow on the
-                    // way into the destination.
-                    //
-                    // An `f32` slot holds a promoted double, so it reads eight
-                    // bytes wide and demotes, which is the pair `load_scalar_slot`
-                    // and `value_to_ptr` already agree on. A four-byte read got
-                    // the double's zero low half and `Shared<f32>.replace` came
-                    // back 0.
+                    // The callee wrote the element at its own width, so read it
+                    // at the destination's: a word read of a `Vec<u8>` element
+                    // took seven bytes of whatever the slot held before.
                     let want = dst_local
                         .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
-                        .filter(|t| t.is_float())
                         .unwrap_or(types::I64);
-                    if want == types::F32 {
-                        let wide = builder.ins().stack_load(types::F64, ss, 0);
-                        builder.ins().fdemote(types::F32, wide)
-                    } else {
-                        builder.ins().stack_load(want, ss, 0)
-                    }
+                    builder.ins().stack_load(want, ss, 0)
                 }
                 CallAdapt::OptionOutParam(ss) => {
                     // Payload is already in place; 1 means it's there (tag 0),
@@ -8109,41 +8110,28 @@ impl<'a> FunctionBuilder<'a> {
     /// Store a value to a stack slot and return its address.
     /// Used for pointer-based calling convention (typed runtime API).
     ///
-    /// An f32 is widened to f64 first, so a float always occupies the whole
-    /// 8-byte slot — the same convention struct fields use. `load_scalar_slot`
-    /// is the matching read. Without agreeing on one width, `v.push(1.5)` on a
-    /// `Vec<f32>` wrote 8 bytes of double (a float literal materializes as f64
-    /// when the callee's declared parameter isn't a float type) while
-    /// `v.push(a)` on an `f32` local wrote 4, and the 4-byte read back got the
-    /// double's zero low half — printing 0 for the literal and the right value
-    /// for the local (#629).
+    /// The value goes in at its own width, because that is the width a
+    /// collection slot holds it at and the runtime copies exactly that many
+    /// bytes (#985). An f32 stays an f32: promoted to a double, a `Vec<f32>`'s
+    /// four-byte slot got the double's zero low half. `load_scalar_slot` is the
+    /// matching read.
     ///
     /// The slot is as wide as the value, and an i128 is sixteen bytes. An
     /// eight-byte slot took the store's high half into whatever Cranelift put
     /// next to it: in a test body that was the spill slot holding a `u128::MAX`
     /// literal, so `assert u[1] == <max>` compared against `0` (#1407).
     fn value_to_ptr(builder: &mut ClifFunctionBuilder, val: Value) -> Value {
-        let stored = if builder.func.dfg.value_type(val) == types::F32 {
-            builder.ins().fpromote(types::F64, val)
-        } else {
-            val
-        };
-        let size = builder.func.dfg.value_type(stored).bytes().max(8);
+        let size = builder.func.dfg.value_type(val).bytes().max(8);
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, size, 0,
         ));
-        builder.ins().stack_store(stored, ss, 0);
+        builder.ins().stack_store(val, ss, 0);
         builder.ins().stack_addr(types::I64, ss, 0)
     }
 
-    /// Load a scalar the runtime stored in an 8-byte slot, as `want`.
-    /// The twin of `value_to_ptr`: a float lives there as f64, so an f32
-    /// destination loads the double and demotes.
+    /// Load a scalar the runtime stored in a collection slot, as `want`. The
+    /// twin of `value_to_ptr`: the slot holds the value at its own width.
     fn load_scalar_slot(builder: &mut ClifFunctionBuilder, ptr: Value, want: Type) -> Value {
-        if want == types::F32 {
-            let wide = builder.ins().load(types::F64, MemFlags::new(), ptr, 0);
-            return builder.ins().fdemote(types::F32, wide);
-        }
         builder.ins().load(want, MemFlags::new(), ptr, 0)
     }
 

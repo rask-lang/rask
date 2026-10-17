@@ -1235,19 +1235,12 @@ int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
     return n == (size_t)len ? len : -1;
 }
 
-// The bytes are gathered first: a `Vec<u8>` gives every element its own 8-byte
-// slot, so its buffer isn't a byte string (#863).
 int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
+    const char *bytes = (const char *)(uintptr_t)rask_vec_as_ptr(v);
     size_t n = fwrite(bytes, 1, (size_t)len, std_stream(which));
-    rask_free(bytes);
     return n == (size_t)len ? len : -1;
 }
 
@@ -1259,12 +1252,12 @@ int64_t rask_io_std_flush(int64_t which) {
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
     RASK_SIM_UNSIMULATED("reading stdin");
-    RaskVec *v = rask_vec_new(8, NULL, 0);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
         if (c == EOF) break;
-        int64_t byte = (unsigned char)c;   // one 8-byte slot, as rask_vec_from_bytes
+        uint8_t byte = (uint8_t)c;
         rask_vec_push(v, &byte);
     }
     return (int64_t)(uintptr_t)v;
@@ -1345,31 +1338,17 @@ int64_t rask_net_read_bytes(int64_t fd) {
 }
 
 // Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
-//
-// The bytes are gathered before the write because a `Vec<u8>` gives every
-// element its own 8-byte slot, so taking element 0's address as the start of a
-// byte buffer sent every second byte as seven NULs: "hello" left as
-// "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
-// per-element read `rask_fwrite_vec` does for files.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
+    const char *bytes = (const char *)(uintptr_t)rask_vec_as_ptr(v);
     int64_t written = 0;
     while (written < len) {
         ssize_t n = sock_write(fd, bytes + written, (size_t)(len - written));
-        if (n < 0) {
-            rask_free(bytes);
-            return -1;
-        }
+        if (n < 0) return -1;
         written += n;
     }
-    rask_free(bytes);
     return 0;
 }
 
@@ -1472,25 +1451,16 @@ int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr) {
         errno = EMSGSIZE;
         return -1;
     }
-    char *bytes = (char *)rask_alloc(len > 0 ? len : 1);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
+    const char *bytes = (const char *)(uintptr_t)rask_vec_as_ptr(v);
     int64_t result;
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) {
-        result = rask_sim_net_send_to(fd, bytes, (size_t)len, host, port_str);
-        rask_free(bytes);
-        return result;
+        return rask_sim_net_send_to(fd, bytes, (size_t)len, host, port_str);
     }
 #endif
     struct sockaddr_storage sa;
     socklen_t sa_len;
-    if (udp_resolve(host, port_str, &sa, &sa_len) != 0) {
-        rask_free(bytes);
-        return -2;
-    }
+    if (udp_resolve(host, port_str, &sa, &sa_len) != 0) return -2;
     for (;;) {
         ssize_t put = sendto((int)fd, bytes, (size_t)len, 0, (struct sockaddr *)&sa, sa_len);
         if (put >= 0) {
@@ -1507,9 +1477,6 @@ int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr) {
             break;
         }
     }
-    int saved = errno;
-    rask_free(bytes);
-    errno = saved;
     return result;
 }
 

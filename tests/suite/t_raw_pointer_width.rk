@@ -23,10 +23,10 @@
 // The values here are all above 127, so a byte that came back sign-extended
 // would show as negative rather than as itself. That is the other half of the
 // same rule (#326, #1127): a narrow read of an unsigned value zero-extends.
-
-extern "C" func malloc(size: usize) -> *u8
-
-extern "C" func free(ptr: *u8)
+//
+// The buffers are `Vec<u8>`s, one byte an element since #985, so the file runs
+// on both backends. It used `malloc` through `extern "C"` before, which the
+// interpreter can't call.
 
 /// U4 wants an unsafe block kept small, so the pointer work lives in wrappers
 /// and the tests below read as ordinary code.
@@ -47,7 +47,8 @@ func byte_at(p: *u8, i: i64) -> u8 {
 }
 
 test "mem.unsafe — a byte write through a *u8 writes one byte" {
-    let p = unsafe malloc(4)
+    mut buf: Vec<u8> = [0, 0, 0, 0]
+    let p = buf.as_mut_ptr()
     fill_bytes(p, 4)
 
     // Every one still holds what it was given: an 8-byte store would have left
@@ -56,7 +57,7 @@ test "mem.unsafe — a byte write through a *u8 writes one byte" {
     assert byte_at(p, 1) == 201.wrap<u8>()
     assert byte_at(p, 2) == 202.wrap<u8>()
     assert byte_at(p, 3) == 203.wrap<u8>()
-    unsafe free(p)
+    assert buf[3] == 203
 }
 
 // The neighbour test: a write to one byte leaves the next one alone. The
@@ -70,21 +71,22 @@ func put_byte(p: *u8, i: i64, v: u8) -> void {
 }
 
 test "mem.unsafe — a byte write leaves its neighbours alone" {
-    let p = unsafe malloc(2)
+    mut buf: Vec<u8> = [0, 0]
+    let p = buf.as_mut_ptr()
     put_byte(p, 0, 1.wrap<u8>())
     put_byte(p, 1, 2.wrap<u8>())
     put_byte(p, 0, 9.wrap<u8>())
     assert byte_at(p, 1) == 2.wrap<u8>()
     assert byte_at(p, 0) == 9.wrap<u8>()
-    unsafe free(p)
+    assert buf[1] == 2
 }
 
 func main() {
-    let p = unsafe malloc(3)
+    mut buf: Vec<u8> = [0, 0, 0]
+    let p = buf.as_mut_ptr()
     put_byte(p, 0, 250.wrap<u8>())
     put_byte(p, 1, 251.wrap<u8>())
     put_byte(p, 2, 252.wrap<u8>())
     println("raw pointer width ok: {byte_at(p, 0)} {byte_at(p, 2)}")
-    unsafe free(p)
     return
 }

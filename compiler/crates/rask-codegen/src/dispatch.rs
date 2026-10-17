@@ -224,7 +224,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Vec_free_view", "rask_vec_free_view", &[types::I64], None, false),
-        StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64, types::I64], None, false),
+        StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         // Giving back the reference a captured variable's slot held, on the way
         // to the slot holding another one. Spelled apart from the refcount
@@ -376,8 +376,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
-            mir_name: "Vec_join_i64", c_name: "rask_vec_join_i64",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            mir_name: "Vec_join_scalar", c_name: "rask_vec_join_scalar",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // `{v:debug}` — the second argument is a RASK_DEBUG_ELEM_* code saying
@@ -969,8 +969,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clear", "rask_map_clear", &[types::I64], None, false),
         StdlibEntry::simple("Map_keys", "rask_map_keys", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_values", "rask_map_values", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Map_iter", "rask_map_entries", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Map_entries", "rask_map_entries", &[types::I64], Some(types::I64), false),
+        // (map, value offset, pair size): the pair is laid out as the tuple
+        // `(K, V)`, which lowering has the layout for.
+        StdlibEntry::simple("Map_entries", "rask_map_entries", &[types::I64, types::I64, types::I64], Some(types::I64), false),
 
         // ── Rack + Link operations (mem.racks) ─────────────────
         // `Rack.new()` has nothing to read `T` off, so the node type's size and
