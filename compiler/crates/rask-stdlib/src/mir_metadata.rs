@@ -812,6 +812,11 @@ pub fn returns_a_view(qualified_name: &str) -> bool {
         // the frame released nothing — and a panicking task's message string
         // was freed by nobody (#1223).
         Some(m) if m.take_self => false,
+        // A raw pointer out of `self` is the address of its storage —
+        // `as_ptr`, `as_mut_ptr`. Read as a plain number, the owner was dead
+        // at its last named use: `c_call(msg.data.as_ptr())` freed `msg`
+        // before C read the bytes.
+        Some(m) if m.takes_self && m.ret_category == RetCategory::Ptr => true,
         Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
         // Unaccounted for: say it points into its receiver. The caller then
         // releases nothing it got back — a leak, where the other guess is a

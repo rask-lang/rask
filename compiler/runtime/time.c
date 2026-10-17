@@ -8,9 +8,6 @@
 
 // Under sim both clocks are virtual (sim/C1): `Instant` starts at 0 and
 // `SystemTime` at 2020-01-01T00:00:00Z, and every read is a scheduling step.
-#ifdef RASK_SIM
-#define SIM_WALL_CLOCK_START_NS (1577836800LL * 1000000000LL)
-#endif
 
 static int64_t clock_monotonic_ns(void) {
 #ifdef RASK_SIM
@@ -33,8 +30,8 @@ int64_t rask_time_Instant_now(void) {
 int64_t rask_time_wall_clock_nanos(void) {
 #ifdef RASK_SIM
     if (rask_sim_active()) {
-        int64_t now = rask_sim_now_ns();
-        return SIM_WALL_CLOCK_START_NS + now + rask_sim_wall_jump_ns();
+        rask_sim_point();
+        return rask_sim_wall_ns();
     }
 #endif
     struct timespec ts;

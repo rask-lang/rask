@@ -14,19 +14,13 @@ use rask_ast::ty::TypeExpr;
 use rask_mono::StructLayout;
 
 impl<'a> MirLowerer<'a> {
-    /// Vec.from([a, b, c]) → store elements into stack array, call rask_vec_from_static
-    pub(super) fn lower_vec_from_array(
-        &mut self,
-        elems: &[Expr],
-    ) -> Result<TypedOperand, LoweringError> {
-        self.lower_vec_from_array_with(elems, None, None)
-    }
-
-    /// `lower_vec_from_array`, told what the elements are.
+    /// `Vec.from([a, b, c])` or a `[a, b, c]` that is a Vec: the elements go
+    /// into a stack array, which `rask_vec_from_static` copies in.
     ///
-    /// The first element's own lowered type is a guess: it can't see that the
-    /// slot wants a `T?`, so `[1, none, 3]` into a `Vec<i64?>` built 8-byte slots
-    /// and dropped every tag. The checker knows, so it says.
+    /// The element type is the checker's. The first element's own lowered type
+    /// is a guess: it can't see that the slot wants a `T?`, so `[1, none, 3]`
+    /// into a `Vec<i64?>` built 8-byte slots and dropped every tag, and an
+    /// untyped integer literal lowers as i32 whatever the Vec holds.
     pub(super) fn lower_vec_from_array_with(
         &mut self,
         elems: &[Expr],
@@ -42,18 +36,10 @@ impl<'a> MirLowerer<'a> {
             }
             lowered.push((op, ty));
         }
-        if let Some(hint) = elem_hint {
+        if let Some(hint) = elem_hint
+            .or_else(|| literal_id.and_then(|id| self.container_elem_mir_type(id, 0)))
+        {
             elem_ty = hint;
-        }
-        // A Vec keeps scalars in 8-byte slots — `Vec.new()` declares elem_size 8
-        // and readers load a whole word per element. An untyped integer literal
-        // lowers as i32, so building the array at its natural 4-byte stride left
-        // storage and readers disagreeing: `Vec.from([1, 2, 3])` summed to
-        // 21474836486 because each 8-byte load straddled two elements (#461).
-        // Widen narrow scalars to the slot width; genuinely wide elements
-        // (string, interface object, aggregates) keep their real size.
-        if elem_ty.size() < 8 && !matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_)) {
-            elem_ty = MirType::I64;
         }
         // A bare `T` filling a `T?` slot gets its layers here, same as an array
         // literal's elements and a struct field's value.
@@ -61,7 +47,7 @@ impl<'a> MirLowerer<'a> {
             .into_iter()
             .map(|(op, val_ty)| self.wrap_collection_element(&elem_ty, &val_ty, op))
             .collect();
-        let elem_size = elem_ty.size();
+        let elem_size = Self::mir_slot_size(&elem_ty) as u32;
         let array_ty = MirType::Array {
             elem: Box::new(elem_ty.clone()),
             len: elems.len() as u32,
@@ -72,7 +58,9 @@ impl<'a> MirLowerer<'a> {
         // store size codegen drops the address into the slot and the reader
         // sees the pointer's bytes as a string. `Vec.from(["ab", "cde"])`
         // reported len 15 for every element that way (#508).
-        let store_size = (elem_size > 8).then_some(elem_size);
+        // A narrow scalar is stored at its own width, the stride the Vec reads
+        // it back at.
+        let store_size = (elem_size != 8).then_some(elem_size);
         for (i, op) in lowered.into_iter().enumerate() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: arr_local,
@@ -902,12 +890,11 @@ impl<'a> MirLowerer<'a> {
     /// The single slot-size authority for a value stored in a collection
     /// (Vec/Map element or key/value, Channel/Shared/Mutex element).
     ///
-    /// Keyed on the resolved `Type` — no type-name string parsing. Delegates to
-    /// the mono layout tables (via `type_to_mir`): scalars occupy an 8-byte slot
-    /// (storing a scalar in a narrower slot truncated it on the i64 load-back),
+    /// Keyed on the resolved `Type`, no type-name string parsing. A scalar sits
+    /// at its own width, so a `Vec<u8>` is a byte buffer C can read (#985);
     /// string is 16, `T?` is `[tag:8][payload]` with the payload floored to a
-    /// word, and aggregates use their computed layout size. `None` when the type
-    /// is still an unresolved variable.
+    /// word, and aggregates use their computed layout size. `None` when the
+    /// type is still an unresolved variable.
     pub(super) fn slot_size_for_type(&self, ty: &rask_types::Type) -> Option<i64> {
         use rask_types::Type;
         match ty {
@@ -930,20 +917,33 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Slot size for an already-lowered `MirType`: scalars and pointers occupy
-    /// one 8-byte slot, string is 16, aggregates use their layout size.
-    pub(super) fn mir_slot_size(ty: &MirType) -> i64 {
-        match ty {
-            MirType::String => 16,
-            MirType::Void => 0,
-            MirType::Bool | MirType::I8 | MirType::U8
-            | MirType::I16 | MirType::U16
-            | MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char
-            | MirType::I64 | MirType::U64 | MirType::F64
-            | MirType::Ptr | MirType::FuncPtr(_) => 8,
-            // Struct/Enum/Tuple/Option/Result/Union/Array/... — layout size.
-            _ => ty.size() as i64,
+    /// A number going into a collection slot, converted to the slot's type.
+    ///
+    /// The runtime copies exactly the slot's width out of the value, so an
+    /// `i32` pushed into a `Vec<i64>` left four bytes of whatever sat beside it
+    /// in the element (#985). Anything that isn't a number pair is unchanged.
+    pub(super) fn into_slot_scalar(
+        &mut self,
+        op: MirOperand,
+        from: &MirType,
+        to: &MirType,
+    ) -> MirOperand {
+        let numeric = |t: &MirType| t.is_int_like() || t.is_float();
+        if from == to || !numeric(from) || !numeric(to) {
+            return op;
         }
+        let cast = self.builder.alloc_temp(to.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: cast,
+            rvalue: MirRValue::Cast { value: op, target_ty: to.clone() },
+        }));
+        MirOperand::Local(cast)
+    }
+
+    /// Slot size for an already-lowered `MirType`: a scalar's own width, string
+    /// is 16, aggregates use their layout size.
+    pub(super) fn mir_slot_size(ty: &MirType) -> i64 {
+        ty.size() as i64
     }
 
     /// Slot size of the Nth generic argument of the collection/box type inferred

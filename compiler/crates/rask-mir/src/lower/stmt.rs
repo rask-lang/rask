@@ -2500,7 +2500,7 @@ impl<'a> MirLowerer<'a> {
             // LP13: a map iterates over its entries. Without this the loop ran
             // `Vec_len`/`Vec_get` straight on the map pointer, and reading a
             // field off whatever came back segfaulted. `Map_entries` snapshots
-            // it as a Vec of 16-byte (key, value) pairs, which the tuple
+            // it as a Vec of (key, value) tuples, which the tuple
             // destructuring below already knows how to read.
             let map_tmp = self.builder.alloc_temp(iter_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2508,12 +2508,9 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Use(iter_op),
             }));
             map_local = Some(map_tmp);
-            let entries_vec = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(entries_vec),
-                func: FunctionRef::internal("Map_entries".to_string()),
-                args: vec![MirOperand::Local(map_tmp)],
-            }));
+            let key_ty = self.container_elem_mir_type(iter_expr.id, 0).unwrap_or(MirType::I64);
+            let val_ty = self.container_elem_mir_type(iter_expr.id, 1).unwrap_or(MirType::I64);
+            let entries_vec = self.map_entries(MirOperand::Local(map_tmp), &key_ty, &val_ty);
             (MirOperand::Local(entries_vec), MirType::I64)
         } else {
             (iter_op, iter_ty)

@@ -2387,12 +2387,6 @@ impl TypeChecker {
             ("Duration", "as_seconds") if args.is_empty() => {
                 self.unify(ret, &Type::U64, span)
             }
-            ("Duration", "from_nanos") if args.len() == 1 => {
-                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-            }
-            ("Duration", "from_millis") if args.len() == 1 => {
-                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-            }
 
             // Instant comparisons
             ("Instant", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {

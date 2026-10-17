@@ -1318,14 +1318,21 @@ impl<'a> MirLowerer<'a> {
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
         )?;
-        let elem_size = Self::mir_slot_size(&final_ty);
+        // The checker's element type sizes the slot when it has one: a chain
+        // over a `Vec<i32>` collected into a `Vec<i64>` produces i32s, and the
+        // Vec has to hold what its type says.
+        let slot_ty = elem.clone()
+            .filter(|t| t.is_int_like() || t.is_float())
+            .unwrap_or_else(|| final_ty.clone());
+        let final_op = self.into_slot_scalar(final_op, &final_ty, &slot_ty);
+        let elem_size = Self::mir_slot_size(&slot_ty);
         if elem_size > 0 {
             let args = vec![
                 MirOperand::Constant(MirConst::Int(elem_size)),
-                crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
+                crate::elem_strs::elem(elem.unwrap_or_else(|| slot_ty.clone())),
             ];
             self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
-            self.collected_elem_types.insert(result_vec, final_ty);
+            self.collected_elem_types.insert(result_vec, slot_ty);
         }
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -1412,7 +1419,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Field {
                 base: final_op,
                 field_index: 1,
-                byte_offset: Some(Self::mir_slot_size(&key_ty) as u32),
+                byte_offset: Some(MirType::tuple_layout(&[key_ty.clone(), val_ty.clone()]).0[1]),
                 access: FieldAccess::Word,
             },
         }));
@@ -2206,19 +2213,15 @@ impl<'a> MirLowerer<'a> {
     ) -> (MirOperand, MirType) {
         let tuple_ty = MirType::Tuple(vec![first.1.clone(), second.1.clone()]);
         let result_local = self.builder.alloc_temp(tuple_ty.clone());
-        let mut offset = 0u32;
-        for (op, ty) in [first, second] {
-            let elem_size = ty.size();
-            let elem_align = ty.align().max(1);
-            offset = (offset + elem_align - 1) & !(elem_align - 1);
+        let (offsets, _) = MirType::tuple_layout(&[first.1.clone(), second.1.clone()]);
+        for ((op, ty), offset) in [first, second].into_iter().zip(offsets) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: result_local,
                 offset,
                 value: op,
-                store_size: Some(elem_size),
+                store_size: Some(ty.size()),
                 field: None,
             }));
-            offset += elem_size;
         }
         (MirOperand::Local(result_local), tuple_ty)
     }

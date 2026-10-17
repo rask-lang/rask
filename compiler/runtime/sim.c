@@ -472,6 +472,17 @@ int rask_sim_draw_sick(int64_t fault_bits, const char *what) {
     return 1;
 }
 
+// A datagram link that loses and repeats packets this run (sim/F1, N1). Not
+// a fault a test opts into: UDP is allowed to do this, and code that breaks
+// on it was already broken. Logged with the sick resources, so the report
+// says which link it was.
+#define BAD_LINK_ONE_IN 10
+int rask_sim_draw_bad_link(const char *what) {
+    if (!g.active || splitmix64(&g.fault) % BAD_LINK_ONE_IN != 0) return 0;
+    log_append(g.sick_log, sizeof(g.sick_log), what);
+    return 1;
+}
+
 int rask_sim_draw_failure(const char *what) {
     if (splitmix64(&g.fault) % FAIL_ONE_IN != 0) return 0;
     char line[512];
@@ -848,6 +859,15 @@ int64_t rask_sim_step(void) {
 
 int64_t rask_sim_time_ns(void) {
     return g.now_ns;
+}
+
+// `SystemTime` starts at 2020-01-01T00:00:00Z (sim/C1) and moves with the
+// virtual clock, plus whatever ClockJump has added. Not a scheduling step:
+// time.c takes the step itself, and linked C reads this from the middle of
+// code that can't be switched away from (sim_libc.c).
+#define SIM_WALL_CLOCK_START_NS (1577836800LL * 1000000000LL)
+int64_t rask_sim_wall_ns(void) {
+    return SIM_WALL_CLOCK_START_NS + g.now_ns + rask_sim_wall_jump_ns();
 }
 
 #endif // RASK_SIM

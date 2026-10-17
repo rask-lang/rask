@@ -211,3 +211,117 @@ extend TcpConnection {
     @native("rask_net_is_unresolved")
     func is_unresolved(self) -> bool {}
 }
+
+// ─── UDP ────────────────────────────────────────────────────
+
+extend net {
+    /// Open a UDP socket bound to a local address. Port 0 picks a free one;
+    /// `local_addr()` says which.
+    public func udp_bind(addr: string) -> UdpSocket or IoError {
+        try net.check_addr(addr)
+        if !net.resolves(addr) {
+            return IoError.Other("could not resolve {addr}")
+        }
+        if net.udp_bind_handle(addr) is UdpSocket as s {
+            return s
+        }
+        return IoError.last_os_error()
+    }
+
+    /// Whether `addr` names an IPv4 address. Asked before the bind because a
+    /// socket is a resource: a bind that answered "invalid" through the
+    /// handle itself had a handle on every path to account for.
+    @native("rask_net_resolves")
+    func resolves(addr: string) -> bool {}
+
+    /// The raw `socket`/`bind`: `none` with errno set when it fails.
+    @native("rask_net_udp_bind")
+    func udp_bind_handle(addr: string) -> UdpSocket? {}
+}
+
+/// One datagram, and who sent it.
+public struct Datagram {
+    public data: Vec<u8>
+    public from: string
+}
+
+/// A UDP socket: whole datagrams, each sent on its own. One may be lost,
+/// arrive twice, or overtake one sent before it.
+@resource
+public struct UdpSocket { }
+
+extend UdpSocket {
+    /// Send `data` as one datagram to `addr`. Fails with `IoError` when it's
+    /// too big to send in one piece.
+    public func send_to(self, data: Vec<u8>, addr: string) -> void or IoError {
+        try net.check_addr(addr)
+        let r = self.send_to_raw(data, addr)
+        if r == -2 {
+            return IoError.Other("could not resolve {addr}")
+        }
+        if r < 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
+
+    /// Wait for the next datagram.
+    public func receive_from(self) -> Datagram or IoError {
+        if self.receive_raw() is Vec<u8> as raw {
+            return try UdpSocket.unpack(raw)
+        }
+        return IoError.last_os_error()
+    }
+
+    /// The next datagram if one has arrived, `none` if not. Doesn't wait:
+    /// for a loop that drains its socket once a tick.
+    public func try_receive_from(self) -> Datagram? or IoError {
+        if self.try_receive_raw() is Vec<u8> as raw {
+            if raw.is_empty() {
+                return none
+            }
+            return try UdpSocket.unpack(raw)
+        }
+        return IoError.last_os_error()
+    }
+
+    /// The runtime appends the sender's address and then its length in one
+    /// byte: [payload][address][length]. So a real datagram is never empty,
+    /// and `try_receive_raw` says "nothing yet" with an empty one.
+    func unpack(take raw: Vec<u8>) -> Datagram or IoError {
+        mut data = raw
+        let n = data.pop()!.wrap<i64>()
+        mut addr: Vec<u8> = Vec.new()
+        mut i = 0
+        while i < n {
+            addr.push(data.pop()!)
+            i = i + 1
+        }
+        addr.reverse()
+        let from = string.from_utf8(addr) catch e => {
+            return IoError.Other("sender address is not valid UTF-8: {e.message()}")
+        }
+        return Datagram(data: data, from: from)
+    }
+
+    /// The address this socket is bound to, as "ip:port".
+    @native("rask_net_local_addr")
+    public func local_addr(self) -> string {}
+
+    /// Close the socket.
+    @native("rask_net_close")
+    public func close(take self) -> void or IoError {}
+
+    /// 0 when sent, -1 with errno set, -2 when `addr` doesn't resolve.
+    @native("rask_net_udp_send_to")
+    func send_to_raw(self, data: Vec<u8>, addr: string) -> i64 {}
+
+    /// The next datagram with its sender appended (see `receive_from`), or
+    /// `none` with errno set.
+    @native("rask_net_udp_receive")
+    func receive_raw(self) -> Vec<u8>? {}
+
+    /// As `receive_raw`, but an empty Vec when nothing has arrived.
+    @native("rask_net_udp_try_receive")
+    func try_receive_raw(self) -> Vec<u8>? {}
+}

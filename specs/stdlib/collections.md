@@ -381,6 +381,8 @@ vec.as_mut_ptr() -> *T         // unsafe (mutable access)
 Vec.from_raw_parts(ptr, len, cap) -> Vec<T>  // unsafe
 ```
 
+A `Vec<T>`'s elements sit side by side, each `T`'s own size apart, so `as_ptr()` is a C array of `T`: a `Vec<u8>` is a byte buffer and `p.offset(1)` is the next element. I chose that over giving every scalar a word-wide slot, which wasted seven bytes of every byte and made the pointer step disagree with the layout (#985).
+
 ## Error Messages
 
 ```

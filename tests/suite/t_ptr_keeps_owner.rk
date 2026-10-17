@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A pointer from `as_ptr()` keeps what it points into alive while it's used.
+//
+// The struct below was released at its last named use, which is the
+// `as_ptr()` call: nothing after it names `msg`, only the address. So the read
+// through the pointer read freed memory and natively printed 24 for a byte
+// holding 192. A pointer out of `self` is a view of `self`'s storage, the
+// same as `v.get(i)`, and holds the owner the same way.
+
+struct Packet {
+    data: Vec<u8>
+    from: string
+}
+
+func make() -> Packet? {
+    return Packet(data: [192, 1], from: "peer")
+}
+
+func first(p: *u8) -> u8 {
+    return unsafe *p
+}
+
+test "a pointer into a field keeps the struct alive" {
+    let msg = make() ?? {
+        return
+    }
+    let p = unsafe msg.data.as_ptr()
+    assert first(p) == 192
+}
+
+test "a pointer passed straight to a call keeps it alive through the call" {
+    let msg = Packet(data: [7, 8], from: "peer")
+    assert first(unsafe msg.data.as_ptr()) == 7
+}
+
+func main() {
+    let msg = Packet(data: [5], from: "peer")
+    println("owner alive: {first(unsafe msg.data.as_ptr())}")
+}

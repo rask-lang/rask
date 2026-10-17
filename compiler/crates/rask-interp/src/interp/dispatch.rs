@@ -411,6 +411,7 @@ impl Interpreter {
             Value::File(_) => "File".to_string(),
             Value::TcpListener(_) => "TcpListener".to_string(),
             Value::TcpConnection(_) => "TcpConnection".to_string(),
+            Value::UdpSocket(_) => "UdpSocket".to_string(),
             _ => return None,
         })
     }

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// C asking libc for the time, randomness, its pid and memory gets sim's
+// answers (sim/B7, B8). Called from Rask through `extern "C"`, which reaches
+// the same symbols linked C would.
+
+extern "C" func getpid() -> i32
+
+extern "C" func clock_gettime(clock: i32, ts: *i64) -> i32
+
+extern "C" func getrandom(buf: *u8, n: usize, flags: u32) -> isize
+
+extern "C" func malloc(size: usize) -> *u8
+
+extern "C" func free(ptr: *u8)
+
+extern "C" func malloc_usable_size(ptr: *u8) -> usize
+
+func byte_at(p: *u8, i: i64) -> u8 {
+    return unsafe *p.offset(i)
+}
+
+test "libc answers from the seed" {
+    let pid = unsafe getpid()
+    // CLOCK_REALTIME, then CLOCK_MONOTONIC: a timespec is two i64s.
+    let ts = unsafe malloc(16).cast<i64>()
+    unsafe clock_gettime(0, ts)
+    let wall = unsafe *ts
+    unsafe clock_gettime(1, ts)
+    let mono = unsafe *ts
+    unsafe free(ts.cast<u8>())
+    println("pid {pid} wall {wall} mono {mono}")
+
+    let buf = unsafe malloc(8)
+    // A fresh block is poisoned, not zeroed.
+    println("fresh byte {byte_at(buf, 0)}, usable {unsafe malloc_usable_size(buf)}")
+    let n = unsafe getrandom(buf, 8, 0)
+    println("random {n}: {byte_at(buf, 0)} {byte_at(buf, 1)} {byte_at(buf, 2)} {byte_at(buf, 3)}")
+    unsafe free(buf)
+}

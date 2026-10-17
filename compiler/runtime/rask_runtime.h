@@ -259,7 +259,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
 RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
                        const int32_t *str_offs, int64_t n_str_offs);
 void     rask_vec_free_view(RaskVec *v);
-void     rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride);
+void     rask_vec_copy_back(const RaskVec *v, char *dst);
 // A `Vec<u8>` of raw bytes, one 8-byte slot per byte like compiled code's.
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n);
 // Releases every string the elements hold, then the vector itself.
@@ -268,6 +268,7 @@ void     rask_vec_free(RaskVec *v);
 // copying another's elements owns them only after this.
 void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
+int64_t  rask_vec_as_ptr(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
                         const int32_t *str_offs, int64_t n_str_offs);
@@ -599,7 +600,7 @@ uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
-void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+void     rask_vec_join_scalar(RaskStr *out, const RaskVec *src, const RaskStr *sep, int64_t kind);
 
 // How `rask_vec_debug` reads one element. The vector header only carries a
 // width, and a four-byte slot could be an i32, a u32 or an f32 — all three

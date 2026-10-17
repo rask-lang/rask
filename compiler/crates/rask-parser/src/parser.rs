@@ -687,7 +687,7 @@ impl Parser {
             TokenKind::Test => self.parse_test_decl(is_comptime, attrs)?,
             TokenKind::Benchmark => self.parse_benchmark_decl(attrs)?,
             TokenKind::Extern => {
-                let mut members = self.parse_extern_decls(doc)?;
+                let mut members = self.parse_extern_decls(attrs, doc)?;
                 let (first, first_span) = members.remove(0);
                 let pending: Vec<Decl> = members.into_iter().map(|(kind, span)| {
                     let id = self.next_id();
@@ -2540,8 +2540,12 @@ impl Parser {
     /// braces started after every member's span start, and nothing emitted it until
     /// the next declaration came along — below the block, reading as a comment
     /// about that instead (#805).
+    ///
+    /// Attributes above the block apply to every member, and each member may
+    /// carry its own as well.
     fn parse_extern_decls(
         &mut self,
+        attrs: Vec<rask_ast::attr::Attr>,
         doc: Option<String>,
     ) -> Result<Vec<(DeclKind, Span)>, ParseError> {
         let extern_start = self.current().span.start;
@@ -2555,10 +2559,15 @@ impl Parser {
             self.skip_newlines();
             let mut decls = Vec::new();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                let func_doc = self.take_doc();
                 let member_start = self.current().span.start;
+                let mut member_attrs = attrs.clone();
+                while self.check(&TokenKind::At) {
+                    member_attrs.push(self.parse_attribute()?);
+                    self.skip_newlines();
+                }
+                let func_doc = self.take_doc();
                 self.expect(&TokenKind::Func)?;
-                let kind = self.parse_extern_func(&abi, func_doc, Some(extern_start))?;
+                let kind = self.parse_extern_func(&abi, member_attrs, func_doc, Some(extern_start))?;
                 let member_end = self.tokens[self.pos.saturating_sub(1)].span.end;
                 decls.push((kind, self.span(member_start, member_end)));
                 self.skip_newlines();
@@ -2570,7 +2579,7 @@ impl Parser {
         // Single form: extern "C" func name(...)
         let single_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
-        let kind = self.parse_extern_func(&abi, doc, None)?;
+        let kind = self.parse_extern_func(&abi, attrs, doc, None)?;
         let end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(vec![(kind, self.span(single_start, end))])
     }
@@ -2579,7 +2588,13 @@ impl Parser {
     ///
     /// `block_start` is the offset of the `extern` keyword when this member came
     /// from the block form, so the formatter can print the braces back (#805).
-    fn parse_extern_func(&mut self, abi: &str, doc: Option<String>, block_start: Option<usize>) -> Result<DeclKind, ParseError> {
+    fn parse_extern_func(
+        &mut self,
+        abi: &str,
+        attrs: Vec<rask_ast::attr::Attr>,
+        doc: Option<String>,
+        block_start: Option<usize>,
+    ) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
@@ -2616,14 +2631,14 @@ impl Parser {
                 is_comptime: false,
                 is_unsafe: false,
                 abi: Some(abi.to_string()),
-                attrs: vec![],
+                attrs,
                 doc,
                 span: self.span(fn_start, self.tokens[self.pos.saturating_sub(1)].span.end),
                 decl_start: fn_start,
             }));
         }
 
-        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, block_start }))
+        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, block_start, attrs }))
     }
 
 

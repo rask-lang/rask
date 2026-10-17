@@ -310,9 +310,10 @@ impl<'t> InferPass<'t> {
                 if self.effects.contains_key(&e.name) {
                     continue;
                 }
+                let io = !e.attrs.iter().any(|a| a.is("no_io"));
                 self.effects.insert(
                     e.name.clone(),
-                    Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false },
+                    Effects { io, async_: false, grow: false, shrink: false, needs_runtime: false },
                 );
             }
         }
@@ -988,6 +989,7 @@ mod tests {
                 ret_ty: None,
                 doc: None,
                 block_start: None,
+                attrs: vec![],
             }),
             span: sp(),
         }
@@ -1152,6 +1154,16 @@ mod tests {
         let decls = vec![make_extern("c_function")];
         let effects = infer(&decls, &Default::default());
         assert!(effects["c_function"].io, "INF5: extern is conservative IO");
+    }
+
+    #[test]
+    fn extern_marked_no_io_is_not_io() {
+        let mut decl = make_extern("ngtcp2_step");
+        if let DeclKind::Extern(e) = &mut decl.kind {
+            e.attrs.push(rask_ast::attr::Attr::synthetic("no_io", None));
+        }
+        let effects = infer(&[decl], &Default::default());
+        assert!(!effects["ngtcp2_step"].io, "INF5: @no_io takes the IO mark off");
     }
 
     #[test]

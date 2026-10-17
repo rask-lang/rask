@@ -249,11 +249,18 @@ impl Interpreter {
 
     pub(super) fn assign_target(&mut self, target: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &target.kind {
+            // `*p = v` through a raw pointer writes where it points. Peeling the
+            // deref off the way `Owned` wants assigned `v` to `p` itself, so the
+            // pointer became a number and the buffer never saw the write.
+            //
             // mem.owned/OW3: writing through `*owned` is a mutable borrow, and
             // `Owned<T>` is transparent — the binding already holds the T. So
-            // `(*p).x = v` is `p.x = v`, and the deref peels off here. Raw
-            // pointers never reach the interpreter; `unsafe` is native-only.
+            // `(*p).x = v` is `p.x = v`, and the deref peels off here.
             ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, operand } => {
+                let target = self.eval_expr(operand).map_err(|diag| diag.error)?;
+                if let Value::RawPtr(p) = target {
+                    return p.write(value);
+                }
                 self.assign_target(operand, value)
             }
             ExprKind::Ident(name) => {

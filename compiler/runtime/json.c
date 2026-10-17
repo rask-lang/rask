@@ -667,9 +667,8 @@ static const char *json_shape_name(int64_t kind) {
     }
 }
 
-// Writes an integer into a `width`-byte slot. Vec/Map slots are always a full
-// word and readers load a whole word out of them, so a narrow value is
-// sign-extended into the slot rather than left with garbage above it.
+// Writes an integer into a `width`-byte slot: a struct field, or a Vec/Map
+// element at its own width. A word slot takes the value sign-extended.
 static void json_store_int(void *dst, int64_t width, int64_t v) {
     switch (width) {
         case 1: { int8_t  x = (int8_t)v;  memcpy(dst, &x, 1); break; }
