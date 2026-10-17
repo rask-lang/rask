@@ -13,6 +13,39 @@ pub struct Decl {
     pub span: Span,
 }
 
+impl Decl {
+    /// The name this declaration introduces at module level. `None` for one
+    /// that introduces none: an `extend` block, an import, a test.
+    pub fn name(&self) -> Option<&str> {
+        match &self.kind {
+            DeclKind::Fn(f) => Some(&f.name),
+            DeclKind::Struct(s) => Some(&s.name),
+            DeclKind::Enum(e) => Some(&e.name),
+            DeclKind::Interface(t) => Some(&t.name),
+            DeclKind::Const(c) => Some(&c.name),
+            DeclKind::TypeAlias(a) => Some(&a.name),
+            DeclKind::Annotation(a) => Some(&a.name),
+            DeclKind::Union(u) => Some(&u.name),
+            _ => None,
+        }
+    }
+
+    /// `name`, to write.
+    pub fn name_mut(&mut self) -> Option<&mut String> {
+        match &mut self.kind {
+            DeclKind::Fn(f) => Some(&mut f.name),
+            DeclKind::Struct(s) => Some(&mut s.name),
+            DeclKind::Enum(e) => Some(&mut e.name),
+            DeclKind::Interface(t) => Some(&mut t.name),
+            DeclKind::Const(c) => Some(&mut c.name),
+            DeclKind::TypeAlias(a) => Some(&mut a.name),
+            DeclKind::Annotation(a) => Some(&mut a.name),
+            DeclKind::Union(u) => Some(&mut u.name),
+            _ => None,
+        }
+    }
+}
+
 /// The kind of declaration.
 #[derive(Debug, Clone)]
 pub enum DeclKind {

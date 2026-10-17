@@ -124,32 +124,8 @@ pub fn rename_path_head(name: &mut String, new_name: impl Fn(&str) -> Option<Str
     }
 }
 
-pub fn declared_name(decl: &Decl) -> Option<String> {
-    match &decl.kind {
-        DeclKind::Fn(f) => Some(f.name.clone()),
-        DeclKind::Struct(s) => Some(s.name.clone()),
-        DeclKind::Enum(e) => Some(e.name.clone()),
-        DeclKind::Interface(t) => Some(t.name.clone()),
-        DeclKind::Const(c) => Some(c.name.clone()),
-        DeclKind::TypeAlias(a) => Some(a.name.clone()),
-        DeclKind::Annotation(a) => Some(a.name.clone()),
-        DeclKind::Union(u) => Some(u.name.clone()),
-        _ => None,
-    }
-}
-
 pub fn rename_declaration(decl: &mut Decl, map: &HashMap<String, String>) {
-    let name: &mut String = match &mut decl.kind {
-        DeclKind::Fn(f) => &mut f.name,
-        DeclKind::Struct(s) => &mut s.name,
-        DeclKind::Enum(e) => &mut e.name,
-        DeclKind::Interface(t) => &mut t.name,
-        DeclKind::Const(c) => &mut c.name,
-        DeclKind::TypeAlias(a) => &mut a.name,
-        DeclKind::Annotation(a) => &mut a.name,
-        DeclKind::Union(u) => &mut u.name,
-        _ => return,
-    };
+    let Some(name) = decl.name_mut() else { return };
     if let Some(q) = map.get(name.as_str()) {
         *name = q.clone();
     }

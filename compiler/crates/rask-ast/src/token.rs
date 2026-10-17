@@ -78,6 +78,65 @@ impl StrPositions {
     }
 }
 
+/// Every keyword and how it's spelled: the one list. The lexer's tokens are
+/// checked against it, and the parser, the diagnostics and the LSP read it.
+pub const KEYWORDS: &[(TokenKind, &str)] = &[
+    (TokenKind::Func, "func"),
+    (TokenKind::Let, "let"),
+    (TokenKind::Mut, "mut"),
+    (TokenKind::Const, "const"),
+    (TokenKind::Struct, "struct"),
+    (TokenKind::Enum, "enum"),
+    (TokenKind::Interface, "interface"),
+    (TokenKind::Implements, "implements"),
+    (TokenKind::Extend, "extend"),
+    (TokenKind::Public, "public"),
+    (TokenKind::Private, "private"),
+    (TokenKind::Import, "import"),
+    (TokenKind::Return, "return"),
+    (TokenKind::If, "if"),
+    (TokenKind::Else, "else"),
+    (TokenKind::Match, "match"),
+    (TokenKind::For, "for"),
+    (TokenKind::In, "in"),
+    (TokenKind::While, "while"),
+    (TokenKind::Loop, "loop"),
+    (TokenKind::Break, "break"),
+    (TokenKind::Continue, "continue"),
+    (TokenKind::SelectPriority, "select_priority"),
+    (TokenKind::Select, "select"),
+    (TokenKind::With, "with"),
+    (TokenKind::Ensure, "ensure"),
+    (TokenKind::Take, "take"),
+    (TokenKind::MutateKw, "mutate"),
+    (TokenKind::Where, "where"),
+    (TokenKind::As, "as"),
+    (TokenKind::Is, "is"),
+    (TokenKind::Bool(true), "true"),
+    (TokenKind::Bool(false), "false"),
+    (TokenKind::Unsafe, "unsafe"),
+    (TokenKind::Extern, "extern"),
+    (TokenKind::Comptime, "comptime"),
+    (TokenKind::Type, "type"),
+    (TokenKind::None, "none"),
+    (TokenKind::Nullptr, "nullptr"),
+    (TokenKind::Using, "using"),
+    (TokenKind::Export, "export"),
+    (TokenKind::Lazy, "lazy"),
+    (TokenKind::Asm, "asm"),
+    (TokenKind::Native, "native"),
+    (TokenKind::Test, "test"),
+    (TokenKind::Benchmark, "benchmark"),
+    (TokenKind::Assert, "assert"),
+    (TokenKind::Check, "check"),
+    (TokenKind::Try, "try"),
+    (TokenKind::Catch, "catch"),
+    (TokenKind::Or, "or"),
+    (TokenKind::Union, "union"),
+    (TokenKind::Discard, "discard"),
+    (TokenKind::Void, "void"),
+];
+
 /// The kind of token.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
@@ -209,71 +268,24 @@ pub enum TokenKind {
 
 impl TokenKind {
     /// Returns a human-readable name for this token kind.
+    /// How this token is spelled, when it's a keyword.
+    pub fn keyword(&self) -> Option<&'static str> {
+        KEYWORDS.iter().find(|(k, _)| k == self).map(|(_, spelling)| *spelling)
+    }
+
     pub fn display_name(&self) -> &'static str {
+        if let Some(word) = self.keyword() {
+            return quoted_keyword(word);
+        }
         match self {
             // Literals
             TokenKind::Int(_, _) => "a number",
             TokenKind::Float(_, _) => "a number",
             TokenKind::String(..) => "a string",
             TokenKind::Char(_) => "a character",
-            TokenKind::Bool(_) => "'true' or 'false'",
 
             // Identifier
             TokenKind::Ident(_) => "a name",
-
-            // Keywords
-            TokenKind::Func => "'func'",
-            TokenKind::Let => "'let'",
-            TokenKind::Mut => "'mut'",
-            TokenKind::Const => "'const'",
-            TokenKind::Struct => "'struct'",
-            TokenKind::Enum => "'enum'",
-            TokenKind::Interface => "'interface'",
-            TokenKind::Implements => "'implements'",
-            TokenKind::Extend => "'extend'",
-            TokenKind::Public => "'public'",
-            TokenKind::Import => "'import'",
-            TokenKind::Return => "'return'",
-            TokenKind::If => "'if'",
-            TokenKind::Else => "'else'",
-            TokenKind::Match => "'match'",
-            TokenKind::For => "'for'",
-            TokenKind::In => "'in'",
-            TokenKind::While => "'while'",
-            TokenKind::Loop => "'loop'",
-            TokenKind::Break => "'break'",
-            TokenKind::Continue => "'continue'",
-            TokenKind::Select => "'select'",
-            TokenKind::SelectPriority => "'select_priority'",
-            TokenKind::With => "'with'",
-            TokenKind::Ensure => "'ensure'",
-            TokenKind::Take => "'take'",
-            TokenKind::MutateKw => "'mutate'",
-            TokenKind::Where => "'where'",
-            TokenKind::As => "'as'",
-            TokenKind::Is => "'is'",
-            TokenKind::Unsafe => "'unsafe'",
-            TokenKind::Extern => "'extern'",
-            TokenKind::Comptime => "'comptime'",
-            TokenKind::Type => "'type'",
-            TokenKind::None => "'None'",
-            TokenKind::Nullptr => "'nullptr'",
-            TokenKind::Using => "'using'",
-            TokenKind::Export => "'export'",
-            TokenKind::Lazy => "'lazy'",
-            TokenKind::Asm => "'asm'",
-            TokenKind::Native => "'native'",
-            TokenKind::Test => "'test'",
-            TokenKind::Benchmark => "'benchmark'",
-            TokenKind::Assert => "'assert'",
-            TokenKind::Check => "'check'",
-            TokenKind::Try => "'try'",
-            TokenKind::Catch => "'catch'",
-            TokenKind::Or => "'or'",
-            TokenKind::Private => "'private'",
-            TokenKind::Union => "'union'",
-            TokenKind::Discard => "'discard'",
-            TokenKind::Void => "'void'",
 
             // Operators
             TokenKind::Plus => "'+'",
@@ -333,6 +345,20 @@ impl TokenKind {
             TokenKind::Newline => "end of line",
             TokenKind::Eof => "end of file",
             TokenKind::DocComment(_) => "doc comment",
+            // `KEYWORDS` has every keyword; the lexer's test holds it to that.
+            keyword => unreachable!("{keyword:?} is a keyword missing from KEYWORDS"),
         }
     }
+}
+
+/// `'func'` for `func`, built once per keyword.
+fn quoted_keyword(word: &'static str) -> &'static str {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static QUOTED: OnceLock<HashMap<&'static str, String>> = OnceLock::new();
+    QUOTED
+        .get_or_init(|| KEYWORDS.iter().map(|(_, w)| (*w, format!("'{w}'"))).collect())
+        .get(word)
+        .map(String::as_str)
+        .unwrap_or(word)
 }

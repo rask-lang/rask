@@ -647,7 +647,7 @@ fn check_package_scoped(
         let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
         for decl in &decls {
             if !is_public_decl(decl) {
-                if let Some(name) = declared_name(decl) {
+                if let Some(name) = decl.name().map(str::to_string) {
                     private_elsewhere.entry(name).or_default().push((pkg.id, pkg.name.clone(), decl.span));
                 }
             }
@@ -1237,20 +1237,6 @@ fn visible_packages(
         out.insert(binding, map.clone());
     }
     out
-}
-
-fn declared_name(decl: &Decl) -> Option<String> {
-    match &decl.kind {
-        DeclKind::Fn(f) => Some(f.name.clone()),
-        DeclKind::Struct(s) => Some(s.name.clone()),
-        DeclKind::Enum(e) => Some(e.name.clone()),
-        DeclKind::Interface(t) => Some(t.name.clone()),
-        DeclKind::Const(c) => Some(c.name.clone()),
-        DeclKind::TypeAlias(a) => Some(a.name.clone()),
-        DeclKind::Annotation(a) => Some(a.name.clone()),
-        DeclKind::Union(u) => Some(u.name.clone()),
-        _ => None,
-    }
 }
 
 /// Drop diagnostics that land in stdlib source, when the user's own code has

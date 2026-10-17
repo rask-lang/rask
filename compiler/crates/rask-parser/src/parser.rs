@@ -271,7 +271,7 @@ impl Parser {
     fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
         let name = match self.current_kind() {
             TokenKind::Ident(name) => name.clone(),
-            other => match keyword_spelling(other) {
+            other => match other.keyword() {
                 Some(kw) => kw.to_string(),
                 None => return Err(ParseError::expected(
                     "a name",
@@ -807,7 +807,7 @@ impl Parser {
         }
         let name = match self.current_kind() {
             TokenKind::Ident(n) => n.clone(),
-            other => keyword_spelling(other)?.to_string(),
+            other => other.keyword()?.to_string(),
         };
         self.advance();
         self.advance();
@@ -907,7 +907,7 @@ impl Parser {
         let name_tok = &self.tokens[(self.pos + 1).min(self.tokens.len() - 1)];
         let keyword = match &name_tok.kind {
             TokenKind::Ident(_) => return Ok(()),
-            other => keyword_spelling(other),
+            other => other.keyword(),
         };
         let Some(keyword) = keyword else { return Ok(()) };
         let (why, hint) = if starts_an_expression(&name_tok.kind) {
@@ -5677,73 +5677,6 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::Break
             | TokenKind::Continue
     )
-}
-
-/// positions) and to name one in a diagnostic.
-fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
-    Some(match kind {
-        // Control flow
-        TokenKind::If => "if",
-        TokenKind::Else => "else",
-        TokenKind::Match => "match",
-        TokenKind::For => "for",
-        TokenKind::In => "in",
-        TokenKind::While => "while",
-        TokenKind::Loop => "loop",
-        TokenKind::Break => "break",
-        TokenKind::Continue => "continue",
-        TokenKind::Return => "return",
-        // Declarations
-        TokenKind::Func => "func",
-        TokenKind::Let => "let",
-        TokenKind::Mut => "mut",
-        TokenKind::Const => "const",
-        TokenKind::Struct => "struct",
-        TokenKind::Enum => "enum",
-        TokenKind::Interface => "interface",
-        TokenKind::Implements => "implements",
-        TokenKind::Extend => "extend",
-        TokenKind::Import => "import",
-        TokenKind::Type => "type",
-        // Modifiers
-        TokenKind::Public => "public",
-        TokenKind::Private => "private",
-        TokenKind::Take => "take",
-        TokenKind::MutateKw => "mutate",
-        TokenKind::Unsafe => "unsafe",
-        TokenKind::Comptime => "comptime",
-        TokenKind::Native => "native",
-        TokenKind::Export => "export",
-        TokenKind::Using => "using",
-        TokenKind::Lazy => "lazy",
-        // Concurrency
-        TokenKind::Select => "select",
-        TokenKind::With => "with",
-        // Error handling
-        TokenKind::Ensure => "ensure",
-        TokenKind::Try => "try",
-        TokenKind::Catch => "catch",
-        // Testing
-        TokenKind::Test => "test",
-        TokenKind::Benchmark => "benchmark",
-        TokenKind::Assert => "assert",
-        TokenKind::Check => "check",
-        // Operators/keywords
-        TokenKind::As => "as",
-        TokenKind::Is => "is",
-        TokenKind::Where => "where",
-        TokenKind::Or => "or",
-        // Literals/constants
-        TokenKind::Bool(true) => "true",
-        TokenKind::Bool(false) => "false",
-        TokenKind::None => "none",
-        TokenKind::Nullptr => "nullptr",
-        // Other
-        TokenKind::Extern => "extern",
-        TokenKind::Asm => "asm",
-        TokenKind::Discard => "discard",
-        _ => return None,
-    })
 }
 
 /// The six operators P2 refuses to chain: ordering and equality.

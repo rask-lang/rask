@@ -490,6 +490,9 @@ impl Default for ErrorCodeRegistry {
                 "E0337" => ("range step of zero", Type,
                     "A zero step never advances, so the loop would run forever without making progress (ctrl.ranges/SP3). A step's sign also picks the direction: positive counts up, negative counts down. Zero says neither.",
                     "for i in (0..10).step(0) { … }   // error: never advances\n// fix: `.step(2)` to count up by two, `.step(-1)` on a descending range"),
+                "E0338" => ("malformed format template", Syntax,
+                    "A string with `{…}` in it is a format template: each brace pair holds an expression, a positional `{0}`, or an empty `{}` that takes the next argument, optionally followed by `:spec`. An unclosed `{`, a spec that isn't one, an index past the arguments given, or `{}` mixed with `{0}` in one template has no single meaning, so it's rejected where the string is written. A literal brace is `{{` or `}}`.",
+                    "println(\"total: {\")          // error: unclosed `{`\n// fix: println(\"total: {{\")\nformat(\"{} {0}\", a, b)          // error: mixes `{}` with `{0}`\n// fix: format(\"{0} {1}\", a, b)"),
                 "E0339" => ("`.read()`/`.write()` with nothing chained onto it", Type,
                     "Taking a lock on a `Shared` is expression-scoped: the lock is held for the chain it appears in and released at the end of it (mem.borrowing/E5). On its own, with no field access after it, the lock is taken and dropped in the same instant and the value goes nowhere. Chain a field to read one thing, or use `with` when you need several statements under the lock — that form holds it for the block.",
                     "counter.write()             // error: locks, then immediately unlocks\n// fix (one field): counter.write().hits = 0\n// fix (several statements):\nwith counter.write() as c {\n    c.hits = 0\n    c.last = now()\n}"),
@@ -1084,6 +1087,62 @@ mod registry_audit {
              add an entry to codes.rs: {:#?}",
             missing
         );
+    }
+
+    /// The code literals every compiler crate's source emits, with where:
+    /// `with_code("E…")`, and a `code: "E…"` field on an error struct of its
+    /// own. Desugar's format-template errors were E0338 for months while the
+    /// test above, reading `convert.rs` alone, never saw them.
+    fn emitted_anywhere() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut files = Vec::new();
+        for c in std::fs::read_dir(crates).unwrap().flatten() {
+            walk(&c.path().join("src"), &mut files);
+        }
+        let mut out = Vec::new();
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            for (n, line) in text.lines().enumerate() {
+                for marker in ["with_code(\"", "code: \""] {
+                    let mut rest = line;
+                    while let Some(i) = rest.find(marker) {
+                        rest = &rest[i + marker.len()..];
+                        let code: String = rest.chars().take(5).collect();
+                        if code.len() == 5
+                            && matches!(code.as_bytes()[0], b'E' | b'W' | b'R')
+                            && code[1..].bytes().all(|b| b.is_ascii_digit())
+                        {
+                            out.push((code, format!("{}:{}", file.display(), n + 1)));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(out.len() > 200, "read only {} code sites; is the walk finding the crates?", out.len());
+        out
+    }
+
+    #[test]
+    fn every_code_any_crate_emits_can_be_explained() {
+        let registry = ErrorCodeRegistry::default();
+        let mut missing: Vec<String> = emitted_anywhere()
+            .into_iter()
+            .filter(|(code, _)| registry.get(code).is_none())
+            .map(|(code, at)| format!("{code} at {at}"))
+            .collect();
+        missing.sort();
+        assert!(missing.is_empty(), "emitted but not in codes.rs: {missing:#?}");
     }
 
     /// Codes that two or more genuinely different errors both report.

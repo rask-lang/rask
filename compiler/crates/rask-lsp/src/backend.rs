@@ -22,7 +22,7 @@ use tokio::sync::RwLock;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 
-use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::decl::Decl;
 use rask_ast::Span;
 use rask_diagnostics::ToDiagnostic;
 use rask_types::TypedProgram;
@@ -182,7 +182,6 @@ impl PipelineOutput {
         let diag = rask_diagnostics::Diagnostic::error(
             "rask-lsp: analyzer panicked (this is a compiler bug)",
         )
-        .with_code("E9999")
         .with_primary(Span::new(0, 0), "");
         Self {
             version,
@@ -443,15 +442,7 @@ fn build_sibling_names(uri: &Url, ctx: &rask_compiler::PackageContext) -> HashMa
             continue;
         }
         for decl in &file.decls {
-            let name = match &decl.kind {
-                DeclKind::Fn(f) => Some(f.name.clone()),
-                DeclKind::Struct(s) => Some(s.name.clone()),
-                DeclKind::Enum(e) => Some(e.name.clone()),
-                DeclKind::Interface(t) => Some(t.name.clone()),
-                DeclKind::Const(c) => Some(c.name.clone()),
-                DeclKind::Union(u) => Some(u.name.clone()),
-                _ => None,
-            };
+            let name = decl.name().map(str::to_string);
             if let Some(name) = name {
                 names.entry(name).or_insert_with(|| SiblingFile {
                     path: file.path.clone(),

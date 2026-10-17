@@ -34,7 +34,7 @@ use rask_ast::ty::TypeExpr;
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
-use rask_ast::qualify::{self, declared_name};
+use rask_ast::qualify;
 use rask_ast::rewrite::{self, Rewrite};
 
 /// `Cat` in `libpkg` → `Cat_libpkg`.
@@ -58,7 +58,7 @@ pub fn qualified(pkg: &str, name: &str) -> String {
 pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
     for decl in decls.iter() {
-        if let Some(name) = declared_name(decl) {
+        if let Some(name) = decl.name().map(str::to_string) {
             map.insert(name.clone(), qualified(pkg, &name));
         }
     }
@@ -150,7 +150,7 @@ pub fn unqualified_imports(
     let mut clashes = Vec::new();
     let declared: HashMap<String, rask_ast::Span> = decls
         .iter()
-        .filter_map(|d| declared_name(d).map(|n| (n, d.span)))
+        .filter_map(|d| d.name().map(|n| (n.to_string(), d.span)))
         .collect();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
