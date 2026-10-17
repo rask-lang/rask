@@ -35,6 +35,7 @@ extern jmp_buf *rask_panic_jmpbuf(void);
 extern void     rask_panic_activate(void);
 extern char    *rask_panic_take_message(void);
 extern int64_t  rask_next_task_id(void);
+extern int64_t  rask_panic_task_id(void);
 extern void     rask_panic_set_task_id(int64_t id);
 
 // ─── The task record ───────────────────────────────────────
@@ -122,6 +123,7 @@ RaskTask *rask_task_new(void) {
     pthread_mutex_init(&t->report_lock, NULL);
     pthread_mutex_init(&t->wait_lock, NULL);
     pthread_cond_init(&t->wait_idle, NULL);
+    RASK_SIM_TRACE_TASK(rask_panic_task_id(), "spawn", t->task_id, NULL);
     return t;
 }
 
@@ -179,6 +181,7 @@ void rask_task_release(RaskTask *t) {
 // Record how the body ended and wake whoever waits for it. The one ending for
 // every kind of task.
 void rask_task_finish(RaskTask *t, int64_t result, char *panic_msg) {
+    RASK_SIM_TRACE_TASK(t->task_id, panic_msg ? "panic" : "done", -1, panic_msg);
     pthread_mutex_lock(&t->report_lock);
     t->result = result;
     t->panic_msg = panic_msg;
@@ -518,6 +521,7 @@ static void wait_done(RaskTask *t) {
 int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out) {
     RaskTask *t = handle_task(h, "join");
     wait_done(t);
+    RASK_SIM_TRACE_TASK(rask_panic_task_id(), "join", t->task_id, NULL);
 
     int64_t outcome;
     if (atomic_load_explicit(&t->status, memory_order_acquire) == RASK_TASK_PANICKED) {

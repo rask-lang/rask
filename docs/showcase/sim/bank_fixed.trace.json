@@ -1,0 +1,16 @@
+{"test":"an account never goes below zero","test_seed":"6918000853396003295","passed":true,"steps":24,"time_ns":24000,"truncated":false,"replay":"rask test --sim --seed 1 -f 'an account never goes below zero' bank_fixed.rk","events":[
+{"step":0,"task":0,"op":"spawn","other":1},
+{"step":0,"task":0,"op":"spawn","other":2},
+{"step":7,"task":1,"op":"acquire","what":"Shared write","obj":1},
+{"step":7,"task":1,"op":"print","text":"sees 100, sending 80"},
+{"step":7,"task":1,"op":"release","obj":1},
+{"step":7,"task":1,"op":"done"},
+{"step":9,"task":0,"op":"join","other":1},
+{"step":11,"task":2,"op":"acquire","what":"Shared write","obj":1},
+{"step":11,"task":2,"op":"print","text":"sees 20, sending 80"},
+{"step":11,"task":2,"op":"release","obj":1},
+{"step":11,"task":2,"op":"done"},
+{"step":15,"task":0,"op":"join","other":2},
+{"step":24,"task":0,"op":"acquire","what":"Shared read","obj":1},
+{"step":24,"task":0,"op":"release","obj":1}
+]}

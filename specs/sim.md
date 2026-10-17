@@ -162,6 +162,37 @@ FAIL: tags the build
   no simulated implementation for `Command.run`: sim fails here instead of reaching the real machine, which the seed can't replay (sim/B3)
 ```
 
+## Trace
+
+A replay line reproduces a failure; a trace shows it. It's the schedule the seed picked, written down task by task, so the interleaving that broke the test can be read instead of reconstructed from print statements.
+
+| Rule | Description |
+|------|-------------|
+| **TR1: One schedule** | `--trace FILE` writes the schedule of one test under one seed to FILE. It's refused with `--seeds` above 1, with a directory, and when the filter leaves more than one test: a trace is something to replay, so it starts from a replay line |
+| **TR2: What's in it** | Per event: the step it happened at, the task, and what it did. Spawning a task, finishing or panicking, joining one; acquiring and releasing a `Shared` or `Shared<T, Mutex>` the program made; sending and receiving on a channel; and each line the task printed. The objects tasks meet on are numbered by first appearance, so a trace reads the same on every machine |
+| **TR3: Written either way** | The trace is written when the test reports, pass or fail. A deadlock and a spent step budget are failures like any other and leave a trace too. It carries the test's name, its outcome and error, the step count and the replay line |
+| **TR4: Observing doesn't steer** | Recording draws nothing from any stream and adds no scheduling point, so a traced replay takes exactly the schedule the untraced one did |
+
+```
+rask test --sim --seed 9472586925727978214 -f 'never overdrawn' bank.rk --trace bank.json
+```
+
+```json
+{"test":"never overdrawn","passed":false,"steps":21,
+ "error":"bank.rk:32: alice is at -60",
+ "replay":"rask test --sim --seed 9472586925727978214 -f 'never overdrawn' bank.rk",
+ "events":[
+  {"step":6,"task":1,"op":"acquire","what":"Shared read","obj":1},
+  {"step":6,"task":1,"op":"release","obj":1},
+  {"step":8,"task":2,"op":"acquire","what":"Shared read","obj":1},
+  {"step":8,"task":2,"op":"release","obj":1},
+  {"step":9,"task":2,"op":"acquire","what":"Shared write","obj":1},
+  {"step":11,"task":1,"op":"acquire","what":"Shared write","obj":1}
+ ]}
+```
+
+Atomics aren't in it yet. They're scheduling points (S3), but an atomic op with no value attached says little, and a value means formatting every payload type the runtime can hold.
+
 ## Edge Cases
 
 | Case | Behavior | Rule |

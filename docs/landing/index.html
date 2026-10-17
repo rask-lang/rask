@@ -91,8 +91,8 @@ func total(cart: Vec&lt;Item&gt;) -&gt; i64 {
 
 func main() {
     mut cart = Vec.new()
-    cart.push(Item { name: "coffee", price: 45 })
-    cart.push(Item { name: "beans", price: 120 })
+    cart.push(Item(name: "coffee", price: 45))
+    cart.push(Item(name: "beans", price: 120))
 
     println("{cart.len()} items, {total(cart)} kr")
 }</code></pre>
@@ -127,6 +127,14 @@ func main() {
     </div>
 
     <p class="prose">Raw pointers are behind <code>unsafe</code>, same as in Rust, and they are there for talking to C. What neither language gives you is a hand-built pointer graph in safe code: in Rask that shape lives in a <code>Rack</code> and you pay an indirection to reach through a <code>Link</code>. C and C++ hand you the pointers with no ceremony at all, and if that is the trade you want, they are the honest answer.</p>
+</section>
+
+<section class="page">
+    <h2>Finding a race with sim mode</h2>
+    <p class="lede prose">Two tasks take money out of one account at the same time and sometimes overdraw it. A normal test run catches this about once in eight runs. <code>rask test --sim</code> catches it within a few seeds and gives you one that reproduces it every time.</p>
+    <div class="actions">
+        <a class="btn outline" href="/showcase/sim/">See how</a>
+    </div>
 </section>
 
 <section class="page">

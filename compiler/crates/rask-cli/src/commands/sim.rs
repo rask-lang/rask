@@ -29,6 +29,8 @@ pub struct SimOptions {
     /// `--max-steps N`: the scheduling-step budget (sim/S5a). The runtime
     /// holds the default.
     pub max_steps: Option<u64>,
+    /// `--trace FILE`: where the one test's schedule is written (sim/TR1).
+    pub trace: Option<String>,
 }
 
 // ─── Seeds ──────────────────────────────────────────────────
@@ -97,8 +99,15 @@ struct Run {
 /// it, or a block somewhere sim doesn't schedule.
 const WALL_CLOCK_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Where a traced run writes its schedule, and the replay line that goes in
+/// it so the file says how to get it back.
+struct TraceTo<'a> {
+    path: &'a str,
+    replay: String,
+}
+
 /// Run the binary's `index`th test under `seed`.
-fn run_one(bin: &Path, index: usize, seed: u64, max_steps: Option<u64>) -> Run {
+fn run_one(bin: &Path, index: usize, seed: u64, max_steps: Option<u64>, trace: Option<&TraceTo>) -> Run {
     let mut cmd = test_binary_command(bin);
     cmd.env("RASK_SIM_TEST", index.to_string())
         .env("RASK_SIM_SEED", seed.to_string())
@@ -107,6 +116,9 @@ fn run_one(bin: &Path, index: usize, seed: u64, max_steps: Option<u64>) -> Run {
         .stderr(process::Stdio::piped());
     if let Some(n) = max_steps {
         cmd.env("RASK_SIM_MAX_STEPS", n.to_string());
+    }
+    if let Some(t) = trace {
+        cmd.env("RASK_SIM_TRACE", t.path).env("RASK_SIM_TRACE_REPLAY", &t.replay);
     }
     let failed = |error: String| Run {
         passed: false,
@@ -329,6 +341,10 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
         (vec![path.to_string()], true)
     };
 
+    if opts.trace.is_some() && !single {
+        eprintln!("{}: `--trace` records one test — pass its file, not a directory", output::error_label());
+        process::exit(1);
+    }
     let run_seed = opts.seed.unwrap_or_else(entropy_seed);
     if opts.seeds == 1 {
         println!("sim: seed {run_seed}\n");
@@ -399,8 +415,20 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
         .unwrap_or_default();
     let batch = std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(4);
 
+    if opts.trace.is_some() && bin.tests.len() != 1 {
+        eprintln!(
+            "{}: `--trace` records one test, and {} matched here — pick it with `-f`",
+            output::error_label(),
+            bin.tests.len(),
+        );
+        process::exit(1);
+    }
     for (index, (name, _)) in bin.tests.iter().enumerate() {
         let full_name = format!("{stem}::{name}");
+        let trace = opts.trace.as_deref().map(|p| TraceTo {
+            path: p,
+            replay: replay_line(sweep_seed(run_seed, 0, 1), opts.max_steps, name, path),
+        });
         // Distinct failures by message, each with the first seed that hit it
         // (sim/R3).
         let mut distinct: BTreeMap<String, (u64, Run)> = BTreeMap::new();
@@ -415,7 +443,8 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
                         let sweep = sweep_seed(run_seed, i, opts.seeds);
                         let seed = test_seed(sweep, &full_name);
                         let bin_path = &bin.path;
-                        scope.spawn(move || (sweep, run_one(bin_path, index, seed, opts.max_steps)))
+                        let trace = trace.as_ref();
+                        scope.spawn(move || (sweep, run_one(bin_path, index, seed, opts.max_steps, trace)))
                     })
                     .collect();
                 handles.into_iter().map(|h| h.join().expect("sim run thread")).collect()
@@ -450,6 +479,9 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
                 print_failure(name, run, *sweep, opts.max_steps, path);
                 println!();
             }
+        }
+        if let Some(t) = &trace {
+            println!("  trace written to {}", output::file_path(t.path));
         }
     }
 }

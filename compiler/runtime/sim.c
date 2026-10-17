@@ -618,11 +618,208 @@ void rask_sim_unsimulated(const char *fmt, ...) {
                    what);
 }
 
+// ─── Trace (sim/TR1–TR4) ────────────────────────────────────
+//
+// What each task did, step by step, for `rask test --sim --trace`. Recorded
+// only when the runner asked for it; everything here is a no-op otherwise.
+// The run is already single-threaded and replays from its seed, so the trace
+// is just a log appended to as things happen, written once at the end.
+
+extern int64_t rask_panic_task_id(void);
+
+#define TRACE_MAX_EVENTS 200000
+
+static struct {
+    int          on;
+    char        *path;
+    char        *replay;      // the command that reproduces this run
+    char        *buf;
+    size_t       len, cap;
+    int64_t      events;
+    int          truncated;
+    const void  *objs[256];
+    int          nobjs;
+    char         line[1024];
+    size_t       line_len;
+    int64_t      line_task;
+    int          line_open;
+} tr;
+
+int rask_sim_tracing(void) {
+    return tr.on;
+}
+
+static void tr_put(const char *s, size_t n) {
+    if (tr.len + n + 1 > tr.cap) {
+        size_t cap = tr.cap ? tr.cap : 65536;
+        while (tr.len + n + 1 > cap) cap *= 2;
+        char *b = (char *)realloc(tr.buf, cap);
+        if (!b) {
+            fprintf(stderr, "sim: out of memory recording the trace\n");
+            _exit(1);
+        }
+        tr.buf = b;
+        tr.cap = cap;
+    }
+    memcpy(tr.buf + tr.len, s, n);
+    tr.len += n;
+    tr.buf[tr.len] = 0;
+}
+
+static void tr_printf(const char *fmt, ...) {
+    char tmp[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    if (n > 0) tr_put(tmp, (size_t)n < sizeof(tmp) ? (size_t)n : sizeof(tmp) - 1);
+}
+
+static void tr_json_str(const char *s, size_t n) {
+    tr_put("\"", 1);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') {
+            char e[2] = { '\\', (char)c };
+            tr_put(e, 2);
+        } else if (c == '\n') {
+            tr_put("\\n", 2);
+        } else if (c < 0x20) {
+            tr_printf("\\u%04x", c);
+        } else {
+            tr_put((const char *)&s[i], 1);
+        }
+    }
+    tr_put("\"", 1);
+}
+
+// The objects tasks meet on, numbered by first appearance, so a trace names
+// "lock 1" the same way on every machine instead of printing an address.
+static int tr_obj(const void *p) {
+    for (int i = 0; i < tr.nobjs; i++) {
+        if (tr.objs[i] == p) return i + 1;
+    }
+    if (tr.nobjs == (int)(sizeof(tr.objs) / sizeof(tr.objs[0]))) return 0;
+    tr.objs[tr.nobjs++] = p;
+    return tr.nobjs;
+}
+
+// Opens an event object; the caller adds fields and closes it. 0 when the
+// cap is reached, which the written trace says rather than ending silently.
+static int tr_begin(int64_t task, const char *op) {
+    if (tr.events >= TRACE_MAX_EVENTS) {
+        tr.truncated = 1;
+        return 0;
+    }
+    tr_printf("%s\n{\"step\":%lld,\"task\":%lld,\"op\":\"%s\"",
+              tr.events ? "," : "", (long long)g.step, (long long)task, op);
+    tr.events++;
+    return 1;
+}
+
+static void tr_line_flush(void) {
+    if (!tr.line_open) return;
+    tr.line_open = 0;
+    if (!tr_begin(tr.line_task, "print")) return;
+    tr_put(",\"text\":", 8);
+    tr_json_str(tr.line, tr.line_len);
+    tr_put("}", 1);
+    tr.line_len = 0;
+}
+
+void rask_sim_trace(const char *op, const char *what, const void *obj) {
+    if (!tr.on) return;
+    tr_line_flush();
+    if (!tr_begin(rask_panic_task_id(), op)) return;
+    if (what) {
+        tr_put(",\"what\":", 8);
+        tr_json_str(what, strlen(what));
+    }
+    if (obj) tr_printf(",\"obj\":%d", tr_obj(obj));
+    tr_put("}", 1);
+}
+
+void rask_sim_trace_task(int64_t task, const char *op, int64_t other, const char *text) {
+    if (!tr.on) return;
+    tr_line_flush();
+    if (!tr_begin(task, op)) return;
+    if (other >= 0) tr_printf(",\"other\":%lld", (long long)other);
+    if (text) {
+        tr_put(",\"text\":", 8);
+        tr_json_str(text, strlen(text));
+    }
+    tr_put("}", 1);
+}
+
+// A printed line arrives in pieces (`println("a {b}")` is three calls), so
+// the pieces gather here until the newline. A line can't be split by a switch:
+// a task isn't preempted while it holds the print lock.
+void rask_sim_trace_text(const char *s, size_t n) {
+    if (!tr.on) return;
+    int64_t task = rask_panic_task_id();
+    if (tr.line_open && tr.line_task != task) tr_line_flush();
+    tr.line_open = 1;
+    tr.line_task = task;
+    size_t room = sizeof(tr.line) - tr.line_len;
+    if (n > room) n = room;
+    memcpy(tr.line + tr.line_len, s, n);
+    tr.line_len += n;
+}
+
+void rask_sim_trace_line_end(void) {
+    if (!tr.on) return;
+    tr.line_open = 1;
+    tr.line_task = rask_panic_task_id();
+    tr_line_flush();
+}
+
+// Written by test.c as the test reports, pass or fail (sim/TR3).
+void rask_sim_trace_write(const char *name, int passed, const char *error) {
+    if (!tr.on) return;
+    tr_line_flush();
+    FILE *f = fopen(tr.path, "w");
+    if (!f) {
+        fprintf(stderr, "sim: can't write the trace to %s\n", tr.path);
+        return;
+    }
+    char *events = tr.buf;
+    size_t events_len = tr.len;
+    tr.buf = NULL;
+    tr.len = tr.cap = 0;
+    tr_put("{\"test\":", 8);
+    tr_json_str(name ? name : "", name ? strlen(name) : 0);
+    tr_printf(",\"test_seed\":\"%llu\",\"passed\":%s,\"steps\":%lld,\"time_ns\":%lld,\"truncated\":%s",
+              (unsigned long long)g.seed, passed ? "true" : "false",
+              (long long)g.step, (long long)g.now_ns, tr.truncated ? "true" : "false");
+    if (error) {
+        tr_put(",\"error\":", 9);
+        tr_json_str(error, strlen(error));
+    }
+    if (tr.replay) {
+        tr_put(",\"replay\":", 10);
+        tr_json_str(tr.replay, strlen(tr.replay));
+    }
+    fwrite(tr.buf, 1, tr.len, f);
+    fputs(",\"events\":[", f);
+    if (events) fwrite(events, 1, events_len, f);
+    fputs("\n]}\n", f);
+    fclose(f);
+    free(events);
+}
+
 // ─── Test lifecycle (test.c) ────────────────────────────────
 
 static char *sim_argv[] = { "<test>", NULL };
 
 void rask_sim_begin(uint64_t seed, int64_t max_steps) {
+    // Read before the environment is sealed below.
+    const char *trace = getenv("RASK_SIM_TRACE");
+    if (trace && *trace) {
+        tr.path = strdup(trace);
+        tr.on = tr.path != NULL;
+        const char *replay = getenv("RASK_SIM_TRACE_REPLAY");
+        if (replay) tr.replay = strdup(replay);
+    }
     pthread_mutex_lock(&g.lock);
     g.seed = seed;
     g.max_steps = max_steps;

@@ -62,6 +62,21 @@ void   rask_green_thread_tls_swap(void *blob);
 
 int  rask_sim_active(void);
 void rask_sim_point(void);
+
+// The trace `--trace` writes (sim/TR1–TR4). `rask_sim_trace` records an event
+// for the running task; `_task` names the task itself, for the edges of one's
+// life where the running task isn't it. Printed text arrives in pieces and is
+// cut into lines at the newline.
+int  rask_sim_tracing(void);
+void rask_sim_trace(const char *op, const char *what, const void *obj);
+void rask_sim_trace_task(int64_t task, const char *op, int64_t other, const char *text);
+void rask_sim_trace_text(const char *s, size_t n);
+void rask_sim_trace_line_end(void);
+void rask_sim_trace_write(const char *name, int passed, const char *error);
+#define RASK_SIM_TRACE(op, what, obj) \
+    do { if (rask_sim_tracing()) rask_sim_trace((op), (what), (obj)); } while (0)
+#define RASK_SIM_TRACE_TASK(task, op, other, text) \
+    do { if (rask_sim_tracing()) rask_sim_trace_task((task), (op), (other), (text)); } while (0)
 void rask_sim_park(const void *key, const char *what);
 void rask_sim_notify(const void *key);
 void rask_sim_notify_one(const void *key);
@@ -247,6 +262,8 @@ static inline void rask_task_rwlock_unlock(pthread_rwlock_t *l) {
 
 #define RASK_SIM_POINT() ((void)0)
 #define RASK_SIM_UNSIMULATED(...) ((void)0)
+#define RASK_SIM_TRACE(op, what, obj) ((void)0)
+#define RASK_SIM_TRACE_TASK(task, op, other, text) ((void)0)
 
 // Outside sim, a wait on a green fiber parks the fiber and gives its worker
 // back (green.c); anywhere else — the scope's own thread, `Thread.spawn`, a

@@ -107,14 +107,40 @@ void rask_print_unlock_all(void) {
     while (eprint_lock_depth > 0) { eprint_lock_depth--; funlockfile(stderr); }
 }
 
-void rask_print_i64(int64_t val) { rask_fput_i64(stdout, val); }
-void rask_print_bool(int8_t val) { rask_fput_bool(stdout, val); }
-void rask_print_f64(double val) { rask_fput_f64(stdout, val); }
-void rask_print_f32(float val) { rask_fput_f32(stdout, val); }
-void rask_print_char(int32_t codepoint) { rask_fput_char(stdout, codepoint); }
-void rask_print_u64(uint64_t val) { rask_fput_u64(stdout, val); }
-void rask_print_string(const RaskStr *s) { rask_fput_string(stdout, s); }
-void rask_print_newline(void) { putchar('\n'); }
+// Under `--sim --trace`, what a task prints goes into its lane too (sim/TR2).
+// Formatted a second time into memory, so the trace has the exact text the
+// program wrote without stdout being taken over.
+#ifdef RASK_SIM
+#define TRACE_PRINT(put, val) do { \
+        if (rask_sim_tracing()) { \
+            char buf_[128]; \
+            FILE *m_ = fmemopen(buf_, sizeof(buf_), "w"); \
+            if (m_) { put(m_, val); long n_ = ftell(m_); fclose(m_); \
+                      if (n_ > 0) rask_sim_trace_text(buf_, (size_t)n_); } \
+        } \
+    } while (0)
+#else
+#define TRACE_PRINT(put, val) ((void)0)
+#endif
+
+void rask_print_i64(int64_t val) { rask_fput_i64(stdout, val); TRACE_PRINT(rask_fput_i64, val); }
+void rask_print_bool(int8_t val) { rask_fput_bool(stdout, val); TRACE_PRINT(rask_fput_bool, val); }
+void rask_print_f64(double val) { rask_fput_f64(stdout, val); TRACE_PRINT(rask_fput_f64, val); }
+void rask_print_f32(float val) { rask_fput_f32(stdout, val); TRACE_PRINT(rask_fput_f32, val); }
+void rask_print_char(int32_t codepoint) { rask_fput_char(stdout, codepoint); TRACE_PRINT(rask_fput_char, codepoint); }
+void rask_print_u64(uint64_t val) { rask_fput_u64(stdout, val); TRACE_PRINT(rask_fput_u64, val); }
+void rask_print_string(const RaskStr *s) {
+    rask_fput_string(stdout, s);
+#ifdef RASK_SIM
+    if (rask_sim_tracing()) rask_sim_trace_text(rask_string_ptr(s), (size_t)rask_string_len(s));
+#endif
+}
+void rask_print_newline(void) {
+    putchar('\n');
+#ifdef RASK_SIM
+    if (rask_sim_tracing()) rask_sim_trace_line_end();
+#endif
+}
 
 void rask_eprint_i64(int64_t val) { rask_fput_i64(stderr, val); }
 void rask_eprint_bool(int8_t val) { rask_fput_bool(stderr, val); }

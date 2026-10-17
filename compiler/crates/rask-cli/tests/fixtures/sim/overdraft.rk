@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Check-then-act across two `with` blocks: both transfers read 100, both
+// pass the check, both debit. The trace test replays one such seed and
+// reads the interleaving back out of `--trace`.
+import sync.Shared
+
+struct Bank {
+    balances: Vec<i64>
+}
+
+const bank = Shared.new(Bank(balances: [100, 0, 0]))
+
+func transfer(from: i64, to: i64, amount: i64) -> bool {
+    let balance = with bank.read() as b { b.balances[from] }
+    println("sees {balance}")
+    if balance < amount {
+        return false
+    }
+    with bank.write() as b {
+        b.balances[from] -= amount
+        b.balances[to] += amount
+    }
+    return true
+}
+
+test "never overdrawn" {
+    using Multitasking {
+        let a = spawn { transfer(0, 1, 80) }
+        ensure a.detach()
+        let b = spawn { transfer(0, 2, 80) }
+        ensure b.detach()
+        let _ = a.join()!
+        let _ = b.join()!
+    }
+    let alice = with bank.read() as b { b.balances[0] }
+    assert alice >= 0, "alice is at {alice}"
+}
