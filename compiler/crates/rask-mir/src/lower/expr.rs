@@ -6757,6 +6757,7 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Local, "set") => "Cell_set",
             (SharedStrategy::Local, "replace") => "Cell_replace",
             (SharedStrategy::Local, "take") => "Cell_into_inner",
+            (SharedStrategy::Local, "clone") => "Cell_clone",
             (SharedStrategy::Mutex, "try_read" | "try_write") => "Mutex_try_lock",
             (SharedStrategy::Mutex, "clone") => "Mutex_clone",
             // `get`/`set`/`replace` exist under every strategy (CE6), not just

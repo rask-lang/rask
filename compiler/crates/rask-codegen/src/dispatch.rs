@@ -1609,6 +1609,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `rask_shared_free` was in before #1099, and the reason
         // `Shared.local(0)` leaked its cell and its payload.
         StdlibEntry::simple("Cell_drop", "rask_cell_free", &[types::I64], None, false),
+        // Another handle on the same cell. Without it a `Local` clone took the
+        // `Readers` row and bumped a refcount the cell doesn't have.
+        StdlibEntry::simple("Cell_clone", "rask_cell_clone", &[types::I64], Some(types::I64), false),
 
         // ── Char predicates ───────────────────────────────────
         StdlibEntry::simple("char_is_digit", "rask_char_is_digit", &[types::I32], Some(types::I64), false),

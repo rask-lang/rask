@@ -256,6 +256,12 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // two allocations #1099 measured, for the two spellings it didn't test.
     ("Mutex_new", 0, 0, "Mutex_drop"),
     ("Cell_new", 0, 0, "Cell_drop"),
+    // A clone is one more handle on the box, and each handle gives its
+    // reference back when it goes. Without these, `let b = a.clone()` held a
+    // reference nothing released, so the box outlived every handle.
+    ("Shared_clone", 0, 0, "Shared_drop"),
+    ("Mutex_clone", 0, 0, "Mutex_drop"),
+    ("Cell_clone", 0, 0, "Cell_drop"),
     // The clones. These were absent because `clone_elision` can decide a clone
     // is unnecessary and leave the caller's own container in the slot, and
     // freeing that is a double free — `return v.clone()` printed the right

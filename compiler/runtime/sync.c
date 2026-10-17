@@ -444,16 +444,17 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
 
 // ─── Cell ───────────────────────────────────────────────────
 //
-// mem.cell: single-owner interior mutability. No lock — a Cell is not
-// shareable across tasks, so `get`/`set` are a plain copy in and out of a
-// heap slot. The slot keeps the value at a stable address, which is what
-// lets a `const` binding hand out a mutable interior.
+// The `Local` strategy of `Shared`. No lock — a `Local` box never leaves its
+// task, so `get`/`set` are a plain copy in and out of a heap slot, and the
+// handle count needs no atomics. The slot keeps the value at a stable address,
+// which is what lets a `const` binding hand out a mutable interior.
 
 typedef struct {
     RaskBoxHeader header;
     int64_t       data_size;
     void         *data;
     int64_t       payload_kind;
+    int64_t       refcount;
 } RaskCell;
 
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
@@ -464,6 +465,7 @@ int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind)
         .data_size = data_size,
         .data = rask_alloc(data_size),
         .payload_kind = payload_kind,
+        .refcount = 1,
     };
     if (data_ptr) {
         memcpy(c->data, (const void *)(intptr_t)data_ptr, (size_t)data_size);
@@ -517,9 +519,17 @@ void rask_cell_into_inner(int64_t cell, int64_t out) {
     rask_free(c);
 }
 
+int64_t rask_cell_clone(int64_t cell) {
+    RaskCell *c = (RaskCell *)(intptr_t)cell;
+    RASK_CHECK_NONNULL(c, "Shared.clone: cell is null");
+    c->refcount++;
+    return cell;
+}
+
 void rask_cell_free(int64_t cell) {
     RaskCell *c = (RaskCell *)(intptr_t)cell;
     if (!c) return;
+    if (--c->refcount > 0) return;
     box_payload_free(c->payload_kind, c->data);
     rask_free(c->data);
     rask_free(c);

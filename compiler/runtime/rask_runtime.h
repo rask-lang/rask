@@ -1467,6 +1467,7 @@ int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
 void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);
 void    rask_cell_into_inner(int64_t cell, int64_t out);
+int64_t rask_cell_clone(int64_t cell);
 void    rask_cell_free(int64_t cell);
 
 // `get`/`set`/`replace` under each lock — the single-expression shorthand
