@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// What the endpoint promises, checked where the network breaks it: under
+// `rask test --sim`, some seeds give a link that loses, repeats and reorders
+// datagrams (sim/N1). Natively loopback loses nothing, so these pass there
+// without proving much; sim is where they mean something.
+
+import time
+import time.Duration
+
+/// Two endpoints ticking once a millisecond until `done` says so.
+func run_until(mutate a: Endpoint, mutate b: Endpoint, mutate got: Vec<Message>, want: usize) -> void or IoError {
+    mut ticks = 0
+    while got.len() < want {
+        try a.flush()
+        try b.flush()
+        time.sleep(Duration.millis(1))
+        for m in try b.poll() {
+            got.push(m)
+        }
+        // A's poll reads B's acks.
+        try a.poll()
+        ticks = ticks + 1
+        assert ticks < 5000
+    }
+    return
+}
+
+test "reliable messages arrive once and in order, whatever the link does" {
+    mut a = try Endpoint.bind("127.0.0.1:0")
+    ensure a.close()
+    mut b = try Endpoint.bind("127.0.0.1:0")
+    ensure b.close()
+
+    for i in 0..30 {
+        a.send(b.local_addr(), [i.wrap<u8>()], true)
+    }
+    mut got: Vec<Message> = []
+    try run_until(mutate a, mutate b, mutate got, 30)
+
+    assert got.len() == 30
+    for i in 0..30 {
+        assert got[i].reliable
+        assert got[i].data[0] == i.wrap<u8>()
+        assert got[i].from == a.local_addr()
+    }
+}
+
+test "acknowledged messages stop being sent" {
+    mut a = try Endpoint.bind("127.0.0.1:0")
+    ensure a.close()
+    mut b = try Endpoint.bind("127.0.0.1:0")
+    ensure b.close()
+
+    a.send(b.local_addr(), [1u8], true)
+    mut got: Vec<Message> = []
+    try run_until(mutate a, mutate b, mutate got, 1)
+    // Delivered isn't acknowledged yet: B's ack is on its next packet.
+    mut ticks = 0
+    while a.unacked(b.local_addr()) > 0 {
+        try b.flush()
+        time.sleep(Duration.millis(1))
+        try a.poll()
+        ticks = ticks + 1
+        assert ticks < 5000
+    }
+    assert a.unacked(b.local_addr()) == 0
+}

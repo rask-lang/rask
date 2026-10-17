@@ -1,0 +1,316 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// One UDP socket, any number of peers, two kinds of message.
+//
+// A reliable message is sent again in every packet to its peer until a packet
+// carrying it is acknowledged, and handed over in the order it was sent, once.
+// An unreliable one goes in one packet and is forgotten. Both kinds share the
+// packets, so a lost chat line costs a resend and never holds up a position
+// update. Acks ride on every packet too: the newest sequence number seen from
+// the peer, and a bit for each of the 32 before it.
+//
+// Barebones on purpose: no encryption, no handshake, no splitting of a message
+// too big for one packet, no send-rate control. A peer is whoever sends.
+
+import net
+import net.UdpSocket
+import net.Datagram
+import io.IoError
+
+/// Most bytes put in one datagram: under the usual 1280-byte path minimum.
+const MAX_PACKET: usize = 1200
+/// Header: sequence, ack, ack bits, message count.
+const HEADER_BYTES: usize = 13
+/// Per message: kind, id, length.
+const MESSAGE_HEADER: usize = 7
+/// Sent packets remembered for matching acks. One older than this can't be
+/// acknowledged any more, and its reliable messages simply go out again.
+const IN_FLIGHT_KEPT: i64 = 64
+
+public struct Message {
+    public from: string
+    public data: Vec<u8>
+    public reliable: bool
+}
+
+struct Pending {
+    id: i64
+    data: Vec<u8>
+}
+
+struct Sent {
+    seq: i64
+    ids: Vec<i64>
+}
+
+struct Peer {
+    addr: string
+    next_seq: i64
+    // What we've heard from them: the newest sequence, -1 for none yet, and
+    // which of the 32 before it arrived.
+    remote_seq: i64
+    remote_bits: i64
+    // Reliable, sending.
+    next_id: i64
+    unacked: Vec<Pending>
+    in_flight: Vec<Sent>
+    // Reliable, receiving: the next id to hand over, and what arrived early.
+    next_deliver: i64
+    held: Map<i64, Vec<u8>>
+    // Unreliable, waiting for the next flush.
+    outbox: Vec<Vec<u8>>
+}
+
+@resource
+public struct Endpoint {
+    socket: UdpSocket
+    peers: Vec<Peer>
+}
+
+extend Endpoint {
+    public func bind(addr: string) -> Endpoint or IoError {
+        let socket = try net.udp_bind(addr)
+        return Endpoint(socket: socket, peers: [])
+    }
+
+    public func local_addr(self) -> string {
+        return self.socket.local_addr()
+    }
+
+    public func close(take self) -> void or IoError {
+        try self.socket.close()
+        return
+    }
+
+    /// Queue `data` for `to`. It leaves on the next `flush`.
+    public func send(mutate self, to: string, take data: Vec<u8>, reliable: bool) -> void {
+        let p = self.peer_index(to)
+        if reliable {
+            let id = self.peers[p].next_id
+            self.peers[p].next_id = id + 1
+            self.peers[p].unacked.push(Pending(id: id, data: data))
+        } else {
+            self.peers[p].outbox.push(data)
+        }
+    }
+
+    /// Reliable messages to `to` not yet acknowledged.
+    public func unacked(self, to: string) -> i64 {
+        for peer in self.peers {
+            if peer.addr == to {
+                return peer.unacked.len().wrap<i64>()
+            }
+        }
+        return 0
+    }
+
+    /// One packet to every peer: its queued unreliable messages, every
+    /// unacknowledged reliable one that fits, and our acks. A peer with
+    /// nothing to send still gets a packet, so its acks arrive.
+    public func flush(mutate self) -> void or IoError {
+        mut i: usize = 0
+        while i < self.peers.len() {
+            let packet = self.build_packet(i)
+            try self.socket.send_to(packet, self.peers[i].addr)
+            i = i + 1
+        }
+        return
+    }
+
+    /// Every packet that has arrived, without waiting, and what they
+    /// deliver: for a loop that runs once a tick.
+    public func poll(mutate self) -> Vec<Message> or IoError {
+        mut out: Vec<Message> = []
+        loop {
+            let next = try self.socket.try_receive_from()
+            if next is Datagram as d {
+                self.take_packet(d, mutate out)
+            } else {
+                return out
+            }
+        }
+    }
+
+    /// Wait for one packet and return what it delivers.
+    public func receive(mutate self) -> Vec<Message> or IoError {
+        let d = try self.socket.receive_from()
+        mut out: Vec<Message> = []
+        self.take_packet(d, mutate out)
+        return out
+    }
+
+    /// Read one packet's acks and messages. Its unreliable messages, and the
+    /// reliable ones now next in order, go on `out`. A packet too short or cut
+    /// off is dropped where it stops making sense.
+    func take_packet(mutate self, d: Datagram, mutate out: Vec<Message>) {
+        if d.data.len() < HEADER_BYTES {
+            return
+        }
+        let p = self.peer_index(d.from)
+        self.heard(p, get_u32(d.data, 0))
+        self.acked(p, get_u32(d.data, 4), get_u32(d.data, 8))
+
+        let count = d.data[12].wrap<i64>()
+        mut at: usize = HEADER_BYTES
+        mut n = 0
+        while n < count && at + MESSAGE_HEADER <= d.data.len() {
+            let kind = d.data[at]
+            let id = get_u32(d.data, at + 1)
+            let len = get_u16(d.data, at + 5).wrap<usize>()
+            at = at + MESSAGE_HEADER
+            if at + len > d.data.len() {
+                return
+            }
+            let body = d.data.skip(at).take(len).to_vec()
+            at = at + len
+            n = n + 1
+            if kind == 0u8 {
+                out.push(Message(from: d.from, data: body, reliable: false))
+            } else if id >= self.peers[p].next_deliver {
+                self.peers[p].held.insert(id, body)
+            }
+        }
+        // Hand over the reliable run that's complete now.
+        loop {
+            let next = self.peers[p].next_deliver
+            let body = self.peers[p].held.remove(next)
+            if body is Vec<u8> as data {
+                out.push(Message(from: d.from, data: data, reliable: true))
+                self.peers[p].next_deliver = next + 1
+            } else {
+                return
+            }
+        }
+    }
+
+    func peer_index(mutate self, addr: string) -> usize {
+        mut i: usize = 0
+        while i < self.peers.len() {
+            if self.peers[i].addr == addr {
+                return i
+            }
+            i = i + 1
+        }
+        self.peers.push(Peer(
+            addr: addr
+            next_seq: 0
+            remote_seq: -1
+            remote_bits: 0
+            next_id: 0
+            unacked: []
+            in_flight: []
+            next_deliver: 0
+            held: Map.new()
+            outbox: []
+        ))
+        return self.peers.len() - 1
+    }
+
+    /// Note that packet `seq` arrived from peer `p`, for the acks we send.
+    func heard(mutate self, p: usize, seq: i64) {
+        let newest = self.peers[p].remote_seq
+        if newest < 0 {
+            self.peers[p].remote_seq = seq
+            self.peers[p].remote_bits = 0
+        } else if seq > newest {
+            let shift = seq - newest
+            mut bits: i64 = 0
+            if shift <= 32 {
+                bits = (self.peers[p].remote_bits << shift | 1 << shift - 1) & 0xFFFFFFFF
+            }
+            self.peers[p].remote_seq = seq
+            self.peers[p].remote_bits = bits
+        } else if seq < newest && newest - seq <= 32 {
+            self.peers[p].remote_bits = self.peers[p].remote_bits | 1 << newest - seq - 1
+        }
+    }
+
+    /// The peer has our packet `ack`, and each of the 32 before it whose bit
+    /// is set: the reliable messages those carried are delivered.
+    func acked(mutate self, p: usize, ack: i64, bits: i64) {
+        mut i: usize = 0
+        while i < self.peers[p].in_flight.len() {
+            let seq = self.peers[p].in_flight[i].seq
+            let back = ack - seq
+            let got = back == 0 || back > 0 && back <= 32 && (bits & 1 << back - 1) != 0
+            if got {
+                let ids = self.peers[p].in_flight[i].ids
+                self.peers[p].unacked.remove_where(|m| ids.contains(m.id))
+                self.peers[p].in_flight.remove(i.wrap<i64>())
+            } else {
+                i = i + 1
+            }
+        }
+    }
+
+    func build_packet(mutate self, p: usize) -> Vec<u8> {
+        let seq = self.peers[p].next_seq
+        self.peers[p].next_seq = seq + 1
+        mut packet: Vec<u8> = []
+        put_u32(mutate packet, seq)
+        put_u32(mutate packet, self.peers[p].remote_seq)
+        put_u32(mutate packet, self.peers[p].remote_bits)
+        packet.push(0u8)   // message count, set below
+
+        mut count = 0
+        mut ids: Vec<i64> = []
+        for m in self.peers[p].unacked {
+            if count == 255 || packet.len() + MESSAGE_HEADER + m.data.len() > MAX_PACKET {
+                break
+            }
+            put_message(mutate packet, 1u8, m.id, m.data)
+            ids.push(m.id)
+            count = count + 1
+        }
+        let queued = self.peers[p].outbox.take_all().to_vec()
+        for data in queued {
+            if count == 255 || packet.len() + MESSAGE_HEADER + data.len() > MAX_PACKET {
+                break
+            }
+            put_message(mutate packet, 0u8, 0, data)
+            count = count + 1
+        }
+        packet.set(12, count.wrap<u8>())
+
+        if !ids.is_empty() {
+            self.peers[p].in_flight.push(Sent(seq: seq, ids: ids))
+            if self.peers[p].in_flight.len().wrap<i64>() > IN_FLIGHT_KEPT {
+                self.peers[p].in_flight.remove(0)
+            }
+        }
+        return packet
+    }
+}
+
+// ─── Wire ───────────────────────────────────────────────────
+// Little-endian. A sequence of -1 (nothing heard yet) goes out as 0xFFFFFFFF
+// and reads back as a number no packet will ever carry.
+
+func put_message(mutate packet: Vec<u8>, kind: u8, id: i64, data: Vec<u8>) {
+    packet.push(kind)
+    put_u32(mutate packet, id)
+    put_u16(mutate packet, data.len().wrap<i64>())
+    for b in data {
+        packet.push(b)
+    }
+}
+
+func put_u16(mutate out: Vec<u8>, v: i64) {
+    out.push(v.wrap<u8>())
+    out.push((v >> 8).wrap<u8>())
+}
+
+func put_u32(mutate out: Vec<u8>, v: i64) {
+    out.push(v.wrap<u8>())
+    out.push((v >> 8).wrap<u8>())
+    out.push((v >> 16).wrap<u8>())
+    out.push((v >> 24).wrap<u8>())
+}
+
+func get_u16(data: Vec<u8>, at: usize) -> i64 {
+    return data[at].wrap<i64>() | data[at + 1].wrap<i64>() << 8
+}
+
+func get_u32(data: Vec<u8>, at: usize) -> i64 {
+    return data[at].wrap<i64>() | data[at + 1].wrap<i64>() << 8 | data[at + 2].wrap<i64>() << 16 | data[at + 3].wrap<i64>() << 24
+}

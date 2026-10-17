@@ -1,6 +1,6 @@
 <!-- id: ting.overview -->
 <!-- status: proposed -->
-<!-- summary: Ting -- real-time server-to-client multiplayer over QUIC, testable under sim -->
+<!-- summary: Ting -- real-time server-to-client multiplayer over UDP, testable under sim -->
 
 # Ting
 
@@ -14,7 +14,7 @@ Latency can't be removed, only hidden, and every way of hiding it makes the clie
 
 | Problem | Ting |
 |---------|------|
-| TCP stalls everything behind one lost packet | Each message picks its delivery: reliable, or lost-is-fine |
+| TCP stalls everything behind one lost packet | Each message picks reliable or unreliable, and both ride the same UDP packets |
 | Bandwidth | Snapshots are deltas against what the client last acknowledged, filtered by what the client can see |
 | Prediction, interpolation, rewind | The server keeps tick history. The client hooks get the inputs and states they need |
 | Desync and "it only happens at 200 ms with one dropped packet" | The whole stack runs under `rask test --sim`, with packet loss, delay and reordering from the seed |
@@ -26,82 +26,69 @@ The last two are why this is a Rask project and not another netcode library. Gam
 
 ```
 ┌──────────────────────────────────────┐
-│  3. Game       tick loop, snapshots, │  game supplies simulate, relevance,
+│  2. Game       tick loop, snapshots, │  game supplies simulate, relevance,
 │                inputs, history       │  prediction hooks
 ├──────────────────────────────────────┤
-│  2. Channels   Reliable · Unreliable │  what a message needs
-│                · Latest              │
-├──────────────────────────────────────┤
-│  1. QUIC       handshake, crypto,    │  streams + datagrams (RFC 9221)
-│                acks, send rate       │
+│  1. Endpoint   acks, resends,        │  reliable · unreliable
+│                ordering              │
 ├──────────────────────────────────────┤
 │  0. Datagrams  UDP · sim network     │  where packets go
 └──────────────────────────────────────┘
 ```
 
-Each layer only knows the one below. The game layer never sees QUIC; it says what a message needs and the channel layer provides it.
+Each layer only knows the one below.
 
 ### 0. Datagrams
 
-Send a packet, receive a packet. The real implementation is a UDP socket (`std.net/U1`). Under sim it's an in-process network where each link draws its behaviour from the seed: a delay and jitter, a loss rate, reordering, duplication. As with sim's other faults (`sim/F4`), the seed decides per link whether that link is bad for this run, so most runs are clean and some are awful, and the report says which link was which.
+A UDP socket (`std.net/U1`). Under sim it's an in-process network where the seed picks some links to lose, repeat and reorder datagrams for the whole run (`sim/N1`).
 
-### 1. QUIC
+### 1. Endpoint (built)
 
-I use QUIC rather than building reliability over UDP myself. It already does the hard parts: a handshake that can't be used to flood a third party, TLS 1.3, acknowledgements, send-rate control, connections that survive the client's IP changing. It also gives us browsers, through WebTransport.
+`endpoint.rk`. One socket, any number of peers, two kinds of message:
 
-The implementation is a C library with no I/O of its own (ngtcp2 or quiche): Ting hands it packets and the current time, and it hands back packets to send. That is what makes it testable. Sim drives it from the simulated network and the virtual clock. The TLS code underneath asks for random numbers and memory directly, which is why sim has to intercept C's clock, random and `malloc` first (`sim/B7`). Until that's built a QUIC handshake doesn't replay.
+- **Reliable**: sent again in every packet to its peer until a packet carrying it is acknowledged, and handed over once, in the order it was sent.
+- **Unreliable**: goes in one packet and is forgotten.
 
-### 2. Channels
+Both kinds share packets, so a lost chat line costs a resend and never holds up a position update. Every packet carries acks: the newest sequence number heard from the peer and a bit for each of the 32 before it.
 
-Three kinds, picked per message type:
+```rask
+mut ep = try Endpoint.bind("0.0.0.0:7777")
+ensure ep.close()
+ep.send(client, state_bytes, reliable: false)
+try ep.flush()                       // once a tick
+for m in try ep.poll() { ... }       // whatever arrived, without waiting
+```
 
-| Kind | QUIC carries it as | Use |
-|------|-------------------|-----|
-| **Reliable** | One stream per channel | Chat, inventory, joins and leaves, anything that must arrive. Separate channels don't wait on each other |
-| **Unreliable** | A datagram | Fire-and-forget: sounds, effects, redundant input |
-| **Latest** | A datagram with a per-key sequence number | State where only the newest value matters. The receiver drops anything older than what it has |
+`reliability.rk` checks the promise under sim. With every link made bad, 200 runs deliver every reliable message once and in order, while a protocol that trusts UDP fails on its first seed.
 
-A datagram has to fit in one packet (about 1200 bytes). A bigger Unreliable or Latest message is an error, not something Ting quietly splits. Anything that big belongs on a Reliable channel.
+Barebones on purpose: no encryption, no handshake, no splitting of a message too big for one packet, and no send-rate control yet.
 
-### 3. Game
+### 2. Game (not built)
 
-The server runs a fixed tick. The tick rate is configuration, from 10 Hz for a strategy game to 60 or more for a shooter.
+The server runs a fixed tick, from 10 Hz for a strategy game to 60 or more for a shooter.
 
-**Inputs.** The client tags each input with the tick it's for and sends it on an Unreliable channel. Every packet carries the last few inputs too, so one lost packet costs nothing. The server applies inputs at their tick. A late input is applied at the current tick or dropped, and the game decides which.
+**Inputs.** The client tags each input with its tick and sends it unreliable, with the last few inputs repeated in every packet, so one lost packet costs nothing.
 
-**Snapshots.** Each tick the server builds one snapshot per client: what that client can see (the game's relevance function), encoded as a delta against the last snapshot the client acknowledged. Acknowledgements ride back on input packets. A client that missed a few snapshots still decodes the next one, because the server only ever deltas against snapshots it knows arrived.
+**Snapshots.** Each tick the server builds one snapshot per client: what that client can see (the game's relevance function), as a delta against the last snapshot the client acknowledged.
 
-**History.** The server keeps the last N ticks of state. That's what lag compensation rewinds into ("was the target there in the frame the shooter saw?"), and what the game uses to check a client's prediction.
+**History.** The server keeps the last N ticks of state, for lag compensation ("was the target there in the frame the shooter saw?") and for checking a client's prediction.
 
-**What the game supplies:**
+The game supplies `simulate(state, inputs) -> state` for one tick, `relevance(state, client)`, and optional prediction and lag-compensation hooks. If `simulate` is written in Raido, the client can run the same bytecode to predict and the server can re-run any client's prediction bit for bit (`gdl.extensions` describes the same model). Rules in Rask work too, without that check: Rask floats are only deterministic within one binary (`determinism/D12`).
 
-- `simulate(state, inputs) -> state`, one tick
-- `relevance(state, client) -> what that client sees`
-- optional prediction and reconciliation on the client, and lag compensation on the server
+## Why not QUIC
 
-If `simulate` is written in Raido, the client can run the same bytecode to predict, and the server can re-run any client's prediction from the same inputs and get a bit-identical answer. That's both desync detection and anti-cheat (`gdl.extensions`, client scripts, describes the same model). Rules written in Rask work too, without that check, because Rask floats are only deterministic within one binary (`determinism/D12`).
+I wanted QUIC for its encryption and for browsers (WebTransport). The ngtcp2 1.x source I could get comes paired with aws-lc, a BoringSSL fork, and BoringSSL mixes the CPU's RDRAND instruction into its randomness when the CPU has it. Sim can only intercept libc calls (`sim/B7`), and a handshake that doesn't replay breaks the one thing Ting is for. The packaged alternative, ngtcp2 0.12 with GnuTLS, is a pre-1.0 API that newer distributions have already dropped. So the endpoint is our own, and encryption will come from libsodium, which gets its randomness from `getrandom`. QUIC can still arrive later as another layer 0 for browser clients.
 
 ## Clients
 
-Rask can't draw, so real clients will usually be a game engine or a browser. The wire format is specified so any language can implement it, and the client half of the channel and game layers ships as a C library.
-
-A Rask client exists from the start anyway. Bots, load tests and sim tests are all Rask clients, and they're how the stack gets tested.
+Rask can't draw, so real clients will usually be a game engine or a browser. The wire format is specified so any language can implement it. Bots, load tests and sim tests are Rask clients, and they're how the stack gets tested.
 
 ## Not Leden
 
-[Leden](../leden/README.md) is a capability protocol for federated endpoints over reliable streams. Ting is one server, many clients, packets that may get lost. They share no code and Ting doesn't change Leden. Ting borrows one idea: a matchmaker hands the client a signed ticket for one specific server, which is a capability in all but name.
+[Leden](../leden/README.md) is a capability protocol for federated endpoints over reliable streams. Ting is one server, many clients, packets that may get lost. They share no code and Ting doesn't change Leden.
 
-## Order of work
+## Next
 
-1. Sim intercepts C's clock, random and `malloc` (`sim/B7`). Any linked C library needs this, not just QUIC.
-2. UDP in the stdlib and runtime (`std.net/U1`–`U3`), and the simulated datagram network with per-link loss, delay and reordering.
-3. QUIC binding, driven by Ting's own socket and clock.
-4. Channels.
-5. Game layer, with a small example game and a sim test that fails on a dropped packet and replays from its seed.
-
-## Open
-
-- Wire encoding for snapshots and deltas. Probably the Encode/Decode derive (`std.encoding`) with a bit-packed format, but unmeasured.
-- Whether a fixed-point Raido interpreter is fast enough for a client to re-simulate several ticks per frame for many entities. Needs a benchmark before the game layer leans on it.
-- Rollback for fighting games is the game layer plus save/restore of state. Ting provides the history and inputs; whether it should also provide the resimulate loop is open.
-- Browser support depends on WebTransport, which needs HTTP/3 on top of QUIC.
+1. Send-rate control and splitting large reliable messages.
+2. Encryption and a connect handshake (libsodium; a matchmaker-signed connect ticket).
+3. The game layer, with a small example game.

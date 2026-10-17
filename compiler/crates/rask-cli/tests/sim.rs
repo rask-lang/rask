@@ -432,6 +432,17 @@ fn a_bad_link_breaks_a_protocol_that_trusts_udp() {
     assert_eq!(line_with(&again, "assertion failed").trim(), failure);
 }
 
+/// projects/ting's reliable messages arrive once and in order over the same
+/// network that breaks the naive protocol above, across a sweep wide enough
+/// to include bad links. (With every link bad, 200 runs pass too.)
+#[test]
+fn ting_delivers_reliable_messages_over_bad_links() {
+    let ting = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../projects/ting");
+    let (out, code) = sim_in(&ting, &["--seed", "1", "--seeds", "30", "."]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("2 tests, 2 passed, 0 failed (60 runs)"), "{out}");
+}
+
 /// What a run printed, read off its trace (a passing run's output isn't shown).
 fn printed(dir: &Path, seed: &str, file: &str) -> Vec<String> {
     let trace_file = format!("trace.{seed}.json");
