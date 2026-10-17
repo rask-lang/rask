@@ -418,7 +418,7 @@ fn a_bad_link_breaks_a_protocol_that_trusts_udp() {
     let (healthy, code) = sim(&["--seed", "1", "udp.rk"]);
     assert_eq!(code, 0, "seed 1's link is healthy:\n{healthy}");
 
-    let (out, code) = sim(&["--seed", "2", "udp.rk"]);
+    let (out, code) = sim(&["--seed", "6", "udp.rk"]);
     assert_eq!(code, 1, "{out}");
     assert!(
         line_with(&out, "sick this seed").contains("datagrams :49152 → :49153 lost, repeated and reordered"),

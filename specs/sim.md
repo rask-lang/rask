@@ -73,7 +73,7 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | **F4b: What a fault is** | `IoError`: the operation fails with `EIO`. `Disconnect`: the connection is reset — this call fails, the peer's next read fails with `ECONNRESET` rather than reading an end of stream, and every later call on it fails |
 | **F5: All-or-nothing** | An injected error means the operation had no effect. Partial effects come only from the short-read/short-write class, where partial *is* the behavior |
 | **F6: Rendered, not recorded** | The fault log in a failure report is regenerated from the seed. Nothing is stored between runs |
-| **N1: Datagram links** | Each direction between two UDP sockets is a link. The first datagram on it draws whether the link is bad for the run, 1 time in 4, and a bad link is named with the sick resources. A healthy link delays each datagram by up to 0.5 ms and keeps their order. A bad one delays each by up to 5 ms on its own, so they overtake each other, loses 1 in 8 and repeats 1 in 32. Always on, like F1: UDP promises none of this (`std.net/U4`). With `Fault.IoError`, a UDP socket can be sick like any other resource (F4) |
+| **N1: Datagram links** | Each direction between two UDP sockets is a link. The first datagram on it draws whether the link is bad for the run, 1 time in 10, and a bad link is named with the sick resources. A healthy link delays each datagram by up to 0.5 ms and keeps their order. A bad one delays each by up to 5 ms on its own, so they overtake each other, loses 1 in 8 and repeats 1 in 32. Always on, like F1: UDP promises none of this (`std.net/U4`). With `Fault.IoError`, a UDP socket can be sick like any other resource (F4) |
 
 <!-- test: skip -->
 ```rask

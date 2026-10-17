@@ -476,7 +476,7 @@ int rask_sim_draw_sick(int64_t fault_bits, const char *what) {
 // a fault a test opts into: UDP is allowed to do this, and code that breaks
 // on it was already broken. Logged with the sick resources, so the report
 // says which link it was.
-#define BAD_LINK_ONE_IN 4
+#define BAD_LINK_ONE_IN 10
 int rask_sim_draw_bad_link(const char *what) {
     if (!g.active || splitmix64(&g.fault) % BAD_LINK_ONE_IN != 0) return 0;
     log_append(g.sick_log, sizeof(g.sick_log), what);
