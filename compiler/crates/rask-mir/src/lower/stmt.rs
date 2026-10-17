@@ -983,17 +983,7 @@ impl<'a> MirLowerer<'a> {
                             field: None,
                         }));
                     }
-                    // CT49 is a read — `value.("x")` resolves to a field access
-                    // in expression position, and nothing says what writing
-                    // through one means. Both backends reject it; say so in words
-                    // rather than printing the AST at the user.
-                    ExprKind::DynamicField { .. } => {
-                        return Err(LoweringError::InvalidConstruct(
-                            "can't assign through `value.(name)` — comptime field access reads a \
-                             field, it doesn't name one to write to. Write the field directly."
-                                .into(),
-                        ));
-                    }
+                    // The checker rejects every other target (E0916).
                     _ => {
                         return Err(LoweringError::InvalidConstruct(format!(
                             "can't assign to a {} — an assignment target has to be a variable, \

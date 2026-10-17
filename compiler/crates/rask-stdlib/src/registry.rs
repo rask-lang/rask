@@ -106,12 +106,12 @@ const SIMD_METHODS: &[&str] = &[
     "get", "set",
 ];
 
-/// mem.atomics: one type, so one list. Which of these a given payload actually
-/// gets is GA3's business — a `bool` has no `fetch_add` — and the checker
-/// answers that from the payload rather than from a second list here.
-///
-/// `new` and `default` are constructors — they answer on the type, not on a
-/// value, the same way `Shared`'s do, so they aren't here.
+// mem.atomics: one type, so one list. Which of these a given payload actually
+// gets is GA3's business — a `bool` has no `fetch_add` — and the checker
+// answers that from the payload rather than from a second list here.
+//
+// `new` and `default` are constructors — they answer on the type, not on a
+// value, the same way `Shared`'s do, so they aren't here.
 methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
     "load" => [1],
     "store" => [2],

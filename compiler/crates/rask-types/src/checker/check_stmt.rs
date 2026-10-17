@@ -265,6 +265,7 @@ impl TypeChecker {
                 self.in_assign_target = true;
                 let target_ty = self.infer_expr(target);
                 self.in_assign_target = false;
+                self.check_assignment_target(target);
 
                 // `*x = v` requires unsafe only when `x` really is a raw
                 // pointer. Writing through an `Owned` is a mutable borrow
@@ -712,6 +713,38 @@ impl TypeChecker {
         }
     }
 
+    /// The left side of `=` has to name somewhere to store: a variable, a
+    /// field, an index or `*p`. Anything else type-checked and then failed in
+    /// whichever backend ran it, as "invalid assignment target" on the
+    /// interpreter and a lowering error natively.
+    fn check_assignment_target(&mut self, target: &Expr) {
+        use rask_ast::expr::UnaryOp;
+        let what = match &target.kind {
+            ExprKind::Ident(_)
+            | ExprKind::Field { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Unary { op: UnaryOp::Deref, .. } => return,
+            // `s.write() += 1`: the guard with nothing chained, which R5
+            // already has words for.
+            _ if self.is_sync_access(target).is_some() => {
+                self.check_unchained_sync(target, false);
+                return;
+            }
+            ExprKind::MethodCall { .. } => "a method call",
+            ExprKind::Call { .. } => "a function call",
+            ExprKind::DynamicField { .. } => "a comptime field access",
+            ExprKind::OptionalField { .. } => "an optional field access",
+            ExprKind::Int { .. }
+            | ExprKind::Float { .. }
+            | ExprKind::String { .. }
+            | ExprKind::StringInterp { .. }
+            | ExprKind::Bool(_)
+            | ExprKind::Char(_) => "a literal",
+            _ => "this expression",
+        };
+        self.errors.push(TypeError::NotAPlace { what, span: target.span });
+    }
+
     /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.
     /// Only `const x = shared.read().field` (Copy out) is allowed.
     fn check_sync_access_in_binding(&mut self, init: &Expr) {
@@ -879,18 +912,10 @@ impl TypeChecker {
         }
     }
 
-    /// Check if an expression's inferred type is Shared<T> or Mutex<T>.
+    /// `Some("Shared")` when the expression is a `Shared` box.
     pub(super) fn sync_type_of(&self, expr: &Expr) -> Option<String> {
         let ty = self.node_types.get(&expr.id)?;
-        let resolved = self.ctx.apply(ty);
-        match &resolved {
-            Type::UnresolvedGeneric { name, .. }
-                if matches!(name.as_str(), "Shared" | "Mutex") =>
-            {
-                Some(name.clone())
-            }
-            _ => None,
-        }
+        self.is_shared_box(&self.ctx.apply(ty)).then(|| "Shared".to_string())
     }
 
     /// The expression an `ensure` body statement leaves as its result — whatever

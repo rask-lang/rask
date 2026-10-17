@@ -6054,10 +6054,6 @@ impl TypeChecker {
         }
     }
 
-    /// Is this expression's inferred type `Shared<...>`? (Receiver must have
-    /// been inferred already — with-binding sources are.)
-    /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
-    /// for a place that already has the type in hand.
     /// Report every task-local `Shared` (SH7) and every value carrying a link
     /// (`mem.ownership/T2`) a task block reaches.
     ///
@@ -6305,13 +6301,10 @@ impl TypeChecker {
         }
     }
 
-    fn expr_is_shared(&mut self, e: &Expr) -> bool {
-        let Some(t) = self.node_types.get(&e.id).cloned() else { return false };
-        match self.ctx.apply(&t) {
-            Type::Generic { base, .. } => self.types.type_name(base) == "Shared",
-            Type::UnresolvedGeneric { name, .. } => name == "Shared",
-            _ => false,
-        }
+    /// Is this expression's inferred type `Shared<...>`? (Receiver must have
+    /// been inferred already — with-binding sources are.)
+    fn expr_is_shared(&self, e: &Expr) -> bool {
+        self.node_types.get(&e.id).is_some_and(|t| self.is_shared_box(&self.ctx.apply(t)))
     }
 
     /// Check every void-bodied `catch` whose scrutinee's success type was

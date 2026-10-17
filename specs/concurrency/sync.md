@@ -120,7 +120,7 @@ it's safe to reach for:
 <!-- test: skip -->
 ```rask
 let counter = Shared.local(0)
-spawn { counter.write() += 1 }     // compile error, SH7
+spawn { with counter.write() as c { c += 1 } }     // compile error, SH7
 ```
 
 ```

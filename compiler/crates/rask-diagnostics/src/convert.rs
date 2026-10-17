@@ -2931,6 +2931,13 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
 
+            NotAPlace { what, span } => {
+                Diagnostic::error(format!("can't assign to {}", what))
+                    .with_code("E0916")
+                    .with_primary(*span, "this is a value, not somewhere to store one")
+                    .with_fix("assign to a variable (`x = v`), a field (`p.x = v`), an index (`items[i] = v`), or through a pointer (`*p = v`)")
+                    .with_why("an assignment stores into a place that already exists; a call or a literal produces a value, and a new one has nowhere to go")
+            }
             BareSyncAccess { ty, method, span } => {
                 let recv = ty.to_lowercase();
                 Diagnostic::error(format!(

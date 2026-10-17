@@ -1039,6 +1039,13 @@ pub enum TypeError {
     },
 
 
+    /// The left side of `=` names nothing to store into.
+    #[error("can't assign to {what}")]
+    NotAPlace {
+        what: &'static str,
+        span: Span,
+    },
+
     /// E5/R5/MX3: standalone sync access without chaining
     #[error("standalone `.{method}()` on `{ty}` must be chained — use `.{method}().field` or `with` block")]
     BareSyncAccess {
@@ -1748,6 +1755,7 @@ impl TypeError {
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
             | BareSyncAccess { .. }
+            | NotAPlace { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }
