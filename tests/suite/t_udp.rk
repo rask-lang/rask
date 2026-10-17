@@ -3,6 +3,8 @@
 // UDP over loopback (std.net/U1–U2): one datagram there, one back, and the
 // receiver learns who sent each.
 import net
+import net.UdpSocket
+import io.IoError
 
 test "std.net — a datagram arrives whole, with its sender" {
     let a = try net.udp_bind("127.0.0.1:0")
@@ -47,4 +49,44 @@ test "std.net — binding a port that's taken is an IoError" {
     }
     ensure b.close()
     assert false
+}
+
+test "std.net — try_receive_from doesn't wait" {
+    let a = try net.udp_bind("127.0.0.1:0")
+    ensure a.close()
+    let nothing = try a.try_receive_from()
+    assert nothing is none
+    try a.send_to([7u8], a.local_addr())
+    // Loopback hands it over at once natively; under sim it's due within
+    // 0.5 ms, so keep asking until it is.
+    mut got = try a.try_receive_from()
+    while got is none {
+        got = try a.try_receive_from()
+    }
+    assert got!.data[0] == 7u8
+}
+
+// A socket held in a struct field. Natively the field was sized at zero bytes
+// (UdpSocket's declaration is an empty struct standing in for a handle), so
+// the struct held nothing and every call through it used a garbage fd.
+@resource
+struct Holder {
+    socket: UdpSocket
+    n: i64
+}
+
+extend Holder {
+    func close(take self) -> void or IoError {
+        try self.socket.close()
+        return
+    }
+}
+
+test "std.net — a UdpSocket in a struct field is the socket" {
+    let h = Holder(socket: try net.udp_bind("127.0.0.1:0"), n: 1)
+    ensure h.close()
+    assert h.socket.local_addr() != "unknown"
+    try h.socket.send_to([5u8], h.socket.local_addr())
+    let d = try h.socket.receive_from()
+    assert d.data[0] == 5u8
 }

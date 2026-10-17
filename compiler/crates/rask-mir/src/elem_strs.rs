@@ -336,6 +336,7 @@ pub const WRAPPED_CTORS: &[(&str, &str)] = &[
     ("File_read_bytes_raw", "Vec_free"),
     // One datagram with its sender appended, in a Vec made for this call.
     ("UdpSocket_receive_raw", "Vec_free"),
+    ("UdpSocket_try_receive_raw", "Vec_free"),
 ];
 
 /// What frees the container inside the wrapper this native call handed back.

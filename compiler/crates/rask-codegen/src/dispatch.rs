@@ -1161,6 +1161,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::neg_none("net_udp_bind_handle", "rask_net_udp_bind", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("UdpSocket_send_to_raw", "rask_net_udp_send_to", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_none("UdpSocket_receive_raw", "rask_net_udp_receive", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("UdpSocket_try_receive_raw", "rask_net_udp_try_receive", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("UdpSocket_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "UdpSocket_local_addr", c_name: "rask_net_local_addr",

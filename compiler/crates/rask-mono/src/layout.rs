@@ -262,7 +262,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "f64" => scalar_by_name(&Type::F64),
                 "char" => scalar_by_name(&Type::Char),
                 // Stdlib types backed by opaque runtime pointers
-                "TcpListener" | "TcpConnection" | "File" | "Handle"
+                "TcpListener" | "TcpConnection" | "UdpSocket" | "File" | "Handle"
                 | "Sender" | "Receiver" | "ThreadPool"
                 | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder"
                 // `cstring` is the malloc'd NUL-terminated buffer itself, so

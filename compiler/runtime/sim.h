@@ -153,7 +153,9 @@ int64_t rask_sim_net_dup(int64_t fd);
 void    rask_sim_net_addr(int64_t fd, int remote, char *out, size_t cap);
 int64_t rask_sim_net_udp_bind(const char *host, const char *port);
 int64_t rask_sim_net_send_to(int64_t fd, const void *buf, size_t n, const char *host, const char *port);
-int64_t rask_sim_net_receive_from(int64_t fd, void *buf, size_t cap, char *from, size_t from_cap);
+// -2 when `wait` is 0 and no datagram is due yet.
+int64_t rask_sim_net_receive_from(int64_t fd, void *buf, size_t cap, char *from, size_t from_cap,
+                                  int wait);
 
 #define RASK_SIM_POINT() rask_sim_point()
 #define RASK_SIM_UNSIMULATED(...) rask_sim_unsimulated(__VA_ARGS__)

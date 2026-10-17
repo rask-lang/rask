@@ -662,7 +662,7 @@ static long earliest(const SimSock *s) {
 }
 
 int64_t rask_sim_net_receive_from(int64_t fd, void *buf, size_t cap, char *from,
-                                  size_t from_cap) {
+                                  size_t from_cap, int wait) {
     SimSock *s = sock_at((int)fd);
     RASK_SIM_POINT();
     if (!s || s->kind != SOCK_UDP || s->closed) {
@@ -680,6 +680,7 @@ int64_t rask_sim_net_receive_from(int64_t fd, void *buf, size_t cap, char *from,
         pick = earliest(s);
         int64_t now = rask_sim_time_ns();
         if (pick >= 0 && s->inbox[pick].due_ns <= now) break;
+        if (!wait) return -2;
         if (pick < 0) {
             SimWait sw = {0};
             int stop = sim_wait(&sw, s, "datagram");

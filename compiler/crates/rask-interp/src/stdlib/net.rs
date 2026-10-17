@@ -140,6 +140,7 @@ impl Interpreter {
             "rask_net_udp_bind"
             | "rask_net_udp_send_to"
             | "rask_net_udp_receive"
+            | "rask_net_udp_try_receive"
             | "rask_net_local_addr"
             | "rask_net_close"
                 if symbol == "rask_net_udp_bind" || matches!(args.first(), Some(Value::UdpSocket(_))) =>
@@ -808,7 +809,7 @@ impl Interpreter {
                     }
                 }
             }
-            "rask_net_udp_receive" => {
+            "rask_net_udp_receive" | "rask_net_udp_try_receive" => {
                 // A clone to wait on, so a close from another task isn't
                 // held off by this lock.
                 let s = match &*sock.lock().unwrap() {
@@ -816,7 +817,18 @@ impl Interpreter {
                     _ => return Err(closed()),
                 };
                 let mut buf = vec![0u8; 65536];
-                match s.and_then(|s| udp_recv(&s, &mut buf)) {
+                let received = if symbol == "rask_net_udp_try_receive" {
+                    // Nothing waiting is an empty Vec, as runtime.c says it.
+                    match s.and_then(|s| s.set_nonblocking(true).and_then(|_| s.recv_from(&mut buf))) {
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Ok(some(Value::vec(Vec::new())));
+                        }
+                        other => other,
+                    }
+                } else {
+                    s.and_then(|s| udp_recv(&s, &mut buf))
+                };
+                match received {
                     Ok((n, from)) => {
                         // [payload][sender][sender's length], as runtime.c
                         // hands it to net.rk.

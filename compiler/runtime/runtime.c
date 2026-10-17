@@ -1513,16 +1513,18 @@ int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr) {
     return result;
 }
 
-// Wait for one datagram. A Vec<u8> of the payload, then the sender as
-// "ip:port", then that address's length in one byte; or -1 with errno set.
-// stdlib/net.rk takes it apart.
-int64_t rask_net_udp_receive(int64_t fd) {
+// One datagram: a Vec<u8> of the payload, then the sender as "ip:port", then
+// that address's length in one byte; or -1 with errno set. stdlib/net.rk
+// takes it apart. Without `wait`, an empty Vec when nothing has arrived: a
+// real one always has the length byte.
+static int64_t udp_receive(int64_t fd, int wait) {
     static __thread char buf[UDP_MAX_PAYLOAD + 64];
     char from[64];
     ssize_t n;
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) {
-        n = (ssize_t)rask_sim_net_receive_from(fd, buf, UDP_MAX_PAYLOAD, from, sizeof(from));
+        n = (ssize_t)rask_sim_net_receive_from(fd, buf, UDP_MAX_PAYLOAD, from, sizeof(from), wait);
+        if (n == -2) return (int64_t)(uintptr_t)rask_vec_from_bytes(buf, 0);
         if (n < 0) return -1;
         goto got;
     }
@@ -1538,6 +1540,7 @@ int64_t rask_net_udp_receive(int64_t fd) {
             break;
         }
         if (!would_block()) return -1;
+        if (!wait) return (int64_t)(uintptr_t)rask_vec_from_bytes(buf, 0);
         if (rask_io_wait(fd, 0)) {
             errno = ECANCELED;
             return -1;
@@ -1553,6 +1556,16 @@ got:
         RaskVec *v = rask_vec_from_bytes(buf, n + (int64_t)from_len + 1);
         return (int64_t)(uintptr_t)v;
     }
+}
+
+// UdpSocket.receive_from: waits.
+int64_t rask_net_udp_receive(int64_t fd) {
+    return udp_receive(fd, 1);
+}
+
+// UdpSocket.try_receive_from: doesn't.
+int64_t rask_net_udp_try_receive(int64_t fd) {
+    return udp_receive(fd, 0);
 }
 
 // Local address a listener/connection is bound to (TcpListener.local_addr).
