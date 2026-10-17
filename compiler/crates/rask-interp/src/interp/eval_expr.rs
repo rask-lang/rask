@@ -2825,12 +2825,11 @@ impl Interpreter {
                     let obj = self.eval_expr(object)?;
                     // `read`/`write` are the verbs on every strategy
                     // (conc.sync/SH5); which lock they take — if any — is the
-                    // strategy's business. `lock` is the `Mutex` strategy's
-                    // older spelling.
+                    // strategy's business.
                     match (&obj, method.as_str()) {
                         (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
                         (Value::Shared(s), "write" | "staged") => WithSource::SharedWrite(Arc::clone(s)),
-                        (Value::RaskMutex(m), "lock" | "read" | "write" | "staged") => {
+                        (Value::RaskMutex(m), "read" | "write" | "staged") => {
                             WithSource::Mutex(Arc::clone(m))
                         }
                         (Value::Cell(c), "read" | "write") => WithSource::Cell(Arc::clone(c)),

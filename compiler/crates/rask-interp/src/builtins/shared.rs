@@ -132,9 +132,9 @@ impl Interpreter {
             // `Shared<T, Mutex>` is a mutex, and it answers to `read` and
             // `write` too — which lock a verb takes is the strategy's business
             // (SH5), and under `Mutex` both take the exclusive one.
-            (Value::RaskMutex(m), "lock" | "read" | "write") => {
+            (Value::RaskMutex(m), "read" | "write") => {
                 let guard = crate::lock_waiting(m).map_err(|e| {
-                    RuntimeError::Panic(format!("Mutex.{}: lock poisoned: {}", method, e))
+                    RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
                 })?;
                 Ok(guard.clone())
             }
@@ -216,7 +216,7 @@ impl Interpreter {
         }
     }
 
-    /// Handle Mutex<T> instance methods.
+    /// `Shared<T, Mutex>` methods.
     pub(crate) fn call_mutex_method(
         &mut self,
         mutex: &Arc<Mutex<Value>>,
@@ -224,24 +224,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            // Mutex<T>.lock() -> T  (inline access, E5/MX3)
-            // Returns a snapshot for inline mutation. Aggregate types share
-            // through Arc, so field mutations go to the shared data.
-            "lock" if args.is_empty() => {
-                let guard = crate::lock_waiting(mutex).map_err(|e| {
-                    RuntimeError::Panic(format!("Mutex.{}: lock poisoned: {}", method, e))
-                })?;
-                Ok(guard.clone())
-            }
-            // Mutex<T>.lock(|T| -> R) -> R  (closure-based)
-            "lock" => {
-                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
-                    expected: 1,
-                    got: 0,
-                })?;
-                self.call_mutex_lock_closure(mutex, &closure)
-            }
-            "try_lock" => {
+            "try_read" | "try_write" => {
                 let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
                     got: 0,
@@ -280,9 +263,6 @@ impl Interpreter {
                 let old = std::mem::replace(&mut *guard, value);
                 Ok(if method == "replace" { old } else { Value::Unit })
             }
-            "try_read" | "try_write" => {
-                return self.call_mutex_method(mutex, "try_lock", args);
-            }
             "clone" => Ok(Value::RaskMutex(Arc::clone(mutex))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Mutex".to_string(),
@@ -291,61 +271,4 @@ impl Interpreter {
         }
     }
 
-    /// Execute a closure under a Mutex lock — locks, runs the closure with the
-    /// inner value, writes back mutations, then unlocks.
-    fn call_mutex_lock_closure(
-        &mut self,
-        mutex: &Arc<Mutex<Value>>,
-        closure: &Value,
-    ) -> Result<Value, RuntimeError> {
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                lent,
-                generics,
-                ..
-            } => {
-                let mut guard = crate::lock_waiting(mutex).map_err(|e| {
-                    RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
-                })?;
-
-                self.enter_closure(captured_env, lent, generics);
-                let param_name = params
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "_".to_string());
-                self.env.define(param_name.clone(), guard.clone());
-
-                let result = self.eval_expr(body).map_err(|diag| diag.error);
-
-                // Write back
-                match &result {
-                    Err(RuntimeError::Return(v)) => {
-                        *guard = v.clone();
-                    }
-                    Ok(v) if !matches!(v, Value::Unit) => {
-                        *guard = v.clone();
-                    }
-                    _ => {
-                        if let Some(updated) = self.env.get(&param_name) {
-                            *guard = updated.clone();
-                        }
-                    }
-                }
-
-                self.leave_closure();
-                match result {
-                    Ok(v) => Ok(v),
-                    Err(RuntimeError::Return(v)) => Ok(v),
-                    Err(e) => Err(e),
-                }
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "expected closure, found {}",
-                closure.type_name()
-            ))),
-        }
-    }
 }

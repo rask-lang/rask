@@ -2225,7 +2225,7 @@ impl TypeChecker {
                             if matches!(method.as_str(), "read" | "write" | "staged")
                     );
                     let unwraps = |name: &str| {
-                        !names_a_lock && matches!(name, "Mutex" | "Shared" | "Cell")
+                        !names_a_lock && name == "Shared"
                     };
                     let inner_of = |args: &[GenericArg]| match args.first() {
                         Some(GenericArg::Type(inner)) => Some((**inner).clone()),
@@ -5928,7 +5928,7 @@ impl TypeChecker {
     /// The stdlib types whose static methods `resolve_method` matches by their
     /// bare name (`Type::UnresolvedNamed("Vec")`).
     fn resolved_by_name(name: &str) -> bool {
-        matches!(name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
+        matches!(name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Shared" | "Channel" | "Atomic" | "Heap")
     }
 
     /// A stdlib static method's parameter types, one per parameter, `None`
@@ -6212,7 +6212,7 @@ impl TypeChecker {
         let ExprKind::MethodCall { object, method, args, .. } = &binding.source.kind else {
             return;
         };
-        if !args.is_empty() || !matches!(method.as_str(), "write" | "lock") {
+        if !args.is_empty() || method != "write" {
             return;
         }
         let Some(recv_ty) = self
@@ -6811,7 +6811,7 @@ impl TypeChecker {
             _ => return false,
         };
         name.starts_with("Atomic")
-            || matches!(name.as_str(), "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver")
+            || matches!(name.as_str(), "Shared" | "Channel" | "Sender" | "Receiver")
     }
 
     pub(super) fn validate_pending_mutations(&mut self) {

@@ -4,7 +4,7 @@
 
 use crate::FieldAccess;
 use super::{
-    binop_result_type, concurrency::BoxWithSyms, is_type_constructor_name, lower_binop,
+    binop_result_type, is_type_constructor_name, lower_binop,
     lower_unaryop, operator_method_to_binop, operator_method_to_unaryop, LoopContext,
     LoweringError, MirLowerer, TypedOperand,
 };
@@ -4431,9 +4431,8 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_with_as(&mut self, bindings: &[WithBinding], body: &[Stmt]) -> Result<TypedOperand, LoweringError> {
-            // `with shared.read() as d { body }` / `.write()`. Takes the same
-            // in-frame acquire/body/release path as Mutex and Cell below.
-            // It used to build a closure and hand it to Shared_read, and the
+            // `with shared.read() as d { body }` / `.write()`: acquire, run the
+            // body in this frame, release. It used to build a closure and hand it to Shared_read, and the
             // closure's return type was hardcoded i64: a block ending in a
             // string printed the pointer as a number, and a block ending in a
             // struct returned the address of a slot in the closure's own
@@ -4447,25 +4446,7 @@ impl<'a> MirLowerer<'a> {
                         matches!(method.as_str(), "read" | "write" | "staged")
                         && call_args.is_empty();
                     if is_shared_access {
-                        // Check if the object type is Shared
-                        let obj_raw_type = self.ctx.lookup_raw_type(object.id);
-                        let is_shared = obj_raw_type.map(|ty| {
-                            matches!(ty,
-                                rask_types::Type::UnresolvedGeneric { name, .. }
-                                | rask_types::Type::UnresolvedNamed(name)
-                                if name == "Shared"
-                            )
-                        }).unwrap_or(false)
-                        // Fallback: check local_meta type_prefix
-                        || if let Some(var_name) = object.name() {
-                            self.meta(var_name)
-                                .and_then(|m| m.type_prefix.as_deref())
-                                .map(|p| p == "Shared")
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        };
-                        if is_shared {
+                        if self.is_shared_expr(object) {
                             // Which lock the block takes is the strategy's
                             // business (SH5) — the verb only says read or
                             // write. A `Local` box takes none. `staged` takes
@@ -4479,48 +4460,6 @@ impl<'a> MirLowerer<'a> {
                             return self.lower_box_with_block(object, &binding.name, body, &syms);
                         }
                     }
-                }
-            }
-
-            // Mutex and Cell both bind the payload by address, so both take
-            // the acquire/body/write-back path — `with m.lock() as v`,
-            // `with m as v`, and `with c as v` alike. Cell's payload used to
-            // fall through to the alias binding below, which handed the body
-            // the *box* instead of what it holds: `with c as v { v }` on a
-            // `Cell<i64>` printed the pointer (#558). CE4 says the binding is
-            // the value, and the interpreter always agreed.
-            //
-            // `is_sync_box_expr` resolves the box from the receiver's type, so
-            // a field receiver (`with self.state as s`, straight out of
-            // mem.cell) works as well as a bare name. The checks here used to
-            // pattern-match `Ident` and silently miss it — the same name-only
-            // restriction that hid two pool bugs in #567.
-            if bindings.len() == 1 {
-                let binding = &bindings[0];
-                let locked = match &binding.source.kind {
-                    ExprKind::MethodCall { object, method, args: call_args, .. }
-                        if method == "lock" && call_args.is_empty() => Some(object.as_ref()),
-                    _ => None,
-                };
-                // `.lock()` only makes sense on a Mutex; a bare receiver can
-                // be either box.
-                let target = match locked {
-                    Some(object) => self
-                        .is_sync_box_expr(object, "Mutex")
-                        .then_some((object, &BoxWithSyms::MUTEX)),
-                    None => {
-                        let source = &binding.source;
-                        if self.is_sync_box_expr(source, "Mutex") {
-                            Some((source, &BoxWithSyms::MUTEX))
-                        } else if self.is_sync_box_expr(source, "Cell") {
-                            Some((source, &BoxWithSyms::CELL))
-                        } else {
-                            None
-                        }
-                    }
-                };
-                if let Some((object, syms)) = target {
-                    return self.lower_box_with_block(object, &binding.name, body, syms);
                 }
             }
 
@@ -5679,24 +5618,15 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.push(op);
                             }
 
-                            // Inject elem_size/data_size for generic constructors.
-                            // The C runtime needs actual sizes for struct types;
-                            // the dispatch table expects these as extra arguments.
-                            // The element type is read from the call's resolved
+                            // A channel's element size goes first: (elem_size,
+                            // capacity). It is read from the call's resolved
                             // result type (`Channel<T>` returns a Sender/Receiver
-                            // tuple; generic_arg_slot_size unwraps that).
-                            if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
-                                || ((base_name == "Shared" || base_name == "Mutex") && method == "new")
-                            {
+                            // tuple; generic_arg_slot_size unwraps that). A
+                            // `Shared`'s payload size is codegen's to add, from
+                            // the value it is handed (`box_new_args`).
+                            if base_name == "Channel" && (method == "buffered" || method == "unbuffered") {
                                 let elem_size = self.generic_arg_slot_size(expr.id, 0)?;
-                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
-                                if base_name == "Channel" {
-                                    // Channel: elem_size goes first → (elem_size, capacity)
-                                    arg_operands.insert(0, size_op);
-                                } else {
-                                    // Shared: data_size goes last → (data_ptr, data_size)
-                                    arg_operands.push(size_op);
-                                }
+                                arg_operands.insert(0, MirOperand::Constant(MirConst::Int(elem_size)));
                             }
                             // An atomic cell holds its payload at the payload's
                             // width and does arithmetic by its kind, so the
@@ -5721,7 +5651,7 @@ impl<'a> MirLowerer<'a> {
                             // container's element descriptor does. Last argument,
                             // always, which is what codegen's `box_new_args`
                             // relies on.
-                            if matches!(base_name, "Shared" | "Mutex" | "Cell")
+                            if base_name == "Shared"
                                 && matches!(method.as_str(), "new" | "mutex" | "local")
                             {
                                 let kind = args

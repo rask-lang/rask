@@ -14,7 +14,7 @@ use super::TypeChecker;
 
 use crate::types::Type;
 
-/// One inline `.read()`/`.write()`/`.lock()` found inside an expression: which
+/// One inline `.read()`/`.write()` found inside an expression: which
 /// verb, how the receiver was written, and where.
 struct SyncAccess {
     method: String,
@@ -670,7 +670,7 @@ impl TypeChecker {
 
     // ── E5: Sync inline access validation ──────────────────────────────
     //
-    // E5/R5/MX3: `.read()/.write()/.lock()` on Shared<T>/Mutex<T> produce
+    // E5/R5/MX3: `.read()/.write()` on a `Shared` produce
     // expression-scoped locks. Validation rules:
     //
     // 1. Must be chained: `shared.read().field` or `shared.read().method()`.
@@ -751,7 +751,7 @@ impl TypeChecker {
         self.check_unchained_sync(init, false);
     }
 
-    /// R5/MX3: an inline `.read()`/`.write()`/`.lock()` is scoped to the chain
+    /// R5/MX3: an inline `.read()`/`.write()` is scoped to the chain
     /// it starts, so one with nothing chained onto it is an error — wherever it
     /// sits, not only when it's the whole initializer.
     ///
@@ -814,11 +814,11 @@ impl TypeChecker {
     }
 
     /// Check if an expression is a sync access call (not chained).
-    /// Returns Some if this is a bare `.read()/.write()/.lock()`.
+    /// Returns Some if this is a bare `.read()/.write()`.
     fn is_sync_access(&self, expr: &Expr) -> Option<(String, String, rask_ast::Span)> {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
-                if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
+                if args.is_empty() && matches!(method.as_str(), "read" | "write") {
                     if let Some(ty_name) = self.sync_type_of(object) {
                         return Some((ty_name, method.clone(), expr.span));
                     }
@@ -852,7 +852,7 @@ impl TypeChecker {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check if this node itself is a sync access
-                if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
+                if args.is_empty() && matches!(method.as_str(), "read" | "write") {
                     if self.sync_type_of(object).is_some() {
                         out.push(SyncAccess {
                             method: method.clone(),

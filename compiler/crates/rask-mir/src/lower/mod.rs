@@ -2179,10 +2179,10 @@ impl<'a> MirLowerer<'a> {
             return Some(self.ctx.type_to_mir(elem));
         }
         let (name, args) = self.generic_head(ty)?;
-        // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
-        // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
+        // A box holding a collection is transparent here: `Shared<Map<K, V>>`
+        // holds what its `Map` holds, and `self.counters.read().get(k)` asks
         // exactly that.
-        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Heap") {
+        if matches!(name.as_str(), "Shared" | "Heap") {
             let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
             return self.collection_elem_of_checker_type(inner);
         }
@@ -2621,13 +2621,10 @@ impl<'a> MirLowerer<'a> {
         // A view over a collection holds what the collection holds, so ask the
         // receiver. `for prime in PRIMES.iter()` types as `Vec<?>` — the checker
         // leaves the element a variable — while `PRIMES` itself knows.
-        // `values` views a collection; `lock`/`read`/`write` unwrap a box
-        // around one. Either way the receiver is the thing that knows.
+        // `values` views a collection; `read`/`write` unwrap a box around
+        // one. Either way the receiver is the thing that knows.
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
-            if matches!(
-                method.as_str(),
-                "values" | "into_iter" | "lock" | "read" | "write"
-            ) {
+            if matches!(method.as_str(), "values" | "into_iter" | "read" | "write") {
                 if let Some(elem) = self.collection_elem_of_expr(object) {
                     return Some(elem);
                 }
