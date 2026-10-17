@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// ngtcp2's core library, vendored, and the glue that gives it null crypto
+// (quic/ting_quic.c).
+
+import fs
+
+func build(ctx: BuildContext) -> void or Error {
+    let lib = "vendor/ngtcp2/lib"
+    mut sources: Vec<string> = ["quic/ting_quic.c"]
+    mut names = try fs.list_dir("{ctx.package_dir.as_string()}/{lib}")
+    names.sort()
+    for name in names {
+        if name.ends_with(".c") {
+            sources.push("{lib}/{name}")
+        }
+    }
+    // The script reruns when one of these changes, not only build.rk.
+    for source in sources {
+        ctx.declare_dependency(source)
+    }
+    ctx.compile_c(sources, ["-O2", "-std=c11", "-D_GNU_SOURCE", "-DHAVE_CONFIG_H", "-Ivendor/ngtcp2", "-Ivendor/ngtcp2/lib/includes"])
+    return
+}

@@ -7,62 +7,122 @@
 
 import time
 import time.Duration
+import io.IoError
 
-/// Two endpoints ticking once a millisecond until `done` says so.
-func run_until(mutate a: Endpoint, mutate b: Endpoint, mutate got: Vec<Message>, want: usize) -> void or IoError {
-    mut ticks = 0
-    while got.len() < want {
-        try a.flush()
-        try b.flush()
-        time.sleep(Duration.millis(1))
-        for m in try b.poll() {
-            got.push(m)
-        }
-        // A's poll reads B's acks.
-        try a.poll()
-        ticks = ticks + 1
-        assert ticks < 5000
+/// One message: a single byte.
+func byte(n: i64) -> Vec<u8> {
+    mut v: Vec<u8> = []
+    v.push(n.wrap<u8>())
+    return v
+}
+
+/// One tick for both ends: send what's queued, let a millisecond pass, take
+/// what arrived. Messages the server receives go on `at_server`, the client's
+/// on `at_client`.
+func tick(mutate server: Endpoint, mutate client: Endpoint, mutate at_server: Vec<Message>, mutate at_client: Vec<Message>) -> void or IoError {
+    try client.flush()
+    try server.flush()
+    time.sleep(Duration.millis(1))
+    for m in try server.poll() {
+        at_server.push(m)
+    }
+    for m in try client.poll() {
+        at_client.push(m)
     }
     return
 }
 
 test "reliable messages arrive once and in order, whatever the link does" {
-    mut a = try Endpoint.bind("127.0.0.1:0")
-    ensure a.close()
-    mut b = try Endpoint.bind("127.0.0.1:0")
-    ensure b.close()
+    mut server = try Endpoint.listen("127.0.0.1:0")
+    ensure server.close()
+    mut client = try Endpoint.connect("127.0.0.1:0", server.local_addr())
+    ensure client.close()
 
+    // Queued before the handshake; they go once it's done.
     for i in 0..30 {
-        a.send(b.local_addr(), [i.wrap<u8>()], true)
+        try client.send(server.local_addr(), byte(i), true)
     }
-    mut got: Vec<Message> = []
-    try run_until(mutate a, mutate b, mutate got, 30)
-
-    assert got.len() == 30
+    mut at_server: Vec<Message> = []
+    mut at_client: Vec<Message> = []
+    mut ticks = 0
+    while at_server.len() < 30 {
+        try tick(mutate server, mutate client, mutate at_server, mutate at_client)
+        ticks = ticks + 1
+        assert ticks < 20000
+    }
+    assert at_server.len() == 30
     for i in 0..30 {
-        assert got[i].reliable
-        assert got[i].data[0] == i.wrap<u8>()
-        assert got[i].from == a.local_addr()
+        assert at_server[i].reliable
+        assert at_server[i].data[0] == i.wrap<u8>()
+        assert at_server[i].from == client.local_addr()
     }
 }
 
-test "acknowledged messages stop being sent" {
-    mut a = try Endpoint.bind("127.0.0.1:0")
-    ensure a.close()
-    mut b = try Endpoint.bind("127.0.0.1:0")
-    ensure b.close()
+test "the server answers on the same connection" {
+    mut server = try Endpoint.listen("127.0.0.1:0")
+    ensure server.close()
+    mut client = try Endpoint.connect("127.0.0.1:0", server.local_addr())
+    ensure client.close()
 
-    a.send(b.local_addr(), [1u8], true)
-    mut got: Vec<Message> = []
-    try run_until(mutate a, mutate b, mutate got, 1)
-    // Delivered isn't acknowledged yet: B's ack is on its next packet.
+    try client.send(server.local_addr(), byte(1), true)
+    mut at_server: Vec<Message> = []
+    mut at_client: Vec<Message> = []
     mut ticks = 0
-    while a.unacked(b.local_addr()) > 0 {
-        try b.flush()
-        time.sleep(Duration.millis(1))
-        try a.poll()
+    while at_server.len() < 1 {
+        try tick(mutate server, mutate client, mutate at_server, mutate at_client)
         ticks = ticks + 1
-        assert ticks < 5000
+        assert ticks < 20000
     }
-    assert a.unacked(b.local_addr()) == 0
+    for i in 0..10 {
+        try server.send(client.local_addr(), byte(i), true)
+    }
+    while at_client.len() < 10 {
+        try tick(mutate server, mutate client, mutate at_server, mutate at_client)
+        ticks = ticks + 1
+        assert ticks < 20000
+    }
+    for i in 0..10 {
+        assert at_client[i].data[0] == i.wrap<u8>()
+    }
+    // Delivered isn't acknowledged yet; a few more ticks carry the acks.
+    while client.unacked(server.local_addr()) > 0 || server.unacked(client.local_addr()) > 0 {
+        try tick(mutate server, mutate client, mutate at_server, mutate at_client)
+        ticks = ticks + 1
+        assert ticks < 20000
+    }
+}
+
+test "an unreliable message is never repeated or corrupted" {
+    mut server = try Endpoint.listen("127.0.0.1:0")
+    ensure server.close()
+    mut client = try Endpoint.connect("127.0.0.1:0", server.local_addr())
+    ensure client.close()
+
+    mut at_server: Vec<Message> = []
+    mut at_client: Vec<Message> = []
+    mut ticks = 0
+    while !client.connected(server.local_addr()) {
+        try tick(mutate server, mutate client, mutate at_server, mutate at_client)
+        ticks = ticks + 1
+        assert ticks < 20000
+    }
+    for i in 0..40 {
+        try client.send(server.local_addr(), byte(i), false)
+    }
+    for i in 0..200 {
+        try tick(mutate server, mutate client, mutate at_server, mutate at_client)
+    }
+    // Some may be lost on a bad link. None arrive twice, none are anything
+    // that wasn't sent.
+    mut seen: Vec<bool> = []
+    for i in 0..40 {
+        seen.push(false)
+    }
+    for m in at_server {
+        assert !m.reliable
+        let n = m.data[0].wrap<i64>()
+        assert n < 40
+        assert !seen[n]
+        seen[n] = true
+    }
 }

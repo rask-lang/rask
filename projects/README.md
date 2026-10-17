@@ -22,7 +22,7 @@ If rules are enforced mechanically, two parties don't need a third party to trus
 
 **[Urd](urd/)** — A state-history engine for applications. Git for live application state: your app's state becomes a deterministic machine over an op log — so sync, undo, branching, replay, and audit are one primitive instead of five features. The piece of the stack a developer can adopt in an afternoon.
 
-**[Ting](ting/)** — Real-time multiplayer for one server and many clients, over UDP. Stands apart from the federated pieces: it borrows Raido for shared game rules and sim mode for reproducing network bugs, and nothing from Leden.
+**[Ting](ting/)** — Real-time multiplayer for one server and many clients, over QUIC. Stands apart from the federated pieces: it borrows Raido for shared game rules and sim mode for reproducing network bugs, and nothing from Leden.
 
 **[Midgard](midgard/)** — A virtual world that puts it all together. Independent servers, each running their own world. A sword can't be copied. A currency can't be inflated. A character can travel between servers and bring their things — because both sides can verify everything checks out. It's the most intuitive example, but the model isn't about games.
 
