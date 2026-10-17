@@ -104,7 +104,6 @@ extend Endpoint {
 
     /// Queue `data` for `to`. It leaves on the next `flush`. Fails when there
     /// is no connection to `to`: a server has one once that client has sent.
-    @no_io
     public func send(mutate self, to: string, data: Vec<u8>, reliable: bool) -> void or IoError {
         let peer = c_text(to)
         let kind: i64 = if reliable { 1 } else { 0 }
@@ -154,14 +153,12 @@ extend Endpoint {
     }
 
     /// Whether the handshake with `peer` is done.
-    @no_io
     public func connected(self, peer: string) -> bool {
         let p = c_text(peer)
         return unsafe ting_quic_connected(self.quic, p.as_ptr()) == 1
     }
 
     /// Reliable messages to `peer` not yet acknowledged.
-    @no_io
     public func unacked(self, peer: string) -> i64 {
         let p = c_text(peer)
         return unsafe ting_quic_unacked(self.quic, p.as_ptr())

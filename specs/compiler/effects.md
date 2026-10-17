@@ -23,7 +23,7 @@ Effects don't restrict what you can call. A function without IO effects can call
 |------|-------------|
 | **IO1: Source functions** | Ground truth: stdlib functions that read the process-global runtime slot for async-capable I/O (see `conc.io-context` "Which functions need the runtime") |
 | **IO2: Transitive** | Any function that transitively calls an IO source has the IO effect |
-| **IO3: Unsafe I/O** | `unsafe` blocks that call C functions with I/O semantics are conservatively marked IO |
+| **IO3: Unsafe I/O** | An `unsafe` block does I/O through what it calls: a C function is I/O unless it says `@no_io` (INF5). The block itself adds nothing |
 
 <!-- test: skip -->
 ```rask
@@ -102,9 +102,6 @@ infer_effects(func):
 
         // Transitive: add callee's effects
         effects.union(callee_effects(call.target))
-
-    if func.body.contains_unsafe_block:
-        effects.add(IO)  // IO3: conservative
 
     return effects
 ```
@@ -238,7 +235,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | Recursive function | FX2, INF1 | Fixed-point iteration (converges in 2-3 passes) |
 | Closure captures IO function | FX2 | Closure inherits effects of captured calls |
 | Generic function | INF1 | Effects inferred per monomorphized instance (post-monomorphization) |
-| `unsafe` block with no C calls | IO3 | Still conservative (IO assumed). Suppress with `@no_io` on the function |
+| `unsafe` block with no C calls | IO3 | Not I/O: a pointer read or write touches memory, not a device |
 | `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching I/O, `spawn` or a rack insert is rejected at its definition |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
 | `extern` function | INF5 | Conservative IO unless `@no_io` annotated |
@@ -252,7 +249,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 
 **FX3 (not in the type system):** I considered putting effects in function signatures — `func f() -> T [io]`. That's function coloring. A pure function that can't call an IO function needs effect polymorphism for generic code. This is the same ecosystem split I rejected for async/await (`rejected-features.md`). Effects as metadata give you all the visibility (through IDE) without any of the cost (coloring, polymorphism, annotation burden).
 
-**IO3 (conservative unsafe):** Unsafe blocks might call C functions that do I/O. I'd rather over-approximate than miss an IO effect. The `@no_io` escape hatch handles the rare case where unsafe code is provably pure.
+**IO3 (unsafe through its calls):** The conservative guess lives on the C function (INF5), where `@no_io` can answer it once for every caller. Marking the `unsafe` block as well made that answer useless, because calling a C function needs the block, so every caller of a pure C library warned about I/O it never did.
 
 **INF4 (no annotation required):** Rask's principle is "write intent, not mechanics" (`CORE_DESIGN.md` principle 7). Effect annotations are mechanics. The compiler infers them; the IDE shows them. Code stays clean.
 

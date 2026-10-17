@@ -436,9 +436,11 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             }
         }
 
-        // IO3: unsafe blocks conservatively get IO
+        // IO3: an unsafe block does I/O through what it calls. A C function
+        // already counts as I/O unless it says `@no_io` (INF5), so marking
+        // the block too made that attribute useless: calling the function
+        // needs the block.
         ExprKind::Unsafe { body } => {
-            effects.io = true;
             classify_body(body, effects, callees, t);
         }
 
@@ -1100,20 +1102,31 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_block_conservative_io() {
-        let decls = vec![make_fn("ffi_call", vec![
-            Stmt {
+    fn unsafe_block_is_io_only_through_its_calls() {
+        let block = |body| Stmt {
+            id: NodeId(0),
+            kind: StmtKind::Expr(Expr {
                 id: NodeId(0),
-                kind: StmtKind::Expr(Expr {
-                    id: NodeId(0),
-                    kind: ExprKind::Unsafe { body: vec![] },
-                    span: sp(),
-                }),
+                kind: ExprKind::Unsafe { body },
                 span: sp(),
-            },
-        ])];
+            }),
+            span: sp(),
+        };
+        let mut quiet = make_extern("c_step");
+        if let DeclKind::Extern(e) = &mut quiet.kind {
+            e.attrs.push(rask_ast::attr::Attr::synthetic("no_io", None));
+        }
+        let decls = vec![
+            make_fn("reads_a_pointer", vec![block(vec![])]),
+            make_fn("calls_quiet_c", vec![block(vec![expr_stmt(call("c_step", vec![]))])]),
+            make_fn("calls_c", vec![block(vec![expr_stmt(call("c_read", vec![]))])]),
+            quiet,
+            make_extern("c_read"),
+        ];
         let effects = infer(&decls, &Default::default());
-        assert!(effects["ffi_call"].io, "IO3: unsafe blocks conservative IO");
+        assert!(!effects["reads_a_pointer"].io, "IO3: the block alone is not I/O");
+        assert!(!effects["calls_quiet_c"].io, "IO3: a @no_io extern adds none");
+        assert!(effects["calls_c"].io, "IO3: an unmarked extern is I/O (INF5)");
     }
 
     /// PU2 says a `comptime func` is pure and that "effect inference confirms

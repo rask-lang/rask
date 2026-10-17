@@ -225,7 +225,7 @@ FIX: delete `duck`. 3 types already match by shape; the "harden duck interface"
 | Private `from_*` method | N1 | Still checked — conventions apply regardless of visibility |
 | `into_*` with `mutate self` | N2 | Violation — must be `take self` |
 | `@pure` on `comptime func` | P1 | Redundant — comptime is already pure. No warning (harmless) |
-| `@pure` on function with `unsafe` block | P1 | Warning: unsafe is conservatively IO (`comp.effects/IO3`). Suppress with `@allow(purity/io)` if known-pure |
+| `@pure` on function with `unsafe` block | P1 | Checked through what the block calls (`comp.effects/IO3`): a C function not marked `@no_io` is IO |
 | `@pure` on public vs private function | P1-P3 | Same check — purity annotation applies regardless of visibility |
 | `@pure` with a `mutate` rack parameter | P3 | Warning only if the function actually performs Grow/Shrink. Reading through links is fine |
 
