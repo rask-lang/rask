@@ -154,8 +154,10 @@ check_one() {
   # also names where the value came from, which is the difference between a
   # finding someone can act on and one they have to re-derive.
   exec 3>&2 2> /dev/null
-  valgrind --leak-check=no --errors-for-leak-kinds=none \
-           --track-origins=yes --quiet timeout 120 "$bin" \
+  # `timeout` goes outside: inside, valgrind instruments `timeout` itself,
+  # which only forks the program, and every file came back clean.
+  timeout 240 valgrind --leak-check=no --errors-for-leak-kinds=none \
+           --track-origins=yes --quiet "$bin" \
            > "$WORK/$name.out" 2> "$WORK/$name.vg"
   rc=$?
   exec 2>&3 3>&-
