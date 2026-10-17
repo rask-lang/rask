@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `comptime func` calling I/O through a name an import gave it
+//
+// Spec: ctrl.comptime (CT7), comp.effects (PU2)
+//
+// `import fs.exists` makes the bare `exists` mean `fs.exists`, and
+// `import fs as files` makes `files.exists` mean it too. Effect inference
+// reads the imports to name the callee, so both calls are I/O even though
+// neither call site says `fs`.
+
+import fs.exists
+import fs as files
+
+// ERROR: `comptime func` reaching I/O [E0875]
+comptime func has_config() -> bool {
+    return exists("rask.toml")
+}
+
+// ERROR: through a module alias [E0875]
+comptime func has_lock() -> bool {
+    return files.exists("rask.lock")
+}
+
+// FIX: check at run time
+func has_config_now() -> bool {
+    return exists("rask.toml") || files.exists("rask.lock")
+}
+
+func main() {
+    println("{has_config_now()}")
+}

@@ -177,6 +177,7 @@ go down.
 | [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
+| [comptime_imported_io_name.rk](comptime_imported_io_name.rk) | A `comptime func` calling `exists` after `import fs.exists`, or `files.exists` after `import fs as files` (E0875). Effect inference names a callee by the imports, so a program's own `exists` is not I/O and these still are |
 | [resource_leak.rk](resource_leak.rk) | A `File` never closed, closed after other work, closed on one branch, closed twice (E0881, E0882, E0821, E0800). `File` was a plain struct until this file was rewritten, and the old version was only rejected for stale syntax |
 | [responder_mistakes.rk](responder_mistakes.rk) | An HTTP `Responder` that some path never answers, or answers twice (E0882, E0805, E0800, std.http/S2). The fixes name `respond(…)`, not a `.close()` it doesn't have |
 | [resource_cleanup_choices.rk](resource_cleanup_choices.rk) | A leaked resource with two consuming methods (`commit`, `rollback`) and a private one. The fix lists both public ones, since nothing says which is the cleanup, and never the private helper (E0882) |

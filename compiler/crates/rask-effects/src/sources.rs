@@ -5,6 +5,8 @@
 //! Maps function names to their direct effects based on the tables
 //! in `comp.effects` and `conc.io-context` specs.
 
+use std::collections::HashMap;
+
 use crate::Effects;
 
 /// Classify a call target by its known effects.
@@ -36,6 +38,51 @@ pub fn classify_method(callee: &str, effect: rask_ast::decl::StructuralEffect) -
     e
 }
 
+/// What a name at a call site stands for, by the program's imports:
+/// `import fs.exists` makes `exists` mean `fs.exists`, and `import fs as f`
+/// makes `f.exists` mean it too. Anything else means itself, so a program's
+/// own `exists` is its own function.
+#[derive(Debug, Default)]
+pub struct ImportedNames {
+    symbols: HashMap<String, String>,
+    modules: HashMap<String, String>,
+}
+
+impl ImportedNames {
+    pub fn from_decls(decls: &[rask_ast::decl::Decl]) -> Self {
+        let mut names = Self::default();
+        for decl in decls {
+            let rask_ast::decl::DeclKind::Import(i) = &decl.kind else { continue };
+            if i.is_glob {
+                continue;
+            }
+            match i.path.as_slice() {
+                [module] => {
+                    if let Some(alias) = &i.alias {
+                        names.modules.insert(alias.clone(), module.clone());
+                    }
+                }
+                [.., last] => {
+                    let local = i.alias.clone().unwrap_or_else(|| last.clone());
+                    names.symbols.insert(local, i.path.join("."));
+                }
+                [] => {}
+            }
+        }
+        names
+    }
+
+    pub fn qualify(&self, name: &str) -> String {
+        if let Some((head, rest)) = name.split_once('.') {
+            return match self.modules.get(head) {
+                Some(module) => format!("{module}.{rest}"),
+                None => name.to_string(),
+            };
+        }
+        self.symbols.get(name).cloned().unwrap_or_else(|| name.to_string())
+    }
+}
+
 /// The stdlib's I/O, spelled the way the checker resolves a call to it.
 fn is_io_source(callee: &str) -> bool {
     matches!(callee,
@@ -44,8 +91,6 @@ fn is_io_source(callee: &str) -> bool {
         | "fs.write_text" | "fs.write_bytes" | "fs.append_text" | "fs.exists"
         | "fs.copy" | "fs.rename" | "fs.remove_file" | "fs.create_dir" | "fs.create_dir_all"
         | "fs.list_dir" | "fs.metadata" | "fs.absolute_path"
-        // A free function imported by name (`import fs.read_text`).
-        | "open" | "read_text" | "write_text" | "exists"
         // An open file
         | "File.read_text" | "File.read_bytes" | "File.write" | "File.write_bytes"
         | "File.write_text" | "File.write_line" | "File.close"

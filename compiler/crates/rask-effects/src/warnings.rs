@@ -27,9 +27,11 @@ pub fn detect(
 ) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
     let program_is_concurrent = effects.values().any(|e| e.async_);
+    let imports = crate::sources::ImportedNames::from_decls(decls);
     let mut ctx = WarnContext {
         effects,
         targets,
+        imports: &imports,
         runtime_only,
         program_is_concurrent,
         in_thread_pool: false,
@@ -94,6 +96,8 @@ struct WarnContext<'a> {
     effects: &'a EffectMap,
     /// The checker's name for each method call it resolved.
     targets: &'a MethodTargets,
+    /// The program's imports, for what a name at a call site means.
+    imports: &'a crate::sources::ImportedNames,
     /// Functions every path to which installs a runtime first — see
     /// `infer::infer_with_reach`. CW2 stays quiet inside one.
     runtime_only: &'a HashSet<String>,
@@ -280,7 +284,7 @@ impl<'a> WarnContext<'a> {
             }
 
             ExprKind::MethodCall { object, method, args, .. } => {
-                let names = crate::method_callees(expr.id, object, method, self.targets);
+                let names = crate::method_callees(expr.id, object, method, self.targets, self.imports);
                 for name in &names {
                     self.maybe_warn_io_call(name, expr.span, warnings);
                 }
@@ -426,7 +430,7 @@ impl<'a> WarnContext<'a> {
     ) {
         let has_io = self.effects.get(callee)
             .map_or(false, |e| e.io)
-            || crate::sources::classify_call(callee).io;
+            || crate::sources::classify_call(&self.imports.qualify(callee)).io;
 
         if !has_io {
             return;

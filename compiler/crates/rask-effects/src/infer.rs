@@ -38,9 +38,17 @@ pub fn infer_with_reach(decls: &[Decl], targets: &MethodTargets) -> (EffectMap, 
     (pass.effects, runtime_only)
 }
 
+/// What classifying a body reads besides the body.
+struct Cx<'a> {
+    targets: &'a MethodTargets,
+    imports: &'a sources::ImportedNames,
+}
+
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
     targets: &'t MethodTargets,
+    /// The program's imports, for what a name at a call site means.
+    imports: sources::ImportedNames,
     /// Per-function direct effects (before transitive propagation).
     effects: EffectMap,
     /// Call graph: caller → callees.
@@ -64,6 +72,7 @@ impl<'t> InferPass<'t> {
     fn new(targets: &'t MethodTargets) -> Self {
         Self {
             targets,
+            imports: sources::ImportedNames::default(),
             effects: HashMap::new(),
             call_graph: HashMap::new(),
             direct_needs_runtime: HashSet::new(),
@@ -75,6 +84,7 @@ impl<'t> InferPass<'t> {
     }
 
     fn run(&mut self, decls: &[Decl]) {
+        self.imports = sources::ImportedNames::from_decls(decls);
         // Phase 1: Classify direct effects and build call graph
         self.collect(decls);
 
@@ -159,7 +169,8 @@ impl<'t> InferPass<'t> {
         // Classify direct effects from function body
         let mut direct = Effects::default();
         let mut callees = HashSet::new();
-        classify_body(body, &mut direct, &mut callees, self.targets);
+        let cx = Cx { targets: self.targets, imports: &self.imports };
+        classify_body(body, &mut direct, &mut callees, &cx);
 
         // @no_io suppresses conservative IO marking
         let has_no_io = attrs.iter().any(|a| a.is("no_io"));
@@ -178,7 +189,7 @@ impl<'t> InferPass<'t> {
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
-        let mut scan = ReachScan::new(self.targets);
+        let mut scan = ReachScan::new(self.targets, &self.imports);
         let direct_needs_rt = rt_scan_stmts(body, 0, &mut scan);
         if direct_needs_rt {
             self.direct_needs_runtime.insert(qname.to_string());
@@ -358,13 +369,13 @@ impl<'t> InferPass<'t> {
 // ── Body classification ──────────────────────────────────────────────
 
 /// Walk a function body, collecting direct effects and callee names.
-fn classify_body(stmts: &[Stmt], effects: &mut Effects, callees: &mut HashSet<String>, t: &MethodTargets) {
+fn classify_body(stmts: &[Stmt], effects: &mut Effects, callees: &mut HashSet<String>, t: &Cx) {
     for stmt in stmts {
         classify_stmt(stmt, effects, callees, t);
     }
 }
 
-fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<String>, t: &MethodTargets) {
+fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<String>, t: &Cx) {
     match &stmt.kind {
         StmtKind::Expr(e) => classify_expr(e, effects, callees, t),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
@@ -408,12 +419,13 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
     }
 }
 
-fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>, t: &MethodTargets) {
+fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>, t: &Cx) {
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = extract_callee_name(func) {
-                // Check if this is a known source function
-                let direct = sources::classify_call(&name);
+                // A stdlib source by what the name means here: `exists`
+                // is `fs.exists` only where the program imported it.
+                let direct = sources::classify_call(&t.imports.qualify(&name));
                 effects.union(direct);
                 callees.insert(name);
             }
@@ -424,8 +436,8 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         }
 
         ExprKind::MethodCall { object, method, args, .. } => {
-            let effect = t.get(&expr.id).map(|target| target.effect).unwrap_or_default();
-            for name in crate::method_callees(expr.id, object, method, t) {
+            let effect = t.targets.get(&expr.id).map(|target| target.effect).unwrap_or_default();
+            for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
                 effects.union(sources::classify_method(&name, effect));
                 callees.insert(name);
             }
@@ -624,6 +636,7 @@ fn is_multitasking_block(name: &str) -> bool {
 /// shape #1263 is about.
 struct ReachScan<'t> {
     targets: &'t MethodTargets,
+    imports: &'t sources::ImportedNames,
     unguarded: HashSet<String>,
     plain: HashSet<String>,
     guarded: HashSet<String>,
@@ -631,9 +644,10 @@ struct ReachScan<'t> {
 }
 
 impl<'t> ReachScan<'t> {
-    fn new(targets: &'t MethodTargets) -> Self {
+    fn new(targets: &'t MethodTargets, imports: &'t sources::ImportedNames) -> Self {
         Self {
             targets,
+            imports,
             unguarded: HashSet::new(),
             plain: HashSet::new(),
             guarded: HashSet::new(),
@@ -736,7 +750,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
 
         // All other expressions: recurse with same depth
         ExprKind::MethodCall { object, method, args, .. } => {
-            for name in crate::method_callees(expr.id, object, method, rs.targets) {
+            for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {
                 rs.reach(depth, name);
             }
             let mut r = rt_scan_expr(object, depth, rs);

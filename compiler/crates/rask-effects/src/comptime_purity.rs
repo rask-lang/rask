@@ -19,6 +19,7 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::visit::walk_body;
 use rask_ast::Span;
 
+use crate::sources::ImportedNames;
 use crate::{EffectMap, Effects};
 
 /// A `comptime func` that reaches outside the comptime subset.
@@ -39,23 +40,24 @@ pub struct ComptimePurityError {
 
 /// Check every `comptime func` against CT7, transitively (CT6, CT60).
 pub fn check(decls: &[Decl], effects: &EffectMap) -> Vec<ComptimePurityError> {
+    let imports = ImportedNames::from_decls(decls);
     let mut out = Vec::new();
     for decl in decls {
         match &decl.kind {
-            DeclKind::Fn(f) => check_fn(f, &f.name, effects, &mut out),
+            DeclKind::Fn(f) => check_fn(f, &f.name, effects, &imports, &mut out),
             DeclKind::Struct(s) => {
                 for m in &s.methods {
-                    check_fn(m, &format!("{}.{}", s.name, m.name), effects, &mut out);
+                    check_fn(m, &format!("{}.{}", s.name, m.name), effects, &imports, &mut out);
                 }
             }
             DeclKind::Enum(e) => {
                 for m in &e.methods {
-                    check_fn(m, &format!("{}.{}", e.name, m.name), effects, &mut out);
+                    check_fn(m, &format!("{}.{}", e.name, m.name), effects, &imports, &mut out);
                 }
             }
             DeclKind::Impl(i) => {
                 for m in &i.methods {
-                    check_fn(m, &format!("{}.{}", i.target_ty, m.name), effects, &mut out);
+                    check_fn(m, &format!("{}.{}", i.target_ty, m.name), effects, &imports, &mut out);
                 }
             }
             _ => {}
@@ -64,7 +66,13 @@ pub fn check(decls: &[Decl], effects: &EffectMap) -> Vec<ComptimePurityError> {
     out
 }
 
-fn check_fn(f: &FnDecl, qname: &str, effects: &EffectMap, out: &mut Vec<ComptimePurityError>) {
+fn check_fn(
+    f: &FnDecl,
+    qname: &str,
+    effects: &EffectMap,
+    imports: &ImportedNames,
+    out: &mut Vec<ComptimePurityError>,
+) {
     if !f.is_comptime {
         return;
     }
@@ -75,7 +83,7 @@ fn check_fn(f: &FnDecl, qname: &str, effects: &EffectMap, out: &mut Vec<Comptime
     // Point at the call the effect came in through. Inference is transitive, so
     // the offender may be several hops down — the nearest call whose own
     // effects are impure is the one the reader can act on.
-    let culprit = first_impure_call(&f.body, effects);
+    let culprit = first_impure_call(&f.body, effects, imports);
     let (via, span) = match culprit {
         Some((name, span)) => (Some(name), span),
         None => (None, f.span),
@@ -132,6 +140,7 @@ fn fns(decl: &Decl) -> Vec<&FnDecl> {
 /// the name the reader knows it by: the declaration's own defaults are seen
 /// first.
 pub fn check_compile_time_values(decls: &[Decl], effects: &EffectMap) -> Vec<CompileTimeValueError> {
+    let imports = ImportedNames::from_decls(decls);
     let mut out: Vec<CompileTimeValueError> = Vec::new();
     let push = |what: CompileTimeValue, expr: &Expr, out: &mut Vec<CompileTimeValueError>| {
         let body = [rask_ast::stmt::Stmt {
@@ -139,7 +148,7 @@ pub fn check_compile_time_values(decls: &[Decl], effects: &EffectMap) -> Vec<Com
             kind: rask_ast::stmt::StmtKind::Expr(expr.clone()),
             span: expr.span,
         }];
-        if let Some((via, span, effect)) = first_impure_call_effect(&body, effects) {
+        if let Some((via, span, effect)) = first_impure_call_effect(&body, effects, &imports) {
             if !out.iter().any(|e| e.span == span) {
                 out.push(CompileTimeValueError { what, effect, via, span });
             }
@@ -208,9 +217,10 @@ fn names_the_effect(e: &Effects) -> Option<&'static str> {
 fn first_impure_call_effect(
     body: &[rask_ast::stmt::Stmt],
     effects: &EffectMap,
+    imports: &ImportedNames,
 ) -> Option<(String, Span, &'static str)> {
-    let (name, span) = first_impure_call(body, effects)?;
-    let mut reached = crate::sources::classify_call(&name);
+    let (name, span) = first_impure_call(body, effects, imports)?;
+    let mut reached = crate::sources::classify_call(&imports.qualify(&name));
     let inferred = effects.get(&name).copied().unwrap_or_default();
     reached.io |= inferred.io;
     reached.async_ |= inferred.async_;
@@ -221,7 +231,11 @@ fn first_impure_call_effect(
 }
 
 /// The first call in the body whose callee isn't pure, with its span.
-fn first_impure_call(body: &[rask_ast::stmt::Stmt], effects: &EffectMap) -> Option<(String, Span)> {
+fn first_impure_call(
+    body: &[rask_ast::stmt::Stmt],
+    effects: &EffectMap,
+    imports: &ImportedNames,
+) -> Option<(String, Span)> {
     let mut found: Option<(String, Span)> = None;
     walk_body(body, &mut |e: &Expr| {
         if found.is_some() {
@@ -240,7 +254,7 @@ fn first_impure_call(body: &[rask_ast::stmt::Stmt], effects: &EffectMap) -> Opti
         };
         // Two sources: the ground-truth table for a stdlib call, and the
         // inferred map for a function in this program.
-        let direct = crate::sources::classify_call(&name);
+        let direct = crate::sources::classify_call(&imports.qualify(&name));
         let inferred = effects.get(&name).copied().unwrap_or_default();
         if !direct.is_pure() || !inferred.is_pure() {
             found = Some((name, span));

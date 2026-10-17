@@ -128,19 +128,22 @@ pub(crate) fn method_key(target: &TypeExpr, method: &str) -> String {
 /// The checker's `Type.method` when it resolved the call. A call it didn't
 /// resolve falls back to how it's spelled: `recv.method` plus the bare
 /// method name. Spelling alone classed `t.join()` by the variable `t`, so a
-/// call through any variable missed every `Type.method` source (#1418).
+/// call through any variable missed every `Type.method` source (#1418). The
+/// spelled form goes through the imports, so `f.exists` under `import fs as f`
+/// is `fs.exists`.
 pub(crate) fn method_callees(
     call: NodeId,
     object: &Expr,
     method: &str,
     targets: &MethodTargets,
+    imports: &sources::ImportedNames,
 ) -> Vec<String> {
     if let Some(target) = targets.get(&call) {
         return vec![target.name.clone()];
     }
     let mut names = Vec::new();
     if let Some(recv) = object.name() {
-        names.push(format!("{recv}.{method}"));
+        names.push(imports.qualify(&format!("{recv}.{method}")));
     }
     names.push(method.to_string());
     names
