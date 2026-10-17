@@ -721,12 +721,22 @@ pub fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
 /// Is this method name one an operator desugars to? Derived from the two maps
 /// above, so a new operator can't be forgotten here.
 pub fn is_operator_method(name: &str) -> bool {
+    binary_op_of_method(name).is_some() || unary_op_of_method(name).is_some()
+}
+
+/// The binary operator a desugared method name came from: `add` → `+`. `eq`
+/// answers `==`; `!=` desugars to it too, negated.
+pub fn binary_op_of_method(name: &str) -> Option<BinOp> {
+    BinOp::ALL.into_iter().find(|op| binary_op_method(*op) == Some(name))
+}
+
+/// The unary operator a desugared method name came from: `neg` → `-`.
+pub fn unary_op_of_method(name: &str) -> Option<UnaryOp> {
     const UNOPS: &[UnaryOp] = &[
         UnaryOp::Neg, UnaryOp::BitNot, UnaryOp::Not,
         UnaryOp::Ref, UnaryOp::Deref, UnaryOp::Heap,
     ];
-    BinOp::ALL.iter().any(|op| binary_op_method(*op) == Some(name))
-        || UNOPS.iter().any(|op| unary_op_method(*op) == Some(name))
+    UNOPS.iter().copied().find(|op| unary_op_method(*op) == Some(name))
 }
 
 /// Exhaustive on purpose: a new `ExprKind` variant won't compile until it's

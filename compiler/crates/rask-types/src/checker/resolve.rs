@@ -3521,11 +3521,7 @@ impl TypeChecker {
     /// The operator a desugared method name came from, so the message quotes
     /// what was written rather than `add`.
     pub(super) fn operator_spelling(method: &str) -> &'static str {
-        use rask_ast::expr::{binary_op_method, BinOp};
-        BinOp::ALL
-            .into_iter()
-            .find(|op| binary_op_method(*op) == Some(method))
-            .map_or("this operator", BinOp::symbol)
+        rask_ast::expr::binary_op_of_method(method).map_or("this operator", rask_ast::expr::BinOp::symbol)
     }
 
     /// Anything that would put two links in an order (RK11): the comparison

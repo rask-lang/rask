@@ -5931,40 +5931,16 @@ pub(crate) fn is_parse_target_type_name(name: &str) -> bool {
     is_integer_type_name(name) || matches!(name, "f32" | "f64")
 }
 
-/// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")
+/// The MIR operator a desugared method name stands for: `add` is `+`.
 fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {
-    use crate::operand::BinOp as MirBinOp;
-    match method {
-        "add" => Some(MirBinOp::Add),
-        "sub" => Some(MirBinOp::Sub),
-        "mul" => Some(MirBinOp::Mul),
-        "div" => Some(MirBinOp::Div),
-        "rem" => Some(MirBinOp::Mod),
-        "eq" => Some(MirBinOp::Eq),
-        "lt" => Some(MirBinOp::Lt),
-        "gt" => Some(MirBinOp::Gt),
-        "le" => Some(MirBinOp::Le),
-        "ge" => Some(MirBinOp::Ge),
-        "bit_and" => Some(MirBinOp::BitAnd),
-        "bit_or" => Some(MirBinOp::BitOr),
-        "bit_xor" => Some(MirBinOp::BitXor),
-        "shl" => Some(MirBinOp::Shl),
-        "shr" => Some(MirBinOp::Shr),
-        _ => None,
-    }
+    rask_ast::expr::binary_op_of_method(method).map(lower_binop)
 }
 
-/// Recognize unary operator method names produced by desugar
+/// The MIR operator a desugared unary method name stands for: `neg` is `-`.
 fn operator_method_to_unaryop(method: &str) -> Option<crate::operand::UnaryOp> {
-    use crate::operand::UnaryOp as MirUnaryOp;
-    match method {
-        "neg" => Some(MirUnaryOp::Neg),
-        "bit_not" => Some(MirUnaryOp::BitNot),
-        _ => None,
-    }
+    rask_ast::expr::unary_op_of_method(method).map(lower_unaryop)
 }
 
-/// Map AST binary operator to MIR binary operator (for &&/|| that survive desugar)
 fn lower_binop(op: BinOp) -> crate::operand::BinOp {
     use crate::operand::BinOp as MirBinOp;
     match op {
