@@ -26,7 +26,7 @@ func wait() {
 // What the module does have still resolves: a free function it exports and a
 // member of its namespace.
 func fine() -> bool {
-    time.sleep(time.Duration.from_millis(1))
+    time.sleep(time.Duration.millis(1))
     return async.cancelled()
 }
 
