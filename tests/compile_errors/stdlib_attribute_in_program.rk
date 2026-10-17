@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an attribute only the stdlib's own declarations may carry
+//
+// Spec: type.annotations (AN5), comp.effects (INF4)
+//
+// `@native`, `@builtin`, `@grows`, `@io` and the rest say how a stdlib
+// declaration is implemented, or what it does that no body shows. A program
+// could write them, and the compiler either ignored one (`@native` on a body)
+// or believed it: `@io` made a function an I/O source to effect inference,
+// whose rule is that a program's effects come from its code.
+
+// ERROR: the stdlib's effect mark [E0854]
+@io
+func log_line(s: string) -> u64 {
+    return s.len()
+}
+
+// ERROR: the stdlib's implementation mark [E0854]
+@native
+func twice(n: i64) -> i64 {
+    return n * 2
+}
+
+// FIX: leave them off; the body says what the function does
+func log_line_fixed(s: string) -> u64 {
+    return s.len()
+}
+
+func main() {
+    println("{log_line_fixed("x")}")
+}
