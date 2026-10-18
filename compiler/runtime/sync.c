@@ -74,8 +74,12 @@ struct RaskMutex {
 // from lowering at construction (`elem_strs::box_payload_kind`) — the runtime
 // is the only place that knows when the *last* reference goes, and that is
 // when the container has to be given back.
+//
+// Only a container payload is a handle. Anything else is as wide as it is,
+// which can be narrower than a word, so the kind is asked before the slot is
+// read as one.
 static void box_payload_free(int64_t payload_kind, void *data) {
-    if (!data) return;
+    if (!data || payload_kind == RASK_BOX_PAYLOAD_NONE) return;
     int64_t handle = *(int64_t *)data;
     if (!handle) return;
     switch (payload_kind) {

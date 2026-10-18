@@ -18,5 +18,4 @@ p19_mutate_param_link_write.rk    # #1587
 t_arena_in_a_struct_field.rk      # #1587
 t_container_through_field.rk      # #1587
 t_fixed_array_clone.rk            # #1588 b = a.clone() frees a's strings first
-t_week_opaque_struct_fields.rk    # #1589 a Random in a struct field is freed by a call
 t42_flatten_shaped_header.rk      # #1590 uninitialised bool through a flattened break
