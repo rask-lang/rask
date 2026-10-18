@@ -1032,7 +1032,6 @@ mod tests {
                 doc: None,
                 attrs: vec![],
                 block_start: None,
-                attrs: vec![],
             }),
             span: sp(),
         }
@@ -1149,7 +1148,11 @@ mod tests {
         let decls = vec![make_fn("ffi_call", vec![
             Stmt {
                 id: NodeId(0),
-                kind: ExprKind::Unsafe { body },
+                kind: StmtKind::Expr(Expr {
+                    id: NodeId(0),
+                    kind: ExprKind::Unsafe { body: vec![] },
+                    span: sp(),
+                }),
                 span: sp(),
             },
         ])];
