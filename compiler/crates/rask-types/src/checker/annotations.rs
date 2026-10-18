@@ -232,6 +232,17 @@ impl TypeChecker {
                     self.check_attachment_site(&f.attrs, "func", decl.span, &declared);
                     self.check_signature_types(f, &declared);
                 }
+                DeclKind::Extern(e) => {
+                    // A C function says its effects on its declaration
+                    // (comp.effects/INF5), so those are the program's to write.
+                    let attrs: Vec<_> = e
+                        .attrs
+                        .iter()
+                        .filter(|a| !rask_ast::attr::extern_may_write(&a.name()))
+                        .cloned()
+                        .collect();
+                    self.check_attachment_site(&attrs, "func", decl.span, &declared);
+                }
                 DeclKind::Impl(i) => {
                     for m in &i.methods {
                         self.check_attachment_site(&m.attrs, "method", m.span, &declared);
@@ -262,6 +273,7 @@ impl TypeChecker {
                 DeclKind::Test(t) => (&t.attrs, decl.span),
                 DeclKind::Benchmark(b) => (&b.attrs, decl.span),
                 DeclKind::Const(c) => (&c.attrs, decl.span),
+                DeclKind::Extern(e) => (&e.attrs, decl.span),
                 _ => (&[], decl.span),
             };
             self.check_allow_attrs(attrs, span);

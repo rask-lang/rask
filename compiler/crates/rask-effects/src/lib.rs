@@ -16,7 +16,8 @@
 //!
 //! The stdlib's bodies are inferred like the program's, so only the natives at
 //! the bottom say anything themselves (`@blocks`, `@ambient`), and an
-//! `extern` C function is assumed to do both unless it says `@no_io`.
+//! `extern` C function is assumed to do both unless it says `@ambient`
+//! (outside state, never waits) or `@memory_only` (neither).
 //!
 //! Run after type checking. No AST modifications — annotation only.
 

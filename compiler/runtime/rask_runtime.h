@@ -257,6 +257,7 @@ void     rask_vec_free(RaskVec *v);
 // copying another's elements owns them only after this.
 void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
+int64_t  rask_vec_as_ptr(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
                         const int32_t *str_offs, int64_t n_str_offs);

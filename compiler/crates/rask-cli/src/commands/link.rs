@@ -508,9 +508,11 @@ fn write_dsym(bin_path: &str) {
 /// list is read from the runtime directory now, so the original cause is gone,
 /// but a runtime whose sources and headers are out of step still lands here.
 fn stale_runtime_hint(stderr: &str) -> Option<String> {
-    let undefined_rask_symbol = stderr.lines().any(|l| {
-        (l.contains("undefined reference to") || l.contains("undefined symbol"))
-            && (l.contains("rask_") || l.contains("_rask_"))
+    // The symbol's own name, not the line: GNU ld puts `rask_module:` in front
+    // of every undefined reference from a Rask object, so matching the line
+    // blamed the runtime for a missing C library too.
+    let undefined_rask_symbol = stderr.lines().filter_map(undefined_symbol).any(|name| {
+        name.starts_with("rask_") || name.starts_with("_rask_")
     });
     if !undefined_rask_symbol {
         return None;
@@ -523,6 +525,35 @@ fn stale_runtime_hint(stderr: &str) -> Option<String> {
          \x20       cargo build --release -p rask-cli"
             .to_string(),
     )
+}
+
+/// The name in a linker's "undefined reference to `name'" (GNU ld) or
+/// "undefined symbol: name" (lld, ld64).
+fn undefined_symbol(line: &str) -> Option<&str> {
+    if let Some((_, rest)) = line.split_once("undefined reference to `") {
+        return rest.split('\'').next();
+    }
+    let (_, rest) = line.split_once("undefined symbol: ")?;
+    rest.split_whitespace().next()
+}
+
+#[cfg(test)]
+mod stale_runtime_hint_tests {
+    use super::stale_runtime_hint;
+
+    #[test]
+    fn a_missing_runtime_symbol_gets_the_note() {
+        let ld = "/usr/bin/ld: string.c:(.text+0x10): undefined reference to `rask_canonical_decompose'";
+        assert!(stale_runtime_hint(ld).is_some());
+    }
+
+    #[test]
+    fn a_missing_c_library_symbol_does_not() {
+        // From a package whose build.rk compiled nothing: the reference sits
+        // in `rask_module`, but the symbol is the package's own C.
+        let ld = "/usr/bin/ld: rask_module:(.text+0x1224f): undefined reference to `ting_quic_new'";
+        assert!(stale_runtime_hint(ld).is_none());
+    }
 }
 
 /// Locate the runtime directory containing runtime.c and args.c.

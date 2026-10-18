@@ -593,7 +593,12 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             };
 
             let mut interp = rask_interp::Interpreter::new();
-            match interp.run_build(&build_decls, build_state) {
+            // The stdlib's Rask-written half comes along, as it does for
+            // `rask run --interp`: without it `ctx.package_dir.as_string()`
+            // was "no method `as_string` on type `Path`", since Path's
+            // methods live in stdlib/path.rk.
+            let script_decls = rask_compiler::program_decls(&build_decls);
+            match interp.run_build(&script_decls, build_state) {
                 Ok(_) => {
                     if opts.verbose {
                         println!("  {} build script", "Finished".green().bold());

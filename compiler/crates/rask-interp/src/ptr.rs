@@ -74,7 +74,7 @@ impl RawPtr {
 
     /// Bytes per step, which is also the stride `addr()` walks in.
     fn stride(&self) -> u64 {
-        match self.target {
+        match &self.target {
             PtrTarget::Bytes(_) => 1,
             PtrTarget::Elements(ref v) => match self.view {
                 Some(view) => view_width(view).unwrap_or(8),

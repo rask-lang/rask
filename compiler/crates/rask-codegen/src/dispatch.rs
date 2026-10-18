@@ -1156,6 +1156,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("TcpConnection_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpConnection_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
+        // UDP: the same handle and -1/-2 conventions as TCP above.
+        StdlibEntry::simple("net_resolves", "rask_net_resolves", &[types::I64], Some(types::I8), false),
+        StdlibEntry::neg_none("net_udp_bind_handle", "rask_net_udp_bind", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("UdpSocket_send_to_raw", "rask_net_udp_send_to", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("UdpSocket_receive_raw", "rask_net_udp_receive", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("UdpSocket_try_receive_raw", "rask_net_udp_try_receive", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("UdpSocket_close", "rask_net_close", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "UdpSocket_local_addr", c_name: "rask_net_local_addr",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
 
         // ── os module: environment ──────────────────────────────────
         // env returns `string?` — the string header is written into the

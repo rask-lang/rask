@@ -7495,7 +7495,7 @@ impl<'a> FunctionBuilder<'a> {
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, want.bytes(), 4,
         ));
-        builder.ins().stack_store(stored, ss, 0);
+        builder.ins().stack_store(val, ss, 0);
         builder.ins().stack_addr(types::I64, ss, 0)
     }
 

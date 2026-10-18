@@ -44,6 +44,10 @@ pub enum Writer {
     /// writing one would be believed: `@blocks` on a program function made it
     /// a blocking call (#1593).
     Stdlib,
+    /// The stdlib, and any `extern` declaration. A C function has no body to
+    /// read its effects from, so its declaration is the only place to say them
+    /// (comp.effects/INF5).
+    StdlibOrExtern,
 }
 
 /// Every attribute name the compiler owns, how its arguments are written, and
@@ -85,7 +89,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("grows", ArgForm::Exprs, Writer::Stdlib),
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
-    ("ambient", ArgForm::Exprs, Writer::Stdlib),
+    ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
@@ -119,7 +123,14 @@ pub fn compiler_attr(name: &str) -> Option<ArgForm> {
 
 /// Whether only the stdlib may write the attribute `name`.
 pub fn stdlib_only(name: &str) -> bool {
-    COMPILER_ATTRS.iter().any(|(n, _, w)| *n == name && *w == Writer::Stdlib)
+    COMPILER_ATTRS
+        .iter()
+        .any(|(n, _, w)| *n == name && matches!(w, Writer::Stdlib | Writer::StdlibOrExtern))
+}
+
+/// Whether a program's `extern` declaration may write the attribute `name`.
+pub fn extern_may_write(name: &str) -> bool {
+    COMPILER_ATTRS.iter().any(|(n, _, w)| *n == name && *w == Writer::StdlibOrExtern)
 }
 
 /// One `@name` or `@name(args)` attached to a declaration, field or variant.

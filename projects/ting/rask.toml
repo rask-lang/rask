@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "ting"
+version = "0.0.0"
+description = "Real-time multiplayer over UDP: reliable and unreliable messages on one socket"
+license = "MIT OR Apache-2.0"

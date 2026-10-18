@@ -103,6 +103,17 @@ impl Interpreter {
                     std::io::Error::from_raw_os_error(code as i32).to_string(),
                 )))
             }),
+            "rask_net_resolves" => self.expect_string(args, 0).map(|a| Value::Bool(udp_resolve(&a).is_some())),
+            "rask_net_udp_bind"
+            | "rask_net_udp_send_to"
+            | "rask_net_udp_receive"
+            | "rask_net_udp_try_receive"
+            | "rask_net_local_addr"
+            | "rask_net_close"
+                if symbol == "rask_net_udp_bind" || matches!(args.first(), Some(Value::UdpSocket(_))) =>
+            {
+                self.call_udp_native(symbol, args)
+            }
             "rask_net_read_some" => {
                 let Some(Value::TcpConnection(stream)) = args.first() else {
                     return Some(Err(RuntimeError::TypeError(
@@ -444,10 +455,18 @@ impl Interpreter {
                 }
                 Ok(Value::TcpConnection(arc))
             }
-            _ => Err(RuntimeError::NoSuchMethod {
-                ty: "net".to_string(),
-                method: method.to_string(),
-            }),
+            _ => {
+                // A bodiless `@native` in net.rk (`udp_bind_handle`).
+                if let Some(symbol) = Self::stdlib_native_symbol("net", method) {
+                    if let Some(result) = self.call_native_symbol(&symbol, &args) {
+                        return result;
+                    }
+                }
+                Err(RuntimeError::NoSuchMethod {
+                    ty: "net".to_string(),
+                    method: method.to_string(),
+                })
+            }
         }
     }
 
@@ -604,4 +623,168 @@ impl Interpreter {
         }
     }
 
+}
+
+// ─── UDP ─────────────────────────────────────────────────────
+//
+// The same natives as native's runtime.c, so stdlib/net.rk's Rask bodies run
+// unchanged on both backends: -1 with the error left for
+// `IoError.last_os_error()`, -2 for an address that names nothing.
+
+/// The first IPv4 address `addr` names, the way native's `getaddrinfo` with
+/// AF_INET picks one. `ToSocketAddrs` alone would take `::1` for localhost.
+fn udp_resolve(addr: &str) -> Option<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs().ok()?.find(|a| a.is_ipv4())
+}
+
+fn udp_bytes(v: Option<&Value>) -> Vec<u8> {
+    match v {
+        Some(Value::Vec(v)) => v
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|val| match val {
+                Value::Int(n, _) => *n as u8,
+                _ => 0,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn some(v: Value) -> Value {
+    Value::Enum { name: "Option".to_string(), variant: "Some".to_string(), fields: vec![v], variant_index: 0, origin: None }
+}
+
+fn none() -> Value {
+    Value::Enum { name: "Option".to_string(), variant: "None".to_string(), fields: vec![], variant_index: 1, origin: None }
+}
+
+/// One datagram, waiting in a task the way a cancel can interrupt.
+fn udp_recv(sock: &std::net::UdpSocket, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
+    use std::os::fd::AsRawFd;
+    let Some(token) = crate::value::current_cancel() else {
+        return sock.recv_from(buf);
+    };
+    sock.set_nonblocking(true)?;
+    let result = loop {
+        match sock.recv_from(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => match wait_ready(sock.as_raw_fd(), false, &token) {
+                Ok(true) => break Err(std::io::Error::other(Cancelled)),
+                Ok(false) => continue,
+                Err(e) => break Err(e),
+            },
+            other => break other,
+        }
+    };
+    let _ = sock.set_nonblocking(false);
+    result
+}
+
+impl Interpreter {
+    fn call_udp_native(&mut self, symbol: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+        use crate::value::{IntKind, UdpHandle};
+        let int = |n: i64| Value::Int(n, IntKind::I64);
+        if symbol == "rask_net_udp_bind" {
+            let addr = self.expect_string(args, 0)?;
+            let bound = match udp_resolve(&addr) {
+                Some(sa) => std::net::UdpSocket::bind(sa),
+                None => Err(std::io::Error::from_raw_os_error(libc::EADDRNOTAVAIL)),
+            };
+            return Ok(match bound {
+                Ok(sock) => {
+                    let arc = Arc::new(Mutex::new(UdpHandle::Open(sock)));
+                    let ptr = Arc::as_ptr(&arc) as usize;
+                    self.resource_tracker.register_file(ptr, self.env.scope_depth());
+                    some(Value::UdpSocket(arc))
+                }
+                Err(e) => {
+                    set_last_os_error(&e);
+                    none()
+                }
+            });
+        }
+        let Some(Value::UdpSocket(sock)) = args.first() else {
+            return Err(RuntimeError::TypeError(format!("{symbol}: expected a UdpSocket")));
+        };
+        let closed = || RuntimeError::ResourceClosed {
+            resource_type: "UdpSocket".to_string(),
+            operation: "use".to_string(),
+        };
+        match symbol {
+            "rask_net_local_addr" => {
+                let guard = sock.lock().unwrap();
+                let UdpHandle::Open(s) = &*guard else { return Err(closed()) };
+                let text = s.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+                Ok(Value::String(Arc::new(Mutex::new(text))))
+            }
+            "rask_net_close" => {
+                if !matches!(&*sock.lock().unwrap(), UdpHandle::Open(_)) {
+                    return Ok(make_result_ok(Value::Unit));
+                }
+                let ptr = Arc::as_ptr(sock) as usize;
+                if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
+                    self.resource_tracker.mark_consumed(id).map_err(RuntimeError::Panic)?;
+                }
+                *sock.lock().unwrap() = UdpHandle::Closed;
+                Ok(make_result_ok(Value::Unit))
+            }
+            "rask_net_udp_send_to" => {
+                let data = udp_bytes(args.get(1));
+                let addr = self.expect_string(args, 2)?;
+                let Some(sa) = udp_resolve(&addr) else { return Ok(int(-2)) };
+                let guard = sock.lock().unwrap();
+                let UdpHandle::Open(s) = &*guard else { return Err(closed()) };
+                match s.send_to(&data, sa) {
+                    Ok(_) => Ok(int(0)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(int(-1))
+                    }
+                }
+            }
+            "rask_net_udp_receive" | "rask_net_udp_try_receive" => {
+                // A clone to wait on, so a close from another task isn't
+                // held off by this lock.
+                let s = match &*sock.lock().unwrap() {
+                    UdpHandle::Open(s) => s.try_clone(),
+                    _ => return Err(closed()),
+                };
+                let mut buf = vec![0u8; 65536];
+                let received = if symbol == "rask_net_udp_try_receive" {
+                    // Nothing waiting is an empty Vec, as runtime.c says it.
+                    match s.and_then(|s| s.set_nonblocking(true).and_then(|_| s.recv_from(&mut buf))) {
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Ok(some(Value::vec(Vec::new())));
+                        }
+                        other => other,
+                    }
+                } else {
+                    s.and_then(|s| udp_recv(&s, &mut buf))
+                };
+                match received {
+                    Ok((n, from)) => {
+                        // [payload][sender][sender's length], as runtime.c
+                        // hands it to net.rk.
+                        let from = from.to_string();
+                        buf.truncate(n);
+                        buf.extend_from_slice(from.as_bytes());
+                        buf.push(from.len() as u8);
+                        let bytes = buf.into_iter().map(|b| Value::Int(b as i64, IntKind::U8)).collect();
+                        Ok(some(Value::vec(bytes)))
+                    }
+                    Err(e) => {
+                        if is_cancelled(&e) {
+                            set_last_os_error(&std::io::Error::from_raw_os_error(libc::ECANCELED));
+                        } else {
+                            set_last_os_error(&e);
+                        }
+                        Ok(none())
+                    }
+                }
+            }
+            _ => Err(RuntimeError::TypeError(format!("UdpSocket has no native `{symbol}`"))),
+        }
+    }
 }

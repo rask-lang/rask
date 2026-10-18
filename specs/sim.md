@@ -13,7 +13,7 @@ Sim is a **link choice, not a dialect** (`determinism/D2`, `D3`). `rask test --s
 
 | Rule | Description |
 |------|-------------|
-| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime — one file, or every file in a directory of loose files. v1 is test-only — `rask run --sim` is not part of it, and neither is a package directory |
+| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime — one file, every file in a directory of loose files, or a package, built as one program with the C its `build.rk` links. v1 is test-only — `rask run --sim` is not part of it |
 | **I2: Run seed** | `--seed N` fixes the run seed (u64, decimal). Without it the runner draws from system entropy and prints it in the header |
 | **I3: Per-test seed** | Each test's seed derives from (run seed, module name, test name), where a file's module name is its stem. A test replays identically no matter which other tests ran, in what order, or whether they ran at all |
 | **I4: Replay line** | Every failure prints the exact command that reproduces it. The printed line is the repro — that's the whole point |
@@ -73,6 +73,7 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | **F4b: What a fault is** | `IoError`: the operation fails with `EIO`. `Disconnect`: the connection is reset — this call fails, the peer's next read fails with `ECONNRESET` rather than reading an end of stream, and every later call on it fails |
 | **F5: All-or-nothing** | An injected error means the operation had no effect. Partial effects come only from the short-read/short-write class, where partial *is* the behavior |
 | **F6: Rendered, not recorded** | The fault log in a failure report is regenerated from the seed. Nothing is stored between runs |
+| **N1: Datagram links** | Each direction between two UDP sockets is a link. The first datagram on it draws whether the link is bad for the run, 1 time in 10, and a bad link is named with the sick resources. A healthy link delays each datagram by up to 0.5 ms and keeps their order. A bad one delays each by up to 5 ms on its own, so they overtake each other, loses 1 in 8 and repeats 1 in 32. Always on, like F1: UDP promises none of this (`std.net/U4`). With `Fault.IoError`, a UDP socket can be sick like any other resource (F4) |
 
 <!-- test: skip -->
 ```rask
@@ -97,7 +98,7 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | **B4: Environment** | Sim owns the environment. It starts empty at every test, and a test that needs a variable sets it with `os.set_env` (`std.os/E3`) in its body. The real process env is never visible, and never leaks from one test to the next. `os.args()` is `["<test>"]` |
 | **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified. A listing is the merged view, sorted by name: `readdir` order belongs to the filesystem, not the program |
 | **B6: Sealed C is inside the contract** | C that only computes is already deterministic — same bytes in, same bytes out. Sim classifies each linked object by its undefined symbols: if they all fall in the pure set (`memcpy`, `strlen`, libm, …), the code is sealed. No mark, full contract, nothing to simulate. *Not built, with B2* |
-| **B7: Reaching C is interposed** | Between sealed and escaping sits C that asks the world one question at a time: `clock_gettime`, `gettimeofday`, `getrandom`, `getpid`, `sysconf`, and `malloc`. Sim resolves those at link time to a virtual clock, seeded random, fixed answers, and a fixed-base allocator that poison-fills what it hands back. Interposed is still inside the contract. *Not built: the runtime's own clock, random and environment are simulated, but C calling `clock_gettime` or `malloc` directly gets the real ones* |
+| **B7: Reaching C is interposed** | Between sealed and escaping sits C that asks the world one question at a time: `clock_gettime`, `gettimeofday`, `getrandom`, `getpid`, `sysconf`, and `malloc`. Sim resolves those at link time to a virtual clock, seeded random, fixed answers, and a fixed-base allocator that poison-fills what it hands back. Interposed is still inside the contract. The same questions asked through `syscall(SYS_getrandom, …)` are answered too, since OpenSSL asks that way. A C clock read is not a scheduling step: C can't be switched away from mid-call, so C that spins waiting for time to pass spins forever. *Linux only. Reading `/dev/urandom` still reaches the real one* |
 | **B8: Addresses are the C-side hole** | `determinism/D11` says addresses can't leak into logic — true of Rask, not of C, which can hash or sort by a pointer freely. The fixed-base allocator (B7) is what closes it, and it is the reason `malloc` is interposed rather than treated as pure |
 
 ## v1 surface
@@ -168,7 +169,7 @@ A replay line reproduces a failure; a trace shows it. It's the schedule the seed
 
 | Rule | Description |
 |------|-------------|
-| **TR1: One schedule** | `--trace FILE` writes the schedule of one test under one seed to FILE. It's refused with `--seeds` above 1, with a directory, and when the filter leaves more than one test: a trace is something to replay, so it starts from a replay line |
+| **TR1: One schedule** | `--trace FILE` writes the schedule of one test under one seed to FILE. It's refused with `--seeds` above 1, with a directory of loose files, and when the filter leaves more than one test: a trace is something to replay, so it starts from a replay line |
 | **TR2: What's in it** | Per event: the step it happened at, the task, and what it did. Spawning a task, finishing or panicking, joining one; acquiring and releasing a `Shared` or `Shared<T, Mutex>` the program made; sending and receiving on a channel; and each line the task printed. The objects tasks meet on are numbered by first appearance, so a trace reads the same on every machine |
 | **TR3: Written either way** | The trace is written when the test reports, pass or fail. A deadlock and a spent step budget are failures like any other and leave a trace too. It carries the test's name, its outcome and error, the step count and the replay line |
 | **TR4: Observing doesn't steer** | Recording draws nothing from any stream and adds no scheduling point, so a traced replay takes exactly the schedule the untraced one did |

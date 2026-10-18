@@ -13,6 +13,10 @@
 // arrives after a latency. Both are drawn from the fault stream, so they
 // replay from the seed and never shift the schedule.
 //
+// UDP sockets share the fd table. Each datagram gets its own latency, so one
+// can overtake another, and the seed picks some links to drop and repeat
+// datagrams for the whole run (sim/N1). All of that is legal for UDP.
+//
 // Built only with -DRASK_SIM.
 
 #include "rask_runtime.h"
@@ -41,7 +45,9 @@
 #define MIN_WINDOW_SHIFT 10   // 1 KB
 #define WINDOW_SHIFTS    9    // ... to 256 KB
 
-typedef enum { SOCK_LISTENER, SOCK_CONN } SockKind;
+typedef enum { SOCK_LISTENER, SOCK_CONN, SOCK_UDP } SockKind;
+
+typedef struct SimDatagram SimDatagram;
 
 typedef struct SimSock {
     SockKind        kind;
@@ -62,7 +68,19 @@ typedef struct SimSock {
     int             reset;      // cut by an injected Disconnect
     int             peer_reset; // the other end was cut: reads fail, not EOF
     char            label[64];  // how the fault log names this end
+    // UDP
+    SimDatagram    *inbox;      // waiting, in no order; the earliest due is taken
+    size_t          inbox_len, inbox_cap;
+    void           *sleeper;    // a receiver asleep until the next one is due
 } SimSock;
+
+struct SimDatagram {
+    char    *data;
+    size_t   len;
+    int      from_port;
+    int64_t  due_ns;   // virtual time it arrives
+    uint64_t seq;      // ties on due_ns go in send order
+};
 
 static SimSock **fd_table;
 static size_t    fd_count, fd_cap;
@@ -429,6 +447,10 @@ int rask_sim_net_close(int64_t fd) {
             conn->closed = 1;
             reset_conn(conn);
         }
+    } else if (s->kind == SOCK_UDP) {
+        if (s->sleeper) rask_sim_wake(s->sleeper);
+        for (size_t k = 0; k < s->inbox_len; k++) free(s->inbox[k].data);
+        s->inbox_len = 0;
     } else if (s->peer) {
         // Closing with bytes still unread resets the connection, as TCP does:
         // the peer learns that what it sent wasn't all read.
@@ -457,6 +479,229 @@ void rask_sim_net_addr(int64_t fd, int remote, char *out, size_t cap) {
     }
     int port = remote && s->kind == SOCK_CONN ? s->remote_port : s->port;
     snprintf(out, cap, "127.0.0.1:%d", port);
+}
+
+// ─── UDP ────────────────────────────────────────────────────
+
+#define UDP_MAX_PAYLOAD 65507
+#define BAD_LINK_MAX_LATENCY_NS 5000000   // 5 ms: plenty of overtaking
+#define BAD_LINK_DROP_ONE_IN 8
+#define BAD_LINK_REPEAT_ONE_IN 32
+
+// Whether a link drops, repeats and reorders datagrams, decided the first
+// time it carries one and kept for the run. A healthy link only delays them,
+// in order: real paths mostly do, and reordering everywhere would make every
+// run the awful one.
+typedef struct {
+    int     from, to;
+    int     bad;
+    int64_t last_due;   // a healthy link delivers nothing before this
+} SimLink;
+
+static SimLink *links;
+static size_t   link_count, link_cap;
+static uint64_t next_seq;
+
+static SimSock *udp_on(int port) {
+    for (size_t i = 0; i < fd_count; i++) {
+        SimSock *s = fd_table[i];
+        if (s && s->kind == SOCK_UDP && !s->closed && s->port == port) return s;
+    }
+    return NULL;
+}
+
+static SimLink *link_between(int from, int to) {
+    for (size_t i = 0; i < link_count; i++) {
+        if (links[i].from == from && links[i].to == to) return &links[i];
+    }
+    char what[96];
+    snprintf(what, sizeof(what), "datagrams :%d → :%d lost, repeated and reordered", from, to);
+    int bad = rask_sim_draw_bad_link(what);
+    if (link_count == link_cap) {
+        link_cap = link_cap ? link_cap * 2 : 8;
+        links = (SimLink *)realloc(links, link_cap * sizeof(SimLink));
+        if (!links) abort();
+    }
+    links[link_count] = (SimLink){ .from = from, .to = to, .bad = bad };
+    return &links[link_count++];
+}
+
+static void deliver(SimSock *to, const void *buf, size_t n, SimLink *link) {
+    int64_t span = link->bad ? BAD_LINK_MAX_LATENCY_NS : MAX_LATENCY_NS;
+    int64_t due = rask_sim_time_ns() + (int64_t)(rask_sim_fault_draw() % (uint64_t)span);
+    if (!link->bad) {
+        if (due < link->last_due) due = link->last_due;
+        link->last_due = due;
+    }
+    if (to->inbox_len == to->inbox_cap) {
+        to->inbox_cap = to->inbox_cap ? to->inbox_cap * 2 : 8;
+        to->inbox = (SimDatagram *)realloc(to->inbox, to->inbox_cap * sizeof(SimDatagram));
+        if (!to->inbox) abort();
+    }
+    SimDatagram *d = &to->inbox[to->inbox_len++];
+    d->data = (char *)malloc(n ? n : 1);
+    if (!d->data) abort();
+    memcpy(d->data, buf, n);
+    d->len = n;
+    d->from_port = link->from;
+    d->due_ns = due;
+    d->seq = next_seq++;
+    rask_sim_notify(to);
+    if (to->sleeper) rask_sim_wake(to->sleeper);
+}
+
+// An injected IoError on a sick socket (sim/F4). A datagram socket has no
+// connection to cut, so Disconnect doesn't apply.
+static int udp_injected(SimSock *s, const char *op) {
+    if (!s->sick || !rask_sim_fault_enabled(SIM_FAULT_IO_ERROR)) return 0;
+    char what[160];
+    snprintf(what, sizeof(what), "%s failed on %s", op, s->label);
+    if (!rask_sim_draw_failure(what)) return 0;
+    errno = EIO;
+    return 1;
+}
+
+int64_t rask_sim_net_udp_bind(const char *host, const char *port_str) {
+    if (!is_loopback(host)) {
+        rask_sim_unsimulated("`net.udp_bind(\"%s:%s\")` — sim's network is "
+                             "loopback only", host, port_str);
+    }
+    RASK_SIM_POINT();
+    int port = parse_port(port_str);
+    if (port < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (port == 0) {
+        while (udp_on(next_port)) next_port++;
+        port = next_port++;
+    } else if (udp_on(port)) {
+        errno = EADDRINUSE;
+        return -1;
+    }
+    SimSock *s = (SimSock *)xcalloc(sizeof(SimSock));
+    s->kind = SOCK_UDP;
+    s->port = port;
+    snprintf(s->label, sizeof(s->label), "UDP socket :%d", port);
+    s->sick = rask_sim_draw_sick(SIM_FAULT_IO_ERROR, s->label);
+    return add_fd(s);
+}
+
+int64_t rask_sim_net_send_to(int64_t fd, const void *buf, size_t n, const char *host,
+                             const char *port_str) {
+    SimSock *s = sock_at((int)fd);
+    RASK_SIM_POINT();
+    if (!s || s->kind != SOCK_UDP || s->closed) {
+        errno = EBADF;
+        return -1;
+    }
+    if (!is_loopback(host)) {
+        rask_sim_unsimulated("sending a datagram to %s:%s — sim's network is "
+                             "loopback only", host, port_str);
+    }
+    if (n > UDP_MAX_PAYLOAD) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    if (udp_injected(s, "send")) return -1;
+    int port = parse_port(port_str);
+    if (port <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    // Nobody listening: the datagram is gone, and the sender isn't told.
+    SimSock *to = udp_on(port);
+    if (!to) return 0;
+    SimLink *link = link_between(s->port, port);
+    if (link->bad && rask_sim_fault_draw() % BAD_LINK_DROP_ONE_IN == 0) return 0;
+    deliver(to, buf, n, link);
+    if (link->bad && rask_sim_fault_draw() % BAD_LINK_REPEAT_ONE_IN == 0) {
+        deliver(to, buf, n, link);
+    }
+    return 0;
+}
+
+static void wake_sim_task(RaskCancelWake *w) {
+    rask_sim_wake(w->a);
+}
+
+// Sleep until the next datagram is due; 1 when cancelled. A datagram due
+// sooner, or a close, ends a thread's sleep early. A green task's sleep runs
+// to its deadline, which only makes a datagram later, and it ends on a cancel
+// by itself.
+static int udp_sleep(SimSock *s, int64_t ns) {
+    if (rask_fiber_active()) {
+        rask_sim_sleep(ns);
+        return rask_cancel_requested();
+    }
+    RaskCancelWake w = { .wake = wake_sim_task, .a = rask_sim_self() };
+    if (rask_cancel_wait_begin(&w)) {
+        rask_cancel_wait_end();
+        return 1;
+    }
+    int released = rask_task_slot_release();
+    s->sleeper = w.a;
+    rask_sim_sleep(ns);
+    s->sleeper = NULL;
+    rask_task_slot_retake(released);
+    rask_cancel_wait_end();
+    return rask_cancel_requested();
+}
+
+// The datagram due first, or -1 when the inbox is empty.
+static long earliest(const SimSock *s) {
+    long best = -1;
+    for (size_t i = 0; i < s->inbox_len; i++) {
+        const SimDatagram *d = &s->inbox[i];
+        if (best < 0 || d->due_ns < s->inbox[best].due_ns ||
+            (d->due_ns == s->inbox[best].due_ns && d->seq < s->inbox[best].seq)) {
+            best = (long)i;
+        }
+    }
+    return best;
+}
+
+int64_t rask_sim_net_receive_from(int64_t fd, void *buf, size_t cap, char *from,
+                                  size_t from_cap, int wait) {
+    SimSock *s = sock_at((int)fd);
+    RASK_SIM_POINT();
+    if (!s || s->kind != SOCK_UDP || s->closed) {
+        errno = EBADF;
+        return -1;
+    }
+    if (udp_injected(s, "receive")) return -1;
+
+    long pick;
+    for (;;) {
+        if (s->closed) {
+            errno = EBADF;
+            return -1;
+        }
+        pick = earliest(s);
+        int64_t now = rask_sim_time_ns();
+        if (pick >= 0 && s->inbox[pick].due_ns <= now) break;
+        if (!wait) return -2;
+        if (pick < 0) {
+            SimWait sw = {0};
+            int stop = sim_wait(&sw, s, "datagram");
+            sim_wait_done(&sw, 0);
+            if (stop) {
+                errno = ECANCELED;
+                return -1;
+            }
+        } else if (udp_sleep(s, s->inbox[pick].due_ns - now)) {
+            errno = ECANCELED;
+            return -1;
+        }
+    }
+
+    SimDatagram d = s->inbox[pick];
+    s->inbox[pick] = s->inbox[--s->inbox_len];
+    size_t k = d.len < cap ? d.len : cap;   // a short buffer truncates, as UDP does
+    memcpy(buf, d.data, k);
+    free(d.data);
+    snprintf(from, from_cap, "127.0.0.1:%d", d.from_port);
+    return (int64_t)k;
 }
 
 #endif // RASK_SIM

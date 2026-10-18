@@ -143,6 +143,38 @@ pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build
 /// Uses the full build pipeline (package resolution, build script, deps)
 /// but compiles with a test runner entry point instead of main().
 pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
+    let bin = match build_package_test_binary(path, filter.as_deref(), format, false) {
+        Ok(bin) => bin,
+        Err(TestOutcome::Failed) => process::exit(1),
+        Err(_) => return,
+    };
+    let run_output = test_binary_command(&bin.path).output();
+
+    match run_output {
+        Ok(out) => {
+            forward_test_stderr(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let complete = display_test_results(&stdout, path, format, bin.tests.len(), Some(&out.status));
+            if !out.status.success() || !complete {
+                process::exit(test_exit_code(&out.status));
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: executing test binary: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    }
+}
+
+/// Compile and link a package's tests into one binary, with what its
+/// `build.rk` links. `sim` links the sim runtime instead (`rask test --sim`).
+/// `Err` carries the outcome when there is nothing to run.
+pub fn build_package_test_binary(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    sim: bool,
+) -> Result<TestBinary, TestOutcome> {
     use colored::Colorize;
 
     let opts = super::build::BuildOptions {
@@ -158,14 +190,14 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
     if prepared.dep_errors > 0 {
         eprintln!("{}", output::banner_fail("Build", prepared.dep_errors));
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     }
 
     let root_pkg = match prepared.registry.get(prepared.root_id) {
         Some(p) => p,
         None => {
             eprintln!("{}: root package not found", output::error_label());
-            process::exit(1);
+            return Err(TestOutcome::Failed);
         }
     };
 
@@ -217,7 +249,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     }
     let Some(compiled) = output.result else {
         eprintln!("{}", output::banner_fail("Check", output.diagnostics.len()));
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     };
 
     if tests.is_empty() {
@@ -225,7 +257,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
         }
-        return;
+        return Err(TestOutcome::Passed);
     }
 
     // One path per binary, not per process: a directory builds one per file,
@@ -246,35 +278,18 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             eprintln!("{}: compile: {}", output::error_label(), e);
         }
         let _ = std::fs::remove_file(&obj_path);
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     }
 
-    if let Err(e) = super::link::link_executable_with(
-        &obj_path, &bin_str, &prepared.link_opts, false, None,
-    ) {
+    let link_opts = super::link::LinkOptions { sim, ..prepared.link_opts };
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
         eprintln!("{}: link: {}", output::error_label(), e);
         let _ = std::fs::remove_file(&obj_path);
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     }
     let _ = std::fs::remove_file(&obj_path);
 
-    let run_output = test_binary_command(&bin_str).output();
-    let _ = std::fs::remove_file(&bin_path);
-
-    match run_output {
-        Ok(out) => {
-            forward_test_stderr(&out.stderr);
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let complete = display_test_results(&stdout, path, format, tests.len(), Some(&out.status));
-            if !out.status.success() || !complete {
-                process::exit(test_exit_code(&out.status));
-            }
-        }
-        Err(e) => {
-            eprintln!("{}: executing test binary: {}", output::error_label(), e);
-            process::exit(1);
-        }
-    }
+    Ok(TestBinary { path: bin_path, tests, comptime_records: String::new(), comptime_count: 0 })
 }
 
 /// How a test binary ended, when it ended badly — "signal 11 (SIGSEGV)" rather

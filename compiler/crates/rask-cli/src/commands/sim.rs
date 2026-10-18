@@ -328,14 +328,12 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
         process::exit(1);
     }
     let p = Path::new(path);
-    let (files, single) = if p.is_dir() {
-        if rask_resolve::package::is_package_root(p) {
-            eprintln!(
-                "{}: `rask test --sim` doesn't take a package directory yet — pass one of its test files",
-                output::error_label(),
-            );
-            process::exit(1);
-        }
+    // A package builds as one program, with what its `build.rk` links, so
+    // linked C runs under sim too (sim/B7).
+    let package = p.is_dir() && rask_resolve::package::is_package_root(p);
+    let (files, single) = if package {
+        (vec![path.to_string()], true)
+    } else if p.is_dir() {
         (super::run::without_companion_modules(crate::collect_rk_files(p)), false)
     } else {
         (vec![path.to_string()], true)
@@ -357,7 +355,12 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
     for file in &files {
         // A file named on its own must have tests; in a directory, a module
         // with none is ordinary.
-        match build_test_binary(file, filter.as_deref(), format, single, true) {
+        let built = if package {
+            super::run::build_package_test_binary(file, filter.as_deref(), format, true)
+        } else {
+            build_test_binary(file, filter.as_deref(), format, single, true)
+        };
+        match built {
             Ok(bin) => {
                 if !single {
                     println!("{} {} {}", "===".dimmed(), output::file_path(file), "===".dimmed());

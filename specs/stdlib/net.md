@@ -97,13 +97,19 @@ let response = try conn.read_text()
 | Rule | Description |
 |------|-------------|
 | **U1: UdpSocket** | Connectionless datagram socket. Linear resource — must close |
-| **U2: Bind** | `net.udp_bind(addr)` creates a socket bound to a local address |
-| **U3: Connect** | `udp.connect(addr)` sets a default peer for `send`/`receive` — no actual handshake |
+| **U2: Bind** | `net.udp_bind(addr)` creates a socket bound to a local address. Port 0 picks a free one |
+| **U3: Whole datagrams** | `send_to` sends one datagram, or fails with `IoError` when it doesn't fit in one (65507 bytes). `receive_from` returns one whole datagram and its sender |
+| **U4: No promises** | A datagram may be lost, arrive twice, or overtake one sent before it. The API says nothing more, and sim exercises all three (`sim/N1`) |
 
 <!-- test: skip -->
 ```rask
 @resource
 struct UdpSocket { }
+
+struct Datagram {
+    public data: Vec<u8>
+    public from: string
+}
 
 net.udp_bind(addr: string) -> UdpSocket or IoError
 ```
@@ -111,11 +117,8 @@ net.udp_bind(addr: string) -> UdpSocket or IoError
 <!-- test: skip -->
 ```rask
 extend UdpSocket {
-    func send_to(self, data: Vec<u8>, addr: string) -> usize or IoError
-    func receive_from(self, buf: Vec<u8>) -> (usize, string) or IoError
-    func connect(self, addr: string) -> void or IoError
-    func send(self, data: Vec<u8>) -> usize or IoError     // to connected peer
-    func receive(self, buf: Vec<u8>) -> usize or IoError      // from connected peer
+    func send_to(self, data: Vec<u8>, addr: string) -> void or IoError
+    func receive_from(self) -> Datagram or IoError
     func local_addr(self) -> string
     func close(take self) -> void or IoError
 }
@@ -128,9 +131,8 @@ import net
 let socket = try net.udp_bind("0.0.0.0:9000")
 ensure socket.close()
 
-mut buf = [0u8; 1024]
-let (n, sender) = try socket.receive_from(buf)
-try socket.send_to(buf[0..n], sender)
+let d = try socket.receive_from()
+try socket.send_to(d.data, d.from)
 ```
 
 ## DNS
@@ -200,8 +202,8 @@ WHY: Another process is already listening on this address.
 | `read_text` on non-UTF-8 data | `IoError.Other("invalid UTF-8")` — use `read_bytes` for raw bytes | N6 |
 | `close()` fails (rare) | `IoError` returned; `ensure conn.close()` discards it | N8 |
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
-| UDP `send`/`receive` without `connect` | `IoError.Other("not connected")` | U3 |
-| UDP packet too large for buffer | Truncated, remaining bytes lost | U1 |
+| UDP datagram over 65507 bytes | `IoError` from `send_to`, nothing sent | U3 |
+| UDP datagram to a port nobody bound | Sent; it's gone, and the sender isn't told | U4 |
 | DNS resolution with no results | Empty `Vec` | D1 |
 | DNS resolution for IP literal | Returns the IP itself | D1 |
 
@@ -216,6 +218,8 @@ WHY: Another process is already listening on this address.
 **N3 (string addresses):** No `SocketAddr` or `IpAddr` types. Simpler API, and parsing can be added later without breaking changes.
 
 **U1 (UDP as linear resource):** Same reasoning as TCP — sockets are OS resources that must be explicitly closed. UDP's connectionless nature doesn't change the resource obligation.
+
+**U3 (no caller buffer):** The first draft had `receive_from(buf)` fill a buffer and return a length, the way the C call does. A fresh `Vec<u8>` per datagram is how TCP's reads already work here, and a `Datagram` with named fields reads better at the call site than a `(usize, string)` tuple. I also dropped `connect`/`send`/`receive`: a connected UDP socket only saves passing the address, and a game client can keep the server's address in a variable.
 
 **D1 (string results):** DNS results are IP address strings, consistent with N3's string address philosophy. Parsing into structured types can be added later.
 

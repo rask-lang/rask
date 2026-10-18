@@ -5531,7 +5531,7 @@ impl<'a> MirLowerer<'a> {
                             let base = name;
                             if base == "Vec" && method == "from" && args.len() == 1 {
                                 if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_vec_from_array(elems).map(Some);
+                                    return self.lower_vec_from_array_with(elems, None, Some(expr.id)).map(Some);
                                 }
                             }
                             if base == "Map" && method == "from" && args.len() == 1 {
@@ -7465,6 +7465,8 @@ impl<'a> MirLowerer<'a> {
                             tmp
                         }
                     };
+                    // At the pointee's width: an f32 is four bytes in memory.
+                    let store_size = (want == MirType::F32).then_some(4);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr,
                         offset: 0,

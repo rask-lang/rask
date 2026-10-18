@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A Vec's elements sit side by side at their own width (#985).
+//
+// Every scalar used to take an 8-byte slot, so a `Vec<u8>` was eight times its
+// size and `as_ptr()` handed C a buffer it couldn't read: `p.offset(1)` steps
+// one byte, and the second element was eight bytes on. A pointer steps by its
+// pointee's width everywhere else, so the Vec moved to match.
+
+func walk_bytes(v: Vec<u8>) -> i64 {
+    let p = v.as_ptr()
+    mut sum: i64 = 0
+    for i in 0..v.len() {
+        sum = sum + (unsafe *p.offset(i.wrap<i64>())).wrap<i64>()
+    }
+    return sum
+}
+
+test "a pointer steps from one byte element to the next" {
+    let v: Vec<u8> = [200, 7, 255]
+    let p = v.as_ptr()
+    assert unsafe *p == 200
+    assert unsafe *p.offset(1) == 7
+    assert unsafe *p.offset(2) == 255
+    assert walk_bytes(v) == 462
+}
+
+test "the runtime's byte vectors are packed too" {
+    let v = "hey".bytes().to_vec()
+    let p = v.as_ptr()
+    assert unsafe *p.offset(1) == 101
+    assert walk_bytes(v) == 104 + 101 + 121
+}
+
+test "narrow integers walk at their own width" {
+    let v: Vec<i32> = [7, -8, 9]
+    let p = v.as_ptr()
+    assert unsafe *p.offset(1) == -8
+    assert unsafe *p.offset(2) == 9
+
+    let w: Vec<u16> = [1, 60000]
+    let q = w.as_ptr()
+    assert unsafe *q.offset(1) == 60000
+}
+
+test "an f32 element is four bytes" {
+    let v: Vec<f32> = [1.5, -2.25]
+    let p = v.as_ptr()
+    assert unsafe *p.offset(1) == -2.25
+    mut w: Vec<f32> = []
+    w.push(0.5)
+    w.push(3.0)
+    assert w[1] == 3.0
+    assert (w.get(0) ?? 0.0) == 0.5
+}
+
+test "a byte view reads across element boundaries" {
+    let v: Vec<u8> = [1, 2, 3, 4]
+    let p = unsafe v.as_ptr().cast<u32>()
+    assert unsafe *p == 67305985
+}
+
+test "a write through the buffer lands in the Vec" {
+    mut v: Vec<u8> = [0, 0, 0]
+    let p = v.as_mut_ptr()
+    unsafe {
+        let q = p.offset(1)
+        *q = 42
+    }
+    assert v[0] == 0
+    assert v[1] == 42
+    assert v[2] == 0
+}
+
+test "reads, pops and removes give each element back whole" {
+    mut v: Vec<u8> = [250, 1, 2]
+    assert v[0] == 250
+    assert (v.get(2) ?? 0) == 2
+    assert (v.pop() ?? 0) == 2
+    assert v.remove(0) == 250
+    assert v.len() == 1
+    assert v[0] == 1
+}
+
+test "pushing a wider number converts it to the element" {
+    mut v: Vec<i64> = []
+    let small: i32 = -3
+    v.push(small.wrap<i64>())
+    let doubled: Vec<i64> = [1, 2].map(|x| x * 2).to_vec()
+    assert v[0] == -3
+    assert doubled[1] == 4
+}
+
+test "printing, joining and sorting read the element's own width" {
+    mut v: Vec<u8> = [200, 3, 17]
+    assert v.join(",") == "200,3,17"
+    v.sort()
+    assert "{v:debug}" == "[3, 17, 200]"
+    let flags: Vec<bool> = [true, false]
+    assert flags.join(" ") == "true false"
+}
+
+test "a map of narrow keys and values iterates as pairs" {
+    mut m: Map<u8, u16> = Map.new()
+    m.insert(3, 60000)
+    mut total: i64 = 0
+    for (k, v) in m {
+        total = k.wrap<i64>() + v.wrap<i64>()
+    }
+    assert total == 60003
+}
+
+func main() {
+    println("packed: {walk_bytes("ab".bytes().to_vec())}")
+    return
+}

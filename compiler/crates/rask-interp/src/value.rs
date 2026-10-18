@@ -676,9 +676,17 @@ impl Value {
             Value::File(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
             Value::TcpListener(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
             Value::TcpConnection(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            Value::UdpSocket(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
             _ => None,
         }
     }
+}
+
+/// A UDP socket, or one that was closed.
+#[derive(Debug)]
+pub enum UdpHandle {
+    Open(std::net::UdpSocket),
+    Closed,
 }
 
 /// What every spawn form hands back (conc.async/H5).
@@ -1182,6 +1190,8 @@ pub enum Value {
     RaskMutex(Arc<Mutex<Value>>),
     TcpListener(Arc<Mutex<Socket<std::net::TcpListener>>>),
     TcpConnection(Arc<Mutex<Socket<std::net::TcpStream>>>),
+    /// UDP socket
+    UdpSocket(Arc<Mutex<UdpHandle>>),
     /// SIMD f32x8 (8-wide f32 vector for SIMD operations)
     SimdF32x8([f32; 8]),
     /// Random number generator (xoshiro256++ state)
@@ -1518,6 +1528,7 @@ impl Value {
             Value::RaskMutex(_) => "Mutex",
             Value::TcpListener(_) => "TcpListener",
             Value::TcpConnection(_) => "TcpConnection",
+            Value::UdpSocket(_) => "UdpSocket",
             Value::SimdF32x8(_) => "f32x8",
             Value::Rng(_) => "Random",
             Value::StringBuilder(_) => "StringBuilder",
@@ -1870,6 +1881,10 @@ impl fmt::Display for Value {
                     write!(f, "<closed TcpConnection>")
                 }
             }
+            Value::UdpSocket(u) => match &*u.lock().unwrap() {
+                UdpHandle::Open(_) => write!(f, "<UdpSocket>"),
+                _ => write!(f, "<closed UdpSocket>"),
+            },
             Value::SimdF32x8(v) => {
                 write!(f, "f32x8(")?;
                 for (i, x) in v.iter().enumerate() {

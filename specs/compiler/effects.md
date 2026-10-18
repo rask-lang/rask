@@ -25,7 +25,7 @@ I split what used to be one "IO" effect in two because its two readers ask diffe
 
 | Rule | Description |
 |------|-------------|
-| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless declared `@memory_only` (INF5) |
+| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless it says otherwise (INF5) |
 | **BL2: Transitive** | Any function that transitively calls a source has its effect |
 | **BL3: Unsafe is what it calls** | An `unsafe` block has the effects of the calls in it. Raw pointer work touches nothing outside the program; a C call in the block is conservative on its own (INF5) |
 
@@ -83,7 +83,7 @@ A call is matched on the callee the type checker resolved, not on how the call i
 | **INF2: Module-local** | Within a module, infer from source. Cross-module: read effects from compiled metadata |
 | **INF3: Public function metadata** | Public function effects are stored in compiled module output alongside type information |
 | **INF4: No annotation required** | A program's effects are always inferred, never declared. The marks in BL1 are the stdlib's, on natives with no body to infer from, and a program can't write them (`type.annotations/AN5`) |
-| **INF5: Conservative for extern** | An `extern` C function is assumed to block and touch ambient state unless declared `@memory_only`: the function works on the memory it's given and the heap, doesn't wait, and reaches nothing outside the process. `@memory_only extern "C" func strlen(s: *u8) -> usize`. It has no body to check, so the declaration is trusted. `@memory_only` anywhere but an `extern` is an error (E0854): a Rask function's effects are read from its body |
+| **INF5: Conservative for extern** | An `extern` C function is assumed to block and touch ambient state. `@ambient` says it touches ambient state but never waits (a protocol engine that reads the clock). `@memory_only` says neither: the function works on the memory it's given and the heap, and reaches nothing outside the process: `@memory_only extern "C" func strlen(s: *u8) -> usize`. It has no body to check, so the declaration is trusted. `@memory_only` anywhere but an `extern` is an error (E0854): a Rask function's effects are read from its body |
 
 ### Inference Algorithm
 
@@ -96,7 +96,7 @@ infer_effects(program, stdlib):
             if call.target grows/shrinks:  effects[func].add(Mutation)
             edges.add(func -> call.target)
     for c in extern C functions:
-        effects[c] = if c is @memory_only { none } else { Blocks + Ambient }
+        effects[c] = if c is @memory_only { none } else if c is @ambient { Ambient } else { Blocks + Ambient }
     propagate effects[callee] into effects[caller] along edges, to a fixed point
 ```
 
@@ -228,7 +228,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | `unsafe` block with no C calls | BL3 | Pure: raw pointer work touches nothing outside the program |
 | `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching a call that blocks, outside state, or `spawn` is rejected at its definition. Growing a `Vec` is fine (`ctrl.comptime/CT26`) |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
-| `extern` function | INF5 | Blocks and Ambient unless declared `@memory_only` |
+| `extern` function | INF5 | Blocks and Ambient, Ambient only under `@ambient`, neither under `@memory_only` |
 | Function pointer / `any Interface` call | INF1 | Unknown: nothing is assumed (dynamic dispatch prevents static analysis) |
 
 ---

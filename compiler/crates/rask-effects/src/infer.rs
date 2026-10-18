@@ -340,11 +340,13 @@ impl<'t> InferPass<'t> {
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
-                let memory_only = e.attrs.iter().any(|a| a.is("memory_only"));
-                let effects = if memory_only {
+                // `@ambient`: reads ambient state (the clock, randomness) but
+                // never waits, which is a protocol engine's whole shape.
+                let says = |name: &str| e.attrs.iter().any(|a| a.is(name));
+                let effects = if says("memory_only") {
                     Effects::default()
                 } else {
-                    Effects { blocks: true, ambient: true, ..Default::default() }
+                    Effects { blocks: !says("ambient"), ambient: true, ..Default::default() }
                 };
                 self.effects.insert(e.name.clone(), effects);
             }
@@ -1199,16 +1201,6 @@ mod tests {
         assert!(effects["c_function"].ambient, "INF5: and could touch anything");
     }
 
-    /// `@memory_only` on an `extern` is the author's word that it does neither.
-    #[test]
-    fn a_memory_only_extern_is_pure() {
-        let mut decl = make_extern("strlen");
-        if let DeclKind::Extern(e) = &mut decl.kind {
-            e.attrs = vec![rask_ast::attr::Attr { path: vec!["memory_only".into()], args: None, span: sp() }];
-        }
-        let effects = infer_std(&[decl], &Default::default());
-        assert!(effects["strlen"].is_pure());
-    }
 
     /// The stdlib's bodies are inferred, so a public function gets its
     /// effects from the native at the bottom: `fs.current_dir` calls the C
@@ -1230,6 +1222,26 @@ mod tests {
     fn growing(node: u32) -> MethodTargets {
         let effect = rask_ast::decl::DeclaredEffects { grows: true, ..Default::default() };
         [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into()
+    }
+
+    #[test]
+    fn an_extern_says_what_it_does() {
+        let marked = |name: &str, attr: &str| {
+            let mut decl = make_extern(name);
+            if let DeclKind::Extern(e) = &mut decl.kind {
+                e.attrs.push(rask_ast::attr::Attr::synthetic(attr, None));
+            }
+            decl
+        };
+        let decls = vec![
+            make_extern("c_read"),
+            marked("ngtcp2_step", "ambient"),
+            marked("strlen", "memory_only"),
+        ];
+        let effects = infer(&decls, &Default::default());
+        assert!(effects["c_read"].blocks && effects["c_read"].ambient, "INF5: unmarked is both");
+        assert!(!effects["ngtcp2_step"].blocks && effects["ngtcp2_step"].ambient, "INF5: @ambient never waits");
+        assert!(effects["strlen"].is_pure(), "INF5: @memory_only is neither");
     }
 
     #[test]

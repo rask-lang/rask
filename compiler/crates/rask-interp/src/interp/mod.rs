@@ -1357,11 +1357,24 @@ impl Interpreter {
             ))?;
 
         // If func build takes a parameter, pass ctx; otherwise call with no args
-        if build_fn.params.is_empty() {
-            self.call_function(&build_fn, vec![], None)
+        let value = if build_fn.params.is_empty() {
+            self.call_function(&build_fn, vec![], None)?
         } else {
-            self.call_function(&build_fn, vec![ctx_value], None)
+            self.call_function(&build_fn, vec![ctx_value], None)?
+        };
+        // An error `build` returns, by `try` or by `return`, is a failed
+        // build. It used to come back as an ordinary value and the build went
+        // on without whatever the script hadn't got to yet: a `try` on a
+        // missing directory skipped every `compile_c` after it, and the link
+        // then failed on symbols nobody had compiled.
+        if let Some(err) = Self::main_error_return(build_fn.ret_ty.as_ref(), &value) {
+            let msg = self.describe_error_value(err);
+            return Err(RuntimeDiagnostic::new(
+                RuntimeError::Generic(format!("build() returned an error: {msg}")),
+                build_fn.span,
+            ));
         }
+        Ok(value)
     }
 
     /// Take the build state after a build script finishes.
