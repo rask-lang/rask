@@ -235,7 +235,7 @@ pub fn build_package_test_binary(
         &mut pkg_ctx,
         &config,
         |decls, _typed| {
-            tests = super::compile::extract_tests(decls, filter);
+            tests = rask_compiler::runners::extract_tests(decls, filter.as_deref());
         },
     );
 
@@ -260,13 +260,6 @@ pub fn build_package_test_binary(
         return Err(TestOutcome::Passed);
     }
 
-    let (typed, all_decls, mono, comptime_globals) = (
-        compiled.typed,
-        compiled.decls,
-        compiled.mono,
-        compiled.comptime_globals,
-    );
-
     // One path per binary, not per process: a directory builds one per file,
     // and with RASK_KEEP_TEST_BIN set every file overwrote the last one's.
     static NEXT_BIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -276,9 +269,10 @@ pub fn build_package_test_binary(
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    if let Err(errors) = super::compile::compile_tests_to_object(
-        &mono, &typed, &all_decls, &comptime_globals,
-        &tests, None, None, &obj_path, Some(&cfg),
+    let input = rask_compiler::emit::BackEnd::of(&compiled, None, None);
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Tests(&tests), None,
+        rask_compiler::emit::BuildMode::Debug, &obj_path,
     ) {
         for e in &errors {
             eprintln!("{}: compile: {}", output::error_label(), e);
@@ -690,7 +684,7 @@ pub fn build_test_binary(
     let mut comptime_count = 0;
     let output = rask_compiler::compile_file_with(path, &config, |decls, _typed| {
         (comptime_records, comptime_count) = comptime_test_records(decls, filter);
-        tests = super::compile::extract_tests(decls, filter);
+        tests = rask_compiler::runners::extract_tests(decls, filter);
     });
 
     // The pipeline reports its own sources; fall back to the file itself when
@@ -737,17 +731,17 @@ pub fn build_test_binary(
         return Err(if require_tests { TestOutcome::Failed } else { TestOutcome::Passed });
     }
 
-    let mono = result.mono;
-    let comptime_globals = result.comptime_globals;
-
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    if let Err(errors) = super::compile::compile_tests_to_object(
-        &mono, &result.typed, &result.decls, &comptime_globals,
-        &tests, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+    let input = rask_compiler::emit::BackEnd::of(
+        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
+    );
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Tests(&tests), None,
+        rask_compiler::emit::BuildMode::Debug, &obj_path,
     ) {
         // The file is named because nothing else here does. A failure at
         // this point prints no `=== Testing` header, so in a directory run
@@ -1166,20 +1160,22 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     }
 }
 
-pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
-    // Try native compilation first
-    if try_benchmark_native(path, filter.as_deref(), format) {
+/// Native unless `--interp` asks otherwise, like `run` and `test`. A native
+/// build that fails is an error. It used to switch to the interpreter and
+/// print its timings, labelled "(interpreter)" in a header that was easy to
+/// miss, so a benchmark that boxed to `any I` measured the wrong backend
+/// (#1563).
+pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format, interp: bool) {
+    if interp {
+        cmd_benchmark_interp(path, filter, format);
         return;
     }
-
-    // Fallback: interpreter
-    if format == Format::Human {
-        eprintln!("{}: native benchmark failed, falling back to interpreter", "note".yellow());
+    if !try_benchmark_native(path, filter.as_deref(), format) {
+        process::exit(1);
     }
-    cmd_benchmark_interp(path, filter, format);
 }
 
-/// Run benchmarks via interpreter (original behavior).
+/// Run benchmarks on the interpreter.
 fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
@@ -1604,7 +1600,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
             &path_owned,
             &config,
             |decls, _typed| {
-                benchmarks = super::compile::extract_benchmarks(decls, filter_owned.as_deref());
+                benchmarks = rask_compiler::runners::extract_benchmarks(decls, filter_owned.as_deref());
             },
         );
         (output, benchmarks)
@@ -1630,17 +1626,18 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
         return BenchRun::NoResults;
     }
     let result = output.result.unwrap();
-    let mono = result.mono;
-    let comptime_globals = result.comptime_globals;
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    if let Err(errors) = super::compile::compile_benchmarks_to_object(
-        &mono, &result.typed, &result.decls, &comptime_globals,
-        &benchmarks, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+    let input = rask_compiler::emit::BackEnd::of(
+        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
+    );
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Benches(&benchmarks), None,
+        rask_compiler::emit::BuildMode::Release, &obj_path,
     ) {
         if format == Format::Human {
             for e in &errors {

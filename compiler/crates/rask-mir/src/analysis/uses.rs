@@ -30,70 +30,92 @@ fn visit_operand_uses(op: &MirOperand, f: &mut impl FnMut(LocalId)) {
     }
 }
 
-/// Visit every local read by an rvalue.
-pub(crate) fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
+/// What a statement or rvalue names: an operand, or a local named directly
+/// (a store's address, a closure, a capture).
+#[derive(Debug, Clone, Copy)]
+pub enum Named<'a> {
+    Operand(&'a MirOperand),
+    Local(LocalId),
+}
+
+/// Visit everything an rvalue reads.
+fn visit_rvalue_named<'a>(rv: &'a MirRValue, f: &mut impl FnMut(Named<'a>)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_uses(o, f),
-        MirRValue::Ref(id) => f(*id),
+        MirRValue::Use(o) | MirRValue::Deref(o) => f(Named::Operand(o)),
+        MirRValue::Ref(id) => f(Named::Local(*id)),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
-            visit_operand_uses(left, f);
-            visit_operand_uses(right, f);
+            f(Named::Operand(left));
+            f(Named::Operand(right));
         }
-        MirRValue::UnaryOp { operand, .. } => visit_operand_uses(operand, f),
+        MirRValue::UnaryOp { operand, .. } => f(Named::Operand(operand)),
         MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => {
-            visit_operand_uses(value, f)
+            f(Named::Operand(value))
         }
-        MirRValue::Field { base, .. } => visit_operand_uses(base, f),
-        MirRValue::EnumTag { value } => visit_operand_uses(value, f),
+        MirRValue::Field { base, .. } => f(Named::Operand(base)),
+        MirRValue::EnumTag { value } => f(Named::Operand(value)),
         MirRValue::ArrayIndex { base, index, .. } => {
-            visit_operand_uses(base, f);
-            visit_operand_uses(index, f);
+            f(Named::Operand(base));
+            f(Named::Operand(index));
         }
     }
 }
 
-/// Visit every local read by a statement (as an operand, not as a write dst).
-fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
+/// Visit every local read by an rvalue.
+pub(crate) fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
+    visit_rvalue_named(rv, &mut |n| match n {
+        Named::Operand(o) => visit_operand_uses(o, f),
+        Named::Local(id) => f(id),
+    });
+}
+
+/// Visit everything a statement reads, as an operand or as a local it names
+/// (not as a write destination).
+///
+/// Exhaustive on purpose: a new statement kind is a compile error here, not a
+/// walk somewhere that quietly skips it. Codegen's string-literal scan was two
+/// hand-written walks with a `_ => {}`, and a literal passed to an interface
+/// method came out as `""` (#1558).
+fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
     match &stmt.kind {
-        MirStmtKind::Assign { rvalue, .. } => visit_rvalue_uses(rvalue, f),
+        MirStmtKind::Assign { rvalue, .. } => visit_rvalue_named(rvalue, f),
         MirStmtKind::Store { addr, value, .. } => {
-            f(*addr);
-            visit_operand_uses(value, f);
+            f(Named::Local(*addr));
+            f(Named::Operand(value));
         }
         MirStmtKind::Call { args, .. } => {
-            args.iter().for_each(|a| visit_operand_uses(a, f))
+            args.iter().for_each(|a| f(Named::Operand(a)))
         }
         MirStmtKind::ClosureCall { closure, args, .. } => {
-            f(*closure);
-            args.iter().for_each(|a| visit_operand_uses(a, f));
+            f(Named::Local(*closure));
+            args.iter().for_each(|a| f(Named::Operand(a)));
         }
         MirStmtKind::ClosureCreate { captures, .. }
         | MirStmtKind::EnsureHookRegister { captures, .. } => {
-            captures.iter().for_each(|c| f(c.local_id));
+            captures.iter().for_each(|c| f(Named::Local(c.local_id)));
         }
-        MirStmtKind::LoadCapture { env_ptr, .. } => f(*env_ptr),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(*closure),
-        MirStmtKind::ResourceConsume { resource_id } => f(*resource_id),
+        MirStmtKind::LoadCapture { env_ptr, .. } => f(Named::Local(*env_ptr)),
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(Named::Local(*closure)),
+        MirStmtKind::ResourceConsume { resource_id } => f(Named::Local(*resource_id)),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
-            f(*base);
-            visit_operand_uses(index, f);
-            visit_operand_uses(value, f);
+            f(Named::Local(*base));
+            f(Named::Operand(index));
+            f(Named::Operand(value));
         }
-        MirStmtKind::InterfaceBox { value, .. } => visit_operand_uses(value, f),
+        MirStmtKind::InterfaceBox { value, .. } => f(Named::Operand(value)),
         MirStmtKind::InterfaceCall { interface_object, args, .. } => {
-            f(*interface_object);
-            args.iter().for_each(|a| visit_operand_uses(a, f));
+            f(Named::Local(*interface_object));
+            args.iter().for_each(|a| f(Named::Operand(a)));
         }
-        MirStmtKind::InterfaceDrop { interface_object, .. } => f(*interface_object),
+        MirStmtKind::InterfaceDrop { interface_object, .. } => f(Named::Local(*interface_object)),
         MirStmtKind::Phi { args, .. } => {
-            args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
+            args.iter().for_each(|(_, o)| f(Named::Operand(o)))
         }
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(*local),
-        MirStmtKind::ReleaseSlot { addr, .. } => f(*addr),
+        | MirStmtKind::RcIncContents { local } => f(Named::Local(*local)),
+        MirStmtKind::ReleaseSlot { addr, .. } => f(Named::Local(*addr)),
         // Bookkeeping: an arm copies the value into the frame's unwind record
         // and nothing reads it there but a panic. Counted as a read, every
         // analysis that treats an unknown reader as a keeper would stop
@@ -109,6 +131,37 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
         | MirStmtKind::EnsureHookPop
         | MirStmtKind::UnwindArm { .. }
         | MirStmtKind::UnwindDisarm { .. } => {}
+    }
+}
+
+/// Visit every local read by a statement (as an operand, not as a write dst).
+fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
+    visit_stmt_named(stmt, &mut |n| match n {
+        Named::Operand(o) => visit_operand_uses(o, f),
+        Named::Local(id) => f(id),
+    });
+}
+
+/// Visit every operand a statement reads, constants included.
+pub fn visit_stmt_operands<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(&'a MirOperand)) {
+    visit_stmt_named(stmt, &mut |n| {
+        if let Named::Operand(o) = n {
+            f(o);
+        }
+    });
+}
+
+/// Visit every operand a terminator reads, constants included.
+pub fn visit_terminator_operands<'a>(term: &'a MirTerminator, f: &mut impl FnMut(&'a MirOperand)) {
+    match &term.kind {
+        MirTerminatorKind::Return { value: Some(op) }
+        | MirTerminatorKind::CleanupReturn { value: Some(op), .. } => f(op),
+        MirTerminatorKind::Branch { cond, .. } => f(cond),
+        MirTerminatorKind::Switch { value, .. } => f(value),
+        MirTerminatorKind::Return { value: None }
+        | MirTerminatorKind::CleanupReturn { value: None, .. }
+        | MirTerminatorKind::Goto { .. }
+        | MirTerminatorKind::Unreachable => {}
     }
 }
 

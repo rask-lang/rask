@@ -1052,3 +1052,39 @@ impl LexError {
         }
     }
 }
+
+#[cfg(test)]
+mod keyword_tests {
+    use super::Lexer;
+    use rask_ast::token::KEYWORDS;
+
+    /// Each keyword in `rask_ast::token::KEYWORDS` lexes as that keyword.
+    #[test]
+    fn every_listed_keyword_lexes_as_itself() {
+        for (kind, spelling) in KEYWORDS {
+            let lexed = Lexer::new(spelling).tokenize();
+            let first = lexed.tokens.first().map(|t| &t.kind);
+            assert_eq!(first, Some(kind), "`{spelling}` didn't lex as {kind:?}");
+        }
+    }
+
+    /// And the list has every word this lexer reads as a keyword. The parser,
+    /// the diagnostics and the LSP's completions all read the list, so one
+    /// missing from it is a keyword they don't know.
+    #[test]
+    fn every_keyword_the_lexer_has_is_listed() {
+        let source = include_str!("lexer.rs");
+        let mut missing = Vec::new();
+        for line in source.lines() {
+            let Some(rest) = line.trim().strip_prefix("#[token(\"") else { continue };
+            let Some(word) = rest.split('"').next() else { continue };
+            if !word.chars().all(|c| c.is_ascii_alphabetic() || c == '_') {
+                continue;
+            }
+            if !KEYWORDS.iter().any(|(_, s)| *s == word) {
+                missing.push(word);
+            }
+        }
+        assert!(missing.is_empty(), "lexer keywords not in KEYWORDS: {missing:?}");
+    }
+}

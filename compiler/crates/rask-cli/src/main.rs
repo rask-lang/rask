@@ -610,7 +610,7 @@ fn main() {
                 };
                 commands::run::cmd_benchmark_dir(path, filter, format, opts);
             } else {
-                commands::run::cmd_benchmark(path, filter, format);
+                commands::run::cmd_benchmark(path, filter, format, cmd_args.contains(&"--interp"));
             }
         }
         "test-specs" => {

@@ -463,6 +463,18 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// A `with` binding given away. The block reaches into its source; the
+    /// source still holds the value when the block ends.
+    #[error("cannot give away `{name}` — `with` only lends it out of `{from}`")]
+    ConsumeWithBinding {
+        name: String,
+        /// What the `with` reads: `s` for `s.write()`.
+        from: String,
+        /// The `with` source expression.
+        with_at: Span,
+        sink: Option<String>,
+    },
+
     /// A closure body gave away something it captured (mem.closures/CM4).
     ///
     /// The parameter version of this is `ConsumeBorrowedParam` (#804). What
@@ -594,6 +606,17 @@ pub enum OwnershipErrorKind {
         position: LinearDiscardPosition,
         /// The transitively-linear type that would be dropped.
         type_name: String,
+    },
+
+    /// conc.sync/SH9: a generic body `take`s a `Shared<T>`, and this call
+    /// fixes `T` to a value that isn't consumed exactly once.
+    #[error("`take` needs a `Shared` holding a resource, and this call gives `{param}` = `{type_arg}`")]
+    TakeInGenericInstance {
+        /// Generic functions from the call down to the one that takes.
+        chain: Vec<String>,
+        param: String,
+        type_arg: String,
+        take_at: Span,
     },
 
     /// mem.linear/L1–L2 per instantiation (#1366): a generic body that is fine

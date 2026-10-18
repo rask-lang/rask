@@ -322,6 +322,17 @@ impl TypeChecker {
                 }
             }
             DeclKind::Fn(f) => {
+                if f.params.iter().any(|p| p.default.is_some()) {
+                    if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
+                        let defaults = f
+                            .params
+                            .iter()
+                            .filter(|p| p.name != "self")
+                            .map(|p| p.default.clone())
+                            .collect();
+                        self.fn_defaults.insert(sym_id, defaults);
+                    }
+                }
                 // PC1: explicit <T> declarations plus implicit single-letter
                 // type params from the signature.
                 let type_param_names = signature_type_param_names(f);
@@ -1890,7 +1901,8 @@ impl TypeChecker {
 
         MethodSig {
             param_names,
-            derived: false,
+            origin: crate::MethodOrigin::Declared,
+            effect: m.declared_effects(),
             is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
             // stored name is `tag<E>`. Method lookup compares against what the
@@ -2128,7 +2140,8 @@ impl TypeChecker {
             let declared = |name: &str| methods.iter().any(|m| m.name == name);
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
-                derived: true,
+                origin: crate::MethodOrigin::Structural,
+                effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -2733,10 +2746,12 @@ impl TypeChecker {
                     // to the other, so `c.bump()` came back "no method `bump`
                     // found for type `Counter`" (#1124).
 
-                    if !self.types.builtin_modules.is_module(&module_name) {
+                    // The marker names the module, not the alias, so `import
+                    // time as tm` checks `tm.sleep` as `time.sleep`.
+                    if !self.types.builtin_modules.is_module(pkg_name) {
                         self.define_local(
                             module_name.clone(),
-                            Type::UnresolvedNamed(format!("__module_{}", module_name)),
+                            Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
                         );
                     }
                 }

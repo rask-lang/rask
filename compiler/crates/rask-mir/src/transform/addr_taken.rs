@@ -407,7 +407,7 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                             // be stored at its own width or the load reads
                             // bytes the store never wrote — an f32 stored as a
                             // promoted f64 reads back as noise.
-                            store_size: Some(ty.size()),
+                            store_size: ty.size(),
                             field: None,
                         },
                         span,

@@ -239,13 +239,14 @@ impl Type {
     /// the atomic-payload check both read them here, so a struct's size and the
     /// rule about what fits a machine word can't drift apart (#1083).
     ///
-    /// `char` is a full word: the runtime carries a code point in one.
+    /// Each is its real size (type.primitives/P5: a `char` is 4 bytes). A value
+    /// is never padded out to a word to make it easier to move.
     pub fn scalar_bytes(&self) -> Option<u32> {
         Some(match self {
             Type::Bool | Type::I8 | Type::U8 => 1,
             Type::I16 | Type::U16 => 2,
-            Type::I32 | Type::U32 | Type::F32 => 4,
-            Type::I64 | Type::U64 | Type::F64 | Type::Char => 8,
+            Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
+            Type::I64 | Type::U64 | Type::F64 => 8,
             Type::I128 | Type::U128 => 16,
             _ => return None,
         })

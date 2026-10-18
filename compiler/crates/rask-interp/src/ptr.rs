@@ -76,7 +76,10 @@ impl RawPtr {
     fn stride(&self) -> u64 {
         match &self.target {
             PtrTarget::Bytes(_) => 1,
-            PtrTarget::Elements(v) => self.view.and_then(view_width).unwrap_or_else(|| elem_width(v)),
+            PtrTarget::Elements(ref v) => match self.view {
+                Some(view) => view_width(view).unwrap_or(8),
+                None => elem_kind(v).and_then(view_width).unwrap_or(8),
+            },
             PtrTarget::Foreign(_) => 1,
         }
     }
@@ -87,17 +90,20 @@ impl RawPtr {
     /// Only a Vec's elements get a view: a string buffer is bytes already, and
     /// a foreign pointer has nothing behind it to read. The position is kept in
     /// bytes across the change, so `p.offset(1).cast<u8>()` on an `*i64` is
-    /// byte 8. A view of the element's own kind is the element.
+    /// byte 8, and on an `*i16` byte 2.
     pub fn cast_to(&self, from: Option<IntKind>, to: Option<IntKind>) -> Result<RawPtr, RuntimeError> {
-        let PtrTarget::Elements(v) = &self.target else {
-            return Ok(self.clone());
-        };
+        let PtrTarget::Elements(v) = &self.target else { return Ok(self.clone()) };
         if from == to {
             return Ok(self.clone());
         }
-        let byte = self.index.wrapping_mul(self.stride() as i64);
-        let view = to.filter(|k| Some(*k) != elem_kind(v) && view_width(*k).is_some());
-        let step = view.and_then(view_width).unwrap_or_else(|| elem_width(v)) as i64;
+        // The element's own kind: from the elements, or, with no view in the
+        // way, the pointee the cast starts from.
+        let elem = elem_kind(v).or(if self.view.is_none() { from } else { None });
+        let width = |k: Option<IntKind>| k.and_then(view_width).unwrap_or(8) as i64;
+        let byte = self.index.wrapping_mul(width(self.view.or(elem)));
+        // A cast back to the element type reads the element as itself.
+        let view = to.filter(|k| Some(*k) != elem && view_width(*k).is_some());
+        let step = width(view.or(elem));
         if byte.rem_euclid(step) != 0 {
             return Err(RuntimeError::Panic(format!(
                 "casting a pointer at byte {} of {} to a {}-byte pointee leaves it \
@@ -202,83 +208,63 @@ impl RawPtr {
                     drop(guard);
                     return found.ok_or_else(|| self.out_of_range("read"));
                 };
-                let width = self.stride() as usize;
-                let bytes = self.view_bytes(v, "read")?;
-                let mut raw = [0u8; 8];
-                raw[..width].copy_from_slice(&bytes);
-                let unsigned = u64::from_le_bytes(raw);
-                let bits = (width * 8) as u32;
-                let n = if view.signed() {
-                    ((unsigned << (64 - bits)) as i64) >> (64 - bits)
-                } else {
-                    unsigned as i64
-                };
-                Ok(Value::Int(n, view))
+                let raw = self.view_bytes(v, "read")?;
+                Ok(Value::Int(from_width(&raw, raw.len(), view.signed()), view))
             }
             PtrTarget::Foreign(_) => Err(self.out_of_range("read")),
         }
     }
 
-    /// The bytes a viewed pointer covers, gathered from the elements they fall
-    /// in. A Vec's elements sit side by side at their own width, the way
-    /// native lays them out (#985), so a view may span several. An element is
-    /// its value's two's-complement bytes; anything that isn't an integer has
-    /// no byte layout here to read.
+    /// The bytes a viewed pointer covers, gathered from the elements they
+    /// fall in. An element is its value's two's-complement bytes at its own
+    /// width, which is how native lays a Vec out, so a `*u8` over a `Vec<i16>`
+    /// walks two bytes per element and a `*u32` over a `Vec<u8>` reads four.
     fn view_bytes(&self, v: &Arc<Mutex<VecData>>, verb: &str) -> Result<Vec<u8>, RuntimeError> {
-        let width = self.stride() as i64;
-        let start = self.index.wrapping_mul(width);
-        let ew = elem_width(v) as i64;
+        let (start, width, ew) = self.view_span(v)?;
         let guard = v.lock().unwrap();
-        let mut out = Vec::with_capacity(width as usize);
-        for byte in start..start + width {
-            let element = usize::try_from(byte.div_euclid(ew)).ok().and_then(|i| guard.items.get(i));
-            let Some(element) = element.filter(|_| byte >= 0) else {
+        let mut out = Vec::with_capacity(width);
+        for b in start..start + width as i64 {
+            let element = usize::try_from(b.div_euclid(ew)).ok().and_then(|i| guard.items.get(i));
+            let Some(element) = element.filter(|_| b >= 0) else {
                 drop(guard);
                 return Err(self.out_of_range(verb));
             };
             let Value::Int(n, _) = element else {
-                let name = element.type_name();
-                drop(guard);
-                return Err(self.not_bytes(&name));
+                return Err(not_bytes(&self.describe_target(), element));
             };
-            out.push((*n as u64).to_le_bytes()[byte.rem_euclid(ew) as usize]);
+            out.push((*n as u64).to_le_bytes()[b.rem_euclid(ew) as usize]);
         }
         Ok(out)
     }
 
-    /// Write `bytes` where a viewed pointer points, into the elements they fall in.
+    /// Write `bytes` over the span a viewed pointer covers, each element
+    /// taking back the bytes that land in it at its own width and sign.
     fn write_view_bytes(&self, v: &Arc<Mutex<VecData>>, bytes: &[u8]) -> Result<(), RuntimeError> {
-        self.view_bytes(v, "write")?;
-        let start = self.index.wrapping_mul(self.stride() as i64);
-        let ew = elem_width(v) as i64;
+        let (start, _, ew) = self.view_span(v)?;
         let mut guard = v.lock().unwrap();
-        for (k, b) in bytes.iter().enumerate() {
-            let byte = start + k as i64;
-            let element = byte.div_euclid(ew) as usize;
-            if let Value::Int(old, kind) = &mut guard.items[element] {
-                let mut le = (*old as u64).to_le_bytes();
-                le[byte.rem_euclid(ew) as usize] = *b;
-                let raw = u64::from_le_bytes(le);
-                let bits = (ew * 8) as u32;
-                *old = if bits < 64 && kind.signed() {
-                    ((raw << (64 - bits)) as i64) >> (64 - bits)
-                } else if bits < 64 {
-                    (raw & ((1u64 << bits) - 1)) as i64
-                } else {
-                    raw as i64
-                };
-            }
+        for (k, byte) in bytes.iter().enumerate() {
+            let b = start + k as i64;
+            let element = usize::try_from(b.div_euclid(ew)).ok().filter(|_| b >= 0);
+            let Some(Value::Int(n, kind)) = element.and_then(|i| guard.items.get_mut(i)) else {
+                drop(guard);
+                return Err(self.out_of_range("write"));
+            };
+            let mut raw = (*n as u64).to_le_bytes();
+            raw[b.rem_euclid(ew) as usize] = *byte;
+            *n = from_width(&raw, ew as usize, kind.signed());
         }
         Ok(())
     }
 
-    fn not_bytes(&self, element: &str) -> RuntimeError {
-        RuntimeError::TypeError(format!(
-            "reading part of {} through a cast pointer — the interpreter holds \
-             values, not bytes, and a {} has no byte layout it can split (#1012)",
-            self.describe_target(),
-            element
-        ))
+    /// Where a viewed pointer starts in bytes, how many it covers, and the
+    /// element width it walks over.
+    fn view_span(&self, v: &Arc<Mutex<VecData>>) -> Result<(i64, usize, i64), RuntimeError> {
+        let width = self.stride();
+        let ew = match elem_kind(v) {
+            Some(kind) => view_width(kind).unwrap_or(8) as i64,
+            None => return Err(self.out_of_range("read")),
+        };
+        Ok((self.index.wrapping_mul(width as i64), width as usize, ew))
     }
 
     /// `p.write(v)`. Writes land in the buffer the pointer came from, so a
@@ -481,24 +467,35 @@ fn view_width(kind: IntKind) -> Option<u64> {
     kind.bits().map(|b| (b / 8) as u64)
 }
 
-/// The integer kind a Vec's elements are, read off the first one that says.
+/// The integer kind a Vec's elements are, read off the elements. `None` for
+/// an empty Vec or one of non-integers, which a view can't address.
 fn elem_kind(v: &Arc<Mutex<VecData>>) -> Option<IntKind> {
-    v.lock().unwrap().items.iter().find_map(|item| match item {
-        Value::Int(_, kind) if kind.bits().is_some() => Some(*kind),
+    match v.lock().unwrap().items.first() {
+        Some(Value::Int(_, kind)) => Some(*kind),
         _ => None,
-    })
+    }
 }
 
-/// How wide one of a Vec's elements is natively: an integer's own width, a
-/// bool's one byte, and a word for anything the interpreter can't size.
-fn elem_width(v: &Arc<Mutex<VecData>>) -> u64 {
-    if let Some(kind) = elem_kind(v) {
-        return view_width(kind).unwrap_or(8);
+/// The value of `width` little-endian bytes, sign- or zero-extended.
+fn from_width(raw: &[u8], width: usize, signed: bool) -> i64 {
+    let mut word = [0u8; 8];
+    word[..width].copy_from_slice(&raw[..width]);
+    let unsigned = u64::from_le_bytes(word);
+    let bits = (width * 8) as u32;
+    if signed && bits < 64 {
+        ((unsigned << (64 - bits)) as i64) >> (64 - bits)
+    } else {
+        unsigned as i64
     }
-    match v.lock().unwrap().items.first() {
-        Some(Value::Bool(_)) => 1,
-        _ => 8,
-    }
+}
+
+fn not_bytes(target: &str, element: &Value) -> RuntimeError {
+    RuntimeError::TypeError(format!(
+        "reading part of {} through a cast pointer — the interpreter holds \
+         values, not bytes, and a {} has no byte layout it can split (#1012)",
+        target,
+        element.type_name()
+    ))
 }
 
 fn unimplemented_ptr_method(method: &str) -> RuntimeError {

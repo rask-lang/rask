@@ -86,6 +86,11 @@ fn stub_file_id(index: usize) -> u16 {
 /// resolver's symbol for `cancelled` and the checker's declaration of it agree on
 /// which node they mean. They used to be six separate parses, each numbering
 /// from its own base.
+/// Every stdlib declaration as parsed, in source order.
+pub(crate) fn parsed_decls() -> impl Iterator<Item = &'static Decl> {
+    parsed_stdlib().iter().flatten().flatten()
+}
+
 fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
     static PARSED: OnceLock<Vec<Option<Vec<Decl>>>> = OnceLock::new();
     PARSED.get_or_init(|| {
@@ -280,6 +285,8 @@ pub struct MethodStub {
     /// `json.decode<WithPtr>` type-checked clean and failed later, in MIR
     /// lowering on native and as a bogus "missing field" on interp.
     pub type_param_bounds: Vec<(String, TypeExpr)>,
+    /// `@grows`, `@shrinks`, `@io`, `@waits`.
+    pub effects: rask_ast::decl::DeclaredEffects,
 }
 
 /// A type extracted from a stub file.
@@ -329,6 +336,8 @@ pub struct FunctionStub {
     pub source_file: String,
     /// Byte offset span of the function name within the stub source.
     pub span: Span,
+    /// `@io`, `@waits` and the rest, as on a method.
+    pub effects: rask_ast::decl::DeclaredEffects,
 }
 
 /// Registry of all stub data, lazily loaded.
@@ -462,12 +471,12 @@ impl StubRegistry {
     }
 
     /// The stdlib declarations desugaring needs from outside the program:
-    /// every struct and enum, and every function that has a defaulted
-    /// parameter.
+    /// every struct and enum, and every `extend` block declaring a `message`.
     ///
-    /// Filling an omitted argument needs the declaration it was omitted from
-    /// (#1276), and telling `Point(x: 1)` from a call needs to know `Point` is
-    /// a struct — the stdlib's `SourceLoc` as much as a program's own.
+    /// Telling `Point(x: 1)` from a call needs to know `Point` is a struct —
+    /// the stdlib's `SourceLoc` as much as a program's own — and a struct
+    /// literal leaving a field out takes the field's default. An error
+    /// variant delegates its message to a payload that has one (ER37).
     /// `rask-desugar` can't read this registry itself — this crate already
     /// depends on it — so the caller hands the list in.
     ///
@@ -477,14 +486,11 @@ impl StubRegistry {
         static CACHE: OnceLock<Vec<Decl>> = OnceLock::new();
         CACHE.get_or_init(|| {
             let mut decls = Vec::new();
-
-            let defaulted = |f: &FnDecl| f.params.iter().any(|p| p.default.is_some());
             for stub_index in 0..all_sources().len() {
                 let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
                 for decl in parsed {
                     let keep = match &decl.kind {
-                        DeclKind::Fn(f) => defaulted(f),
-                        DeclKind::Impl(i) => i.methods.iter().any(defaulted),
+                        DeclKind::Impl(i) => i.methods.iter().any(|m| m.name == "message"),
                         DeclKind::Enum(_) | DeclKind::Struct(_) => true,
                         _ => false,
                     };
@@ -619,6 +625,7 @@ impl StubRegistry {
                     doc: f.doc.clone(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
+                    effects: f.declared_effects(),
                 });
             }
             _ => {}
@@ -779,6 +786,7 @@ fn fn_to_method_stub(
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
+        effects: f.declared_effects(),
     }
 }
 

@@ -52,19 +52,19 @@ mod tests {
 
     /// An attribute above `extern` reaches the declaration, and one above a
     /// block reaches every member. They used to be parsed and dropped, so
-    /// `@no_io` on a C function did nothing.
+    /// `@pure` on a C function did nothing.
     #[test]
     fn extern_declarations_keep_their_attributes() {
-        let result = parse("@no_io\nextern \"C\" func a()\n\n@no_io\nextern \"C\" {\n    func b()\n    @deny(x)\n    func c()\n}\n");
+        let result = parse("@pure\nextern \"C\" func a()\n\n@ambient\nextern \"C\" {\n    func b()\n    func c()\n}\n");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         let attrs: Vec<(String, Vec<String>)> = result.decls.iter().filter_map(|d| match &d.kind {
             DeclKind::Extern(e) => Some((e.name.clone(), e.attrs.iter().map(|a| a.name().to_string()).collect())),
             _ => None,
         }).collect();
         assert_eq!(attrs, vec![
-            ("a".to_string(), vec!["no_io".to_string()]),
-            ("b".to_string(), vec!["no_io".to_string()]),
-            ("c".to_string(), vec!["no_io".to_string(), "deny".to_string()]),
+            ("a".to_string(), vec!["pure".to_string()]),
+            ("b".to_string(), vec!["ambient".to_string()]),
+            ("c".to_string(), vec!["ambient".to_string()]),
         ]);
     }
 

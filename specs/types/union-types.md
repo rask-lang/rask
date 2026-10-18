@@ -27,7 +27,7 @@ func load() -> Config or (IoError | ParseError)
 func process() -> Output or (IoError | ParseError | ValidationError)
 
 // Invalid: general unions not allowed
-mut x: int | string = ...              // Compile error
+mut x: i64 | string = ...              // Compile error
 func foo(input: A | B) -> C           // Compile error
 ```
 
@@ -97,7 +97,7 @@ func transform<T, E>(result: T or E) -> U or (E | TransformError)
 ```
 ERROR [type.unions/U1]: union types only allowed in error position
    |
-3  |  let x: int | string = ...
+3  |  let x: i64 | string = ...
    |           ^^^^^^^^^^^^ use an explicit enum for data modeling
 
 WHY: General union types add subtyping complexity. Use enums instead.
@@ -182,7 +182,7 @@ func load_app() -> App or (IoError | ParseError | ValidationError) {
 
 <!-- test: skip -->
 ```rask
-// Instead of: mut value: int | string = ...
+// Instead of: mut value: i64 | string = ...
 enum IntOrString { Int(i32), String(string) }
 mut value: IntOrString = IntOrString.Int(42)
 ```

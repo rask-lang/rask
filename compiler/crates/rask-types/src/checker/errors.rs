@@ -1039,6 +1039,29 @@ pub enum TypeError {
     },
 
 
+    /// mem.linear/L8: `clone` on a value consumed exactly once.
+    #[error("`{ty}` can't be cloned — it's consumed exactly once")]
+    CloneLinear {
+        ty: String,
+        /// The value inside, when the receiver is a `Shared` that holds one.
+        payload: Option<String>,
+        span: Span,
+    },
+
+    /// conc.sync/SH9: `take` on a `Shared` whose payload isn't linear.
+    #[error("`take` is for a `Shared` holding a value consumed exactly once")]
+    TakeFromSharedBox {
+        payload: String,
+        span: Span,
+    },
+
+    /// The left side of `=` names nothing to store into.
+    #[error("can't assign to {what}")]
+    NotAPlace {
+        what: &'static str,
+        span: Span,
+    },
+
     /// E5/R5/MX3: standalone sync access without chaining
     #[error("standalone `.{method}()` on `{ty}` must be chained — use `.{method}().field` or `with` block")]
     BareSyncAccess {
@@ -1748,6 +1771,9 @@ impl TypeError {
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
             | BareSyncAccess { .. }
+            | NotAPlace { .. }
+            | CloneLinear { .. }
+            | TakeFromSharedBox { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }

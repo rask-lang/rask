@@ -421,27 +421,12 @@ impl<'a> Printer<'a> {
     /// beside it rather than below the block — which is what the flattened form
     /// could not express.
     fn format_extern_block(&mut self, members: &[Decl]) {
-        let (abi, first_attrs) = match &members[0].kind {
+        let (abi, attrs) = match &members[0].kind {
             DeclKind::Extern(e) => (e.abi.clone(), e.attrs.clone()),
             _ => return,
         };
-        // The block's own attributes were given to every member, so they are
-        // the leading ones every member has at the same source position.
-        let shared = first_attrs
-            .iter()
-            .take_while(|a| {
-                members.iter().all(|m| match &m.kind {
-                    DeclKind::Extern(e) => e.attrs.iter().any(|b| b.span == a.span),
-                    _ => false,
-                })
-            })
-            .count();
-        for attr in &first_attrs[..shared] {
-            self.emit_indent();
-            self.emit_attr(attr);
-            self.emit_newline();
-        }
         self.emit_indent();
+        self.emit_extern_attrs(&attrs);
         self.emit("extern \"");
         self.emit(&abi);
         self.emit("\" {");
@@ -455,7 +440,7 @@ impl<'a> Printer<'a> {
                 self.emit_blank_line();
             }
             self.decl_end = m.span.end;
-            self.format_extern_member(e, shared);
+            self.format_extern_member(e);
             self.decl_end = self.source.len();
             self.emit_newline();
             first = false;
@@ -1290,30 +1275,28 @@ impl<'a> Printer<'a> {
     }
 
     fn format_extern_decl(&mut self, e: &ExternDecl) {
-        self.emit_extern_attrs(&e.attrs);
         self.emit_indent();
+        self.emit_extern_attrs(&e.attrs);
         self.emit("extern \"");
         self.emit(&e.abi);
         self.emit("\" ");
         self.format_extern_signature(e);
     }
 
-    /// One member of an `extern "C" { … }` — no `extern "C"` of its own, the
-    /// block already said it.
-    /// `shared` attributes went above the block; the rest are the member's own.
-    fn format_extern_member(&mut self, e: &ExternDecl, shared: usize) {
-        self.emit_extern_attrs(&e.attrs[shared..]);
-        self.emit_indent();
-        self.format_extern_signature(e);
-    }
-
-    /// One line per attribute, above the declaration.
+    /// Attributes before `extern`, one per line, leaving the cursor indented.
     fn emit_extern_attrs(&mut self, attrs: &[rask_ast::attr::Attr]) {
         for attr in attrs {
-            self.emit_indent();
             self.emit_attr(attr);
             self.emit_newline();
+            self.emit_indent();
         }
+    }
+
+    /// One member of an `extern "C" { … }` — no `extern "C"` of its own, the
+    /// block already said it.
+    fn format_extern_member(&mut self, e: &ExternDecl) {
+        self.emit_indent();
+        self.format_extern_signature(e);
     }
 
     fn format_extern_signature(&mut self, e: &ExternDecl) {
@@ -1429,7 +1412,7 @@ impl<'a> Printer<'a> {
                 // then the expansion's own right operand (#805).
                 match (op, &value.kind) {
                     (Some(op), ExprKind::Binary { right, .. }) => {
-                        self.emit(&format!(" {}= ", binop_str(op)));
+                        self.emit(&format!(" {}= ", op.symbol()));
                         self.format_expr(right);
                     }
                     _ => {
@@ -1809,7 +1792,7 @@ impl<'a> Printer<'a> {
                 self.emit(name);
             }
             ExprKind::Binary { op, left, right } => {
-                let prec = precedence(op);
+                let prec = op.binding_power();
                 let need_parens = parent_prec.map_or(false, |pp| prec < pp);
 
                 if need_parens {
@@ -1818,7 +1801,7 @@ impl<'a> Printer<'a> {
 
                 self.format_binary_operand(left, prec, op, false);
                 self.emit(" ");
-                self.emit(binop_str(op));
+                self.emit(op.symbol());
                 self.emit(" ");
                 self.format_binary_operand(right, prec, op, true);
 
@@ -2026,11 +2009,20 @@ impl<'a> Printer<'a> {
                 self.format_expr(place);
             }
             ExprKind::Catch { value, ref clause } => {
-                self.format_expr(value);
+                // The body reads to the end of the expression, so a `catch`
+                // anywhere inside another one keeps its parentheses.
+                let need_parens = parent_prec.is_some();
+                if need_parens {
+                    self.emit("(");
+                }
+                self.format_expr_inner(value, Some(binding::COALESCE));
                 self.emit(" catch ");
                 self.emit(&clause.binder);
                 self.emit(" => ");
                 self.format_expr(&clause.body);
+                if need_parens {
+                    self.emit(")");
+                }
             }
             ExprKind::IsPresent { expr: inner, binding } => {
                 self.format_postfix_receiver(inner);
@@ -2059,9 +2051,19 @@ impl<'a> Printer<'a> {
                 self.format_expr(else_branch);
             }
             ExprKind::NullCoalesce { value, default } => {
-                self.format_expr(value);
+                // `??` binds looser than arithmetic and tighter than comparison,
+                // so `a ?? (b || c)` keeps its parentheses: without them it
+                // reads back as `(a ?? b) || c`.
+                let need_parens = parent_prec.is_some_and(|pp| binding::COALESCE < pp);
+                if need_parens {
+                    self.emit("(");
+                }
+                self.format_expr_inner(value, Some(binding::COALESCE));
                 self.emit(" ?? ");
-                self.format_expr(default);
+                self.format_expr_inner(default, Some(binding::COALESCE + 1));
+                if need_parens {
+                    self.emit(")");
+                }
             }
             ExprKind::Range { start, end, inclusive } => {
                 // A range in a postfix position needs its own parentheses:
@@ -2433,9 +2435,14 @@ impl<'a> Printer<'a> {
     /// forbids chained comparison, so a comparison inside a comparison keeps its
     /// parentheses whichever side it lands on, even though it binds tighter.
     fn format_binary_operand(&mut self, operand: &Expr, prec: u8, op: &BinOp, is_right: bool) {
-        if is_comparison(op) {
+        if op.is_comparison() {
             if let ExprKind::Binary { op: inner, .. } = &operand.kind {
-                if is_comparison(inner) {
+                // `&`, `|` and `^` bind tighter than comparison here, as in Go
+                // and Rust, and the parentheses aren't needed. They stay
+                // anyway: in C `crc & 128 != 0` is `crc & (128 != 0)`, and a
+                // reader who knows that has to stop and check.
+                let bitwise = matches!(inner, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
+                if inner.is_comparison() || bitwise {
                     self.emit("(");
                     self.format_expr(operand);
                     self.emit(")");
@@ -2719,58 +2726,17 @@ impl<'a> Printer<'a> {
 /// positions has to be parenthesised. There is no `Paren` node in the AST — the
 /// printer reconstructs parentheses from precedence — so a position that forgets
 /// to pass its binding power silently reassociates the expression (#896).
-const POSTFIX_PREC: u8 = 11;
+///
+/// Binding powers are the parser's own (`BinOp::binding_power`,
+/// `rask_ast::expr::binding`). This file kept a second table once, with `&`
+/// looser than `<`, and `(a < b) & (c < d)` came back out as code that didn't
+/// compile (#1559).
+const POSTFIX_PREC: u8 = binding::PREFIX;
 /// Looser than every binary operator, tighter than nothing: a range needs its own
 /// parentheses in a postfix position — `(1..10).rev()` is not `1..10.rev()` — but
-/// its endpoints never need any.
+/// its endpoints never need any. Lower than the parser's range power on purpose:
+/// a range under any operator keeps its parentheses, for the reader's sake.
 const RANGE_PREC: u8 = 0;
-
-/// Comparison and equality are non-associative in Rask — `a < b < c` is
-/// rejected — so nesting one inside another always needs parentheses.
-fn is_comparison(op: &BinOp) -> bool {
-    matches!(
-        op,
-        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge
-    )
-}
-
-fn precedence(op: &BinOp) -> u8 {
-    match op {
-        BinOp::Or => 1,
-        BinOp::And => 2,
-        BinOp::BitOr => 3,
-        BinOp::BitXor => 4,
-        BinOp::BitAnd => 5,
-        BinOp::Eq | BinOp::Ne => 6,
-        BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => 7,
-        BinOp::Shl | BinOp::Shr => 8,
-        BinOp::Add | BinOp::Sub => 9,
-        BinOp::Mul | BinOp::Div | BinOp::Mod => 10,
-    }
-}
-
-fn binop_str(op: &BinOp) -> &'static str {
-    match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Mod => "%",
-        BinOp::Eq => "==",
-        BinOp::Ne => "!=",
-        BinOp::Lt => "<",
-        BinOp::Gt => ">",
-        BinOp::Le => "<=",
-        BinOp::Ge => ">=",
-        BinOp::And => "&&",
-        BinOp::Or => "||",
-        BinOp::BitAnd => "&",
-        BinOp::BitOr => "|",
-        BinOp::BitXor => "^",
-        BinOp::Shl => "<<",
-        BinOp::Shr => ">>",
-    }
-}
 
 fn unaryop_str(op: &UnaryOp) -> &'static str {
     match op {

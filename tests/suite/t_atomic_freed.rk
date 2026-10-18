@@ -3,7 +3,7 @@
 // An `Atomic<T>` is given back.
 //
 // An atomic is one machine word behind an opaque handle, and there was no
-// `rask_atomic_int_free` in the runtime at all — so every counter in every
+// `rask_atomic_free` in the runtime at all — so every counter in every
 // program leaked its eight bytes and nothing on either side said so. The same
 // shape `Random` was in: a constructor handing back a heap block with no free
 // on the list the drop pass reads.

@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Benchmark bodies that box to `any I`, read a module const, and own a Vec.
+// Native couldn't build the first two (#1563) and crashed on the third.
+
+import sync.Shared
+
+interface Shape {
+    func area(self) -> i64
+}
+
+struct Sq {
+    public s: i64
+}
+
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+const COUNTER = Shared.mutex(0)
+
+benchmark "boxed" {
+    let b: any Shape = Sq(s: 3)
+    let a = b.area()
+}
+
+benchmark "module const" {
+    with COUNTER.write() as n {
+        n = n + 1
+    }
+}
+
+benchmark "owns a vec" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+}
+
+func main() {}

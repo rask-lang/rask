@@ -61,10 +61,12 @@ extend net {
     /// The raw `bind`/`listen` pair. -1 means the syscall failed and errno says
     /// why; -2 means the address named nothing that resolves.
     @native("rask_net_tcp_listen")
+    @blocks
     func listen_handle(addr: string) -> TcpListener {}
 
     /// The raw `connect`. Same -1/-2 convention as `listen_handle`.
     @native("rask_net_tcp_connect")
+    @blocks
     func connect_handle(addr: string) -> TcpConnection {}
 }
 
@@ -73,6 +75,7 @@ extend net {
 /// Declared here rather than only in the type registry: without a struct
 /// declaration, `self.accept_handle()` inside `extend TcpListener` mangled to
 /// `Self_accept_handle` and codegen couldn't find it.
+@handle
 public struct TcpListener { }
 
 extend TcpListener {
@@ -87,6 +90,7 @@ extend TcpListener {
 
     /// The raw `accept`, -1 on failure.
     @native("rask_net_tcp_accept")
+    @blocks
     func accept_handle(self) -> TcpConnection {}
 
     /// True when the handle is a failed syscall's -1.
@@ -109,10 +113,12 @@ extend TcpListener {
 
     /// Get the local address the listener is bound to.
     @native("rask_net_local_addr")
+    @ambient
     public func local_addr(self) -> string {}
 
     /// Close the listener.
     @native("rask_net_close")
+    @blocks
     public func close(take self) -> void or IoError {}
 
     /// Clone the listener handle.
@@ -121,6 +127,7 @@ extend TcpListener {
 }
 
 /// A TCP connection (socket).
+@handle
 public struct TcpConnection { }
 
 extend TcpConnection {
@@ -147,8 +154,10 @@ extend TcpConnection {
     /// (SIGILL) on the first write to a peer that had hung up. Same fix as
     /// `accept` (#863).
     @native("rask_net_read_bytes")
+    @blocks
     func read_bytes_raw(self) -> Vec<u8>? {}
     @native("rask_net_write_bytes")
+    @blocks
     func write_bytes_raw(self, data: Vec<u8>) -> i64 {}
 
     /// Read all available data, decoding as UTF-8 text.
@@ -181,6 +190,7 @@ extend TcpConnection {
 
     /// Get the remote address as "ip:port".
     @native("rask_net_remote_addr")
+    @ambient
     public func remote_addr(self) -> string {}
 
     // `read_http_request` and `write_http_response` are in http.rk, next to
@@ -192,10 +202,12 @@ extend TcpConnection {
     /// own on (http.rk's messages), which `read_bytes` can't be: it waits for
     /// the peer to close.
     @native("rask_net_read_some")
+    @blocks
     func read_some_raw(self, max: i64) -> Vec<u8>? {}
 
     /// Close the connection.
     @native("rask_net_close")
+    @blocks
     public func close(take self) -> void or IoError {}
 
     /// Clone the connection handle.
@@ -248,6 +260,7 @@ public struct Datagram {
 /// A UDP socket: whole datagrams, each sent on its own. One may be lost,
 /// arrive twice, or overtake one sent before it.
 @resource
+@handle
 public struct UdpSocket { }
 
 extend UdpSocket {

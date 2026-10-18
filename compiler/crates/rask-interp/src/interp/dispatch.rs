@@ -33,7 +33,10 @@ impl Interpreter {
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
             }
-            let result = self.eval_expr(&body).map_err(|diag| diag.error);
+            let result = self.eval_expr(&body).map_err(|diag| {
+                self.failed_call_span = Some(diag.span);
+                diag.error
+            });
             let final_arg = first.and_then(|name| self.env.get(&name));
             self.leave_closure();
             let value = match result {
@@ -118,7 +121,12 @@ impl Interpreter {
                 None => self.env.define(param.clone(), arg.copy_on_bind()),
             }
         }
-        let result = self.eval_expr(&body).map_err(|diag| diag.error);
+        // Where it failed, for the caller that rebuilds a diagnostic from the
+        // bare error — the same note `call_function` leaves (#1110).
+        let result = self.eval_expr(&body).map_err(|diag| {
+            self.failed_call_span = Some(diag.span);
+            diag.error
+        });
         self.leave_closure();
         match result {
             Ok(v) => Ok(v),
@@ -345,6 +353,16 @@ impl Interpreter {
         args: Vec<Value>,
         generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
+        // A method written in Rask is the method: the one native compiles.
+        // The Rust arms used to be asked first, so wherever both existed the
+        // two backends ran different code. `Vec.flat_map` built the whole
+        // vector here where the Rask body is lazy, and `v.flat_map(f).take(1)`
+        // called `f` once natively and for every element here (#1562).
+        if let Some(name) = Self::nominal_type_name(&receiver) {
+            if self.has_rask_body(&name, method) {
+                return self.call_rask_method(&name, method, receiver, args, generics);
+            }
+        }
         match self.call_primitive_method(receiver.clone(), method, args.clone(), generics.clone()) {
             Err(RuntimeError::NoSuchMethod { ty, method: m }) => {
                 match Self::nominal_type_name(&receiver) {
@@ -452,29 +470,7 @@ impl Interpreter {
                 crate::build_context::call_method(state, method, args)
                     .map_err(RuntimeError::Generic)
             }
-            // The stdlib `io` module is compiled out on wasm, and it owns both
-            // these handlers and the `io.stdout()`/`stdin()`/`stderr()` calls
-            // that produce these structs — so on wasm these arms are dead as
-            // well as unbuildable.
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Stdin" => {
-                self.call_stdin_method(method, args)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Stdout" => {
-                self.call_stdout_method(method, args)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Stderr" => {
-                self.call_stderr_method(method, args)
-            }
             Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args),
-            Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
-                self.call_json_value_method(variant, fields, method)
-            }
-            Value::Enum { name, variant, fields, .. } if name == "JsonError" => {
-                self.call_json_error_method(variant, fields, method)
-            }
             Value::SimdF32x8(data) => match method {
                 "sum" => {
                     let sum: f32 = data.iter().sum();
@@ -519,13 +515,7 @@ impl Interpreter {
                     if method == "try_write" {
                         *c.lock().unwrap() = result.clone();
                     }
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![result],
-                        variant_index: 0,
-                        origin: None,
-                    })
+                    Ok(Value::some(result))
                 }
                 "read" | "write" => {
                     let guard = c.lock().unwrap();
@@ -719,6 +709,21 @@ impl Interpreter {
         None
     }
 
+    /// Does the stdlib declare `type_name.method` with a Rask body, not one
+    /// whose body lives in the backends (`@native`, `@builtin`)? A program's
+    /// own methods have their own path below, with the resource bookkeeping
+    /// a `take self` needs.
+    pub(crate) fn has_rask_body(&self, type_name: &str, method: &str) -> bool {
+        rask_stdlib::StubRegistry::load()
+            .lookup_method(type_name, method)
+            .is_some_and(|m| m.has_body)
+            && self
+                .methods
+                .get(type_name)
+                .and_then(|ms| ms.get(method))
+                .is_some_and(|f| !f.body_lives_elsewhere())
+    }
+
     pub(crate) fn call_rask_method(
         &mut self,
         type_name: &str,
@@ -752,6 +757,29 @@ impl Interpreter {
         generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
         self.call_function(func, args, generics).map_err(|d| d.error)
+    }
+
+    /// A variant of a declared enum, with its index read off the declaration.
+    /// Writing the index by hand is how a Rust-built `IoError` ended up with a
+    /// tag the enum doesn't give that variant.
+    pub(crate) fn enum_variant(
+        &self,
+        enum_name: &str,
+        variant: &str,
+        fields: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let index = self
+            .enums
+            .get(enum_name)
+            .and_then(|e| e.variants.iter().position(|v| v.name == variant))
+            .ok_or_else(|| RuntimeError::TypeError(format!("`{enum_name}` declares no variant `{variant}`")))?;
+        Ok(Value::Enum {
+            name: enum_name.to_string(),
+            variant: variant.to_string(),
+            fields,
+            variant_index: index as u32,
+            origin: None,
+        })
     }
 
     /// Call a Rask `extend`-block function that takes no `self` —
@@ -955,12 +983,12 @@ impl Interpreter {
         match module {
             Fs => matches!(method,
                 "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
-                | "append_text" | "exists" | "open" | "create_file" | "absolute_path" | "metadata"
+                | "append_text" | "exists" | "open_handle" | "create_handle" | "absolute_path" | "metadata"
                 | "remove_file" | "remove_dir" | "create_dir" | "create_dir_all"
                 | "rename" | "copy" | "list_dir" | "current_dir" | "home_dir"
             ),
             Io => matches!(method, "read_line"),
-            Net => matches!(method, "tcp_listen" | "tcp_connect"),
+            Net => matches!(method, "listen_handle" | "connect_handle"),
             Time => matches!(method, "sleep"),
             Random => matches!(method, "f32" | "f64" | "i64" | "bool" | "range"),
             Math => matches!(method,

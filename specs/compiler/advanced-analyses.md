@@ -85,8 +85,8 @@ Calls are classified by what they do to a collection's shape. This is metadata, 
 
 | Rule | Description |
 |------|-------------|
-| **EF1: Structural effects** | A call carries `Grow` (insert, alloc), `Shrink` (remove, delete, clear, drain), both, or neither |
-| **EF3: Inference, not annotation** | Effects are inferred from the body, transitively. Nothing is written in a signature |
+| **EF1: Structural effects** | A call carries `Grow` (adds elements, or may move them to a bigger buffer: `push`, `insert`, `reserve`), `Shrink` (removes them, or may move them to a smaller one: `pop`, `remove`, `clear`, `shrink`), both, or neither. The stdlib's collection methods are where these start, and each says so on its declaration: `@grows`, `@shrinks` |
+| **EF3: Inference, not annotation** | A program's effects are inferred from the body, transitively. Nothing is written in its signatures; the two annotations are the stdlib's, on the methods that are sources |
 | **EF4: What reads them** | `for mutate` structural-mutation rejection (`ctrl.loops/LP14`), the `with`-block rule (`mem.borrowing/W2`), and the blocking-I/O-in-a-loop warning (`comp.effects/CW2`) |
 
 The effect map is where "which calls can move the buffer under a borrow" is answered once, rather than at each of the three sites that ask.

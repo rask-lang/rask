@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -271,7 +271,7 @@ impl Parser {
     fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
         let name = match self.current_kind() {
             TokenKind::Ident(name) => name.clone(),
-            other => match keyword_spelling(other) {
+            other => match other.keyword() {
                 Some(kw) => kw.to_string(),
                 None => return Err(ParseError::expected(
                     "a name",
@@ -807,7 +807,7 @@ impl Parser {
         }
         let name = match self.current_kind() {
             TokenKind::Ident(n) => n.clone(),
-            other => keyword_spelling(other)?.to_string(),
+            other => other.keyword()?.to_string(),
         };
         self.advance();
         self.advance();
@@ -907,7 +907,7 @@ impl Parser {
         let name_tok = &self.tokens[(self.pos + 1).min(self.tokens.len() - 1)];
         let keyword = match &name_tok.kind {
             TokenKind::Ident(_) => return Ok(()),
-            other => keyword_spelling(other),
+            other => other.keyword(),
         };
         let Some(keyword) = keyword else { return Ok(()) };
         let (why, hint) = if starts_an_expression(&name_tok.kind) {
@@ -2540,9 +2540,6 @@ impl Parser {
     /// braces started after every member's span start, and nothing emitted it until
     /// the next declaration came along — below the block, reading as a comment
     /// about that instead (#805).
-    ///
-    /// Attributes above the block apply to every member, and each member may
-    /// carry its own as well.
     fn parse_extern_decls(
         &mut self,
         attrs: Vec<rask_ast::attr::Attr>,
@@ -2559,15 +2556,10 @@ impl Parser {
             self.skip_newlines();
             let mut decls = Vec::new();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                let member_start = self.current().span.start;
-                let mut member_attrs = attrs.clone();
-                while self.check(&TokenKind::At) {
-                    member_attrs.push(self.parse_attribute()?);
-                    self.skip_newlines();
-                }
                 let func_doc = self.take_doc();
+                let member_start = self.current().span.start;
                 self.expect(&TokenKind::Func)?;
-                let kind = self.parse_extern_func(&abi, member_attrs, func_doc, Some(extern_start))?;
+                let kind = self.parse_extern_func(&abi, func_doc, Some(extern_start), attrs.clone())?;
                 let member_end = self.tokens[self.pos.saturating_sub(1)].span.end;
                 decls.push((kind, self.span(member_start, member_end)));
                 self.skip_newlines();
@@ -2579,7 +2571,7 @@ impl Parser {
         // Single form: extern "C" func name(...)
         let single_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
-        let kind = self.parse_extern_func(&abi, attrs, doc, None)?;
+        let kind = self.parse_extern_func(&abi, doc, None, attrs)?;
         let end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(vec![(kind, self.span(single_start, end))])
     }
@@ -2591,9 +2583,9 @@ impl Parser {
     fn parse_extern_func(
         &mut self,
         abi: &str,
-        attrs: Vec<rask_ast::attr::Attr>,
         doc: Option<String>,
         block_start: Option<usize>,
+        attrs: Vec<rask_ast::attr::Attr>,
     ) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
@@ -2638,7 +2630,7 @@ impl Parser {
             }));
         }
 
-        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, block_start, attrs }))
+        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, attrs, block_start }))
     }
 
 
@@ -3486,7 +3478,7 @@ impl Parser {
                 // kind of rule that only shows up as a bug: it cost
                 // `examples/sensor_processor.rk` a reading of 2200.02 °C instead
                 // of 22.02 (#817).
-                let bp = 22;
+                let bp = binding::CAST;
                 if bp < min_bp { break; }
                 self.advance();
                 let ty = self.parse_type_name()?;
@@ -3503,7 +3495,7 @@ impl Parser {
             if (self.peek_is_word(0, "truncate")
                 || self.peek_is_word(0, "saturate")
                 || self.peek_is_word(0, "float"))
-                && 22 >= min_bp
+                && binding::CAST >= min_bp
             {
                 match self.try_parse_convert_suffix(lhs, start)? {
                     Ok(converted) => {
@@ -3520,7 +3512,7 @@ impl Parser {
 
             // Pattern test: expr is Pattern (evaluates to bool)
             if self.check(&TokenKind::Is) {
-                let bp = 5;
+                let bp = binding::IS;
                 if bp < min_bp { break; }
                 self.advance();
                 let pattern = self.parse_pattern()?;
@@ -5480,37 +5472,31 @@ impl Parser {
     // Operator Precedence
     // =========================================================================
 
-    const PREFIX_BP: u8 = 23;
+    // Binding powers come from `rask_ast::expr` (`BinOp::binding_power`,
+    // `binding`), which the formatter reads too.
+    const PREFIX_BP: u8 = binding::PREFIX;
 
     fn postfix_bp(&self) -> Option<u8> {
         match self.current_kind() {
-            TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => Some(25),
-            TokenKind::Question | TokenKind::Bang => Some(24),
-            TokenKind::ColonColon => Some(25), // Same precedence as dot for better error messages
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => Some(binding::MEMBER),
+            TokenKind::Question | TokenKind::Bang => Some(binding::POSTFIX),
+            TokenKind::ColonColon => Some(binding::MEMBER), // Same precedence as dot for better error messages
             _ => None,
         }
     }
 
     fn infix_bp(&self) -> Option<(u8, u8)> {
-        match self.current_kind() {
-            TokenKind::PipePipe => Some((1, 2)),
-            TokenKind::AmpAmp => Some((3, 4)),
-            TokenKind::EqEq | TokenKind::BangEq => Some((5, 6)),
-            TokenKind::Lt | TokenKind::Gt | TokenKind::LtEq | TokenKind::GtEq => Some((7, 8)),
-            TokenKind::QuestionQuestion | TokenKind::Catch => Some((9, 10)),
-            TokenKind::Pipe => Some((11, 12)),
-            TokenKind::Caret => Some((13, 14)),
-            TokenKind::Amp => Some((15, 16)),
-            TokenKind::LtLt | TokenKind::GtGt => Some((17, 18)),
-            TokenKind::Plus | TokenKind::Minus => Some((19, 20)),
-            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some((21, 22)),
-            TokenKind::DotDot | TokenKind::DotDotEq => Some((3, 4)), // Low precedence for ranges
-            _ => None,
-        }
+        let left = match self.current_kind() {
+            TokenKind::QuestionQuestion | TokenKind::Catch => binding::COALESCE,
+            TokenKind::DotDot | TokenKind::DotDotEq => binding::RANGE,
+            kind => Self::token_binop(kind)?.binding_power(),
+        };
+        Some((left, left + 1))
     }
 
-    fn parse_binop(&mut self) -> Result<BinOp, ParseError> {
-        let op = match self.current_kind() {
+    /// The binary operator a token spells, if it spells one.
+    fn token_binop(kind: &TokenKind) -> Option<BinOp> {
+        Some(match kind {
             TokenKind::Plus => BinOp::Add,
             TokenKind::Minus => BinOp::Sub,
             TokenKind::Star => BinOp::Mul,
@@ -5529,11 +5515,17 @@ impl Parser {
             TokenKind::Caret => BinOp::BitXor,
             TokenKind::LtLt => BinOp::Shl,
             TokenKind::GtGt => BinOp::Shr,
-            _ => return Err(ParseError::expected(
+            _ => return None,
+        })
+    }
+
+    fn parse_binop(&mut self) -> Result<BinOp, ParseError> {
+        let Some(op) = Self::token_binop(self.current_kind()) else {
+            return Err(ParseError::expected(
                 "operator like '+' or '-'",
                 self.current_kind(),
                 self.current().span,
-            )),
+            ));
         };
         self.advance();
         Ok(op)
@@ -5692,73 +5684,6 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::Break
             | TokenKind::Continue
     )
-}
-
-/// positions) and to name one in a diagnostic.
-fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
-    Some(match kind {
-        // Control flow
-        TokenKind::If => "if",
-        TokenKind::Else => "else",
-        TokenKind::Match => "match",
-        TokenKind::For => "for",
-        TokenKind::In => "in",
-        TokenKind::While => "while",
-        TokenKind::Loop => "loop",
-        TokenKind::Break => "break",
-        TokenKind::Continue => "continue",
-        TokenKind::Return => "return",
-        // Declarations
-        TokenKind::Func => "func",
-        TokenKind::Let => "let",
-        TokenKind::Mut => "mut",
-        TokenKind::Const => "const",
-        TokenKind::Struct => "struct",
-        TokenKind::Enum => "enum",
-        TokenKind::Interface => "interface",
-        TokenKind::Implements => "implements",
-        TokenKind::Extend => "extend",
-        TokenKind::Import => "import",
-        TokenKind::Type => "type",
-        // Modifiers
-        TokenKind::Public => "public",
-        TokenKind::Private => "private",
-        TokenKind::Take => "take",
-        TokenKind::MutateKw => "mutate",
-        TokenKind::Unsafe => "unsafe",
-        TokenKind::Comptime => "comptime",
-        TokenKind::Native => "native",
-        TokenKind::Export => "export",
-        TokenKind::Using => "using",
-        TokenKind::Lazy => "lazy",
-        // Concurrency
-        TokenKind::Select => "select",
-        TokenKind::With => "with",
-        // Error handling
-        TokenKind::Ensure => "ensure",
-        TokenKind::Try => "try",
-        TokenKind::Catch => "catch",
-        // Testing
-        TokenKind::Test => "test",
-        TokenKind::Benchmark => "benchmark",
-        TokenKind::Assert => "assert",
-        TokenKind::Check => "check",
-        // Operators/keywords
-        TokenKind::As => "as",
-        TokenKind::Is => "is",
-        TokenKind::Where => "where",
-        TokenKind::Or => "or",
-        // Literals/constants
-        TokenKind::Bool(true) => "true",
-        TokenKind::Bool(false) => "false",
-        TokenKind::None => "none",
-        TokenKind::Nullptr => "nullptr",
-        // Other
-        TokenKind::Extern => "extern",
-        TokenKind::Asm => "asm",
-        TokenKind::Discard => "discard",
-        _ => return None,
-    })
 }
 
 /// The six operators P2 refuses to chain: ordering and equality.

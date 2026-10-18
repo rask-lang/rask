@@ -35,7 +35,7 @@ static _Atomic int64_t rask_string_live_buffers = 0;
 
 int rask_leak_check_enabled = 0;
 
-#define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
+#define RASK_HEAP_FLAG   ((uint64_t)1 << RASK_STRING_HEAP_BIT)
 #define RASK_RC_SENTINEL UINT32_MAX
 
 // The count, read on its own. A string shared between tasks has its count
@@ -45,7 +45,6 @@ int rask_leak_check_enabled = 0;
 static inline uint32_t rc_load(const uint32_t *rc) {
     return __atomic_load_n(rc, __ATOMIC_RELAXED);
 }
-#define RASK_SSO_MAX     15
 
 // ─── Inline helpers ─────────────────────────────────────────
 
@@ -1019,8 +1018,9 @@ RaskVec *rask_string_char_indices(const RaskStr *s) {
     return v;
 }
 
+// A `Vec<char>`: four bytes per scalar, the width of a `char`.
 RaskVec *rask_string_chars(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(sizeof(int32_t), NULL, 0);
+    RaskVec *v = rask_vec_new((int64_t)sizeof(int32_t), NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;

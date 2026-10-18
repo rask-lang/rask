@@ -179,14 +179,12 @@ impl Finder<'_, '_> {
                 if c.names_a_variant(object, method) {
                     return args.iter().map(|a| &a.expr).collect();
                 }
-                let modes = c.method_param_modes(object, method);
-                let send = c.is_channel_send(object, method, e.span);
+                let modes = c.method_param_modes(e.id, object, method);
                 let mut out: Vec<&Expr> = args
                     .iter()
                     .enumerate()
                     .filter(|(i, _)| {
-                        (send && *i == 0)
-                            || matches!(modes.as_ref().and_then(|m| m.get(*i)), Some(ParamMode::Take))
+                        matches!(modes.as_ref().and_then(|m| m.get(*i)), Some(ParamMode::Take))
                     })
                     .map(|(_, a)| &a.expr)
                     .collect();

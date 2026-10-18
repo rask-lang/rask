@@ -9,6 +9,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// Status codes, kind tags and encodings shared with the compiler.
+#include "rask_abi.h"
+
 // ─── Allocator ──────────────────────────────────────────────
 // Swappable allocator with optional stats tracking.
 // Default uses malloc/realloc/free. Call rask_allocator_set() before any
@@ -124,20 +127,12 @@ typedef struct {
 // container payload is a handle in the box's slot rather than bytes the box can
 // free, and only the runtime knows when the last reference goes.
 //
-// Same integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
-// comment names this one back.
-#define RASK_BOX_PAYLOAD_NONE 0
-#define RASK_BOX_PAYLOAD_VEC  1
-#define RASK_BOX_PAYLOAD_MAP  2
-#define RASK_BOX_PAYLOAD_CLOSURE 3
-#define RASK_BOX_PAYLOAD_BOX  4   // another box: freed through its own header
+// The `RASK_BOX_PAYLOAD_*` values are in rask_abi.h.
 
-#define RASK_OWNED_KIND_SHIFT 28
-#define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
-#define RASK_OWNED_STRING 0
-#define RASK_OWNED_VEC    1
-#define RASK_OWNED_MAP    2
-// A guard, not a thing to free: the entries that follow apply only when the
+// Owned-entry kinds, `RASK_OWNED_*` in rask_abi.h. An entry is the byte offset
+// in the low `RASK_OWNED_KIND_SHIFT` bits and the kind above them.
+//
+// `RASK_OWNED_TAG_IF`: a guard, not a thing to free: the entries that follow apply only when the
 // tag at some offset holds a particular value.
 //
 // This is what lets an *enum* be described. Where an enum's string or vector
@@ -162,8 +157,7 @@ typedef struct {
 // inside it: one entry at offset zero. The block describes itself —
 // `rask_closure_free` reads its size and its environment-drop glue out of the
 // header words before the pointer — so releasing one needs nothing type-specific
-// and retaining one is a count on the same header (#1149).
-#define RASK_OWNED_CLOSURE 4
+// and retaining one is a count on the same header (#1149). `RASK_OWNED_CLOSURE`.
 
 // A trait box element: the 16 bytes are `[data, vtable]`, and the block `data`
 // names belongs to the container. Its size is the vtable's first word, so a
@@ -174,12 +168,10 @@ typedef struct {
 // answer yet: a box inside a container has no frame outliving it, and #1144's
 // rule is that a boxed value's contents belong to the frame. So a `Vec<any
 // Trait>` of values with containers in them still leaks those — as every box
-// did before #1144 — minus the block.
-#define RASK_OWNED_TRAITBOX 5
+// did before #1144 — minus the block. `RASK_OWNED_TRAITBOX`.
 
-// Word index of the vtable's `owned_release`, which has to agree with
-// `rask_mir::vtable_layout` — byte offset 16, so the third word.
-#define RASK_VTABLE_OWNED_RELEASE_WORD 2
+// `RASK_VTABLE_OWNED_RELEASE_WORD` is the word index of the vtable's
+// `owned_release`, byte offset 16 in `rask_mir::vtable_layout`.
 
 // A `Heap<T>` at this offset: the slot holds a pointer to a block, the block
 // holds a `T`, and the aggregate owns both. The entries after this one describe
@@ -193,8 +185,7 @@ typedef struct {
 // element would need `retain` to deep-copy the block on a clone, and a block
 // carries no size for that — so the constructors never see this kind, and a
 // `Heap` in a container element is still nobody's, the way a boxed value's
-// contents are.
-#define RASK_OWNED_HEAP 6
+// contents are. `RASK_OWNED_HEAP`.
 #define RASK_OWNED_HEAP_OFFSET(e) ((e) & 0xFFFF)
 #define RASK_OWNED_HEAP_COUNT(e)  (((e) >> 16) & 0xFFF)
 
@@ -210,10 +201,8 @@ typedef struct {
 // Direct self-reference only. `A` holding a `Heap<B>` holding a `Heap<A>` has
 // no entry that can name A from inside B's list, so codegen describes nothing
 // for that shape and it leaks — the same answer this file gives everywhere else
-// it can't describe something exactly.
-#define RASK_OWNED_SELF 7
+// it can't describe something exactly. `RASK_OWNED_SELF`.
 
-#define RASK_OWNED_TAG_IF 3
 #define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
 #define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
 #define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
@@ -260,7 +249,7 @@ RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
                        const int32_t *str_offs, int64_t n_str_offs);
 void     rask_vec_free_view(RaskVec *v);
 void     rask_vec_copy_back(const RaskVec *v, char *dst);
-// A `Vec<u8>` of raw bytes, one 8-byte slot per byte like compiled code's.
+// A `Vec<u8>` of raw bytes, one byte per element.
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n);
 // Releases every string the elements hold, then the vector itself.
 void     rask_vec_free(RaskVec *v);
@@ -303,17 +292,14 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(const void *field, int64_t size, void *out);
-void     rask_vec_sort(RaskVec *v);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
-// key of a (key, value) pair. `key_kind` is one of the RASK_DEBUG_ELEM_* codes
-// below.
+// key of a (key, value) pair. `key_kind` is one of the RASK_ELEM_KIND_* codes
+// (rask_abi.h).
 void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
-// `pass`: how the comparator takes the two elements. Lowering knows which;
-// the width doesn't say. Lowering picks one in `sort_pass` (rask-mir lower/expr.rs).
-#define RASK_SORT_PASS_WORD    0  /* the slot's word */
-#define RASK_SORT_PASS_ADDRESS 1  /* a pointer to the slot: aggregates, strings */
-#define RASK_SORT_PASS_WIDE    2  /* the slot's two words as one i128 */
+// `pass`: how the comparator takes the two elements, a RASK_SORT_PASS_* code
+// (rask_abi.h). Lowering knows which; the width doesn't say. Lowering picks one
+// in `sort_pass` (rask-mir lower/expr.rs).
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass);
 // Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
 // over two keys — same shape sort_by takes. `keys` is read, not reordered.
@@ -600,17 +586,10 @@ uint32_t rask_canonical_compose(uint32_t a, uint32_t b);
 
 // ─── Vec (string-dependent) ─────────────────────────────────
 void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
-void     rask_vec_join_scalar(RaskStr *out, const RaskVec *src, const RaskStr *sep, int64_t kind);
-
-// How `rask_vec_debug` reads one element. The vector header only carries a
-// width, and a four-byte slot could be an i32, a u32 or an f32 — all three
-// print differently — so the caller says which.
-#define RASK_DEBUG_ELEM_I64    0
-#define RASK_DEBUG_ELEM_U64    1
-#define RASK_DEBUG_ELEM_F64    2
-#define RASK_DEBUG_ELEM_BOOL   3
-#define RASK_DEBUG_ELEM_STRING 4
-#define RASK_DEBUG_ELEM_CHAR   5
+// `kind` is a RASK_ELEM_KIND_* code (rask_abi.h): the vector only records a
+// width, and a four-byte element could be an i32, a u32 or an f32.
+void     rask_vec_join_scalar(RaskStr *out, const RaskVec *src, const RaskStr *sep,
+                              int64_t kind);
 void     rask_vec_debug(RaskStr *out, const RaskVec *src, int64_t kind);
 int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 
@@ -678,6 +657,9 @@ int64_t  rask_map_is_empty(const RaskMap *m);
 void     rask_map_clear(RaskMap *m);
 RaskVec *rask_map_keys(const RaskMap *m);
 RaskVec *rask_map_values(const RaskMap *m);
+// The entries as a Vec of `(key, value)` tuples: the value `voff` bytes into
+// each, entries `stride` bytes apart. The caller lays the tuple out.
+RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride);
 RaskMap *rask_map_clone(const RaskMap *m);
 // mem.racks/RK3: drop every entry whose value is this link.
 int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
@@ -719,10 +701,7 @@ int64_t   rask_rack_len(const RaskRack *r);
 int64_t   rask_rack_is_empty(const RaskRack *r);
 int64_t   rask_rack_contains(const RaskRack *r, const void *link);
 // What a link-bearing field of the node type holds. Packed into the descriptor
-// alongside the byte offset, two int32s per field.
-#define RASK_RACK_FIELD_LINK 0
-#define RASK_RACK_FIELD_VEC  1
-#define RASK_RACK_FIELD_MAP  2
+// alongside the byte offset, two int32s per field: `RASK_RACK_FIELD_*`.
 
 // The node type's shape arrives here rather than at `new`: `Rack.new()` has no
 // argument to read `T` off. `fields` is `field_count` pairs of
@@ -835,9 +814,8 @@ int64_t     rask_file_close(int64_t file);
 const char *rask_io_error_text(int32_t err);
 void rask_io_error_message(RaskStr *out, int32_t err);
 
-#define RASK_STROUT_OK    0
-#define RASK_STROUT_ERROR 1   // *err_out holds the message → IoError.Other(msg)
-#define RASK_STROUT_EOF   2   // input ran out → IoError.UnexpectedEof
+// How a string-out-param call ended: `RASK_STROUT_*`. ERROR means *err_out
+// holds the message (IoError.Other), EOF that the input ran out.
 
 int64_t     rask_file_read_bytes(int64_t file);
 int64_t     rask_file_write(int64_t file, const RaskStr *content);
@@ -941,51 +919,22 @@ void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 // input to rask_json_decode_into, read back the error kind. The shape is what
 // stands in for reflection — codegen has no type info at runtime.
 
-// Parsed value kinds.
-#define RASK_JSON_NULL 0
-#define RASK_JSON_BOOL 1
-#define RASK_JSON_NUM  2
-#define RASK_JSON_STR  3
-#define RASK_JSON_ARR  4
-#define RASK_JSON_OBJ  5
+// Parsed value kinds: `RASK_JSON_NULL` … `RASK_JSON_OBJ`.
 
-// Decode outcomes. Nonzero maps onto a JsonError variant at the call site.
-#define RASK_JSON_OK          0
-#define RASK_JSON_ERR_PARSE   1
-#define RASK_JSON_ERR_TYPE    2
-#define RASK_JSON_ERR_MISSING 3
+// Decode outcomes, `RASK_JSON_OK` and `RASK_JSON_ERR_*`. Nonzero maps onto a
+// JsonError variant at the call site.
 
 // Shape kinds. The primitives come first and their order is the index into the
 // singleton table, so keep them contiguous and keep PRIM_COUNT last of them.
-#define RASK_JSHAPE_BOOL   0
-#define RASK_JSHAPE_I8     1
-#define RASK_JSHAPE_I16    2
-#define RASK_JSHAPE_I32    3
-#define RASK_JSHAPE_I64    4
-#define RASK_JSHAPE_U8     5
-#define RASK_JSHAPE_U16    6
-#define RASK_JSHAPE_U32    7
-#define RASK_JSHAPE_U64    8
-#define RASK_JSHAPE_F32    9
-#define RASK_JSHAPE_F64    10
-#define RASK_JSHAPE_STRING 11
-#define RASK_JSHAPE_PRIM_COUNT 12
-#define RASK_JSHAPE_VEC    12
-#define RASK_JSHAPE_MAP    13
-#define RASK_JSHAPE_OPT    14
-#define RASK_JSHAPE_STRUCT 15
+// `RASK_JSHAPE_*`.
 
 // Shape field flags.
 // Not in the serialized form (`@no_serialize`): encode leaves it out, and
-// decode never looks for it and always runs its fill.
-#define RASK_JFIELD_NOT_SERIALIZED 1
+// decode never looks for it and always runs its fill. `RASK_JFIELD_NOT_SERIALIZED`.
 
 // Writes a field's default into its slot. Called for a field the input leaves
 // out; generated per field by the call site.
 typedef void (*RaskJsonFill)(void *slot);
-
-// Mirrors rask_mono::abi — an Option is [tag:8][payload], tag 0 = Some.
-#define RASK_OPTION_PAYLOAD_OFFSET 8
 
 typedef struct RaskJsonVal RaskJsonVal;
 typedef struct RaskJsonShape RaskJsonShape;
@@ -999,7 +948,8 @@ RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
                                    const int32_t *owned, int64_t n_owned);
 RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
                                    const int32_t *owned, int64_t n_owned);
-RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size);
+RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size,
+                                   int64_t payload_offset);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
                                      RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
 void           rask_json_shape_free(RaskJsonShape *s);
@@ -1179,9 +1129,7 @@ typedef int64_t (*RaskTaskFn)(void *env);
 
 // How a joined task ended. Codegen turns this into the Result tag, so the
 // numbering here is the only thing the two sides have to agree on besides the
-// offsets.
-#define RASK_JOIN_OK        0
-#define RASK_JOIN_PANICKED  1
+// offsets. `RASK_JOIN_OK`, `RASK_JOIN_PANICKED`.
 
 // Wait, and report how it ended separately from the value, so a task that
 // legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
@@ -1298,14 +1246,8 @@ typedef struct RaskChannel RaskChannel;
 typedef struct RaskSender  RaskSender;
 typedef struct RaskRecver  RaskRecver;
 
-// Status codes for channel operations.
-#define RASK_CHAN_OK     0
-#define RASK_CHAN_CLOSED -1
-#define RASK_CHAN_FULL   -2
-#define RASK_CHAN_EMPTY  -3
-// The task was cancelled while it waited (conc.async/CN3). The same code
-// ends a sleep early.
-#define RASK_CHAN_CANCELLED -4
+// Status codes for channel operations, `RASK_CHAN_*`. CANCELLED: the task was
+// cancelled while it waited (conc.async/CN3). The same code ends a sleep early.
 #define RASK_CANCELLED RASK_CHAN_CANCELLED
 
 // Create a channel. capacity=0 for rendezvous (unbuffered).
@@ -1332,21 +1274,16 @@ RaskSender *rask_sender_clone(RaskSender *tx);
 void rask_sender_drop(RaskSender *tx);
 void rask_recver_drop(RaskRecver *rx);
 
-// i64-based channel wrappers for codegen dispatch table.
+// Channel wrappers for the codegen dispatch table.
 // `let (tx, rx) = Channel<T>.buffered(n)`: `new` hands back the channel and
 // each accessor makes the one handle of its kind. Nothing between the calls
 // owns anything, which is the point — the 16-byte pair that used to carry the
 // two handles could be freed by neither accessor and leaked once per channel.
-int64_t rask_channel_new_i64(int64_t capacity);
 int64_t rask_channel_get_tx(int64_t chan);
 int64_t rask_channel_get_rx(int64_t chan);
-int64_t rask_channel_send_i64(int64_t tx, int64_t value);
-int64_t rask_channel_recv_i64(int64_t rx);
 void    rask_sender_drop_i64(int64_t tx);
 void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
-int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
-int64_t rask_channel_try_recv_i64(int64_t rx);
 int64_t rask_channel_try_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr);
 int64_t rask_sender_close_i64(int64_t tx);
@@ -1530,7 +1467,8 @@ int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind)
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
 void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);
-void    rask_cell_into_inner(int64_t cell, int64_t out);
+void    rask_cell_take(int64_t cell, int64_t out);
+int64_t rask_cell_clone(int64_t cell);
 void    rask_cell_free(int64_t cell);
 
 // `get`/`set`/`replace` under each lock — the single-expression shorthand
@@ -1538,15 +1476,18 @@ void    rask_cell_free(int64_t cell);
 int64_t rask_shared_get(int64_t shared);
 void    rask_shared_set(int64_t shared, int64_t data_ptr);
 void    rask_shared_replace(int64_t shared, int64_t data_ptr, int64_t out);
+void    rask_shared_take(int64_t shared, int64_t out);
 int64_t rask_mutex_get(int64_t mutex);
 void    rask_mutex_set(int64_t mutex, int64_t data_ptr);
 void    rask_mutex_replace(int64_t mutex, int64_t data_ptr, int64_t out);
+void    rask_mutex_take(int64_t mutex, int64_t out);
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 
 // Pointer-based channel wrappers for aggregate element types.
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr);
+int64_t rask_channel_try_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr);
 
 // ── Error origin (ER15/ER16) ────────────────────────────────────

@@ -1,39 +1,43 @@
 <!-- id: comp.effects -->
 <!-- status: decided -->
-<!-- summary: Compiler-inferred effect metadata for IO, async, and structural mutation — tooling-visible, not type-level -->
+<!-- summary: Compiler-inferred effect metadata: blocking, outside state, spawning, structural mutation — tooling-visible, not type-level -->
 <!-- depends: concurrency/io-context.md, compiler/advanced-analyses.md -->
 
 # Effect Tracking
 
-The compiler infers which functions perform I/O, async operations, or structural mutations (a call that can grow or shrink a collection). This information is metadata — visible through IDE ghost text and linter annotations, not enforced in the type system. No function coloring.
+The compiler infers which functions can block, touch state outside the program, spawn tasks, or change a collection's size. This information is metadata — visible through IDE ghost text and linter annotations, not enforced in the type system. No function coloring.
 
 ## Effect Categories
 
 | Rule | Description |
 |------|-------------|
-| **FX1: Three categories** | IO (syscalls, file/network/stdio), Async (spawn, sleep, channel ops), Mutation (Grow/Shrink — see `comp.advanced/EF1`, EF3, EF4) |
+| **FX1: Four categories** | Blocks (the thread can park until something outside it happens: a syscall, `sleep`, a channel op, a `join`), Ambient (reads or changes state nobody passed in and the program doesn't own, without waiting: the clock, environment variables, the process, the random source, the task runtime), Async (spawns a task), Mutation (Grow/Shrink — see `comp.advanced/EF1`, EF3, EF4) |
 | **FX2: Transitive inference** | A function has effect X if it or any callee transitively has effect X |
 | **FX3: Not in the type system** | Effects are compiler metadata. They don't appear in function signatures, don't constrain calling, don't split ecosystems |
 
-Effects don't restrict what you can call. A function without IO effects can call a function with IO effects — it just inherits the IO effect. This is tracking, not enforcement.
+Effects don't restrict what you can call. A function that doesn't block can call one that does — it just inherits the effect. This is tracking, not enforcement.
 
-## IO Effect
+I split what used to be one "IO" effect in two because its two readers ask different questions. The warnings (CW1, CW2) care whether a thread can park; a channel `receive` does and isn't I/O. Compile-time evaluation (`ctrl.comptime/CT7`) cares whether the compiler can run the call at all; `Instant.now()` can't, and doesn't block.
+
+"Ambient" is the word for what `Instant.now()` reads: state that is just there, reachable without anyone handing it over. Its arguments don't fix its answer, so the compiler can't compute it ahead of time and a replay has to record it. I didn't call it "external" because that reads as `extern`, which is about calling convention, not about what the call touches.
+
+## Blocks and Ambient
 
 | Rule | Description |
 |------|-------------|
-| **IO1: Source functions** | Ground truth: stdlib functions that read the process-global runtime slot for async-capable I/O (see `conc.io-context` "Which functions need the runtime") |
-| **IO2: Transitive** | Any function that transitively calls an IO source has the IO effect |
-| **IO3: Unsafe I/O** | An `unsafe` block does I/O through what it calls: a C function is I/O unless it says `@no_io` (INF5). The block itself adds nothing |
+| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless it says otherwise (INF5) |
+| **BL2: Transitive** | Any function that transitively calls a source has its effect |
+| **BL3: Unsafe is what it calls** | An `unsafe` block has the effects of the calls in it. Raw pointer work touches nothing outside the program; a C call in the block is conservative on its own (INF5) |
 
 <!-- test: skip -->
 ```rask
-// IO effect — calls File.open (source function)
+// Blocks — fs.read_text bottoms out at the native that opens the file
 func load_config(path: string) -> Config or Error {
     let data = try fs.read_text(path)
     return try json.decode<Config>(data)
 }
 
-// No IO effect — pure computation
+// Pure — nothing below it blocks or reaches outside
 func parse_header(raw: string) -> Header or ParseError {
     let parts = raw.split(":").to_vec()
     if parts.len() != 2 { return ParseError.MalformedHeader }
@@ -41,38 +45,35 @@ func parse_header(raw: string) -> Header or ParseError {
 }
 ```
 
-### IO Source Functions
+### The natives
 
-From `conc.io-context`:
+The marks sit on the natives at the bottom of the stdlib, where no body says
+what happens. What a public function does is inferred from them: `fs.exists`
+blocks because its body calls the C `access`, `Stdout.write` blocks because it
+calls the native that writes.
 
-| Module | Functions | IO? |
-|--------|-----------|-----|
-| `fs` | every `fs` function (`fs.open`, `fs.read_text`, `fs.exists`, …); `File.read_text/read_bytes`, `File.write/write_text/write_bytes/write_line`, `File.close` | Yes |
-| `net` | `net.tcp_listen`, `net.tcp_connect`, `TcpListener.accept`, `TcpConnection.read_text/read_bytes/write_text/write_bytes` | Yes |
-| `io` | `Stdin.read/read_text/read_line`, `Stdout.write`, `Stderr.write`, `println` and the other print functions | Yes |
-| `time` | `time.sleep` | Yes (also Async) |
-| `io` | `Buffer.read`, `Buffer.write` | No |
-| collections | `Vec`, `Map`, `Rack` | No |
-| `json` | `json.encode`, `json.decode` | No |
-| `fmt` | `format` | No |
-| `math` | All functions | No |
+| Mark | Natives |
+|------|---------|
+| `@blocks` | the print functions; `fs`'s open and create; `File`'s raw read, write, seek and close; stdio reads, writes and flush; socket listen, connect, accept, read, write and close; process run, wait and pipe I/O; `time.sleep`; `Handle.join`, `Sender.send`, `Receiver.receive` |
+| `@ambient` | environment variables, args, `os.pid`, `os.exit`, platform and arch; process spawn and poll; signals; `cli.args`, `cli.parse`; the clock (`Instant.now`, `elapsed`, wall time); the global random source and `Random.new`; socket addresses; `errno`; `async.cancelled`, `Handle.cancel` |
+| none | everything else: strings, collections, math, json, reflection, `Duration`, a seeded `Random` |
 
-A source is matched on the callee the type checker resolved, not on how the call is spelled. `t.join()` on a `Handle<i64>` is `Handle.join` whatever the variable is called, and `parts.join(",")` on a `Vec<string>` is `Vec.join`, which is no source at all.
+A call is matched on the callee the type checker resolved, not on how the call is spelled. `t.join()` on a `Handle<i64>` is `Handle.join` whatever the variable is called, and `parts.join(",")` on a `Vec<string>` is `Vec.join`, which blocks on nothing.
 
 ## Async Effect
 
 | Rule | Description |
 |------|-------------|
-| **AS1: Sources** | A task block (`spawn { }`, `Thread.spawn { }`, `ThreadPool.spawn { }`), `time.sleep()`, `Sender.send()`, `Receiver.receive()`, `Handle.join()` |
+| **AS1: Sources** | A task block (`spawn { }`, `Thread.spawn { }`, `ThreadPool.spawn { }`) |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
-| **AS3: Waiting is IO** | An Async source that waits — `time.sleep()`, the channel ops, `Handle.join()` — is also an IO source. `spawn { }` hands a task to the scheduler and returns, so it is Async without IO. A loop of spawns blocks nothing; the `join` is where the wait is |
+| **AS3: Waiting blocks** | Waiting on another task — `time.sleep()`, the channel ops, `Handle.join()` — is Blocks, not Async. `spawn { }` hands a task to the scheduler and returns, so it is Async and blocks nothing. A loop of spawns blocks nothing; the `join` is where the wait is |
 
 ## Mutation Effect
 
 | Rule | Description |
 |------|-------------|
 | **MU1: Defined by comp.advanced** | Structural effects (Grow, Shrink) are already formalized in `comp.advanced/EF1`, EF3, EF4 |
-| **MU2: Orthogonal** | Mutation effects are tracked independently from IO/Async. A function can have IO + Mutation, just IO, or neither |
+| **MU2: Orthogonal** | Mutation effects are tracked independently from the others. A function can block and mutate, just block, or neither |
 
 ## Inference
 
@@ -81,29 +82,22 @@ A source is matched on the callee the type checker resolved, not on how the call
 | **INF1: Per-function** | Compiler computes effects for each function from its body + callees |
 | **INF2: Module-local** | Within a module, infer from source. Cross-module: read effects from compiled metadata |
 | **INF3: Public function metadata** | Public function effects are stored in compiled module output alongside type information |
-| **INF4: No annotation required** | Effects are always inferred, never declared in source. The compiler does the work |
-| **INF5: Conservative for extern** | `extern` functions and C FFI calls are conservatively assumed IO unless annotated `@no_io` |
+| **INF4: No annotation required** | A program's effects are always inferred, never declared. The marks in BL1 are the stdlib's, on natives with no body to infer from, and a program can't write them (`type.annotations/AN5`) |
+| **INF5: Conservative for extern** | An `extern` C function is assumed to block and touch outside state. `@ambient` says it touches outside state but never waits (a protocol engine that reads the clock); `@pure` says neither: `@pure extern "C" func strlen(s: *u8) -> usize`. It has no body to check, so the declaration is trusted |
 
 ### Inference Algorithm
 
 ```
-infer_effects(func):
-    effects = {}
-
-    for call in func.body.calls:
-        if call.target is stdlib_io_source:
-            effects.add(IO)
-        if call.target is async_source:
-            effects.add(Async)
-            if call.target waits:
-                effects.add(IO)  // AS3: waiting is IO, spawning isn't
-        if call.target is grow_or_shrink:
-            effects.add(Mutation)
-
-        // Transitive: add callee's effects
-        effects.union(callee_effects(call.target))
-
-    return effects
+infer_effects(program, stdlib):
+    for func in stdlib ++ program:
+        effects[func] = declared(func)             // @blocks, @ambient on a native
+        for call in func.body.calls:
+            if call.target is a spawn:     effects[func].add(Async)
+            if call.target grows/shrinks:  effects[func].add(Mutation)
+            edges.add(func -> call.target)
+    for c in extern C functions:
+        effects[c] = if c is @pure { none } else if c is @ambient { Ambient } else { Blocks + Ambient }
+    propagate effects[callee] into effects[caller] along edges, to a fixed point
 ```
 
 Fixed-point iteration handles mutual recursion.
@@ -112,13 +106,13 @@ Fixed-point iteration handles mutual recursion.
 
 | Rule | Description |
 |------|-------------|
-| **PU1: Pure definition** | A function is pure if it has no IO, no Async, and no Mutation effects |
+| **PU1: Pure definition** | A function is pure if it has none of the four effects |
 | **PU2: Comptime is pure** | `comptime func` is pure by definition (`ctrl.comptime/CT6-CT7`). Effect inference confirms it by measuring the body like any other function's: a marking the body doesn't earn is `ctrl.comptime/CT60`'s error, not a fact inference grants |
-| **PU3: No pure keyword** | There's no `pure` keyword in the language. Purity is an inferred property. `@pure` is a lint annotation (see `tool.lint`) |
+| **PU3: No pure keyword** | There's no `pure` keyword in the language. Purity is an inferred property. `@pure` is a lint annotation (see `tool.lint`), and on an `extern`, which has no body to infer from, the declaration (INF5) |
 
 <!-- test: skip -->
 ```rask
-// Pure — no IO, no Async, no Mutation
+// Pure — no effects
 func add(a: i32, b: i32) -> i32 {
     return a + b
 }
@@ -129,7 +123,7 @@ func parse(input: string) -> Config or ParseError {
     return Config(value: input)
 }
 
-// Not pure — calls File.open (IO effect)
+// Not pure — fs.read_text blocks
 func load(path: string) -> Config or Error {
     let data = try fs.read_text(path)
     return try parse(data)
@@ -146,8 +140,8 @@ func load(path: string) -> Config or Error {
 
 <!-- test: skip -->
 ```rask
-func load_config(path: string) -> Config or Error {    // ghost: [io]
-    let data = try fs.read_text(path)                 // ← IO originates here
+func load_config(path: string) -> Config or Error {    // ghost: [blocks]
+    let data = try fs.read_text(path)                 // ← blocking originates here
     return try json.decode<Config>(data)                // (no marker — pure)
 }
 
@@ -155,11 +149,11 @@ func process(input: string) -> Result or Error {        // ghost: [pure]
     return try parse(input)
 }
 
-func run_server() -> void or Error {                      // ghost: [io, async]
+func run_server() -> void or Error {                      // ghost: [blocks, async]
     using Multitasking {
         let listener = try TcpListener.bind("0.0.0.0:8080")
         loop {
-            let conn = try listener.accept()          // ← IO + Async
+            let conn = try listener.accept()          // ← blocks
             spawn { handle(conn) }.detach()         // ← Async
         }
     }
@@ -171,11 +165,7 @@ func run_server() -> void or Error {                      // ghost: [io, async]
 | Effects | Ghost text |
 |---------|-----------|
 | No effects | `[pure]` |
-| IO only | `[io]` |
-| IO + Async | `[io, async]` |
-| Async only (spawns, never waits) | `[async]` |
-| Mutation only | `[mutation]` |
-| IO + Mutation | `[io, mutation]` |
+| Any others | the ones present, in the order `blocks`, `ambient`, `async`, `mutation`: `[blocks]`, `[blocks, async]`, `[ambient]`, `[mutation]` |
 
 Ghost text appears after the return type (or after `{` if no return type). Same position as inferred `using` clauses — they don't overlap because `using` is declared, effects are inferred.
 
@@ -183,37 +173,37 @@ Ghost text appears after the return type (or after `{` if no return type). Same 
 
 | Rule | Description |
 |------|-------------|
-| **CW1: IO in ThreadPool** | Warn when a function with IO effect is called inside `ThreadPool.spawn` (blocks pool thread). References `conc.io-context` appendix |
-| **CW2: IO in tight loop** | Warn when IO function is called in a loop without `using Multitasking` (repeated blocking) |
+| **CW1: Blocking in ThreadPool** | Warn when a function that blocks is called inside `ThreadPool.spawn` (holds the pool thread). References `conc.io-context` appendix |
+| **CW2: Blocking in a loop** | Warn when a function that blocks is called in a loop without `using Multitasking`, in a program that spawns (repeated blocking) |
 
 These use the existing `tool.warnings` infrastructure (`@allow` to suppress).
 
 ```
-WARNING [comp.effects/CW1]: I/O function called in thread pool context
+WARNING [comp.effects/CW1]: `fs.read_text` can block, and this runs on a thread pool
    |
 5  |  ThreadPool.spawn {
-6  |      let data = try File.read("big.csv")
-   |                       ^^^^^^^^^ File.read has IO effect — blocks pool thread
+6  |      let data = try fs.read_text("big.csv")
+   |                     ^^^^^^^^^^^^ `fs.read_text` can block
    |
-WHY: ThreadPool is for CPU-bound work. I/O blocks the pool thread instead of
-     parking a green task.
+WHY: ThreadPool is for CPU-bound work. A call that blocks holds the pool
+     thread instead of parking a green task.
 
 FIX: Use `spawn` for I/O-heavy work:
 
   spawn {
-      let data = try File.read("big.csv")
+      let data = try fs.read_text("big.csv")
       let result = try ThreadPool.spawn { parse(data) }.join()
   }.detach()
 ```
 
 ```
-WARNING [comp.effects/CW2]: I/O in loop without Multitasking context
+WARNING [comp.effects/CW2]: `http_get` can block, in a loop with no `using Multitasking`
    |
 3  |  for url in urls {
 4  |      let data = try http_get(url)
-   |                       ^^^^^^^^ IO effect in loop — blocks thread on each iteration
+   |                       ^^^^^^^^ `http_get` can block
    |
-WHY: Without `using Multitasking`, each I/O call blocks the thread sequentially.
+WHY: Without `using Multitasking`, each call that blocks holds the thread in turn.
 
 FIX: Wrap in using Multitasking to enable concurrent I/O:
 
@@ -233,13 +223,13 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | Case | Rule | Handling |
 |------|------|----------|
 | Recursive function | FX2, INF1 | Fixed-point iteration (converges in 2-3 passes) |
-| Closure captures IO function | FX2 | Closure inherits effects of captured calls |
+| Closure captures a blocking function | FX2 | Closure inherits effects of captured calls |
 | Generic function | INF1 | Effects inferred per monomorphized instance (post-monomorphization) |
-| `unsafe` block with no C calls | IO3 | Not I/O: a pointer read or write touches memory, not a device |
-| `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching I/O, `spawn` or a rack insert is rejected at its definition |
+| `unsafe` block with no C calls | BL3 | Pure: raw pointer work touches nothing outside the program |
+| `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching a call that blocks, outside state, or `spawn` is rejected at its definition. Growing a `Vec` is fine (`ctrl.comptime/CT26`) |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
-| `extern` function | INF5 | Conservative IO unless `@no_io` annotated |
-| Function pointer / `any Interface` call | INF1 | Conservative: assumed IO + Async (dynamic dispatch prevents static analysis) |
+| `extern` function | INF5 | Blocks and Ambient, Ambient only under `@ambient`, neither under `@pure` |
+| Function pointer / `any Interface` call | INF1 | Unknown: nothing is assumed (dynamic dispatch prevents static analysis) |
 
 ---
 
@@ -247,19 +237,19 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 
 ### Rationale
 
-**FX3 (not in the type system):** I considered putting effects in function signatures — `func f() -> T [io]`. That's function coloring. A pure function that can't call an IO function needs effect polymorphism for generic code. This is the same ecosystem split I rejected for async/await (`rejected-features.md`). Effects as metadata give you all the visibility (through IDE) without any of the cost (coloring, polymorphism, annotation burden).
+**FX3 (not in the type system):** I considered putting effects in function signatures — `func f() -> T [io]`. That's function coloring. A pure function that can't call a blocking one needs effect polymorphism for generic code. This is the same ecosystem split I rejected for async/await (`rejected-features.md`). Effects as metadata give you all the visibility (through IDE) without any of the cost (coloring, polymorphism, annotation burden).
 
-**IO3 (unsafe through its calls):** The conservative guess lives on the C function (INF5), where `@no_io` can answer it once for every caller. Marking the `unsafe` block as well made that answer useless, because calling a C function needs the block, so every caller of a pure C library warned about I/O it never did.
+**BL3 (unsafe is what it calls):** This used to be conservative: any `unsafe` block counted as I/O. The stdlib allocates through `unsafe`, so once its bodies were inferred that would have made `Vec.push` a blocking call. The C call is what could block, and INF5 is already conservative about it, so the block itself adds nothing.
 
 **INF4 (no annotation required):** Rask's principle is "write intent, not mechanics" (`CORE_DESIGN.md` principle 7). Effect annotations are mechanics. The compiler infers them; the IDE shows them. Code stays clean.
 
 **PU1 (pure definition):** Errors (`T or E`) are NOT effects. They're values in the type system. A function that returns `T or ParseError` and does nothing else is pure. This matches Haskell's distinction between `Either` (pure) and `IO` (effectful).
 
-**CW1 (IO in ThreadPool):** This replaces the hand-written linter rule sketched under `conc.runtime/HP2` with a principled check. The compiler now has effect metadata to back it up instead of relying on special-case detection.
+**CW1 (blocking in ThreadPool):** This replaces the hand-written linter rule sketched under `conc.runtime/HP2` with a principled check. The compiler now has effect metadata to back it up instead of relying on special-case detection.
 
 ### What This Doesn't Do
 
-- **No function coloring.** A function with IO effects can be called from anywhere. No restrictions.
+- **No function coloring.** A function that blocks can be called from anywhere. No restrictions.
 - **No effect polymorphism.** Generic functions don't need `<E: Effect>` bounds.
 - **No user-defined effects.** The three categories are fixed. No handler mechanisms.
 - **No algebraic effects.** Effects can't be intercepted, resumed, or composed. See `rejected-features.md`.
@@ -273,7 +263,7 @@ This is deliberately less powerful than Koka, Scala 3's capture checking, or Fra
 |---------|-------------|-------------------|
 | `T or E` | Tracks errors in types | Not an effect — already handled by the type system |
 | `with v[i] as x { … }` | Borrows into a growable buffer | Mutation effect says which calls in the body could move that buffer (`comp.advanced/EF1`, EF4) |
-| `using Multitasking { ... }` block | Installs process-global runtime | IO/Async effects track which functions need it; the CC2 reachability check is a separate pass |
+| `using Multitasking { ... }` block | Installs process-global runtime | Blocks/Async effects track which functions need it; the CC2 reachability check is a separate pass |
 | `comptime func` | Restricts to pure computation | Purity (PU2) gives vocabulary for what comptime already enforces |
 
 ### Implementation Notes
@@ -282,16 +272,16 @@ Effect inference runs as a pass after type checking: one call-graph walk plus fi
 
 **Compilation cost:** O(n) per module for the initial walk, O(n × k) for fixed-point iteration where k is typically 2-3. Well under the 10% analysis budget from `comp.advanced`.
 
-**Storage:** Effects are a 3-bit mask per function: `IO | Async | Mutation`. Stored in the module's compiled metadata alongside type signatures. Negligible space.
+**Storage:** Effects are a small bit mask per function: `Blocks | External | Async | Grow | Shrink`. Stored in the module's compiled metadata alongside type signatures. Negligible space.
 
 ### Patterns & Guidance
 
 **When effects are useful to know:**
 
-- Debugging performance: "Why is this slow?" → IDE shows IO effect on an inner function you thought was pure
+- Debugging performance: "Why is this slow?" → IDE shows `[blocks]` on an inner function you thought was pure
 - Code review: `rask annotate --diff` writes effect labels into the diff, and flags callers whose effects changed even when their lines didn't (`tool.annotate/DF2`)
-- Refactoring: moving IO out of a hot path — effects show which functions are safe to inline
-- Architecture: effect summary per module shows which modules are IO-heavy vs pure computation
+- Refactoring: moving blocking calls out of a hot path — effects show which functions are safe to inline
+- Architecture: effect summary per module shows which modules block vs compute
 
 **When effects don't matter:**
 

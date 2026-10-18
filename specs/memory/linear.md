@@ -30,6 +30,7 @@ Same tradeoff as "everything is a value": cost transparency over hidden mechanis
 | **L5: Move consumes** | Passing to a `take` parameter, assigning to another binding, or sending on a channel consumes the value |
 | **L6: Explicit consumption cancels `ensure`** | If the value is consumed before scope exit, the registered `ensure` is void (`ctrl.ensure/C1`) |
 | **L7: Commit before anything else** | Nothing may stand between acquiring a linear value and committing its cleanup. The statement after an acquisition commits it — `ensure`, a consuming call, a move, or a `return` |
+| **L8: No clone** | `clone()` on a linear value is a compile error (E0917). A copy would be a second obligation for one file or one allocation, and one of the two would be closed twice or never |
 
 Consumption happens via:
 - A method declared with `take self` (e.g. `file.close()`, `tx.commit()`)
@@ -45,8 +46,9 @@ Three ways a value acquires the linear property:
 |-----------|------------|--------------|
 | `@resource` annotation | Struct types (File, Connection, Transaction) | [resource-types.md](resource-types.md) |
 | `Heap<T>` type constructor | Any T, heap-allocated | [heap.md](heap.md) |
+| `Shared<T, S>` holding a linear `T` | The box, consumed by `take()` | [sync.md](../concurrency/sync.md) (SH9) |
 
-Rules L1–L7 apply identically in all three cases. The individual specs cite them instead of restating.
+Rules L1–L8 apply identically in every case. The individual specs cite them instead of restating.
 
 ## Linearity + `ensure` + `try`
 

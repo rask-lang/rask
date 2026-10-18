@@ -6,10 +6,12 @@ struct cli { }
 extend cli {
     /// Get command-line arguments as a list of strings.
     @native("rask_cli_args")
+    @ambient
     public func args() -> Vec<string> {}
 
     /// Parse command-line arguments into a structured Args object.
     @native("rask_args_parse")
+    @ambient
     public func parse() -> Args {}
 }
 

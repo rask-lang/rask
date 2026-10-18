@@ -82,9 +82,9 @@ impl Interpreter {
                 match tx.send(val) {
                     Ok(()) => Ok(chan_ok(Value::Unit)),
                     Err(SendError::Cancelled(_)) => {
-                        Ok(chan_err(chan_error("SendError", "Cancelled", 1, vec![])))
+                        Ok(chan_error("SendError", "Cancelled", vec![]))
                     }
-                    Err(_) => Ok(chan_err(chan_error("SendError", "Closed", 0, vec![]))),
+                    Err(_) => Ok(chan_error("SendError", "Closed", vec![])),
                 }
             }
             "try_send" => {
@@ -94,10 +94,10 @@ impl Interpreter {
                     // Both variants carry the value back — the send didn't
                     // happen, so the caller still owns what it tried to send.
                     Err(SendError::Full(v)) => {
-                        Ok(chan_err(chan_error("TrySendError", "Full", 0, vec![v])))
+                        Ok(chan_error("TrySendError", "Full", vec![v]))
                     }
                     Err(SendError::Closed(v) | SendError::Cancelled(v)) => {
-                        Ok(chan_err(chan_error("TrySendError", "Closed", 1, vec![v])))
+                        Ok(chan_error("TrySendError", "Closed", vec![v]))
                     }
                 }
             }
@@ -127,16 +127,16 @@ impl Interpreter {
             "receive" => match rx.recv() {
                 Ok(val) => Ok(chan_ok(val)),
                 Err(RecvError::Cancelled) => {
-                    Ok(chan_err(chan_error("ReceiveError", "Cancelled", 1, vec![])))
+                    Ok(chan_error("ReceiveError", "Cancelled", vec![]))
                 }
-                Err(_) => Ok(chan_err(chan_error("ReceiveError", "Closed", 0, vec![]))),
+                Err(_) => Ok(chan_error("ReceiveError", "Closed", vec![])),
             },
             "try_receive" => match rx.try_recv() {
                 Ok(val) => Ok(chan_ok(val)),
                 Err(RecvError::Empty) => {
-                    Ok(chan_err(chan_error("TryReceiveError", "Empty", 0, vec![])))
+                    Ok(chan_error("TryReceiveError", "Empty", vec![]))
                 }
-                Err(_) => Ok(chan_err(chan_error("TryReceiveError", "Closed", 1, vec![]))),
+                Err(_) => Ok(chan_error("TryReceiveError", "Closed", vec![])),
             },
             "close" => {
                 rx.close();
@@ -152,25 +152,7 @@ impl Interpreter {
 
 /// `Ok(value)` for a channel operation.
 fn chan_ok(value: Value) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Ok".to_string(),
-        fields: vec![value],
-        variant_index: 0,
-        origin: None,
-    }
-}
-
-/// `Err(error)` for a channel operation. The tag is 1 — `Err` was built with
-/// index 0 here, the same number `Ok` uses.
-fn chan_err(error: Value) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![error],
-        variant_index: 1,
-        origin: None,
-    }
+    Value::ok(value)
 }
 
 /// One of `stdlib/async.rk`'s channel error enums.
@@ -178,14 +160,8 @@ fn chan_err(error: Value) -> Value {
 /// These used to be bare strings, so `match rx.receive() { ReceiveError as e =>
 /// … }` matched no arm and `e.message()` had nothing to resolve against — the
 /// error branch the signature promises was unreachable (#1067).
-fn chan_error(ty: &str, variant: &str, index: u32, fields: Vec<Value>) -> Value {
-    Value::Enum {
-        name: ty.to_string(),
-        variant: variant.to_string(),
-        fields,
-        variant_index: index,
-        origin: None,
-    }
+fn chan_error(ty: &str, variant: &str, fields: Vec<Value>) -> Value {
+    Value::err(Value::stdlib_enum(ty, variant, fields))
 }
 
 /// Wait for the body and say how it ended, as `T or JoinError`. A cancelled
@@ -202,22 +178,7 @@ fn join_outcome(handle: &HandleInner) -> Value {
         None => Err("handle already consumed".to_string()),
     };
     match ended {
-        Err(msg) => Value::Enum {
-            name: "Result".to_string(),
-            variant: "Err".to_string(),
-            fields: vec![Value::Enum {
-                name: "JoinError".to_string(),
-                variant: "Panicked".to_string(),
-                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
-                variant_index: 0, origin: None,
-            }],
-            variant_index: 0, origin: None,
-        },
-        Ok(val) => Value::Enum {
-            name: "Result".to_string(),
-            variant: "Ok".to_string(),
-            fields: vec![val],
-            variant_index: 0, origin: None,
-        },
+        Err(msg) => Value::err(Value::stdlib_enum("JoinError", "Panicked", vec![Value::String(Arc::new(Mutex::new(msg)))])),
+        Ok(val) => Value::ok(val),
     }
 }

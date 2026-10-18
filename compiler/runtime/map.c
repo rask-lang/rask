@@ -604,12 +604,13 @@ RaskVec *rask_map_values(const RaskMap *m) {
     return v;
 }
 
-// Entries as a Vec of (key, value) pairs laid out as the tuple `(K, V)`: key
-// at 0, value at `voff`, `stride` bytes a pair. Lowering has the tuple's
-// layout and passes it, because the alignment that places the value isn't in
-// the map (#985).
+// The entries as a Vec of `(key, value)` tuples. Where the value sits and how
+// big an entry is are the caller's: a tuple puts each field at its own
+// alignment, which the runtime can't see from the sizes. Putting the value at
+// the next eight-byte boundary read every value of a `Map<i32, i32>` four
+// bytes early.
 RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride) {
-    if (!m) return rask_vec_new(stride > 0 ? stride : 16, NULL, 0);
+    if (!m) return rask_vec_new(stride, NULL, 0);
     // Where the pair's strings land. The two shapes worth a static map are the
     // ones programs actually iterate: a string key with a string value, and a
     // string key with anything else. Any other arrangement would need an

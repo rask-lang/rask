@@ -17,13 +17,7 @@ fn wrap_like(old: Option<&Value>, new: Value) -> Value {
     let old_is_option = matches!(old, Some(Value::Enum { name, .. }) if name == "Option");
     let new_is_option = matches!(&new, Value::Enum { name, .. } if name == "Option");
     if old_is_option && !new_is_option {
-        Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![new],
-            variant_index: 0,
-            origin: None,
-        }
+        Value::some(new)
     } else {
         new
     }
@@ -301,9 +295,9 @@ impl Interpreter {
                         let container = self.eval_index_target(idx_obj)?;
                         self.assign_index_field(&container, &idx_val, &field_chain, value)
                     }
-                    // Inline sync access: shared.write().field = value, mutex.lock().field = value
+                    // Inline sync access: shared.write().field = value
                     ExprKind::MethodCall { object, method, args, .. }
-                        if args.is_empty() && matches!(method.as_str(), "write" | "lock" | "read") =>
+                        if args.is_empty() && matches!(method.as_str(), "write" | "read") =>
                     {
                         let receiver = self.eval_expr(object).map_err(|diag| diag.error)?;
                         let obj = self.call_inline_sync_access(&receiver, method)

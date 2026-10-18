@@ -17,9 +17,9 @@ import net.UdpSocket
 import io.IoError
 import string.cstring
 
-// None of these touch a file or a socket: ngtcp2 is a state machine, and the
-// socket is this file's.
-@no_io
+// None of these wait: ngtcp2 is a state machine, and the socket is this
+// file's. They do read the clock and ask for random bytes.
+@ambient
 extern "C" {
     func ting_quic_new(local: *u8, remote: *u8) -> *u8
     func ting_quic_free(quic: *u8)

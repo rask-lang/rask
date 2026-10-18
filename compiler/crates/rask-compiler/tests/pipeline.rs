@@ -547,7 +547,7 @@ fn check_still_folds_a_valid_comptime_const() {
 
 #[test]
 fn default_args_desugar_runs() {
-    // If desugar_default_args doesn't run, calls without all args fail.
+    // If desugar_struct_defaults doesn't run, calls without all args fail.
     let path = tmp_rk(r#"
         func greet(name: string = "World") -> string {
             return "Hello, {name}"

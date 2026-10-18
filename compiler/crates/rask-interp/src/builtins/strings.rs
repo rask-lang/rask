@@ -182,18 +182,8 @@ impl Interpreter {
             "parse_float" => {
                 let text = s.lock().unwrap().trim().to_string();
                 match text.parse::<f64>() {
-                    Ok(n) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Float(n, FloatKind::Untyped)],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![parse_error(&text)],
-                        variant_index: 0, origin: None,
-                    }),
+                    Ok(n) => Ok(Value::ok(Value::Float(n, FloatKind::Untyped))),
+                    Err(_) => Ok(Value::err(parse_error(&text))),
                 }
             }
             // Generic `parse<T>()`: the type checker injects T's name as arg 0.
@@ -222,18 +212,8 @@ impl Interpreter {
                     text.parse::<i64>().ok().map(Value::int)
                 };
                 match parsed {
-                    Some(v) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![parse_error(&text)],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(v) => Ok(Value::ok(v)),
+                    None => Ok(Value::err(parse_error(&text))),
                 }
             }
             // Byte offset in, scalar out (std.strings/U1) — none when out of
@@ -243,69 +223,29 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 let found = guard.is_char_boundary(idx).then(|| guard[idx..].chars().next()).flatten();
                 Ok(match found {
-                    Some(c) => Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::Char(c)],
-                        variant_index: 0, origin: None,
-                    },
-                    None => Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    },
+                    Some(c) => Value::some(Value::Char(c)),
+                    None => Value::none(),
                 })
             }
             "byte_at" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 match s.lock().unwrap().as_bytes().get(idx) {
-                    Some(&b) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::int(b as i64)],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(&b) => Ok(Value::some(Value::int(b as i64))),
+                    None => Ok(Value::none()),
                 }
             }
             "index_of" => {
                 let pattern = self.expect_string(&args, 0)?;
                 match s.lock().unwrap().find(&pattern) {
-                    Some(idx) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::int(idx as i64)],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(idx) => Ok(Value::some(Value::int(idx as i64))),
+                    None => Ok(Value::none()),
                 }
             }
             "last_index_of" => {
                 let pattern = self.expect_string(&args, 0)?;
                 match s.lock().unwrap().rfind(&pattern) {
-                    Some(idx) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::int(idx as i64)],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(idx) => Ok(Value::some(Value::int(idx as i64))),
+                    None => Ok(Value::none()),
                 }
             }
             "repeat" => {
@@ -344,16 +284,7 @@ impl Interpreter {
             "compare" => {
                 let b = self.expect_string(&args, 0)?;
                 let ord = s.lock().unwrap().cmp(&b);
-                Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: match ord {
-                        std::cmp::Ordering::Less => "Less".to_string(),
-                        std::cmp::Ordering::Equal => "Equal".to_string(),
-                        std::cmp::Ordering::Greater => "Greater".to_string(),
-                    },
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::ordering(ord))
             }
             // C interop. The pointer keeps hold of this string's buffer, so
             // `*p` reads its first byte and `p.offset(n)` walks it — the same
@@ -509,8 +440,7 @@ fn parse_at_width(text: &str, kind: IntKind) -> Option<Value> {
     }
 }
 
-/// Build a `ParseError` variant for a failed `parse<T>()`.
-/// Mirrors stdlib/string.rk's `ParseError` (Empty/Invalid/OutOfRange).
+/// The `ParseError` (stdlib/string.rk) a failed `parse<T>()` answers.
 fn parse_error(text: &str) -> Value {
     let variant = if text.is_empty() {
         "Empty"
@@ -519,13 +449,7 @@ fn parse_error(text: &str) -> Value {
     } else {
         "Invalid"
     };
-    Value::Enum {
-        name: "ParseError".to_string(),
-        variant: variant.to_string(),
-        fields: vec![],
-        variant_index: match variant { "Empty" => 0, "Invalid" => 1, _ => 2 },
-        origin: None,
-    }
+    Value::stdlib_enum("ParseError", variant, vec![])
 }
 
 // ─── Text units (std.strings/U1–U5) ────────────────────────────────────────

@@ -29,7 +29,7 @@ struct Connection {
 
 ## Consumption Rules
 
-`@resource` values follow the linearity rules `mem.linear/L1–L7`. This table restates them in `@resource` context with the rule identifiers they're cited by in other specs:
+`@resource` values follow the linearity rules `mem.linear/L1–L8`. This table restates them in `@resource` context with the rule identifiers they're cited by in other specs:
 
 | Rule | Citation | Description |
 |------|----------|-------------|
@@ -361,7 +361,7 @@ gathered into a pool the program then has to remember to drain.
 
 ### Rationale
 
-**Why `@resource` exists:** Linearity is a property, but in real code you want to attach it to a specific kind of value — a file, a socket, a transaction. `@resource` is the annotation that says "every value of this struct type is linear." Rules L1–L7 do the work; the annotation just scopes them to a concrete type.
+**Why `@resource` exists:** Linearity is a property, but in real code you want to attach it to a specific kind of value — a file, a socket, a transaction. `@resource` is the annotation that says "every value of this struct type is linear." Rules L1–L8 do the work; the annotation just scopes them to a concrete type.
 
 **L4 (ensure):** The bridge between linearity and error handling. Commit to cleanup early, then use `try` freely knowing it'll happen.
 
@@ -439,7 +439,7 @@ func process_files(paths: Vec<string>) -> void or Error {
 
 ### See Also
 
-- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource` and `Heap<T>` (`mem.linear`)
+- [Linearity](linear.md) — Rule set (L1–L8) shared by `@resource` and `Heap<T>` (`mem.linear`)
 - [Heap Values](heap.md) — `Heap<T>`, the other linear value (`mem.heap`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)

@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An enum's tag and its payload fields hold their real widths, the same as a
+// struct's. Both used to be padded to a word each: `Small(u8, i16)` took 24
+// bytes. Every store and read now goes at the field's own width.
+
+enum Shape {
+    Dot
+    Small(u8, i16)
+    Mixed(bool, f32, i64)
+    Name(string)
+    Neg(i8)
+}
+
+func show(s: Shape) -> string {
+    return match s {
+        Dot => "dot",
+        Small(a, b) => "small {a} {b}",
+        Mixed(f, x, n) => "mixed {f} {x} {n}",
+        Name(n) => "name {n}",
+        Neg(n) => "neg {n}",
+    }
+}
+
+struct Holder {
+    public a: Shape
+    public tail: u8
+}
+
+enum Thing {
+    Named(string)
+    Plain
+}
+
+func pick(k: i64) -> Thing {
+    let s = "x".repeat(40)
+    if k == 0 {
+        return Thing.Named(s)
+    }
+    return Thing.Plain
+}
+
+test "each payload field reads back at its own width" {
+    let all: Vec<Shape> = Vec.from([Shape.Dot, Shape.Small(200, -3), Shape.Mixed(true, 1.5, -9), Shape.Name("hi"), Shape.Neg(-100)])
+    mut out = ""
+    for s in all {
+        out = "{out}{show(s)};"
+    }
+    assert out == "dot;small 200 -3;mixed true 1.5 -9;name hi;neg -100;"
+}
+
+test "an enum field beside a narrow struct field" {
+    let h = Holder(a: Shape.Small(255, 32000), tail: 7)
+    assert show(h.a) == "small 255 32000"
+    assert h.tail == 7
+}
+
+test "a one-byte tag store builds the value" {
+    assert pick(1) == Thing.Plain
+    let n = pick(0)
+    if n is Thing.Named(s) {
+        assert s.len() == 40
+    } else {
+        assert false
+    }
+}
+
+func main() {}

@@ -101,13 +101,13 @@ impl IntKind {
         Some(match s {
             "i8" => IntKind::I8,
             "i16" => IntKind::I16,
-            "i32" | "int" => IntKind::I32,
+            "i32" => IntKind::I32,
             "i64" => IntKind::I64,
             "isize" => IntKind::isize_kind(),
             "u8" => IntKind::U8,
             "u16" => IntKind::U16,
             "u32" => IntKind::U32,
-            "u64" | "uint" => IntKind::U64,
+            "u64" => IntKind::U64,
             "usize" => IntKind::usize_kind(),
             _ => return None,
         })
@@ -1188,10 +1188,8 @@ pub enum Value {
     Shared(Arc<RwLock<Value>>),
     /// Mutex<T> (exclusive lock wrapper)
     RaskMutex(Arc<Mutex<Value>>),
-    /// TCP listener socket (Option allows close to invalidate)
-    TcpListener(Arc<Mutex<Option<std::net::TcpListener>>>),
-    /// TCP connection (Option allows close to invalidate)
-    TcpConnection(Arc<Mutex<Option<std::net::TcpStream>>>),
+    TcpListener(Arc<Mutex<Socket<std::net::TcpListener>>>),
+    TcpConnection(Arc<Mutex<Socket<std::net::TcpStream>>>),
     /// UDP socket
     UdpSocket(Arc<Mutex<UdpHandle>>),
     /// SIMD f32x8 (8-wide f32 vector for SIMD operations)
@@ -1356,7 +1354,94 @@ impl fmt::Debug for IteratorState {
     }
 }
 
+/// A socket as the interpreter holds it. The raw `listen`/`connect`/`accept`
+/// seams in stdlib/net.rk answer a handle the Rask body then inspects: native's
+/// -1 is `Failed` (errno says why) and -2 is `Unresolved`. Closing leaves
+/// `Failed` too.
+#[derive(Debug)]
+pub enum Socket<T> {
+    Open(T),
+    Failed,
+    Unresolved,
+}
+
+impl<T> Socket<T> {
+    pub fn is_open(&self) -> bool {
+        matches!(self, Socket::Open(_))
+    }
+
+    pub fn as_ref(&self) -> Option<&T> {
+        match self {
+            Socket::Open(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Socket::Open(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The socket, leaving `Failed` behind.
+    pub fn take(&mut self) -> Option<T> {
+        match std::mem::replace(self, Socket::Failed) {
+            Socket::Open(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
 impl Value {
+    /// The success side of a `T or E`.
+    pub fn ok(value: Value) -> Value {
+        Self::wrapper("Result", "Ok", vec![value])
+    }
+
+    /// The error side of a `T or E`.
+    pub fn err(error: Value) -> Value {
+        Self::wrapper("Result", "Err", vec![error])
+    }
+
+    /// A present `T?`.
+    pub fn some(value: Value) -> Value {
+        Self::wrapper("Option", "Some", vec![value])
+    }
+
+    /// An absent `T?`.
+    pub fn none() -> Value {
+        Self::wrapper("Option", "None", vec![])
+    }
+
+    fn wrapper(name: &str, variant: &str, fields: Vec<Value>) -> Value {
+        Self::stdlib_enum(name, variant, fields)
+    }
+
+    /// What `compare` answers.
+    pub fn ordering(ord: std::cmp::Ordering) -> Value {
+        let variant = match ord {
+            std::cmp::Ordering::Less => "Less",
+            std::cmp::Ordering::Equal => "Equal",
+            std::cmp::Ordering::Greater => "Greater",
+        };
+        Self::stdlib_enum("Ordering", variant, vec![])
+    }
+
+    /// A value of an enum the stdlib declares, tagged by that declaration.
+    /// Naming a variant the stdlib doesn't declare is an interpreter bug.
+    pub fn stdlib_enum(enum_name: &str, variant: &str, fields: Vec<Value>) -> Value {
+        let tag = rask_stdlib::modules::variant_tag(enum_name, variant)
+            .unwrap_or_else(|| panic!("the stdlib declares no `{enum_name}.{variant}`"));
+        Value::Enum {
+            name: enum_name.to_string(),
+            variant: variant.to_string(),
+            fields,
+            variant_index: tag,
+            origin: None,
+        }
+    }
+
     /// An unbounded vector holding `items`.
     pub fn vec(items: Vec<Value>) -> Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
@@ -1395,12 +1480,6 @@ impl Value {
     /// Create a new struct value wrapped in Arc<Mutex<>>.
     pub fn new_struct(name: String, fields: IndexMap<String, Value>, resource_id: Option<u64>) -> Self {
         Value::Struct(Arc::new(Mutex::new(StructData { name, fields, resource_id })))
-    }
-
-    /// Create an enum value. variant_index defaults to 0 (builtin enums).
-    /// User-defined enums should use `enum_with_index` for correct ordering.
-    pub fn enum_val(name: String, variant: String, fields: Vec<Value>) -> Self {
-        Value::Enum { name, variant, fields, variant_index: 0, origin: None }
     }
 
     /// Create an enum value with an explicit variant index for ordering.
@@ -1789,14 +1868,14 @@ impl fmt::Display for Value {
                 write!(f, "Atomic({})", inner)
             }
             Value::TcpListener(l) => {
-                if l.lock().unwrap().is_some() {
+                if l.lock().unwrap().is_open() {
                     write!(f, "<TcpListener>")
                 } else {
                     write!(f, "<closed TcpListener>")
                 }
             }
             Value::TcpConnection(c) => {
-                if c.lock().unwrap().is_some() {
+                if c.lock().unwrap().is_open() {
                     write!(f, "<TcpConnection>")
                 } else {
                     write!(f, "<closed TcpConnection>")

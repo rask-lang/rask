@@ -58,7 +58,7 @@ func observe() {
 | **U1: Ensures run** | Every ensure scheduled between the panic point and the task root runs during unwind |
 | **U2: Access released, writes kept** | Unwind releases *access* (locks, borrows, bindings) but never rolls back *data*. Values keep whatever mutations happened before the panic |
 | **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, an element binding ends |
-| **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
+| **U4: Inline access release** | Expression-scoped locks (`shared.read().f`, `shared.write().f` — `conc.sync/R5`) release when the expression is abandoned mid-unwind |
 | **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
 | **U6: Owned memory released** | Unwinding releases what each abandoned frame owns (its vectors, maps, strings, closures, boxes, and the structs, enums, tuples, `T?` and `T or E` that hold them) the way the frame's normal exit would have, after that frame's ensures run. Inner frames go before outer ones. A value handed to a callee is the callee's to release, not the caller's |
 

@@ -4,11 +4,10 @@
 // Spec: type.structs (FD1), std.encoding (E21), ctrl.comptime (CT1, CT7)
 //
 // A field's default, declared or `@default(…)`, is worked out once while
-// compiling. Each default is a `comptime func` desugar writes, so one that
-// reaches I/O is rejected where it's written, through whatever call it goes.
-// The defaults used to be copied to every construction and run on every
-// decode, so `tick()` printed each time and nothing said it wasn't a constant
-// (#1537).
+// compiling, like every compile-time value. One that reaches I/O is rejected
+// where it's written, through whatever call it goes, named by its field. The
+// defaults used to be copied to every construction and run on every decode, so
+// `tick()` printed each time and nothing said it wasn't a constant (#1537).
 
 func tick() -> i64 {
     println("tick")

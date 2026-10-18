@@ -43,7 +43,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// match everything. Empty when the type has no registry entry — a user-defined
 /// type, where there's nothing to compare against.
 fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
-    nearest_names(rask_stdlib::registry::type_method_names(type_base(ty)), method)
+    nearest_names(&rask_stdlib::registry::type_method_names(type_base(ty)), method)
 }
 
 /// The rules `nearest_methods` describes, over any list of names.
@@ -2931,6 +2931,37 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
 
+            NotAPlace { what, span } => {
+                Diagnostic::error(format!("can't assign to {}", what))
+                    .with_code("E0916")
+                    .with_primary(*span, "this is a value, not somewhere to store one")
+                    .with_fix("assign to a variable (`x = v`), a field (`p.x = v`), an index (`items[i] = v`), or through a pointer (`*p = v`)")
+                    .with_why("an assignment stores into a place that already exists; a call or a literal produces a value, and a new one has nowhere to go")
+            }
+            CloneLinear { ty, payload, span } => {
+                let (label, fix) = match payload {
+                    Some(inner) => (
+                        format!("this `Shared` holds a `{}`, so it has exactly one owner", inner),
+                        "pass the `Shared` itself, or `take()` the value out when you're done with it".to_string(),
+                    ),
+                    None => (
+                        format!("a `{}` is consumed exactly once, and a copy would be a second obligation", ty),
+                        "pass it on (`take` it), or borrow it where a copy was wanted".to_string(),
+                    ),
+                };
+                Diagnostic::error(format!("`{}` can't be cloned", ty))
+                    .with_code("E0917")
+                    .with_primary(*span, label)
+                    .with_fix(fix)
+                    .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
+            }
+            TakeFromSharedBox { payload, span } => {
+                Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
+                    .with_code("E0918")
+                    .with_primary(*span, format!("`{}` doesn't need to be consumed, so other handles could still be reading it", payload))
+                    .with_fix("`replace(new)` to swap a value out and keep the box usable, or `get()` to copy it")
+                    .with_why("`take` empties the box, which is only sound when this is the last handle; a `Shared` is single-handle only when it holds a value that must be consumed [conc.sync/SH9]")
+            }
             BareSyncAccess { ty, method, span } => {
                 let recv = ty.to_lowercase();
                 Diagnostic::error(format!(
@@ -3826,6 +3857,27 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            TakeInGenericInstance { chain, param, type_arg, take_at } => {
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let via = if chain.len() > 1 {
+                    format!(" (reached through {})", chain.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(" → "))
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!(
+                    "`{}` takes a `Shared<{}>` apart, and this call gives it `{}` = `{}`",
+                    func, param, param, type_arg
+                ))
+                .with_code("E0920")
+                .with_primary(self.span, format!("`{}` = `{}` here{}", param, type_arg, via))
+                .with_secondary(*take_at, format!("`take` empties the box, in `{}`", func))
+                .with_fix(format!(
+                    "use `replace` in `{}` if any `{}` should work, or call it with a box holding a resource",
+                    func, param
+                ))
+                .with_why("`take` empties the box, which is only sound on the last handle. A `Shared` is single-handle only when its value must be consumed, and the body is checked against each type it's called with [conc.sync/SH9]")
+            }
+
             LinearInGenericInstance { chain, type_args, inner, inner_span } => {
                 let func = chain.last().map(String::as_str).unwrap_or("?");
                 let what = match inner.as_ref() {
@@ -4516,6 +4568,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_fix(format!("{}.clone()", name))
                 .with_why(format!(
                     "a `for` loop lends each element and `{}` keeps it, so giving `{}` away would leave two owners of one value. [ctrl.loops/LP6]",
+                    from, name
+                ))
+            }
+
+            ConsumeWithBinding { name, from, with_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
+                    None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `with` only lends it out of `{}`",
+                    name, from
+                ))
+                .with_code("E0919")
+                .with_primary(self.span, label)
+                .with_secondary(*with_at, format!("`{}` is reached through this, not taken out", name))
+                .with_fix(format!("change `{}` in place inside the block; to give the value away, take it out of `{}` first", name, from))
+                .with_why(format!(
+                    "`{}` still holds the value after the block, so giving `{}` away would leave two owners of one value. [mem.borrowing/W8]",
                     from, name
                 ))
             }

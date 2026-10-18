@@ -17,7 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Sites in `rask-mir/src/lower/` today. Only ever decrease it.
-const SITES: usize = 49;
+const SITES: usize = 47;
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };

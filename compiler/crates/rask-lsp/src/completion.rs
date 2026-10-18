@@ -121,12 +121,8 @@ fn identifier_completion(source: &str, offset: usize, cached: &CompilationResult
         });
     }
 
-    let keywords = [
-        "let", "mut", "const", "func", "struct", "enum", "interface", "extend",
-        "if", "else", "match", "for", "while", "loop", "return",
-        "try", "ensure", "import", "public", "spawn", "with",
-    ];
-    for kw in &keywords {
+    let keywords = rask_ast::token::KEYWORDS.iter().map(|(_, spelling)| spelling);
+    for kw in keywords {
         if prefix.is_empty() || kw.starts_with(prefix) {
             if seen.insert(kw.to_string()) {
                 items.push(CompletionItem {

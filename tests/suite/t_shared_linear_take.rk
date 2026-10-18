@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `Shared` holding a resource is single-owner, and `take()` is how the
+// resource gets out (conc.sync/SH9). Every strategy has its own runtime box,
+// and `take` used to lower to `replace` on two of them, leaving the box and
+// its lock allocated with a copy of the resource still inside.
+
+import sync.Shared
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+func readers() -> i64 {
+    let r = Shared.new(Conn(id: 1))
+    ensure r.take().close()
+    with r.write() as c {
+        c.id = 2
+    }
+    return r.read().id
+}
+
+func mutex() -> i64 {
+    let m = Shared.mutex(Conn(id: 10))
+    ensure m.take().close()
+    with m.write() as c {
+        c.id = 20
+    }
+    return m.read().id
+}
+
+func direct() -> i64 {
+    let m = Shared.mutex(Conn(id: 7))
+    return m.take().close()
+}
+
+func local() -> i64 {
+    let l = Shared.local(Conn(id: 100))
+    let c = l.take()
+    return c.close()
+}
+
+// Checked per call: `T` is a `Conn` at every call here.
+func unbox<T>(take s: Shared<T>) -> T {
+    return s.take()
+}
+
+func relay<U>(take s: Shared<U>) -> U {
+    return unbox(s)
+}
+
+test "conc.sync — take in a generic body" {
+    assert unbox(Shared.new(Conn(id: 3))).close() == 3
+    assert relay(Shared.new(Conn(id: 4))).close() == 4
+}
+
+test "conc.sync — take under each strategy" {
+    assert readers() == 2
+    assert mutex() == 20
+    assert direct() == 7
+    assert local() == 100
+}
+
+func main() {}

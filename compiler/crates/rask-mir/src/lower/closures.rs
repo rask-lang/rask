@@ -6,7 +6,7 @@ use rask_ast::ty::TypeExpr;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use rask_ast::NodeId;
 use crate::{
-    stmt::ClosureCapture, BlockBuilder, FunctionRef, LocalId, MirOperand,
+    BlockBuilder, FunctionRef, LocalId, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::{
@@ -340,21 +340,9 @@ impl<'a> MirLowerer<'a> {
         } else {
             crate::CaptureAccess::Borrowed
         };
-        let mut captures = Vec::new();
-        let mut env_offset = 0u32;
-        for (_name, local_id, ty, copy) in &free_vars {
-            // An address is a word regardless of what it points at.
-            let size = if by_ref { 8 } else { ty.size() };
-            let aligned_offset = (env_offset + 7) & !7;
-            captures.push(ClosureCapture {
-                local_id: *local_id,
-                offset: aligned_offset,
-                size,
-                by_ref,
-                copy: *copy,
-            });
-            env_offset = aligned_offset + size;
-        }
+        let captures = crate::stmt::lay_out_captures(
+            free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), by_ref, *copy)),
+        );
 
         // 4. Synthesize a MIR function for the closure body.
         //
@@ -659,25 +647,12 @@ impl<'a> MirLowerer<'a> {
             free_vars.push((format!("__value_{closure_name}"), v, outer_ret.clone(), false));
         }
 
-        let mut captures = Vec::new();
-        let mut env_offset = 0u32;
-        for _ in &free_vars {
-            // A scope-limited closure borrows (mem.closures/MC1), and an address
-            // is a word. The sequence only calls it, so it never outlives this
-            // frame — see `transform::addr_taken` for why that matters.
-            captures.push(crate::stmt::ClosureCapture {
-                local_id: LocalId(0), // filled in below
-                offset: env_offset,
-                size: 8,
-                by_ref: true,
-                copy: false, // filled in below
-            });
-            env_offset += 8;
-        }
-        for (cap, (_, id, _, copy)) in captures.iter_mut().zip(free_vars.iter()) {
-            cap.local_id = *id;
-            cap.copy = *copy;
-        }
+        // A scope-limited closure borrows (mem.closures/MC1). The sequence
+        // only calls it, so it never outlives this frame — see
+        // `transform::addr_taken` for why that matters.
+        let captures = crate::stmt::lay_out_captures(
+            free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), true, *copy)),
+        );
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
         let env_param = yb.add_param("__env".to_string(), MirType::Ptr);
@@ -951,7 +926,7 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(env)],
         }));
 
-        let size = ret.size().max(8) as i64;
+        let size = ret.size().max(1) as i64;
         let boxed = b.alloc_local("__boxed".to_string(), MirType::Ptr);
         b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(boxed),
@@ -962,7 +937,7 @@ impl<'a> MirLowerer<'a> {
             addr: boxed,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: Some(ret.size()),
+            store_size: ret.size(),
             field: None,
         }));
         b.terminate(MirTerminator::dummy(MirTerminatorKind::Return {

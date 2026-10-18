@@ -28,8 +28,9 @@ pub const VTABLE_SIZE_OFFSET: u32 = 0;
 /// Byte offset of the alignment field.
 pub const VTABLE_ALIGN_OFFSET: u32 = 8;
 /// Byte offset of the release for a value the box owns; null when the concrete
-/// type holds nothing that needs one.
-pub const VTABLE_OWNED_RELEASE_OFFSET: u32 = 16;
+/// type holds nothing that needs one. The runtime reads it by word index.
+pub const VTABLE_OWNED_RELEASE_OFFSET: u32 =
+    rask_mono::runtime_abi::RASK_VTABLE_OWNED_RELEASE_WORD as u32 * 8;
 /// Byte offset where method pointers begin.
 pub const VTABLE_METHODS_START: u32 = 24;
 

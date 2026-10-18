@@ -5,8 +5,7 @@
 // 2.5 printed as 4612811918334231000, and a write landed as a denormal — `w[0]`
 // read back as 0.000…044.
 //
-// A float slot is a whole word everywhere (`Vec<f32>` widens on the way in), so
-// the load is eight bytes as an `f64` and an `f32` narrows after it.
+// The load and the store are the pointee's own width and register class.
 
 test "reading a float back as a float" {
     mut w: Vec<f64> = Vec.new()
@@ -24,11 +23,17 @@ test "writing a float through a pointer" {
     assert w[0] == 9.75
 }
 
-test "an f32 narrows after the word-wide load" {
+test "an f32 is four bytes each way" {
     mut s: Vec<f32> = Vec.new()
     s.push(1.5)
-    let t = unsafe s.as_ptr()
+    s.push(-3.5)
+    let t = unsafe s.as_mut_ptr()
     assert unsafe *t == 1.5
+    let next = unsafe t.add(1)
+    assert unsafe next.read() == -3.5
+    unsafe t.write(0.25)
+    assert s[0] == 0.25
+    assert s[1] == -3.5
 }
 
 test "stepping to the next element" {

@@ -117,6 +117,10 @@ pub struct Monomorphizer<'a> {
     /// everything by node id, and a copy's nodes are new. Populated from the
     /// origin map each instantiation reports.
     pub instantiated_node_types: HashMap<NodeId, rask_types::Type>,
+    /// Which original node each copy's node replaces. A fact recorded against
+    /// the generic body by a later pass — a folded `comptime` value — reaches
+    /// the copies through this.
+    pub node_origins: HashMap<NodeId, NodeId>,
     /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
     /// OR1: the same, for the operator calls a conformance answered. An
@@ -128,6 +132,7 @@ pub struct Monomorphizer<'a> {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Assignments in the copies whose new value takes the old one.
     pub instantiated_field_reuses: HashSet<NodeId>,
@@ -490,10 +495,12 @@ impl<'a> Monomorphizer<'a> {
             next_instantiated_id: 0,
             in_test_body: false,
             instantiated_node_types: HashMap::new(),
+            node_origins: HashMap::new(),
             instantiated_call_targets: HashMap::new(),
             instantiated_operator_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
             instantiated_fallback_keeps_shape: HashSet::new(),
+            instantiated_err_returns: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
             instantiated_field_reuses: HashSet::new(),
             instantiated_task_bound_closures: HashSet::new(),
@@ -556,6 +563,7 @@ impl<'a> Monomorphizer<'a> {
             .map(|n| n.as_str())
             .zip(type_args.iter())
             .collect();
+        self.node_origins.extend(origins.iter().map(|(&new_id, &old_id)| (new_id, old_id)));
         for (&new_id, &old_id) in origins {
             if let Some(args) = self.call_type_args.get(&old_id) {
                 let concrete: Vec<TypeBinding> = args
@@ -656,6 +664,11 @@ impl<'a> Monomorphizer<'a> {
             // operand types, which substitution preserves.
             if typed.fallback_keeps_shape.contains(&old_id) {
                 self.instantiated_fallback_keeps_shape.insert(new_id);
+            }
+            // ER9: which side a return takes doesn't depend on the type
+            // arguments — a `T` never meets `E` (ER3).
+            if typed.err_returns.contains(&old_id) {
+                self.instantiated_err_returns.insert(new_id);
             }
             // CM1: whether a closure outlives its frame is a property of where
             // it is written, which substitution doesn't move.

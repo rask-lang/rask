@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A stdlib method written in Rask runs that body on both backends.
+//
+// The interpreter answered such methods from Rust copies of its own first, and
+// only fell back to the Rask body when no copy existed. Wherever both existed
+// the two backends ran different code: `flat_map` is lazy in Rask and built the
+// whole vector in Rust, so `.take(1)` called the closure once natively and
+// for every element on the interpreter (#1562).
+
+func calls_for_first_pair() -> i64 {
+    mut calls = 0
+    let v: Vec<i64> = Vec.from([1, 2, 3])
+    let first: Vec<i64> = v.flat_map(|x| {
+        calls += 1
+        return Vec.from([x, x])
+    }).take(1).to_vec()
+    assert first.len() == 1
+    return calls
+}
+
+test "flat_map runs only as far as the chain asks" {
+    assert calls_for_first_pair() == 1
+}
+
+test "try_push answers through its Rask body" {
+    mut v: Vec<i64> = Vec.new()
+    v.try_push(7) catch e => {
+        panic("a Vec with room refused a push")
+    }
+    assert v[0] == 7
+}
+
+func main() {}

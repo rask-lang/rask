@@ -33,6 +33,17 @@ struct Config {
     verbose: bool
 }
 
+@resource
+struct Ticket {
+    id: i64
+}
+
+extend Ticket {
+    func redeem(take self) -> i64 {
+        return self.id
+    }
+}
+
 test "conc.sync — `Shared.local` holds a Copy value and hands it back" {
     mut c = Shared.local(7)
     assert c.get() == 7
@@ -55,9 +66,9 @@ test "conc.sync — replace returns the old value in one step" {
     assert c.get() == 3
 }
 
-test "conc.sync — take consumes the Shared" {
-    let c = Shared.local(99)
-    assert c.take() == 99
+test "conc.sync — take consumes a Shared holding a resource" {
+    let c = Shared.local(Ticket(id: 99))
+    assert c.take().redeem() == 99
 }
 
 test "conc.sync — the Mutex strategy serialises access through with" {

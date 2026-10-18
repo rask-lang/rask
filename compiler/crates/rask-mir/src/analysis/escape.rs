@@ -13,24 +13,17 @@ use crate::analysis::uses;
 use crate::{LocalId, MirFunction, MirOperand, MirStmtKind, MirTerminatorKind, MirType};
 use std::collections::HashSet;
 
-/// Functions that take ownership of a string argument (the string escapes).
-const ESCAPE_FUNCTIONS: &[&str] = &[
-    "rask_vec_push",
-    "rask_vec_set",
-    "rask_map_insert",
-    "rask_map_insert_str",
-    "rask_channel_send",
-    "rask_shared_new",
-    "rask_mutex_new",
-];
-
 /// Returns the set of string-typed locals that may escape the function.
 ///
 /// A local escapes if:
 /// - Returned from the function
-/// - Passed to a function that takes ownership (collections, channels, shared)
 /// - Captured by an escaping (heap) closure
 /// - Stored via pointer (conservative: any Store of a string)
+///
+/// A string handed to a call that keeps it is not decided here: that is the
+/// callee's declaration's to say, and `rc_elide` asks it
+/// (`own_names::keeps_argument`). This used to match a list of C symbol names
+/// MIR never emits (`rask_vec_push`), so it never fired.
 pub fn escaping_strings(func: &MirFunction) -> HashSet<LocalId> {
     let mut escaped = HashSet::new();
 
@@ -45,19 +38,6 @@ pub fn escaping_strings(func: &MirFunction) -> HashSet<LocalId> {
         // Check statements
         for stmt in &block.statements {
             match &stmt.kind {
-                MirStmtKind::Call { func: fref, args, .. } => {
-                    let is_escape_fn = ESCAPE_FUNCTIONS.iter()
-                        .any(|name| fref.name.contains(name));
-                    if is_escape_fn {
-                        for arg in args {
-                            if let Some(id) = uses::operand_local(arg) {
-                                if string_locals.contains(&id) {
-                                    escaped.insert(id);
-                                }
-                            }
-                        }
-                    }
-                }
                 // String stored via pointer — conservative escape
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
                     if string_locals.contains(id) {
@@ -176,24 +156,6 @@ mod tests {
         );
         let esc = escaping_strings(&f);
         assert!(esc.is_empty());
-    }
-
-    #[test]
-    fn string_pushed_to_vec_escapes() {
-        let f = make_fn(
-            vec![string_local(0, "s"), int_local(1)],
-            vec![MirBlock {
-                id: BlockId(0),
-                statements: vec![MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("rask_vec_push".to_string()),
-                    args: vec![MirOperand::Local(local(1)), MirOperand::Local(local(0))],
-                })],
-                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
-            }],
-        );
-        let esc = escaping_strings(&f);
-        assert!(esc.contains(&local(0)));
     }
 
     #[test]

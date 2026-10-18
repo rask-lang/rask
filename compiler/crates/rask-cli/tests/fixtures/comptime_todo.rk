@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `todo()` is the exception to "a comptime panic is a compile error": it means
-// the block hasn't been written yet, and a program full of them still has to
-// compile. The const runs at runtime, where the same `todo()` panics.
+// `todo()` in a `comptime` block is a compile error like any other failure to
+// compute it (ctrl.comptime/CT69). It used to be the exception — the const ran
+// at run time instead — but a value that's sometimes computed while compiling
+// and sometimes not is one nobody can reason about (#1552).
 const D: i64 = comptime { todo("write the table") }
 
 func main() { println(D.to_string()) }

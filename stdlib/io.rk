@@ -72,6 +72,7 @@ extend IoError {
 
     /// errno, which is a macro over a thread-local, so Rask can't name it.
     @native("rask_io_errno")
+    @ambient
     func errno_now() -> i32 {}
 
     /// The variant index for an errno, in declaration order. The E* values
@@ -126,6 +127,7 @@ struct io { }
 extend io {
     /// Read a line of text from standard input.
     @native("rask_io_read_line")
+    @blocks
     public func read_line() -> string or IoError {}
 
     /// Acquire a handle to standard input.
@@ -150,18 +152,22 @@ extend io {
     /// The stream number comes off the handle: 0 = stdin, 1 = stdout,
     /// 2 = stderr. Bytes written, or -1.
     @native("rask_io_std_write_text")
+    @blocks
     func write_std_text(stream: i32, data: string) -> i64 {}
 
     /// The same, for bytes that needn't be UTF-8.
     @native("rask_io_std_write_bytes")
+    @blocks
     func write_std_bytes(stream: i32, data: Vec<u8>) -> i64 {}
 
     /// Push what stdio is holding. 0, or -1.
     @native("rask_io_std_flush")
+    @blocks
     func flush_std(stream: i32) -> i64 {}
 
     /// Read up to `max` bytes from standard input, stopping at end of input.
     @native("rask_io_std_read_bytes")
+    @blocks
     func read_std_bytes(max: i64) -> Vec<u8> {}
 
     /// Copy all bytes from reader to writer. Returns total bytes copied.
@@ -226,6 +232,7 @@ Stdin implements Reader {
 extend Stdin {
     /// Read a single line from stdin.
     @native("rask_io_read_line")
+    @blocks
     public func read_line(self) -> string or IoError {}
 
     /// Close the handle.
@@ -547,6 +554,7 @@ Buffer implements Seeker {
 /// A file handle for reading and writing. A resource: every opened file is
 /// closed exactly once, and the compiler checks it.
 @resource
+@handle
 public struct File { }
 
 extend File {
@@ -554,8 +562,10 @@ extend File {
     /// The interface methods below turn -1 into an `IoError` and take the
     /// `SeekFrom` apart, which is work neither backend should be doing.
     @native("rask_file_seek")
+    @blocks
     func seek_raw(self, whence: i64, offset: i64) -> i64 {}
     @native("rask_file_position")
+    @blocks
     func position_raw(self) -> i64 {}
 
     /// Read from the current position to the end.
@@ -622,12 +632,16 @@ extend File {
     /// themselves and returned nothing natively, so a failed write read as a
     /// success.
     @native("rask_file_write")
+    @blocks
     func write_raw(self, data: string) -> i64 {}
     @native("rask_file_write_bytes")
+    @blocks
     func write_bytes_raw(self, data: Vec<u8>) -> i64 {}
     @native("rask_file_write_line")
+    @blocks
     func write_line_raw(self, data: string) -> i64 {}
     @native("rask_file_close")
+    @blocks
     func close_raw(self) -> i64 {}
 
     /// The read as the backends see it: `none` when it failed, with the OS
@@ -635,5 +649,6 @@ extend File {
     /// itself, and natively a failure came back with the raw -1 as its error,
     /// which trapped when matched as an `IoError` (#1340).
     @native("rask_file_read_bytes")
+    @blocks
     func read_bytes_raw(self) -> Vec<u8>? {}
 }

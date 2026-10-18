@@ -182,10 +182,7 @@ impl fmt::Display for MirStmt {
                 // The width is half the meaning of a store — a copy that moves
                 // 8 bytes into a 16-byte option looks identical to a correct one
                 // without it.
-                match store_size {
-                    Some(n) => write!(f, "  [{}B]", n),
-                    None => Ok(()),
-                }
+                write!(f, "  [{}B]", store_size)
             }
             MirStmtKind::Call { dst, func, args } => {
                 if let Some(d) = dst {
