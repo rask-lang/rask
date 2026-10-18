@@ -28,7 +28,9 @@ const NAME_WHY: &str =
 const RESERVED_WHY: &str =
     "the compiler already acts on this name, so a user annotation would either be shadowed or silently change what the compiler does [type.annotations/AN5]";
 const STDLIB_ONLY_WHY: &str =
-    "these say how a stdlib declaration is implemented, or what it does that no body shows; on a program's function the compiler would either ignore one or believe it, and `@io` would make the function an I/O source whatever its body does [type.annotations/AN5]";
+    "these say how a stdlib declaration is implemented, or what it does that no body shows; on a program's function the compiler would either ignore one or believe it, and `@blocks` would make the function a blocking call whatever its body does [type.annotations/AN5]";
+const MEMORY_ONLY_WHY: &str =
+    "`@memory_only` vouches for a C function's body, which the compiler can't see. A Rask function's effects are read from its body, so the claim would either be redundant or wrong [comp.effects/INF5]";
 const CONST_WHY: &str =
     "attached values are embedded as constants and read identically in every instantiation, which only works for the comptime-constant types [type.annotations/AN1, ctrl.comptime/CT58]";
 const UNRESOLVED_WHY: &str =
@@ -385,6 +387,21 @@ impl TypeChecker {
                     problem: format!("`@{}` is only for the stdlib's own declarations", name),
                     fix: format!("remove `@{}` — a program's effects and bodies are read from its code", name),
                     why: STDLIB_ONLY_WHY,
+                    span: attr_span(attr, span),
+                });
+                continue;
+            }
+            // Every site this sweep visits is a Rask declaration, never an
+            // `extern`, so the mark is out of place wherever it shows up here.
+            if name == "memory_only" {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: name.to_string(),
+                    problem: format!(
+                        "`@memory_only` goes on an `extern` declaration, not a {}",
+                        if site == "func" { "function" } else { site }
+                    ),
+                    fix: "remove it; this function's effects are inferred from its body".to_string(),
+                    why: MEMORY_ONLY_WHY,
                     span: attr_span(attr, span),
                 });
                 continue;

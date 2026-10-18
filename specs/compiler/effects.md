@@ -25,7 +25,7 @@ I split what used to be one "IO" effect in two because its two readers ask diffe
 
 | Rule | Description |
 |------|-------------|
-| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless declared `@pure` (INF5) |
+| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless declared `@memory_only` (INF5) |
 | **BL2: Transitive** | Any function that transitively calls a source has its effect |
 | **BL3: Unsafe is what it calls** | An `unsafe` block has the effects of the calls in it. Raw pointer work touches nothing outside the program; a C call in the block is conservative on its own (INF5) |
 
@@ -83,7 +83,7 @@ A call is matched on the callee the type checker resolved, not on how the call i
 | **INF2: Module-local** | Within a module, infer from source. Cross-module: read effects from compiled metadata |
 | **INF3: Public function metadata** | Public function effects are stored in compiled module output alongside type information |
 | **INF4: No annotation required** | A program's effects are always inferred, never declared. The marks in BL1 are the stdlib's, on natives with no body to infer from, and a program can't write them (`type.annotations/AN5`) |
-| **INF5: Conservative for extern** | An `extern` C function is assumed to block and touch outside state unless declared `@pure`: `@pure extern "C" func strlen(s: *u8) -> usize`. It has no body to check, so the declaration is trusted |
+| **INF5: Conservative for extern** | An `extern` C function is assumed to block and touch ambient state unless declared `@memory_only`: the function works on the memory it's given and the heap, doesn't wait, and reaches nothing outside the process. `@memory_only extern "C" func strlen(s: *u8) -> usize`. It has no body to check, so the declaration is trusted. `@memory_only` anywhere but an `extern` is an error (E0854): a Rask function's effects are read from its body |
 
 ### Inference Algorithm
 
@@ -96,7 +96,7 @@ infer_effects(program, stdlib):
             if call.target grows/shrinks:  effects[func].add(Mutation)
             edges.add(func -> call.target)
     for c in extern C functions:
-        effects[c] = if c is @pure { none } else { Blocks + External }
+        effects[c] = if c is @memory_only { none } else { Blocks + Ambient }
     propagate effects[callee] into effects[caller] along edges, to a fixed point
 ```
 
@@ -108,7 +108,7 @@ Fixed-point iteration handles mutual recursion.
 |------|-------------|
 | **PU1: Pure definition** | A function is pure if it has none of the four effects |
 | **PU2: Comptime is pure** | `comptime func` is pure by definition (`ctrl.comptime/CT6-CT7`). Effect inference confirms it by measuring the body like any other function's: a marking the body doesn't earn is `ctrl.comptime/CT60`'s error, not a fact inference grants |
-| **PU3: No pure keyword** | There's no `pure` keyword in the language. Purity is an inferred property. `@pure` is a lint annotation (see `tool.lint`), and on an `extern`, which has no body to infer from, the declaration (INF5) |
+| **PU3: Purity is never written** | There's no `pure` keyword or annotation. Purity is an inferred property, shown as `[pure]` ghost text (IDE1). The one hand-written effect claim is `@memory_only` on an `extern`, which has no body to infer from (INF5) |
 
 <!-- test: skip -->
 ```rask
@@ -228,7 +228,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | `unsafe` block with no C calls | BL3 | Pure: raw pointer work touches nothing outside the program |
 | `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching a call that blocks, outside state, or `spawn` is rejected at its definition. Growing a `Vec` is fine (`ctrl.comptime/CT26`) |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
-| `extern` function | INF5 | Blocks and External unless declared `@pure` |
+| `extern` function | INF5 | Blocks and Ambient unless declared `@memory_only` |
 | Function pointer / `any Interface` call | INF1 | Unknown: nothing is assumed (dynamic dispatch prevents static analysis) |
 
 ---
@@ -253,7 +253,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 - **No effect polymorphism.** Generic functions don't need `<E: Effect>` bounds.
 - **No user-defined effects.** The three categories are fixed. No handler mechanisms.
 - **No algebraic effects.** Effects can't be intercepted, resumed, or composed. See `rejected-features.md`.
-- **No compile errors from effects.** Only warnings (`CW1`, `CW2`) and lint annotations (`@pure`).
+- **No compile errors from effects.** Only warnings (`CW1`, `CW2`).
 
 This is deliberately less powerful than Koka, Scala 3's capture checking, or Frank. The goal is visibility, not enforcement. Rask's type system handles the enforcement it needs through `T or E` (errors), the structural-effect rules (mutation under a borrow), and `using Multitasking` (async context).
 
@@ -272,7 +272,7 @@ Effect inference runs as a pass after type checking: one call-graph walk plus fi
 
 **Compilation cost:** O(n) per module for the initial walk, O(n × k) for fixed-point iteration where k is typically 2-3. Well under the 10% analysis budget from `comp.advanced`.
 
-**Storage:** Effects are a small bit mask per function: `Blocks | External | Async | Grow | Shrink`. Stored in the module's compiled metadata alongside type signatures. Negligible space.
+**Storage:** Effects are a small bit mask per function: `Blocks | Ambient | Async | Grow | Shrink`. Stored in the module's compiled metadata alongside type signatures. Negligible space.
 
 ### Patterns & Guidance
 
@@ -292,5 +292,4 @@ Effect inference runs as a pass after type checking: one call-graph walk plus fi
 - `conc.io-context` — IO source function categorization
 - `comp.advanced/EF1`, EF3, EF4 — the structural-effect rules
 - `ctrl.comptime/CT6-CT8` — comptime purity restrictions
-- `tool.lint` — `@pure` annotation enforcement
 - `tool.warnings` — warning infrastructure (`@allow`, `@deny`)

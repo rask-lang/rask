@@ -335,13 +335,13 @@ impl<'t> InferPass<'t> {
 
     // ── Phase 2: Extern declarations ────────────────────────────────
 
-    /// INF5: a C function could do anything, so it blocks and touches state
-    /// outside the program unless its declaration says `@pure`.
+    /// INF5: a C function could do anything, so it blocks and touches ambient
+    /// state unless its declaration says `@memory_only`.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
-                let pure = e.attrs.iter().any(|a| a.is("pure"));
-                let effects = if pure {
+                let memory_only = e.attrs.iter().any(|a| a.is("memory_only"));
+                let effects = if memory_only {
                     Effects::default()
                 } else {
                     Effects { blocks: true, ambient: true, ..Default::default() }
@@ -1199,12 +1199,12 @@ mod tests {
         assert!(effects["c_function"].ambient, "INF5: and could touch anything");
     }
 
-    /// `@pure` on an `extern` is the author's word that it does neither.
+    /// `@memory_only` on an `extern` is the author's word that it does neither.
     #[test]
-    fn a_pure_extern_is_pure() {
+    fn a_memory_only_extern_is_pure() {
         let mut decl = make_extern("strlen");
         if let DeclKind::Extern(e) = &mut decl.kind {
-            e.attrs = vec![rask_ast::attr::Attr { path: vec!["pure".into()], args: None, span: sp() }];
+            e.attrs = vec![rask_ast::attr::Attr { path: vec!["memory_only".into()], args: None, span: sp() }];
         }
         let effects = infer_std(&[decl], &Default::default());
         assert!(effects["strlen"].is_pure());
