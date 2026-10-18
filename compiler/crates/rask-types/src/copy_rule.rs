@@ -37,17 +37,6 @@ impl CopyVerdict {
 }
 
 impl TypeTable {
-    /// Compiler-native generic containers whose layout lives in the runtime
-    /// rather than in a visible struct decl (an empty `struct Vec<T> { }`
-    /// stub) — field-based size/Copy inference can't see them, so they're
-    /// named explicitly instead.
-    pub fn is_native_opaque_generic(base_name: &str) -> bool {
-        matches!(base_name,
-            "Vec" | "Map" | "Wide" | "Cell"
-            | "Rack" | "Link"
-            | "Handle" | "Sender" | "Receiver")
-    }
-
     /// Map a generic struct/enum's own type parameter names to the concrete
     /// types plugged in at this instantiation (`Wrapping<u32>`'s `T` -> `u32`).
     /// Const-generic args have nothing to bind to a type parameter and are
@@ -131,6 +120,11 @@ impl TypeTable {
             // Union: NOT Copy (error union types)
             Type::Union(_) => Move,
 
+            // A non-generic runtime handle (`Random`, `File`, ...) declares no
+            // fields, so the field rule below would call it a zero-byte Copy
+            // and two names would free one block.
+            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => Move,
+
             // User-defined types: need to check size and fields
             Type::Named(type_id) => match self.get(*type_id) {
                 None => Unknown,
@@ -161,10 +155,9 @@ impl TypeTable {
             // Without it, `v.push(link)` consumed the name and a later
             // `rack.delete(link)` drew a bogus use-after-move.
             //
-            // The other compiler-native generics (Vec, Map, Rack, ...) have no
-            // fields visible to the type system — their layout lives in the
-            // runtime, not in a struct decl — so field-based inference can't
-            // see them and they stay hardcoded move-only.
+            // Every other runtime handle (Vec, Map, Rack, ...) has no fields
+            // visible to the type system — its storage is the runtime's — so
+            // field-based inference can't see it, and it moves.
             //
             // A user-defined generic struct (`struct Wrapping<T> { value: T }`)
             // *does* have real fields, so its Copy-ness depends on what T ends
@@ -172,7 +165,7 @@ impl TypeTable {
             // struct, just substituted first (W4).
             Type::Generic { base, args } => {
                 let base_name = self.type_name(*base);
-                if Self::is_native_opaque_generic(&base_name) {
+                if rask_stdlib::is_runtime_handle(&base_name) {
                     return if base_name.as_str() == "Link" { Copy } else { Move };
                 }
                 match self.get(*base) {
@@ -253,6 +246,7 @@ impl TypeTable {
             Type::Tuple(elems) => elems.iter().map(|t| self.value_size(t)).sum(),
             Type::Array { elem, len } => self.value_size(elem) * len,
             ty if ty.is_option() => self.value_size(ty.as_option().unwrap()) + 1, // tag byte
+            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => 8,
             Type::Named(type_id) => {
                 if let Some(def) = self.get(*type_id) {
                     match def {
@@ -277,12 +271,9 @@ impl TypeTable {
             // non-generic one, once its own type parameter is substituted
             // with the type argument at this instantiation (`Wrapping<u8>` is
             // one byte, not whatever the unsubstituted `T` would default to).
-            // The compiler-native generics (Vec, Map, ...) declare an empty
-            // field list — their real layout lives in the runtime, not in the
-            // struct decl — so summing fields would say 0 instead of their
-            // actual size. Keep them at the old flat 8-byte guess rather than
-            // let an empty sum silently answer 0.
-            Type::Generic { base, args } if !Self::is_native_opaque_generic(&self.type_name(*base)) => {
+            // A runtime handle (Vec, Map, ...) declares no fields — its storage
+            // is the runtime's — so summing fields would say 0. It's a word.
+            Type::Generic { base, args } if !rask_stdlib::is_runtime_handle(&self.type_name(*base)) => {
                 if let Some(def) = self.get(*base) {
                     match def {
                         crate::TypeDef::Struct { type_params, fields, .. } => {

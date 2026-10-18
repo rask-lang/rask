@@ -14,7 +14,7 @@ use super::TypeChecker;
 
 use crate::types::Type;
 
-/// One inline `.read()`/`.write()`/`.lock()` found inside an expression: which
+/// One inline `.read()`/`.write()` found inside an expression: which
 /// verb, how the receiver was written, and where.
 struct SyncAccess {
     method: String,
@@ -265,6 +265,7 @@ impl TypeChecker {
                 self.in_assign_target = true;
                 let target_ty = self.infer_expr(target);
                 self.in_assign_target = false;
+                self.check_assignment_target(target);
 
                 // `*x = v` requires unsafe only when `x` really is a raw
                 // pointer. Writing through an `Owned` is a mutable borrow
@@ -669,7 +670,7 @@ impl TypeChecker {
 
     // ── E5: Sync inline access validation ──────────────────────────────
     //
-    // E5/R5/MX3: `.read()/.write()/.lock()` on Shared<T>/Mutex<T> produce
+    // E5/R5/MX3: `.read()/.write()` on a `Shared` produce
     // expression-scoped locks. Validation rules:
     //
     // 1. Must be chained: `shared.read().field` or `shared.read().method()`.
@@ -712,13 +713,45 @@ impl TypeChecker {
         }
     }
 
+    /// The left side of `=` has to name somewhere to store: a variable, a
+    /// field, an index or `*p`. Anything else type-checked and then failed in
+    /// whichever backend ran it, as "invalid assignment target" on the
+    /// interpreter and a lowering error natively.
+    fn check_assignment_target(&mut self, target: &Expr) {
+        use rask_ast::expr::UnaryOp;
+        let what = match &target.kind {
+            ExprKind::Ident(_)
+            | ExprKind::Field { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Unary { op: UnaryOp::Deref, .. } => return,
+            // `s.write() += 1`: the guard with nothing chained, which R5
+            // already has words for.
+            _ if self.is_sync_access(target).is_some() => {
+                self.check_unchained_sync(target, false);
+                return;
+            }
+            ExprKind::MethodCall { .. } => "a method call",
+            ExprKind::Call { .. } => "a function call",
+            ExprKind::DynamicField { .. } => "a comptime field access",
+            ExprKind::OptionalField { .. } => "an optional field access",
+            ExprKind::Int { .. }
+            | ExprKind::Float { .. }
+            | ExprKind::String { .. }
+            | ExprKind::StringInterp { .. }
+            | ExprKind::Bool(_)
+            | ExprKind::Char(_) => "a literal",
+            _ => "this expression",
+        };
+        self.errors.push(TypeError::NotAPlace { what, span: target.span });
+    }
+
     /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.
     /// Only `const x = shared.read().field` (Copy out) is allowed.
     fn check_sync_access_in_binding(&mut self, init: &Expr) {
         self.check_unchained_sync(init, false);
     }
 
-    /// R5/MX3: an inline `.read()`/`.write()`/`.lock()` is scoped to the chain
+    /// R5/MX3: an inline `.read()`/`.write()` is scoped to the chain
     /// it starts, so one with nothing chained onto it is an error — wherever it
     /// sits, not only when it's the whole initializer.
     ///
@@ -781,11 +814,11 @@ impl TypeChecker {
     }
 
     /// Check if an expression is a sync access call (not chained).
-    /// Returns Some if this is a bare `.read()/.write()/.lock()`.
+    /// Returns Some if this is a bare `.read()/.write()`.
     fn is_sync_access(&self, expr: &Expr) -> Option<(String, String, rask_ast::Span)> {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
-                if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
+                if args.is_empty() && matches!(method.as_str(), "read" | "write") {
                     if let Some(ty_name) = self.sync_type_of(object) {
                         return Some((ty_name, method.clone(), expr.span));
                     }
@@ -819,7 +852,7 @@ impl TypeChecker {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check if this node itself is a sync access
-                if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
+                if args.is_empty() && matches!(method.as_str(), "read" | "write") {
                     if self.sync_type_of(object).is_some() {
                         out.push(SyncAccess {
                             method: method.clone(),
@@ -879,18 +912,10 @@ impl TypeChecker {
         }
     }
 
-    /// Check if an expression's inferred type is Shared<T> or Mutex<T>.
+    /// `Some("Shared")` when the expression is a `Shared` box.
     pub(super) fn sync_type_of(&self, expr: &Expr) -> Option<String> {
         let ty = self.node_types.get(&expr.id)?;
-        let resolved = self.ctx.apply(ty);
-        match &resolved {
-            Type::UnresolvedGeneric { name, .. }
-                if matches!(name.as_str(), "Shared" | "Mutex") =>
-            {
-                Some(name.clone())
-            }
-            _ => None,
-        }
+        self.is_shared_box(&self.ctx.apply(ty)).then(|| "Shared".to_string())
     }
 
     /// The expression an `ensure` body statement leaves as its result — whatever

@@ -222,7 +222,7 @@ fn mir_type_to_var_info(
         }
         rask_mir::MirType::Option(inner) => {
             let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts);
-            (format!("Option<{}>", inner.type_name), inner.byte_size + 8, TypeKind::Other)
+            (format!("Option<{}>", inner.type_name), ty.size(), TypeKind::Other)
         }
         rask_mir::MirType::Tuple(_) => ("tuple".into(), 8, TypeKind::Other),
         _ => ("unknown".into(), 8, TypeKind::Other),

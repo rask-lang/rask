@@ -34,67 +34,103 @@ pub enum ArgForm {
     RuleNames,
 }
 
-/// Every attribute name the compiler owns, and how its arguments are written.
-/// The one list: the parser asks it which arguments are rule names, the
-/// checker refuses these names to user annotations (type.annotations/AN5), and
+/// Who may write a compiler-known attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writer {
+    /// Any program.
+    Anyone,
+    /// Only the stdlib's own declarations. These say how a declaration is
+    /// implemented, or what it does that its body can't show, and a program
+    /// writing one would be believed: `@blocks` on a program function made it
+    /// a blocking call (#1593).
+    Stdlib,
+    /// The stdlib, and any `extern` declaration. A C function has no body to
+    /// read its effects from, so its declaration is the only place to say them
+    /// (comp.effects/INF5).
+    StdlibOrExtern,
+}
+
+/// Every attribute name the compiler owns, how its arguments are written, and
+/// who may write it. The one list: the parser asks it which arguments are rule
+/// names, the checker refuses these names to user annotations
+/// (type.annotations/AN5) and the stdlib's to programs, and
 /// `every_attribute_the_compiler_reads_is_listed` fails the build when the
 /// compiler reads a name that isn't here.
 ///
 /// Names the specs decide but nothing reads yet are listed too, so a user
 /// annotation can't take one before it's built. `@embed_file` and the other
 /// `@name(…)` forms written in an expression aren't attributes and aren't here.
-pub const COMPILER_ATTRS: &[(&str, ArgForm)] = &[
+pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // Serialization (std.encoding)
-    ("rename", ArgForm::Exprs),
-    ("no_serialize", ArgForm::Exprs),
-    ("skip", ArgForm::Exprs), // only to say it's now `@no_serialize`
-    ("default", ArgForm::Exprs),
-    ("tag", ArgForm::Exprs),
-    ("no_encode", ArgForm::Exprs),
-    ("no_decode", ArgForm::Exprs),
-    ("binary", ArgForm::Exprs),
+    ("rename", ArgForm::Exprs, Writer::Anyone),
+    ("no_serialize", ArgForm::Exprs, Writer::Anyone),
+    ("skip", ArgForm::Exprs, Writer::Anyone), // only to say it's now `@no_serialize`
+    ("default", ArgForm::Exprs, Writer::Anyone),
+    ("tag", ArgForm::Exprs, Writer::Anyone),
+    ("no_encode", ArgForm::Exprs, Writer::Anyone),
+    ("no_decode", ArgForm::Exprs, Writer::Anyone),
+    ("binary", ArgForm::Exprs, Writer::Anyone),
     // Types and memory
-    ("resource", ArgForm::Exprs),
-    ("unique", ArgForm::Exprs),
-    ("small", ArgForm::Exprs),
-    ("layout", ArgForm::Exprs),
-    ("message", ArgForm::Exprs),
+    ("resource", ArgForm::Exprs, Writer::Anyone),
+    ("unique", ArgForm::Exprs, Writer::Anyone),
+    ("small", ArgForm::Exprs, Writer::Anyone),
+    ("layout", ArgForm::Exprs, Writer::Anyone),
+    ("message", ArgForm::Exprs, Writer::Anyone),
     // Functions
-    ("entry", ArgForm::Exprs),
-    ("no_alloc", ArgForm::Exprs),
-    ("no_io", ArgForm::Exprs),
-    ("test", ArgForm::Exprs),
+    ("entry", ArgForm::Exprs, Writer::Anyone),
+    ("no_alloc", ArgForm::Exprs, Writer::Anyone),
+    ("test", ArgForm::Exprs, Writer::Anyone),
     // Stdlib declarations: where the body lives
-    ("native", ArgForm::Exprs),
-    ("builtin", ArgForm::Exprs),
-    ("unimplemented", ArgForm::Exprs),
+    ("native", ArgForm::Exprs, Writer::Stdlib),
+    ("builtin", ArgForm::Exprs, Writer::Stdlib),
+    ("unimplemented", ArgForm::Exprs, Writer::Stdlib),
+    // Stdlib declarations: effects a body can't show (comp.advanced/EF1,
+    // comp.effects/FX1)
+    ("grows", ArgForm::Exprs, Writer::Stdlib),
+    ("shrinks", ArgForm::Exprs, Writer::Stdlib),
+    ("blocks", ArgForm::Exprs, Writer::Stdlib),
+    ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),
+    // Stdlib declarations: a one-word value the runtime owns the storage of
+    ("handle", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
-    ("test_body", ArgForm::Exprs),
+    ("test_body", ArgForm::Exprs, Writer::Anyone),
     // Comptime
-    ("comptime_quota", ArgForm::Exprs),
+    ("comptime_quota", ArgForm::Exprs, Writer::Anyone),
     // Lints and warnings (tool.lint, tool.warnings)
-    ("allow", ArgForm::RuleNames),
-    ("warn", ArgForm::RuleNames),
-    ("deny", ArgForm::RuleNames),
+    ("allow", ArgForm::RuleNames, Writer::Anyone),
+    ("warn", ArgForm::RuleNames, Writer::Anyone),
+    ("deny", ArgForm::RuleNames, Writer::Anyone),
     // Decided, not built yet
-    ("inline", ArgForm::Exprs),             // SYNTAX.md
-    ("deprecated", ArgForm::Exprs),         // tool.warnings/W5
-    ("packed", ArgForm::Exprs),             // type.structs
-    ("align", ArgForm::Exprs),              // type.structs
-    ("bitfield", ArgForm::Exprs),           // struct.c-interop
-    ("export", ArgForm::Exprs),             // compiler.mangling
-    ("traced", ArgForm::Exprs),             // type.errors/ER34
-    ("pure", ArgForm::Exprs),               // tool.lint/P1
-    ("checked_unsafe", ArgForm::Exprs),     // mem.unsafe
-    ("unchecked_unsafe", ArgForm::Exprs),   // mem.unsafe
-    ("call_text", ArgForm::Exprs),          // ctrl.call-info (proposed)
-    ("call_location", ArgForm::Exprs),      // ctrl.call-info (proposed)
+    ("inline", ArgForm::Exprs, Writer::Anyone),             // SYNTAX.md
+    ("deprecated", ArgForm::Exprs, Writer::Anyone),         // tool.warnings/W5
+    ("packed", ArgForm::Exprs, Writer::Anyone),             // type.structs
+    ("align", ArgForm::Exprs, Writer::Anyone),              // type.structs
+    ("bitfield", ArgForm::Exprs, Writer::Anyone),           // struct.c-interop
+    ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
+    ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
+    ("pure", ArgForm::Exprs, Writer::Anyone),               // tool.lint/P1; on an `extern`, comp.effects/INF5
+    ("checked_unsafe", ArgForm::Exprs, Writer::Anyone),     // mem.unsafe
+    ("unchecked_unsafe", ArgForm::Exprs, Writer::Anyone),   // mem.unsafe
+    ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)
+    ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];
 
 /// How the compiler-known attribute `name` takes its arguments, or `None` for
 /// a name the compiler doesn't own (a user annotation).
 pub fn compiler_attr(name: &str) -> Option<ArgForm> {
-    COMPILER_ATTRS.iter().find(|(n, _)| *n == name).map(|(_, form)| *form)
+    COMPILER_ATTRS.iter().find(|(n, ..)| *n == name).map(|(_, form, _)| *form)
+}
+
+/// Whether only the stdlib may write the attribute `name`.
+pub fn stdlib_only(name: &str) -> bool {
+    COMPILER_ATTRS
+        .iter()
+        .any(|(n, _, w)| *n == name && matches!(w, Writer::Stdlib | Writer::StdlibOrExtern))
+}
+
+/// Whether a program's `extern` declaration may write the attribute `name`.
+pub fn extern_may_write(name: &str) -> bool {
+    COMPILER_ATTRS.iter().any(|(n, _, w)| *n == name && *w == Writer::StdlibOrExtern)
 }
 
 /// One `@name` or `@name(args)` attached to a declaration, field or variant.

@@ -143,6 +143,38 @@ pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build
 /// Uses the full build pipeline (package resolution, build script, deps)
 /// but compiles with a test runner entry point instead of main().
 pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
+    let bin = match build_package_test_binary(path, filter.as_deref(), format, false) {
+        Ok(bin) => bin,
+        Err(TestOutcome::Failed) => process::exit(1),
+        Err(_) => return,
+    };
+    let run_output = test_binary_command(&bin.path).output();
+
+    match run_output {
+        Ok(out) => {
+            forward_test_stderr(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let complete = display_test_results(&stdout, path, format, bin.tests.len(), Some(&out.status));
+            if !out.status.success() || !complete {
+                process::exit(test_exit_code(&out.status));
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: executing test binary: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    }
+}
+
+/// Compile and link a package's tests into one binary, with what its
+/// `build.rk` links. `sim` links the sim runtime instead (`rask test --sim`).
+/// `Err` carries the outcome when there is nothing to run.
+pub fn build_package_test_binary(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    sim: bool,
+) -> Result<TestBinary, TestOutcome> {
     use colored::Colorize;
 
     let opts = super::build::BuildOptions {
@@ -158,14 +190,14 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 
     if prepared.dep_errors > 0 {
         eprintln!("{}", output::banner_fail("Build", prepared.dep_errors));
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     }
 
     let root_pkg = match prepared.registry.get(prepared.root_id) {
         Some(p) => p,
         None => {
             eprintln!("{}: root package not found", output::error_label());
-            process::exit(1);
+            return Err(TestOutcome::Failed);
         }
     };
 
@@ -203,7 +235,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         &mut pkg_ctx,
         &config,
         |decls, _typed| {
-            tests = super::compile::extract_tests(decls, filter.as_deref());
+            tests = rask_compiler::runners::extract_tests(decls, filter.as_deref());
         },
     );
 
@@ -217,7 +249,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     }
     let Some(compiled) = output.result else {
         eprintln!("{}", output::banner_fail("Check", output.diagnostics.len()));
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     };
 
     if tests.is_empty() {
@@ -225,15 +257,8 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
         }
-        return;
+        return Err(TestOutcome::Passed);
     }
-
-    let (typed, all_decls, mono, comptime_globals) = (
-        compiled.typed,
-        compiled.decls,
-        compiled.mono,
-        compiled.comptime_globals,
-    );
 
     // One path per binary, not per process: a directory builds one per file,
     // and with RASK_KEEP_TEST_BIN set every file overwrote the last one's.
@@ -244,43 +269,27 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    if let Err(errors) = super::compile::compile_tests_to_object(
-        &mono, &typed, &all_decls, &comptime_globals,
-        &tests, None, None, &obj_path, Some(&cfg),
+    let input = rask_compiler::emit::BackEnd::of(&compiled, None, None);
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Tests(&tests), None,
+        rask_compiler::emit::BuildMode::Debug, &obj_path,
     ) {
         for e in &errors {
             eprintln!("{}: compile: {}", output::error_label(), e);
         }
         let _ = std::fs::remove_file(&obj_path);
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     }
 
-    if let Err(e) = super::link::link_executable_with(
-        &obj_path, &bin_str, &prepared.link_opts, false, None,
-    ) {
+    let link_opts = super::link::LinkOptions { sim, ..prepared.link_opts };
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
         eprintln!("{}: link: {}", output::error_label(), e);
         let _ = std::fs::remove_file(&obj_path);
-        process::exit(1);
+        return Err(TestOutcome::Failed);
     }
     let _ = std::fs::remove_file(&obj_path);
 
-    let run_output = test_binary_command(&bin_str).output();
-    let _ = std::fs::remove_file(&bin_path);
-
-    match run_output {
-        Ok(out) => {
-            forward_test_stderr(&out.stderr);
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let complete = display_test_results(&stdout, path, format, tests.len(), Some(&out.status));
-            if !out.status.success() || !complete {
-                process::exit(test_exit_code(&out.status));
-            }
-        }
-        Err(e) => {
-            eprintln!("{}: executing test binary: {}", output::error_label(), e);
-            process::exit(1);
-        }
-    }
+    Ok(TestBinary { path: bin_path, tests, comptime_records: String::new(), comptime_count: 0 })
 }
 
 /// How a test binary ended, when it ended badly — "signal 11 (SIGSEGV)" rather
@@ -675,7 +684,7 @@ pub fn build_test_binary(
     let mut comptime_count = 0;
     let output = rask_compiler::compile_file_with(path, &config, |decls, _typed| {
         (comptime_records, comptime_count) = comptime_test_records(decls, filter);
-        tests = super::compile::extract_tests(decls, filter);
+        tests = rask_compiler::runners::extract_tests(decls, filter);
     });
 
     // The pipeline reports its own sources; fall back to the file itself when
@@ -722,17 +731,17 @@ pub fn build_test_binary(
         return Err(if require_tests { TestOutcome::Failed } else { TestOutcome::Passed });
     }
 
-    let mono = result.mono;
-    let comptime_globals = result.comptime_globals;
-
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    if let Err(errors) = super::compile::compile_tests_to_object(
-        &mono, &result.typed, &result.decls, &comptime_globals,
-        &tests, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+    let input = rask_compiler::emit::BackEnd::of(
+        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
+    );
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Tests(&tests), None,
+        rask_compiler::emit::BuildMode::Debug, &obj_path,
     ) {
         // The file is named because nothing else here does. A failure at
         // this point prints no `=== Testing` header, so in a directory run
@@ -1151,20 +1160,22 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     }
 }
 
-pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
-    // Try native compilation first
-    if try_benchmark_native(path, filter.as_deref(), format) {
+/// Native unless `--interp` asks otherwise, like `run` and `test`. A native
+/// build that fails is an error. It used to switch to the interpreter and
+/// print its timings, labelled "(interpreter)" in a header that was easy to
+/// miss, so a benchmark that boxed to `any I` measured the wrong backend
+/// (#1563).
+pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format, interp: bool) {
+    if interp {
+        cmd_benchmark_interp(path, filter, format);
         return;
     }
-
-    // Fallback: interpreter
-    if format == Format::Human {
-        eprintln!("{}: native benchmark failed, falling back to interpreter", "note".yellow());
+    if !try_benchmark_native(path, filter.as_deref(), format) {
+        process::exit(1);
     }
-    cmd_benchmark_interp(path, filter, format);
 }
 
-/// Run benchmarks via interpreter (original behavior).
+/// Run benchmarks on the interpreter.
 fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
@@ -1589,7 +1600,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
             &path_owned,
             &config,
             |decls, _typed| {
-                benchmarks = super::compile::extract_benchmarks(decls, filter_owned.as_deref());
+                benchmarks = rask_compiler::runners::extract_benchmarks(decls, filter_owned.as_deref());
             },
         );
         (output, benchmarks)
@@ -1615,17 +1626,18 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
         return BenchRun::NoResults;
     }
     let result = output.result.unwrap();
-    let mono = result.mono;
-    let comptime_globals = result.comptime_globals;
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    if let Err(errors) = super::compile::compile_benchmarks_to_object(
-        &mono, &result.typed, &result.decls, &comptime_globals,
-        &benchmarks, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
+    let input = rask_compiler::emit::BackEnd::of(
+        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
+    );
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Benches(&benchmarks), None,
+        rask_compiler::emit::BuildMode::Release, &obj_path,
     ) {
         if format == Format::Human {
             for e in &errors {

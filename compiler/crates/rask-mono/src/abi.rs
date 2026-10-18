@@ -1,34 +1,64 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Canonical in-memory layout offsets for `Result<T, E>` and `Option<T>`.
+//! The in-memory layout of `T?`, `T or E` and an error union `(A | B)`.
 //!
-//! Single source of truth. `rask-mir` and `rask-codegen` re-export these instead
-//! of defining their own copies, and the C runtime mirrors them. Change a value
-//! here and it changes everywhere the layout is computed.
+//! The only definition. Mono's layouts, `MirType::size`, codegen's slot sizes
+//! and the C runtime all take theirs from here. Every value sits at its own
+//! size and alignment; nothing is padded out to a word to make it easier to
+//! move.
 //!
-//! Result: `[tag:8][origin_file:8][origin_line:8][payload:max(ok,err)]` (ER15 —
-//! the origin fields carry the error's source location for diagnostics).
-//! Option: `[tag:8][payload:inner]`.
+//! - `T?`: `[tag:1][payload: T]`, the payload at `T`'s alignment.
+//! - `T or E`: `[tag:1][origin_line:4][origin_file:8][payload: max(T, E)]`.
+//!   The origin fields carry the error's source location (ER15).
+//! - `(A | B)`: `[member:1][payload: max(A, B)]`, the member's position in the
+//!   union as written. The members are nominally distinct types and nothing in
+//!   their bytes tells them apart, so which one is held has to be written down
+//!   (#776).
 
-pub const RESULT_TAG_OFFSET: u32 = 0;
+/// Every wrapper's tag (or a union's member index) is its first byte.
+pub const TAG_OFFSET: u32 = 0;
+pub const TAG_BYTES: u32 = 1;
+
+/// The source line a propagated error came from, as a `u32`.
+pub const RESULT_ORIGIN_LINE_OFFSET: u32 = 4;
+pub const RESULT_ORIGIN_LINE_BYTES: u32 = 4;
+/// The source file it came from, as a pointer to its name.
 pub const RESULT_ORIGIN_FILE_OFFSET: u32 = 8;
-pub const RESULT_ORIGIN_LINE_OFFSET: u32 = 16;
-pub const RESULT_PAYLOAD_OFFSET: u32 = 24;
+pub const RESULT_ORIGIN_FILE_BYTES: u32 = 8;
+/// Where a `T or E`'s payload starts, unless it needs a stricter alignment
+/// (a 32-byte SIMD vector).
+const RESULT_HEADER_BYTES: u32 = 16;
 
-pub const OPTION_TAG_OFFSET: u32 = 0;
-pub const OPTION_PAYLOAD_OFFSET: u32 = 8;
+/// Where a wrapper keeps its payload, and how big the whole thing is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrapperLayout {
+    pub payload_offset: u32,
+    pub size: u32,
+    pub align: u32,
+}
 
-/// An error union `(A | B)`: `[member:8][member bytes:max(A, B)]`.
-///
-/// The members are nominally distinct types and nothing in their bytes tells
-/// them apart, so which one is held has to be written down. Before this the
-/// union collapsed to a bare pointer and `r is ParseError` on a
-/// `T or (ParseError | DivError)` was answered by the Result's own tag — every
-/// error read as whichever member was listed second (#776).
-///
-/// The index is the member's position in the union as written.
-pub const UNION_MEMBER_OFFSET: u32 = 0;
-pub const UNION_PAYLOAD_OFFSET: u32 = 8;
+fn align_up(n: u32, align: u32) -> u32 {
+    (n + align - 1) & !(align - 1)
+}
+
+/// `T?`, for a payload of this size and alignment.
+pub fn option_layout(payload_size: u32, payload_align: u32) -> WrapperLayout {
+    let align = payload_align.max(1);
+    let payload_offset = align_up(TAG_BYTES, align);
+    WrapperLayout { payload_offset, size: align_up(payload_offset + payload_size, align), align }
+}
+
+/// `T or E`, for the larger of the two sides and the stricter alignment.
+pub fn result_layout(payload_size: u32, payload_align: u32) -> WrapperLayout {
+    let align = payload_align.max(8);
+    let payload_offset = align_up(RESULT_HEADER_BYTES, align);
+    WrapperLayout { payload_offset, size: align_up(payload_offset + payload_size, align), align }
+}
+
+/// An error union, for its widest member and the strictest alignment.
+pub fn union_layout(payload_size: u32, payload_align: u32) -> WrapperLayout {
+    option_layout(payload_size, payload_align)
+}
 
 /// `none` for a niche-optimized `Link<T>?`: a link is the node's machine
 /// address, and the address that can never name a node is the null one.
@@ -41,116 +71,21 @@ pub const UNION_PAYLOAD_OFFSET: u32 = 8;
 /// The sentinel belongs to the type, not to the niche mechanism.
 pub const LINK_NONE_SENTINEL: i64 = 0;
 
-/// A scalar payload occupies the whole slot, whatever its own width.
-pub const PAYLOAD_SLOT_BYTES: u32 = 8;
-
-/// How a payload sits in a wrapper's payload slot.
-///
-/// The float case is the one that bites. A payload read is a plain load of the
-/// slot, so a 4-byte `f32` write and an 8-byte read disagree about which bytes
-/// carry the value — that's #629, and the same mistake reappeared one layer up
-/// when the wrap moved into MIR. Storing floats as `f64` makes the write and the
-/// read agree by construction.
-///
-/// Integers are written full-width and may be read at their own narrower width;
-/// little-endian puts the meaningful bytes first, so both agree.
-///
-/// Kept here beside the offsets because it is the same kind of fact: MIR widens
-/// a value to this on the way in, codegen takes it apart by this on the way out,
-/// and neither gets its own opinion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PayloadRepr {
-    /// Float scalar — occupies the slot as an `f64`.
-    Float64,
-    /// Integer-like scalar — written full-width, read at its own width.
-    IntFullWidth,
-    /// Aggregate — lives at its own address, copied in and out by bytes.
-    InPlace,
-}
-
-/// Classify a payload from the two facts that decide it.
-pub fn payload_repr(is_float: bool, passed_by_address: bool) -> PayloadRepr {
-    if passed_by_address {
-        PayloadRepr::InPlace
-    } else if is_float {
-        PayloadRepr::Float64
-    } else {
-        PayloadRepr::IntFullWidth
-    }
-}
-
-/// How wide a scalar sits in a slot of `slot_bytes`, in bytes.
-///
-/// `PayloadRepr` above answers this for a wrapper's payload slot, which is
-/// always a word. Every other slot a scalar can live in — a struct field, an
-/// array element, an enum payload, the local a `match` writes its arms into —
-/// asks the same question and may have a narrower answer, and each one used to
-/// answer it locally:
-///
-/// | Site | How it disagreed |
-/// |---|---|
-/// | array element store | stored at the value's width, not the slot's (#902) |
-/// | generic struct field read | honoured the caller's `F32` request (#972) |
-/// | `match` result local | typed `i64` before the arms reported (#973) |
-/// | enum payload read | never set a width at all (#973) |
-///
-/// All four were quiet: a wrong width reads back as a plausible number, not a
-/// crash. `2.5` printing as `2` looks like rounding. So the rule lives here,
-/// beside the offsets, for the same reason `PayloadRepr` does — the write and
-/// the read have to agree by construction, and neither gets its own opinion.
-///
-/// The rule: **a float occupies its slot whole.** In a word it is an `f64`; in
-/// a four-byte slot it is an `f32`. An integer is written full-width into a
-/// word and at its own width into anything narrower — little-endian puts the
-/// meaningful bytes first, so a narrower read of a full-width write agrees.
-///
-/// A word is the widest a scalar gets, with one exception: a 128-bit integer
-/// is sixteen bytes and still a scalar, held in a register pair rather than
-/// behind a pointer. Answering "a word" for one is what had a `balance: i128`
-/// field read back eight bytes wide (#933).
-pub fn slot_scalar_bytes(is_float: bool, value_bytes: u32, slot_bytes: u32) -> u32 {
-    if slot_bytes >= PAYLOAD_SLOT_BYTES {
-        // A word-or-wider slot: a float fills a word as an f64, an integer is
-        // written full-width. A scalar wider than a word takes as much of the
-        // slot as it actually is.
-        PAYLOAD_SLOT_BYTES.max(value_bytes.min(slot_bytes))
-    } else if is_float {
-        // Only f32 is narrower than a word, and a narrow slot holds it at its
-        // own width rather than promoted.
-        slot_bytes.min(value_bytes.max(4))
-    } else {
-        slot_bytes
-    }
-}
-
 #[cfg(test)]
-mod slot_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn a_float_fills_a_word_as_an_f64() {
-        assert_eq!(slot_scalar_bytes(true, 4, 8), 8, "f32 in a word is promoted");
-        assert_eq!(slot_scalar_bytes(true, 8, 8), 8);
+    fn an_option_is_its_payload_and_a_tag() {
+        assert_eq!(option_layout(1, 1), WrapperLayout { payload_offset: 1, size: 2, align: 1 });
+        assert_eq!(option_layout(4, 4), WrapperLayout { payload_offset: 4, size: 8, align: 4 });
+        assert_eq!(option_layout(8, 8), WrapperLayout { payload_offset: 8, size: 16, align: 8 });
+        assert_eq!(option_layout(16, 8), WrapperLayout { payload_offset: 8, size: 24, align: 8 });
     }
 
     #[test]
-    fn a_narrow_slot_holds_a_float_at_its_own_width() {
-        assert_eq!(slot_scalar_bytes(true, 4, 4), 4, "f32 in a 4-byte slot stays f32");
-    }
-
-    #[test]
-    fn an_integer_takes_the_slot_it_is_given() {
-        assert_eq!(slot_scalar_bytes(false, 8, 8), 8);
-        assert_eq!(slot_scalar_bytes(false, 4, 4), 4);
-        assert_eq!(slot_scalar_bytes(false, 8, 2), 2, "narrowed to the slot");
-        assert_eq!(slot_scalar_bytes(false, 1, 1), 1);
-        assert_eq!(slot_scalar_bytes(false, 4, 8), 8, "narrow int fills a word");
-    }
-
-    #[test]
-    fn a_scalar_wider_than_a_word_keeps_its_width() {
-        assert_eq!(slot_scalar_bytes(false, 16, 16), 16, "an i128 is sixteen bytes");
-        // A word-wide slot can't hold more than a word, whatever the value is.
-        assert_eq!(slot_scalar_bytes(false, 16, 8), 8);
+    fn a_result_keeps_its_payload_after_the_origin() {
+        assert_eq!(result_layout(1, 1), WrapperLayout { payload_offset: 16, size: 24, align: 8 });
+        assert_eq!(result_layout(16, 16), WrapperLayout { payload_offset: 16, size: 32, align: 16 });
     }
 }

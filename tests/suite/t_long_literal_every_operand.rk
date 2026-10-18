@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A string literal too long for the inline form is static data, and codegen
+// registers each one before it builds the function that names it.
+//
+// The registration was two hand-written walks over MIR that only looked at
+// assignments, stores, calls and returns. A literal passed to an interface
+// method, or stored into an array element, was never registered, and codegen
+// built `""` in its place (#1558).
+
+interface Shape {
+    func describe(self, label: string) -> string
+}
+
+struct Circle {
+    public r: i64
+}
+
+Circle implements Shape {
+    func describe(self, label: string) -> string {
+        return "{label}:{self.r}"
+    }
+}
+
+func through_interface() -> string {
+    let s: any Shape = Circle(r: 3)
+    return s.describe("a literal longer than fifteen")
+}
+
+func into_array_element() -> string {
+    mut arr = ["", "", ""]
+    arr[1] = "another literal longer than fifteen"
+    return arr[1]
+}
+
+test "a long literal passed to an interface method" {
+    assert through_interface() == "a literal longer than fifteen:3"
+}
+
+test "a long literal stored into an array element" {
+    assert into_array_element() == "another literal longer than fifteen"
+}
+
+func main() {}

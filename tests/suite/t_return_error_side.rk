@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Which side of `T or E` a `return` lands on is the checker's call (ER9). Both
+// backends used to make it again by comparing types, and a nominal error type
+// fooled both: `type Code = i64` is an `i64` to native and a "nominal" value to
+// the interpreter.
+//
+//   f(false) from `string or Code`:  interp: Ok(3), printed as the string
+//                                    native: a bare 3 read as a string, SIGSEGV
+
+type Code = i64
+
+extend Code {
+    func message(self) -> string {
+        return "code {self.value}"
+    }
+}
+
+enum Bad {
+    Nope
+}
+
+func f(ok: bool) -> string or Code {
+    if ok {
+        return "fine"
+    }
+    return Code(3)
+}
+
+func g(ok: bool) -> i64 or Code {
+    if ok {
+        return 10
+    }
+    return Code(4)
+}
+
+func h(which: i64) -> i64 or (Code | Bad) {
+    if which == 0 {
+        return 1
+    }
+    if which == 1 {
+        return Code(5)
+    }
+    return Bad.Nope
+}
+
+func first<T>(items: Vec<T>) -> T or Code {
+    if items.len() == 0 {
+        return Code(0)
+    }
+    return items[0].clone()
+}
+
+test "a nominal error goes to the error side" {
+    assert (f(true) catch e => e.message()) == "fine"
+    assert (f(false) catch e => e.message()) == "code 3"
+}
+
+test "even when it wraps the success side's type" {
+    assert (g(true) catch e => -1) == 10
+    assert (g(false) catch e => -1) == -1
+}
+
+test "a nominal member of a union error" {
+    assert (h(0) catch e => -1) == 1
+    assert (h(1) catch e => -1) == -1
+    assert (h(2) catch e => -2) == -2
+}
+
+test "in a generic body" {
+    let empty: Vec<string> = Vec.new()
+    assert (first(empty) catch e => e.message()) == "code 0"
+    assert (first(["a"]) catch e => e.message()) == "a"
+}

@@ -4,10 +4,12 @@ import memory.Heap
 
 /// Print a value followed by a newline to stdout.
 @native
+@blocks
 public func println(msg: string) {}
 
 /// Print a value to stdout without a trailing newline.
 @native
+@blocks
 public func print(msg: string) {}
 
 /// Abort execution with an error message.
@@ -34,10 +36,12 @@ public func drop(take ptr: Heap) {}
 
 /// Print a value followed by a newline to stderr.
 @native
+@blocks
 public func eprintln(msg: string) {}
 
 /// Print a value to stderr without a trailing newline.
 @native
+@blocks
 public func eprint(msg: string) {}
 
 /// Format values into a string.

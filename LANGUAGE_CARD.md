@@ -160,14 +160,14 @@ There are no stored iterator objects. Collection methods return `Sequence<T>` �
 
 <!-- test: parse -->
 ```rask
-let active = users.iter().filter(|u| u.active).map(|u| u.name).to_vec()
+let active = users.filter(|u| u.active).map(|u| u.name).to_vec()
 
 for x in vec { }               // borrowed elements
 for mutate x in vec { }        // in-place mutation
 for n in rack.nodes() { }      // racks yield links; write through them directly
 ```
 
-A chain can be split across statements inside one block — `let s = v.iter().filter(p)` is fine, and `s.to_vec()` later in the same block is fine. What it can't do is outlive what it borrows: a sequence over `v` can't be returned, stored in a struct, or sent to another task (`type.sequence/SEQ26`), exactly like any closure that captures a borrow.
+A chain can be split across statements inside one block — `let s = v.filter(p)` is fine, and `s.to_vec()` later in the same block is fine. What it can't do is outlive what it borrows: a sequence over `v` can't be returned, stored in a struct, or sent to another task (`type.sequence/SEQ26`), exactly like any closure that captures a borrow.
 
 **Lazy, not resumable.** There is no `next()`, no `peek`, no `zip`. A push source keeps its position on the call stack, so it can't hand one back or hold two at once — anything needing that uses indices (`type.sequence/SEQ38`, `SEQ39`).
 
@@ -199,7 +199,7 @@ a string and `entries` on a map are all things that look right and aren't.
 say `contains`, a map does not. `m[k] = v` inserts or replaces; `m[k]` reads and
 panics when the key is absent, so test with `contains` or use `get`.
 
-**Sequence adapters** (off `.iter()`, or a `string` splitter) — `map` `filter`
+**Sequence adapters** (straight off a collection, or a `string` splitter) — `map` `filter`
 `take` `skip` `take_while` `skip_while` `chain` `enumerate` `flatten`
 `flat_map`. No `zip` (needs two positions), no `sort` (sorting a lazy chain
 means buffering it — `to_vec()` then `sort()`), and it's `take`, not `limit`.
@@ -207,9 +207,10 @@ means buffering it — `to_vec()` then `sort()`), and it's `take`, not `limit`.
 `count` `min` `max` `min_by` `max_by` `min_by_key` `max_by_key` `any` `all`
 `find` `for_each`. A chain ends in one of these or in a `for` loop.
 
-Adapters live on `Sequence`, not on the collection: `v.map(f)` doesn't exist,
-`v.iter().map(f).to_vec()` does. The old `Vec.map` allocated a second Vec;
-the chain allocates once, at the terminal (`type.sequence/SEQ41`).
+There is no `.iter()`: a collection is its own chain head, so `v.map(f)`
+starts a lazy sequence over `v` and `v.map(f).to_vec()` builds the Vec
+(`type.sequence/SEQ48`). The chain allocates once, at the terminal
+(`type.sequence/SEQ41`).
 
 `.len()` answers `u64` everywhere. `as` won't narrow it to `i64` — that's
 `.to<i64>()!`, or keep the count unsigned.

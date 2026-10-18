@@ -7,16 +7,11 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{Socket, Value};
 
 /// Build a Result.Ok(value).
 fn make_result_ok(value: Value) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Ok".to_string(),
-        fields: vec![value],
-        variant_index: 0, origin: None,
-    }
+    Value::ok(value)
 }
 
 /// Build a `Result.Err(IoError.Other(message))`.
@@ -26,43 +21,15 @@ fn make_result_ok(value: Value) -> Value {
 /// `message` on type `string`" — while native, which builds a real `IoError`,
 /// was fine (#863). The outer tag was wrong too: `Err` is variant 1, not 0.
 fn make_result_err(msg: &str) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![Value::Enum {
-            name: "IoError".to_string(),
-            variant: "Other".to_string(),
-            fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
-            // NotFound(0) PermissionDenied(1) AlreadyExists(2) BrokenPipe(3)
-            // ConnectionReset(4) TimedOut(5) UnexpectedEof(6) Other(7) Cancelled(8)
-            variant_index: 7,
-            origin: None,
-        }],
-        variant_index: 1, origin: None,
-    }
+    Value::err(Value::stdlib_enum(
+        "IoError",
+        "Other",
+        vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
+    ))
 }
 
 fn is_cancelled(e: &std::io::Error) -> bool {
     e.get_ref().is_some_and(|inner| inner.is::<Cancelled>())
-}
-
-/// `IoError` for a failed socket call, `Cancelled` when a cancel ended it.
-fn io_err(e: &std::io::Error) -> Value {
-    if !is_cancelled(e) {
-        return make_result_err(&e.to_string());
-    }
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![Value::Enum {
-            name: "IoError".to_string(),
-            variant: "Cancelled".to_string(),
-            fields: vec![],
-            variant_index: 8,
-            origin: None,
-        }],
-        variant_index: 1, origin: None,
-    }
 }
 
 #[derive(Debug)]
@@ -136,6 +103,17 @@ impl Interpreter {
                     std::io::Error::from_raw_os_error(code as i32).to_string(),
                 )))
             }),
+            "rask_net_resolves" => self.expect_string(args, 0).map(|a| Value::Bool(udp_resolve(&a).is_some())),
+            "rask_net_udp_bind"
+            | "rask_net_udp_send_to"
+            | "rask_net_udp_receive"
+            | "rask_net_udp_try_receive"
+            | "rask_net_local_addr"
+            | "rask_net_close"
+                if symbol == "rask_net_udp_bind" || matches!(args.first(), Some(Value::UdpSocket(_))) =>
+            {
+                self.call_udp_native(symbol, args)
+            }
             "rask_net_read_some" => {
                 let Some(Value::TcpConnection(stream)) = args.first() else {
                     return Some(Err(RuntimeError::TypeError(
@@ -159,23 +137,11 @@ impl Interpreter {
                         buf.truncate(n);
                         let bytes: Vec<Value> =
                             buf.into_iter().map(|b| Value::Int(b as i64, crate::value::IntKind::U8)).collect();
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![Value::vec(bytes)],
-                            variant_index: 0,
-                            origin: None,
-                        })
+                        Ok(Value::some(Value::vec(bytes)))
                     }
                     Err(e) => {
                         set_last_os_error(&e);
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 1,
-                            origin: None,
-                        })
+                        Ok(Value::none())
                     }
                 }
             }
@@ -437,111 +403,109 @@ fn sockaddr_of(sa: &std::net::SocketAddr) -> (libc::c_int, libc::sockaddr_storag
     }
 }
 
-/// The same address rules `net.check_addr` applies in stdlib/net.rk, so both
-/// backends reject the same strings with the same message.
-///
-/// The interpreter can't run the Rask body: it ends in
-/// `IoError.last_os_error()`, which calls into the C runtime. So the rules live
-/// in two places and this is the copy — keep it in step with the Rask one
-/// (#863).
-fn check_addr(addr: &str) -> Option<&'static str> {
-    let Some(at) = addr.rfind(':') else {
-        return Some("invalid socket address");
-    };
-    if at == 0 {
-        return Some("invalid socket address");
+/// What a failed `bind`/`connect` hands back: `Unresolved` when the address
+/// never became a socket address (no errno, native's -2), else `Failed` with
+/// the error recorded for `IoError.last_os_error()` (native's -1).
+fn failed_socket<T>(e: &std::io::Error) -> Socket<T> {
+    if e.raw_os_error().is_none() && !is_cancelled(e) {
+        return Socket::Unresolved;
     }
-    if addr[at + 1..].parse::<u16>().is_err() {
-        return Some("invalid port value");
-    }
-    None
-}
-
-/// An `io::Error` with no OS error code never became a socket address at all —
-/// that's a resolution failure, which native reports as -2 rather than through
-/// errno. Anything with an errno is a real syscall failure and keeps Rust's
-/// wording, which matches `IoError.last_os_error()`.
-fn net_error(addr: &str, e: &std::io::Error) -> String {
-    if e.raw_os_error().is_none() {
-        return format!("could not resolve {}", addr);
-    }
-    e.to_string()
+    set_last_os_error(e);
+    Socket::Failed
 }
 
 impl Interpreter {
-    /// Handle net module methods.
+    /// The raw seams under `net`'s module functions. `tcp_listen`,
+    /// `tcp_connect` and the address check are the Rask bodies in net.rk over
+    /// these; the Rust copies here used to win, with the check kept in step by
+    /// hand (#1562).
     pub(crate) fn call_net_method(
         &mut self,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "tcp_listen" => {
+            // `rask_net_tcp_listen`
+            "listen_handle" => {
                 let addr = self.expect_string(&args, 0)?;
-                if let Some(why) = check_addr(&addr) {
-                    return Ok(make_result_err(why));
+                let socket = match std::net::TcpListener::bind(&addr) {
+                    Ok(listener) => Socket::Open(listener),
+                    Err(e) => failed_socket(&e),
+                };
+                let open = socket.is_open();
+                let arc = Arc::new(Mutex::new(socket));
+                if open {
+                    let ptr = Arc::as_ptr(&arc) as usize;
+                    self.resource_tracker.register_file(ptr, self.env.scope_depth());
                 }
-                match std::net::TcpListener::bind(&addr) {
-                    Ok(listener) => {
-                        let arc = Arc::new(Mutex::new(Some(listener)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker
-                            .register_file(ptr, self.env.scope_depth());
-                        Ok(make_result_ok(Value::TcpListener(arc)))
-                    }
-                    Err(e) => Ok(make_result_err(&net_error(&addr, &e))),
-                }
+                Ok(Value::TcpListener(arc))
             }
-            "tcp_connect" => {
+            // `rask_net_tcp_connect`
+            "connect_handle" => {
                 let addr = self.expect_string(&args, 0)?;
-                if let Some(why) = check_addr(&addr) {
-                    return Ok(make_result_err(why));
+                let socket = match connect_cancellable(&addr) {
+                    Ok(stream) => Socket::Open(stream),
+                    Err(e) => failed_socket(&e),
+                };
+                let open = socket.is_open();
+                let arc = Arc::new(Mutex::new(socket));
+                if open {
+                    let ptr = Arc::as_ptr(&arc) as usize;
+                    self.resource_tracker.register_file(ptr, self.env.scope_depth());
                 }
-                match connect_cancellable(&addr) {
-                    Ok(stream) => {
-                        let arc = Arc::new(Mutex::new(Some(stream)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker
-                            .register_file(ptr, self.env.scope_depth());
-                        Ok(make_result_ok(Value::TcpConnection(arc)))
-                    }
-                    Err(e) if is_cancelled(&e) => Ok(io_err(&e)),
-                    Err(e) => Ok(make_result_err(&net_error(&addr, &e))),
-                }
+                Ok(Value::TcpConnection(arc))
             }
-            _ => Err(RuntimeError::NoSuchMethod {
-                ty: "net".to_string(),
-                method: method.to_string(),
-            }),
+            _ => {
+                // A bodiless `@native` in net.rk (`udp_bind_handle`).
+                if let Some(symbol) = Self::stdlib_native_symbol("net", method) {
+                    if let Some(result) = self.call_native_symbol(&symbol, &args) {
+                        return result;
+                    }
+                }
+                Err(RuntimeError::NoSuchMethod {
+                    ty: "net".to_string(),
+                    method: method.to_string(),
+                })
+            }
         }
     }
 
     /// Handle TcpListener instance methods.
     pub(crate) fn call_tcp_listener_method(
         &mut self,
-        listener: &Arc<Mutex<Option<std::net::TcpListener>>>,
+        listener: &Arc<Mutex<Socket<std::net::TcpListener>>>,
         method: &str,
         _args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "accept" => {
+            // `rask_net_tcp_accept`: the connection, or one with no socket
+            // behind it and the OS error recorded. `accept` is the Rask body
+            // in net.rk that turns the second into an `IoError` (#1562).
+            "accept_handle" => {
                 let guard = listener.lock().unwrap();
                 let l = guard.as_ref().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpListener".to_string(), operation: "accept on".to_string() }
                 })?;
                 match accept_cancellable(l) {
                     Ok(stream) => {
-                        let arc = Arc::new(Mutex::new(Some(stream)));
+                        let arc = Arc::new(Mutex::new(Socket::Open(stream)));
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker
                             .register_file(ptr, self.env.scope_depth());
-                        Ok(make_result_ok(Value::TcpConnection(arc)))
+                        Ok(Value::TcpConnection(arc))
                     }
-                    Err(e) => Ok(io_err(&e)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::TcpConnection(Arc::new(Mutex::new(Socket::Failed))))
+                    }
                 }
             }
+            // `rask_net_is_invalid` / `rask_net_is_unresolved`: what a failed
+            // seam handed back.
+            "is_invalid" => Ok(Value::Bool(matches!(*listener.lock().unwrap(), Socket::Failed))),
+            "is_unresolved" => Ok(Value::Bool(matches!(*listener.lock().unwrap(), Socket::Unresolved))),
             "close" => {
-                if listener.lock().unwrap().is_none() {
+                if !listener.lock().unwrap().is_open() {
                     return Ok(make_result_ok(Value::Unit));
                 }
                 let ptr = Arc::as_ptr(listener) as usize;
@@ -574,26 +538,21 @@ impl Interpreter {
     /// Handle TcpConnection instance methods.
     pub(crate) fn call_tcp_stream_method(
         &mut self,
-        stream: &Arc<Mutex<Option<std::net::TcpStream>>>,
+        stream: &Arc<Mutex<Socket<std::net::TcpStream>>>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "read_text" => {
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
-                })?;
-                let mut bytes = Vec::new();
-                match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut bytes)) {
-                    Ok(_) => match String::from_utf8(bytes) {
-                        Ok(buf) => Ok(make_result_ok(Value::String(Arc::new(Mutex::new(buf))))),
-                        Err(_) => Ok(make_result_err("stream did not contain valid UTF-8")),
-                    },
-                    Err(e) => Ok(io_err(&e)),
-                }
-            }
-            "read_bytes" => {
+            // `rask_net_is_invalid`: a failed syscall's handle, which is what
+            // `accept_handle` hands back when the accept fails.
+            "is_invalid" => Ok(Value::Bool(matches!(*stream.lock().unwrap(), Socket::Failed))),
+            "is_unresolved" => Ok(Value::Bool(matches!(*stream.lock().unwrap(), Socket::Unresolved))),
+            // `rask_net_read_bytes` / `rask_net_write_bytes`: the bytes or
+            // `none`, a count or -1, with the OS error recorded. `read_bytes`,
+            // `write_bytes`, `read_text` and `write_text` are the Rask bodies
+            // in net.rk over these; their Rust copies here used to win, and a
+            // failure came back as `Err(<a string>)` (#1562).
+            "read_bytes_raw" => {
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
@@ -602,23 +561,15 @@ impl Interpreter {
                 match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut buf)) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
-                        Ok(make_result_ok(Value::vec(bytes)))
+                        Ok(Value::some(Value::vec(bytes)))
                     }
-                    Err(e) => Ok(io_err(&e)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::none())
+                    }
                 }
             }
-            "write_text" => {
-                let data = self.expect_string(&args, 0)?;
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
-                })?;
-                match Cancellable::new(s).and_then(|mut c| c.write_all(data.as_bytes()).and_then(|_| c.flush())) {
-                    Ok(()) => Ok(make_result_ok(Value::Unit)),
-                    Err(e) => Ok(io_err(&e)),
-                }
-            }
-            "write_bytes" => {
+            "write_bytes_raw" => {
                 let bytes: Vec<u8> = match args.first() {
                     Some(Value::Vec(v)) => v.lock().unwrap().iter().map(|val| match val {
                         Value::Int(n, _) => *n as u8,
@@ -634,8 +585,11 @@ impl Interpreter {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
                 })?;
                 match Cancellable::new(s).and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
-                    Ok(()) => Ok(make_result_ok(Value::Unit)),
-                    Err(e) => Ok(io_err(&e)),
+                    Ok(()) => Ok(Value::int(bytes.len() as i64)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::int(-1))
+                    }
                 }
             }
             "remote_addr" => {
@@ -649,7 +603,7 @@ impl Interpreter {
                 }
             }
             "close" => {
-                if stream.lock().unwrap().is_none() {
+                if !stream.lock().unwrap().is_open() {
                     return Ok(make_result_ok(Value::Unit));
                 }
                 let ptr = Arc::as_ptr(stream) as usize;
@@ -669,4 +623,168 @@ impl Interpreter {
         }
     }
 
+}
+
+// ─── UDP ─────────────────────────────────────────────────────
+//
+// The same natives as native's runtime.c, so stdlib/net.rk's Rask bodies run
+// unchanged on both backends: -1 with the error left for
+// `IoError.last_os_error()`, -2 for an address that names nothing.
+
+/// The first IPv4 address `addr` names, the way native's `getaddrinfo` with
+/// AF_INET picks one. `ToSocketAddrs` alone would take `::1` for localhost.
+fn udp_resolve(addr: &str) -> Option<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs().ok()?.find(|a| a.is_ipv4())
+}
+
+fn udp_bytes(v: Option<&Value>) -> Vec<u8> {
+    match v {
+        Some(Value::Vec(v)) => v
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|val| match val {
+                Value::Int(n, _) => *n as u8,
+                _ => 0,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn some(v: Value) -> Value {
+    Value::Enum { name: "Option".to_string(), variant: "Some".to_string(), fields: vec![v], variant_index: 0, origin: None }
+}
+
+fn none() -> Value {
+    Value::Enum { name: "Option".to_string(), variant: "None".to_string(), fields: vec![], variant_index: 1, origin: None }
+}
+
+/// One datagram, waiting in a task the way a cancel can interrupt.
+fn udp_recv(sock: &std::net::UdpSocket, buf: &mut [u8]) -> std::io::Result<(usize, std::net::SocketAddr)> {
+    use std::os::fd::AsRawFd;
+    let Some(token) = crate::value::current_cancel() else {
+        return sock.recv_from(buf);
+    };
+    sock.set_nonblocking(true)?;
+    let result = loop {
+        match sock.recv_from(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => match wait_ready(sock.as_raw_fd(), false, &token) {
+                Ok(true) => break Err(std::io::Error::other(Cancelled)),
+                Ok(false) => continue,
+                Err(e) => break Err(e),
+            },
+            other => break other,
+        }
+    };
+    let _ = sock.set_nonblocking(false);
+    result
+}
+
+impl Interpreter {
+    fn call_udp_native(&mut self, symbol: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+        use crate::value::{IntKind, UdpHandle};
+        let int = |n: i64| Value::Int(n, IntKind::I64);
+        if symbol == "rask_net_udp_bind" {
+            let addr = self.expect_string(args, 0)?;
+            let bound = match udp_resolve(&addr) {
+                Some(sa) => std::net::UdpSocket::bind(sa),
+                None => Err(std::io::Error::from_raw_os_error(libc::EADDRNOTAVAIL)),
+            };
+            return Ok(match bound {
+                Ok(sock) => {
+                    let arc = Arc::new(Mutex::new(UdpHandle::Open(sock)));
+                    let ptr = Arc::as_ptr(&arc) as usize;
+                    self.resource_tracker.register_file(ptr, self.env.scope_depth());
+                    some(Value::UdpSocket(arc))
+                }
+                Err(e) => {
+                    set_last_os_error(&e);
+                    none()
+                }
+            });
+        }
+        let Some(Value::UdpSocket(sock)) = args.first() else {
+            return Err(RuntimeError::TypeError(format!("{symbol}: expected a UdpSocket")));
+        };
+        let closed = || RuntimeError::ResourceClosed {
+            resource_type: "UdpSocket".to_string(),
+            operation: "use".to_string(),
+        };
+        match symbol {
+            "rask_net_local_addr" => {
+                let guard = sock.lock().unwrap();
+                let UdpHandle::Open(s) = &*guard else { return Err(closed()) };
+                let text = s.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+                Ok(Value::String(Arc::new(Mutex::new(text))))
+            }
+            "rask_net_close" => {
+                if !matches!(&*sock.lock().unwrap(), UdpHandle::Open(_)) {
+                    return Ok(make_result_ok(Value::Unit));
+                }
+                let ptr = Arc::as_ptr(sock) as usize;
+                if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
+                    self.resource_tracker.mark_consumed(id).map_err(RuntimeError::Panic)?;
+                }
+                *sock.lock().unwrap() = UdpHandle::Closed;
+                Ok(make_result_ok(Value::Unit))
+            }
+            "rask_net_udp_send_to" => {
+                let data = udp_bytes(args.get(1));
+                let addr = self.expect_string(args, 2)?;
+                let Some(sa) = udp_resolve(&addr) else { return Ok(int(-2)) };
+                let guard = sock.lock().unwrap();
+                let UdpHandle::Open(s) = &*guard else { return Err(closed()) };
+                match s.send_to(&data, sa) {
+                    Ok(_) => Ok(int(0)),
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(int(-1))
+                    }
+                }
+            }
+            "rask_net_udp_receive" | "rask_net_udp_try_receive" => {
+                // A clone to wait on, so a close from another task isn't
+                // held off by this lock.
+                let s = match &*sock.lock().unwrap() {
+                    UdpHandle::Open(s) => s.try_clone(),
+                    _ => return Err(closed()),
+                };
+                let mut buf = vec![0u8; 65536];
+                let received = if symbol == "rask_net_udp_try_receive" {
+                    // Nothing waiting is an empty Vec, as runtime.c says it.
+                    match s.and_then(|s| s.set_nonblocking(true).and_then(|_| s.recv_from(&mut buf))) {
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            return Ok(some(Value::vec(Vec::new())));
+                        }
+                        other => other,
+                    }
+                } else {
+                    s.and_then(|s| udp_recv(&s, &mut buf))
+                };
+                match received {
+                    Ok((n, from)) => {
+                        // [payload][sender][sender's length], as runtime.c
+                        // hands it to net.rk.
+                        let from = from.to_string();
+                        buf.truncate(n);
+                        buf.extend_from_slice(from.as_bytes());
+                        buf.push(from.len() as u8);
+                        let bytes = buf.into_iter().map(|b| Value::Int(b as i64, IntKind::U8)).collect();
+                        Ok(some(Value::vec(bytes)))
+                    }
+                    Err(e) => {
+                        if is_cancelled(&e) {
+                            set_last_os_error(&std::io::Error::from_raw_os_error(libc::ECANCELED));
+                        } else {
+                            set_last_os_error(&e);
+                        }
+                        Ok(none())
+                    }
+                }
+            }
+            _ => Err(RuntimeError::TypeError(format!("UdpSocket has no native `{symbol}`"))),
+        }
+    }
 }

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A position or a count passed to a `Vec` or `string` method takes any integer
+// type (std.collections/V8).
+//
+// Which parameters count was a list of method names in the checker. `char_at`
+// and `byte_at` weren't on it, and once string method arguments were checked
+// at all (#1561), `s.char_at(i)` with an `i64` became a compile error. The
+// parameters are now read off each method's declaration.
+
+func string_positions() -> string {
+    let s = "hello"
+    let wide: i64 = 1
+    let narrow: i32 = 4
+    let c = s.char_at(wide) ?? '?'
+    let d = s.char_at(narrow) ?? '?'
+    let b = s.byte_at(wide) ?? 0
+    return "{c}{d}{b}"
+}
+
+func vec_positions() -> i64 {
+    mut v: Vec<i64> = Vec.from([10, 20, 30, 40])
+    let narrow: i32 = 1
+    let unsigned: usize = 2
+    let a = v.get(narrow) ?? -1
+    let b = v.get_clone(unsigned) ?? -1
+    let taken = v.remove_unordered(narrow)
+    return a + b + taken + v.len().wrap<i64>()
+}
+
+test "string positions take any integer" {
+    assert string_positions() == "eo101"
+}
+
+test "vec positions take any integer" {
+    assert vec_positions() == 20 + 30 + 20 + 3
+}
+
+func main() {}

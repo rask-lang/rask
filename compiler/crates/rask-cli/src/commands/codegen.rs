@@ -2,20 +2,10 @@
 //! Code generation commands: mono, mir, compile.
 
 use colored::Colorize;
-use rask_mono::MonoProgram;
 use std::path::{Path, PathBuf};
 use std::process;
 
 use crate::{output, Format};
-
-type PipelineResult = (
-    MonoProgram,
-    rask_types::TypedProgram,
-    Vec<rask_ast::decl::Decl>,
-    std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta>,
-    Option<String>,
-    Vec<String>,
-);
 
 /// Run the full front-end pipeline + monomorphize + comptime eval via
 /// rask-compiler. Exits on error (including comptime hard errors, which are
@@ -24,7 +14,7 @@ type PipelineResult = (
 /// `cfg` is the build's, not the host's: `comptime if cfg.os` is decided in
 /// here, so a cfg built afterwards for codegen came too late and every
 /// cross-compile took the host's branch (#1315).
-fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> PipelineResult {
+fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> (rask_compiler::CompileResult, Option<String>) {
     let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
     let output = rask_compiler::compile_file(path, &config);
 
@@ -51,35 +41,16 @@ fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> P
         process::exit(1);
     }
 
-    let result = output.result.unwrap();
     let source = std::fs::read_to_string(path).ok();
-    let package_names = vec![]; // package_modules is in CompileResult but not as names
-    (result.mono, result.typed, result.decls, result.comptime_globals, source, package_names)
+    (output.result.unwrap(), source)
 }
 
-
-/// Surface comptime hard-error diagnostics and abort. For the test/bench paths
-/// that build their own monomorphized program and call
-/// `rask_compiler::evaluate_comptime_globals` directly (the compile/build paths
-/// get these through the normal pipeline diagnostics instead).
-pub(crate) fn exit_on_comptime_errors(
-    diags: &[rask_diagnostics::Diagnostic],
-    source_files: &[(std::path::PathBuf, String)],
-) {
-    if diags.is_empty() {
-        return;
-    }
-    for d in diags {
-        crate::show_diagnostic_multi(d, source_files);
-    }
-    eprintln!("{}", output::banner_fail("Comptime", diags.len()));
-    process::exit(1);
-}
 
 /// Dump monomorphization output for a single file.
 pub fn cmd_mono(path: &str, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let (mono, _typed, _decls, _comptime_globals, _source, _package_names) = run_pipeline(path, format, &cfg);
+    let (result, _source) = run_pipeline(path, format, &cfg);
+    let mono = result.mono;
 
     if format == Format::Human {
         println!(
@@ -190,180 +161,50 @@ pub fn cmd_mono(path: &str, format: Format) {
 /// Dump MIR for a single file.
 pub fn cmd_mir(path: &str, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let (mono, typed, decls, comptime_globals, source, _package_names) = run_pipeline(path, format, &cfg);
-
-    // Lower each monomorphized function to MIR
+    let (result, source) = run_pipeline(path, format, &cfg);
+    let functions = lower_or_exit(&result, path, source.as_deref());
     if format == Format::Human {
         println!(
-            "{} MIR ({} function{}, {} struct layout{}, {} enum layout{}) {}\n",
+            "{} MIR ({} function{}) {}\n",
             "===".dimmed(),
-            mono.functions.len(),
-            if mono.functions.len() == 1 { "" } else { "s" },
-            mono.struct_layouts.len(),
-            if mono.struct_layouts.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            mono.enum_layouts.len(),
-            if mono.enum_layouts.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
+            functions.len(),
+            if functions.len() == 1 { "" } else { "s" },
             "===".dimmed()
         );
-    }
-
-    // Collect all monomorphized function bodies + extern decls for signature table.
-    // Patch FnDecl names to use the qualified monomorphized name (e.g. "GameState_new"
-    // instead of bare "new") so func_sigs maps them correctly.
-    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
-        let mut decl = f.body.clone();
-        if let rask_ast::decl::DeclKind::Fn(ref mut fn_decl) = decl.kind {
-            fn_decl.name = f.name.clone();
+        for func in &functions {
+            println!("{}", func);
         }
-        decl
-    }).collect();
-    all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
-    let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
-    let line_map = source.as_deref().map(rask_ast::LineMap::new);
-    let type_names: std::collections::HashMap<rask_types::TypeId, String> =
-        typed.types.type_name_map();
-    let interface_methods = super::compile::build_interface_methods(&typed);
-    let mut mir_interp = rask_comptime::ComptimeInterpreter::new();
-    mir_interp.inject_cfg(&cfg);
-    mir_interp.register_functions(&decls);
-    let nominal_underlying = super::compile::build_nominal_underlying(&typed);
-    // Instantiated generic bodies have nodes the checker never saw; mono
-    // carried its records onto them. Lowering wants one map for both.
-    let records = mono.node_records(&typed);
-    let mut mir_ctx = rask_mir::lower::MirContext::new(
-        &typed,
-        &mono.struct_layouts,
-        &mono.enum_layouts,
-        &records,
-        &type_names,
-    )
-        .with_comptime_globals(&comptime_globals)
-        .with_extern_funcs(&extern_funcs)
-        .with_interface_methods(interface_methods)
-        .with_mono_calls(&mono)
-        .with_nominal_underlying(&nominal_underlying);
-    mir_ctx.line_map = line_map.as_ref();
-    mir_ctx.source_file = Some(path);
-    mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
-
-    rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
-
-    let mut mir_errors = 0;
-    for mono_fn in &mono.functions {
-        // Skip empty-body stdlib stubs (same filter as compile path).
-        if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
-            if f.body.is_empty()
-                && rask_stdlib::mir_metadata::lookup(&mono_fn.name).is_some()
-            {
-                continue;
-            }
-        }
-        match rask_mir::lower::MirLowerer::lower_function_named(&mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)) {
-            Ok(mir_fns) => {
-                if format == Format::Human {
-                    for mir_fn in &mir_fns {
-                        println!("{}", mir_fn);
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "{}: lowering function '{}': {:?}",
-                    output::error_label(),
-                    mono_fn.name,
-                    e
-                );
-                mir_errors += 1;
-            }
-        }
-    }
-
-    if format == Format::Human {
         println!();
-        if mir_errors == 0 {
-            println!("{}", output::banner_ok("MIR lowering"));
-        } else {
-            eprintln!("{}", output::banner_fail("MIR lowering", mir_errors));
-            process::exit(1);
-        }
+        println!("{}", output::banner_ok("MIR lowering"));
     }
 }
 
-/// Dump MIR for a .rk file — runs the full pipeline up to MIR lowering
-/// and prints the MIR functions to stderr. Used for debugging codegen issues.
+/// Dump MIR for a .rk file to stderr — the MIR codegen sees, after every pass.
+/// Used for debugging codegen issues.
 pub fn cmd_dump_mir(path: &str, format: Format, release: bool, target: Option<&str>) {
     let cfg = target_cfg_or_exit(target, release);
-    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format, &cfg);
-    let type_names = super::compile::build_type_names(&typed);
-    let interface_methods = super::compile::build_interface_methods(&typed);
-    let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
-    let line_map = source.as_deref().map(rask_ast::LineMap::new);
-    let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
-
-    let nominal_underlying = super::compile::build_nominal_underlying(&typed);
-    // Instantiated generic bodies have nodes the checker never saw; mono
-    // carried its records onto them. Lowering wants one map for both.
-    let records = mono.node_records(&typed);
-    let mut mir_ctx = rask_mir::lower::MirContext::new(
-        &typed,
-        &mono.struct_layouts,
-        &mono.enum_layouts,
-        &records,
-        &type_names,
-    )
-        .with_comptime_globals(&comptime_globals)
-        .with_extern_funcs(&extern_funcs)
-        .with_package_modules(&package_modules)
-        .with_interface_methods(interface_methods.clone())
-        .with_mono_calls(&mono)
-        .with_nominal_underlying(&nominal_underlying);
-    mir_ctx.line_map = line_map.as_ref();
-    mir_ctx.source_file = Some(path);
-
-    let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
-    rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
-    let mut mir_functions = Vec::new();
-    for mono_fn in &mono.functions {
-        if let rask_ast::decl::DeclKind::Fn(f) = &mono_fn.body.kind {
-            if f.body.is_empty()
-                && rask_stdlib::mir_metadata::lookup(&mono_fn.name).is_some()
-            {
-                continue;
-            }
-        }
-        match rask_mir::lower::MirLowerer::lower_function_named(
-            &mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)
-        ) {
-            Ok(mir_fns) => mir_functions.extend(mir_fns),
-            Err(e) => {
-                eprintln!("{}: MIR lowering '{}': {:?}", output::error_label(), mono_fn.name, e);
-            }
-        }
-    }
-
-    // Run what compile runs, so the dump is the MIR codegen sees. Printing the
-    // raw lowering output hid every bug that lives in a pass: refcount
-    // insertion, inlining, bounds-check elimination and generation coalescing
-    // are all invisible before this point.
-    rask_mir::transform::addr_taken::run_all(&mut mir_functions);
-    for func in &mut mir_functions {
-        rask_mir::transform::ssa::construct(func);
-    }
-    let _ = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
-    for func in &mut mir_functions {
-        rask_mir::transform::ssa::destruct(func);
-    }
-
-    for func in &mir_functions {
+    let (result, source) = run_pipeline(path, format, &cfg);
+    for func in &lower_or_exit(&result, path, source.as_deref()) {
         eprintln!("{}", func);
+    }
+}
+
+/// MIR after the passes, or exit with what stopped it.
+fn lower_or_exit(
+    result: &rask_compiler::CompileResult,
+    path: &str,
+    source: Option<&str>,
+) -> Vec<rask_mir::MirFunction> {
+    let input = rask_compiler::emit::BackEnd::of(result, Some(path), source);
+    match rask_compiler::emit::lower(&input, &rask_compiler::emit::Entry::Main) {
+        Ok(lowered) => lowered.functions,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{}: {}", output::error_label(), e);
+            }
+            eprintln!("{}", output::banner_fail("MIR lowering", errors.len()));
+            process::exit(1);
+        }
     }
 }
 
@@ -387,8 +228,8 @@ fn target_cfg_or_exit(target: Option<&str>, release: bool) -> rask_comptime::Cfg
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
 pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool, target: Option<&str>) {
     let cfg = target_cfg_or_exit(target, release);
-    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format, &cfg);
-    let build_mode = if release { rask_codegen::BuildMode::Release } else { rask_codegen::BuildMode::Debug };
+    let (result, source) = run_pipeline(path, format, &cfg);
+    let build_mode = if release { rask_compiler::emit::BuildMode::Release } else { rask_compiler::emit::BuildMode::Debug };
 
     // Determine output paths
     let bin_path = match output_path {
@@ -415,11 +256,9 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     };
     let obj_path = format!("{}.o", bin_path);
 
-    let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
-    if let Err(errors) = super::compile::compile_to_object(
-        &mono, &typed, &decls, &comptime_globals,
-        Some(path), source.as_deref(), target, &obj_path, build_mode, Some(&cfg),
-        &package_modules,
+    let input = rask_compiler::emit::BackEnd::of(&result, Some(path), source.as_deref());
+    if let Err(errors) = super::compile::emit_object(
+        &input, &rask_compiler::emit::Entry::Main, target, build_mode, &obj_path,
     ) {
         for e in &errors {
             eprintln!("{}: {}", output::error_label(), e);
@@ -437,82 +276,4 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     if format == Format::Human && !quiet {
         eprintln!("{}", output::banner_ok(&format!("Compiled → {}", bin_path)));
     }
-}
-
-/// Extract the names of all `extern "C"` functions from parsed declarations
-/// and C import namespaces.
-pub fn collect_extern_func_names(
-    decls: &[rask_ast::decl::Decl],
-    symbols: &rask_resolve::SymbolTable,
-) -> std::collections::HashSet<String> {
-    let mut names: std::collections::HashSet<String> = decls.iter().filter_map(|d| {
-        if let rask_ast::decl::DeclKind::Extern(e) = &d.kind {
-            Some(e.name.clone())
-        } else {
-            None
-        }
-    }).collect();
-
-    // Add functions from C import namespaces
-    for sym in symbols.iter() {
-        if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
-            for (_, &member_id) in members {
-                if let Some(member) = symbols.get(member_id) {
-                    if let rask_resolve::SymbolKind::ExternFunction { abi, .. } = &member.kind {
-                        if abi == "C" {
-                            names.insert(member.name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    names
-}
-
-/// Extract extern function signatures from C import namespaces in the symbol table.
-pub fn collect_c_import_extern_sigs(
-    symbols: &rask_resolve::SymbolTable,
-) -> Vec<rask_codegen::ExternFuncSig> {
-    let mut sigs = Vec::new();
-    for sym in symbols.iter() {
-        if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
-            // The header's struct types register under the qualified spelling —
-            // `c.Rect` — because that is how a program writes them. A parameter
-            // declared as one arrives here bare, so it wouldn't find the layout
-            // that says how to pass it (#948).
-            let structs: std::collections::HashSet<&str> = members
-                .iter()
-                .filter(|(_, &id)| {
-                    symbols
-                        .get(id)
-                        .is_some_and(|m| matches!(m.kind, rask_resolve::SymbolKind::Struct { .. }))
-                })
-                .map(|(name, _)| name.as_str())
-                .collect();
-            let qualify = |ty: &rask_ast::ty::TypeExpr| match ty.bare_name() {
-                Some(name) if structs.contains(name) => rask_ast::ty::TypeExpr::Named {
-                    path: vec![sym.name.clone(), name.to_string()],
-                    args: Vec::new(),
-                },
-                _ => ty.clone(),
-            };
-
-            for (_, &member_id) in members {
-                if let Some(member) = symbols.get(member_id) {
-                    if let rask_resolve::SymbolKind::ExternFunction { abi, params, ret_ty } = &member.kind {
-                        if abi == "C" {
-                            sigs.push(rask_codegen::ExternFuncSig {
-                                name: member.name.clone(),
-                                param_types: params.iter().map(qualify).collect(),
-                                ret_ty: ret_ty.as_ref().map(qualify),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    sigs
 }

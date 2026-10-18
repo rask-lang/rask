@@ -10,12 +10,8 @@
 // inside it. `rask_shared_free` had existed all along with nothing calling it,
 // the same way `rask_rack_free` and `rask_pool_free` had before #1048.
 //
-// This file is on `known_leaks.txt` for `s.clone()`, which is deliberately not
-// a registered constructor: `clone_elision` may leave the caller's own Shared in
-// the slot, and freeing that is a double free rather than a smaller leak. The
-// count is what checks the rest — a regression that stopped freeing any of
-// these would push it back up, and one that started freeing a Shared twice would
-// abort the run.
+// A clone is one more handle, and it gives its reference back like the
+// original does: `s.clone()` leaked one until each strategy's clone dropped.
 
 import sync.Shared
 

@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Clone elision turns a clone into a move only when the clone runs no code the
+// program wrote (comp.clone-elision CE3).
+//
+// It used to decide by name: any one-argument call ending in `_clone` whose
+// source was dead afterwards became a plain copy. A program's `make_clone(s)`
+// was deleted, side effects and all, and handed back its argument (#1557).
+
+struct Counted {
+    public n: i64
+}
+
+extend Counted {
+    func clone(self) -> Counted {
+        return Counted(n: self.n + 100)
+    }
+}
+
+struct Holder {
+    public inner: Counted
+    public tag: string
+}
+
+func make_clone(s: string) -> string {
+    return "{s}{s}"
+}
+
+func doubled() -> string {
+    let a = "ab"
+    let b = make_clone(a)
+    return b
+}
+
+func cloned_counted() -> i64 {
+    let a = Counted(n: 5)
+    let b = a.clone()
+    return b.n
+}
+
+func cloned_holder() -> i64 {
+    let h = Holder(inner: Counted(n: 7), tag: "t")
+    let k = h.clone()
+    return k.inner.n
+}
+
+func cloned_vec() -> usize {
+    let v: Vec<i64> = Vec.from([1, 2, 3])
+    let w = v.clone()
+    return w.len()
+}
+
+test "a function named like a clone is called" {
+    assert doubled() == "abab"
+}
+
+test "a clone the program wrote runs, directly and through a derived one" {
+    assert cloned_counted() == 105
+    assert cloned_holder() == 107
+}
+
+test "a compiler-provided clone still clones" {
+    assert cloned_vec() == 3
+}
+
+func main() {}

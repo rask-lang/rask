@@ -227,26 +227,6 @@ fn raw_i64(val: &Value) -> Option<i64> {
     }
 }
 
-fn some(val: Value) -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "Some".to_string(),
-        fields: vec![val],
-        variant_index: 0,
-        origin: None,
-    }
-}
-
-fn none() -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "None".to_string(),
-        fields: vec![],
-        variant_index: 1,
-        origin: None,
-    }
-}
-
 fn not_int(target: &str) -> RuntimeError {
     RuntimeError::TypeError(format!("conversion target `{}` is not an integer type", target))
 }
@@ -272,48 +252,20 @@ enum Rounding {
     Up,
 }
 
-/// `ConvertError`'s variants, in declaration order — `stdlib/builtins.rk`.
-const CONVERT_ERR_OUT_OF_RANGE: u32 = 0;
-const CONVERT_ERR_NOT_EXACT: u32 = 1;
-const CONVERT_ERR_NOT_FINITE: u32 = 2;
-
-fn ok(val: Value) -> Value {
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Ok".to_string(),
-        fields: vec![val],
-        variant_index: 0,
-        origin: None,
-    }
-}
-
-fn convert_err(variant: &str, index: u32) -> Value {
-    let payload = Value::Enum {
-        name: "ConvertError".to_string(),
-        variant: variant.to_string(),
-        fields: vec![],
-        variant_index: index,
-        origin: None,
-    };
-    Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![payload],
-        variant_index: 1,
-        origin: None,
-    }
+fn convert_err(variant: &str) -> Value {
+    Value::err(Value::stdlib_enum("ConvertError", variant, vec![]))
 }
 
 fn out_of_range() -> Value {
-    convert_err("OutOfRange", CONVERT_ERR_OUT_OF_RANGE)
+    convert_err("OutOfRange")
 }
 
 fn not_exact() -> Value {
-    convert_err("NotExact", CONVERT_ERR_NOT_EXACT)
+    convert_err("NotExact")
 }
 
 fn not_finite() -> Value {
-    convert_err("NotFinite", CONVERT_ERR_NOT_FINITE)
+    convert_err("NotFinite")
 }
 
 /// The float widths a conversion can target.
@@ -357,7 +309,7 @@ fn convert_exact(val: Value, target: &str) -> Result<Value, RuntimeError> {
         if !as_f64.is_nan() && narrowed != as_f64 {
             return Ok(not_exact());
         }
-        return Ok(ok(Value::Float(narrowed, fk)));
+        return Ok(Value::ok(Value::Float(narrowed, fk)));
     }
 
     let t = IntTarget::parse(target).ok_or_else(|| not_convertible(target))?;
@@ -420,19 +372,19 @@ fn float_to_int_checked(f: f64, t: IntTarget, mode: Rounding, exact_only: bool) 
     if rounded < min as f64 || above {
         return out_of_range();
     }
-    ok(t.store(rounded as i128))
+    Value::ok(t.store(rounded as i128))
 }
 
 /// An integer into an integer target, exactly or not at all.
 fn int_into(t: IntTarget, src: i128) -> Value {
     if let IntTarget::U128 = t {
-        return if src < 0 { out_of_range() } else { ok(Value::Uint128(src as u128)) };
+        return if src < 0 { out_of_range() } else { Value::ok(Value::Uint128(src as u128)) };
     }
     let (min, max) = t.bounds();
     if src < min || src > max {
         out_of_range()
     } else {
-        ok(t.store(src))
+        Value::ok(t.store(src))
     }
 }
 
@@ -493,10 +445,10 @@ fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
         format!("a checked conversion needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {
-        return Ok(if src < 0 { none() } else { some(Value::Uint128(src as u128)) });
+        return Ok(if src < 0 { Value::none() } else { Value::some(Value::Uint128(src as u128)) });
     }
     let (min, max) = t.bounds();
-    Ok(if src >= min && src <= max { some(t.store(src)) } else { none() })
+    Ok(if src >= min && src <= max { Value::some(t.store(src)) } else { Value::none() })
 }
 
 

@@ -248,6 +248,8 @@ pub struct Interpreter {
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape instead of unwrapping.
     pub(crate) fallback_keeps_shape: std::collections::HashSet<rask_ast::NodeId>,
+    /// ER9: `return` values that go to the error side (`TypedProgram::err_returns`).
+    pub(crate) err_returns: std::collections::HashSet<rask_ast::NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` propagates at the
     /// call and hands `.len()` the payload.
@@ -487,6 +489,7 @@ impl Interpreter {
             else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         }
@@ -528,6 +531,7 @@ impl Interpreter {
             else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             build_state: None,
             source_info: None,
             lent_args: None,
@@ -575,6 +579,7 @@ impl Interpreter {
             else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         };
@@ -681,6 +686,7 @@ impl Interpreter {
         self.try_chain_placement = typed.try_chain_placement.clone();
         self.else_binding_types = typed.else_binding_types.clone();
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
+        self.err_returns = typed.err_returns.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
         self.task_bound_closures = typed.task_bound_closures.clone();
@@ -850,6 +856,7 @@ impl Interpreter {
         child.try_chain_placement = self.try_chain_placement.clone();
         child.else_binding_types = self.else_binding_types.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        child.err_returns = self.err_returns.clone();
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
@@ -1307,30 +1314,12 @@ impl Interpreter {
     /// declared return type — without a `T or E` there's no error branch and
     /// every value is a success.
     fn main_error_return<'v>(ret_ty: Option<&TypeExpr>, value: &'v Value) -> Option<&'v Value> {
-        let (_, err) = call::result_sides(ret_ty?)?;
-        let err_arms = call::err_arms(err);
+        call::result_sides(ret_ty?)?;
         match value {
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 (variant == "Err").then(|| fields.first().unwrap_or(&Value::Unit))
             }
-            Value::Unit => None,
-            other => {
-                // A bare error value returned without a Result wrapper. It's
-                // the error branch when its type is named there — `void or Fail`
-                // returning a `Fail`, or one arm of a `A | B` union.
-                let name = match other {
-                    Value::Struct(s) => s.lock().unwrap().name.clone(),
-                    Value::Enum { name, .. } => {
-                        name.split('.').next().unwrap_or(name).to_string()
-                    }
-                    Value::Nominal { type_name, .. } => type_name.clone(),
-                    _ => return None,
-                };
-                err_arms
-                    .iter()
-                    .any(|e| e.to_string() == name)
-                    .then_some(other)
-            }
+            _ => None,
         }
     }
 
@@ -1368,11 +1357,24 @@ impl Interpreter {
             ))?;
 
         // If func build takes a parameter, pass ctx; otherwise call with no args
-        if build_fn.params.is_empty() {
-            self.call_function(&build_fn, vec![], None)
+        let value = if build_fn.params.is_empty() {
+            self.call_function(&build_fn, vec![], None)?
         } else {
-            self.call_function(&build_fn, vec![ctx_value], None)
+            self.call_function(&build_fn, vec![ctx_value], None)?
+        };
+        // An error `build` returns, by `try` or by `return`, is a failed
+        // build. It used to come back as an ordinary value and the build went
+        // on without whatever the script hadn't got to yet: a `try` on a
+        // missing directory skipped every `compile_c` after it, and the link
+        // then failed on symbols nobody had compiled.
+        if let Some(err) = Self::main_error_return(build_fn.ret_ty.as_ref(), &value) {
+            let msg = self.describe_error_value(err);
+            return Err(RuntimeDiagnostic::new(
+                RuntimeError::Generic(format!("build() returned an error: {msg}")),
+                build_fn.span,
+            ));
         }
+        Ok(value)
     }
 
     /// Take the build state after a build script finishes.

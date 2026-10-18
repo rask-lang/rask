@@ -14,6 +14,7 @@ import memory.Heap
 /// Whether the task, pooled job or thread running this has been asked to stop.
 /// Use in long-running loops.
 @native("rask_handle_cancelled")
+@ambient
 public func cancelled() -> bool {}
 
 // --- Handles ---
@@ -22,12 +23,14 @@ public func cancelled() -> bool {}
 /// `ThreadPool.spawn { … }`. Must be joined or detached; dropping one is a
 /// compile error.
 @resource
+@handle
 public struct Handle<T> {
 }
 
 extend Handle<T> {
     /// Wait for the result.
     @native("rask_handle_join")
+    @blocks
     public func join(take self) -> T or JoinError {}
 
     /// Let it run on without waiting.
@@ -37,6 +40,7 @@ extend Handle<T> {
     /// Ask it to stop, then wait. It stops only where it checks `cancelled()`,
     /// and whatever it returns then is the result.
     @native("rask_handle_cancel")
+    @ambient
     public func cancel(take self) -> T or JoinError {}
 }
 
@@ -134,15 +138,17 @@ extend Channel<T> {
     public func unbuffered() -> (Sender<T>, Receiver<T>) {}
 }
 
+@handle
 public struct Sender<T> { }
 
 extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
     @native("rask_channel_send_ptr")
+    @blocks
     public func send(self, take value: T) -> void or SendError {}
 
     /// Non-blocking send. Returns error if full or closed.
-    @native("rask_channel_try_send_i64")
+    @native("rask_channel_try_send_ptr")
     public func try_send(self, value: T) -> void or TrySendError {}
 
     /// Explicitly close this end. Consumes the sender: closing *is* dropping
@@ -153,11 +159,13 @@ extend Sender<T> {
     public func close(take self) -> void or CloseError {}
 }
 
+@handle
 public struct Receiver<T> { }
 
 extend Receiver<T> {
     /// Receive a value. Pauses/blocks if buffer empty.
-    @native("rask_channel_recv_i64")
+    @native("rask_channel_recv_into")
+    @blocks
     public func receive(self) -> T or ReceiveError {}
 
     /// Non-blocking receive. Returns error if empty or closed.

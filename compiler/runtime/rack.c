@@ -508,7 +508,8 @@ static void rack_describe(RaskRack *r, int64_t elem_size, int32_t field_count,
                           const int32_t *fields, int32_t owned_count,
                           const int32_t *owned) {
     if (r->elem_size != 0) return;
-    r->elem_size = elem_size > 0 ? elem_size : 8;
+    if (elem_size <= 0) rask_panic("rack element size must be positive");
+    r->elem_size = elem_size;
     if (owned_count > 0 && owned) {
         int64_t bytes = (int64_t)owned_count * (int64_t)sizeof(int32_t);
         r->owned = (int32_t *)rask_alloc(bytes);
@@ -830,7 +831,11 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
     if (!r) return NULL;
     RaskRack *copy = rask_rack_new();
     if (!copy) return NULL;
-    rack_describe(copy, r->elem_size, r->field_count, r->fields, r->owned_count, r->owned);
+    // A rack nothing was ever inserted into has no shape yet, and neither
+    // does its copy.
+    if (r->elem_size != 0) {
+        rack_describe(copy, r->elem_size, r->field_count, r->fields, r->owned_count, r->owned);
+    }
 
     // Copy every node first, so every target exists before any edge is rewritten.
     // `origin` maps original slot index -> copied payload.

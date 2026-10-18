@@ -229,6 +229,9 @@ impl Default for ErrorCodeRegistry {
                 "E0904" => ("a generic body that can't take the linear type it's called with", Ownership,
                     "A generic function is checked again for every linear type argument it is called with. A body that drops its `T`, or uses it after giving it away, is fine for an `i64` and a leak or a double close for a `@resource`. The error is reported at the call that supplied the linear type, and points into the body at the line that does it (type.generics/G6, mem.linear/L1–L2).",
                     "func forget<T>(take x: T) { }\n\nforget(Conn(id: 1))   // error: `forget` drops `x`\n\n// fix: consume it, or return it to the caller\nfunc keep<T>(take x: T) -> T { return x }"),
+                "E0919" => ("a `with` binding given away", Ownership,
+                    "`with s.write() as v`, `with items[i] as v` and the rest reach into a value that stays where it is: the `Shared` or the collection still holds it after the block. So `v` can't be handed to a `take` parameter, stored, or moved into another binding. That would leave the value with two owners.\n\nTo get the value out of a `Shared`, use `take()` (when it holds a value that must be consumed) or `replace(new)`. To keep both, clone it.",
+                    "let s = Shared.new(Conn.open())\nwith s.write() as c {\n    c.close()        // error: `s` still holds the connection\n}\n// fix:\ns.take().close()"),
                 "E0902" => ("a loop's element given away", Ownership,
                     "A value-mode `for` lends each element: the collection still holds it, so the binding can't be handed to a `take` parameter, stored in a struct, tuple or array, or moved into another binding. That would leave the element with two owners, and both free it.\n\nClone it to keep both. To take the elements out of a `Vec` instead, loop over `take_all()`.",
                     "for v in groups {\n    out.push(v)          // error\n}\n// fix: out.push(v.clone()), or `for v in groups.take_all()`"),
@@ -442,7 +445,7 @@ impl Default for ErrorCodeRegistry {
                     "A `comptime test` runs during compilation, not in the test runner (std.testing/T11), so anything that stops it — a false `assert`, or a body the compiler can't evaluate — is a compile error. The second half is the common one: the compiler has no files, no sockets and no scheduler, only the comptime subset (ctrl.comptime/CT7), so a test that opens a file or reaches `spawn` can't run there at all. Drop the `comptime` and it becomes an ordinary test, reported by the runner like any other.",
                     "comptime func fact(n: i64) -> i64 {\n    if n <= 1 { return 1 }\n    return n * fact(n - 1)\n}\n\ncomptime test \"factorial\" {\n    assert fact(5) == 121      // error: left: 120, right: 121\n}\n\n// fix: correct the expectation — or, if the body needs a real runtime,\n// drop `comptime` and let the runner have it\ntest \"reads the fixture\" {\n    let text = try fs.read(\"fixture.json\")\n}"),
                 "E0875" => ("a `comptime func` that reaches outside the compile-time subset", Type,
-                    "CT7 rules out I/O, spawning and pool structural changes at compile time, and CT6 says a call in comptime position is legal iff the callee stays inside that subset — transitively, and with no marking required on the callee. `comptime func` is the assertion of that property at the definition: CT60 says the keyword buys definition-time checking, so the guarantee lands where the author is rather than erupting at a call site three packages away. Until this check existed the keyword bought nothing — a `comptime func` doing I/O compiled, and the failure came later and elsewhere, as the evaluator not finding a function it had never registered. The effect map is transitive, so a helper three hops down is named at the call that brings it in.",
+                    "CT7 rules out what the compiler can't do while compiling: a call that blocks (files, sockets, stdio, a channel, `sleep`), one that reads or changes state outside the program (the clock, environment variables, the process), and spawning. Growing a `Vec` or a `Map` is fine; building tables is what comptime is for. CT6 says a call in comptime position is legal iff the callee stays inside that subset — transitively, and with no marking required on the callee. `comptime func` is the assertion of that property at the definition: CT60 says the keyword buys definition-time checking, so the guarantee lands where the author is rather than erupting at a call site three packages away. Until this check existed the keyword bought nothing — a `comptime func` doing I/O compiled, and the failure came later and elsewhere, as the evaluator not finding a function it had never registered. The effect map is transitive, so a helper three hops down is named at the call that brings it in.",
                     "comptime func read_config() -> string {\n    return io.read_line() catch e => \"\"   // error: I/O isn't available while compiling\n}\n\n// fix: drop `comptime` and let callers decide\nfunc read_config() -> string { … }\n// or move the I/O out and pass the result in\ncomptime func parse_config(text: string) -> Config { … }"),
                 "E0874" => ("a `with` source that is neither an element nor a `Shared`", Type,
                     "A `with` block scopes access to one thing: an element of a collection reached by index or key (`with items[i] as e`), or the value inside a `Shared` (`with shared.write() as v`). Both are cases where the block earns its keep — it holds the access open across several statements, and for a `Shared` holds the lock for the block's duration. A plain place is neither: there is nothing to hold, so `with h.data as d { d.push(1) }` does exactly what `h.data.push(1)` does, in three lines instead of one. Native compiled the form and the interpreter refused it at run time, which is how it went unnoticed — no file in the corpus uses it.",
@@ -490,6 +493,21 @@ impl Default for ErrorCodeRegistry {
                 "E0337" => ("range step of zero", Type,
                     "A zero step never advances, so the loop would run forever without making progress (ctrl.ranges/SP3). A step's sign also picks the direction: positive counts up, negative counts down. Zero says neither.",
                     "for i in (0..10).step(0) { … }   // error: never advances\n// fix: `.step(2)` to count up by two, `.step(-1)` on a descending range"),
+                "E0338" => ("malformed format template", Syntax,
+                    "A string with `{…}` in it is a format template: each brace pair holds an expression, a positional `{0}`, or an empty `{}` that takes the next argument, optionally followed by `:spec`. An unclosed `{`, a spec that isn't one, an index past the arguments given, or `{}` mixed with `{0}` in one template has no single meaning, so it's rejected where the string is written. A literal brace is `{{` or `}}`.",
+                    "println(\"total: {\")          // error: unclosed `{`\n// fix: println(\"total: {{\")\nformat(\"{} {0}\", a, b)          // error: mixes `{}` with `{0}`\n// fix: format(\"{0} {1}\", a, b)"),
+                "E0916" => ("an assignment to something that isn't a place", Type,
+                    "`=` and `+=` store into a place: a variable, a field, an element by index, or the target of a pointer. A method call, a function call or a literal is a value, with no storage of its own for the new value to land in, so `v.len() = 3` has no meaning.\n\nThe checker used to let these through, and each backend then failed in its own words — \"invalid assignment target\" on the interpreter, a lowering error natively.\n\nFor a `Shared`, `s.write() += 1` is reported as an inline access with nothing chained (E0339): the value is reached through `with s.write() as v { v += 1 }`.",
+                    "mut items = Vec.from([1, 2])\nitems.len() = 3        // error: a method call isn't a place\n// fix: change the thing the call reads\nitems.push(3)"),
+                "E0917" => ("`clone` on a value consumed exactly once", Type,
+                    "A `@resource` value or a `Heap` has to be consumed exactly once (mem.linear). A clone would make two of them, and one would be closed twice or never. A `Shared` holding such a value is single-owner for the same reason: cloning it would hand the value to two places that could each `take` it.\n\nPass the value on, or borrow it.",
+                    "let f = fs.open(\"a.txt\")\nlet g = f.clone()         // error: two obligations for one file\n// fix: pass `f` itself, or borrow it\nread_header(f)"),
+                "E0918" => ("`take` on a `Shared` whose value isn't consumed exactly once", Type,
+                    "`take` empties the box and gives back what it held. That's only sound for the last handle, and a `Shared` is guaranteed to be the last one only when its value is linear (a `@resource` or `Heap`), since those boxes can't be cloned (conc.sync/SH9). Any other `Shared` may have clones still reading it.\n\n`replace(new)` swaps a value out and leaves one behind; `get()` copies it.",
+                    "let s = Shared.new(Vec.from([1, 2]))\nlet items = s.take()       // error: another handle might still read `s`\n// fix:\nlet items = s.replace(Vec.new())"),
+                "E0920" => ("a generic `take` called with a value that isn't consumed exactly once", Ownership,
+                    "A generic body may `take` a `Shared<T>`. It can't know whether `T` is a resource, so each call that fixes `T` is checked instead, and one that makes it an integer, a string or any other ordinary value is this error (conc.sync/SH9). It's reported at the call and points at the `take` inside, through as many generic calls as it took to get there.\n\nThe same rule without a generic in the way is E0918.",
+                    "func unbox<T>(take s: Shared<T>) -> T {\n    return s.take()\n}\n\nlet n = unbox(Shared.new(5))   // error: `T` = `i32`, and `unbox` empties the box\n// fix: use `replace` in the body if any `T` should work"),
                 "E0339" => ("`.read()`/`.write()` with nothing chained onto it", Type,
                     "Taking a lock on a `Shared` is expression-scoped: the lock is held for the chain it appears in and released at the end of it (mem.borrowing/E5). On its own, with no field access after it, the lock is taken and dropped in the same instant and the value goes nowhere. Chain a field to read one thing, or use `with` when you need several statements under the lock — that form holds it for the block.",
                     "counter.write()             // error: locks, then immediately unlocks\n// fix (one field): counter.write().hits = 0\n// fix (several statements):\nwith counter.write() as c {\n    c.hits = 0\n    c.last = now()\n}"),
@@ -542,7 +560,7 @@ impl Default for ErrorCodeRegistry {
                     "A `Shared` is read by many or written by one, and the two behave differently — a read binding lets other readers in and never writes back, a write binding shuts them out and does (conc.sync/R4). Which one you get is written rather than inferred, because the difference is not visible in the block's body but is very visible in production.",
                     "with counter as c { … }          // error: read or write?\n// fix: name the lock\nwith counter.read() as c { … }   // concurrent readers\nwith counter.write() as c { … }  // exclusive"),
                 "E0383" => ("comptime evaluation failed", Type,
-                    "`const X = comptime { … }` says the value is computed while the program is being compiled (ctrl.comptime/CT2), so there is no second chance: if the block panics, runs past the branch quota, indexes off the end, or asks for something that only exists at run time (I/O, a pool, a spawn), the constant has no value and compilation stops. That is the deal the keyword makes — the alternative, quietly running the block at startup instead, turns a compile error into a crash in the field.\n\nA long-running fold that is genuinely finite is the one case to override: `@comptime_quota(N)` on the const raises the backwards-branch limit from its 1,000 default (CT35).",
+                    "A `comptime` value — `const X = comptime { … }`, a `comptime` block, a call to a `comptime func`, a default argument, a field's default — is computed while the program is being compiled (ctrl.comptime/CT2), or not at all. There is no second chance and no fallback: if the block panics, runs past the branch quota, indexes off the end, asks for something that only exists at run time (I/O, a pool, a spawn), reaches something the evaluator can't do, or produces a value nothing static can hold (a `Vec` inside a struct, an `any I`), the value doesn't exist and compilation stops. The alternative, quietly running the code when the program runs, turns a compile error into a crash in the field and makes `comptime` mean nothing.\n\nA long-running fold that is genuinely finite is the one case to override: `@comptime_quota(N)` on the const raises the backwards-branch limit from its 1,000 default (CT35).",
                     "const PRIMES = comptime { sieve(100000) }   // error: quota (1,000)\n// fix: say how much room it needs\n@comptime_quota(500000)\nconst PRIMES = comptime { sieve(100000) }"),
                 "E0417" => ("a type's name starts with a lowercase letter", Type,
                     "Values are built with parentheses, the way functions are called: `Point(x: 1)` and `point(1)` look alike except for the first letter. So the first letter carries the difference — a type's name starts with a capital, a function's doesn't — and a reader can tell building from calling without looking either one up.",
@@ -901,9 +919,6 @@ let old = a.load(Ordering.SeqCst)"),
                 "W0301" => ("`discard` on a Copy type frees nothing", Type,
                     "`discard` exists to end a value\'s life before its scope does — to release the memory it owns at a point you choose rather than at the closing brace. A Copy type owns no memory, so there is nothing to release and the statement reads as a cost it doesn\'t pay (mem.ownership/D2).\n\nIt does still put the name out of use, which is D1 and holds for every type. If that was the point, a comment says so more clearly than a `discard` that looks like cleanup.",
                     "let n = 7\ndiscard n            // warning: frees nothing\n// fix: drop the line\nlet n = 7"),
-                "W0303" => ("comptime const could not be folded, so it runs at runtime", Type,
-                    "The comptime evaluator doesn't cover the whole language yet, and this block reached a corner it can't model — a static method it has no implementation for, a value it can't represent. The program still works: the block is evaluated at startup instead. What's lost is the guarantee `comptime` was written for, so this is worth knowing about rather than silent. The warning names what stopped it.",
-                    "const SPRITES = comptime {\n    mut v = Vec.new()\n    v.push(load_atlas())        // warning: I/O isn't available at comptime\n    v\n}"),
                 "W0302" => ("range step runs the wrong way, so the range is empty", Type,
                     "A positive step on a descending range, or a negative step on an ascending one, never reaches the far end — the loop body runs zero times (ctrl.ranges/SP1-SP2). That is legal and almost never intended, so it's a warning rather than an error. Match the step's sign to the range's direction, or swap the endpoints.",
                     "for i in (10..0).step(1) { … }   // warning: runs zero times\n// fix: descend\nfor i in (10..0).step(-1) { … }\n// or ascend\nfor i in (0..10).step(1) { … }"),
@@ -1087,6 +1102,62 @@ mod registry_audit {
              add an entry to codes.rs: {:#?}",
             missing
         );
+    }
+
+    /// The code literals every compiler crate's source emits, with where:
+    /// `with_code("E…")`, and a `code: "E…"` field on an error struct of its
+    /// own. Desugar's format-template errors were E0338 for months while the
+    /// test above, reading `convert.rs` alone, never saw them.
+    fn emitted_anywhere() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for e in entries.flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut files = Vec::new();
+        for c in std::fs::read_dir(crates).unwrap().flatten() {
+            walk(&c.path().join("src"), &mut files);
+        }
+        let mut out = Vec::new();
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            for (n, line) in text.lines().enumerate() {
+                for marker in ["with_code(\"", "code: \""] {
+                    let mut rest = line;
+                    while let Some(i) = rest.find(marker) {
+                        rest = &rest[i + marker.len()..];
+                        let code: String = rest.chars().take(5).collect();
+                        if code.len() == 5
+                            && matches!(code.as_bytes()[0], b'E' | b'W' | b'R')
+                            && code[1..].bytes().all(|b| b.is_ascii_digit())
+                        {
+                            out.push((code, format!("{}:{}", file.display(), n + 1)));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(out.len() > 200, "read only {} code sites; is the walk finding the crates?", out.len());
+        out
+    }
+
+    #[test]
+    fn every_code_any_crate_emits_can_be_explained() {
+        let registry = ErrorCodeRegistry::default();
+        let mut missing: Vec<String> = emitted_anywhere()
+            .into_iter()
+            .filter(|(code, _)| registry.get(code).is_none())
+            .map(|(code, at)| format!("{code} at {at}"))
+            .collect();
+        missing.sort();
+        assert!(missing.is_empty(), "emitted but not in codes.rs: {missing:#?}");
     }
 
     /// Codes that two or more genuinely different errors both report.

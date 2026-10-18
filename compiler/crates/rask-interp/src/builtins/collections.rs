@@ -46,20 +46,8 @@ fn is_truthy(val: &Value) -> bool {
 /// `Some(v)` / `none` as interpreter values.
 fn option_value(v: Option<Value>) -> Value {
     match v {
-        Some(v) => Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![v],
-            variant_index: 0,
-            origin: None,
-        },
-        None => Value::Enum {
-            name: "Option".to_string(),
-            variant: "None".to_string(),
-            fields: vec![],
-            variant_index: 0,
-            origin: None,
-        },
+        Some(v) => Value::some(v),
+        None => Value::none(),
     }
 }
 
@@ -91,37 +79,6 @@ impl Interpreter {
                 // so the target's delete can drop the entry.
                 crate::rack::register_element(v, &pushed);
                 Ok(Value::Unit)
-            }
-            // C2: hands the value back rather than panicking. Native lowers the
-            // same shape inline at the call site (stdlib generic bodies aren't
-            // monomorphized, so the element can't cross a call boundary there).
-            // `NoMemory` has no path on either backend — the allocator panics on
-            // OOM rather than reporting it.
-            "try_push" => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit).copy_on_bind();
-                let mut guard = v.lock().unwrap();
-                if guard.is_full() {
-                    return Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
-                            name: "GrowError".to_string(),
-                            variant: "Full".to_string(),
-                            fields: vec![item],
-                            variant_index: 0,
-                            origin: None,
-                        }],
-                        variant_index: 0,
-                        origin: None,
-                    });
-                }
-                guard.push(item);
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0, origin: None,
-                })
             }
             // `as_mut_ptr` differs only in taking `mutate self`, which the
             // checker enforces — both hand back the same buffer.
@@ -169,18 +126,8 @@ impl Interpreter {
             "pop" => {
                 let result = v.lock().unwrap().pop();
                 match result {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(val) => Ok(Value::some(val)),
+                    None => Ok(Value::none()),
                 }
             }
             "len" | "count" => Ok(Value::int(v.lock().unwrap().len() as i64)),
@@ -189,18 +136,8 @@ impl Interpreter {
                 // A copy out of the slot (std.collections/V3): sharing the
                 // element let a later write to the slot show through it.
                 match v.lock().unwrap().get(idx).map(Value::copy_on_bind) {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(val) => Ok(Value::some(val)),
+                    None => Ok(Value::none()),
                 }
             }
             "is_empty" => Ok(Value::Bool(v.lock().unwrap().is_empty())),
@@ -217,34 +154,14 @@ impl Interpreter {
             }
             "first" => {
                 match v.lock().unwrap().first().map(Value::copy_on_bind) {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(val) => Ok(Value::some(val)),
+                    None => Ok(Value::none()),
                 }
             }
             "last" => {
                 match v.lock().unwrap().last().map(Value::copy_on_bind) {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(val) => Ok(Value::some(val)),
+                    None => Ok(Value::none()),
                 }
             }
             "contains" => {
@@ -380,20 +297,6 @@ impl Interpreter {
                 }
                 Ok(Value::vec(mapped))
             }
-            "flat_map" => {
-                let closure = args.into_iter().next().unwrap_or(Value::Unit);
-                let vec = v.lock().unwrap();
-                let mut result = Vec::new();
-                for item in vec.iter() {
-                    let mapped = self.call_value(closure.clone(), vec![item.clone()])?;
-                    if let Value::Vec(inner) = mapped {
-                        result.extend(inner.lock().unwrap().items.clone());
-                    } else {
-                        result.push(mapped);
-                    }
-                }
-                Ok(Value::vec(result))
-            }
             "fold" => {
                 let init = args.get(0).cloned().unwrap_or(Value::Unit);
                 let closure = args.get(1).cloned().unwrap_or(Value::Unit);
@@ -408,23 +311,13 @@ impl Interpreter {
                 let closure = args.into_iter().next().unwrap_or(Value::Unit);
                 let vec = v.lock().unwrap();
                 if vec.is_empty() {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
+                    return Ok(Value::none());
                 }
                 let mut acc = vec[0].clone();
                 for item in vec.iter().skip(1) {
                     acc = self.call_value(closure.clone(), vec![acc, item.clone()])?;
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![acc],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::some(acc))
             }
             "enumerate" => {
                 let vec = v.lock().unwrap();
@@ -455,18 +348,6 @@ impl Interpreter {
                 let vec = v.lock().unwrap();
                 let taken: Vec<Value> = vec.iter().take(n).cloned().collect();
                 Ok(Value::vec(taken))
-            }
-            "flatten" => {
-                let vec = v.lock().unwrap();
-                let mut flattened = Vec::new();
-                for item in vec.iter() {
-                    if let Value::Vec(inner) = item {
-                        flattened.extend(inner.lock().unwrap().items.clone());
-                    } else {
-                        flattened.push(item.clone());
-                    }
-                }
-                Ok(Value::vec(flattened))
             }
             "sort" => {
                 // std.collections/SO3: `sort()` is `T: Comparable`, so a type
@@ -561,20 +442,10 @@ impl Interpreter {
                 for item in vec.iter() {
                     let result = self.call_value(closure.clone(), vec![item.clone()])?;
                     if is_truthy(&result) {
-                        return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![item.clone()],
-                            variant_index: 0, origin: None,
-                        });
+                        return Ok(Value::some(item.clone()));
                     }
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::none())
             }
             "position" => {
                 let closure = args.into_iter().next().unwrap_or(Value::Unit);
@@ -582,20 +453,10 @@ impl Interpreter {
                 for (i, item) in vec.iter().enumerate() {
                     let result = self.call_value(closure.clone(), vec![item.clone()])?;
                     if is_truthy(&result) {
-                        return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![Value::int(i as i64)],
-                            variant_index: 0, origin: None,
-                        });
+                        return Ok(Value::some(Value::int(i as i64)));
                     }
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "None".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::none())
             }
             "remove_adjacent_duplicates" => {
                 let mut vec = v.lock().unwrap();
@@ -654,19 +515,9 @@ impl Interpreter {
                 let vec = v.lock().unwrap();
                 if let Some(item) = vec.get(index) {
                     let result = self.call_value(closure.clone(), vec![item.clone()])?;
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![result],
-                        variant_index: 0, origin: None,
-                    })
+                    Ok(Value::some(result))
                 } else {
-                    Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    })
+                    Ok(Value::none())
                 }
             }
             "modify" => {
@@ -680,12 +531,7 @@ impl Interpreter {
                 // reach the same Vec, and holding it across the call deadlocks.
                 let item = v.lock().unwrap().get(index).cloned();
                 let Some(item) = item else {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 1, origin: None,
-                    });
+                    return Ok(Value::none());
                 };
                 let (result, written) =
                     self.call_closure_keeping_arg(closure.clone(), vec![item])?;
@@ -696,12 +542,7 @@ impl Interpreter {
                         *slot = new_item;
                     }
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![result],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::some(result))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
@@ -887,18 +728,8 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         let option_of = |v: Option<Value>| match v {
-            Some(v) => Value::Enum {
-                name: "Option".to_string(),
-                variant: "Some".to_string(),
-                fields: vec![v],
-                variant_index: 0, origin: None,
-            },
-            None => Value::Enum {
-                name: "Option".to_string(),
-                variant: "None".to_string(),
-                fields: vec![],
-                variant_index: 0, origin: None,
-            },
+            Some(v) => Value::some(v),
+            None => Value::none(),
         };
         match method {
             "insert" => {
@@ -954,20 +785,6 @@ impl Interpreter {
             }
             // Deep, for the same reason as `Vec.clone`.
             "clone" => Ok(Value::Map(Arc::clone(m)).clone_as_element()),
-            "insert_if_missing" => {
-                let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
-                    expected: 2,
-                    got: args.len(),
-                })?;
-
-                if !self.map_contains(&m, key.clone())? {
-                    let new_value = self.call_closure_no_args(factory)?;
-                    self.map_insert(&m, key, new_value)?;
-                }
-
-                Ok(Value::Unit)
-            }
             "modify_with_default" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
@@ -1165,14 +982,8 @@ impl Interpreter {
                 // CH3: returns char? — none for surrogates / out-of-range code points.
                 let n = self.expect_int(&args, 0)? as u32;
                 let opt = match char::from_u32(n) {
-                    Some(c) => Value::Enum {
-                        name: "Option".to_string(), variant: "Some".to_string(),
-                        fields: vec![Value::Char(c)], variant_index: 0, origin: None,
-                    },
-                    None => Value::Enum {
-                        name: "Option".to_string(), variant: "None".to_string(),
-                        fields: vec![], variant_index: 1, origin: None,
-                    },
+                    Some(c) => Value::some(Value::Char(c)),
+                    None => Value::none(),
                 };
                 Ok(opt)
             }
@@ -1278,44 +1089,19 @@ impl Interpreter {
                 Ok(Value::Atomic(Arc::new(Mutex::new(Value::int(0)))))
             }
             (TypeConstructorKind::Ordering, "Relaxed") => {
-                Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "Relaxed".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::stdlib_enum("Ordering", "Relaxed", vec![]))
             }
             (TypeConstructorKind::Ordering, "Acquire") => {
-                Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "Acquire".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::stdlib_enum("Ordering", "Acquire", vec![]))
             }
             (TypeConstructorKind::Ordering, "Release") => {
-                Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "Release".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::stdlib_enum("Ordering", "Release", vec![]))
             }
             (TypeConstructorKind::Ordering, "AcqRel") => {
-                Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "AcqRel".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::stdlib_enum("Ordering", "AcqRel", vec![]))
             }
             (TypeConstructorKind::Ordering, "SeqCst") => {
-                Ok(Value::Enum {
-                    name: "Ordering".to_string(),
-                    variant: "SeqCst".to_string(),
-                    fields: vec![],
-                    variant_index: 0, origin: None,
-                })
+                Ok(Value::stdlib_enum("Ordering", "SeqCst", vec![]))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),
@@ -1366,13 +1152,7 @@ impl Interpreter {
                 let current = slot.clone();
                 if Self::value_eq(&current, &expected) {
                     *slot = new;
-                    Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![current],
-                        variant_index: 0,
-                        origin: None,
-                    })
+                    Ok(Value::ok(current))
                 } else {
                     // `CasFailed { found }` — what's there now, so a retry loop
                     // has the value it needs without a second load. The wrapper
@@ -1380,17 +1160,11 @@ impl Interpreter {
                     // and a bare payload made `CasFailed as e` match the ok arm.
                     let mut fields = indexmap::IndexMap::new();
                     fields.insert("found".to_string(), current);
-                    Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::new_struct(
+                    Ok(Value::err(Value::new_struct(
                             "CasFailed".to_string(),
                             fields,
                             None,
-                        )],
-                        variant_index: 1,
-                        origin: None,
-                    })
+                        )))
                 }
             }
             "take" => Ok(atomic.lock().unwrap().clone()),
@@ -1427,6 +1201,24 @@ impl Interpreter {
                 }),
             };
         }
+        // Floats add, subtract and order as floats, on their own width's grid
+        // (GA3).
+        if let (Value::Float(a, fk), Value::Float(b, _)) = (old, operand) {
+            let (a, b) = (*a, *b);
+            let n = match method {
+                "fetch_add" => a + b,
+                "fetch_sub" => a - b,
+                "fetch_max" => a.max(b),
+                "fetch_min" => a.min(b),
+                _ => {
+                    return Err(RuntimeError::NoSuchMethod {
+                        ty: "Atomic<float>".to_string(),
+                        method: method.to_string(),
+                    })
+                }
+            };
+            return Ok(Value::Float(fk.round(n), *fk));
+        }
         let (Value::Int(a, kind), Value::Int(b, _)) = (old, operand) else {
             return Err(RuntimeError::TypeError(format!(
                 "`{}` needs a countable payload, found {}",
@@ -1435,6 +1227,9 @@ impl Interpreter {
             )));
         };
         let (a, b, kind) = (*a, *b, *kind);
+        // An unsigned payload orders unsigned: a `u64` above `i64::MAX` is
+        // held as a negative i64.
+        let less = |x: i64, y: i64| if kind.signed() { x < y } else { (x as u64) < (y as u64) };
         let n = match method {
             "fetch_add" => a.wrapping_add(b),
             "fetch_sub" => a.wrapping_sub(b),
@@ -1442,8 +1237,8 @@ impl Interpreter {
             "fetch_or" => a | b,
             "fetch_xor" => a ^ b,
             "fetch_nand" => !(a & b),
-            "fetch_max" => a.max(b),
-            "fetch_min" => a.min(b),
+            "fetch_max" => if less(a, b) { b } else { a },
+            "fetch_min" => if less(b, a) { b } else { a },
             _ => {
                 return Err(RuntimeError::NoSuchMethod {
                     ty: "Atomic".to_string(),
@@ -1451,7 +1246,9 @@ impl Interpreter {
                 })
             }
         };
-        Ok(Value::Int(n, kind))
+        // AT5 wraps at the payload's width, not at 64 bits: a `u8` at 250
+        // plus 10 holds 4.
+        Ok(Value::Int(kind.wrap(n), kind))
     }
 
     fn parse_ordering(

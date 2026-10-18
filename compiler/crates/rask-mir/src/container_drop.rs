@@ -43,15 +43,15 @@ fn free_for(ctor: &str) -> Option<&'static str> {
 
 /// What puts a reference back on a handle its free gives up.
 ///
-/// Only the three that have both halves in the runtime. A `Receiver` is
-/// single-owner and a `Cell` has no dispatchable clone, so neither belongs
-/// here — and leaving one out leaks where getting it wrong closes a channel
-/// under a task still sending into it.
+/// Only the handles that have both halves in the runtime. A `Receiver` is
+/// single-owner, so it doesn't belong here — and leaving one out leaks where
+/// getting it wrong closes a channel under a task still sending into it.
 fn retain_for(free: &str) -> Option<&'static str> {
     match free {
         "Sender_drop" => Some("Sender_clone"),
         "Shared_drop" => Some("Shared_clone"),
         "Mutex_drop" => Some("Mutex_clone"),
+        "Cell_drop" => Some("Cell_clone"),
         _ => None,
     }
 }

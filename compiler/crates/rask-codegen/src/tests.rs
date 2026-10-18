@@ -40,7 +40,7 @@ mod tests {
     fn call(dst: Option<u32>, name: &str, args: Vec<MirOperand>) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: dst.map(LocalId),
-            func: FunctionRef { name: name.to_string(), is_extern: false },
+            func: FunctionRef::internal(name.to_string()),
             args,
         })
     }
@@ -647,8 +647,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None, field: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: 4, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: 4, field: None }),
                     assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, access: FieldAccess::Word }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -970,8 +970,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None, field: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: 4, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: 4, field: None }),
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
@@ -1006,8 +1006,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None, field: None }),
-                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: 1, field: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: 4, field: None }),
                     assign(1, MirRValue::EnumTag { value: local_op(0) }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1167,7 +1167,7 @@ mod tests {
     #[test]
     fn codegen_stdlib_vec_push() {
         // Calling stdlib Vec methods through dispatch.
-        // _0 = Vec_new()
+        // _0 = Vec_new(4, <i32>)
         // Vec_push(_0, 42)
         let mir = MirFunction {
             name: "f".to_string(),
@@ -1178,7 +1178,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    call(Some(0), "Vec_new", vec![]),
+                    call(Some(0), "Vec_new", vec![i32_const(4), rask_mir::elem_strs::elem(MirType::I32)]),
                     call(None, "Vec_push", vec![local_op(0), i32_const(42)]),
                 ], ret(None)),
             ],
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn codegen_stdlib_vec_len() {
-        // _0 = Vec_new()
+        // _0 = Vec_new(8, <i64>)
         // _1 = Vec_len(_0)
         // return _1
         let mir = MirFunction {
@@ -1207,7 +1207,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    call(Some(0), "Vec_new", vec![]),
+                    call(Some(0), "Vec_new", vec![i32_const(8), rask_mir::elem_strs::elem(MirType::I64)]),
                     call(Some(1), "Vec_len", vec![local_op(0)]),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1264,22 +1264,24 @@ mod tests {
     fn closure_env_layout_sizing() {
         use crate::closures::ClosureEnvLayout;
 
+        // Offsets come from MIR's `lay_out_captures`; the layout records them
+        // and its size is where the last capture ends.
+        let caps = rask_mir::lay_out_captures([
+            (LocalId(0), MirType::I64, false, true),
+            (LocalId(1), MirType::U8, false, true),
+            (LocalId(2), MirType::I32, false, true),
+            (LocalId(3), MirType::F64, true, false),
+        ]);
+        let offsets: Vec<u32> = caps.iter().map(|c| c.offset).collect();
+        assert_eq!(offsets, vec![0, 8, 12, 16]);
+
         let mut layout = ClosureEnvLayout::new();
         assert_eq!(layout.size, 0);
-
-        let off0 = layout.add_capture(LocalId(0), 8, false, false);
-        assert_eq!(off0, 0);
-        assert_eq!(layout.size, 8);
-
-        let off1 = layout.add_capture(LocalId(1), 4, false, false);
-        assert_eq!(off1, 8); // aligned to 8
-        assert_eq!(layout.size, 12);
-
-        let off2 = layout.add_capture(LocalId(2), 8, false, false);
-        assert_eq!(off2, 16); // aligned up from 12 → 16
+        for c in &caps {
+            layout.add_capture(c.local_id, c.offset, c.size, false, c.by_ref);
+        }
         assert_eq!(layout.size, 24);
-
-        assert_eq!(layout.captures.len(), 3);
+        assert_eq!(layout.captures.len(), 4);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1959,10 +1961,12 @@ mod tests {
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
+            node_origins: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
             instantiated_fallback_keeps_shape: Default::default(),
+            instantiated_err_returns: Default::default(),
         instantiated_escaping_closures: Default::default(),
         instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
@@ -1980,10 +1984,12 @@ mod tests {
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
+            node_origins: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
             instantiated_fallback_keeps_shape: Default::default(),
+            instantiated_err_returns: Default::default(),
         instantiated_escaping_closures: Default::default(),
         instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
@@ -2035,10 +2041,12 @@ mod tests {
         rask_mono::MonoProgram {
             type_names: Default::default(),
             instantiated_node_types: Default::default(),
+            node_origins: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
             instantiated_fallback_keeps_shape: Default::default(),
+            instantiated_err_returns: Default::default(),
         instantiated_escaping_closures: Default::default(),
         instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),

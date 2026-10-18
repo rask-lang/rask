@@ -182,18 +182,8 @@ impl Interpreter {
         match method {
             "next" => {
                 match self.iter_next(iter)? {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(val) => Ok(Value::some(val)),
+                    None => Ok(Value::none()),
                 }
             }
             "to_vec" => {
@@ -348,19 +338,9 @@ impl Interpreter {
                                 None => break,
                             }
                         }
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![acc],
-                            variant_index: 0, origin: None,
-                        })
+                        Ok(Value::some(acc))
                     }
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    None => Ok(Value::none()),
                 }
             }
             "any" => {
@@ -398,20 +378,10 @@ impl Interpreter {
                         Some(item) => {
                             let result = self.call_value(pred.clone(), vec![item.clone()])?;
                             if is_truthy(&result) {
-                                return Ok(Value::Enum {
-                                    name: "Option".to_string(),
-                                    variant: "Some".to_string(),
-                                    fields: vec![item],
-                                    variant_index: 0, origin: None,
-                                });
+                                return Ok(Value::some(item));
                             }
                         }
-                        None => return Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                            variant_index: 0, origin: None,
-                        }),
+                        None => return Ok(Value::none()),
                     }
                 }
             }
@@ -464,18 +434,8 @@ impl Interpreter {
                     }
                 }
                 match best {
-                    Some(v) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(v) => Ok(Value::some(v)),
+                    None => Ok(Value::none()),
                 }
             }
             "max" => {
@@ -498,18 +458,8 @@ impl Interpreter {
                     }
                 }
                 match best {
-                    Some(v) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(v) => Ok(Value::some(v)),
+                    None => Ok(Value::none()),
                 }
             }
             "min_by" => {
@@ -534,18 +484,8 @@ impl Interpreter {
                     }
                 }
                 match best {
-                    Some(v) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(v) => Ok(Value::some(v)),
+                    None => Ok(Value::none()),
                 }
             }
             "max_by" => {
@@ -570,18 +510,8 @@ impl Interpreter {
                     }
                 }
                 match best {
-                    Some(v) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some(v) => Ok(Value::some(v)),
+                    None => Ok(Value::none()),
                 }
             }
             "min_by_key" => {
@@ -606,18 +536,8 @@ impl Interpreter {
                     }
                 }
                 match best {
-                    Some((v, _)) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some((v, _)) => Ok(Value::some(v)),
+                    None => Ok(Value::none()),
                 }
             }
             "max_by_key" => {
@@ -642,18 +562,8 @@ impl Interpreter {
                     }
                 }
                 match best {
-                    Some((v, _)) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![v],
-                        variant_index: 0, origin: None,
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    }),
+                    Some((v, _)) => Ok(Value::some(v)),
+                    None => Ok(Value::none()),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {

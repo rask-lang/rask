@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "cpkg"
+version = "0.1.0"
+description = "Linked C asking libc for randomness and the time, under sim"
+license = "MIT OR Apache-2.0"

@@ -355,7 +355,8 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_new", Internal::SameAs("Shared_local")),
     ("Mutex_new", Internal::SameAs("Shared_mutex")),
     ("Cell_set", Internal::SameAs("Shared_set")),
-    ("Cell_into_inner", Internal::SameAs("Shared_take")),
+    ("Cell_take", Internal::SameAs("Shared_take")),
+    ("Mutex_take", Internal::SameAs("Shared_take")),
     ("Mutex_set", Internal::SameAs("Shared_set")),
     ("Cell_replace", Internal::SameAs("Shared_replace")),
     ("Mutex_replace", Internal::SameAs("Shared_replace")),
@@ -376,7 +377,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Map_lend", Internal::LendsElement),
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
-    ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),
@@ -484,7 +484,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // frame must not free it again.
     ("Atomic_take", Internal::ConsumesReceiver),
     ("Atomic_free", Internal::ConsumesReceiver),
-    ("Pool_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
     // if nobody else holds one (#1099).
@@ -784,21 +783,26 @@ const TRANSFERS_OUT: &[&str] = &[
     "Field_take",
     "Map_insert",
     "Map_remove",
-    "Pool_remove",
+    "Shared_replace",
 ];
+
+/// On `TRANSFERS_OUT` by its own name or by the declaration it stands for, so
+/// `Mutex_replace` answers with `Shared_replace`.
+fn listed_as_transfer(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    TRANSFERS_OUT.contains(&base)
+        || declared(qualified_name).is_some_and(|m| TRANSFERS_OUT.contains(&m.qualified_name.as_str()))
+}
 
 /// Does this call take an element out of its receiver and hand it over?
 /// `TRANSFERS_OUT`, asked by name.
 pub fn transfers_out(qualified_name: &str) -> bool {
-    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
-    let base = head.split('$').next().unwrap_or(head);
-    TRANSFERS_OUT.contains(&base)
+    listed_as_transfer(qualified_name)
 }
 
 pub fn returns_a_view(qualified_name: &str) -> bool {
-    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
-    let base = head.split('$').next().unwrap_or(head);
-    if TRANSFERS_OUT.contains(&base) {
+    if listed_as_transfer(qualified_name) {
         return false;
     }
     match declared(qualified_name) {
@@ -812,6 +816,11 @@ pub fn returns_a_view(qualified_name: &str) -> bool {
         // the frame released nothing — and a panicking task's message string
         // was freed by nobody (#1223).
         Some(m) if m.take_self => false,
+        // A raw pointer out of `self` is the address of its storage —
+        // `as_ptr`, `as_mut_ptr`. Read as a plain number, the owner was dead
+        // at its last named use: `c_call(msg.data.as_ptr())` freed `msg`
+        // before C read the bytes.
+        Some(m) if m.takes_self && m.ret_category == RetCategory::Ptr => true,
         Some(m) => m.takes_self && m.ret_category.names_a_type_param(),
         // Unaccounted for: say it points into its receiver. The caller then
         // releases nothing it got back — a leak, where the other guess is a
@@ -980,8 +989,6 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 const BORROWS_ITS_CALLBACK: &[&str] = &[
     "Vec_sort_by",
     "Vec_sort_by_keys",
-    "Vec_map",
-    "Vec_filter",
     "rask_closure_refuse_crossing",
 ];
 

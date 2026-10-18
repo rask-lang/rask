@@ -425,15 +425,9 @@ fn expr_text(e: &Expr) -> Option<String> {
     }
 }
 
+/// Arithmetic only: the idiom this renders for rewrites `x = x + y` forms.
 fn binop_text(op: &BinOp) -> Option<&'static str> {
-    Some(match op {
-        BinOp::Add => "+",
-        BinOp::Sub => "-",
-        BinOp::Mul => "*",
-        BinOp::Div => "/",
-        BinOp::Mod => "%",
-        _ => return None,
-    })
+    matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod).then(|| op.symbol())
 }
 
 /// idiom/match-on-optional: a two-arm `match` where one arm is `none`.

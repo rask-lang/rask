@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: another language's primitive name points at Rask's
+//
+// `int` and `uint` used to be accepted as aliases nobody specified, and the two
+// backends disagreed on them: the checker read `int` as `i64`, the
+// interpreter's `as` read it as `i32`. Rask's integers say their width, so the
+// aliases are gone and the error names the type to write instead.
+
+// ERROR: unknown type `int`
+func takes_int(x: int) -> i64 {
+    return 1
+}
+
+// ERROR: did you mean `u64`?
+func returns_uint() -> uint {
+    return 2
+}
+
+// ERROR: did you mean `f64`?
+func takes_float(y: float) -> i64 {
+    return 3
+}
+
+func main() {
+    println("{takes_int(1)}")
+}

@@ -79,20 +79,6 @@ fn sign_extend(v: i64, width: u32, signed: bool) -> i64 {
     ((v << shift) >> shift) as i64
 }
 
-/// Create an Ordering enum value from a std::cmp::Ordering.
-fn ordering_value(ord: std::cmp::Ordering) -> Value {
-    Value::Enum {
-        name: "Ordering".to_string(),
-        variant: match ord {
-            std::cmp::Ordering::Less => "Less".to_string(),
-            std::cmp::Ordering::Equal => "Equal".to_string(),
-            std::cmp::Ordering::Greater => "Greater".to_string(),
-        },
-        fields: vec![],
-        variant_index: 0, origin: None,
-    }
-}
-
 impl Interpreter {
     /// Handle integer method calls. `kind` is the receiver's width, preserved
     /// on integer results and used for checked arithmetic. Note: the desugared
@@ -177,7 +163,7 @@ impl Interpreter {
             }
             "compare" => {
                 let b = self.expect_int(args, 0)?;
-                Ok(ordering_value(Self::int_value_cmp(a, kind, b, other_kind(args, kind))))
+                Ok(Value::ordering(Self::int_value_cmp(a, kind, b, other_kind(args, kind))))
             }
             "bit_and" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a & b, arg_kind(args))) }
             "bit_or" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a | b, arg_kind(args))) }
@@ -294,21 +280,9 @@ impl Interpreter {
                     return Ok(Value::tuple(vec![value, Value::Bool(overflowed)]));
                 }
                 if overflowed {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 1,
-                        origin: None,
-                    });
+                    return Ok(Value::none());
                 }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![value],
-                    variant_index: 0,
-                    origin: None,
-                })
+                Ok(Value::some(value))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i64".to_string(),
@@ -348,7 +322,7 @@ impl Interpreter {
             "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a >= b)) }
-            "compare" => { let b = self.expect_int128(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
+            "compare" => { let b = self.expect_int128(args, 0)?; Ok(Value::ordering(a.cmp(&b))) }
             "bit_and" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a & b)) }
             "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
             "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
@@ -449,7 +423,7 @@ impl Interpreter {
             "le" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a >= b)) }
-            "compare" => { let b = self.expect_uint128(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
+            "compare" => { let b = self.expect_uint128(args, 0)?; Ok(Value::ordering(a.cmp(&b))) }
             "bit_and" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a & b)) }
             "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
             "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
@@ -547,7 +521,7 @@ impl Interpreter {
             // terminates with every element present. `<`/`>` stay IEEE below.
             "compare" => {
                 let b = self.expect_float(args, 0)?;
-                Ok(ordering_value(a.total_cmp(&b)))
+                Ok(Value::ordering(a.total_cmp(&b)))
             }
             "abs" => Ok(Value::Float(k.round(a.abs()), k)),
             "floor" => Ok(Value::Float(k.round(a.floor()), k)),
@@ -608,7 +582,7 @@ impl Interpreter {
             "le" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a & !b)) }
             "ge" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a >= b)) }
-            "compare" => { let b = self.expect_bool(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
+            "compare" => { let b = self.expect_bool(args, 0)?; Ok(Value::ordering(a.cmp(&b))) }
             "to_string" | "debug" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
             "hash" => Ok(Value::Int(
                 crate::builtins::fnv1a(&[a as u8]) as i64,
@@ -655,7 +629,7 @@ impl Interpreter {
             "le" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c <= other)) }
             "gt" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c > other)) }
             "ge" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c >= other)) }
-            "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
+            "compare" => { let other = self.expect_char(args, 0)?; Ok(Value::ordering(c.cmp(&other))) }
             // A char is its 4-byte Unicode scalar, same as native.
             "hash" => Ok(Value::Int(
                 crate::builtins::fnv1a(&(c as u32).to_le_bytes()) as i64,

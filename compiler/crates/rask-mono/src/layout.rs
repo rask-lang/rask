@@ -86,6 +86,13 @@ pub struct EnumLayout {
     pub attrs: Vec<rask_ast::attr::Attr>,
 }
 
+impl EnumLayout {
+    /// How many bytes the tag occupies: its declared width, never a word.
+    pub fn tag_bytes(&self) -> u32 {
+        self.tag_ty.scalar_bytes().unwrap_or(1)
+    }
+}
+
 /// Variant layout within enum
 #[derive(Debug, Clone)]
 pub struct VariantLayout {
@@ -130,19 +137,48 @@ fn cached_generic_layout(
         .filter(|(size, _)| *size > 0)
 }
 
+fn is_link(ty: &Type) -> bool {
+    matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Link")
+}
+
+/// Where a `T?`, `T or E` or error union keeps its payload, and its size, by
+/// `crate::abi`'s rules. `None` for anything else and for a niche `Link<T>?`,
+/// which is its payload.
+///
+/// An error union is `[member:1][payload]`: the members are nominally distinct
+/// types with nothing in their bytes to tell them apart, so the index is
+/// stored (#776).
+pub fn wrapper_layout(ty: &Type, cache: &LayoutCache) -> Option<crate::abi::WrapperLayout> {
+    let widest = |types: &mut dyn Iterator<Item = &Type>| {
+        types.fold((0u32, 1u32), |(size, align), t| {
+            let (s, a) = type_size_align(t, cache);
+            (size.max(s), align.max(a))
+        })
+    };
+    match ty {
+        Type::Result { ok, err } if !ty.is_option() => {
+            let (size, align) = widest(&mut [ok.as_ref(), err.as_ref()].into_iter());
+            Some(crate::abi::result_layout(size, align))
+        }
+        Type::Union(members) => {
+            let (size, align) = widest(&mut members.iter());
+            Some(crate::abi::union_layout(size, align))
+        }
+        _ => {
+            let inner = ty.as_option().filter(|inner| !is_link(inner))?;
+            let (size, align) = type_size_align(inner, cache);
+            Some(crate::abi::option_layout(size, align))
+        }
+    }
+}
+
 /// Get size and alignment for a type (after monomorphization).
 /// `cache` maps type names to already-computed (size, align) for user-defined types.
 pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
     match ty {
-        // A struct field holds its declared width. Everything that reads one
-        // reads it at that width — `FieldLayout.size` is what says so, and
-        // `slot_scalar_bytes` turns it into a load.
-        //
-        // The aggregate *slots* below don't shrink with it: an `Option`
-        // payload, an enum tag and an enum payload field are word slots by
-        // codegen's convention, and each says so where it computes its own
-        // layout. That used to fall out of every scalar being eight bytes, so
-        // none of them had to state it (#1083).
+        // Every value holds its own width, wherever it sits: a struct field,
+        // an enum tag or payload field, a wrapper's payload. Nothing is padded
+        // out to a word.
         Type::Unit => (0, 1),
         // Widths live on the type (`Type::scalar_bytes`), so this pass and the
         // atomic-payload rule read the same numbers. Natural alignment.
@@ -154,34 +190,12 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (n, n)
         }
         Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
-        ty if ty.is_option() => {
-            let inner = ty.as_option().unwrap();
-            // Niche optimization: `Link<T>?` is the node's address with null
-            // for `none` — one word, no tag.
-            if matches!(inner, Type::UnresolvedGeneric { name, .. }
-                if name == "Link")
-            {
-                return (8, 8);
-            }
-            let (size, align) = type_size_align(inner, cache);
-            // The payload sits in a word slot, the same convention the `Result`
-            // arm below states: codegen writes a scalar payload full-width, so
-            // the slot is floored at a word however narrow the value is.
-            let size = size.max(crate::abi::PAYLOAD_SLOT_BYTES);
-            let align = align.max(crate::abi::PAYLOAD_SLOT_BYTES);
-            let tag_size = 1u32;
-            let payload_offset = align_up(tag_size, align);
-            (payload_offset + size, align)
-        }
-        Type::Result { ok, err } => {
-            let (ok_size, ok_align) = type_size_align(ok, cache);
-            let (err_size, err_align) = type_size_align(err, cache);
-            // Layout must match rask-codegen/rask-mir (ER15 origin fields):
-            // [tag:8][origin_file:8][origin_line:8][payload:max(ok,err)]. Scalars
-            // occupy 8-byte slots in codegen, so floor each side at 8.
-            let max_size = ok_size.max(8).max(err_size.max(8));
-            let max_align = ok_align.max(err_align).max(8);
-            (align_up(crate::abi::RESULT_PAYLOAD_OFFSET + max_size, max_align), max_align)
+        // Niche optimization: `Link<T>?` is the node's address with null
+        // for `none` — one word, no tag.
+        ty if ty.as_option().is_some_and(is_link) => (8, 8),
+        Type::Result { .. } => {
+            let l = wrapper_layout(ty, cache).expect("a result has a layout");
+            (l.size, l.align)
         }
         Type::Tuple(types) => {
             let mut offset = 0u32;
@@ -261,15 +275,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "u64" => scalar_by_name(&Type::U64),
                 "f64" => scalar_by_name(&Type::F64),
                 "char" => scalar_by_name(&Type::Char),
-                // Stdlib types backed by opaque runtime pointers
-                "TcpListener" | "TcpConnection" | "File" | "Handle"
-                | "Sender" | "Receiver" | "ThreadPool"
-                | "MultitaskingRuntime" | "Random" | "Iterator" | "StringBuilder"
-                // `cstring` is the malloc'd NUL-terminated buffer itself, so
-                // the handle *is* the `const char*` C receives (#949). Without
-                // a line here its empty declaration sized it at zero and every
-                // call returning one gave MIR nothing to work out a type from.
-                | "cstring" => (8, 8),
+                // One word: the address of storage the runtime made. Its
+                // declaration has no fields, so the layout cache says zero.
+                name if rask_stdlib::is_runtime_handle(name) => (8, 8),
                 // A word, but not for the reason the line above is: these two
                 // are an `int64_t` of nanoseconds in the runtime, not a pointer
                 // to anything. Their Rask declarations are empty structs, so
@@ -278,37 +286,15 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 // field no room at all (#924).
                 "Duration" | "Instant" => (8, 8),
                 _ => {
-                    // Look up user-defined types from the layout cache first — a user
-                    // struct can be named the same as a builtin container (e.g. `Wide`),
-                    // and its real, cached size must win over the builtin guess below.
-                    //
-                    // Except a zero. A container's stdlib declaration is an empty
-                    // struct standing in for an opaque runtime pointer, so the
-                    // cache reports `Vec` as nothing at all — and a `Vec<i64>?`
-                    // type argument, whose name loses its `<i64>` on the way here,
-                    // sized as one byte of tag with no payload. The instance
-                    // layout then came out smaller than the shared one, was
-                    // dropped as pointless, and the struct literal wrapped its
-                    // field against the shared layout's placeholder: a bare `Vec`
-                    // stored where a `Vec?` goes, tag never written, and the read
-                    // came back `none` (#1081). No user struct is zero-sized *and*
-                    // named after a container, so this costs nothing.
-                    let cached_size = cache
-                        .get(name.as_str())
-                        .filter(|(size, _)| *size > 0 || !is_opaque_container_name(name));
+                    // A declared type's layout. A handle never gets here: its
+                    // declaration is empty, so the cache would say zero for
+                    // `Vec` (#1081).
+                    let cached_size = cache.get(name.as_str());
                     if let Some(&cached) = cached_size {
                         cached
                     } else if is_typevar_name(name) {
                         // Unsubstituted type parameter — pointer-sized fallback,
                         // silent because mono always picks a concrete size on real call sites.
-                        (8, 8)
-                    } else if matches!(name.as_str(),
-                        // Generic containers/boxes written without their type args (e.g. a
-                        // type alias target like `type Counts = Map`) arrive here as a bare
-                        // name instead of `UnresolvedGeneric` — same opaque-pointer types as
-                        // the `UnresolvedGeneric` arm above, just missing their `<...>`.
-                        "Vec" | "Map"
-                        | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
@@ -322,22 +308,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 }
             }
         }
-        // [member:8][member bytes] — the members are nominally distinct types
-        // with nothing in their bytes to tell them apart, so the index is
-        // stored (#776), the same layout `MirType::Union` sizes. Counting only
-        // the widest member here gave the slot eight bytes too few.
-        Type::Union(variants) => {
-            let mut max_size = 0u32;
-            let mut max_align = 8u32;
-            for v in variants {
-                let (s, a) = type_size_align(v, cache);
-                max_size = max_size.max(s);
-                max_align = max_align.max(a);
-            }
-            (
-                align_up(crate::abi::UNION_PAYLOAD_OFFSET + max_size, max_align),
-                max_align,
-            )
+        Type::Union(_) => {
+            let l = wrapper_layout(ty, cache).expect("a union has a layout");
+            (l.size, l.align)
         }
         Type::SimdVector { elem, lanes } => {
             let (elem_size, _) = type_size_align(elem, cache);
@@ -533,31 +506,12 @@ pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&st
 }
 
 /// A builtin generic that is one pointer whatever its arguments are: a
-/// collection or box is a handle to runtime storage, a link is the node's
-/// address, a rack a pointer to its slab.
+/// runtime handle (`rask_stdlib::handles`).
 ///
 /// Laying out a type that holds one never needs its arguments' layouts, so
 /// `Vec<Expr>` inside `Wrapped` doesn't make `Wrapped` wait for `Expr`.
 pub(crate) fn generic_is_one_word(name: &str) -> bool {
-    matches!(
-        name,
-        "Link" | "Rack" | "Vec" | "Map" | "Random" | "Channel"
-            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
-            | "Sender" | "Receiver" | "Handle"
-    )
-}
-
-/// A builtin container or box, written without its type arguments.
-///
-/// Each is an opaque runtime pointer whose Rask declaration is an empty struct,
-/// so the layout cache holds a zero for it that isn't the truth.
-fn is_opaque_container_name(name: &str) -> bool {
-    matches!(
-        name,
-        "Vec" | "Map" | "Set" | "Rack" | "Link"
-            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
-            | "Sender" | "Receiver"
-    )
+    rask_stdlib::is_runtime_handle(name)
 }
 
 /// A type argument that owns storage of its own.
@@ -573,7 +527,7 @@ fn is_opaque_container_name(name: &str) -> bool {
 /// `string` argument is not here and doesn't need to be — a string is
 /// refcounted, so the frame's own name gives it back.
 pub fn arg_owns_storage(name: &str) -> bool {
-    is_opaque_container_name(name) || matches!(name, "Random" | "cstring" | "StringBuilder")
+    rask_stdlib::is_runtime_handle(name)
 }
 
 /// Check whether a struct has `@layout(C)` attribute.
@@ -772,15 +726,11 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
 /// bare integer (#729).
 ///
 /// Built from `ORDERING_VARIANTS` so the variant list stays in one place, and
-/// sized through `type_size_align` rather than by hand, because a `u8` tag does
-/// not occupy one byte here: codegen gives every scalar an 8-byte slot, so
-/// `compute_enum_layout` gives a fieldless enum size 8, align 8. Written as
-/// `size: 1` this layout was the only enum in the program whose stack slot was
-/// narrower than the stores and loads aimed at it — `Ordering.Less` wrote eight
-/// bytes into a one-byte slot, a returned `Ordering` was copied one byte out of
-/// eight, and `==` read all eight back, so two equal values compared equal or
-/// not depending on what was next to them on the stack. It moved when a test
-/// was added above the one that used it.
+/// sized like any other fieldless enum: a one-byte tag. Every store of its tag
+/// has to be one byte too. When stores were a word and this slot one byte,
+/// `Ordering.Less` wrote eight bytes into it and `==` read eight back, so two
+/// equal values compared equal or not depending on what was next to them on
+/// the stack.
 pub fn ordering_layout() -> EnumLayout {
     let (tag_size, tag_align) = type_size_align(&Type::U8, &LayoutCache::new());
     EnumLayout {
@@ -837,7 +787,7 @@ fn enum_layout(
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
-            "i64" | "int" => Type::I64,
+            "i64" => Type::I64,
             _ => if variant_count <= 256 { Type::U8 } else { Type::U16 },
         }
     } else if variant_count <= 256 {
@@ -845,14 +795,9 @@ fn enum_layout(
     } else {
         Type::U16
     };
-    // The tag and every payload field sit in word slots, the same convention
-    // `Option` and `Result` state: codegen writes a scalar full-width and the
-    // match paths read a word. Struct fields hold their real widths (#1083);
-    // an enum's don't.
-    let (tag_size, tag_align) = {
-        let (s, a) = type_size_align(&tag_ty, cache);
-        (s.max(crate::abi::PAYLOAD_SLOT_BYTES), a.max(crate::abi::PAYLOAD_SLOT_BYTES))
-    };
+    // The tag and every payload field hold their real widths, the same as a
+    // struct's fields (#1083).
+    let (tag_size, tag_align) = type_size_align(&tag_ty, cache);
 
     // Compute size and alignment of each variant payload
     let mut max_payload_size = 0u32;
@@ -873,8 +818,6 @@ fn enum_layout(
                 let sized = substitute_inside(&field_ty, &subst);
                 let (size, align) = type_size_align(&sized, cache);
                 let field_ty = if record_arguments { sized } else { field_ty };
-                let size = size.max(crate::abi::PAYLOAD_SLOT_BYTES);
-                let align = align.max(crate::abi::PAYLOAD_SLOT_BYTES);
 
                 payload_align = payload_align.max(align);
                 field_offset = align_up(field_offset, align);
@@ -1074,9 +1017,7 @@ mod tests {
         assert_eq!(tsa(&Type::I64), (8, 8));
         assert_eq!(tsa(&Type::U64), (8, 8));
         assert_eq!(tsa(&Type::F64), (8, 8));
-        // `char` is a full word, not four bytes: the runtime carries a
-        // code point in one.
-        assert_eq!(tsa(&Type::Char), (8, 8));
+        assert_eq!(tsa(&Type::Char), (4, 4));
     }
 
     #[test]
@@ -1098,18 +1039,18 @@ mod tests {
 
     #[test]
     fn option_i32_layout() {
-        // tag (8 bytes) + i32 payload (8 bytes, codegen uses i64) = 16
+        // [tag:1][pad:3][i32:4]
         let (size, align) = tsa(&Type::option(Type::I32));
-        assert_eq!(align, 8);
-        assert_eq!(size, 16);
+        assert_eq!(align, 4);
+        assert_eq!(size, 8);
     }
 
     #[test]
     fn option_i8_layout() {
-        // tag (8) + i8 payload (8, codegen uses i64) = 16
+        // [tag:1][i8:1]
         let (size, align) = tsa(&Type::option(Type::I8));
-        assert_eq!(align, 8);
-        assert_eq!(size, 16);
+        assert_eq!(align, 1);
+        assert_eq!(size, 2);
     }
 
     #[test]
@@ -1138,14 +1079,13 @@ mod tests {
 
     #[test]
     fn result_i32_i64_layout() {
-        // [tag:8][origin_file:8][origin_line:8][payload:8] — ER15 origin fields
-        // (must match rask-codegen; see rask_mono::abi).
+        // [tag:1][pad:3][origin_line:4][origin_file:8][payload:8]
         let (size, align) = tsa(&Type::Result {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I64),
         });
         assert_eq!(align, 8);
-        assert_eq!(size, 32); // 24 (tag + origin) + 8 payload
+        assert_eq!(size, 24);
     }
 
     #[test]
@@ -1154,8 +1094,9 @@ mod tests {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I32),
         });
+        // The 4-byte payload at 16, rounded up to the origin pointer's 8.
         assert_eq!(align, 8);
-        assert_eq!(size, 32); // 24 (tag + origin) + 8 payload
+        assert_eq!(size, 24);
     }
 
     #[test]
@@ -1269,8 +1210,8 @@ mod tests {
         assert_eq!(layout.variants[0].tag, 0);
         assert_eq!(layout.variants[1].tag, 1);
         assert_eq!(layout.variants[2].tag, 2);
-        // No payload → size is just tag (U8 stored as i64 = 8 bytes)
-        assert_eq!(layout.size, 8);
+        // No payload: the one-byte tag is the whole value.
+        assert_eq!(layout.size, 1);
     }
 
     #[test]
@@ -1284,17 +1225,17 @@ mod tests {
         assert_eq!(layout.tag_offset, 0);
         assert!(matches!(layout.tag_ty, Type::U8)); // <=256 variants
 
-        // Circle payload: 1 field × 8 bytes = 8 (i32 stored as i64)
-        assert_eq!(layout.variants[0].payload_size, 8);
-        // Rect payload: 2 fields × 8 bytes = 16
-        assert_eq!(layout.variants[1].payload_size, 16);
+        // Each field at its own width.
+        assert_eq!(layout.variants[0].payload_size, 4);
+        assert_eq!(layout.variants[1].payload_size, 8);
 
-        // All variants share the same payload_offset
+        // All variants share the same payload_offset, aligned for an i32.
         assert_eq!(layout.variants[0].payload_offset, layout.variants[1].payload_offset);
+        assert_eq!(layout.variants[0].payload_offset, 4);
 
-        // Total: tag (8) + max_payload (16) = 24
-        assert_eq!(layout.size, 24);
-        assert_eq!(layout.align, 8);
+        // Tag (1) + padding (3) + max payload (8).
+        assert_eq!(layout.size, 12);
+        assert_eq!(layout.align, 4);
     }
 
     #[test]
@@ -1311,11 +1252,11 @@ mod tests {
         let layout = compute_enum_layout(&decl, &[], &empty_cache());
 
         assert_eq!(layout.variants[0].payload_size, 0);
-        assert_eq!(layout.variants[1].payload_size, 8);
-        assert_eq!(layout.variants[2].payload_size, 16);
+        assert_eq!(layout.variants[1].payload_size, 4);
+        assert_eq!(layout.variants[2].payload_size, 8);
 
-        // Size = tag (8) + max_payload (16) = 24
-        assert_eq!(layout.size, 24);
+        // Tag (1) + padding (3) + max payload (8).
+        assert_eq!(layout.size, 12);
     }
 
     // ── Field reordering (S1/L4) ──────────────────────────────────

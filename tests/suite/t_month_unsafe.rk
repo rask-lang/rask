@@ -10,19 +10,13 @@
 // p: *i32 = &x` is "remove the '&' - Rask currently uses owned values" — so
 // `as_ptr()` is the only way to get a pointer, which is what this file uses.
 //
-// Two things deliberately aren't here, both for the same reason: a test that
-// panics fails, so neither can be asserted on.
-//
-//   - Reading past the end of a buffer, and dereferencing nullptr. mem.unsafe's
-//     debug-mode table says both panic with a location in debug and are UB in
-//     release. The interpreter is a debug environment by construction and always
-//     panics; native reads whatever is there (or takes a SIGSEGV, which
-//     RASK_RUNTIME_CHECKS=1 turns into the same message). That's the specified
-//     split between the modes, not a divergence.
-//   - `Vec<T>` pointer walking for any T narrower than 8 bytes. Native builds the
-//     Vec with an 8-byte stride and steps the pointer by the element's natural
-//     width, so `*p.offset(1)` on a `Vec<i32>` lands inside element 0 — #985. The
-//     Vec cases below stay on `i64`, where the two widths agree.
+// Reading past the end of a buffer and dereferencing nullptr aren't here: a test
+// that panics fails, so neither can be asserted on. mem.unsafe's debug-mode
+// table says both panic with a location in debug and are UB in release. The
+// interpreter is a debug environment by construction and always panics; native
+// reads whatever is there (or takes a SIGSEGV, which RASK_RUNTIME_CHECKS=1 turns
+// into the same message). That's the specified split between the modes, not a
+// divergence.
 //
 // The C-interop half of the area (compile_rust, cbindgen, linking a real object
 // file) still needs a build-system harness and stays a recorded hole in

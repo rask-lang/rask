@@ -115,21 +115,10 @@ test "std.encoding — a skipped field decodes to its declared default" {
 // E19 again, from the type-system side: a field that can't be serialized would
 // disqualify the whole struct, but a skipped one never reaches the wire, so it
 // doesn't get a vote. Without this, `@no_serialize` was advice the checker ignored.
-interface Opaque {
-    func tag(self) -> i64
-}
-
-struct Marker {
-    public v: i64
-}
-
-Marker implements Opaque {
-    func tag(self) -> i64 { return self.v }
-}
-
+// A tuple has no JSON form, and has a compile-time one for the default.
 struct HasOpaque {
     @no_serialize
-    public probe: any Opaque = Marker(v: 0) as any Opaque
+    public probe: (i64, i64) = (0, 0)
 
     public n: i64
 }

@@ -270,7 +270,7 @@ impl Interpreter {
                 let ord = args.first()
                     .and_then(|o| Self::value_cmp(&receiver, o))
                     .unwrap_or(std::cmp::Ordering::Equal);
-                return Ok(Self::ordering_value(ord));
+                return Ok(Value::ordering(ord));
             }
             // An enum the checker wrote no `eq` for — an optional, a result, a
             // stdlib enum: same variant, and the payloads equal through their own
@@ -337,13 +337,13 @@ impl Interpreter {
                 let ord = args.first()
                     .and_then(|other| Self::value_cmp(&receiver, other))
                     .unwrap_or(std::cmp::Ordering::Equal);
-                return Ok(Self::ordering_value(ord));
+                return Ok(Value::ordering(ord));
             }
             Value::Enum { .. } if method == "compare" => {
                 let ord = args.first()
                     .and_then(|other| Self::value_cmp(&receiver, other))
                     .unwrap_or(std::cmp::Ordering::Equal);
-                return Ok(Self::ordering_value(ord));
+                return Ok(Value::ordering(ord));
             }
             // ORD1: lt/le/gt/ge derived from compare via value_cmp
             Value::Struct(..) | Value::Enum { .. }
@@ -499,25 +499,6 @@ impl Interpreter {
             ty: type_name,
             method: method.to_string(),
         })
-    }
-
-    /// `Ordering` as a value. The variant index is its declaration order —
-    /// Less(0), Equal(1), Greater(2) — which is what makes two `Ordering`s
-    /// comparable to each other; every one of these used to be built with
-    /// index 0.
-    fn ordering_value(ord: std::cmp::Ordering) -> Value {
-        let (variant, index) = match ord {
-            std::cmp::Ordering::Less => ("Less", 0),
-            std::cmp::Ordering::Equal => ("Equal", 1),
-            std::cmp::Ordering::Greater => ("Greater", 2),
-        };
-        Value::Enum {
-            name: "Ordering".to_string(),
-            variant: variant.to_string(),
-            fields: vec![],
-            variant_index: index,
-            origin: None,
-        }
     }
 }
 

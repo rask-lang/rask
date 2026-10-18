@@ -15,6 +15,9 @@
 // came later and elsewhere, as the evaluator not finding a function it had
 // never registered.
 
+import fs
+import time
+
 // ERROR: `comptime func` reaching I/O [E0875]
 comptime func noisy(n: i64) -> i64 {
     println("computing {n}")
@@ -31,6 +34,21 @@ func helper(n: i64) -> i64 {
 // ERROR: reached through a call [E0875]
 comptime func indirect(n: i64) -> i64 {
     return helper(n) * 2
+}
+
+// The stdlib says which of its functions are I/O on their declarations
+// (`@io`). The name list it replaced didn't have `fs.current_dir`, so this
+// passed the check and failed later as "undefined variable `fs`".
+// ERROR: a stdlib I/O source the old list missed [E0875]
+comptime func here() -> string {
+    return fs.current_dir().as_string()
+}
+
+// The clock doesn't block, but the compiler can't read it for you: the value
+// would be whatever time the build ran. It's state outside the program.
+// ERROR: reading the clock at compile time [E0875]
+comptime func built_at() -> u64 {
+    return time.Instant.now().elapsed().as_nanos()
 }
 
 // FIX 1: drop `comptime` and let each caller decide (CT6 checks it there)

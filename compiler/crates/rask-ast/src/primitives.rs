@@ -28,12 +28,7 @@ pub const FLOATS: &[&str] = &["f32", "f64"];
 /// P4/P5: the non-numeric scalars.
 pub const BOOL_AND_CHAR: &[&str] = &["bool", "char"];
 
-/// Pre-spec spellings the interpreter still accepts: `int` is `i32`, `uint` is
-/// `u64`. Not in `specs/types/primitives.md`, so anything enforcing the spec
-/// leaves them out.
-pub const INT_ALIASES: &[&str] = &["int", "uint"];
-
-/// An integer that fits a register — no 128-bit, no aliases.
+/// An integer that fits a register — no 128-bit.
 pub fn is_machine_integer(name: &str) -> bool {
     SIGNED_INTS.contains(&name) || UNSIGNED_INTS.contains(&name)
 }
@@ -88,9 +83,9 @@ pub fn isize_spelling() -> &'static str {
     if pointer_bits() == 32 { "i32" } else { "i64" }
 }
 
-/// Any integer spelling, 128-bit and aliases included.
+/// Any integer spelling, 128-bit included.
 pub fn is_integer(name: &str) -> bool {
-    is_machine_integer(name) || WIDE_INTS.contains(&name) || INT_ALIASES.contains(&name)
+    is_machine_integer(name) || WIDE_INTS.contains(&name)
 }
 
 pub fn is_float(name: &str) -> bool {
@@ -98,7 +93,7 @@ pub fn is_float(name: &str) -> bool {
 }
 
 /// The spec's primitive set: integers, floats, `bool`, `char`. No `string` —
-/// it's a builtin type with a heap buffer, not a scalar — and no aliases.
+/// it's a builtin type with a heap buffer, not a scalar.
 pub fn is_scalar(name: &str) -> bool {
     is_machine_integer(name)
         || WIDE_INTS.contains(&name)
@@ -106,10 +101,10 @@ pub fn is_scalar(name: &str) -> bool {
         || BOOL_AND_CHAR.contains(&name)
 }
 
-/// Every spelling that names a primitive-ish builtin, including `string` and the
-/// legacy aliases. For code asking "do I recognize this type name at all".
+/// Every spelling that names a primitive-ish builtin, `string` included. For
+/// code asking "do I recognize this type name at all".
 pub fn is_builtin_scalar_or_string(name: &str) -> bool {
-    is_scalar(name) || INT_ALIASES.contains(&name) || name == "string"
+    is_scalar(name) || name == "string"
 }
 
 #[cfg(test)]
@@ -117,7 +112,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_spec_set_excludes_string_and_aliases() {
+    fn the_spec_set_excludes_string() {
         assert!(is_scalar("i64"));
         assert!(is_scalar("usize"));
         assert!(is_scalar("f32"));
@@ -128,33 +123,30 @@ mod tests {
     }
 
     #[test]
-    fn the_wide_set_includes_them() {
+    fn the_wide_set_includes_string() {
         assert!(is_builtin_scalar_or_string("string"));
-        assert!(is_builtin_scalar_or_string("int"));
-        assert!(is_builtin_scalar_or_string("uint"));
+        assert!(!is_builtin_scalar_or_string("int"));
         assert!(is_builtin_scalar_or_string("i8"));
         assert!(!is_builtin_scalar_or_string("Vec"));
     }
 
     #[test]
-    fn integers_cover_both_signs_and_the_aliases() {
+    fn integers_cover_both_signs() {
         for n in SIGNED_INTS.iter().chain(UNSIGNED_INTS.iter()) {
             assert!(is_integer(n), "{} should be an integer", n);
         }
         assert!(is_integer("i128"));
-        assert!(is_integer("int"));
-        assert!(is_integer("uint"));
+        assert!(!is_integer("int"));
         assert!(!is_integer("f64"));
         assert!(!is_integer("bool"));
     }
 
     #[test]
-    fn machine_integers_exclude_the_wide_ones_and_the_aliases() {
+    fn machine_integers_exclude_the_wide_ones() {
         assert!(is_machine_integer("i64"));
         assert!(is_machine_integer("usize"));
         assert!(!is_machine_integer("i128"));
         assert!(!is_machine_integer("u128"));
-        assert!(!is_machine_integer("int"));
     }
 
     /// P2: `usize`/`isize` are pointer-sized, so their width has to come from
@@ -181,7 +173,7 @@ mod tests {
     /// am I asking" ambiguous again.
     #[test]
     fn the_groups_do_not_overlap() {
-        let groups = [SIGNED_INTS, UNSIGNED_INTS, WIDE_INTS, FLOATS, BOOL_AND_CHAR, INT_ALIASES];
+        let groups = [SIGNED_INTS, UNSIGNED_INTS, WIDE_INTS, FLOATS, BOOL_AND_CHAR];
         for (i, a) in groups.iter().enumerate() {
             for b in groups.iter().skip(i + 1) {
                 for name in a.iter() {

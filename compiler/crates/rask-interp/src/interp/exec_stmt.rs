@@ -100,10 +100,11 @@ impl Interpreter {
             }
 
             StmtKind::Return(expr) => {
-                let value = if let Some(e) = expr {
-                    self.eval_expr(e)?
-                } else {
-                    Value::Unit
+                let value = match expr {
+                    // ER9: the checker said which side this return takes.
+                    Some(e) if self.err_returns.contains(&e.id) => Value::err(self.eval_expr(e)?),
+                    Some(e) => self.eval_expr(e)?,
+                    None => Value::Unit,
                 };
                 Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
@@ -498,9 +499,14 @@ impl Interpreter {
                             scope: self.env.capture_shared(),
                             lent: self.env.lent_names(),
                         });
+                        // Blame the line inside the sequence that failed, not
+                        // this loop, as a method call does (#1110).
+                        let outer = self.failed_call_span.take();
                         let driven = self.call_value(seq, vec![Value::Builtin(
                             crate::value::BuiltinKind::SequenceYield,
                         )]);
+                        let inner = self.failed_call_span.take();
+                        self.failed_call_span = outer;
                         let frame = self.yield_stack.pop();
                         // The body's own escape wins over anything the sequence
                         // says on the way out: a `return` in the loop body is
@@ -511,7 +517,7 @@ impl Interpreter {
                         }
                         driven
                             .map(|_| Value::Unit)
-                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))
+                            .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(stmt.span)))
                     }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
@@ -731,13 +737,7 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
         }
         let mut out = value;
         for _ in value_option_depth(&out)..want {
-            out = Value::Enum {
-                name: "Option".to_string(),
-                variant: "Some".to_string(),
-                fields: vec![out],
-                variant_index: 0,
-                origin: None,
-            };
+            out = Value::some(out);
         }
         return out;
     }
@@ -759,26 +759,14 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
         }
         return value;
     }
-    if let Some((_, err)) = super::call::result_sides(ty) {
+    // A bare value here is the success side: only a `return` may put a bare
+    // error on the error side (ER9); a binding needs the whole `T or E`
+    // (ER11), and the checker rejects anything else.
+    if super::call::result_sides(ty).is_some() {
         if matches!(&value, Value::Enum { name, .. } if name == "Result") {
             return value;
         }
-        let err_names = super::call::err_arms(err);
-        let is_err = match &value {
-            Value::Enum { name, .. } => err_names.iter().any(|n| super::call::same_nominal(n, name)),
-            Value::Struct(s) => {
-                let guard = s.lock().unwrap();
-                err_names.iter().any(|n| super::call::same_nominal(n, &guard.name))
-            }
-            _ => false,
-        };
-        return Value::Enum {
-            name: "Result".to_string(),
-            variant: if is_err { "Err".to_string() } else { "Ok".to_string() },
-            fields: vec![value],
-            variant_index: if is_err { 1 } else { 0 },
-            origin: None,
-        };
+        return Value::ok(value);
     }
     value
 }

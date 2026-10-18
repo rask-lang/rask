@@ -181,18 +181,25 @@ fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> 
         return Flatness::NotFlat;
     };
 
-    // R5: reflection sees the monomorphized type. A generic declaration's fields
-    // are written in its type parameters, and substituting them needs the
-    // instantiation, which isn't on the declaration.
-    if !decls.type_params(base).is_empty() {
-        return Flatness::Unknown;
-    }
-
     if seen.iter().any(|s| s == base) {
         // Already on the stack — this arm contributes nothing new.
         return Flatness::Flat;
     }
     seen.push(base.to_string());
+    // R5: reflection sees the monomorphized type, and a generic declaration's
+    // fields are written in parameters the declaration can't fill in. Each
+    // parameter stands in as `()`, the flattest type there is. Flatness only
+    // gets worse as an argument does, so a field that's not flat even then
+    // isn't flat for any argument: `Set<T>` holds a `Map`.
+    let params = decls.type_params(base);
+    let members: Vec<TypeExpr> = if params.is_empty() {
+        members
+    } else {
+        members
+            .iter()
+            .map(|m| m.substitute(&|n| params.iter().any(|p| p == n).then_some(TypeExpr::Unit)))
+            .collect()
+    };
     let mut answer = Flatness::Flat;
     for member in &members {
         match flatness(member, decls, seen) {
@@ -205,36 +212,22 @@ fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> 
         }
     }
     seen.pop();
+    // Flat with `()` filled in says nothing about other arguments.
+    if answer != Flatness::NotFlat && !params.is_empty() {
+        return Flatness::Unknown;
+    }
     answer
 }
 
-/// mem.relocatable/FL2, plus the widths and aliases the spec's list implies.
+/// mem.relocatable/FL2, plus the widths the spec's list implies.
 fn is_flat_primitive(name: &str) -> bool {
-    is_integer(name) || matches!(name, "bool" | "f32" | "f64" | "char" | "int" | "uint")
+    is_integer(name) || matches!(name, "bool" | "f32" | "f64" | "char")
 }
 
-/// FL1's list: the types that own or point at heap memory.
+/// FL1: the types that own or point at heap memory. A runtime handle's
+/// storage is the runtime's; a struct holding one is found through its fields.
 fn is_heap_backed(name: &str) -> bool {
-    matches!(
-        name,
-        "string"
-            | "Path"
-            | "StringView"
-            | "Vec"
-            | "Wide"
-            | "Map"
-            | "Set"
-            | "Shared"
-            | "Mutex"
-            | "Heap"
-            | "Channel"
-            | "Sender"
-            | "Receiver"
-            | "Handle"
-            | "ThreadPool"
-            | "StringBuilder"
-            | "Iterator"
-    )
+    matches!(name, "string" | "StringView") || rask_stdlib::is_runtime_handle(name)
 }
 
 #[cfg(test)]

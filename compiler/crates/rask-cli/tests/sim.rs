@@ -391,6 +391,90 @@ fn a_trace_shows_the_interleaving_that_overdrew_the_account() {
     assert_eq!(saw_100, 2, "each task's printed line is in its lane:\n{text}");
 }
 
+/// A package runs under sim as one program, with the C its `build.rk`
+/// compiles: that C's `getrandom` and `clock_gettime` answer from the seed.
+#[test]
+fn a_package_with_linked_c_runs_under_sim() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("sim_cpkg");
+    let dir = std::env::temp_dir().join(format!("rask_sim_cpkg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+    }
+    let first = printed(&dir, "3", ".");
+    assert!(first[0].ends_with("wall 1577836800"), "the virtual wall clock: {first:?}");
+    assert_eq!(first, printed(&dir, "3", "."), "same seed, same answers");
+    assert_ne!(first, printed(&dir, "4", "."), "another seed, other random bytes");
+}
+
+/// sim/N1: a datagram link is healthy (delayed, in order) or, on some seeds,
+/// bad for the whole run: datagrams lost, repeated and reordered. A protocol
+/// that trusts UDP passes the healthy seeds and fails a bad one, the report
+/// names the link, and the replay line reproduces it.
+#[test]
+fn a_bad_link_breaks_a_protocol_that_trusts_udp() {
+    let (healthy, code) = sim(&["--seed", "1", "udp.rk"]);
+    assert_eq!(code, 0, "seed 1's link is healthy:\n{healthy}");
+
+    let (out, code) = sim(&["--seed", "6", "udp.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        line_with(&out, "sick this seed").contains("datagrams :49152 → :49153 lost, repeated and reordered"),
+        "{out}"
+    );
+    let failure = line_with(&out, "assertion failed").trim().to_string();
+    let replay = line_with(&out, "replay: ").trim().trim_start_matches("replay: ");
+    let seed = replay.split_whitespace().skip_while(|w| *w != "--seed").nth(1).unwrap();
+    let (again, code) = sim(&["--seed", seed, "-f", "once, in order", "udp.rk"]);
+    assert_eq!(code, 1, "{again}");
+    assert_eq!(line_with(&again, "assertion failed").trim(), failure);
+}
+
+/// projects/ting runs QUIC (ngtcp2, linked C) under sim. Its reliable
+/// messages arrive once and in order over the same network that breaks the
+/// naive protocol above, across a sweep wide enough to include bad links.
+/// (With every link made bad, 150 runs pass too.)
+#[test]
+fn ting_delivers_reliable_messages_over_bad_links() {
+    let ting = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../projects/ting");
+    let (out, code) = sim_in(&ting, &["--seed", "1", "--seeds", "30", "."]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("3 tests, 3 passed, 0 failed (90 runs)"), "{out}");
+}
+
+/// What a run printed, read off its trace (a passing run's output isn't shown).
+fn printed(dir: &Path, seed: &str, file: &str) -> Vec<String> {
+    let trace_file = format!("trace.{seed}.json");
+    let (out, code) = sim_in(dir, &["--seed", seed, "--trace", &trace_file, file]);
+    assert_eq!(code, 0, "{out}");
+    let text = std::fs::read_to_string(dir.join(&trace_file)).unwrap();
+    let trace: serde_json::Value = serde_json::from_str(&text).unwrap();
+    trace["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["op"] == "print")
+        .map(|e| e["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// sim/B7, B8: C asking libc for the time, randomness, its pid or memory gets
+/// answers from the seed — a fixed pid, the virtual clocks, a poisoned block
+/// from the fixed-address heap — and random bytes that follow the seed.
+#[test]
+fn linked_c_gets_answers_from_the_seed() {
+    let dir = fixture_copy();
+    let first = printed(&dir, "7", "libc.rk");
+    assert_eq!(first[0], "pid 1000 wall 1577836800 mono 0", "{first:?}");
+    // glibc would hand back 24 usable bytes and leave them as it found them.
+    assert_eq!(first[1], "fresh byte 170, usable 16", "{first:?}");
+    assert_eq!(first, printed(&dir, "7", "libc.rk"), "same seed, same answers");
+    let other = printed(&dir, "8", "libc.rk");
+    assert_ne!(first[2], other[2], "random bytes follow the seed: {first:?} {other:?}");
+}
+
 #[test]
 fn trace_takes_one_schedule() {
     let (out, code) = sim(&["--seeds", "5", "--trace", "x.json", "overdraft.rk"]);

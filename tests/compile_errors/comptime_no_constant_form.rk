@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a compile-time value that can't be computed or held as a constant
+//
+// Spec: ctrl.comptime (CT2, CT58), type.structs (FD1)
+//
+// A `comptime` value is computed while compiling or the program doesn't
+// compile. These used to be quietly built at run time instead (#1552): a const
+// with W0303, a field default with nothing said at all.
+
+interface Opaque {
+    func tag(self) -> i64
+}
+
+struct Marker {
+    public v: i64
+}
+
+Marker implements Opaque {
+    func tag(self) -> i64 {
+        return self.v
+    }
+}
+
+struct Holder {
+    public items: Vec<i64>
+    public n: i64
+}
+
+// ERROR: an `any` value points at a box [E0383]
+const PROBE: any Opaque = comptime { Marker(v: 0) as any Opaque }
+
+// ERROR: a Vec inside a struct owns a heap buffer [E0383]
+const HELD: Holder = comptime { Holder(items: [1, 2], n: 3) }
+
+struct Job {
+    // ERROR: the same rule for a field's default [E0383]
+    public probe: any Opaque = Marker(v: 1) as any Opaque
+    public n: i64
+}
+
+// FIX: build them at run time, without `comptime`
+func held() -> Holder {
+    return Holder(items: [1, 2], n: 3)
+}
+
+func main() {
+    let j = Job(n: 1)
+    println("{PROBE.tag()} {HELD.n} {j.n} {held().n}")
+}

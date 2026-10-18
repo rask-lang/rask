@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An atomic holds its payload at the payload's width and does arithmetic by
+// its kind. The native cell was one 64-bit integer for every payload: a `u8`
+// at 250 plus 10 held 260, so a compare-exchange against the 4 the program
+// read failed; an unsigned `fetch_max` compared signed; and an `f32` went in
+// converted to an integer, so 1.5 came back 1. The interpreter didn't wrap at
+// the payload's width either, and had no float arithmetic.
+
+import sync.Atomic
+import sync.CasFailed
+import sync.Relaxed
+import sync.SeqCst
+
+struct Pair {
+    public a: u16
+    public b: u16
+}
+
+test "a narrow counter wraps in the cell" {
+    let a: Atomic<u8> = Atomic.new(250)
+    assert a.fetch_add(10, Relaxed) == 250
+    assert a.load(Relaxed) == 4
+    let r = a.compare_exchange(4, 9, SeqCst, Relaxed)
+    assert !(r is CasFailed<u8>)
+    assert a.load(Relaxed) == 9
+}
+
+test "a signed payload keeps its sign" {
+    let b: Atomic<i8> = Atomic.new(-1)
+    assert b.fetch_add(-127, Relaxed) == -1
+    assert b.load(Relaxed) == -128
+    assert b.fetch_sub(1, Relaxed) == -128
+    assert b.load(Relaxed) == 127
+}
+
+test "an unsigned payload orders unsigned" {
+    let m: Atomic<u64> = Atomic.new(5)
+    m.fetch_max(18446744073709551615, Relaxed)
+    assert m.load(Relaxed) == 18446744073709551615
+    m.fetch_min(7, Relaxed)
+    assert m.load(Relaxed) == 7
+}
+
+test "floats are floats" {
+    let f: Atomic<f32> = Atomic.new(1.5)
+    assert f.fetch_add(0.25, Relaxed) == 1.5
+    assert f.load(Relaxed) == 1.75
+    let d: Atomic<f64> = Atomic.new(-2.5)
+    assert d.swap(4.0, Relaxed) == -2.5
+    assert d.load(Relaxed) == 4.0
+}
+
+test "a small struct payload" {
+    let p: Atomic<Pair> = Atomic.new(Pair(a: 1, b: 2))
+    p.store(Pair(a: 7, b: 9), Relaxed)
+    let got = p.load(Relaxed)
+    assert got.a == 7
+    assert got.b == 9
+}

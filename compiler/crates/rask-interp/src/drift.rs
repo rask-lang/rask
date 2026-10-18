@@ -43,26 +43,14 @@ fn dummy_value(type_name: &str) -> Value {
             rack.lock().unwrap().insert(Arc::clone(&node));
             Value::Link { rack_id, node }
         }
-        "Result" => Value::Enum {
-            name: "Result".to_string(),
-            variant: "Ok".to_string(),
-            fields: vec![Value::Unit],
-            variant_index: 0, origin: None,
-        },
-        "Option" => Value::Enum {
-            name: "Option".to_string(),
-            variant: "Some".to_string(),
-            fields: vec![Value::Unit],
-            variant_index: 0, origin: None,
-        },
         "File" => Value::File(Arc::new(Mutex::new(None))),
         "Metadata" => Value::new_struct(
             "Metadata".to_string(),
             IndexMap::new(),
             None,
         ),
-        "TcpListener" => Value::TcpListener(Arc::new(Mutex::new(None))),
-        "TcpConnection" => Value::TcpConnection(Arc::new(Mutex::new(None))),
+        "TcpListener" => Value::TcpListener(Arc::new(Mutex::new(crate::value::Socket::Failed))),
+        "TcpConnection" => Value::TcpConnection(Arc::new(Mutex::new(crate::value::Socket::Failed))),
         "JsonValue" => Value::Enum {
             name: "JsonValue".to_string(),
             variant: "Null".to_string(),
@@ -176,41 +164,54 @@ fn rask_implemented_types_have_no_rust_copy() {
 
 #[test]
 fn all_registered_type_methods_implemented() {
-    use rask_stdlib::registry::{is_codegen_only_type, codegen_only_methods};
+    use rask_stdlib::registry::is_codegen_only_type;
 
     let mut interp = Interpreter::new();
     let reg = rask_stdlib::StubRegistry::load();
+    let mut missing = Vec::new();
     for &type_name in rask_stdlib::registry::REGISTERED_TYPES {
         // Skip types that only exist for native codegen
         if is_codegen_only_type(type_name) {
             continue;
         }
         let dummy = dummy_value(type_name);
-        let skip = codegen_only_methods(type_name);
         // Written in Rask: `rask_implemented_types_have_no_rust_copy` checks
         // the opposite for these.
         if rask_stdlib::registry::is_rask_implemented(type_name) {
             continue;
         }
-        for &method in rask_stdlib::registry::type_method_names(type_name) {
-            if skip.contains(&method) {
-                continue;
-            }
+        for method in rask_stdlib::registry::type_method_names(type_name) {
             // A method with a Rask body in stdlib/*.rk runs that body, which
             // this bare interpreter hasn't loaded. `File.read_bytes` is one.
-            let rask_bodied = reg
-                .get_type(type_name)
-                .and_then(|ty| ty.methods.iter().find(|m| m.name == method))
-                .is_some_and(|m| m.has_body);
-            if rask_bodied {
+            let stub = reg.lookup_method(type_name, method);
+            if stub.is_some_and(|m| m.has_body) {
                 continue;
             }
-            assert!(
-                interp.has_method_dispatch(dummy.clone(), method),
-                "{type_name}.{method} registered in rask-stdlib but interpreter returns NoSuchMethod"
-            );
+            // Inherited from `Sequence` (type.sequence/SEQ49): a generated
+            // forwarder to `as_sequence()`, Rask on both backends.
+            if stub.is_none() && reg.get_type(type_name).is_some() {
+                continue;
+            }
+            // Called on the type, `f64.from_bits(…)`, so there's no value to
+            // dispatch on.
+            if stub.is_some_and(|m| !m.takes_self) {
+                continue;
+            }
+            // The compiler's own, not a method table's: `staged` only exists
+            // as the source of a `with`.
+            if stub.is_some_and(|m| m.builtin) {
+                continue;
+            }
+            if !interp.has_method_dispatch(dummy.clone(), method) {
+                missing.push(format!("{type_name}.{method}"));
+            }
         }
     }
+    assert!(
+        missing.is_empty(),
+        "declared in stdlib/*.rk, but the interpreter answers NoSuchMethod: {}",
+        missing.join(", ")
+    );
 }
 
 // Every raw-pointer method has to answer. `PTR_METHODS` is the one list — the
@@ -263,7 +264,7 @@ fn all_registered_module_methods_implemented() {
     let mut interp = Interpreter::new();
     for &module in rask_stdlib::registry::REGISTERED_MODULES {
         let kind = module_kind(module);
-        for &method in rask_stdlib::registry::module_method_names(module) {
+        for method in rask_stdlib::registry::module_method_names(module) {
             let in_rust = interp.has_module_dispatch(&kind, method);
             let in_rask = stubs
                 .lookup_method(module, method)
@@ -275,5 +276,79 @@ fn all_registered_module_methods_implemented() {
                  either side: no Rust dispatch in rask-interp, no Rask body in stdlib/{module}.rk"
             );
         }
+    }
+}
+
+/// A stdlib enum value built in Rust carries the tag the interpreter reads off
+/// that enum's declaration, so ordering and hashing treat it like one the
+/// program built. Each site used to spell its own tag.
+#[test]
+fn rust_built_enums_carry_the_declared_tags() {
+    let mut interp = Interpreter::new();
+    interp.register_stdlib_enums();
+    let tag = |v: &Value| match v {
+        Value::Enum { variant_index, .. } => *variant_index,
+        other => panic!("not an enum: {other:?}"),
+    };
+    for (enum_name, variant) in [
+        ("IoError", "NotFound"),
+        ("IoError", "Other"),
+        ("IoError", "Cancelled"),
+        ("JsonError", "MissingField"),
+        ("ConvertError", "NotFinite"),
+        ("ParseError", "OutOfRange"),
+        ("SelectError", "Cancelled"),
+        ("TryReceiveError", "Closed"),
+        ("Ordering", "Greater"),
+        ("Ordering", "SeqCst"),
+    ] {
+        let built = Value::stdlib_enum(enum_name, variant, vec![]);
+        let declared = interp.enum_variant(enum_name, variant, vec![]).unwrap();
+        assert_eq!(tag(&built), tag(&declared), "{enum_name}.{variant}");
+    }
+    assert_eq!(tag(&Value::none()), rask_stdlib::wrappers::ABSENT_TAG);
+    assert_eq!(tag(&Value::err(Value::Unit)), rask_stdlib::wrappers::ABSENT_TAG);
+}
+
+/// Module functions whose Rask body calls libc through `extern "C"`, which the
+/// interpreter can't run, so it still answers them from a Rust copy. Only ever
+/// shrinks: each one leaves by gaining an `@native` seam the interpreter
+/// answers instead, as `fs.open` did (#1562).
+const MODULE_FUNCTIONS_WITH_A_RUST_COPY: &[&str] = &[
+    "fs.read_text", "fs.read_bytes", "fs.write_text", "fs.write_bytes",
+    "fs.exists", "fs.read_lines", "fs.absolute_path", "fs.copy", "fs.rename",
+    "fs.remove_file", "fs.create_dir", "fs.create_dir_all", "fs.append_text",
+    "fs.list_dir", "fs.metadata", "fs.current_dir", "fs.home_dir",
+];
+
+/// A module function written in Rask runs that body on the interpreter too.
+/// The interpreter tries its Rust arms first, so a Rust copy of a function that
+/// has a Rask body silently wins, and the two backends run different code:
+/// `net.tcp_connect` had its address rules copied "in step" by comment.
+#[test]
+fn module_functions_with_a_rask_body_have_no_rust_copy() {
+    let stubs = rask_stdlib::StubRegistry::load();
+    let interp = Interpreter::new();
+    let mut copies = Vec::new();
+    for &module in rask_stdlib::registry::REGISTERED_MODULES {
+        let kind = module_kind(module);
+        for m in stubs.methods(module) {
+            if m.has_body && interp.has_module_dispatch(&kind, &m.name) {
+                copies.push(format!("{module}.{}", m.name));
+            }
+        }
+    }
+    for copy in &copies {
+        assert!(
+            MODULE_FUNCTIONS_WITH_A_RUST_COPY.contains(&copy.as_str()),
+            "{copy} has a Rask body in stdlib/*.rk and a Rust copy in rask-interp. \
+             Answer its `@native` seam instead and delete the copy"
+        );
+    }
+    for listed in MODULE_FUNCTIONS_WITH_A_RUST_COPY {
+        assert!(
+            copies.iter().any(|c| c == listed),
+            "{listed} no longer has a Rust copy; take it off MODULE_FUNCTIONS_WITH_A_RUST_COPY"
+        );
     }
 }

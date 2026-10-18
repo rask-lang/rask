@@ -300,6 +300,9 @@ extend string {
 // aggregate at function boundaries while call sites still pass the
 // handle, so `mutate b: StringBuilder` crashed natively.
 
+// No release: `build()` takes the builder away, so freeing one an owner
+// still names would free a block that's already gone.
+@handle
 public struct StringBuilder { }
 
 extend StringBuilder {
@@ -376,6 +379,7 @@ extend StringView {
 //
 // Owned null-terminated string for C FFI. Move on assignment (not Copy).
 
+@handle(release: "rask_cstring_free")
 public struct cstring { }
 
 extend cstring {

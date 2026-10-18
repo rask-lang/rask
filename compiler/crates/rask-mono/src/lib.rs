@@ -9,6 +9,7 @@
 
 pub mod drop_names;
 pub mod abi;
+pub mod runtime_abi;
 mod instantiate;
 mod layout;
 mod reachability;
@@ -16,7 +17,7 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
-    is_stdlib_span, ordering_layout, field_type, type_size_align,
+    is_stdlib_span, ordering_layout, field_type, type_size_align, wrapper_layout,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
@@ -57,6 +58,8 @@ pub struct MonoProgram {
     /// here — so without these, every lookup inside an instantiated body misses
     /// and lowering falls back to guessing from AST shape.
     pub instantiated_node_types: HashMap<NodeId, Type>,
+    /// Which original node each node of an instantiated body copies.
+    pub node_origins: HashMap<NodeId, NodeId>,
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
     /// OR1: operator calls a conformance answered, in instantiated bodies.
     pub instantiated_operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
@@ -64,6 +67,8 @@ pub struct MonoProgram {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    /// ER9: error-side returns in instantiated bodies.
+    pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     pub instantiated_field_reuses: HashSet<NodeId>,
     /// Closures in instantiated bodies that may not reach another task, each
@@ -89,6 +94,8 @@ pub struct NodeRecords {
     pub error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape.
     pub fallback_keeps_shape: HashSet<NodeId>,
+    /// ER9: `return` values that go to the error side.
+    pub err_returns: HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them.
     pub escaping_closures: HashSet<NodeId>,
     /// Assignments whose new value takes the old one (ownership).
@@ -106,6 +113,7 @@ impl NodeRecords {
             operator_targets: typed.operator_targets.clone(),
             error_wraps: typed.error_wraps.clone(),
             fallback_keeps_shape: typed.fallback_keeps_shape.clone(),
+            err_returns: typed.err_returns.clone(),
             escaping_closures: typed.escaping_closures.clone(),
             field_reuses: typed.field_reuses.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
@@ -124,6 +132,7 @@ impl MonoProgram {
             .extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
         r.error_wraps.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
         r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
+        r.err_returns.extend(self.instantiated_err_returns.iter().copied());
         r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
         r.field_reuses.extend(self.instantiated_field_reuses.iter().copied());
         r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
@@ -407,10 +416,16 @@ fn lay_out_instance(
         _ => return,
     };
     let held = inline_params.get(base);
-    // Only when an argument the type holds by value overflows the shared slot...
+    // Only when an argument the type holds by value overflows the shared slot,
+    // or is a `T?` / `T or E` / union at any size. The shared slot is an `i64`,
+    // and a wrapper there isn't wrapped: `Holder<bool?>(v: true)` stored a bare
+    // `true` and the read found no tag. A `bool?` is two bytes now, so the size
+    // alone no longer catches it...
     let overflows = args.iter().enumerate().any(|(i, a)| {
         held.map_or(true, |flags| flags.get(i).copied().unwrap_or(true))
-            && inline_arg_size(a, inst.type_names, inst.types, layout_cache).is_some_and(|size| size > 8)
+            && (matches!(a, Type::Result { .. } | Type::Union(_))
+                || inline_arg_size(a, inst.type_names, inst.types, layout_cache)
+                    .is_some_and(|size| size > 8))
     });
     // ...or when it owns storage. A container argument fits the shared word
     // fine, and that is the problem: the shared layout says `i64`, the release
@@ -1104,10 +1119,12 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         instantiated_node_types: mono.instantiated_node_types,
+        node_origins: mono.node_origins,
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_operator_targets: mono.instantiated_operator_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
+        instantiated_err_returns: mono.instantiated_err_returns,
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
         instantiated_field_reuses: mono.instantiated_field_reuses,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
@@ -1300,6 +1317,7 @@ mod tests {
             conformance_interfaces: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            err_returns: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
@@ -1308,7 +1326,6 @@ mod tests {
             else_binding_types: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
-            channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: std::collections::HashMap::new(),
@@ -1572,10 +1589,10 @@ mod tests {
         assert_eq!(result.struct_layouts.len(), 1);
         let container = &result.struct_layouts[0];
         assert_eq!(container.name, "Container");
-        // Kind enum: tag(8) + field_x(8) + field_y(8) = 24 bytes
+        // Kind enum: tag(1) + padding(3) + x(4) + y(4) = 12 bytes.
         // Container should embed Kind at its full size, not the (8,8) default.
         let kind_field = container.fields.iter().find(|f| f.name == "kind").unwrap();
-        assert_eq!(kind_field.size, 24, "Kind field should be 24 bytes (tag + 2 fields), not 8");
+        assert_eq!(kind_field.size, 12, "Kind field should be 12 bytes (tag + 2 fields), not 8");
     }
 
     // ── Instantiation ───────────────────────────────────────────

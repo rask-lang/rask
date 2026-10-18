@@ -93,16 +93,6 @@ fn is_link_to(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> bool {
     link_target(v, rack_id).is_some_and(|n| Arc::ptr_eq(&n, dead))
 }
 
-fn option_none() -> Value {
-    Value::Enum {
-        name: "Option".to_string(),
-        variant: "None".to_string(),
-        fields: vec![],
-        variant_index: 1,
-        origin: None,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Registration — recording who points at whom, as links are stored
 // ---------------------------------------------------------------------------
@@ -386,7 +376,7 @@ fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, rack_id: u32, dead: &
     };
     if is_link_to(&current, rack_id, dead) {
         EDGES_FIXED.fetch_add(1, Ordering::Relaxed);
-        holder.lock().unwrap().fields.insert(field.to_string(), option_none());
+        holder.lock().unwrap().fields.insert(field.to_string(), Value::none());
         return;
     }
     // The backlink may name a field whose edge now sits inside a container the

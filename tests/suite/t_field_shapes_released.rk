@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct or a variant gives back what every one of its fields holds, whatever
+// shape the field is. The release walk over a struct's fields used the fields'
+// checker types and only knew strings, containers, boxes and nested structs, so
+// a tuple, a fixed array or an optional field was skipped and its strings and
+// vectors leaked: 200 of these leaked 1300 allocations. A vector's element
+// description had the same gap, so 50 elements leaked 300.
+
+struct Holder {
+    pair: (string, Vec<i64>)
+    maybe: Vec<string>?
+    names: [string; 2]
+    tag: string
+}
+
+struct Rec {
+    pair: (string, Vec<i64>)
+    maybe: Vec<string>?
+    id: i64
+}
+
+enum Shape {
+    Many((string, Vec<i64>))
+    Few(string)
+}
+
+func make(n: i64) -> Holder {
+    mut v: Vec<i64> = Vec.new()
+    v.push(n)
+    mut w: Vec<string> = Vec.new()
+    w.push("a string well past the inline limit {n}")
+    return Holder(
+        pair: ("another heap string past the limit {n}", v),
+        maybe: w,
+        names: ["first long string past inline {n}", "second long string past inline {n}"],
+        tag: "tag string that is long enough {n}",
+    )
+}
+
+func shape(n: i64) -> Shape {
+    mut v: Vec<i64> = Vec.new()
+    v.push(n)
+    if n % 2 == 0 {
+        return Shape.Many(("many heap string past inline {n}", v))
+    }
+    return Shape.Few("few heap string past inline {n}")
+}
+
+test "every field shape is released" {
+    mut total = 0
+    for i in 0..200 {
+        let h = make(i)
+        total += h.pair.1.len()
+        assert h.names[1].len() > 0
+        let s = shape(i)
+        match s {
+            Shape.Many(p) => total += p.1.len()
+            Shape.Few(t) => total += t.len()
+        }
+    }
+    assert total == 3345
+}
+
+func rec(n: i64) -> Rec {
+    mut v: Vec<i64> = Vec.new()
+    v.push(n)
+    mut w: Vec<string> = Vec.new()
+    w.push("an element string long enough for the heap {n}")
+    return Rec(pair: ("a pair string long enough for the heap {n}", v), maybe: w, id: n)
+}
+
+test "a vector's elements release every field shape" {
+    mut recs: Vec<Rec> = Vec.new()
+    for i in 0..50 {
+        recs.push(rec(i))
+    }
+    mut total = 0
+    for r in recs {
+        total += r.pair.1[0] + r.id
+    }
+    assert total == 2450
+}

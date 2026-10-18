@@ -212,52 +212,87 @@ enum WrapLayer {
     Result { err: MirType },
 }
 
-/// Metadata for a comptime-evaluated global constant.
+/// Every value the program computes at compile time, handed down from the
+/// fold (ctrl.comptime/CT2, CT56). A `comptime` position never reaches MIR as
+/// code to run: it reaches it as the value, or the program didn't compile.
+#[derive(Debug, Clone, Default)]
+pub struct Folded {
+    /// Each folded node — a `comptime` block, a call to a `comptime func` —
+    /// and where its value lives.
+    pub nodes: HashMap<NodeId, FoldedNode>,
+    /// Module consts whose value is folded, and the node holding it.
+    pub consts: HashMap<String, NodeId>,
+    /// The data the values live in, by symbol.
+    pub data: HashMap<String, ComptimeGlobalMeta>,
+    /// Each `comptime` statement the fold settled, by the statement.
+    pub statements: HashMap<NodeId, FoldedStmt>,
+}
+
+/// What a `comptime` statement came to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FoldedStmt {
+    /// A `comptime if`: which branch the program keeps — `true` the first.
+    /// Only that branch is code; the other was never there.
+    Branch(bool),
+    /// A `comptime { … }` of statements: it ran while compiling, and nothing
+    /// of it is left to run.
+    Ran,
+}
+
+/// One folded value: its data symbol, and the MIR type its bytes were written
+/// as. The bytes and the type come from the same place, so a read can't pick
+/// a width the write didn't use.
+#[derive(Debug, Clone)]
+pub struct FoldedNode {
+    pub symbol: String,
+    pub ty: MirType,
+}
+
+/// What a folded value's data holds.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FoldedForm {
+    /// The value exactly as it sits in memory; a use copies it out.
+    Value,
+    /// A string's characters. A use is a string literal, which is already
+    /// const data with a sentinel refcount (#1074).
+    Text,
+    /// A list's elements. A use builds a `Vec` the user owns from them.
+    List,
+    /// A map's entries, key then value. A use inserts them into a new map: a
+    /// hash table seeds its layout per process, so there's no table to emit
+    /// (#1075).
+    Map,
+}
+
+/// The data behind a folded value.
 #[derive(Debug, Clone)]
 pub struct ComptimeGlobalMeta {
+    pub form: FoldedForm,
     pub bytes: Vec<u8>,
-    /// Element count (for Vec/Array globals)
+    /// Element count (for a list or a map)
     pub elem_count: usize,
-    /// Type prefix for method dispatch ("Vec", "Array", etc.)
-    pub type_prefix: String,
-    /// What the elements are, for a Vec/Array global. Without it, indexing one
-    /// had no element type to resolve and lowering fell back to a guess.
-    pub elem_type: Option<String>,
-    /// What a folded `Map`'s keys and values are. Lowering needs both to size
-    /// the slots in the blob and to build the map they go into.
-    pub map_types: Option<(String, String)>,
-    /// `(byte offset, text)` for each element string too long to sit inline.
+    /// What a list's elements are, from its checked type. Without it, indexing
+    /// one had no element type to resolve, and an empty `Vec<string>` came out
+    /// with word-sized slots for sixteen-byte strings.
+    pub elem: Option<MirType>,
+    /// What a folded `Map`'s keys and values are. The blob is its entries as
+    /// `(K, V)` tuples, and lowering builds the map they go into.
+    pub map_types: Option<(MirType, MirType)>,
+    /// `(byte offset, text)` for each string too long to sit inline.
     /// Codegen emits a static header for the text and writes its address at the
     /// offset — a pointer isn't a byte, so it can't travel in `bytes`.
     pub string_relocs: Vec<(usize, String)>,
-    /// The layout the bytes are laid out in, when the value is a struct or an
-    /// enum. `bytes` is then the value exactly as it sits in memory, and a
-    /// use copies it out.
-    pub aggregate: Option<ConstAggregate>,
 }
 
-/// Which layout a folded struct or enum constant was written in: an index
-/// into the program's struct or enum layouts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConstAggregate {
-    Struct(usize),
-    Enum(usize),
+/// The data symbol for a folded node.
+pub fn folded_symbol(node: NodeId) -> String {
+    format!("__comptime_{}", node.0)
 }
 
 /// Prefix for the writable data slot holding a module-level const's value.
 /// Codegen finds the slots by scanning `GlobalRef` names for this prefix, so
 /// the two sides can't drift apart.
 pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
-
-/// The key a comptime-folded *local* is stored under.
-///
-/// A comptime global map is shared by the whole program, and a bare binding name
-/// isn't unique in it: two functions each with a `let v = f()` collided, and one
-/// read the other's value and width (#825). The owning function's name makes it
-/// unique. `$` rather than `::` because the key becomes a data symbol name.
-pub fn comptime_local_key(fn_name: &str, binding: &str) -> String {
-    format!("{}$local${}", fn_name, binding)
-}
 
 /// Data-slot name for a module-level const.
 pub fn const_slot_name(const_name: &str) -> String {
@@ -283,24 +318,6 @@ fn const_init_is_literal(init: &Expr) -> bool {
     )
 }
 
-/// Does a value of this type live in memory, with the local holding a pointer
-/// to it? Those go on the heap so the init thunk's frame isn't captured.
-fn mir_ty_is_aggregate(ty: &MirType) -> bool {
-    matches!(
-        ty,
-        MirType::Struct(_)
-            | MirType::Enum(_)
-            | MirType::Tuple(_)
-            | MirType::Result { .. }
-            | MirType::Option(_)
-            | MirType::Union(_)
-            | MirType::Array { .. }
-            | MirType::SimdVector { .. }
-            | MirType::String
-            | MirType::InterfaceObject { .. }
-    )
-}
-
 /// Empty tables, for the fields a caller doesn't have. `'static`, so they
 /// satisfy any `MirContext<'a>`.
 mod empty {
@@ -316,7 +333,7 @@ mod empty {
         };
     }
     empty_of!(strings, std::collections::HashSet<String>);
-    empty_of!(comptime_globals, HashMap<String, ComptimeGlobalMeta>);
+    empty_of!(folded, Folded);
     empty_of!(node_names, HashMap<NodeId, String>);
     empty_of!(nominal_map, HashMap<String, Type>);
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
@@ -357,6 +374,7 @@ impl<'a> MirContext<'a> {
             operator_targets: &records.operator_targets,
             error_wraps: &records.error_wraps,
             fallback_keeps_shape: &records.fallback_keeps_shape,
+            err_returns: &records.err_returns,
             escaping_closures: &records.escaping_closures,
             field_reuses: &records.field_reuses,
             task_bound_closures: &records.task_bound_closures,
@@ -368,7 +386,7 @@ impl<'a> MirContext<'a> {
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
-            comptime_globals: empty::comptime_globals(),
+            folded: empty::folded(),
             extern_funcs: empty::strings(),
             package_modules: empty::strings(),
             line_map: None,
@@ -379,18 +397,14 @@ impl<'a> MirContext<'a> {
             decode_defaults: empty::decode_defaults(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
-            comptime_interp: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(Default::default()),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
-    pub fn with_comptime_globals(
-        mut self,
-        globals: &'a HashMap<String, ComptimeGlobalMeta>,
-    ) -> Self {
-        self.comptime_globals = globals;
+    pub fn with_folded(mut self, folded: &'a Folded) -> Self {
+        self.folded = folded;
         self
     }
 
@@ -437,10 +451,6 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_comptime_interp(mut self, interp: rask_comptime::ComptimeInterpreter) -> Self {
-        self.comptime_interp = Some(std::cell::RefCell::new(interp));
-        self
-    }
 }
 
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
@@ -468,9 +478,9 @@ pub struct MirContext<'a> {
     /// asking about exactly those (#791). This is the declarations as the checker
     /// recorded them — the same thing the interpreter reads off its AST maps.
     pub type_defs: &'a rask_types::TypeTable,
-    /// Comptime-evaluated global constants (name → metadata).
-    /// MIR lowering emits GlobalRef for these instead of lowering the init expr.
-    pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
+    /// Every value computed at compile time. Lowering reads these instead
+    /// of lowering the code that would compute them.
+    pub folded: &'a Folded,
     /// Names of extern "C" functions — calls emit FunctionRef::extern_c().
     pub extern_funcs: &'a std::collections::HashSet<String>,
     /// Names of imported external packages — used to recognize cross-package
@@ -495,9 +505,6 @@ pub struct MirContext<'a> {
     /// Tracking paths seen with more than one element type. Kept out of
     /// `shared_elem_types` for good.
     pub shared_elem_conflicts: std::cell::RefCell<std::collections::HashSet<String>>,
-    /// Comptime interpreter for evaluating `comptime if` during lowering.
-    /// None in tests or when cfg is unavailable.
-    pub comptime_interp: Option<std::cell::RefCell<rask_comptime::ComptimeInterpreter>>,
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
@@ -509,6 +516,8 @@ pub struct MirContext<'a> {
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
     pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
+    /// ER9: `return` values that go to the error side.
+    pub err_returns: &'a std::collections::HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
@@ -590,8 +599,8 @@ impl<'a> MirContext<'a> {
 
     /// Empty context for tests that don't need layouts or type information.
     pub fn empty_with_map(map: &'a HashMap<NodeId, Type>) -> MirContext<'a> {
-        static EMPTY_COMPTIME: std::sync::LazyLock<HashMap<String, ComptimeGlobalMeta>> =
-            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_FOLDED: std::sync::LazyLock<Folded> =
+            std::sync::LazyLock::new(Folded::default);
         static EMPTY_EXTERNS: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_PACKAGES: std::sync::LazyLock<std::collections::HashSet<String>> =
@@ -628,18 +637,18 @@ impl<'a> MirContext<'a> {
             node_types: map,
             type_names: &EMPTY_TYPE_NAMES,
             type_defs: &EMPTY_TYPE_DEFS,
-            comptime_globals: &EMPTY_COMPTIME,
+            folded: &EMPTY_FOLDED,
             extern_funcs: &EMPTY_EXTERNS,
             package_modules: &EMPTY_PACKAGES,
             line_map: None,
             source_file: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
+            err_returns: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
             field_reuses: &EMPTY_ESCAPING,
             task_bound_closures: &EMPTY_ESCAPING,
@@ -937,7 +946,7 @@ impl<'a> MirContext<'a> {
             // type rather than a fact about a binding. The payload keeps its
             // container kind, since `drop` has to free what it points at.
             ("Heap", [inner]) => MirType::Heap(Box::new(self.payload_of_expr(inner))),
-            ("Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared", _) => MirType::Ptr,
+            (head, _) if lowers_to_ptr(head) => MirType::Ptr,
             _ => {
                 // A generic instantiation whose type argument is an inline
                 // aggregate has a layout of its own, not found under the base
@@ -989,7 +998,7 @@ impl<'a> MirContext<'a> {
             }
         }
         match name {
-            "Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared" => MirType::Ptr,
+            name if lowers_to_ptr(name) => MirType::Ptr,
             _ => {
                 // An instantiation whose argument is an inline aggregate has a
                 // layout of its own, not found under the base name (#781).
@@ -1062,7 +1071,7 @@ impl<'a> MirContext<'a> {
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
-            "Vec" | "Map" | "Rack" => MirType::Ptr,
+            name if lowers_to_ptr(name) => MirType::Ptr,
             _ => {
                 // A nominal newtype has no layout — it is whatever it wraps.
                 if let Some(underlying) = self.nominal_underlying.get(name) {
@@ -1252,7 +1261,30 @@ impl<'a> MirContext<'a> {
     /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
     /// what it is instead of collapsing to a bare pointer — see
     /// `MirType::Container`.
-    pub(crate) fn payload_to_mir(&self, ty: &Type) -> MirType {
+    /// Every layout's field types as MIR types, for codegen's walks over a
+    /// struct's or a variant's fields.
+    ///
+    /// An instance layout's type-parameter field carries the substituted type,
+    /// so it converts like any other field. A shared layout's still names the
+    /// parameter, which resolves to no layout and comes out a bare word that
+    /// owns nothing.
+    pub fn field_types(&self) -> crate::FieldTypes {
+        let field = |f: &rask_mono::FieldLayout| self.payload_to_mir(&f.ty);
+        crate::FieldTypes {
+            structs: self
+                .struct_layouts
+                .iter()
+                .map(|l| l.fields.iter().map(field).collect())
+                .collect(),
+            variants: self
+                .enum_layouts
+                .iter()
+                .map(|l| l.variants.iter().map(|v| v.fields.iter().map(field).collect()).collect())
+                .collect(),
+        }
+    }
+
+    pub fn payload_to_mir(&self, ty: &Type) -> MirType {
         let mir = self.type_to_mir(ty);
         if mir != MirType::Ptr {
             return mir;
@@ -1913,7 +1945,7 @@ impl<'a> MirLowerer<'a> {
         self.locals.contains_key(name)
             || self.const_slots.contains_key(name)
             || self.pending_module_consts.contains_key(name)
-            || self.ctx.comptime_globals.contains_key(name)
+            || self.ctx.folded.consts.contains_key(name)
     }
 
     /// Record a module-level const's box type from its initializer, e.g.
@@ -1984,7 +2016,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let local_id = self.builder.alloc_local(name.to_string(), ty.clone());
-        if mir_ty_is_aggregate(&ty) {
+        if ty.passed_by_address() {
             let heap = self.builder.alloc_temp(MirType::Ptr);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: heap,
@@ -2012,10 +2044,11 @@ impl<'a> MirLowerer<'a> {
             name: const_slot_name(name),
         }));
 
-        let stored = if mir_ty_is_aggregate(ty) {
+        let aggregate = ty.passed_by_address();
+        let stored = if aggregate {
             // The value sits in this thunk's frame, which is gone by the time
             // anything reads the slot. Copy it to the heap and share that.
-            let size = self.aggregate_alloc_size(ty);
+            let size = self.aggregate_size(ty);
             let heap = self.builder.alloc_temp(MirType::Ptr);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(heap),
@@ -2030,7 +2063,7 @@ impl<'a> MirLowerer<'a> {
                 addr: heap,
                 offset: 0,
                 value,
-                store_size: Some(size),
+                store_size: size,
                 field: None,
             }));
             MirOperand::Local(heap)
@@ -2038,11 +2071,13 @@ impl<'a> MirLowerer<'a> {
             value
         };
 
+        // The slot holds an aggregate's heap address, or a scalar at its own
+        // width.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr,
             offset: 0,
             value: stored,
-            store_size: None,
+            store_size: if aggregate { MirType::Ptr.size() } else { ty.size() },
             field: None,
         }));
     }
@@ -2065,54 +2100,46 @@ impl<'a> MirLowerer<'a> {
         if !is_err {
             return None;
         }
+        self.build_err(val.clone(), val_ty, result_ty)
+    }
+
+    /// `val` on the error side of `result_ty`: tag 1, no origin, the error as
+    /// payload — a union member wrapped into the union first. `None` when
+    /// `result_ty` has no error side.
+    pub(super) fn build_err(
+        &mut self,
+        val: MirOperand,
+        val_ty: &MirType,
+        result_ty: &MirType,
+    ) -> Option<MirOperand> {
+        let MirType::Result { err, .. } = result_ty else { return None };
         let err_ty = (**err).clone();
-        let slot = self.builder.alloc_temp(result_ty.clone());
-        for (offset, word) in [
-            (crate::types::RESULT_TAG_OFFSET, 1),
-            (crate::types::RESULT_ORIGIN_FILE_OFFSET, 0),
-            (crate::types::RESULT_ORIGIN_LINE_OFFSET, 0),
-        ] {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset,
-                value: MirOperand::Constant(MirConst::Int(word)),
-                store_size: Some(8),
-                field: None,
-            }));
-        }
-        let (payload, size) = if err_ty.passed_by_address() {
-            (val.clone(), self.aggregate_alloc_size(&err_ty))
+        let payload = if matches!(err_ty, MirType::Union(_)) && err_ty != *val_ty {
+            self.wrap_operand_into_union(&val, val_ty, &err_ty)?
         } else {
-            (self.widen_scalar_payload(val.clone(), &err_ty), 8)
+            val
         };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: crate::types::RESULT_PAYLOAD_OFFSET,
-            value: payload,
-            store_size: Some(size),
-            field: None,
-        }));
+        let slot = self.builder.alloc_temp(result_ty.clone());
+        self.store_wrapper_tag(slot, result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
+        self.store_wrapper_payload(slot, result_ty, payload, &err_ty);
         Some(MirOperand::Local(slot))
     }
 
-    /// Byte size to copy for an aggregate const, rounded up to whole words.
-    fn aggregate_alloc_size(&self, ty: &MirType) -> u32 {
-        let raw = match ty {
+    /// An aggregate's own size, from its layout.
+    pub(crate) fn aggregate_size(&self, ty: &MirType) -> u32 {
+        match ty {
             MirType::Struct(StructLayoutId { id, .. }) => self
                 .ctx
                 .struct_layouts
                 .get(*id as usize)
-                .map(|l| l.size)
-                .unwrap_or(8),
+                .map_or(ty.size(), |l| l.size),
             MirType::Enum(EnumLayoutId { id, .. }) => self
                 .ctx
                 .enum_layouts
                 .get(*id as usize)
-                .map(|l| l.size)
-                .unwrap_or(8),
+                .map_or(ty.size(), |l| l.size),
             other => other.size(),
-        };
-        std::cmp::max(raw, 8).div_ceil(8) * 8
+        }
     }
 
     /// The MIR type a module-level const's slot holds, as measured by
@@ -2152,10 +2179,10 @@ impl<'a> MirLowerer<'a> {
             return Some(self.ctx.type_to_mir(elem));
         }
         let (name, args) = self.generic_head(ty)?;
-        // A box holding a collection is transparent here: `Mutex<Map<K, V>>`
-        // holds what its `Map` holds, and `self.counters.lock().get(k)` asks
+        // A box holding a collection is transparent here: `Shared<Map<K, V>>`
+        // holds what its `Map` holds, and `self.counters.read().get(k)` asks
         // exactly that.
-        if matches!(name.as_str(), "Mutex" | "Shared" | "Cell" | "Heap") {
+        if matches!(name.as_str(), "Shared" | "Heap") {
             let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
             return self.collection_elem_of_checker_type(inner);
         }
@@ -2347,80 +2374,42 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// A folded comptime value for a binding in this function, if there is one.
+    /// A value the fold computed, as a MIR value of the type its bytes were
+    /// written in.
     ///
-    /// The local's own key first — that's where a comptime-folded `let` lives — and
-    /// the bare name second, which is a module-level const (#825).
-    pub(crate) fn comptime_global_for(&self, name: &str) -> Option<(String, &'a ComptimeGlobalMeta)> {
-        let local_key = comptime_local_key(&self.parent_name, name);
-        if let Some(meta) = self.ctx.comptime_globals.get(&local_key) {
-            return Some((local_key, meta));
+    /// - A string is a string literal (`FoldedForm::Text`).
+    /// - A list or a map is built from its elements into a collection the use
+    ///   owns.
+    /// - Anything else is its bytes: a scalar is loaded, an aggregate copied
+    ///   out, so changing the copy leaves the constant alone.
+    pub(crate) fn load_folded(&mut self, folded: &FoldedNode) -> Result<(MirOperand, MirType), LoweringError> {
+        let Some(meta) = self.ctx.folded.data.get(&folded.symbol) else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "folded value `{}` has no data", folded.symbol
+            )));
+        };
+        if meta.form == FoldedForm::Text {
+            let text = String::from_utf8(meta.bytes.clone()).map_err(|_| {
+                LoweringError::InvalidConstruct(format!("folded string `{}` isn't UTF-8", folded.symbol))
+            })?;
+            return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
         }
-        self.ctx.comptime_globals.get(name).map(|m| (name.to_string(), m))
-    }
-
-    /// A folded comptime value as a MIR value of its own type.
-    ///
-    /// - A string is the value itself rather than an address: the fold
-    ///   produced the exact characters, and a string literal is already
-    ///   emitted as const data with a sentinel refcount (#1074).
-    /// - A struct or enum is copied out of its bytes.
-    /// - A list or a map is built from its elements into a collection the
-    ///   caller owns.
-    /// - A scalar is loaded at the width the folded value has, not one a
-    ///   use guesses: an `i64` default read 8 of a `u128`'s 16 bytes (#824).
-    pub(crate) fn load_comptime_value(
-        &mut self,
-        key: &str,
-        meta: &ComptimeGlobalMeta,
-    ) -> Result<(MirOperand, MirType), LoweringError> {
-        if meta.type_prefix == "string" {
-            if let Ok(text) = String::from_utf8(meta.bytes.clone()) {
-                return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
-            }
-        }
-        if let Some(agg) = meta.aggregate {
-            return Ok(self.load_comptime_aggregate(key, agg));
-        }
-        let data = self.builder.alloc_temp(MirType::Ptr);
+        // An aggregate's data is named as a value of its own type, so the
+        // copy below is a copy between two of them. Named as a bare address,
+        // an optional or a result read it as a payload and wrapped it:
+        // `by: (func(i64) -> i64)? = none` arrived as `Some(<address>)`.
+        let in_place = meta.form == FoldedForm::Value && folded.ty.passed_by_address();
+        let data = self.builder.alloc_temp(if in_place { folded.ty.clone() } else { MirType::Ptr });
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
             dst: data,
-            name: key.to_string(),
+            name: folded.symbol.clone(),
         }));
-        if let Some(built) = self.build_comptime_collection(data, meta) {
-            return built;
-        }
-        let ty = Self::comptime_global_mir_type(&meta.type_prefix).unwrap_or(MirType::I64);
-        let value = self.builder.alloc_temp(ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: value,
-            rvalue: MirRValue::Deref(MirOperand::Local(data)),
-        }));
-        Ok((MirOperand::Local(value), ty))
-    }
-
-    /// A folded `Vec` or `Map` constant built into a real collection from the
-    /// bytes at `data`. `None` when the constant is neither.
-    ///
-    /// The bytes are the elements, not a collection: a list's are what
-    /// `rask_vec_from_static` copies in, a map's the entries to insert.
-    pub(crate) fn build_comptime_collection(
-        &mut self,
-        data: LocalId,
-        meta: &ComptimeGlobalMeta,
-    ) -> Option<Result<(MirOperand, MirType), LoweringError>> {
-        match meta.type_prefix.as_str() {
-            "Vec" => {
-                // Elements are machine words, except strings — a `RaskStr`
-                // is sixteen bytes, and the vector has to be told it holds
-                // strings so that what it hands out is retained and released
-                // like one.
-                let holds_strings = meta.elem_type.as_deref() == Some("string");
-                let (elem_size, elem_desc) = if holds_strings {
-                    (16, MirType::String)
-                } else {
-                    (8, MirType::I64)
-                };
+        match meta.form {
+            FoldedForm::List => {
+                // The vector is told what it holds so what it hands out is
+                // retained and released like one.
+                let elem_desc = meta.elem.clone().unwrap_or(MirType::I64);
+                let elem_size = elem_desc.size() as i64;
                 let vec_local = self.builder.alloc_temp(MirType::Ptr);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
@@ -2432,74 +2421,28 @@ impl<'a> MirLowerer<'a> {
                         crate::elem_strs::elem(elem_desc),
                     ],
                 }));
-                Some(Ok((MirOperand::Local(vec_local), MirType::Ptr)))
+                Ok((MirOperand::Local(vec_local), MirType::Ptr))
             }
-            "Map" => {
+            FoldedForm::Map => {
                 // An empty map has no first entry to read the key and value
                 // types off, and holds nothing that could tell the
                 // difference, so any pair will do for one.
-                let (k, v) = meta.map_types.clone().unwrap_or_else(|| {
-                    ("i64".to_string(), "i64".to_string())
-                });
-                Some(self.build_comptime_map(data, meta.elem_count, &k, &v))
+                let (k, v) = meta.map_types.clone().unwrap_or((MirType::I64, MirType::I64));
+                self.build_comptime_map(data, meta.elem_count, k, v)
             }
-            _ => None,
+            FoldedForm::Value | FoldedForm::Text => {
+                let value = self.builder.alloc_temp(folded.ty.clone());
+                let rvalue = if in_place {
+                    // One aggregate assigned from another copies its bytes,
+                    // so the use owns a copy and the data stays as it was.
+                    MirRValue::Use(MirOperand::Local(data))
+                } else {
+                    MirRValue::Deref(MirOperand::Local(data))
+                };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: value, rvalue }));
+                Ok((MirOperand::Local(value), folded.ty.clone()))
+            }
         }
-    }
-
-    /// A folded struct or enum constant, copied out of its bytes into a value
-    /// of its own. The bytes are read-only data and every use is a fresh copy,
-    /// the same as reading any other const.
-    pub(crate) fn load_comptime_aggregate(&mut self, key: &str, agg: ConstAggregate) -> (MirOperand, MirType) {
-        let ty = match agg {
-            ConstAggregate::Struct(i) => {
-                let l = &self.ctx.struct_layouts[i];
-                MirType::Struct(StructLayoutId::new(i as u32, l.size, l.align))
-            }
-            ConstAggregate::Enum(i) => {
-                let l = &self.ctx.enum_layouts[i];
-                MirType::Enum(EnumLayoutId::new(i as u32, l.size, l.align))
-            }
-        };
-        let addr = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
-            dst: addr,
-            name: key.to_string(),
-        }));
-        let value = self.builder.alloc_temp(ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: value,
-            rvalue: MirRValue::Use(MirOperand::Local(addr)),
-        }));
-        (MirOperand::Local(value), ty)
-    }
-
-    /// The MIR type of a folded comptime global, from the width its value
-    /// actually has.
-    ///
-    /// A comptime global carries its bytes and the name of what they are; only
-    /// this said how many bytes to read back, and it listed five widths. Anything
-    /// else fell to `i64`, so a `u128` global was read 8 bytes at a time (the value
-    /// came back mod 2^64) and a `u32` one read 8 bytes out of a 4-byte allocation
-    /// (#824).
-    pub(crate) fn comptime_global_mir_type(prefix: &str) -> Option<MirType> {
-        Some(match prefix {
-            "bool" => MirType::Bool,
-            "i8" => MirType::I8,
-            "i16" => MirType::I16,
-            "i32" => MirType::I32,
-            "i64" => MirType::I64,
-            "i128" => MirType::I128,
-            "u8" => MirType::U8,
-            "u16" => MirType::U16,
-            "u32" => MirType::U32,
-            "u64" => MirType::U64,
-            "u128" => MirType::U128,
-            "char" => MirType::Char,
-            "f32" => MirType::F32,
-            "f64" => MirType::F64,
-            _ => return None,
-        })
     }
 
     /// The `T` in a declared `Owned<T>`, or `None` if the type isn't one.
@@ -2553,24 +2496,21 @@ impl<'a> MirLowerer<'a> {
     /// and a flag can't cross a carrier (#1234, #1256). The allocation is also
     /// what the source asked for — `Heap(…)` is written where the cost is.
     ///
-    /// The block is a word at minimum, so a narrow payload still has a whole
-    /// one behind it. The store writes the payload's own width, which is what
-    /// the load on the other side reads: an `f32` written eight bytes wide and
-    /// read four comes back 0.
+    /// The block is the payload's own size, written and read at that width:
+    /// an `f32` written eight bytes wide and read four comes back 0.
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
-        let width = val_ty.size().max(1);
-        let block = (width as i64).max(8);
+        let width = val_ty.size();
         let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(heap),
             func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(MirConst::Int(block))],
+            args: vec![MirOperand::Constant(MirConst::Int(width.max(1) as i64))],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,
             value: val,
-            store_size: Some(width),
+            store_size: width,
             field: None,
         }));
         MirOperand::Local(heap)
@@ -2670,22 +2610,21 @@ impl<'a> MirLowerer<'a> {
         // A comptime-built global — `const SQUARES = comptime { … }` — records
         // what it holds alongside its bytes.
         if let ExprKind::Ident(name) = &expr.kind {
-            if let Some(elem) = self.ctx.comptime_globals.get(name)
-                .and_then(|g| g.elem_type.as_deref())
+            if let Some(elem) = self.ctx.folded.consts.get(name)
+                .and_then(|node| self.ctx.folded.nodes.get(node))
+                .and_then(|f| self.ctx.folded.data.get(&f.symbol))
+                .and_then(|g| g.elem.clone())
             {
-                return Some(self.ctx.resolve_type_name(elem));
+                return Some(elem);
             }
         }
         // A view over a collection holds what the collection holds, so ask the
         // receiver. `for prime in PRIMES.iter()` types as `Vec<?>` — the checker
         // leaves the element a variable — while `PRIMES` itself knows.
-        // `values` views a collection; `lock`/`read`/`write` unwrap a box
-        // around one. Either way the receiver is the thing that knows.
+        // `values` views a collection; `read`/`write` unwrap a box around
+        // one. Either way the receiver is the thing that knows.
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
-            if matches!(
-                method.as_str(),
-                "values" | "into_iter" | "lock" | "read" | "write"
-            ) {
+            if matches!(method.as_str(), "values" | "into_iter" | "read" | "write") {
                 if let Some(elem) = self.collection_elem_of_expr(object) {
                     return Some(elem);
                 }
@@ -2913,9 +2852,11 @@ impl<'a> MirLowerer<'a> {
         src_ty: &MirType,
         dst_ty: &MirType,
     ) -> MirOperand {
-        // Same question the checker asked when it accepted this coercion, asked
-        // through the same match, so the two halves can't drift.
-        let err_branch_by_type = site.wraps_error_branch();
+        // A `return` that goes to the error side never reaches here: the
+        // checker recorded it (`err_returns`) and the return builds it. What
+        // a catch arm hands back has no such record yet, so it still picks
+        // the side by type.
+        let err_branch_by_type = site == rask_ast::coercion::CoercionSite::CatchArm;
 
         let (dst_layers, _) = Self::wrapper_layers(dst_ty);
         let (src_layers, _) = Self::wrapper_layers(src_ty);
@@ -2969,59 +2910,9 @@ impl<'a> MirLowerer<'a> {
             // there inwards is the type of the slot it builds.
             let layer_ty = Self::peel_layers(dst_ty, depth);
             let slot = self.builder.alloc_temp(layer_ty.clone());
-            let (tag_offset, payload_offset, is_result) = match &dst_layers[depth] {
-                WrapLayer::Option => (
-                    rask_mono::abi::OPTION_TAG_OFFSET,
-                    rask_mono::abi::OPTION_PAYLOAD_OFFSET,
-                    false,
-                ),
-                WrapLayer::Result { .. } => (
-                    rask_mono::abi::RESULT_TAG_OFFSET,
-                    rask_mono::abi::RESULT_PAYLOAD_OFFSET,
-                    true,
-                ),
-            };
-            // tag 0 — Some for an Option, Ok for a Result.
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: tag_offset,
-                value: MirOperand::Constant(MirConst::Int(0)),
-                store_size: Some(8),
-                field: None,
-            }));
-            if is_result {
-                // ER15 origin stays zero on the success side.
-                for off in [
-                    rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET,
-                    rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET,
-                ] {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: slot,
-                        offset: off,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                }
-            }
-            let (payload_op, store_size) = if cur_ty.passed_by_address() {
-                // A wrapper or struct payload lives at its own address; the store
-                // is a memcpy, which is why aggregates never had a depth problem.
-                (cur_op, self.aggregate_alloc_size(&cur_ty))
-            } else {
-                // A scalar payload fills the whole 8-byte slot: floats as f64,
-                // integers full-width. The read side picks the payload apart by
-                // that same rule, so storing a narrow f32 here left the reader
-                // taking 8 bytes of a 4-byte write (#629's rule, one layer up).
-                (self.widen_scalar_payload(cur_op, &cur_ty), 8)
-            };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: payload_offset,
-                value: payload_op,
-                store_size: Some(store_size),
-                field: None,
-            }));
+            // Some for an Option, Ok for a Result; a success carries no origin.
+            self.store_wrapper_tag(slot, &layer_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+            self.store_wrapper_payload(slot, &layer_ty, cur_op, &cur_ty);
             cur_op = MirOperand::Local(slot);
             cur_ty = layer_ty;
         }
@@ -3071,28 +2962,179 @@ impl<'a> MirLowerer<'a> {
         (left, right)
     }
 
-    /// Widen a scalar to what the payload slot holds it as — `rask_mono::abi`
-    /// owns that rule, this just applies it. Returns the operand unchanged when
-    /// it is already that wide.
-    fn widen_scalar_payload(&mut self, op: MirOperand, ty: &MirType) -> MirOperand {
-        let is_float = matches!(ty, MirType::F32 | MirType::F64);
-        let target = match rask_mono::abi::payload_repr(is_float, ty.passed_by_address()) {
-            rask_mono::abi::PayloadRepr::InPlace => return op,
-            rask_mono::abi::PayloadRepr::Float64 => MirType::F64,
-            rask_mono::abi::PayloadRepr::IntFullWidth => MirType::I64,
-        };
-        if ty == &target || ty.size() >= rask_mono::abi::PAYLOAD_SLOT_BYTES {
-            return op;
-        }
-        let tmp = self.builder.alloc_temp(target.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: tmp,
-            rvalue: MirRValue::Cast {
-                value: op,
-                target_ty: target,
-            },
+    /// Write a `T?`'s, a `T or E`'s or a union's tag (a union's member index),
+    /// one byte at the front. A `T or E`'s origin is zeroed with it: a success,
+    /// and an error made here rather than propagated, come from nowhere.
+    pub(crate) fn store_wrapper_tag(&mut self, slot: LocalId, wrapper_ty: &MirType, tag: i64) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_mono::abi::TAG_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(tag)),
+            store_size: rask_mono::abi::TAG_BYTES,
+            field: None,
         }));
-        MirOperand::Local(tmp)
+        if matches!(wrapper_ty, MirType::Result { .. }) {
+            self.zero_result_origin(slot);
+        }
+    }
+
+    /// A scalar operand converted to `slot`'s type when the two differ in
+    /// width or register class, for a store into a slot of that type. A
+    /// narrower value stored as is leaves the bytes above it holding whatever
+    /// was there.
+    ///
+    /// Only a real change converts. A handle typed `i64` going into a `ptr`
+    /// slot is the same word, and copying it through a temporary hid the move
+    /// from the ownership pass, which then dropped the handle on the way out:
+    /// `os.signals` handed back a receiver it had already freed.
+    pub(crate) fn to_slot_width(&mut self, value: MirOperand, slot: &MirType) -> MirOperand {
+        let have = match &value {
+            MirOperand::Local(id) => self.builder.local_type(*id),
+            _ => None,
+        };
+        match have {
+            Some(have)
+                if !have.passed_by_address()
+                    && !slot.passed_by_address()
+                    && have.size() > 0
+                    && slot.size() > 0
+                    && (have.size() != slot.size() || have.is_float() != slot.is_float()) =>
+            {
+                let converted = self.builder.alloc_temp(slot.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: converted,
+                    rvalue: MirRValue::Cast { value, target_ty: slot.clone() },
+                }));
+                MirOperand::Local(converted)
+            }
+            _ => value,
+        }
+    }
+
+    /// A scalar going into a runtime container's slot, as a local of the
+    /// slot's own type: the runtime copies the slot's width out of it, so the
+    /// value has to be that wide and in that register class. A constant has
+    /// no type of its own until it lands in one. Anything passed by address
+    /// already is its storage.
+    pub(crate) fn as_slot_value(&mut self, value: MirOperand, slot: &MirType) -> MirOperand {
+        if slot.passed_by_address() || slot.size() == 0 {
+            return value;
+        }
+        match value {
+            MirOperand::Constant(c) => {
+                let typed = self.builder.alloc_temp(slot.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: typed,
+                    rvalue: MirRValue::Use(MirOperand::Constant(c)),
+                }));
+                MirOperand::Local(typed)
+            }
+            local => self.to_slot_width(local, slot),
+        }
+    }
+
+    /// The arguments `Map_entries` takes for a `Map<key, val>`: the map, then
+    /// where a value sits in an entry and how big an entry is. An entry is a
+    /// `(key, value)` tuple, read by the same code that reads any tuple, so
+    /// its layout comes from `tuple_offsets` rather than the runtime's guess:
+    /// it used to put the value at the next eight-byte boundary, and a
+    /// `Map<i32, i32>` read each value four bytes early.
+    pub(crate) fn map_entries_args(&self, map: MirOperand, key: &MirType, val: &MirType) -> Vec<MirOperand> {
+        let fields = [key.clone(), val.clone()];
+        let value_offset = crate::types::tuple_offsets(&fields)[1];
+        let entry_size = MirType::Tuple(fields.to_vec()).size();
+        vec![
+            map,
+            MirOperand::Constant(MirConst::Int(value_offset as i64)),
+            MirOperand::Constant(MirConst::Int(entry_size as i64)),
+        ]
+    }
+
+    /// Fill `slot`, a local holding a `T?`, with a present `value`. A niche
+    /// option is its payload, so the value is the whole of it.
+    pub(crate) fn fill_present(&mut self, slot: LocalId, value: MirOperand) {
+        let ty = self.builder.local_type(slot).expect("an option slot has a type");
+        let MirType::Option(inner) = &ty else {
+            panic!("fill_present on a {ty:?}, not an option");
+        };
+        if ty.wrapper_layout().is_none() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::Use(value),
+            }));
+            return;
+        }
+        let inner = (**inner).clone();
+        self.store_wrapper_tag(slot, &ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+        self.store_wrapper_payload(slot, &ty, value, &inner);
+    }
+
+    /// Fill `slot`, a local holding a `T?`, with `none`.
+    pub(crate) fn fill_absent(&mut self, slot: LocalId) {
+        let ty = self.builder.local_type(slot).expect("an option slot has a type");
+        if ty.wrapper_layout().is_some() {
+            self.store_wrapper_tag(slot, &ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
+            return;
+        }
+        let sentinel = ty.niche_none().expect("an option with no layout is a niche");
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(sentinel))),
+        }));
+    }
+
+    /// Clear a `T or E`'s origin: no source line, no file.
+    pub(crate) fn zero_result_origin(&mut self, slot: LocalId) {
+        for (offset, size) in [
+            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, rask_mono::abi::RESULT_ORIGIN_LINE_BYTES),
+            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
+        ] {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: slot,
+                offset,
+                value: MirOperand::Constant(MirConst::Int(0)),
+                store_size: size,
+                field: None,
+            }));
+        }
+    }
+
+    /// Write a wrapper's payload at its offset, as the side it fills: a scalar
+    /// converted to that side's type, an aggregate copied whole. `value_ty` is
+    /// the value's own type, which says which side of a `T or E` it is.
+    pub(crate) fn store_wrapper_payload(
+        &mut self,
+        slot: LocalId,
+        wrapper_ty: &MirType,
+        value: MirOperand,
+        value_ty: &MirType,
+    ) {
+        let arm = match wrapper_ty {
+            MirType::Option(inner) => (**inner).clone(),
+            MirType::Result { ok, err } => {
+                if value_ty.without_container_kinds() == err.without_container_kinds() {
+                    (**err).clone()
+                } else {
+                    (**ok).clone()
+                }
+            }
+            _ => value_ty.clone(),
+        };
+        let size = self.aggregate_size(&arm);
+        if size == 0 {
+            return;
+        }
+        // `let opt: i64? = big` with `big: u32` (CV1a): stored at its own
+        // width into an 8-byte payload, it left four bytes of whatever was
+        // there above the value.
+        let value = self.to_slot_width(value, &arm);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: wrapper_ty.payload_offset(),
+            value,
+            store_size: size,
+            field: None,
+        }));
     }
 
     /// `ty` with `n` of its outermost wrapper layers removed.
@@ -3735,6 +3777,9 @@ impl<'a> MirLowerer<'a> {
         let mut thunk_builder = BlockBuilder::new(thunk_name.clone(), MirType::Void);
         let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr);
 
+        let captures = crate::stmt::lay_out_captures(
+            caps.iter().map(|c| (c.outer, c.ty.clone(), c.by_ref, c.copy)),
+        );
         let mut thunk_locals: HashMap<String, (LocalId, MirType)> = HashMap::new();
         let mut thunk_res_local: Option<LocalId> = None;
         for (i, cap) in caps.iter().enumerate() {
@@ -3755,7 +3800,7 @@ impl<'a> MirLowerer<'a> {
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst,
                 env_ptr: env_param,
-                offset: (i as u32) * 8,
+                offset: captures[i].offset,
                 access: if cap.by_ref {
                     crate::CaptureAccess::Borrowed
                 } else {
@@ -3836,17 +3881,6 @@ impl<'a> MirLowerer<'a> {
         self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
-        let captures = caps
-            .iter()
-            .enumerate()
-            .map(|(i, c)| crate::stmt::ClosureCapture {
-                local_id: c.outer,
-                offset: (i as u32) * 8,
-                size: 8,
-                by_ref: c.by_ref,
-                copy: c.copy,
-            })
-            .collect();
         Some((thunk_name, captures))
     }
 
@@ -4003,9 +4037,7 @@ impl<'a> MirLowerer<'a> {
             // data section. Giving it a slot would turn the folded constant
             // back into a runtime load, and any const computed from it would
             // stop folding too.
-            if matches!(c.init.kind, ExprKind::Comptime { .. })
-                || ctx.comptime_globals.contains_key(&c.name)
-            {
+            if ctx.folded.consts.contains_key(&c.name) {
                 continue;
             }
             if let Ok(Some(ty)) = Self::measure_const_init_ty(c, all_decls, ctx) {
@@ -4390,9 +4422,9 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
-                } else if lowerer.ctx.comptime_globals.contains_key(&c.name) {
+                } else if lowerer.ctx.folded.consts.contains_key(&c.name) {
                     // Folded at compile time: a reference reads the folded value
-                    // (`comptime_global_for`). Queueing the initializer as well
+                    // (`load_folded`). Queueing the initializer as well
                     // ran the `comptime` block again at runtime, at the first
                     // reference in every function — inside a loop, once a turn —
                     // and each run built a Vec nothing freed
@@ -4477,30 +4509,11 @@ impl<'a> MirLowerer<'a> {
                 // is inlined.
                 let return_value = if result_void_ok {
                     let wrap_local = lowerer.builder.alloc_temp(ret_ty.clone());
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: wrap_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                    // Zero the origin-file and origin-line fields so they
-                    // don't carry stale bytes when the caller copies the
-                    // whole slot.
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: wrap_local,
-                        offset: 8,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
-                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: wrap_local,
-                        offset: 16,
-                        value: MirOperand::Constant(MirConst::Int(0)),
-                        store_size: Some(8),
-                        field: None,
-                    }));
+                    // The tag and a zeroed origin, so the caller's copy of
+                    // the whole slot carries no stale bytes.
+                    lowerer.store_wrapper_tag(
+                        wrap_local, &ret_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT,
+                    );
                     Some(MirOperand::Local(wrap_local))
                 } else {
                     None
@@ -5010,23 +5023,11 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         let index = self.union_member_index(union_ty, src_ty)?;
-        let member_size = members.get(index).map(|m| m.size()).unwrap_or(8);
+        let member = members.get(index)?.clone();
 
         let slot = self.builder.alloc_temp(union_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: crate::types::UNION_MEMBER_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(index as i64)),
-            store_size: Some(8),
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: slot,
-            offset: crate::types::UNION_PAYLOAD_OFFSET,
-            value: val.clone(),
-            store_size: Some(member_size.max(8)),
-            field: None,
-        }));
+        self.store_wrapper_tag(slot, union_ty, index as i64);
+        self.store_wrapper_payload(slot, union_ty, val.clone(), &member);
         Some(MirOperand::Local(slot))
     }
 
@@ -5044,10 +5045,7 @@ impl<'a> MirLowerer<'a> {
         let bare = ty_name.rsplit('.').next().unwrap_or(ty_name);
         let idx = self.union_member_index_by_name(err.as_ref(), bare)?;
         let member = members.get(idx)?.clone();
-        Some((
-            member,
-            crate::types::RESULT_PAYLOAD_OFFSET + crate::types::UNION_PAYLOAD_OFFSET,
-        ))
+        Some((member, scrutinee_ty.payload_offset() + err.payload_offset()))
     }
 
     pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
@@ -5092,49 +5090,45 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn variant_tag_impl(&self, name: &str) -> i64 {
-        // Well-known built-in variant tags
-        match name {
-            "Some" | "Ok" => 0,
-            "None" | "Err" => 1,
-            _ => {
-                let (enum_name, bare) = match name.rsplit_once('.') {
-                    Some((qualifier, variant)) => (
-                        Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
-                        variant,
-                    ),
-                    None => (None, name),
-                };
-                if let Some(enum_name) = enum_name {
-                    for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
-                        for variant in &layout.variants {
-                            if variant.name == bare {
-                                return variant.tag as i64;
-                            }
-                        }
-                    }
-                    // `Ordering` is registered by the compiler, not declared,
-                    // so it has no layout to read tags from.
-                    if enum_name == "Ordering" {
-                        if let Some(tag) = rask_stdlib::ordering_tag(bare) {
-                            return tag;
-                        }
+        if let Some(tag) = rask_stdlib::wrappers::wrapper_tag(name) {
+            return tag as i64;
+        }
+        let (enum_name, bare) = match name.rsplit_once('.') {
+            Some((qualifier, variant)) => (
+                Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
+                variant,
+            ),
+            None => (None, name),
+        };
+        if let Some(enum_name) = enum_name {
+            for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
+                for variant in &layout.variants {
+                    if variant.name == bare {
+                        return variant.tag as i64;
                     }
                 }
-                // Unqualified, or the qualifier named no known enum: first
-                // layout that declares the variant.
-                for layout in self.ctx.enum_layouts {
-                    for variant in &layout.variants {
-                        if variant.name == bare {
-                            return variant.tag as i64;
-                        }
-                    }
+            }
+            // `Ordering` is registered by the compiler, not declared,
+            // so it has no layout to read tags from.
+            if enum_name == "Ordering" {
+                if let Some(tag) = rask_stdlib::ordering_tag(bare) {
+                    return tag;
                 }
-                // A declared enum wins the bare name; `Ordering` picks up what's
-                // left, which is what `Ordering.Less` arrives as — the qualifier
-                // is dropped before it gets here.
-                rask_stdlib::ordering_tag(bare).unwrap_or(0)
             }
         }
+        // Unqualified, or the qualifier named no known enum: first
+        // layout that declares the variant.
+        for layout in self.ctx.enum_layouts {
+            for variant in &layout.variants {
+                if variant.name == bare {
+                    return variant.tag as i64;
+                }
+            }
+        }
+        // A declared enum wins the bare name; `Ordering` picks up what's
+        // left, which is what `Ordering.Less` arrives as — the qualifier
+        // is dropped before it gets here.
+        rask_stdlib::ordering_tag(bare).unwrap_or(0)
     }
 
     /// Check if an expression's type is niche-optimized Option<Handle<T>>.
@@ -5222,47 +5216,35 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Byte offset for extracting a scalar payload from a tagged Result/Option.
-    /// Scalars get the explicit `RESULT_PAYLOAD_OFFSET` so codegen loads the
-    /// value; aggregates get `None` so codegen returns the payload address.
-    /// (The Option codegen path ignores this offset and uses its own, so a
-    /// single Result-shaped offset is correct for both.)
-    /// True when a tagged payload of this type lives inline and is reached by
-    /// address rather than loaded as a value.
-    fn mir_payload_is_aggregate(ty: &MirType) -> bool {
-        matches!(
-            ty,
-            MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::String
-                // An error union lives in the payload area as
-                // `[member:8][member bytes]`, so it's addressed like any other
-                // aggregate. Loaded as a word instead, the member index came
-                // back as if it were the union's address (#776).
-                | MirType::Union(_)
-                // A `T?` or `T or E` in a payload is inline bytes too — tag
-                // plus payload — so it is reached by address like the rest.
-                // Loaded as a word instead, `maybe(0)!` on a `T? or E` read the
-                // inner option's *tag* and dereferenced it as the option's
-                // address (segfault at the unwrap).
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Array { .. }
-        )
-    }
-
-    fn payload_byte_offset(&self, payload_ty: &MirType) -> Option<u32> {
-        let is_aggregate = Self::mir_payload_is_aggregate(payload_ty);
-        if is_aggregate {
-            None
-        } else {
-            Some(crate::types::RESULT_PAYLOAD_OFFSET)
+    /// Read a wrapper's payload as `arm`: at the offset the wrapper's layout
+    /// gives, in place for an aggregate and loaded at its own width for a
+    /// scalar. The offset is the base local's own when it is a wrapper, and
+    /// `wrapper_ty`'s otherwise.
+    ///
+    /// Saying both outright is the point. When `ok` and `err` disagree about
+    /// being an aggregate, codegen can't tell from the wrapper which one is
+    /// being read (#383/#389).
+    pub(crate) fn payload_field(
+        &self,
+        base: MirOperand,
+        wrapper_ty: &MirType,
+        arm: &MirType,
+    ) -> MirRValue {
+        let stored = match &base {
+            MirOperand::Local(id) => self.builder.local_type(*id).filter(|t| t.wrapper_layout().is_some()),
+            _ => None,
+        };
+        let wrapper = stored.as_ref().unwrap_or(wrapper_ty);
+        MirRValue::Field {
+            byte_offset: Some(wrapper.payload_offset()),
+            access: FieldAccess::for_field(arm, arm.size()),
+            base,
+            field_index: 0,
         }
     }
 
-    /// Extract payload from an option value into a new local.
-    /// Niche: the handle value IS the payload. Tagged: load field 0.
+    /// Extract the payload of a `T?` or one side of a `T or E` into a new
+    /// local. A niche option is its payload.
     fn emit_option_payload(
         &mut self,
         value: MirOperand,
@@ -5273,35 +5255,22 @@ impl<'a> MirLowerer<'a> {
         let rvalue = if is_niche {
             MirRValue::Use(value)
         } else {
-            // For non-aggregate payloads (scalars, Ptr to Vec/Map/etc.), pass an
-            // explicit byte_offset so codegen loads the value at
-            // RESULT_PAYLOAD_OFFSET instead of falling into the aggregate
-            // fast-path that returns the slot address.
             // The container has the last word on how the payload is *stored*.
             // `Map.get` returns `i64?` — a pointer to the map's own value — while
             // the checker calls the payload a `User`. Addressing the container
             // instead of loading that pointer handed back the address of the tag,
             // so `self.users.get(id) ?? …` read a User out of the option's own
             // first bytes and `/users/1` segfaulted.
-            let stored_scalar = match &value {
+            let stored = match &value {
                 MirOperand::Local(id) => self.builder.local_type(*id),
                 _ => None,
-            }
-            .and_then(|t| match t {
-                MirType::Option(inner) => Some((*inner).clone()),
-                _ => None,
-            })
-            .map(|stored| !Self::mir_payload_is_aggregate(&stored))
-            .unwrap_or(false);
-
-            let is_aggregate =
-                Self::mir_payload_is_aggregate(&payload_ty) && !stored_scalar;
-            let byte_offset = if is_aggregate {
-                None
-            } else {
-                Some(crate::types::RESULT_PAYLOAD_OFFSET)
             };
-            MirRValue::Field { base: value, field_index: 0, byte_offset, access: FieldAccess::Word }
+            let arm = match &stored {
+                Some(MirType::Option(inner)) => (**inner).clone(),
+                _ => payload_ty.clone(),
+            };
+            let wrapper = stored.unwrap_or_else(|| MirType::Option(Box::new(payload_ty)));
+            self.payload_field(value, &wrapper, &arm)
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: result, rvalue }));
         result
@@ -5441,13 +5410,7 @@ impl<'a> MirLowerer<'a> {
                 let err_local = self.builder.alloc_temp(err_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: err_local,
-                    rvalue: MirRValue::Field {
-                        base: value,
-                        field_index: 0,
-                        // An enum payload is an aggregate: this is its address.
-                        byte_offset: None,
-                        access: FieldAccess::Word,
-                    },
+                    rvalue: self.payload_field(value, scrutinee_ty, &err_ty),
                 }));
                 self.bind_pattern_fields(pattern, MirOperand::Local(err_local), payload_ty, false, &err_ty);
             }
@@ -5524,7 +5487,7 @@ impl<'a> MirLowerer<'a> {
                                 rvalue: MirRValue::Field {
                                     base: value.clone(),
                                     field_index: 0,
-                                    byte_offset: Some(crate::types::RESULT_PAYLOAD_OFFSET + *offset),
+                                    byte_offset: Some(scrutinee_ty.payload_offset() + *offset),
                                     access: FieldAccess::for_field(field_ty, *size),
                                 },
                             }));
@@ -5544,7 +5507,7 @@ impl<'a> MirLowerer<'a> {
                                         base: value.clone(),
                                         field_index: 0,
                                         byte_offset: Some(
-                                            crate::types::RESULT_PAYLOAD_OFFSET + *src_offset,
+                                            scrutinee_ty.payload_offset() + *src_offset,
                                         ),
                                         access: FieldAccess::for_field(field_ty, *size),
                                     },
@@ -5553,7 +5516,7 @@ impl<'a> MirLowerer<'a> {
                                     addr: local,
                                     offset: tuple_offset,
                                     value: MirOperand::Local(read),
-                                    store_size: Some(field_ty.size()),
+                                    store_size: field_ty.size(),
                                     field: None,
                                 }));
                                 tuple_offset += field_ty.size();
@@ -5596,23 +5559,10 @@ impl<'a> MirLowerer<'a> {
                     crate::fallback::unknown_type("lower/mod:typepat_payload")
                 });
                 let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
-                let is_aggregate = matches!(
-                    bound_ty,
-                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::String
-                );
                 let rvalue = if is_niche {
                     MirRValue::Use(value.clone())
                 } else {
-                    MirRValue::Field {
-                        base: value.clone(),
-                        field_index: 0,
-                        byte_offset: if !is_aggregate {
-                            Some(crate::types::RESULT_PAYLOAD_OFFSET)
-                        } else {
-                            None
-                        },
-                        access: FieldAccess::Word,
-                    }
+                    self.payload_field(value.clone(), scrutinee_ty, &bound_ty)
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: local,
@@ -5978,40 +5928,16 @@ pub(crate) fn is_parse_target_type_name(name: &str) -> bool {
     is_integer_type_name(name) || matches!(name, "f32" | "f64")
 }
 
-/// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")
+/// The MIR operator a desugared method name stands for: `add` is `+`.
 fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {
-    use crate::operand::BinOp as MirBinOp;
-    match method {
-        "add" => Some(MirBinOp::Add),
-        "sub" => Some(MirBinOp::Sub),
-        "mul" => Some(MirBinOp::Mul),
-        "div" => Some(MirBinOp::Div),
-        "rem" => Some(MirBinOp::Mod),
-        "eq" => Some(MirBinOp::Eq),
-        "lt" => Some(MirBinOp::Lt),
-        "gt" => Some(MirBinOp::Gt),
-        "le" => Some(MirBinOp::Le),
-        "ge" => Some(MirBinOp::Ge),
-        "bit_and" => Some(MirBinOp::BitAnd),
-        "bit_or" => Some(MirBinOp::BitOr),
-        "bit_xor" => Some(MirBinOp::BitXor),
-        "shl" => Some(MirBinOp::Shl),
-        "shr" => Some(MirBinOp::Shr),
-        _ => None,
-    }
+    rask_ast::expr::binary_op_of_method(method).map(lower_binop)
 }
 
-/// Recognize unary operator method names produced by desugar
+/// The MIR operator a desugared unary method name stands for: `neg` is `-`.
 fn operator_method_to_unaryop(method: &str) -> Option<crate::operand::UnaryOp> {
-    use crate::operand::UnaryOp as MirUnaryOp;
-    match method {
-        "neg" => Some(MirUnaryOp::Neg),
-        "bit_not" => Some(MirUnaryOp::BitNot),
-        _ => None,
-    }
+    rask_ast::expr::unary_op_of_method(method).map(lower_unaryop)
 }
 
-/// Map AST binary operator to MIR binary operator (for &&/|| that survive desugar)
 fn lower_binop(op: BinOp) -> crate::operand::BinOp {
     use crate::operand::BinOp as MirBinOp;
     match op {
@@ -7444,7 +7370,7 @@ mod tests {
 
         let enum_layouts = vec![shape_enum];
         let node_types = HashMap::new();
-        let comptime_globals = HashMap::new();
+        let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
@@ -7467,18 +7393,18 @@ mod tests {
             node_types: &node_types,
             type_names: &type_names,
             type_defs: &empty_type_defs,
-            comptime_globals: &comptime_globals,
+            folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7527,7 +7453,7 @@ mod tests {
 
         let enum_layouts = vec![color_enum];
         let node_types = HashMap::new();
-        let comptime_globals = HashMap::new();
+        let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
@@ -7550,18 +7476,18 @@ mod tests {
             node_types: &node_types,
             type_names: &type_names,
             type_defs: &empty_type_defs,
-            comptime_globals: &comptime_globals,
+            folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7617,7 +7543,7 @@ mod tests {
 
         let enum_layouts = vec![msg_enum];
         let node_types = HashMap::new();
-        let comptime_globals = HashMap::new();
+        let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
@@ -7640,18 +7566,18 @@ mod tests {
             node_types: &node_types,
             type_names: &type_names,
             type_defs: &empty_type_defs,
-            comptime_globals: &comptime_globals,
+            folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
-            comptime_interp: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7678,13 +7604,27 @@ mod tests {
 
     #[test]
     fn lower_static_method_call_on_type() {
-        // Vec.new() → Call to Vec_new
+        // Instant.now() → Call to Instant_now
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Instant"), "now", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_call(&f, "Instant_now"));
+    }
+
+    #[test]
+    fn container_without_an_element_type_is_refused() {
+        // The checker rejects an element type it couldn't work out, so one
+        // missing here is a lowering bug, not a reason to guess a size.
         let decl = make_fn("f", vec![], None, vec![
             expr_stmt(method_call_expr(ident_expr("Vec"), "new", vec![])),
             return_stmt(None),
         ]);
-        let f = lower_one(&decl);
-        assert!(find_call(&f, "Vec_new"));
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
+        let err = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx).unwrap_err();
+        assert!(matches!(err, LoweringError::InvalidConstruct(ref m) if m.contains("no type")), "{err:?}");
     }
 
     #[test]
@@ -7789,4 +7729,14 @@ mod tests {
         assert!(!find_call(&f, "rask_threadpool_init"), "Unknown context should not start a pool");
         assert!(find_call(&f, "work"));
     }
+}
+
+/// A runtime handle is one word, a pointer.
+///
+/// Workaround: `Handle` stays an `i64`. As a pointer, a `Handles` that
+/// `detach(take self)` has taken is no longer released again by its caller,
+/// and that stray release is all that frees the nodes `Handles` drains with
+/// `rest = *next` (#1585).
+fn lowers_to_ptr(name: &str) -> bool {
+    name != "Handle" && rask_stdlib::is_runtime_handle(name)
 }

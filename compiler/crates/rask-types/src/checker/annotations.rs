@@ -27,6 +27,8 @@ const NAME_WHY: &str =
     "readers ask for an annotation by name, so two declarations sharing one name would answer each other's questions [type.annotations/AN5]";
 const RESERVED_WHY: &str =
     "the compiler already acts on this name, so a user annotation would either be shadowed or silently change what the compiler does [type.annotations/AN5]";
+const STDLIB_ONLY_WHY: &str =
+    "these say how a stdlib declaration is implemented, or what it does that no body shows; on a program's function the compiler would either ignore one or believe it, and `@io` would make the function an I/O source whatever its body does [type.annotations/AN5]";
 const CONST_WHY: &str =
     "attached values are embedded as constants and read identically in every instantiation, which only works for the comptime-constant types [type.annotations/AN1, ctrl.comptime/CT58]";
 const UNRESOLVED_WHY: &str =
@@ -228,6 +230,17 @@ impl TypeChecker {
                     self.check_attachment_site(&f.attrs, "func", decl.span, &declared);
                     self.check_signature_types(f, &declared);
                 }
+                DeclKind::Extern(e) => {
+                    // A C function says its effects on its declaration
+                    // (comp.effects/INF5), so those are the program's to write.
+                    let attrs: Vec<_> = e
+                        .attrs
+                        .iter()
+                        .filter(|a| !rask_ast::attr::extern_may_write(&a.name()))
+                        .cloned()
+                        .collect();
+                    self.check_attachment_site(&attrs, "func", decl.span, &declared);
+                }
                 DeclKind::Impl(i) => {
                     for m in &i.methods {
                         self.check_attachment_site(&m.attrs, "method", m.span, &declared);
@@ -258,6 +271,7 @@ impl TypeChecker {
                 DeclKind::Test(t) => (&t.attrs, decl.span),
                 DeclKind::Benchmark(b) => (&b.attrs, decl.span),
                 DeclKind::Const(c) => (&c.attrs, decl.span),
+                DeclKind::Extern(e) => (&e.attrs, decl.span),
                 _ => (&[], decl.span),
             };
             self.check_allow_attrs(attrs, span);
@@ -377,6 +391,16 @@ impl TypeChecker {
                 continue;
             }
             let name = attr.path[0].as_str();
+            if rask_ast::attr::stdlib_only(name) && !self.types.stdlib_mode {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: name.to_string(),
+                    problem: format!("`@{}` is only for the stdlib's own declarations", name),
+                    fix: format!("remove `@{}` — a program's effects and bodies are read from its code", name),
+                    why: STDLIB_ONLY_WHY,
+                    span: attr_span(attr, span),
+                });
+                continue;
+            }
             let Some(ann) = declared.get(name) else { continue };
 
             // AN4: duplicates on one item are ambiguous for readers.

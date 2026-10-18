@@ -400,6 +400,10 @@ jobs:
     - name: Fiber switch (x86_64, aarch64 under qemu)
       timeout-minutes: 3
       run: FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
+    # The allocator every sim run uses, on its own. Needs no compiler either.
+    - name: Sim heap
+      timeout-minutes: 4
+      run: tests/sim_heap_gate.sh
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)

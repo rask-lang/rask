@@ -35,7 +35,7 @@ static _Atomic int64_t rask_string_live_buffers = 0;
 
 int rask_leak_check_enabled = 0;
 
-#define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
+#define RASK_HEAP_FLAG   ((uint64_t)1 << RASK_STRING_HEAP_BIT)
 #define RASK_RC_SENTINEL UINT32_MAX
 
 // The count, read on its own. A string shared between tasks has its count
@@ -45,7 +45,6 @@ int rask_leak_check_enabled = 0;
 static inline uint32_t rc_load(const uint32_t *rc) {
     return __atomic_load_n(rc, __ATOMIC_RELAXED);
 }
-#define RASK_SSO_MAX     15
 
 // ─── Inline helpers ─────────────────────────────────────────
 
@@ -1019,14 +1018,15 @@ RaskVec *rask_string_char_indices(const RaskStr *s) {
     return v;
 }
 
+// A `Vec<char>`: four bytes per scalar, the width of a `char`.
 RaskVec *rask_string_chars(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(8, NULL, 0);
+    RaskVec *v = rask_vec_new((int64_t)sizeof(int32_t), NULL, 0);
     int64_t len = str_len(s);
     const char *d = str_data(s);
     int64_t i = 0;
     while (i < len) {
         int64_t width;
-        int64_t ch = (int64_t)str_decode_at(d, len, i, &width);
+        int32_t ch = (int32_t)str_decode_at(d, len, i, &width);
         rask_vec_push(v, &ch);
         i += width;
     }
@@ -1039,14 +1039,7 @@ RaskVec *rask_string_chars(const RaskStr *s) {
 // with no symbol behind it and codegen failed with "Function not found:
 // string_bytes".
 RaskVec *rask_string_bytes(const RaskStr *s) {
-    int64_t len = str_len(s);
-    RaskVec *v = rask_vec_new(len < 8 ? 8 : len, NULL, 0);
-    const char *d = str_data(s);
-    for (int64_t i = 0; i < len; i++) {
-        int64_t b = (int64_t)(unsigned char)d[i];
-        rask_vec_push(v, &b);
-    }
-    return v;
+    return rask_vec_from_bytes(str_data(s), str_len(s));
 }
 
 // ─── Builder operations (out-param) ─────────────────────────
@@ -1602,13 +1595,6 @@ int64_t rask_char_len_utf8(int32_t c) {
 
 int64_t rask_char_eq(int32_t a, int32_t b) {
     return a == b ? 1 : 0;
-}
-
-// ─── Map iteration ──────────────────────────────────────────
-
-extern RaskVec *rask_map_entries(const void *map);
-RaskVec *rask_map_iter(const void *map) {
-    return rask_map_entries(map);
 }
 
 // ─── StringBuilder ──────────────────────────────────────────

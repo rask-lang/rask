@@ -673,7 +673,7 @@ fn err_routing_native_matches_interp() {
 }
 
 // One element-size query — collections must allocate correctly-sized slots for
-// i32 (8-byte slot, no truncation), string (16), and struct (layout) elements,
+// i32 (4 bytes, no truncation), string (16), and struct (layout) elements,
 // with Map keys/values sized independently. Native must equal interp.
 const COLLECTION_SIZES_OUT: &str = "100\n200000\nalpha\nbeta\n1 2 3\n2\n";
 
@@ -964,6 +964,20 @@ fn a_field_default_that_does_io_is_rejected() {
     assert!(!out.contains("__decode_default"), "the generated name leaked into the message: {out}");
 }
 
+/// #1552: a compile-time value is computed while compiling or the program
+/// doesn't compile. A const with no constant form used to run at startup with
+/// a warning, and a field default that couldn't be computed was built where it
+/// was used without a word.
+#[test]
+fn a_comptime_value_with_no_constant_form_is_rejected() {
+    let (failed, out) = compile_error_output("comptime_no_constant_form.rk");
+    assert!(failed, "an `any` const and a struct holding a Vec must not compile: {out}");
+    assert_eq!(out.matches("E0383").count(), 3, "one error per value, the default once: {out}");
+    assert!(out.contains("as any Opaque"), "{out}");
+    assert!(out.contains("field `items` of `Holder`"), "{out}");
+    assert!(!out.contains("W0303"), "no fallback warning any more: {out}");
+}
+
 /// #1537: a default argument is held to the same rule as a field's default.
 #[test]
 fn a_default_argument_that_does_io_is_rejected() {
@@ -982,7 +996,7 @@ fn a_default_argument_that_does_io_is_rejected() {
 fn a_field_default_that_overflows_is_rejected() {
     let (failed, out) = compile_error_output("field_default_overflows.rk");
     assert!(failed, "`@default(200 + 100)` on a u8 must not compile: {out}");
-    assert!(out.contains("exceeds u8 range"), "{out}");
+    assert!(out.contains("300 doesn't fit in `u8`"), "{out}");
 }
 
 /// #1034: `some_u8 == 'h'` type-checked, then native compared the char as its
@@ -1142,6 +1156,35 @@ fn a_type_that_contains_itself_is_rejected() {
         out.contains("Vertex -> Edge"),
         "should spell the chain for an indirect cycle: {}", out,
     );
+}
+
+#[test]
+fn benchmarks_build_natively_with_boxes_consts_and_collections() {
+    // #1563: benchmarks had their own copy of the back end. It registered no
+    // vtables and left module consts out of lowering, so boxing to `any I` or
+    // reading a const failed to compile, and the command quietly re-ran
+    // everything on the interpreter. It also freed each benchmark's
+    // collections a second time, so a body that owned a Vec died on a signal.
+    let rask = rask_binary();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("benchmark_boxes_and_consts.rk");
+    let out = Command::new(&rask)
+        .arg("benchmark")
+        .arg(&fixture)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask benchmark");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "benchmarks should run: {}", combined);
+    assert!(combined.contains("(native)"), "should run natively: {}", combined);
+    assert!(!combined.contains("interpreter"), "no interpreter run: {}", combined);
+    assert_eq!(combined.matches("ops/sec").count(), 3, "all three timed: {}", combined);
 }
 
 #[test]
@@ -3101,7 +3144,7 @@ fn check_output(source: &str) -> String {
 }
 
 // Starting a thread or handing work to a pool returns at once, but `spawn` was
-// classed as I/O, so every spawn loop got CW2's "blocks thread on each
+// classed as blocking, so every spawn loop got CW2's "blocks thread on each
 // iteration" and an advice to wrap it in `using Multitasking`, which doesn't
 // change what `Thread.spawn` does (#1362). Real I/O in a loop of the same
 // concurrent program still warns.
@@ -3124,14 +3167,14 @@ fn spawn_in_a_loop_is_not_blocking_io() {
          }\n",
     );
     assert!(output.contains("Typecheck OK"), "{}", output);
-    assert!(!output.contains("`spawn` in loop"), "a spawn doesn't block: {}", output);
-    assert!(output.contains("`println` in loop"), "real I/O still warns: {}", output);
+    assert!(!output.contains("`spawn` can block"), "a spawn doesn't block: {}", output);
+    assert!(output.contains("`println` can block, in a loop"), "a print still warns: {}", output);
 }
 
 // A method call is classed by the receiver's type, not by how the variable is
 // spelled. `t.join()` only matched the `Handle.join` source when the variable
 // itself was named `Handle`, so a join in a loop carried no I/O and CW2 never
-// fired (#1418). A `join` on a `Vec<string>` is still no I/O at all.
+// fired (#1418). A `join` on a `Vec<string>` blocks on nothing.
 #[test]
 fn join_through_a_variable_is_io() {
     let output = check_output(
@@ -3148,8 +3191,8 @@ fn join_through_a_variable_is_io() {
          }\n",
     );
     assert!(output.contains("Typecheck OK"), "{}", output);
-    assert!(output.contains("`Handle.join` in loop"), "a join waits: {}", output);
-    assert_eq!(output.matches("in loop without").count(), 1, "only the handle's join: {}", output);
+    assert!(output.contains("`Handle.join` can block, in a loop"), "a join waits: {}", output);
+    assert_eq!(output.matches("in a loop with no").count(), 1, "only the handle's join: {}", output);
 }
 
 #[test]
@@ -4075,12 +4118,12 @@ fn a_padded_atomic_payload_is_rejected() {
 }
 
 #[test]
-fn comptime_todo_still_compiles() {
-    // `todo()` is the exception: it means "not written yet", so a program full
-    // of them has to compile. The const falls back to runtime, where the same
-    // `todo()` panics — the tutorial lessons are written this way.
+fn comptime_todo_is_a_compile_error() {
+    // A `comptime` value is computed while compiling or not at all (CT69), and
+    // `todo()` has no value to give. It used to fall back to run time (#1552).
     let (ok, output) = compile_only_succeeds("comptime_todo.rk");
-    assert!(ok, "a comptime `todo()` must not fail compilation: {}", output);
+    assert!(!ok, "a comptime `todo()` must fail compilation: {}", output);
+    assert!(output.contains("E0383") && output.contains("write the table"), "{}", output);
 }
 
 // ─── Panic semantics: ensure × panic (ctrl.panic, issue #299) ────

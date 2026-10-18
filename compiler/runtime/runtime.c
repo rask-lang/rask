@@ -1235,19 +1235,12 @@ int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
     return n == (size_t)len ? len : -1;
 }
 
-// The bytes are gathered first: a `Vec<u8>` gives every element its own 8-byte
-// slot, so its buffer isn't a byte string (#863).
+// A `Vec<u8>`'s buffer is its bytes, one per element.
 int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
-    size_t n = fwrite(bytes, 1, (size_t)len, std_stream(which));
-    rask_free(bytes);
+    size_t n = fwrite(rask_vec_get(v, 0), 1, (size_t)len, std_stream(which));
     return n == (size_t)len ? len : -1;
 }
 
@@ -1259,12 +1252,12 @@ int64_t rask_io_std_flush(int64_t which) {
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
     RASK_SIM_UNSIMULATED("reading stdin");
-    RaskVec *v = rask_vec_new(8, NULL, 0);
+    RaskVec *v = rask_vec_new(1, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
         if (c == EOF) break;
-        int64_t byte = (unsigned char)c;   // one 8-byte slot, as rask_vec_from_bytes
+        uint8_t byte = (uint8_t)c;
         rask_vec_push(v, &byte);
     }
     return (int64_t)(uintptr_t)v;
@@ -1345,31 +1338,17 @@ int64_t rask_net_read_bytes(int64_t fd) {
 }
 
 // Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
-//
-// The bytes are gathered before the write because a `Vec<u8>` gives every
-// element its own 8-byte slot, so taking element 0's address as the start of a
-// byte buffer sent every second byte as seven NULs: "hello" left as
-// "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
-// per-element read `rask_fwrite_vec` does for files.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return 0;
-    char *bytes = (char *)rask_alloc(len);
-    for (int64_t i = 0; i < len; i++) {
-        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
-        bytes[i] = b ? (char)*b : 0;
-    }
+    const char *bytes = (const char *)rask_vec_get(v, 0);
     int64_t written = 0;
     while (written < len) {
         ssize_t n = sock_write(fd, bytes + written, (size_t)(len - written));
-        if (n < 0) {
-            rask_free(bytes);
-            return -1;
-        }
+        if (n < 0) return -1;
         written += n;
     }
-    rask_free(bytes);
     return 0;
 }
 
@@ -1394,6 +1373,166 @@ void rask_net_remote_addr(RaskStr *out, int64_t fd) {
     char buf[64];
     snprintf(buf, sizeof(buf), "%s:%d", ip, ntohs(addr.sin_port));
     rask_string_from(out, buf);
+}
+
+// ─── UDP ───────────────────────────────────────────────────────
+
+// Largest payload one IPv4 datagram carries.
+#define UDP_MAX_PAYLOAD 65507
+
+// Resolve host:port for a datagram socket. 0, or -2 when it names nothing.
+static int udp_resolve(const char *host, const char *port, struct sockaddr_storage *out,
+                       socklen_t *out_len) {
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    if (getaddrinfo(host, port, &hints, &result) != 0) return -2;
+    memcpy(out, result->ai_addr, result->ai_addrlen);
+    *out_len = result->ai_addrlen;
+    freeaddrinfo(result);
+    return 0;
+}
+
+// Whether "host:port" names an IPv4 address (net.resolves). Under sim the
+// bind decides: sim's network is loopback only, and it says so by name.
+int8_t rask_net_resolves(const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) return 0;
+#ifdef RASK_SIM
+    if (rask_sim_active()) return 1;
+#endif
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
+    return udp_resolve(host, port_str, &sa, &sa_len) == 0;
+}
+
+// net.udp_bind: the fd, or -1 with errno set.
+int64_t rask_net_udp_bind(const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        errno = EINVAL;
+        return -1;
+    }
+#ifdef RASK_SIM
+    if (rask_sim_active()) return rask_sim_net_udp_bind(host, port_str);
+#endif
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
+    if (udp_resolve(host, port_str, &sa, &sa_len) != 0) {
+        // Resolved a moment ago in net.resolves, gone now.
+        errno = EADDRNOTAVAIL;
+        return -1;
+    }
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return -1;
+    if (bind(fd, (struct sockaddr *)&sa, sa_len) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    sock_nonblocking(fd);
+    return (int64_t)fd;
+}
+
+// Send one datagram: 0, -1 with errno set, -2 when `addr` doesn't resolve.
+int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        return -2;
+    }
+    const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
+    int64_t len = rask_vec_len(v);
+    if (len > UDP_MAX_PAYLOAD) {
+        errno = EMSGSIZE;
+        return -1;
+    }
+    const char *bytes = (const char *)(uintptr_t)rask_vec_as_ptr(v);
+    int64_t result;
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) {
+        return rask_sim_net_send_to(fd, bytes, (size_t)len, host, port_str);
+    }
+#endif
+    struct sockaddr_storage sa;
+    socklen_t sa_len;
+    if (udp_resolve(host, port_str, &sa, &sa_len) != 0) return -2;
+    for (;;) {
+        ssize_t put = sendto((int)fd, bytes, (size_t)len, 0, (struct sockaddr *)&sa, sa_len);
+        if (put >= 0) {
+            result = 0;
+            break;
+        }
+        if (!would_block()) {
+            result = -1;
+            break;
+        }
+        if (rask_io_wait(fd, 1)) {
+            errno = ECANCELED;
+            result = -1;
+            break;
+        }
+    }
+    return result;
+}
+
+// One datagram: a Vec<u8> of the payload, then the sender as "ip:port", then
+// that address's length in one byte; or -1 with errno set. stdlib/net.rk
+// takes it apart. Without `wait`, an empty Vec when nothing has arrived: a
+// real one always has the length byte.
+static int64_t udp_receive(int64_t fd, int wait) {
+    static __thread char buf[UDP_MAX_PAYLOAD + 64];
+    char from[64];
+    ssize_t n;
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) {
+        n = (ssize_t)rask_sim_net_receive_from(fd, buf, UDP_MAX_PAYLOAD, from, sizeof(from), wait);
+        if (n == -2) return (int64_t)(uintptr_t)rask_vec_from_bytes(buf, 0);
+        if (n < 0) return -1;
+        goto got;
+    }
+#endif
+    for (;;) {
+        struct sockaddr_in sa;
+        socklen_t sa_len = sizeof(sa);
+        n = recvfrom((int)fd, buf, UDP_MAX_PAYLOAD, 0, (struct sockaddr *)&sa, &sa_len);
+        if (n >= 0) {
+            char ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &sa.sin_addr, ip, sizeof(ip));
+            snprintf(from, sizeof(from), "%s:%d", ip, ntohs(sa.sin_port));
+            break;
+        }
+        if (!would_block()) return -1;
+        if (!wait) return (int64_t)(uintptr_t)rask_vec_from_bytes(buf, 0);
+        if (rask_io_wait(fd, 0)) {
+            errno = ECANCELED;
+            return -1;
+        }
+    }
+#ifdef RASK_SIM
+got:
+#endif
+    {
+        size_t from_len = strlen(from);
+        memcpy(buf + n, from, from_len);
+        buf[n + (ssize_t)from_len] = (char)from_len;
+        RaskVec *v = rask_vec_from_bytes(buf, n + (int64_t)from_len + 1);
+        return (int64_t)(uintptr_t)v;
+    }
+}
+
+// UdpSocket.receive_from: waits.
+int64_t rask_net_udp_receive(int64_t fd) {
+    return udp_receive(fd, 1);
+}
+
+// UdpSocket.try_receive_from: doesn't.
+int64_t rask_net_udp_try_receive(int64_t fd) {
+    return udp_receive(fd, 0);
 }
 
 // Local address a listener/connection is bound to (TcpListener.local_addr).
@@ -1757,14 +1896,14 @@ void rask_set_origin_file(const char *file) {
     rask_origin_file = file;
 }
 
-// Read the origin_line field from a Result and format as a string.
-// Result layout: [tag:8][origin_file:8][origin_line:8][payload:...]
+// Read the origin line out of a `T or E` and format it as `file:line`.
 void rask_result_origin(RaskStr *out, const void *result_ptr) {
-    const int64_t *fields = (const int64_t *)result_ptr;
-    int64_t origin_line = fields[2]; // offset 16 = origin_line
+    uint32_t origin_line;
+    memcpy(&origin_line, (const char *)result_ptr + RASK_RESULT_ORIGIN_LINE_OFFSET,
+           sizeof(origin_line));
     if (origin_line > 0) {
         char buf[256];
-        snprintf(buf, sizeof(buf), "%s:%lld", rask_origin_file, (long long)origin_line);
+        snprintf(buf, sizeof(buf), "%s:%u", rask_origin_file, (unsigned)origin_line);
         rask_string_from(out, buf);
     } else {
         rask_string_from(out, "<no origin>");

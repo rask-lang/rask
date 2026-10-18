@@ -604,16 +604,13 @@ RaskVec *rask_map_values(const RaskMap *m) {
     return v;
 }
 
-// entries: return Vec of (key, value) pairs for iteration.
-// Each entry is a 16-byte struct { key: i64, value: i64 }.
-// Entries as a Vec of (key, value) pairs laid out the way codegen lays out a
-// tuple: key at 0, value at the next 8-byte boundary past it. The old version
-// copied a fixed 8 bytes of each, which truncated a string key to its first
-// word and handed iteration a corrupt RaskStr.
-RaskVec *rask_map_entries(const RaskMap *m) {
-    if (!m) return rask_vec_new(16, NULL, 0);
-    int64_t voff = (m->key_size + 7) & ~(int64_t)7;
-    int64_t stride = (voff + m->val_size + 7) & ~(int64_t)7;
+// The entries as a Vec of `(key, value)` tuples. Where the value sits and how
+// big an entry is are the caller's: a tuple puts each field at its own
+// alignment, which the runtime can't see from the sizes. Putting the value at
+// the next eight-byte boundary read every value of a `Map<i32, i32>` four
+// bytes early.
+RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride) {
+    if (!m) return rask_vec_new(stride, NULL, 0);
     // Where the pair's strings land. The two shapes worth a static map are the
     // ones programs actually iterate: a string key with a string value, and a
     // string key with anything else. Any other arrangement would need an

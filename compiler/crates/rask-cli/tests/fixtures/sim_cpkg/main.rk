@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+extern "C" func entropy_seed() -> i64
+
+extern "C" func entropy_wall_seconds() -> i64
+
+func main() {
+    println("{unsafe entropy_seed()}")
+}
+
+test "linked C seeds itself" {
+    println("seed {unsafe entropy_seed()} wall {unsafe entropy_wall_seconds()}")
+}
