@@ -16,16 +16,16 @@ extern "C" func ftell(stream: *u8) -> i64
 
 extern "C" func ferror(stream: *u8) -> i32
 
-@pure
+@memory_only
 extern "C" func rask_alloc(size: i64) -> *u8
 
-@pure
+@memory_only
 extern "C" func rask_free(ptr: *u8)
 
-@pure
+@memory_only
 extern "C" func rask_realloc(ptr: *u8, old_size: i64, new_size: i64) -> *u8
 
-@pure
+@memory_only
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 
 extern "C" func rask_libc_access(path: *u8, mode: i32) -> i32
@@ -40,7 +40,7 @@ extern "C" func rask_libc_mkdir_or_dir(path: *u8, mode: u32) -> i32
 
 extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
-@pure
+@memory_only
 extern "C" func strlen(s: *u8) -> u64
 
 extern "C" func rask_libc_opendir(path: *u8) -> *u8
@@ -51,13 +51,13 @@ extern "C" func rask_libc_closedir(dir: *u8) -> i32
 
 extern "C" func rask_stat_load(path: *u8) -> i32
 
-@pure
+@memory_only
 extern "C" func rask_stat_loaded_size() -> u64
 
-@pure
+@memory_only
 extern "C" func rask_stat_loaded_mtime() -> i64
 
-@pure
+@memory_only
 extern "C" func rask_stat_loaded_atime() -> i64
 
 extern "C" func rask_stat_size(path: *u8) -> i64

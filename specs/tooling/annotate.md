@@ -17,7 +17,7 @@ Annotations are computed when displayed and stored nowhere — the same lifecycl
 |------|-------------|
 | **AN1: View, not state** | Output goes to stdout, computed at display time. `rask annotate` never writes files, and its output is never an input to anything but eyes and the `--json` consumers |
 | **AN2: Report, not source** | Output is a line-numbered report (diagnostics-formatter style) with annotations in a right-hand gutter. It is deliberately **not** valid Rask — it cannot be committed, hand-edited, or left to go stale, and no comment form is reserved for it |
-| **AN3: One renderer** | Label text is shared with the IDE ghost layer, verbatim: `[io]` from `comp.effects`, `⟨pauses⟩` from `conc.io-context`, `[moves: x (T)]` from `mem.closures`, `mutate x` from `mem.parameters`. Annotate introduces no vocabulary of its |
+| **AN3: One renderer** | Label text is shared with the IDE ghost layer, verbatim: `[blocks]` from `comp.effects`, `⟨pauses⟩` from `conc.io-context`, `[moves: x (T)]` from `mem.closures`, `mutate x` from `mem.parameters`. Annotate introduces no vocabulary of its |
 | **AN4: Deterministic** | Same source + same compiler → byte-identical output. Multiple annotations on one line render in fixed order — call-site modes, captures, match modes, inferred signature/context, effects, pause — joined with ` · ` |
 | **AN5: Clean check required** | Annotation data comes from the type-check, ownership, and effect passes. A file that doesn't check prints diagnostics instead |
 
@@ -29,7 +29,7 @@ src/round.rk
    2 |     p.hp -= amount
    3 | }
    4 |
-   5 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [io]
+   5 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [blocks]
    6 |     mut player = Player.new(seed)
    7 |     apply_damage(mutate player, 10)
    8 |     let report = try http.post(STATS_URL, player.encode())
@@ -53,7 +53,7 @@ Not every ghost earns a place in a diff. The cut:
 |-------------|------------------------|------|
 | a move at a take call site | `moves user` (`mem.parameters`; `mutate` is in source per PM4 — never annotated) | review |
 | Pause points | `⟨pauses⟩` (`conc.io-context`) | review |
-| Effects on function definitions | `[pure]`, `[io]`, `[io, async]`, … (`comp.effects` Ghost Text Format) | review |
+| Effects on function definitions | `[pure]`, `[blocks]`, `[blocks, async]`, … (`comp.effects` Ghost Text Format) | review |
 | Carrying closure captures | `[moves: name (T)]`, `[copies: name (T)]` (`mem.closures`) | review |
 | Consuming match arms | `[takes]`, `[consumes]` (`type.enums`) | review |
 | Inferred private signatures | full signature on the `func` line (`type.gradual`) | review |
@@ -81,14 +81,14 @@ $ rask annotate --diff main src/
 
 src/config.rk @@ -12,4 +12,5 @@
  -12 | func load_defaults() -> Config {
- +12 | func load_defaults() -> Config or Error {   « [pure] → [io]
+ +12 | func load_defaults() -> Config or Error {   « [pure] → [blocks]
  -13 |     return Config.builtin()
  +13 |     let data = try fs.read_text(DEFAULTS)  « ⟨pauses⟩
  +14 |     return try Config.parse(data)
   15 | }
 
 drift: unchanged lines whose meaning changed
-  src/server.rk:41   handle_request — [pure] → [io]      (via load_defaults)
+  src/server.rk:41   handle_request — [pure] → [blocks]      (via load_defaults)
   src/server.rk:41   handle_request — now ⟨pauses⟩       (I/O reachable under Multitasking)
 ```
 
@@ -151,7 +151,7 @@ ERROR [tool.annotate/AN5]: cannot annotate — file does not typecheck
 
 **Why fold the "elaborated view" in?** An elaborated module view that reviewers diff instead of raw source was a candidate direction. But a canonical elaboration is exactly what `annotate --all` on a full file already is, given determinism (AN4). A second artifact with its own format would drift from the first.
 
-**The tier cut (TR1).** The review tier is derived from what a reviewer must not be wrong about: does this call change my data (`mutate`), destroy it (`[consumes]`), suspend mid-lock (`⟨pauses⟩`), touch the outside world (`[io]`), or depend on something not in the parameter list (`using`)? Types and scopes help you read faster; getting them wrong doesn't ship a bug past review the same way "didn't know that call was I/O" does.
+**The tier cut (TR1).** The review tier is derived from what a reviewer must not be wrong about: does this call change my data (`mutate`), destroy it (`[consumes]`), suspend mid-lock (`⟨pauses⟩`), touch the outside world (`[blocks]`), or depend on something not in the parameter list (`using`)? Types and scopes help you read faster; getting them wrong doesn't ship a bug past review the same way "didn't know that call was I/O" does.
 
 **Drift (DF2) is the feature.** Annotated changed lines are convenience — the reviewer could have chased signatures by hand. Effect and pause drift on *untouched* lines is information no reading of the diff can produce, with any tooling, because the affected lines aren't in the diff. It's also cheap: effect inference is already transitive with fixed-point propagation (`comp.effects/FX2`), so "which functions' summaries changed between two revisions" falls out of comparing two effect maps.
 
@@ -166,7 +166,6 @@ The LSP inlay-hint provider and annotate should share one span→label layer (AN
 ### See Also
 
 - `tool.describe` — declared API surface (`rask api`); annotate covers what it deliberately excludes ("Type inference results — only explicitly written types")
-- `tool.lint` — `@pure` checking against the same effect metadata
 - `comp.effects` — effect inference and the ghost label format
 - `mem.parameters` — the call-site-marker decision this spec completes
 - `mem.closures` — capture list ghost format

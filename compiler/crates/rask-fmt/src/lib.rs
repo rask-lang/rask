@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn extern_attributes_stay_where_they_were_written() {
-        let input = "@pure\nextern \"C\" func a()\n\n@pure\nextern \"C\" {\n    func b()\n    func c()\n}\n";
+        let input = "@memory_only\nextern \"C\" func a()\n\n@memory_only\nextern \"C\" {\n    func b()\n    func c()\n}\n";
         let output = format_source(input);
         assert_eq!(output, input, "a block's attributes go above it: {}", output);
     }

@@ -335,15 +335,15 @@ impl<'t> InferPass<'t> {
 
     // ── Phase 2: Extern declarations ────────────────────────────────
 
-    /// INF5: a C function could do anything, so it blocks and touches state
-    /// outside the program unless its declaration says `@pure`.
+    /// INF5: a C function could do anything, so it blocks and touches ambient
+    /// state unless its declaration says `@memory_only`.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
-                // `@ambient`: reads outside state (the clock, randomness) but
+                // `@ambient`: reads ambient state (the clock, randomness) but
                 // never waits, which is a protocol engine's whole shape.
                 let says = |name: &str| e.attrs.iter().any(|a| a.is(name));
-                let effects = if says("pure") {
+                let effects = if says("memory_only") {
                     Effects::default()
                 } else {
                     Effects { blocks: !says("ambient"), ambient: true, ..Default::default() }
@@ -1201,16 +1201,6 @@ mod tests {
         assert!(effects["c_function"].ambient, "INF5: and could touch anything");
     }
 
-    /// `@pure` on an `extern` is the author's word that it does neither.
-    #[test]
-    fn a_pure_extern_is_pure() {
-        let mut decl = make_extern("strlen");
-        if let DeclKind::Extern(e) = &mut decl.kind {
-            e.attrs = vec![rask_ast::attr::Attr { path: vec!["pure".into()], args: None, span: sp() }];
-        }
-        let effects = infer_std(&[decl], &Default::default());
-        assert!(effects["strlen"].is_pure());
-    }
 
     /// The stdlib's bodies are inferred, so a public function gets its
     /// effects from the native at the bottom: `fs.current_dir` calls the C
@@ -1246,12 +1236,12 @@ mod tests {
         let decls = vec![
             make_extern("c_read"),
             marked("ngtcp2_step", "ambient"),
-            marked("strlen", "pure"),
+            marked("strlen", "memory_only"),
         ];
         let effects = infer(&decls, &Default::default());
         assert!(effects["c_read"].blocks && effects["c_read"].ambient, "INF5: unmarked is both");
         assert!(!effects["ngtcp2_step"].blocks && effects["ngtcp2_step"].ambient, "INF5: @ambient never waits");
-        assert!(effects["strlen"].is_pure(), "INF5: @pure is neither");
+        assert!(effects["strlen"].is_pure(), "INF5: @memory_only is neither");
     }
 
     #[test]

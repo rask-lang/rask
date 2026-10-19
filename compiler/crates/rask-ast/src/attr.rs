@@ -108,7 +108,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("bitfield", ArgForm::Exprs, Writer::Anyone),           // struct.c-interop
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
-    ("pure", ArgForm::Exprs, Writer::Anyone),               // tool.lint/P1; on an `extern`, comp.effects/INF5
+    ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
     ("checked_unsafe", ArgForm::Exprs, Writer::Anyone),     // mem.unsafe
     ("unchecked_unsafe", ArgForm::Exprs, Writer::Anyone),   // mem.unsafe
     ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)

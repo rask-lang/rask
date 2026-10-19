@@ -65,41 +65,6 @@ I3 and I4 both say "this was a sketch — is it still?" Neither is about correct
 
 I4 is scoped to packages carrying `description` and `license` — the metadata `struct.build/PB2` requires for publishing — so a throwaway directory stays quiet. I3 has no such scope: the `duck` keyword is itself the declaration that this contract is loose, so it's worth a nudge anywhere.
 
-## Purity
-
-Check `@pure` annotations against compiler-inferred effects (see `comp.effects`). Uses effect metadata — not type-level enforcement.
-
-| Rule | Check | Severity |
-|------|-------|----------|
-| **P1: pure-blocking** | `@pure` function transitively calls something that blocks or touches outside state | warning |
-| **P2: pure-async** | `@pure` function transitively calls an Async source | warning |
-| **P3: pure-mutation** | `@pure` function performs pool Grow/Shrink (`comp.advanced/EF4`) | warning |
-| **P4: pure-allows-errors** | `@pure` functions MAY return `T or E` — errors are values, not effects | — |
-
-`@pure` asserts that a function has none of the effects in `comp.effects/FX1`. The compiler infers effects transitively (`comp.effects/FX2`). Violations are lint warnings, not compile errors — no function coloring. On an `extern` there's no body to check, so `@pure` is taken at its word (`comp.effects/INF5`).
-
-<!-- test: skip -->
-```rask
-@pure
-func validate(input: string) -> bool {
-    return input.len() > 0 and input.len() < 256
-}
-
-@pure
-func parse(input: string) -> Config or ParseError {
-    // P4: returning errors is fine — errors are values
-    if input.is_empty() { return ParseError.Empty }
-    return Config(value: input)
-}
-
-@pure
-func bad_pure(path: string) -> Config or Error {
-    // P1 violation: fs.read_file has IO effect
-    let data = try fs.read_text(path)
-    return try json.decode<Config>(data)
-}
-```
-
 ## Style
 
 | Rule | Check | Severity |
@@ -158,23 +123,6 @@ FIX: change `self` to `take self`, or rename to `to_string`
 ```
 
 ```
-WARNING [tool.lint/P1]: `@pure` function performs I/O
-   |
-2  |  @pure
-3  |  func bad_pure(path: string) -> Config or Error {
-4  |      let data = try fs.read_text(path)
-   |                       ^^^^^^^^^^^^ IO effect (file read)
-   |
-WHY: @pure asserts no I/O, async, or mutation effects.
-     fs.read_file transitively reaches a file system syscall.
-
-FIX: remove @pure, or restructure to accept data as a parameter:
-
-  @pure
-  func parse_config(data: string) -> Config or Error { ... }
-```
-
-```
 WARNING [tool.lint/I3]: `Frobber` is a duck interface
    |
 12 |  duck interface Frobber {
@@ -224,10 +172,6 @@ FIX: delete `duck`. 3 types already match by shape; the "harden duck interface"
 | `@allow` on item overrides block | SU1 | Item-level wins over block-level |
 | Private `from_*` method | N1 | Still checked — conventions apply regardless of visibility |
 | `into_*` with `mutate self` | N2 | Violation — must be `take self` |
-| `@pure` on `comptime func` | P1 | Redundant — comptime is already pure. No warning (harmless) |
-| `@pure` on function with `unsafe` block | P1 | The block is what it calls (`comp.effects/BL3`): pointer work alone is pure, and a C call in it is the one that counts |
-| `@pure` on public vs private function | P1-P3 | Same check — purity annotation applies regardless of visibility |
-| `@pure` with a `mutate` rack parameter | P3 | Warning only if the function actually performs Grow/Shrink. Reading through links is fine |
 
 ---
 
@@ -252,7 +196,7 @@ checks now.
 
 **ST3 (public return type):** Public API signatures are documentation. Forcing explicit return types makes the API surface readable without hovering or inference.
 
-**P1-P3 (purity lint, not type error):** `@pure` is a lint annotation, not a type-system keyword. Violations are warnings, not compile errors. This prevents function coloring — a `@pure` function doesn't restrict its callers or create a "pure world" vs "impure world" split. It's opt-in documentation with compiler-checked teeth. See `comp.effects/FX3` for why effects aren't in the type system.
+**No purity lint.** There used to be four rules here (P1–P4) checking an `@pure` claim on a Rask function against its inferred effects. Nothing ever built them, and nothing needs them: the IDE already shows every function's effects (`comp.effects/IDE1`), so a hand-written claim beside the inferred one adds nothing but a second thing to keep right. The only purity mark left is `@memory_only` on a C declaration, where there is no body to infer from (`comp.effects/INF5`).
 
 ### Patterns & Guidance
 
@@ -276,5 +220,5 @@ rask lint src/ --exclude idiom/force-unwrap-production
 
 - `tool.warnings` — compiler warnings (`rask check`)
 - `tool.describe` — module API schema
-- `comp.effects` — effect inference that powers `@pure` checks
+- `comp.effects` — effect inference, shown as IDE ghost text
 - [canonical-patterns.md](../canonical-patterns.md) — naming convention source

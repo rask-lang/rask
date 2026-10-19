@@ -165,7 +165,7 @@ pub struct ExternDecl {
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
     /// Attributes written before `extern`. In the block form they cover every
-    /// member: `@pure extern "C" { … }`.
+    /// member: `@memory_only extern "C" { … }`.
     pub attrs: Vec<crate::attr::Attr>,
     /// Byte offset of the `extern` keyword when this came from the block form,
     /// `extern "C" { func …; func … }`.

@@ -159,7 +159,7 @@ The compiler tracks information the language deliberately keeps out of the type 
 
 **What this means:**
 - I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures and don't color call syntax. A caller of a function that does I/O writes the call the same way as a caller of a pure one.
-- `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
+- Purity is inferred and shown, never declared. There's no `pure` qualifier, so a pure function can call an impure one and simply stops being pure.
 - IDE ghost annotations show closure captures, inferred types, pause points, and moves at take call sites — the compiler knows, the source doesn't say. (Mutation is not on this list: `mutate` is written at the call site, `mem.parameters/PM4` — a wrong reading of mutation is legal code, so it isn't left to tooling.) Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
 
 **There is no carve-out any more.** One used to sit here: `using Pool<T>` was declared in signatures and propagated up the call graph, because a pool is a value callees dereference and something had to thread it in. That was scope-level coloring, and it was the only coloring left in the language. Pools are gone (rask-lang/rask#908), and nothing replaced the clause — a `Rack<T>` needs no ambient context, because a `Link<T>` *is* the node rather than a ticket you redeem at a container. Nothing in a Rask signature colors it today.

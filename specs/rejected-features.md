@@ -81,13 +81,12 @@ If Rask had effects, it wouldn't be Rask.
 
 ### Effect tracking as metadata
 
-Rask does track effects—just not in the type system. The compiler infers IO, Async, and Mutation effects transitively for every function (see `comp.effects`). This metadata powers:
+Rask does track effects—just not in the type system. The compiler infers blocking, ambient, async and mutation effects transitively for every function (see `comp.effects`). This metadata powers:
 
-- **IDE ghost annotations** showing `[io]`, `[pure]`, etc. on function definitions
-- **Compiler warnings** for IO in thread pools (`comp.effects/CW1`) and tight loops (`comp.effects/CW2`)
-- **`@pure` lint annotation** that flags violations as warnings, not errors (`tool.lint/P1-P3`)
+- **IDE ghost annotations** showing `[blocks]`, `[pure]`, etc. on function definitions
+- **Compiler warnings** for blocking calls in thread pools (`comp.effects/CW1`) and tight loops (`comp.effects/CW2`)
 
-The key distinction: effects are information, not constraints. A "pure" function can call an IO function—it just inherits the IO effect. No function coloring, no ecosystem split, no effect polymorphism. Same pragmatic middle ground as the async model: information available through tooling, not enforced through syntax.
+The key distinction: effects are information, not constraints. A "pure" function can call a blocking one—it just inherits the effect. No function coloring, no ecosystem split, no effect polymorphism. Same pragmatic middle ground as the async model: information available through tooling, not enforced through syntax.
 
 ---
 

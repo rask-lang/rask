@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `@memory_only` anywhere but an `extern` declaration
+//
+// Spec: comp.effects (INF5)
+//
+// The mark vouches for a C function's body, which the compiler can't see: it
+// only works on memory and doesn't wait or reach outside the process. A Rask
+// function's effects are inferred from its body, so on one the claim is either
+// redundant or wrong.
+
+// ERROR: a Rask function, not an extern [E0854]
+@memory_only
+func length(s: string) -> u64 {
+    return s.len()
+}
+
+// FIX: on the C declaration it describes
+@memory_only
+extern "C" func strlen(s: *u8) -> u64
+
+func main() {
+    println("{length("abc")}")
+}
