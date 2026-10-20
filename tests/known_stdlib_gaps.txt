@@ -280,12 +280,6 @@ std.collections Vec.from_raw_parts MISSING
 std.collections Vec.modify_many MISSING
 std.collections Vec.push_all MISSING
 std.collections Vec.try_insert MISSING
-std.csv CsvError MISSING
-std.csv csv.decode MISSING
-std.csv csv.encode MISSING
-std.csv csv.rows MISSING
-std.csv csv.stream MISSING
-std.csv csv.write_rows MISSING
 std.digest Crc32 MISSING
 std.digest Crc32.build MISSING
 std.digest Crc32.new MISSING

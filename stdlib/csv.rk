@@ -1,0 +1,767 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// CSV (std.csv), RFC 4180 with the delimiter and quote as parameters. Pure Rask.
+//
+// The typed half rides on JSON's typed codec instead of having one of its own.
+// `decode<T>` turns each record into a JSON object, typed cell by cell from the
+// struct's fields, and hands it to `json.decode<T>`; `encode<T>` reads the
+// fields back out of `json.encode`. So there is one decoder for a struct, and
+// `@rename`, `@no_serialize`, `@default` and `T?` mean the same thing in both
+// formats. Cells are checked against their field's type here first, so a bad
+// value is reported with its row and column rather than as a JSON error.
+
+import io.IoError
+import io.Reader
+import json
+import sequence.Sequence
+import std.reflect
+
+/// Why a CSV document was rejected. Rows count records from 1, the header
+/// included, the way a spreadsheet numbers them.
+public enum CsvError {
+    MissingColumn(name: string)
+    DuplicateColumn(name: string)
+    ColumnCount(row: usize, expected: usize, found: usize)
+    BadValue(row: usize, column: string, reason: string)
+    UnclosedQuote(row: usize)
+    Io(IoError)
+}
+
+extend CsvError {
+    public func message(self) -> string {
+        match self {
+            CsvError.MissingColumn(name) => return "CSV has no \"{name}\" column, and the struct needs one"
+            CsvError.DuplicateColumn(name) => return "CSV header names \"{name}\" twice, so which one a field means is unanswerable"
+            CsvError.ColumnCount(row, expected, found) => return "CSV row {row} has {found} columns, expected {expected}"
+            CsvError.BadValue(row, column, reason) => return "CSV row {row}, column \"{column}\": {reason}"
+            CsvError.UnclosedQuote(row) => return "CSV row {row} opens a quoted field that never closes"
+            CsvError.Io(e) => return "reading CSV failed: {e.message()}"
+        }
+    }
+}
+
+struct csv { }
+
+extend csv {
+    /// Every record, typed. With `headers`, the first row names the columns
+    /// and fields find theirs by name; without, fields take columns in order.
+    public func decode<T: Decode>(text: string, delimiter: char = ',', quote: char = '"', headers: bool = true) -> Vec<T> or CsvError {
+        let records = try csv_parse(text, delimiter, quote)
+        mut out: Vec<T> = Vec.new()
+        if records.is_empty() {
+            return out
+        }
+        let shape = csv_shape<T>()
+        mut cols = csv_positions(shape)
+        mut expected = shape.names.len()
+        mut first: usize = 0
+        if headers {
+            cols = try csv_columns(shape, records[0])
+            expected = records[0].len()
+            first = 1
+        }
+        for r in first..records.len() {
+            out.push(try csv_record<T>(shape, cols, records[r], r + 1, expected))
+        }
+        return out
+    }
+
+    /// A header row (unless told not to) and one row per record. Fields that
+    /// aren't a string, number or bool are written as JSON.
+    public func encode<T: Encode>(records: Vec<T>, delimiter: char = ',', quote: char = '"', headers: bool = true) -> string {
+        mut names: Vec<string> = Vec.new()
+        comptime for f in reflect.fields<T>() {
+            if !f.is_skipped {
+                names.push(f.serial_name)
+            }
+        }
+        let d = string.from_char(delimiter)
+        let q = string.from_char(quote)
+        mut out = StringBuilder.new()
+        if headers {
+            csv_write_row(names, d, q, mutate out)
+        }
+        for record in records {
+            let pairs = csv_json_fields(json.encode(record))
+            mut cells: Vec<string> = Vec.new()
+            for name in names {
+                mut cell = ""
+                for pair in pairs {
+                    if pair.0 == name {
+                        cell = pair.1
+                    }
+                }
+                cells.push(cell)
+            }
+            csv_write_row(cells, d, q, mutate out)
+        }
+        return out.build()
+    }
+
+    /// `decode` one record at a time, reading `source` as it goes. Holds the
+    /// record being read and one chunk of input, never the whole file.
+    ///
+    /// A record that fails on its own (`BadValue`, `ColumnCount`) is yielded
+    /// as an error and reading carries on, so a caller can skip bad rows. Any
+    /// other error ends the sequence: there's no telling where the next record
+    /// starts after an unclosed quote or a failed read.
+    public func stream<T: Decode, R: Reader>(source: R, delimiter: char = ',', quote: char = '"', headers: bool = true) -> Sequence<T or CsvError> {
+        return |emit| {
+            let d = string.from_char(delimiter)
+            let q = string.from_char(quote)
+            let shape = csv_shape<T>()
+            mut cols = csv_positions(shape)
+            mut expected = shape.names.len()
+            mut need_header = headers
+            mut row: usize = 0
+            // Whole lines not yet read as records, and the bytes after the
+            // last line break, which may end mid-character.
+            mut text = ""
+            mut pos: usize = 0
+            mut tail: Vec<u8> = Vec.new()
+            mut started = false
+            mut eof = false
+            mut buf: Vec<u8> = Vec.new()
+            for _ in 0..4096 {
+                buf.push(0)
+            }
+            loop {
+                while pos < text.len() {
+                    match csv_scan(text, pos, d, q, eof) {
+                        CsvScan.Blank(next) => {
+                            pos = next
+                        }
+                        CsvScan.Short => {
+                            if eof {
+                                emit(csv_err(CsvError.UnclosedQuote(row: row + 1)))
+                                return
+                            }
+                            break
+                        }
+                        CsvScan.Record(fields, next) => {
+                            pos = next
+                            row = row + 1
+                            if need_header {
+                                need_header = false
+                                expected = fields.len()
+                                cols = csv_columns(shape, fields) catch e => {
+                                    emit(csv_err(e))
+                                    return
+                                }
+                            } else if !emit(csv_record<T>(shape, cols, fields, row, expected)) {
+                                return
+                            }
+                        }
+                    }
+                }
+                if eof {
+                    return
+                }
+                text = text[pos..text.len()].to_string()
+                pos = 0
+                let n = source.read(mutate buf) catch e => {
+                    emit(csv_err(CsvError.Io(e)))
+                    return
+                }
+                mut upto: usize = 0
+                if n <= 0 {
+                    eof = true
+                    upto = tail.len()
+                } else {
+                    for i in 0..n.wrap<usize>() {
+                        tail.push(buf[i])
+                    }
+                    for i in 0..tail.len() {
+                        if tail[i] == 10 {
+                            upto = i + 1
+                        }
+                    }
+                }
+                if upto > 0 {
+                    mut line_bytes: Vec<u8> = Vec.with_capacity(upto)
+                    mut rest: Vec<u8> = Vec.new()
+                    for i in 0..tail.len() {
+                        if i < upto {
+                            line_bytes.push(tail[i])
+                        } else {
+                            rest.push(tail[i])
+                        }
+                    }
+                    tail = rest
+                    let lines = string.from_utf8(line_bytes) catch _ => {
+                        emit(csv_err(CsvError.BadValue(row: row + 1, column: "", reason: "the input isn't UTF-8; convert it first")))
+                        return
+                    }
+                    if !started && lines.starts_with("\u{FEFF}") {
+                        text = "{text}{lines[3..lines.len()]}"
+                    } else {
+                        text = "{text}{lines}"
+                    }
+                    started = true
+                }
+            }
+        }
+    }
+
+    /// Every record as its cells, untyped. Rows may differ in length.
+    public func rows(text: string, delimiter: char = ',', quote: char = '"') -> Vec<Vec<string>> or CsvError {
+        return csv_parse(text, delimiter, quote)
+    }
+
+    /// Rows joined with the delimiter, one per line. A cell holding the
+    /// delimiter, the quote or a line break is quoted; nothing else is.
+    public func write_rows(rows: Vec<Vec<string>>, delimiter: char = ',', quote: char = '"') -> string {
+        let d = string.from_char(delimiter)
+        let q = string.from_char(quote)
+        mut out = StringBuilder.new()
+        for row in rows {
+            csv_write_row(row, d, q, mutate out)
+        }
+        return out.build()
+    }
+}
+
+// ─── Records to structs ─────────────────────────────────────────
+
+/// The columns a struct reads: wire name, declared type, and whether a
+/// missing column is fine because the field has another way to get a value.
+struct CsvShape {
+    names: Vec<string>
+    kinds: Vec<string>
+    optional: Vec<bool>
+}
+
+func csv_shape<T>() -> CsvShape {
+    mut names: Vec<string> = Vec.new()
+    mut kinds: Vec<string> = Vec.new()
+    mut optional: Vec<bool> = Vec.new()
+    comptime for f in reflect.fields<T>() {
+        if !f.is_skipped {
+            names.push(f.serial_name)
+            kinds.push(f.type_name)
+            optional.push(f.has_default || f.type_name.ends_with("?"))
+        }
+    }
+    return CsvShape(names, kinds, optional)
+}
+
+/// Field k reads column k.
+func csv_positions(shape: CsvShape) -> Vec<i64> {
+    mut cols: Vec<i64> = Vec.new()
+    for k in 0..shape.names.len() {
+        cols.push(k.wrap<i64>())
+    }
+    return cols
+}
+
+/// The column each field reads by name from `header`, or -1 for none.
+func csv_columns(shape: CsvShape, header: Vec<string>) -> Vec<i64> or CsvError {
+    for i in 0..header.len() {
+        for j in i + 1..header.len() {
+            if header[i] == header[j] {
+                return CsvError.DuplicateColumn(name: header[i])
+            }
+        }
+    }
+    mut cols: Vec<i64> = Vec.new()
+    for k in 0..shape.names.len() {
+        mut found: i64 = -1
+        for i in 0..header.len() {
+            if header[i] == shape.names[k] {
+                found = i.wrap<i64>()
+            }
+        }
+        if found < 0 && !shape.optional[k] {
+            return CsvError.MissingColumn(name: shape.names[k])
+        }
+        cols.push(found)
+    }
+    return cols
+}
+
+/// One record as a T: each cell checked against its field's type, then the
+/// lot handed to the JSON decoder as an object.
+func csv_record<T: Decode>(shape: CsvShape, cols: Vec<i64>, record: Vec<string>, row: usize, expected: usize) -> T or CsvError {
+    if record.len() != expected {
+        return CsvError.ColumnCount(row: row, expected: expected, found: record.len())
+    }
+    mut obj = StringBuilder.new()
+    obj.push("{{")
+    mut any = false
+    for k in 0..shape.names.len() {
+        if cols[k] >= 0 {
+            let cell = record[cols[k].wrap<usize>()]
+            let value = csv_cell_json(shape.kinds[k], cell) catch bad => {
+                return CsvError.BadValue(row: row, column: shape.names[k], reason: bad.reason)
+            }
+            if any {
+                obj.push(",")
+            }
+            any = true
+            obj.push(csv_json_string(shape.names[k]))
+            obj.push(":")
+            obj.push(value)
+        }
+    }
+    obj.push("}}")
+    // Every primitive cell was checked above, so what's left for the decoder
+    // to reject is a nested value written as JSON.
+    let value = json.decode<T>(obj.build()) catch e => {
+        return CsvError.BadValue(row: row, column: csv_nested_columns(shape, cols), reason: e.message())
+    }
+    return value
+}
+
+/// An error as the sequence's item. A yield isn't a `return`, so it doesn't
+/// pick the error side on its own.
+func csv_err<T>(take e: CsvError) -> T or CsvError {
+    return e
+}
+
+// ─── Reading ────────────────────────────────────────────────────
+
+/// Whether `pat` occurs in `s` at byte `i`.
+func csv_at(s: string, i: usize, pat: string) -> bool {
+    let n = pat.len()
+    if i + n > s.len() {
+        return false
+    }
+    for k in 0..n {
+        if s.byte_at(i + k) != pat.byte_at(k) {
+            return false
+        }
+    }
+    return true
+}
+
+/// How far reading one record from `text` at `i` got.
+enum CsvScan {
+    Record(fields: Vec<string>, next: usize)
+    /// An empty line, which is not a row of one empty cell.
+    Blank(next: usize)
+    /// The text ran out first: inside a quoted field, or (before `eof`)
+    /// without a line break.
+    Short
+}
+
+/// Read the record starting at `i`. `\n` and `\r\n` end it.
+func csv_scan(text: string, start: usize, d: string, q: string, eof: bool) -> CsvScan {
+    let len = text.len()
+    mut i = start
+    if (text.byte_at(i) ?? 0) == 10 {
+        return CsvScan.Blank(next: i + 1)
+    }
+    if csv_at(text, i, "\r\n") {
+        return CsvScan.Blank(next: i + 2)
+    }
+    mut fields: Vec<string> = Vec.new()
+    loop {
+        mut cell = StringBuilder.new()
+        if csv_at(text, i, q) {
+            i = i + q.len()
+            mut seg = i
+            loop {
+                if i >= len {
+                    return CsvScan.Short
+                }
+                if csv_at(text, i, q) {
+                    // A doubled quote is one literal quote.
+                    if csv_at(text, i + q.len(), q) {
+                        cell.push(text[seg..i + q.len()].to_string())
+                        i = i + 2 * q.len()
+                        seg = i
+                    } else {
+                        cell.push(text[seg..i].to_string())
+                        i = i + q.len()
+                        break
+                    }
+                } else {
+                    i = i + 1
+                }
+            }
+        }
+        // Unquoted text, or whatever follows a closing quote, runs to the
+        // next delimiter or line end and is kept as written.
+        let seg = i
+        while i < len && !csv_at(text, i, d) && (text.byte_at(i) ?? 0) != 10 && !csv_at(text, i, "\r\n") {
+            i = i + 1
+        }
+        cell.push(text[seg..i].to_string())
+        fields.push(cell.build())
+        if i < len && csv_at(text, i, d) {
+            i = i + d.len()
+            continue
+        }
+        if i >= len && !eof {
+            return CsvScan.Short
+        }
+        if csv_at(text, i, "\r\n") {
+            i = i + 2
+        } else if i < len {
+            i = i + 1
+        }
+        return CsvScan.Record(fields: fields, next: i)
+    }
+}
+
+/// Split a whole document into records of cells. Blank lines are skipped and
+/// a leading byte order mark is dropped.
+func csv_parse(text: string, delimiter: char, quote: char) -> Vec<Vec<string>> or CsvError {
+    let d = string.from_char(delimiter)
+    let q = string.from_char(quote)
+    mut out: Vec<Vec<string>> = Vec.new()
+    mut i: usize = 0
+    if text.starts_with("\u{FEFF}") {
+        i = 3
+    }
+    while i < text.len() {
+        match csv_scan(text, i, d, q, true) {
+            CsvScan.Record(fields, next) => {
+                out.push(fields)
+                i = next
+            }
+            CsvScan.Blank(next) => {
+                i = next
+            }
+            CsvScan.Short => {
+                return CsvError.UnclosedQuote(row: out.len() + 1)
+            }
+        }
+    }
+    return out
+}
+
+/// Why one cell can't be its field's type.
+struct CsvBadCell {
+    reason: string
+}
+
+extend CsvBadCell {
+    func message(self) -> string {
+        return self.reason
+    }
+}
+
+/// A cell as the JSON value its field's type reads, or why it can't be one.
+/// Empty is the type's blank: `none`, "", 0 or false.
+func csv_cell_json(kind: string, cell: string) -> string or CsvBadCell {
+    let optional = kind.ends_with("?")
+    let base = if optional { kind[0..kind.len() - 1].to_string() } else { kind }
+    if cell.is_empty() {
+        if optional {
+            return "null"
+        }
+        if base == "string" {
+            return "\"\""
+        }
+        if base == "bool" {
+            return "false"
+        }
+        if csv_is_int_type(base) || base == "f32" || base == "f64" {
+            return "0"
+        }
+        return "null"
+    }
+    if base == "string" {
+        return csv_json_string(cell)
+    }
+    if base == "bool" {
+        let lower = cell.to_lowercase()
+        if lower == "true" || lower == "false" {
+            return lower
+        }
+        return CsvBadCell(reason: "\"{cell}\" is not true or false")
+    }
+    if csv_is_int_type(base) {
+        return csv_check_int(base, cell)
+    }
+    if base == "f32" || base == "f64" {
+        if csv_is_json_number(cell) {
+            return cell
+        }
+        return CsvBadCell(reason: "\"{cell}\" is not a number")
+    }
+    // A nested value is written as JSON. Anything else is taken as a string,
+    // which is how an enum without payloads is spelled.
+    let b = cell.byte_at(0) ?? 0
+    if b == 91 || b == 123 || b == 34 || cell == "null" || cell == "true" || cell == "false" || csv_is_json_number(cell) {
+        return cell
+    }
+    return csv_json_string(cell)
+}
+
+func csv_is_int_type(t: string) -> bool {
+    return t == "i8" || t == "i16" || t == "i32" || t == "i64" || t == "isize"
+        || t == "u8" || t == "u16" || t == "u32" || t == "u64" || t == "usize"
+}
+
+/// Digits with an optional leading "-", inside the type's range.
+func csv_check_int(t: string, cell: string) -> string or CsvBadCell {
+    let negative = cell.starts_with("-")
+    let digits = if negative { cell[1..cell.len()].to_string() } else { cell }
+    if digits.is_empty() {
+        return CsvBadCell(reason: "\"{cell}\" is not a whole number")
+    }
+    for i in 0..digits.len() {
+        let b = digits.byte_at(i) ?? 0
+        if b < 48 || b > 57 {
+            return CsvBadCell(reason: "\"{cell}\" is not a whole number")
+        }
+    }
+    if t.starts_with("u") {
+        if negative {
+            return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+        }
+        let n = digits.parse<u64>() catch _ => {
+            return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+        }
+        let max: u64 = if t == "u8" { 255 } else if t == "u16" { 65535 } else if t == "u32" { 4294967295 } else { 18446744073709551615 }
+        if n > max {
+            return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+        }
+        return digits
+    }
+    let n = cell.parse<i64>() catch _ => {
+        return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+    }
+    let ok = if t == "i8" {
+        n >= -128 && n <= 127
+    } else if t == "i16" {
+        n >= -32768 && n <= 32767
+    } else if t == "i32" {
+        n >= -2147483648 && n <= 2147483647
+    } else {
+        true
+    }
+    if !ok {
+        return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+    }
+    return cell
+}
+
+/// RFC 8259's number grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+func csv_is_json_number(s: string) -> bool {
+    let len = s.len()
+    mut i: usize = 0
+    if (s.byte_at(0) ?? 0) == 45 {
+        i = 1
+    }
+    let int_start = i
+    while i < len && csv_is_digit(s.byte_at(i) ?? 0) {
+        i = i + 1
+    }
+    let int_len = i - int_start
+    if int_len == 0 || (int_len > 1 && (s.byte_at(int_start) ?? 0) == 48) {
+        return false
+    }
+    if i < len && (s.byte_at(i) ?? 0) == 46 {
+        i = i + 1
+        let frac_start = i
+        while i < len && csv_is_digit(s.byte_at(i) ?? 0) {
+            i = i + 1
+        }
+        if i == frac_start {
+            return false
+        }
+    }
+    if i < len && ((s.byte_at(i) ?? 0) == 101 || (s.byte_at(i) ?? 0) == 69) {
+        i = i + 1
+        if i < len && ((s.byte_at(i) ?? 0) == 43 || (s.byte_at(i) ?? 0) == 45) {
+            i = i + 1
+        }
+        let exp_start = i
+        while i < len && csv_is_digit(s.byte_at(i) ?? 0) {
+            i = i + 1
+        }
+        if i == exp_start {
+            return false
+        }
+    }
+    return i == len
+}
+
+func csv_is_digit(b: u8) -> bool {
+    return b >= 48 && b <= 57
+}
+
+/// `s` as a quoted JSON string.
+func csv_json_string(s: string) -> string {
+    let hex = "0123456789abcdef"
+    mut out = StringBuilder.with_capacity(s.len() + 2)
+    out.push("\"")
+    mut run: usize = 0
+    for i in 0..s.len() {
+        let b = s.byte_at(i) ?? 0
+        if b == 34 || b == 92 || b < 32 {
+            out.push(s[run..i].to_string())
+            if b == 34 {
+                out.push("\\\"")
+            } else if b == 92 {
+                out.push("\\\\")
+            } else {
+                out.push("\\u00")
+                out.push_char(hex.char_at((b >> 4) as usize) ?? '0')
+                out.push_char(hex.char_at((b & 15) as usize) ?? '0')
+            }
+            run = i + 1
+        }
+    }
+    out.push(s[run..s.len()].to_string())
+    out.push("\"")
+    return out.build()
+}
+
+/// The columns holding nested values, for an error the JSON decoder raised:
+/// those are the only cells it could have rejected.
+func csv_nested_columns(shape: CsvShape, cols: Vec<i64>) -> string {
+    mut out: Vec<string> = Vec.new()
+    for k in 0..shape.names.len() {
+        let kind = shape.kinds[k]
+        let base = if kind.ends_with("?") { kind[0..kind.len() - 1].to_string() } else { kind }
+        let primitive = base == "string" || base == "bool" || base == "f32" || base == "f64" || csv_is_int_type(base)
+        if cols[k] >= 0 && !primitive {
+            out.push(shape.names[k])
+        }
+    }
+    return out.join(" or ")
+}
+
+// ─── Writing ────────────────────────────────────────────────────
+
+func csv_write_row(cells: Vec<string>, d: string, q: string, mutate out: StringBuilder) {
+    for i in 0..cells.len() {
+        if i > 0 {
+            out.push(d)
+        }
+        let cell = cells[i]
+        if cell.contains(d) || cell.contains(q) || cell.contains("\n") || cell.contains("\r") {
+            out.push(q)
+            out.push(cell.replace(q, "{q}{q}"))
+            out.push(q)
+        } else {
+            out.push(cell)
+        }
+    }
+    out.push("\n")
+}
+
+/// The top-level fields of a JSON object as `json.encode` writes it: strings
+/// unescaped, null as "", numbers and bools as written, nested values as
+/// their JSON text.
+func csv_json_fields(s: string) -> Vec<(string, string)> {
+    mut out: Vec<(string, string)> = Vec.new()
+    let len = s.len()
+    mut i: usize = 1
+    while i < len {
+        let b = s.byte_at(i) ?? 0
+        if b != 34 {
+            i = i + 1
+            continue
+        }
+        let key = csv_json_unquote(s, i)
+        i = csv_json_skip_string(s, i)
+        // Past the ":".
+        i = i + 1
+        let start = i
+        mut value = ""
+        let v = s.byte_at(i) ?? 0
+        if v == 34 {
+            value = csv_json_unquote(s, i)
+            i = csv_json_skip_string(s, i)
+        } else if v == 91 || v == 123 {
+            mut depth: i64 = 0
+            while i < len {
+                let c = s.byte_at(i) ?? 0
+                if c == 34 {
+                    i = csv_json_skip_string(s, i)
+                    continue
+                }
+                if c == 91 || c == 123 {
+                    depth = depth + 1
+                } else if c == 93 || c == 125 {
+                    depth = depth - 1
+                }
+                i = i + 1
+                if depth == 0 {
+                    break
+                }
+            }
+            value = s[start..i].to_string()
+        } else {
+            while i < len && (s.byte_at(i) ?? 0) != 44 && (s.byte_at(i) ?? 0) != 125 {
+                i = i + 1
+            }
+            value = s[start..i].to_string()
+            if value == "null" {
+                value = ""
+            }
+        }
+        out.push((key, value))
+        // Past the "," or "}".
+        i = i + 1
+    }
+    return out
+}
+
+/// The index just past the JSON string that opens at `i`.
+func csv_json_skip_string(s: string, i: usize) -> usize {
+    mut j = i + 1
+    while j < s.len() {
+        let b = s.byte_at(j) ?? 0
+        if b == 92 {
+            j = j + 2
+        } else if b == 34 {
+            return j + 1
+        } else {
+            j = j + 1
+        }
+    }
+    return j
+}
+
+/// The text of the JSON string that opens at `i`, escapes undone.
+func csv_json_unquote(s: string, i: usize) -> string {
+    let end = csv_json_skip_string(s, i) - 1
+    mut out = StringBuilder.new()
+    mut run = i + 1
+    mut j = i + 1
+    while j < end {
+        if (s.byte_at(j) ?? 0) != 92 {
+            j = j + 1
+            continue
+        }
+        out.push(s[run..j].to_string())
+        let e = s.byte_at(j + 1) ?? 0
+        if e == 110 {
+            out.push("\n")
+        } else if e == 116 {
+            out.push("\t")
+        } else if e == 114 {
+            out.push("\r")
+        } else if e == 98 {
+            out.push_char(char.from_u32(8) ?? ' ')
+        } else if e == 102 {
+            out.push_char(char.from_u32(12) ?? ' ')
+        } else if e == 117 {
+            // \uXXXX; json.encode only writes these for control characters,
+            // so there's no surrogate pair to join.
+            mut n: u32 = 0
+            for k in j + 2..j + 6 {
+                let h = s.byte_at(k) ?? 48
+                let v: u32 = if h >= 97 { (h - 87) as u32 } else if h >= 65 { (h - 55) as u32 } else { (h - 48) as u32 }
+                n = n * 16 + v
+            }
+            out.push_char(char.from_u32(n) ?? '?')
+            j = j + 6
+            run = j
+            continue
+        } else {
+            // \" \\ \/ stand for themselves.
+            out.push(s[j + 1..j + 2].to_string())
+        }
+        j = j + 2
+        run = j
+    }
+    out.push(s[run..end].to_string())
+    return out.build()
+}
