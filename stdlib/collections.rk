@@ -100,7 +100,7 @@ extend Vec<T> {
     ///
     /// What goes in is a copy, for the reason `try_push_all` gives.
     @grows
-    public func push_all(mutate self, items: Sequence<T>) {
+    public func push_all(mutate self, items: Sequence<T>) -> void {
         for item in items {
             self.push(item.clone())
         }
