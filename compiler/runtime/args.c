@@ -61,8 +61,8 @@ int64_t rask_os_env(const RaskStr *name, RaskStr *out) {
 }
 
 // os.pid() -> i64
-int64_t rask_os_pid(void) {
-    return (int64_t)getpid();
+uint32_t rask_os_pid(void) {
+    return (uint32_t)getpid();
 }
 
 // terminal.is_tty() — is stdout a terminal?
@@ -83,8 +83,8 @@ int64_t rask_terminal_size(void) {
 // os.exit(code) — struct.targets/EX3, ctrl.panic/P5: immediate, no unwind, no
 // ensures. `exit` rather than `_exit` so buffered `println` output still reaches
 // the terminal; what it must not do is run the cleanup a panic would.
-_Noreturn void rask_os_exit(int64_t code) {
-    exit((int)code);
+_Noreturn void rask_os_exit(int32_t code) {
+    exit(code);
 }
 
 // os.env_vars() -> Vec<(string, string)>

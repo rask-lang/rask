@@ -105,7 +105,7 @@ impl Interpreter {
 
             #[cfg(not(target_arch = "wasm32"))]
             "pid" => {
-                Ok(Value::int(std::process::id() as i64))
+                Ok(Value::Int(std::process::id() as i64, crate::value::IntKind::U32))
             }
             #[cfg(target_arch = "wasm32")]
             "pid" => {
