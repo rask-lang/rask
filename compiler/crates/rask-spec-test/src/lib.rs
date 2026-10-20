@@ -20,10 +20,13 @@
 //! - `<!-- test: run | expected -->` - Run via interpreter + native, verify output
 //! - `<!-- test: run-interp | expected -->` - Run via interpreter only (codegen escape hatch)
 //! - (no annotation) - Skipped by default
+//! - `<!-- surface -->` - A stdlib spec's promised declarations (see [`surface`]);
+//!   must parse, and the stdlib coverage gate compares it against `stdlib/*.rk`
 
 pub mod deps;
 pub mod extract;
 pub mod runner;
+pub mod surface;
 
 pub use deps::{check_staleness, extract_deps, SpecDeps, StalenessWarning};
 pub use extract::{extract_tests, has_rk_tests, Expectation, FailStage, SpecTest};

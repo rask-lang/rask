@@ -1,0 +1,46 @@
+# Open stdlib coverage gaps: what the specs promise and the stdlib doesn't yet
+# deliver. tests/stdlib_coverage_gate.sh fails on a gap missing from this list,
+# and on a line here whose gap has closed.
+#
+# Format: `<spec-id> <item> <GAP>`, as `rask stdlib-coverage --gaps` prints
+# it. A trailing `# note` is allowed. v0.6 is done when this file is only
+# comments.
+#
+#   NO-SURFACE  the spec states no `<!-- surface -->` block yet
+#   MISSING     promised, not declared in stdlib/*.rk
+#   PRIVATE     declared without `public`
+#   UNBUILT     declared `@unimplemented`
+#   MISMATCH    declared with a different signature
+#   VARIANTS    an enum whose variants differ from the spec's
+#   UNTESTED    built, and no suite program green on both backends calls it
+
+std.base64 - NO-SURFACE
+std.bits - NO-SURFACE
+std.cli - NO-SURFACE
+std.collections - NO-SURFACE
+std.csv - NO-SURFACE
+std.digest - NO-SURFACE
+std.encoding - NO-SURFACE
+std.fmt - NO-SURFACE
+std.fs - NO-SURFACE
+std.hex - NO-SURFACE
+std.http - NO-SURFACE
+std.io - NO-SURFACE
+std.iteration - NO-SURFACE
+std.json - NO-SURFACE
+std.math - NO-SURFACE
+std.net - NO-SURFACE
+std.os - NO-SURFACE
+std.path - NO-SURFACE
+std.random - NO-SURFACE
+std.reflect - NO-SURFACE
+std.strings - NO-SURFACE
+std.terminal - NO-SURFACE
+std.testing - NO-SURFACE
+std.time Duration.micros MISMATCH
+std.time Duration.millis MISMATCH
+std.time Duration.nanos MISMATCH
+std.time Duration.seconds MISMATCH
+std.time Duration.as_micros UNTESTED
+std.tls - NO-SURFACE
+std.url - NO-SURFACE

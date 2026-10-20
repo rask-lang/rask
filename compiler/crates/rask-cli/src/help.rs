@@ -58,6 +58,7 @@ pub fn print_usage() {
     println!("  {} {} Compile and run tests", output::command("test"), output::arg("<file | dir>"));
     println!("  {} {} Run benchmarks in a file", output::command("benchmark"), output::arg("<file>"));
     println!("  {} {} Run spec documentation tests", output::command("test-specs"), output::arg("[dir]"));
+    println!("  {} Stdlib specs against what exists and runs", output::command("stdlib-coverage"));
 
     println!();
     println!("{}", output::section_header("Debugging and Exploration:"));
@@ -414,6 +415,24 @@ pub fn print_test_specs_help() {
         output::arg("[directory]"));
     println!();
     println!("If no directory is specified, tests the 'specs' directory.");
+}
+
+pub fn print_stdlib_coverage_help() {
+    println!("{}", output::section_header("Stdlib Coverage"));
+    println!();
+    println!("Compare each stdlib spec's `<!-- surface -->` blocks against stdlib/*.rk.");
+    println!("A promised function is covered when it's declared public with the same");
+    println!("signature, has a body, and a suite program green on both backends calls it.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("stdlib-coverage"),
+        output::arg("[--specs dir] [--suite dir] [--gaps]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}   Spec directory (default specs/stdlib)", output::arg("--specs"));
+    println!("  {}   Programs that count as exercising a function (default tests/suite)", output::arg("--suite"));
+    println!("  {}    One `<spec-id> <item> <GAP>` line per gap, for the gate", output::arg("--gaps"));
 }
 
 pub fn print_fmt_help() {

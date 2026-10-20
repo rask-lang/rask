@@ -1653,6 +1653,7 @@ dependencies = [
 name = "rask-spec-test"
 version = "0.5.0"
 dependencies = [
+ "rask-ast",
  "rask-desugar",
  "rask-interp",
  "rask-lexer",

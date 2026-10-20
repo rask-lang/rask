@@ -613,6 +613,18 @@ fn main() {
                 commands::run::cmd_benchmark(path, filter, format, cmd_args.contains(&"--interp"));
             }
         }
+        "stdlib-coverage" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_stdlib_coverage_help();
+                return;
+            }
+            let flag = |name: &str| cmd_args.iter().position(|a| *a == name).and_then(|i| cmd_args.get(i + 1).copied());
+            commands::coverage::cmd_stdlib_coverage(commands::coverage::CoverageOpts {
+                specs_dir: flag("--specs").unwrap_or("specs/stdlib"),
+                suite_dir: flag("--suite").unwrap_or("tests/suite"),
+                gaps_only: cmd_args.contains(&"--gaps"),
+            });
+        }
         "test-specs" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_test_specs_help();

@@ -320,6 +320,14 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/spellings_gate.sh
 
+    # v0.6's number. Every function a stdlib spec promises in its `<!-- surface -->`
+    # blocks has to be declared public with that signature and called by a suite
+    # program that's green on both backends. Open gaps sit in
+    # tests/known_stdlib_gaps.txt; a new one or a closed one fails.
+    - name: Stdlib coverage gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/stdlib_coverage_gate.sh
+
     # A rule id is a name: CONVENTIONS.md cites rules as `spec-id/RULE` and
     # diagnostics print them (`warning[comp.effects/CW2]`). Two rules sharing
     # one id makes every citation of it ambiguous, and it happens by accident

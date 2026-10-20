@@ -291,6 +291,7 @@ tests/packages_gate.sh
 tests/tutorials_gate.sh
 tests/book_gate.sh
 tests/spellings_gate.sh        # every internal MIR name is accounted for
+tests/stdlib_coverage_gate.sh  # what stdlib specs promise against what exists and runs
 tests/fmt_roundtrip_gate.sh    # catches `rask fmt` breaking a file — it did, twice
 tests/agentbench_gate.sh       # nineteen more ordinary programs, no model called
 tests/clang_gate.sh            # the C runtime, under a second compiler

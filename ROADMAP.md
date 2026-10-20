@@ -397,14 +397,17 @@ Ships open:
 
 **Done when the stdlib coverage gate reads 100% for every module.**
 
-That gate doesn't exist yet, and building it is the first deliverable. It
-compares each module's spec'd surface against what exists and runs; a function
-reaches 100% by being implemented or by the spec dropping it.
+The gate is `tests/stdlib_coverage_gate.sh`, over `rask stdlib-coverage`. Each
+stdlib spec states what it promises in `<!-- surface -->` blocks, body-less
+declarations in the shape `stdlib/*.rk` uses. A promised function counts once
+`stdlib/*.rk` declares it public with that signature and a suite program that's
+green on both backends calls it. It reaches 100% by being implemented or by the
+spec dropping it. Open gaps are registered in `tests/known_stdlib_gaps.txt`, and
+v0.6 ships when that file is empty.
 
-Today [TODO.md](TODO.md) claims coverage per module between 40% and 90%. Those
-numbers are typed by hand and checked by nobody, which is the same shape as the
-leak gate before it measured. The first deliverable here is the gate, not the
-missing functions; the percentages will move on their own once they're real.
+The per-module percentages [TODO.md](TODO.md) used to carry were typed by hand
+and checked by nobody. Two of the gaps they listed, `SystemTime` and
+`UdpSocket`, had already shipped.
 
 [#726](https://github.com/rask-lang/rask/issues/726) ·
 [#980](https://github.com/rask-lang/rask/issues/980) · the module gaps in

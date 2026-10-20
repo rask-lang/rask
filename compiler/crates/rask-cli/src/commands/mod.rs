@@ -11,6 +11,7 @@ pub mod build;
 pub mod link;
 pub mod tools;
 pub mod specs;
+pub mod coverage;
 pub mod deps;
 pub mod manifest;
 pub mod watch;
