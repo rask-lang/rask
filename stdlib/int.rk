@@ -59,7 +59,6 @@ extend Integer {
 
     @builtin
     public func to_le(self) -> Self {}
-
 }
 
 // The ways out of the checked default (type.integer-overflow/OV5, SH2). Each

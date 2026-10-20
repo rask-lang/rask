@@ -36,14 +36,14 @@ extend base64 {
         while i < len {
             // Up to three bytes make one 24-bit group, read as four sextets.
             let left = len - i
-            let b0 = (data[i] as u32)
+            let b0 = data[i] as u32
             let b1 = if left > 1 { data[i + 1] as u32 } else { 0 }
             let b2 = if left > 2 { data[i + 2] as u32 } else { 0 }
-            let group = (b0 << 16) | (b1 << 8) | b2
-            out.push_char(table.char_at(((group >> 18) & 63) as usize) ?? 'A')
-            out.push_char(table.char_at(((group >> 12) & 63) as usize) ?? 'A')
+            let group = b0 << 16 | b1 << 8 | b2
+            out.push_char(table.char_at((group >> 18 & 63) as usize) ?? 'A')
+            out.push_char(table.char_at((group >> 12 & 63) as usize) ?? 'A')
             if left > 1 {
-                out.push_char(table.char_at(((group >> 6) & 63) as usize) ?? 'A')
+                out.push_char(table.char_at((group >> 6 & 63) as usize) ?? 'A')
             } else if padding {
                 out.push_char('=')
             }
@@ -94,7 +94,7 @@ extend base64 {
             let c1 = base64_sextet(s.byte_at(i + 1) ?? 0).wrap<u32>()
             let c2 = if left > 2 { base64_sextet(s.byte_at(i + 2) ?? 0).wrap<u32>() } else { 0 }
             let c3 = if left > 3 { base64_sextet(s.byte_at(i + 3) ?? 0).wrap<u32>() } else { 0 }
-            let group = (c0 << 18) | (c1 << 12) | (c2 << 6) | c3
+            let group = c0 << 18 | c1 << 12 | c2 << 6 | c3
             // Bits past the last whole byte are dropped, not checked: some
             // encoders leave them set.
             out.push((group >> 16).wrap<u8>())
