@@ -35,6 +35,9 @@ pub struct SurfaceFn {
     pub is_pub: bool,
     /// Declared `@unimplemented`: there's a signature and nothing behind it.
     pub unimplemented: bool,
+    /// A method an interface requires. It has no body of its own to run, so
+    /// only its signature is compared.
+    pub required: bool,
     /// 1-based line in the file it came from.
     pub line: usize,
 }
@@ -227,6 +230,13 @@ fn collect(decls: &[Decl], line_of: &dyn Fn(usize) -> usize, out: &mut Surface) 
             }
             DeclKind::Interface(i) => {
                 out.types.push(SurfaceType { name: i.name.clone(), kind: "interface", variants: Vec::new(), is_pub: i.is_pub, line });
+                for m in &i.methods {
+                    let mut f = surface_fn(&i.name, None, m, line_of);
+                    f.required = true;
+                    // An interface member carries the interface's visibility.
+                    f.is_pub = i.is_pub;
+                    out.fns.push(f);
+                }
             }
             _ => {}
         }
@@ -263,6 +273,7 @@ fn surface_fn(owner: &str, via: Option<String>, f: &FnDecl, line_of: &dyn Fn(usi
         ret: f.ret_ty.as_ref().map(normalize).unwrap_or(TypeExpr::Unit),
         is_pub: f.is_pub,
         unimplemented: f.attrs.iter().any(|a| a.is("unimplemented")),
+        required: false,
         line: line_of(f.span.start),
     }
 }

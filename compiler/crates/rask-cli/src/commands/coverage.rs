@@ -185,7 +185,7 @@ fn judge(
                     Some((Gap::Private, here))
                 } else if have.unimplemented {
                     Some((Gap::Unbuilt, here))
-                } else if !exercised.reaches(have) {
+                } else if !have.required && !exercised.reaches(have) {
                     Some((Gap::Untested, here))
                 } else {
                     None
@@ -219,7 +219,11 @@ fn judge(
         }
     }
 
-    let owners: HashSet<&str> = spec.surface.fns.iter().map(|f| f.owner.as_str()).filter(|o| !o.is_empty()).collect();
+    // Only types the spec itself declares, and its own module: a spec that
+    // adds one method to `Vec` isn't claiming to describe the rest of `Vec`.
+    let module = spec.id.strip_prefix("std.").unwrap_or(&spec.id);
+    let owners: HashSet<&str> =
+        spec.surface.types.iter().map(|t| t.name.as_str()).chain(std::iter::once(module)).collect();
     let promised: HashSet<FnKey> = spec.surface.fns.iter().map(SurfaceFn::key).collect();
     for (key, (have, _)) in &stdlib.fns {
         if have.is_pub && owners.contains(key.owner.as_str()) && !promised.contains(key) {
