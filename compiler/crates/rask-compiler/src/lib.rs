@@ -1028,7 +1028,8 @@ fn finalize_compile_inner(
     write_back_inferred_params(&mut check.decls, &check.typed);
 
     // --- Inject compiled stdlib functions and the types they use ---
-    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let mut stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    check.typed.place_args(&mut stdlib_fn_decls);
     check.decls.extend(stdlib_fn_decls);
 
     // A second copy of every dependency declaration used to be merged here,
