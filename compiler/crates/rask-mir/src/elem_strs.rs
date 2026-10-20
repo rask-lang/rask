@@ -196,6 +196,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // fresh string. Neither points into the source — unlike the splitters
     // below, which look identical from here and are not.
     ("string_chars", 0, 0, "Vec_free"),
+    ("StringView_chars", 0, 0, "Vec_free"),
     ("string_graphemes", 0, 0, "Vec_free"),
     // The third of that family and the one left out: `char_indices` pushes a
     // (byte offset, scalar) pair per character into a fresh vector. Two

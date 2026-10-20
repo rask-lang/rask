@@ -127,6 +127,28 @@ extend string {
     @native("rask_string_char_at")
     public func char_at(self, idx: usize) -> char? {}
 
+    /// The text a `Span` covers, copied out — or `none` when the span runs
+    /// past the end, runs backwards, or cuts a character in half. The
+    /// checked form of `self[span.start..span.end]`.
+    public func get(self, span: Span) -> string? {
+        if span.start > span.end || span.end > self.len() {
+            return none
+        }
+        if !self.starts_char(span.start) || !self.starts_char(span.end) {
+            return none
+        }
+        return self[span.start..span.end]
+    }
+
+    /// Is byte offset `at` where a character starts, or the end? A UTF-8
+    /// continuation byte is `10xxxxxx`; anything else starts one.
+    func starts_char(self, at: usize) -> bool {
+        if self.byte_at(at)? as b {
+            return (b & 0xC0) != 0x80
+        }
+        return at == self.len()
+    }
+
     // ── Searching ───────────────────────────────────────────
 
     /// Byte index of first occurrence. none if not found.
@@ -224,11 +246,20 @@ extend string {
 
     // ── Manipulation ────────────────────────────────────────
 
-    /// Replace all occurrences. Allocates.
-    /// The spec's `limit:` parameter (replace at most n) needs default
-    /// arguments on methods — blocked on rask-lang/rask#1028.
+    /// Replace occurrences of `from` with `to`, left to right: every one, or
+    /// at most `limit`. `limit: 0` replaces nothing. Allocates.
+    public func replace(self, from: string, to: string, limit: usize? = none) -> string {
+        if limit? as n {
+            return self.replace_at_most(from, to, n)
+        }
+        return self.replace_every(from, to)
+    }
+
     @native("rask_string_replace")
-    public func replace(self, from: string, to: string) -> string {}
+    func replace_every(self, from: string, to: string) -> string {}
+
+    @native("rask_string_replace_limit")
+    func replace_at_most(self, from: string, to: string, limit: usize) -> string {}
 
     /// Reverse by graphemes (std.strings/U2). Allocates.
     /// Scalar reversal has no correct use — it splits combining marks from
@@ -357,6 +388,16 @@ extend StringView {
     /// Byte length. O(1).
     @native("rask_string_len")
     public func len(self) -> usize {}
+
+    /// Byte index of the first occurrence of `pat`, from the view's start.
+    /// none if not found. A view is laid out as a string, so this is the same
+    /// search.
+    @native("rask_string_find")
+    public func index_of(self, pat: string) -> usize? {}
+
+    /// The view's Unicode scalars, in order (U3).
+    @native("rask_string_chars")
+    public func chars(self) -> Iterator<char> {}
 
     /// True if the view is empty. O(1).
     @native("rask_string_is_empty")

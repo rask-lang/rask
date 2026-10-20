@@ -108,6 +108,13 @@ extend Span {
     public func is_empty(self) -> bool {
         return self.start == self.end
     }
+
+    /// The text this span covers in `source`, copied out. Panics when it runs
+    /// past the end or cuts a character, the way `source[start..end]` does;
+    /// `source.get(span)` is the form that answers `none` instead.
+    public func to_string(self, source: string) -> string {
+        return source[self.start..self.end]
+    }
 }
 
 /// Why a conversion couldn't produce the value (type.primitives/CV11).

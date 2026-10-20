@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.strings: `replace` with a `limit:`, a `Span` resolved against its
+// source (`span.to_string(s)` panics on a bad span, `s.get(span)` answers
+// none), and a `StringView` searched and walked by scalar.
+
+import builtins.Span
+
+test "replace every occurrence, or at most limit of them" {
+    let s = "a-b-c-d"
+    assert s.replace("-", "+") == "a+b+c+d"
+    assert s.replace("-", "+", limit: 2) == "a+b+c-d"
+    assert s.replace("-", "+", limit: 0) == "a-b-c-d"
+    assert s.replace("-", "+", limit: 10) == "a+b+c+d"
+    assert s.replace("", "+") == s
+    assert "héé".replace("é", "e", limit: 1) == "heé"
+}
+
+test "a span resolves against its source" {
+    let src = "let x = 42"
+    let name = Span.new(4, 5)
+    assert name.to_string(src) == "x"
+    assert name.len() == 1
+    let value = Span.new(8, 10)
+    assert value.to_string(src) == "42"
+}
+
+test "get answers none for a span that doesn't fit" {
+    let src = "naïve"
+    assert (src.get(Span.new(0, 2)) ?? "") == "na"
+    assert (src.get(Span.new(2, 4)) ?? "") == "ï"
+    assert src.get(Span.new(3, 4)) is none
+    assert src.get(Span.new(0, 99)) is none
+    assert src.get(Span.new(4, 2)) is none
+    assert (src.get(Span.new(6, 6)) ?? "x") == ""
+}
+
+test "a view searches and walks its scalars" {
+    let line = "key: välue"
+    let v = line.view()
+    assert (v.index_of(":") ?? 99) == 3
+    assert v.index_of("missing") is none
+    mut n = 0
+    mut last = 'x'
+    for c in v.chars() {
+        n += 1
+        last = c
+    }
+    assert n == 10
+    assert last == 'e'
+}

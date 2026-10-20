@@ -196,7 +196,7 @@ Plain indices for lightweight stored references — offsets for diagnostics, ser
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `Span(i, j)` | `Span` | Create span (just start, end indices) |
+| `Span.new(i, j)` | `Span` | Create span (just start, end indices); `Span(start: i, end: j)` is the same |
 | `s[i..j].span()` | `Span` | The slice's byte range. Works on any expression-scoped slice — `s.trim().span()`, split items |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
@@ -635,7 +635,7 @@ FIX 2: Copy to an independent string:
 
 FIX 3: Store indices instead:
 
-  let v = Span(0, 5)    // store indices, resolve later
+  let v = Span.new(0, 5)    // store indices, resolve later
 ```
 
 ```
@@ -876,7 +876,7 @@ process(s2[0..3])  // passes "hel" as temporary slice
 let kept = s2[0..3].view()  // storable zero-copy view (V1)
 process(kept)
 
-let span = Span(0, 3)
+let span = Span.new(0, 3)
 process(s2[span])  // same as s2[0..3], user ensures s2 is still valid
 ```
 
@@ -940,14 +940,15 @@ Current interpreter behavior differs from spec in some areas:
 - `.view()` works on both backends. A view is a `RaskStr` sharing the source's buffer and holding a refcount on it, so V1, V2, V4 and V6 hold and a stored view can't dangle
 - What doesn't hold yet is V5's "no copy either way" on a *sub-range*. `s[i..j]` and `s.trim()` allocate today (above), so `s.trim().view()` shares the trimmed copy rather than referencing a range of `s` — one allocation per slice, not per view
 - The header-pointer + start/len layout under "Internal Layout" is what removes that last allocation. Until slices are ranges instead of copies, a view always covers the whole of its (already copied) source, so `start`/`len` have nothing to say
-- Read-only API on a view is `len`, `is_empty`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (`index_of`, `chars`, sub-slicing, comparison) isn't wired up
+- Read-only API on a view is `len`, `is_empty`, `index_of`, `chars`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (the other searches, sub-slicing, comparison) isn't wired up
 
 **Method name aliases:**
 - The interpreter still accepts `s.find(pat)` as an alias for `index_of`
 
-**`replace` has no `limit:` yet:** default arguments don't work on methods
-(rask-lang/rask#1028), so only the two-argument form exists today. The limit
-form lands with that fix.
+**`.span()` isn't built:** on a slice it has to answer the slice's range in
+its source, and a slice is still a copy (above), so there's no range to read.
+On a whole string it would be `Span.new(0, s.len())`, which isn't worth a
+method that's wrong everywhere else. It lands with slices as ranges (#492).
 
 **Text units:**
 - `width`, `graphemes`, `truncate` and `normalized` (U2, U5) are implemented on both backends. The interpreter uses the `unicode-*` crates directly; the native runtime's tables are generated from those same crates by `scripts/gen_unicode_text`, so the two cannot drift. `tests/suite/t_text_units.rk` pins the output against Python's `unicodedata` as an independent reference
