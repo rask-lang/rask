@@ -1506,11 +1506,15 @@ pub fn typecheck_with_stdlib_lenient(
     // here too, and `path / "x"` in path.rk is an operator like any other.
     let stdlib = rask_stdlib::StubRegistry::compilable();
     checker.operator_calls.extend(stdlib.operator_calls);
-    let bodies: Vec<Decl> = stdlib
+    // A module const goes ahead of the bodies, which read its type.
+    let (consts, rest): (Vec<Decl>, Vec<Decl>) = stdlib
         .decls
         .into_iter()
-        .filter(|d| matches!(d.kind,
-            rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
+        .partition(|d| matches!(d.kind, rask_ast::decl::DeclKind::Const(_)));
+    let bodies: Vec<Decl> = consts
+        .into_iter()
+        .chain(rest.into_iter().filter(|d| matches!(d.kind,
+            rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_))))
         .collect();
     let (mut typed, errors) = checker.check_lenient_with_stdlib(&bodies, decls);
     typed.attach_derived(decls);

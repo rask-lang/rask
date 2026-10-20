@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.digest against the published test vectors: FIPS 180-4's examples for
+// SHA-256 and SHA-1, RFC 1321's suite for MD5, and CRC-32's check value
+// 0xCBF43926 for "123456789". Digests are fixed-size arrays (D1), and the
+// builders agree with the one-shot functions however the input is chunked
+// (D2) — the lengths around 56 and 64 bytes are where padding changes shape.
+
+import digest
+import digest.{Sha256, Sha1, Md5, Crc32}
+import hex
+
+func bytes_of(s: string) -> Vec<u8> {
+    return s.bytes().to_vec()
+}
+
+func a_times(n: i64) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for _ in 0..n {
+        out.push(97)
+    }
+    return out
+}
+
+func sha256_hex(s: string) -> string {
+    return hex.encode(digest.sha256(bytes_of(s)).to_vec())
+}
+
+func sha1_hex(s: string) -> string {
+    return hex.encode(digest.sha1(bytes_of(s)).to_vec())
+}
+
+func md5_hex(s: string) -> string {
+    return hex.encode(digest.md5(bytes_of(s)).to_vec())
+}
+
+/// Every byte of `data` through each builder, `step` bytes per update, with
+/// an empty update between chunks. Returns the four digests as hex, joined.
+func chunked(data: Vec<u8>, step: i64) -> string {
+    mut s256 = Sha256.new()
+    mut s1 = Sha1.new()
+    mut m5 = Md5.new()
+    mut crc = Crc32.new()
+    let empty: Vec<u8> = []
+    mut i: i64 = 0
+    let len = data.len().wrap<i64>()
+    while i < len {
+        mut chunk: Vec<u8> = Vec.new()
+        mut j = i
+        while j < len && j < i + step {
+            chunk.push(data[j])
+            j = j + 1
+        }
+        s256.update(chunk)
+        s1.update(chunk)
+        m5.update(chunk)
+        crc.update(chunk)
+        s256.update(empty)
+        s1.update(empty)
+        m5.update(empty)
+        crc.update(empty)
+        i = j
+    }
+    return "{hex.encode(s256.build().to_vec())} {hex.encode(s1.build().to_vec())} {hex.encode(m5.build().to_vec())} {crc.build()}"
+}
+
+func one_shot(data: Vec<u8>) -> string {
+    return "{hex.encode(digest.sha256(data).to_vec())} {hex.encode(digest.sha1(data).to_vec())} {hex.encode(digest.md5(data).to_vec())} {digest.crc32(data)}"
+}
+
+test "sha256: FIPS 180-4 examples" {
+    assert sha256_hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    assert sha256_hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    assert sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    assert sha256_hex("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu") == "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+}
+
+test "sha1: FIPS 180-4 examples" {
+    assert sha1_hex("") == "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+    assert sha1_hex("abc") == "a9993e364706816aba3e25717850c26c9cd0d89d"
+    assert sha1_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") == "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
+    assert sha1_hex("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu") == "a49b2446a02c645bf419f995b67091253a04a259"
+}
+
+test "md5: the RFC 1321 test suite" {
+    assert md5_hex("") == "d41d8cd98f00b204e9800998ecf8427e"
+    assert md5_hex("a") == "0cc175b9c0f1b6a831c399e269772661"
+    assert md5_hex("abc") == "900150983cd24fb0d6963f7d28e17f72"
+    assert md5_hex("message digest") == "f96b697d7cb7938d525a2f31aaf161d0"
+    assert md5_hex("abcdefghijklmnopqrstuvwxyz") == "c3fcd3d76192e4007dfb496cca67e13b"
+    assert md5_hex("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") == "d174ab98d277d9f5a5611c2c9f419d9f"
+    assert md5_hex("12345678901234567890123456789012345678901234567890123456789012345678901234567890") == "57edf4a22be3c955ac49da2e2107b67a"
+}
+
+test "crc32: the check value, and the empty input" {
+    assert digest.crc32(bytes_of("123456789")) == 0xcbf43926
+    assert digest.crc32(bytes_of("The quick brown fox jumps over the lazy dog")) == 0x414fa339
+    let empty: Vec<u8> = []
+    assert digest.crc32(empty) == 0
+}
+
+test "every byte value, once" {
+    mut all: Vec<u8> = Vec.new()
+    for i in 0..256 {
+        all.push(i.wrap<u8>())
+    }
+    assert one_shot(all) == "40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880 4916d6bdb7f78e6803698cab32d1586ea457dfc8 e2c865db4162bed963bfaa9ef6ac18f0 688229491"
+}
+
+test "D2: padding edges, one-shot against known values" {
+    assert one_shot(a_times(55)) == "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318 c1c8bbdc22796e28c0e15163d20899b65621d65a ef1772b6dff9a122358552954ad0df65 2866799438"
+    assert one_shot(a_times(56)) == "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a c2db330f6083854c99d4b5bfb6e8f29f201be699 3b0c8ac703f828b04c6c197006d17218 2037976375"
+    assert one_shot(a_times(63)) == "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34 03f09f5b158a7a8cdad920bddc29b81c18a551f5 b06521f39153d618550606be297466d5 1747240414"
+    assert one_shot(a_times(64)) == "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb 0098ba824b5c16427bd7a1122a5a442a25ec644d 014842d480b571495a4a0363793f7367 2310301013"
+    assert one_shot(a_times(65)) == "635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0 11655326c708d70319be2610e8a57d9a5b959d3b c743a45e0d2e6a95cb859adae0248435 4081037149"
+    assert one_shot(a_times(119)) == "31eba51c313a5c08226adf18d4a359cfdfd8d2e816b13f4af952f7ea6584dcfb ee971065aaa017e0632a8ca6c77bb3bf8b1dfc56 8a7bd0732ed6a28ce75f6dabc90e1613 1095035822"
+    assert one_shot(a_times(120)) == "2f3d335432c70b580af0e8e1b3674a7c020d683aa5f73aaaedfdc55af904c21c f34c1488385346a55709ba056ddd08280dd4c6d6 5f61c0ccad4cac44c75ff505e1f1e537 3650647111"
+}
+
+test "D2: any chunking gives the one-shot answer" {
+    for n in [0, 1, 55, 56, 63, 64, 65, 128] {
+        let data = a_times(n)
+        let want = one_shot(data)
+        for step in [1, 7, 64, 200] {
+            assert chunked(data, step) == want
+        }
+    }
+}
+
+test "D1: digests are arrays, compared with ==" {
+    let a = digest.sha256(bytes_of("same"))
+    let b = digest.sha256(bytes_of("same"))
+    let c = digest.sha256(bytes_of("different"))
+    assert a == b
+    assert a != c
+    assert a.len() == 32
+    assert digest.sha1(bytes_of("x")).len() == 20
+    // 16 bytes is at the Copy threshold: the copy leaves the original usable.
+    let m = digest.md5(bytes_of("x"))
+    let m2 = m
+    assert m == m2
+    assert m.len() == 16
+}
+
+func main() {
+    println(sha256_hex("abc"))
+    println(sha1_hex("abc"))
+    println(md5_hex("abc"))
+    println("{digest.crc32(bytes_of("123456789"))}")
+    println(chunked(a_times(65), 7))
+}

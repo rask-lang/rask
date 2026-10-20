@@ -3109,8 +3109,10 @@ impl TypeChecker {
                 for arg in args { self.infer_expr(&arg.expr); }
                 match self.types.get(type_id) {
                     Some(TypeDef::Struct { name, fields, .. }) => {
+                        // As written: a program `Color` shadowing the
+                        // stdlib's carries a `Color#N` symbol in the table.
                         let (name, fields) = (
-                            name.clone(),
+                            self.types.written_name(name).to_string(),
                             fields.iter().map(|(f, _)| f.clone()).collect(),
                         );
                         self.errors.push(TypeError::TypeCalledAsFunction {
@@ -3122,7 +3124,7 @@ impl TypeChecker {
                         Type::Error
                     }
                     Some(TypeDef::Enum { name, .. }) => {
-                        let name = name.clone();
+                        let name = self.types.written_name(name).to_string();
                         self.errors.push(TypeError::TypeCalledAsFunction {
                             name,
                             kind: "an enum".to_string(),

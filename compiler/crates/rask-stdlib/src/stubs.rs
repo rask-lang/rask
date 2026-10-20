@@ -203,8 +203,8 @@ pub fn expand_width_families(decls: &mut Vec<Decl>, next_id: &mut u32) {
 ///
 /// The spellings are ones a program can't write by accident. A type is
 /// UpperCamel, so `RawBytes_fs` already has a character no type name has; that
-/// is the package convention too. A function is snake_case, where one
-/// underscore is ordinary, so it gets two.
+/// is the package convention too. A function is snake_case and a const
+/// SCREAMING_CASE, where one underscore is ordinary, so they get two.
 ///
 /// Left alone: a module's lowercase namespace struct (`struct fs { }`), which
 /// the checker finds by the module's name.
@@ -219,6 +219,7 @@ fn qualify_private_helpers(decls: &mut [Decl], module: &str) {
             }
             DeclKind::Struct(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
             DeclKind::Enum(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
+            DeclKind::Const(c) if !c.is_pub => Some((c.name.clone(), format!("{}__{module}", c.name))),
             _ => None,
         })
         .collect();
@@ -250,6 +251,8 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("json.rk", include_str!("../../../../stdlib/json.rk")),
     ("hex.rk", include_str!("../../../../stdlib/hex.rk")),
     ("base64.rk", include_str!("../../../../stdlib/base64.rk")),
+    ("digest.rk", include_str!("../../../../stdlib/digest.rk")),
+    ("terminal.rk", include_str!("../../../../stdlib/terminal.rk")),
     ("cli.rk", include_str!("../../../../stdlib/cli.rk")),
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
@@ -539,7 +542,7 @@ impl StubRegistry {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
                     | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_)
-                    | DeclKind::TypeAlias(_) | DeclKind::Interface(_) => {
+                    | DeclKind::TypeAlias(_) | DeclKind::Interface(_) | DeclKind::Const(_) => {
                         decls.push(decl);
                     }
                     _ => {}
@@ -583,6 +586,7 @@ impl StubRegistry {
                         DeclKind::Import(_) => true,
                         DeclKind::TypeAlias(_) => true,
                         DeclKind::Interface(_) => true,
+                        DeclKind::Const(_) => true,
                         _ => false,
                     }
                 } else {
