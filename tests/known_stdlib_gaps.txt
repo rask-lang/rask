@@ -16,14 +16,7 @@
 
 std.cli Parser.parse UNTESTED   # same
 std.cli cli.parse UNTESTED      # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
-std.collections Map.from MISSING
-std.collections Vec.from MISSING
-std.collections Vec.from_raw_parts MISSING
-std.collections Vec.modify_many MISSING
-std.collections Vec.push_all MISSING
-std.collections Vec.try_insert MISSING
-std.fmt Displayable.display MISSING
-std.fmt format UNTESTED
+std.collections Vec.from_raw_parts MISSING  # adopts memory it didn't allocate; nothing in Rask hands a buffer out, so the only pointer is a C one, and the interpreter has no C ABI — no suite program can run it on both backends
 std.fs DirEntry MISSING
 std.fs File.flush [Writer] MISSING
 std.fs File.metadata MISSING
@@ -44,9 +37,6 @@ std.fs fs.open_with MISSING
 std.fs fs.read_dir MISSING
 std.fs fs.remove_dir MISSING
 std.fs fs.remove_dir_all MISSING
-std.http Headers.iter MISSING
-std.http HttpError VARIANTS
-std.http http.serve UNTESTED
 std.io Buffer.flush [Writer] MISSING
 std.io Buffer.read_exact [Reader<Vec<u8>>] MISSING
 std.io BufferedReader MISSING
@@ -80,9 +70,6 @@ std.io Stdin.read [Reader<Vec<u8>>] MISMATCH
 std.io Stdout.write [Writer<Vec<u8>>] MISMATCH
 std.io Writer.write MISMATCH
 std.io io.copy MISMATCH
-std.iteration Map.take_all MISSING
-std.iteration Vec.take_all MISMATCH
-std.math f64.pow UNTESTED
 std.net TcpConnection.flush [Writer] MISSING
 std.net TcpConnection.read [Reader<Vec<u8>>] MISSING
 std.net TcpConnection.read_bytes [Reader] MISSING
@@ -91,17 +78,6 @@ std.net TcpConnection.write [Writer<Vec<u8>>] MISSING
 std.net TcpConnection.write_bytes [Writer<Vec<u8>>] MISSING
 std.net TcpConnection.write_text [Writer<string>] MISSING
 std.net net.resolve MISSING
-std.os os.exit MISMATCH
-std.os os.pid MISMATCH
-std.random random.choice MISSING
-std.random random.shuffle MISSING
-std.random random.u64 MISSING
-std.random Random.f32 MISMATCH
-std.random Random.from_seed MISMATCH
-std.random Random.shuffle MISMATCH
-std.random Random.u64 MISMATCH
-std.random random.f32 MISMATCH
-std.random random.range UNTESTED
 std.reflect reflect.has_field UNBUILT
 std.reflect reflect.has_method UNBUILT
 std.reflect reflect.implements UNBUILT
@@ -111,19 +87,8 @@ std.reflect reflect.variants UNBUILT
 std.reflect reflect.align_of UNTESTED
 std.reflect reflect.is_copy UNTESTED
 std.reflect reflect.size_of UNTESTED
-std.strings Span.to_string MISSING
-std.strings StringView.chars MISSING
-std.strings StringView.index_of MISSING
-std.strings string.get MISSING
-std.strings string.span MISSING
-std.strings string.replace MISMATCH
-std.strings cstring.from_ptr UNTESTED
-std.testing expect_fail MISSING
-std.testing skip MISSING
-std.time Duration.micros MISMATCH
-std.time Duration.millis MISMATCH
-std.time Duration.nanos MISMATCH
-std.time Duration.seconds MISMATCH
+std.strings string.span MISSING  # on a slice it has to answer the slice's range in its source, and slices are copies until #492
+std.strings cstring.from_ptr UNTESTED  # the same: it adopts a C pointer, and the interpreter has no C ABI to get one from
 std.tls Certificate MISSING
 std.tls Config MISSING
 std.tls Config.new MISSING
@@ -148,4 +113,4 @@ std.tls Verification MISSING
 std.tls tls.connect MISSING
 std.tls tls.listen MISSING
 std.tls tls.wrap MISSING
-std.url Url.display [Displayable] MISSING  # Url implements Displayable through to_string, the name stdlib/fmt.rk still declares; closes with std.fmt Displayable.display
+
