@@ -6,7 +6,6 @@
 
 mod builtins;
 pub mod types;
-pub mod float_methods;
 pub mod handles;
 pub mod ptr_methods;
 pub mod registry;
@@ -23,7 +22,6 @@ pub use ordering::{
 };
 pub use builtins::{Builtin, BuiltinKind};
 pub use types::{MethodStub, any_builtin_method_mutates, has_method, lookup_method, methods_for};
-pub use float_methods::{FloatMethod, FloatSig, FLOAT_METHODS};
 pub use stubs::{CompilableStdlib, NativeDecl, NativeReturn, StubParamMode, StubRegistry};
 pub use modules::ModuleExports;
 pub use registry::{

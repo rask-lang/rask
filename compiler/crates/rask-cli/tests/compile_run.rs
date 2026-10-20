@@ -5893,7 +5893,7 @@ fn package_diagnostic_names_the_right_file() {
 // The f64 method set lived in four hand-maintained lists — checker, interpreter,
 // codegen dispatch, drift registry — and they disagreed. `x.floor()` passed the
 // checker, ran on the interpreter, and failed native codegen with "Function not
-// found: f64_floor". They all read rask_stdlib::FLOAT_METHODS now; this test
+// found: f64_floor". They all read the declarations in stdlib/float.rk now; this test
 // runs the whole primitive surface through both backends and compares.
 #[test]
 fn primitive_methods_agree_on_both_backends() {

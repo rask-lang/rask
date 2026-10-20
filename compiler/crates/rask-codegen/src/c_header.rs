@@ -13,7 +13,7 @@ use cranelift::prelude::Type;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// One `rask_*` prototype, as registers.
+/// One prototype, as registers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CPrototype {
     pub params: Vec<Type>,
@@ -21,7 +21,7 @@ pub struct CPrototype {
     pub ret: Option<Type>,
 }
 
-/// Every `rask_*` declaration in the header, by name: return type and
+/// Every function the header declares, by name: return type and
 /// parameter types as written. One this can't read (a struct by value) is
 /// left out.
 fn written() -> &'static HashMap<String, (String, Vec<String>)> {
@@ -64,7 +64,7 @@ fn written() -> &'static HashMap<String, (String, Vec<String>)> {
                 continue;
             };
             let name = &head[name_at + 1..];
-            if !name.starts_with("rask_") || head.contains("typedef") {
+            if name.is_empty() || head.contains("typedef") {
                 continue;
             }
             let ret = head[..name_at + 1].trim().to_string();

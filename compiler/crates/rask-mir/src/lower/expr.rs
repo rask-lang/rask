@@ -6000,6 +6000,19 @@ impl<'a> MirLowerer<'a> {
             let mut chars = base.chars();
             !matches!((chars.next(), chars.next()),
                       (Some(c), None) if c.is_ascii_uppercase())
+        })
+        // An integer method is declared once per width (stdlib/int.rk), and
+        // the checker records the width it resolved on. The runtime has one
+        // entry per family — `i64_abs` serves every signed width up to 64 —
+        // so the name collapses the way an undeclared one always did.
+        .map(|prefix| {
+            if rask_ast::primitives::is_machine_integer(&prefix) {
+                super::builtin_method_prefix_for_name(&prefix)
+                    .map(str::to_string)
+                    .unwrap_or(prefix)
+            } else {
+                prefix
+            }
         });
         // `to_int` / `to_float` are one machine instruction, so lower them to a
         // Cast instead of hunting for a `f64_to_int` symbol that never existed.
@@ -6007,6 +6020,12 @@ impl<'a> MirLowerer<'a> {
             self.try_lower_numeric_conversion(method.as_str(), args, &obj_op, &obj_ty)
         {
             return Ok(handled);
+        }
+        // An unsigned value is its own magnitude. stdlib/int.rk declares `abs`
+        // for every width, and the runtime's `abs` entries are signed ones, so
+        // `u32.abs()` reached codegen as a `u64_abs` nothing answered.
+        if method == "abs" && args.is_empty() && obj_ty.is_unsigned() {
+            return Ok((obj_op, obj_ty));
         }
 
         // Resolve the receiver's stdlib type prefix, then mangle to

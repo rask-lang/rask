@@ -119,7 +119,75 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
     let mut decls = parser.parse().decls;
     *next_id = parser.next_node_id();
     qualify_private_helpers(&mut decls, filename.trim_end_matches(".rk"));
+    expand_width_families(&mut decls, next_id);
     Some(decls)
+}
+
+/// The primitive types a family block in the stdlib (`extend Integer`,
+/// `extend Float`) is written for.
+///
+/// Every integer width answers `count_ones`, each at its own width, and the
+/// same for the float methods. Spelling that out per width is ten copies of one
+/// block kept in step by hand; written against the family, it is one. The
+/// block is filed under each member with `Self` read as that member, so every
+/// reader of the stdlib — the checker, the registry, both backends — sees
+/// `extend i8 { … }` through `extend u128 { … }` and nothing family-shaped.
+///
+/// `isize` and `usize` aren't members: they are `i64` and `u64` under another
+/// name, not types with methods of their own.
+pub const WIDTH_FAMILIES: &[(&str, &[&str])] = &[
+    ("Integer", &["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"]),
+    // The integers that fit a register. The overflow hatches have no 128-bit
+    // forms yet, so stdlib/int.rk declares them here.
+    ("MachineInteger", &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]),
+    ("Float", &["f32", "f64"]),
+];
+
+/// Replace each block extending a family in `WIDTH_FAMILIES` with one block per
+/// member type.
+///
+/// Only declarations: a body would be shared node for node by every copy, and
+/// every pass keys what it learns about an expression by its node.
+fn expand_width_families(decls: &mut Vec<Decl>, next_id: &mut u32) {
+    let mut out = Vec::with_capacity(decls.len());
+    for decl in decls.drain(..) {
+        let family = match &decl.kind {
+            DeclKind::Impl(i) if i.interface.is_none() => i
+                .target_ty
+                .bare_name()
+                .and_then(|n| WIDTH_FAMILIES.iter().find(|(f, _)| *f == n)),
+            _ => None,
+        };
+        let (Some((family, members)), DeclKind::Impl(block)) = (family, &decl.kind) else {
+            out.push(decl);
+            continue;
+        };
+        if let Some(m) = block.methods.iter().find(|m| !m.body.is_empty()) {
+            panic!(
+                "`extend {family}` in the stdlib declares `{}` with a body. A block \
+                 written for every width is copied once per width, and a body's \
+                 nodes can't be shared — give the method a marker instead \
+                 (`@builtin` or `@native`)",
+                m.name
+            );
+        }
+        for member in members.iter() {
+            let member_ty = TypeExpr::named(member.to_string());
+            let as_member = |t: &TypeExpr| t.substitute(&|n| (n == "Self").then(|| member_ty.clone()));
+            let mut copy = block.clone();
+            copy.target_ty = member_ty.clone();
+            for m in &mut copy.methods {
+                for p in &mut m.params {
+                    p.ty = p.ty.as_ref().map(as_member);
+                }
+                m.ret_ty = m.ret_ty.as_ref().map(as_member);
+            }
+            let id = rask_ast::NodeId(*next_id);
+            *next_id += 1;
+            out.push(Decl { id, kind: DeclKind::Impl(copy), span: decl.span });
+        }
+    }
+    *decls = out;
 }
 
 /// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there;
@@ -193,6 +261,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("math.rk", include_str!("../../../../stdlib/math.rk")),
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("float.rk", include_str!("../../../../stdlib/float.rk")),
+    ("int.rk", include_str!("../../../../stdlib/int.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
@@ -284,6 +353,8 @@ pub struct MethodStub {
     /// Declared `comptime func` — evaluated by the comptime engine, so the
     /// keyword already says where the body lives.
     pub is_comptime: bool,
+    /// Declared `unsafe func`: the call has to be written inside `unsafe`.
+    pub is_unsafe: bool,
     /// Interface bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
     /// checker builds module signatures from these stubs, and without the bound
@@ -857,6 +928,7 @@ fn fn_to_method_stub(
         builtin: f.attrs.iter().any(|a| a.is("builtin")),
         has_body: !f.body.is_empty(),
         is_comptime: f.is_comptime,
+        is_unsafe: f.is_unsafe,
         native: rask_ast::attr::find(&f.attrs, "native")
             .map(|a| NativeDecl::from_attr(a, &f.name)),
         type_params,

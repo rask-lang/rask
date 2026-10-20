@@ -6117,31 +6117,6 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
         return Some(ctx.resolve_type_expr(&meta.ret_ty));
     }
 
-    // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
-    // knows each one's shape. Without this they all fell through to i64, so
-    // `x.floor().to_string()` picked i64_to_string and printed a truncated
-    // integer (#687).
-    if let Some(name) = func_name.strip_prefix("f64_") {
-        if let Some(m) = rask_stdlib::float_methods::lookup(name) {
-            use rask_stdlib::FloatSig;
-            return Some(match m.sig {
-                FloatSig::Unary | FloatSig::BinaryFloat | FloatSig::BinaryInt => MirType::F64,
-                FloatSig::Predicate | FloatSig::Comparison => MirType::Bool,
-                FloatSig::ToString => MirType::String,
-                FloatSig::ToInt => MirType::I64,
-                // Ordering is an enum; leave it to the caller's own typing.
-                FloatSig::Compare => MirType::I64,
-            });
-        }
-    }
-
-    // `abs` at 128 bits answers at 128 bits. It isn't stub-declared, so without
-    // this it took the i64 default below and the result was truncated on the way
-    // out of the call — `(-18446744073709551614).abs()` printed -2 (#762).
-    if func_name == "i128_abs" {
-        return Some(MirType::I128);
-    }
-
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {

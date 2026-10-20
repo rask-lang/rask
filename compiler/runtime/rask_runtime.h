@@ -304,6 +304,30 @@ float    rask_f32_from_bits(uint32_t bits);
 uint64_t rask_f64_to_bits(double d);
 double   rask_f64_from_bits(uint64_t bits);
 
+// The float methods' entry points (stdlib/float.rk): math.c's wrappers, and
+// the libm functions native code calls directly. Codegen reads its call
+// signatures from these lines.
+double math_sin(double x);
+double math_cos(double x);
+double math_tan(double x);
+double math_asin(double x);
+double math_acos(double x);
+double math_atan(double x);
+double math_exp(double x);
+double math_ln(double x);
+double math_log2(double x);
+double math_log10(double x);
+double math_fract(double x);
+int8_t math_is_nan(double x);
+int8_t math_is_inf(double x);
+int8_t math_is_finite(double x);
+double fabs(double x);
+double floor(double x);
+double ceil(double x);
+double round(double x);
+double trunc(double x);
+double sqrt(double x);
+double pow(double x, double y);
 
 // `pass`: how the comparator takes the two elements, a RASK_SORT_PASS_* code
 // (rask_abi.h). Lowering knows which; the width doesn't say. Lowering picks one
