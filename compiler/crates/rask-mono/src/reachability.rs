@@ -159,6 +159,11 @@ pub struct Monomorphizer<'a> {
     /// where `A` came from, so without this the receiver's instantiation has no
     /// name to bind to (#814).
     method_owners: HashMap<String, MethodOwner>,
+    /// Types with a type parameter that carries an interface bound
+    /// (`BufferedReader<R: Reader>`). Their methods call through that
+    /// parameter, so a body only exists per instantiation — see the widening
+    /// in `visit_expr`.
+    bounded_generic_owners: HashSet<String>,
 }
 
 /// The generic type a method is declared on.
@@ -348,6 +353,19 @@ impl<'a> Monomorphizer<'a> {
             owner_params.insert(bare, params);
         }
 
+        let bounded_generic_owners: HashSet<String> = decls
+            .iter()
+            .filter_map(|decl| match &decl.kind {
+                DeclKind::Struct(s) if s.type_params.iter().any(|p| !p.bounds.is_empty()) => {
+                    Some(s.name.trim().to_string())
+                }
+                DeclKind::Enum(e) if e.type_params.iter().any(|p| !p.bounds.is_empty()) => {
+                    Some(e.name.trim().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+
         // Every type a method could belong to. `Type_method`-shaped free
         // functions are registered as instance methods below, and without this
         // the "type" half was whatever came before the first underscore —
@@ -509,6 +527,7 @@ impl<'a> Monomorphizer<'a> {
             interface_coercions: HashMap::new(),
             decls,
             method_owners,
+            bounded_generic_owners,
         }
     }
 
@@ -908,10 +927,23 @@ impl<'a> Monomorphizer<'a> {
         for method in methods {
             if let Some(qualified_names) = self.method_by_bare_name.get(&method).cloned() {
                 for qname in qualified_names {
-                    self.enqueue(qname, Vec::new());
+                    if !self.needs_instantiation(&qname) {
+                        self.enqueue(qname, Vec::new());
+                    }
                 }
             }
         }
+    }
+
+    /// A method of a type whose parameter has an interface bound
+    /// (`BufferedReader<R: Reader>`). Its body calls through `R`, so there is
+    /// no template to lower on its own: an instance is reached through a call
+    /// the checker pinned to it, which binds `R`. A widened call has nothing
+    /// to bind it with.
+    fn needs_instantiation(&self, qualified: &str) -> bool {
+        self.method_owners
+            .get(qualified)
+            .is_some_and(|o| self.bounded_generic_owners.contains(&o.base))
     }
 
     /// Set the external package module names for cross-package call discovery.
@@ -2014,6 +2046,16 @@ impl<'a> Monomorphizer<'a> {
                                         None if is_primitive_receiver(&name) => {
                                             Dispatch::Intrinsic
                                         }
+                                        // A `@builtin` the checker pinned to its
+                                        // type — `Shared.read` — is lowered by
+                                        // the compiler itself. Widening it made
+                                        // every `with x.read()` reach every
+                                        // stream's `read`.
+                                        None if rask_stdlib::lookup_method(&name, m)
+                                            .is_some_and(|s| s.builtin) =>
+                                        {
+                                            Dispatch::Intrinsic
+                                        }
                                         None => Dispatch::Unknown,
                                     }
                                 }
@@ -2073,8 +2115,11 @@ impl<'a> Monomorphizer<'a> {
                                 let derived = self
                                     .typed
                                     .map(|t| &t.derived_generic_methods);
+                                // Nor one that `needs_instantiation`.
                                 for qname in qualified_names.clone() {
-                                    if !derived.is_some_and(|d| d.contains(&qname)) {
+                                    if !derived.is_some_and(|d| d.contains(&qname))
+                                        && !self.needs_instantiation(&qname)
+                                    {
                                         self.enqueue(qname, type_args.clone());
                                     }
                                 }
