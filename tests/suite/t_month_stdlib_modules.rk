@@ -75,14 +75,14 @@ test "std.path — the pieces of a path" {
     assert p.file_name()! == "file.txt"
     assert p.extension()! == "txt"
     assert p.stem()! == "file"
-    assert p.has_extension()
+    assert p.has_extension("txt")
     assert p.parent()!.as_string() == "/tmp"
 }
 
 test "std.path — a path with no extension" {
     let p = Path.from("/tmp/plain")
     assert p.file_name()! == "plain"
-    assert !p.has_extension()
+    assert !p.has_extension("txt")
     assert p.extension() is none
 }
 

@@ -105,10 +105,11 @@ extend Path {
         return none
     }
 
-    /// Whether the path has an extension.
-    public func has_extension(self) -> bool {
-        if self.extension()? as _e {
-            return true
+    /// Whether the extension is `ext`, given without the dot: "a.rk" has "rk".
+    /// Exact match; a path with no extension has none of them.
+    public func has_extension(self, ext: string) -> bool {
+        if self.extension()? as e {
+            return e == ext
         }
         return false
     }

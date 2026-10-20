@@ -460,7 +460,6 @@ std.net net.udp_bind UNTESTED
 std.os Command.env MISSING
 std.os os.exit MISMATCH
 std.os os.pid MISMATCH
-std.path Path.has_extension MISMATCH
 std.random random.choice MISSING
 std.random random.shuffle MISSING
 std.random random.u64 MISSING
