@@ -21,6 +21,16 @@ public func panic(msg: string) {}
 @native
 public func todo(msg: string?) {}
 
+/// Stop this test here and report it skipped, with the reason
+/// (std.testing/T12). Like `panic`, it doesn't return.
+@native
+public func skip(reason: string) {}
+
+/// Invert this test's result: it passes only if it fails (std.testing/T13).
+/// For a test that pins a known bug until the fix lands.
+@native
+public func expect_fail() {}
+
 /// Mark code that should never be reached. Panics if executed.
 /// Returns `!` (Never) so it works in any type context.
 @native
