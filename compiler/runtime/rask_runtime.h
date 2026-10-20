@@ -696,6 +696,10 @@ RaskVec *rask_map_values(const RaskMap *m);
 // The entries as a Vec of `(key, value)` tuples: the value `voff` bytes into
 // each, entries `stride` bytes apart. The caller lays the tuple out.
 RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride);
+RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
+                           const int32_t *pair_offs, int64_t n_pair_offs);
+void     rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
+                               int64_t voff, int64_t stride);
 RaskMap *rask_map_clone(const RaskMap *m);
 // mem.racks/RK3: drop every entry whose value is this link.
 int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);

@@ -2653,15 +2653,6 @@ impl TypeChecker {
                 };
                 self.unify(ret, &vec_ty, span)
             }
-            // Vec.from(array) — construct Vec from array literal
-            "from" if args.len() == 1 => {
-                let elem_ty = self.from_arg_elem(&args[0]);
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(elem_ty))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
             _ => {
                 let vec_ty = Type::UnresolvedGeneric {
                     name: "Vec".to_string(),
@@ -2771,25 +2762,6 @@ impl TypeChecker {
                 };
                 self.unify(ret, &map_ty, span)
             }
-            // Map.from([(k, v), …]). The pairs are what say `K` and `V`: the
-            // map's arguments used to be left fresh, so in
-            // `let m: Map<i64, string> = Map.from([(1, "one")])` the `1` kept the
-            // literal default and was an `i32` in an `i64` map. The interpreter
-            // hashes by width, and `m[1]` found nothing.
-            "from" if args.len() == 1 => {
-                let fresh_k = self.ctx.fresh_var();
-                let fresh_v = self.ctx.fresh_var();
-                let pair = self.from_arg_elem(&args[0]);
-                self.unify(&pair, &Type::Tuple(vec![fresh_k.clone(), fresh_v.clone()]), span)?;
-                let map_ty = Type::UnresolvedGeneric {
-                    name: "Map".to_string(),
-                    args: vec![
-                        GenericArg::Type(Box::new(fresh_k)),
-                        GenericArg::Type(Box::new(fresh_v)),
-                    ],
-                };
-                self.unify(ret, &map_ty, span)
-            }
             _ => {
                 let map_ty = Type::UnresolvedGeneric {
                     name: "Map".to_string(),
@@ -2804,23 +2776,6 @@ impl TypeChecker {
                     span,
                 })
             }
-        }
-    }
-
-    /// The element type of `Vec.from`'s or `Map.from`'s argument: an array
-    /// literal's element, a `Vec`'s, or a fresh variable for anything else.
-    fn from_arg_elem(&mut self, arg: &Type) -> Type {
-        match arg {
-            Type::Array { elem, .. } => *elem.clone(),
-            Type::UnresolvedGeneric { name, args } if name == "Vec" => match args.first() {
-                Some(GenericArg::Type(t)) => *t.clone(),
-                _ => self.ctx.fresh_var(),
-            },
-            Type::Generic { args, .. } => match args.first() {
-                Some(GenericArg::Type(t)) => *t.clone(),
-                _ => self.ctx.fresh_var(),
-            },
-            _ => self.ctx.fresh_var(),
         }
     }
 

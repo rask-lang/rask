@@ -146,7 +146,7 @@ keeps its own type.
 | Method | Signature | Semantics |
 |--------|-----------|-----------|
 | `Vec.from(arr)` | `[T; N] -> Vec<T>` | Copy array elements into new Vec |
-| `Map.from(pairs)` | `[[K,V]; N] -> Map<K,V>` | Build Map from key-value pair arrays |
+| `Map.from(pairs)` | `[(K, V); N] -> Map<K,V>` | Build Map from `(key, value)` tuples. A repeated key keeps the later value |
 
 <!-- surface -->
 ```rask
@@ -166,12 +166,16 @@ Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is eq
 | **C9: The slot picks the shape** | `[a, b, c]` is a `Vec<T>` where the position it fills says so, a `[T; N]` where that says so, and a `[T; N]` where nothing says anything. One literal, and the destination decides — `let xs: Vec<i64> = [1, 2, 3]` and `let a: [i64; 3] = [1, 2, 3]` are both the literal doing what it was asked |
 | **C10: Elements fill their slot** | An element coerces into the element type the same way a struct field's value does, so `[1, none, 3]` is a `Vec<i64?>` or a `[i64?; 3]` and the present ones acquire their tag. An empty literal takes the destination's shape whole |
 
-**Note:** Key-value pairs for `Map.from()` are represented as 2-element arrays `[key, value]` rather than tuple syntax. Native tuple support may be added in the future. Example:
+A pair is a tuple, `(key, value)`. The spec used to spell it as a two-element
+array, `["alice", 10]`, from before tuples existed — and an array's elements all
+share one type, so that shape could only ever build a map whose keys and values
+were the same type. Both constructors take a literal or an array held in a
+variable; the variable keeps its own elements and the collection gets copies.
 
 ```rask
 let users = Map.from([
-    ["alice", User.new("Alice")]
-    ["bob", User.new("Bob")]
+    ("alice", User.new("Alice")),
+    ("bob", User.new("Bob")),
 ])
 ```
 
@@ -443,7 +447,7 @@ extend Map<K, V> {
 
 <!-- test: parse -->
 ```rask
-let scores = Map.from([["alice", 10], ["bob", 20]])
+let scores = Map.from([("alice", 10), ("bob", 20)])
 scores.contains("alice")      // true
 for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }

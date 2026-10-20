@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `comptime N` parameter inferred from an array argument. Natively the call
+// records nothing for `N`, so the copy is `total$_` over a `[i64; 0]` and the
+// loop runs zero times — a wrong answer with no error (#1623).
+
+func total<comptime N: usize>(arr: [i64; N]) -> i64 {
+    mut t = 0
+    for x in arr {
+        t += x
+    }
+    return t
+}
+
+test "N comes from the array's length" {
+    assert total([1, 2, 3]) == 6
+    let four: [i64; 4] = [1, 1, 1, 1]
+    assert total(four) == 4
+}

@@ -147,3 +147,4 @@ t_stdout_handle_test_output.rk   # handle writes not captured — #1605 (interp 
 
 # A range with 128-bit bounds: the interpreter range holds i64s.
 t_range_over_i128.rk             # interp range over i128 — #1619 (interp run)
+t_comptime_n_array_param.rk       # comptime N from an array argument left unbound — #1623 (native run)

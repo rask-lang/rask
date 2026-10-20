@@ -5549,11 +5549,25 @@ impl<'a> MirLowerer<'a> {
                                 if let ExprKind::Array(elems) = &args[0].expr.kind {
                                     return self.lower_vec_from_array_with(elems, None, Some(expr.id)).map(Some);
                                 }
+                                // An array held somewhere: the Vec gets copies
+                                // and the array keeps its own elements, so it's
+                                // the view an array method borrows, cloned.
+                                let (arr_op, arr_ty) = self.lower_expr(&args[0].expr)?;
+                                if let Some((view, _)) = self.array_receiver_as_vec(&arr_op, &arr_ty) {
+                                    let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: Some(vec_local),
+                                        func: FunctionRef::internal("Vec_clone".to_string()),
+                                        args: vec![view],
+                                    }));
+                                    return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
+                                }
+                                return Err(LoweringError::InvalidConstruct(format!(
+                                    "Vec.from takes a fixed array, and this argument lowered as {arr_ty:?}"
+                                )));
                             }
                             if base == "Map" && method == "from" && args.len() == 1 {
-                                if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_map_from_pairs(expr, written_args, elems).map(Some);
-                                }
+                                return self.lower_map_from_pairs(expr, written_args, &args[0].expr).map(Some);
                             }
                         }
 
@@ -6186,13 +6200,22 @@ impl<'a> MirLowerer<'a> {
             _ => &[],
         };
         // An entry is a `(key, value)` tuple, laid out by the caller.
-        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter") && all_args.len() == 1 {
+        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter" | "Map_take_all") && all_args.len() == 1 {
             if let (Some(key), Some(val)) = (
                 self.container_elem_mir_type(object.id, 0),
                 self.container_elem_mir_type(object.id, 1),
             ) {
                 let map = all_args[0].clone();
                 all_args = self.map_entries_args(map, &key, &val);
+                // `take_all` hands its entries over, so the Vec it builds has
+                // to know what each pair owns.
+                if qualified_name == "Map_take_all" {
+                    let desc = |i: usize, fallback: &MirType| {
+                        self.container_elem_type(object.id, i).unwrap_or_else(|| fallback.clone())
+                    };
+                    let pair = MirType::Tuple(vec![desc(0, &key), desc(1, &val)]);
+                    all_args.push(crate::elem_strs::elem(pair));
+                }
             }
         }
 

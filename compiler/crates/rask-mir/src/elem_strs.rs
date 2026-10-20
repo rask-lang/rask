@@ -154,6 +154,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Map_keys", 0, 0, "Vec_free"),
     ("Map_values", 0, 0, "Vec_free"),
     ("Map_entries", 0, 0, "Vec_free"),
+    // The entries move out into a fresh Vec: (map, value offset, pair size),
+    // then what a pair owns.
+    ("Map_take_all", 3, 1, "Vec_free"),
     // Racks and pools carry no element description: a rack is told about its fields
     // separately, through `Link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
