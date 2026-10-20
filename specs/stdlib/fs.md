@@ -88,14 +88,14 @@ try fs.write_text("output.txt", "hello world")
 | Function | Signature |
 |----------|-----------|
 | `fs.open` | `(path: string) -> File or IoError` |
-| `fs.create` | `(path: string) -> File or IoError` |
+| `fs.create_file` | `(path: string) -> File or IoError` |
 | `fs.open_with` | `(path: string, opts: OpenOptions) -> File or IoError` |
 
 <!-- surface -->
 ```rask
 extend fs {
     func open(path: string) -> File or IoError
-    func create(path: string) -> File or IoError
+    func create_file(path: string) -> File or IoError
     func open_with(path: string, opts: OpenOptions) -> File or IoError
 }
 ```

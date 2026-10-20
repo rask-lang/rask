@@ -332,7 +332,6 @@ std.fs OpenOptions.new MISSING
 std.fs OpenOptions.read MISSING
 std.fs OpenOptions.truncate MISSING
 std.fs OpenOptions.write MISSING
-std.fs fs.create MISSING
 std.fs fs.open_with MISSING
 std.fs fs.read_dir MISSING
 std.fs fs.remove_dir MISSING
@@ -354,7 +353,6 @@ std.fs fs.write_bytes UNTESTED
 std.hex HexError MISSING
 std.hex hex.decode MISSING
 std.hex hex.encode MISSING
-std.http Headers.has MISSING
 std.http Headers.iter MISSING
 std.http HttpError VARIANTS
 std.http Headers.get UNTESTED
@@ -463,7 +461,6 @@ std.net TcpConnection.remote_addr UNTESTED
 std.net net.tcp_connect UNTESTED
 std.net net.tcp_listen UNTESTED
 std.net net.udp_bind UNTESTED
-std.os Command.env MISSING
 std.os os.exit MISMATCH
 std.os os.pid MISMATCH
 std.path Path.has_extension MISMATCH
@@ -480,7 +477,6 @@ std.random random.bool UNTESTED
 std.random random.f64 UNTESTED
 std.random random.i64 UNTESTED
 std.random random.range UNTESTED
-std.reflect reflect.interface_names MISSING
 std.reflect reflect.has_field UNBUILT
 std.reflect reflect.has_method UNBUILT
 std.reflect reflect.implements UNBUILT
@@ -559,3 +555,6 @@ std.url url.encode MISSING
 std.url url.encode_query MISSING
 std.url url.parse MISSING
 std.url url.parse_query MISSING
+std.fs fs.create_file UNTESTED
+std.http Headers.contains UNTESTED
+std.reflect reflect.interfaces UNBUILT

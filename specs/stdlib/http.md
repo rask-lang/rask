@@ -49,7 +49,7 @@ extend Headers {
     func new() -> Headers
     func get(self, name: string) -> string?
     func set(mutate self, name: string, value: string)
-    func has(self, name: string) -> bool
+    func contains(self, name: string) -> bool
     func remove(mutate self, name: string) -> string?
     func len(self) -> usize
     func iter(self) -> Sequence<(string, string)>

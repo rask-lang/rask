@@ -163,13 +163,13 @@ struct MethodInfo {
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `implements<T, Interface>()` | `-> bool` | Whether T satisfies Interface (structural or explicit) |
-| `interface_names<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
+| `interfaces<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
 <!-- surface -->
 ```rask
 extend reflect {
     func implements<T, Interface>() -> bool
-    func interface_names<T>() -> Vec<string>
+    func interfaces<T>() -> Vec<string>
 }
 ```
 

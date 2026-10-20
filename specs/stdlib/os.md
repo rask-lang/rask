@@ -109,7 +109,7 @@ These are "should never happen" failures — most callers `try` them upward or c
 
 | Rule | Description |
 |------|-------------|
-| **C1: Command builder** | `Command` configures program, args, env, working directory, and I/O before execution |
+| **C1: Command builder** | `Command` configures program, args, env, working directory, and I/O before execution. The env setter is `set_env`: `os.env(key)` already reads one, and a builder step spelled like a getter misleads |
 | **C2: Run** | `command.run()` executes to completion and captures output |
 | **C3: Spawn** | `command.spawn()` starts the process and returns a linear `Process` handle |
 | **C4: Process resource** | `Process` is `@resource` — must be consumed via `wait()` or `kill_and_wait()` |
@@ -124,7 +124,7 @@ extend Command {
     func new(program: string) -> Command
     func arg(take self, arg: string) -> Command
     func args(take self, args: Vec<string>) -> Command
-    func env(take self, key: string, value: string) -> Command
+    func set_env(take self, key: string, value: string) -> Command
     func working_dir(take self, dir: string) -> Command
     func stdin(take self, cfg: Stdio) -> Command
     func stdout(take self, cfg: Stdio) -> Command
