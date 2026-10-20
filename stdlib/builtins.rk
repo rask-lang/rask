@@ -44,9 +44,11 @@ public func eprintln(msg: string) {}
 @blocks
 public func eprint(msg: string) {}
 
-/// Format values into a string.
-@native
-public func format(fmt: string) -> string {}
+/// Format values into a string. The arguments after the template are
+/// compiler support (std.fmt/CM1): the compiler reads the template and builds
+/// the string in place, so no call to this reaches either backend.
+@builtin
+public func format(template: string) -> string {}
 
 /// The smaller of two values. Works on any Comparable type — numbers,
 /// strings (lexicographic), custom types. No `.min()` method or

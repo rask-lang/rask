@@ -89,6 +89,9 @@ pub struct CheckResult {
     pub source_files: Vec<(PathBuf, String)>,
     pub effects: EffectMap,
     pub effect_warnings: Vec<EffectWarning>,
+    /// Where `format(…)` was called. Desugar compiles each one into string
+    /// building, so `decls` has no call left to find (std.fmt/CM5).
+    pub format_calls: Vec<rask_ast::Span>,
 }
 
 /// Result of the full compilation pipeline (through monomorphization).
@@ -518,6 +521,7 @@ pub fn check_loaded(
             source_files: source_files.clone(),
             effects,
             effect_warnings,
+            format_calls: desugared.format_calls.clone(),
         },
         diags,
         source_files,
@@ -869,6 +873,7 @@ fn check_package_scoped(
             source_files: source_files.clone(),
             effects,
             effect_warnings,
+            format_calls: desugared.format_calls.clone(),
         },
         diags,
         source_files,
