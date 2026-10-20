@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A move into the `return` at the end of a loop body — #1613.
+//
+// The ownership pass worked out what a loop carries into its next iteration
+// from the state at the end of the body. Ending in `return`, that state never
+// goes round again; only the `continue` does, and it comes before the move. It
+// was rejected as "use of maybe-moved value".
+
+struct Bag {
+    items: Vec<string>
+}
+
+func collect(n: i64) -> Bag {
+    mut items: Vec<string> = Vec.new()
+    mut i = 0
+    loop {
+        items.push("x{i}")
+        i = i + 1
+        if i < n {
+            continue
+        }
+        return Bag(items: items)
+    }
+}
+
+func first_long(words: Vec<string>) -> string {
+    mut acc = ""
+    for w in words {
+        acc = "{acc}{w}"
+        if acc.len() < 4 {
+            continue
+        }
+        return acc
+    }
+    return acc
+}
+
+test "a move into return inside loop" {
+    let b = collect(3)
+    assert b.items.len() == 3
+    assert b.items[2] == "x2"
+}
+
+test "a move into return inside for" {
+    assert first_long(["ab", "c", "de", "f"]) == "abcde"
+    assert first_long(["a"]) == "a"
+}
