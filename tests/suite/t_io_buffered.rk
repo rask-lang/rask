@@ -3,7 +3,7 @@
 // lines and reads, BufferedWriter holding bytes until it fills or flushes,
 // and `take()` handing the inner stream back.
 
-import io.{Buffer, BufferedReader, BufferedWriter, IoError, SeekFrom}
+import io.{Buffer, BufferedReader, BufferedWriter, IoError, SeekFrom, copy}
 
 func bytes_of(s: string) -> Vec<u8> {
     mut out: Vec<u8> = Vec.new()
@@ -108,4 +108,21 @@ test "BufferedWriter writes through when the buffer fills, and take flushes" {
     let all = w.take()
     let _ = all.seek(SeekFrom.Start(0))
     assert all.read_text()! == "abcdea big onez"
+}
+
+// Boxed as `any Reader` / `any Writer`: the vtable slots are the instance's
+// own methods (`BufferedReader_read$Buffer`), which nothing else names.
+test "a BufferedReader goes through io.copy" {
+    let src = BufferedReader.with_capacity(2, Buffer.from(bytes_of("streamed")))
+    let dst = Buffer.new()
+    assert copy(src, dst)! == 8
+    let _ = dst.seek(SeekFrom.Start(0))
+    assert dst.read_text()! == "streamed"
+}
+
+test "a BufferedWriter goes through io.copy" {
+    let dst = BufferedWriter.with_capacity(4, Buffer.new())
+    assert copy(Buffer.from(bytes_of("written")), dst)! == 7
+    dst.flush()!
+    assert dst.take().len() == 7
 }

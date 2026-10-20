@@ -164,6 +164,9 @@ pub struct Monomorphizer<'a> {
     /// parameter, so a body only exists per instantiation — see the widening
     /// in `visit_expr`.
     bounded_generic_owners: HashSet<String>,
+    /// (instance layout, method) → the symbol its vtable slot holds, for the
+    /// instances `mark_boxed_instance_methods` queued.
+    pub vtable_symbols: HashMap<(String, String), String>,
 }
 
 /// The generic type a method is declared on.
@@ -528,6 +531,7 @@ impl<'a> Monomorphizer<'a> {
             decls,
             method_owners,
             bounded_generic_owners,
+            vtable_symbols: HashMap::new(),
         }
     }
 
@@ -932,6 +936,45 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// The vtable methods of the value boxed at `id`, when it's an instance of
+    /// a type that `needs_instantiation`. The widening above skips those, and
+    /// this is the one place that knows the instance: `io.copy(reader, …)`
+    /// with a `BufferedReader<Buffer>` needs `BufferedReader_read$Buffer`.
+    fn mark_boxed_instance_methods(&mut self, id: NodeId, interface_name: &str) {
+        let Some(typed) = self.typed else { return };
+        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)).cloned() else {
+            return;
+        };
+        let Type::Generic { base, args } = &ty else { return };
+        let name = typed.types.type_name(*base);
+        if !self.bounded_generic_owners.contains(&name) {
+            return;
+        }
+        let Some(methods) = self.interface_methods.get(interface_name).cloned() else { return };
+        for method in methods {
+            let qualified = format!("{name}_{method}");
+            let Some(owner) = self.method_owners.get(&qualified) else { continue };
+            let bindings: Vec<TypeBinding> = owner
+                .params
+                .iter()
+                .zip(args.iter())
+                .filter_map(|(param, arg)| match arg {
+                    rask_types::GenericArg::Type(t) => Some(TypeBinding::new(param.clone(), t.as_ref().clone())),
+                    _ => None,
+                })
+                .collect();
+            // The vtable is named after the instance's layout
+            // (`BufferedReader$Buffer`) and the body after the method
+            // (`BufferedReader_read$Buffer`); codegen joins the two here.
+            let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
+            if let Some(layout) = crate::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
+                let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
+                self.vtable_symbols.insert((layout, method.clone()), symbol);
+            }
+            self.enqueue(qualified, bindings);
         }
     }
 
@@ -1793,6 +1836,7 @@ impl<'a> Monomorphizer<'a> {
         // with no written-out cast — the checker flags these by NodeId.
         if let Some(interface_name) = self.interface_coercions.get(&expr.id).cloned() {
             self.mark_interface_object_methods(&interface_name);
+            self.mark_boxed_instance_methods(expr.id, &interface_name);
         }
         if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.note_map_key_fns(expr.id);
