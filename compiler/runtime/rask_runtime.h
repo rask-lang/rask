@@ -872,24 +872,24 @@ int64_t     rask_io_std_flush(int64_t which);
 int64_t     rask_io_std_read_bytes(int64_t max);
 
 // ─── Time module ────────────────────────────────────────────
-// Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
+// Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = u64 nanoseconds (D1, D4).
 
 int64_t rask_time_Instant_now(void);
 int64_t rask_time_wall_clock_nanos(void);
 int64_t rask_time_Instant_elapsed(int64_t instant_ns);
-int64_t rask_time_Duration_from_nanos(int64_t ns);
-int64_t rask_time_Duration_from_millis(int64_t ms);
-int64_t rask_time_Duration_as_nanos(int64_t duration_ns);
-int64_t rask_time_Duration_as_millis(int64_t duration_ns);
-int64_t rask_time_Duration_as_micros(int64_t duration_ns);
-int64_t rask_time_Duration_as_secs(int64_t duration_ns);
-double  rask_time_Duration_as_secs_f64(int64_t duration_ns);
-double  rask_time_Duration_as_secs_f32(int64_t duration_ns);
-int64_t rask_time_Duration_seconds(int64_t secs);
-int64_t rask_time_Duration_millis(int64_t ms);
-int64_t rask_time_Duration_micros(int64_t us);
-int64_t rask_time_Duration_nanos(int64_t ns);
-int64_t rask_time_Duration_from_secs_f64(double secs);
+uint64_t rask_time_Duration_from_nanos(uint64_t ns);
+uint64_t rask_time_Duration_from_millis(uint64_t ms);
+uint64_t rask_time_Duration_as_nanos(uint64_t duration_ns);
+uint64_t rask_time_Duration_as_millis(uint64_t duration_ns);
+uint64_t rask_time_Duration_as_micros(uint64_t duration_ns);
+uint64_t rask_time_Duration_as_secs(uint64_t duration_ns);
+double  rask_time_Duration_as_secs_f64(uint64_t duration_ns);
+double  rask_time_Duration_as_secs_f32(uint64_t duration_ns);
+uint64_t rask_time_Duration_seconds(uint64_t secs);
+uint64_t rask_time_Duration_millis(uint64_t ms);
+uint64_t rask_time_Duration_micros(uint64_t us);
+uint64_t rask_time_Duration_nanos(uint64_t ns);
+uint64_t rask_time_Duration_from_secs_f64(double secs);
 int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 
 // ─── Net module ─────────────────────────────────────────────
