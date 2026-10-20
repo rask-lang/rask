@@ -720,11 +720,21 @@ int32_t rask_libc_rename(const char *from, const char *to) {
     return rename(from, to);
 }
 
-int32_t rask_libc_remove(const char *path) {
+// `fs.remove_file`: a file or a link, never a directory. `remove(3)` would
+// take an empty directory too, which the interpreter's `remove_file` refuses
+// with EISDIR — so one call answered two ways.
+int32_t rask_libc_unlink(const char *path) {
 #ifdef RASK_SIM
-    if (rask_sim_active()) return rask_sim_fs_remove(path);
+    if (rask_sim_active()) {
+        struct stat st;
+        if (path_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            errno = EISDIR;
+            return -1;
+        }
+        return rask_sim_fs_remove(path);
+    }
 #endif
-    return remove(path);
+    return unlink(path);
 }
 
 int32_t rask_libc_mkdir(const char *path, uint32_t mode) {
@@ -874,8 +884,26 @@ void rask_io_error_message(RaskStr *out, int32_t err) {
 // report failure once and leave errno set for `IoError.last_os_error()` (#674).
 static __thread struct stat rask_stat_buf;
 
-int32_t rask_stat_load(const char *path) {
-    return path_stat(path, &rask_stat_buf) == 0 ? 0 : -1;
+int64_t rask_fs_stat_load(const RaskStr *path) {
+    return path_stat(rask_string_ptr(path), &rask_stat_buf) == 0 ? 0 : -1;
+}
+
+// `File.metadata`: the same slot, filled from the open handle. Flushed first,
+// so the size counts what this handle has written. Under sim a file is a
+// cookie stream with no descriptor, and this fails with EBADF.
+int64_t rask_file_stat_load(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) {
+        errno = EBADF;
+        return -1;
+    }
+    if (fflush(f) != 0) return -1;
+    int fd = fileno(f);
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    return fstat(fd, &rask_stat_buf) == 0 ? 0 : -1;
 }
 // Unsigned: st_size is non-negative after a successful stat, and `Metadata.size`
 // is a u64 — `i64 as u64` is a sign reinterpret the cast rules reject (CV3).
@@ -883,20 +911,96 @@ uint64_t rask_stat_loaded_size(void) { return (uint64_t)rask_stat_buf.st_size; }
 int64_t rask_stat_loaded_mtime(void) { return (int64_t)rask_stat_buf.st_mtime; }
 int64_t rask_stat_loaded_atime(void) { return (int64_t)rask_stat_buf.st_atime; }
 
-int64_t rask_stat_size(const char *path) {
+// What `path` is, without following a symlink: 1 file, 2 directory,
+// 3 symlink, 4 anything else, or -1 with errno set. `fs.remove_dir_all` asks
+// it so a link to a directory is removed as a link, never walked into. Sim
+// has no links, and its stat is the answer there.
+int64_t rask_fs_kind(const RaskStr *path) {
     struct stat st;
-    if (path_stat(path, &st) != 0) return -1;
-    return (int64_t)st.st_size;
+    const char *p = rask_string_ptr(path);
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        if (rask_sim_fs_stat(p, &st) != 0) return -1;
+    } else
+#endif
+    if (lstat(p, &st) != 0) return -1;
+    if (S_ISLNK(st.st_mode)) return 3;
+    if (S_ISDIR(st.st_mode)) return 2;
+    if (S_ISREG(st.st_mode)) return 1;
+    return 4;
 }
-int64_t rask_stat_mtime(const char *path) {
-    struct stat st;
-    if (path_stat(path, &st) != 0) return -1;
-    return (int64_t)st.st_mtime;
+
+// `rmdir`: an empty directory only, where `remove` takes a file too.
+int64_t rask_fs_remove_dir(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        struct stat st;
+        if (rask_sim_fs_stat(p, &st) == 0 && !S_ISDIR(st.st_mode)) {
+            errno = ENOTDIR;
+            return -1;
+        }
+        return rask_sim_fs_remove(p) == 0 ? 0 : -1;
+    }
+#endif
+    return rmdir(p) == 0 ? 0 : -1;
 }
-int64_t rask_stat_atime(const char *path) {
-    struct stat st;
-    if (path_stat(path, &st) != 0) return -1;
-    return (int64_t)st.st_atime;
+
+// The names in a directory, without "." and "..": a RaskVec of strings, or
+// -1 with errno set. `fs.read_dir` builds its entries from these.
+int64_t rask_fs_read_dir_names(const RaskStr *path) {
+    void *dir = rask_libc_opendir(rask_string_ptr(path));
+    if (!dir) return -1;
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
+    const char *name;
+    while ((name = rask_libc_readdir(dir)) != NULL) {
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        RaskStr s;
+        rask_string_from(&s, name);
+        rask_vec_push(v, &s);
+    }
+    rask_libc_closedir(dir);
+    return (int64_t)(uintptr_t)v;
+}
+
+// `fs.open_with`: the handle, or -1 with errno set. `flags` is the bits
+// stdlib/fs.rk packs from an `OpenOptions` — 1 read, 2 write, 4 append,
+// 8 create, 16 truncate — after it has rejected the combinations that open
+// nothing. open(2) rather than fopen, because fopen's mode strings can't say
+// "create, don't truncate". Sim's overlay only speaks fopen, so there the
+// nearest mode stands in.
+int64_t rask_fs_open_with(const RaskStr *path, int64_t flags) {
+    const char *p = rask_string_ptr(path);
+    int rd = (flags & 1) != 0, wr = (flags & 2) != 0, ap = (flags & 4) != 0;
+    int cr = (flags & 8) != 0, tr = (flags & 16) != 0;
+    const char *mode;
+    if (ap) mode = rd ? "a+" : "a";
+    else if (wr && (cr || tr)) mode = rd ? "w+" : "w";
+    else if (wr) mode = "r+";
+    else mode = "r";
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        FILE *f = rask_sim_fs_fopen(p, mode);
+        return f ? (int64_t)(uintptr_t)f : -1;
+    }
+#endif
+    int oflags = O_CLOEXEC;
+    if ((wr || ap) && rd) oflags |= O_RDWR;
+    else if (wr || ap) oflags |= O_WRONLY;
+    else oflags |= O_RDONLY;
+    if (ap) oflags |= O_APPEND;
+    if (cr) oflags |= O_CREAT;
+    if (tr) oflags |= O_TRUNC;
+    int fd = open(p, oflags, 0666);
+    if (fd < 0) return -1;
+    FILE *f = fdopen(fd, mode);
+    if (!f) {
+        int err = errno;
+        close(fd);
+        errno = err;
+        return -1;
+    }
+    return (int64_t)(uintptr_t)f;
 }
 
 
@@ -938,6 +1042,38 @@ int64_t rask_file_read_bytes(int64_t file) {
     RaskVec *v = rask_vec_from_bytes(buf, (int64_t)len);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
+}
+
+// One `fread` of up to `max` bytes: a RaskVec<u8>*, empty at the end of the
+// file, or -1 with errno set. What `File.read` fills its buffer from.
+int64_t rask_file_read_some(int64_t file, int64_t max) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) {
+        errno = EBADF;
+        return -1;
+    }
+    if (max <= 0) max = 1;
+    char *buf = (char *)rask_alloc(max);
+    size_t n = fread(buf, 1, (size_t)max, f);
+    if (n == 0 && ferror(f)) {
+        int err = errno ? errno : EIO;
+        rask_free(buf);
+        errno = err;
+        return -1;
+    }
+    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)n);
+    rask_free(buf);
+    return (int64_t)(uintptr_t)v;
+}
+
+// Hand what stdio holds for this file to the OS. 0, or -1 with errno set.
+int64_t rask_file_flush(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) {
+        errno = EBADF;
+        return -1;
+    }
+    return fflush(f) == 0 ? 0 : -1;
 }
 
 // The File writes and close report 0, or -1 with errno set: the IoError is
@@ -1391,6 +1527,34 @@ int8_t rask_net_resolves(const RaskStr *addr) {
     struct sockaddr_storage sa;
     socklen_t sa_len;
     return udp_resolve(host, port_str, &sa, &sa_len) == 0;
+}
+
+// net.resolve: every address `host` names, IPv4 and IPv6, as strings in the
+// order getaddrinfo ranks them — a RaskVec of strings, or -1 when the name
+// doesn't resolve. One socket type in the hints, so each address comes once
+// rather than once per protocol.
+int64_t rask_net_resolve(const RaskStr *host) {
+    const char *h = rask_string_ptr(host);
+    RASK_SIM_UNSIMULATED("resolving `%s`", h);
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(h, NULL, &hints, &result) != 0) return -1;
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
+    for (struct addrinfo *a = result; a; a = a->ai_next) {
+        char buf[INET6_ADDRSTRLEN];
+        const void *src = a->ai_family == AF_INET
+            ? (const void *)&((struct sockaddr_in *)a->ai_addr)->sin_addr
+            : (const void *)&((struct sockaddr_in6 *)a->ai_addr)->sin6_addr;
+        if (a->ai_family != AF_INET && a->ai_family != AF_INET6) continue;
+        if (!inet_ntop(a->ai_family, src, buf, sizeof(buf))) continue;
+        RaskStr s;
+        rask_string_from(&s, buf);
+        rask_vec_push(v, &s);
+    }
+    freeaddrinfo(result);
+    return (int64_t)(uintptr_t)v;
 }
 
 // net.udp_bind: the fd, or -1 with errno set.

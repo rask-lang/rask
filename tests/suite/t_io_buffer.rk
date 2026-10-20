@@ -29,7 +29,7 @@ test "std.io — write then read gives back what went in" {
 
     let hi: Vec<u8> = [104, 105]
     let n = b.write(hi)
-    if n is i64 as k {
+    if n is usize as k {
         assert k == 2
     } else as e {
         assert false
@@ -89,7 +89,7 @@ test "std.io — read fills the caller's buffer a chunk at a time" {
     mut dst: Vec<u8> = [0, 0]
 
     let first = b.read(mutate dst)
-    if first is i64 as k {
+    if first is usize as k {
         assert k == 2
     } else as e {
         assert false
@@ -98,7 +98,7 @@ test "std.io — read fills the caller's buffer a chunk at a time" {
     assert dst[1] == 50
 
     let second = b.read(mutate dst)
-    if second is i64 as k {
+    if second is usize as k {
         assert k == 2
     } else as e {
         assert false
@@ -107,7 +107,7 @@ test "std.io — read fills the caller's buffer a chunk at a time" {
     assert dst[1] == 52
 
     let third = b.read(mutate dst)
-    if third is i64 as k {
+    if third is usize as k {
         assert k == 0
     } else as e {
         assert false
@@ -170,7 +170,7 @@ test "std.io — copy moves every byte from reader to writer" {
     mut dst = Buffer.new()
 
     let n = io.copy(src, dst)
-    if n is i64 as k {
+    if n is u64 as k {
         assert k == 3
     } else as e {
         assert false
@@ -189,7 +189,7 @@ test "std.io — copying an empty reader copies nothing" {
     mut src = Buffer.new()
     mut dst = Buffer.new()
     let n = io.copy(src, dst)
-    if n is i64 as k {
+    if n is u64 as k {
         assert k == 0
     } else as e {
         assert false

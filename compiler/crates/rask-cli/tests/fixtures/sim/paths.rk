@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // One file, however the path is spelled. The overlay used to compare paths
 // as written, so `d/./x` and `d/x` were two files, a relative write was
-// invisible through the absolute path, and `list_dir("./")` found nothing.
+// invisible through the absolute path, and `read_dir("./")` found nothing.
 
 import fs
 
@@ -26,6 +26,6 @@ test "relative and absolute agree" {
 test "a listing answers to any spelling of the directory" {
     try fs.create_dir("sim_nd/")
     try fs.write_text("sim_nd/a.txt", "x")
-    assert (try fs.list_dir("sim_nd/")).len() == 1
-    assert (try fs.list_dir("./")).len() > 0
+    assert (try fs.read_dir("sim_nd/")).len() == 1
+    assert (try fs.read_dir("./")).len() > 0
 }

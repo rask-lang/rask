@@ -31,8 +31,8 @@ struct Tally {
 }
 
 Tally implements io.Writer {
-    func write(self, data: Vec<u8>) -> i64 or io.IoError {
-        return data.len().to<i64>()!
+    func write(self, data: Vec<u8>) -> usize or io.IoError {
+        return data.len()
     }
     func write_bytes(self, data: Vec<u8>) -> void or io.IoError {
     }
@@ -40,6 +40,8 @@ Tally implements io.Writer {
         if data.is_empty() {
             return io.IoError.Other("nothing to write")
         }
+    }
+    func flush(self) -> void or io.IoError {
     }
 }
 

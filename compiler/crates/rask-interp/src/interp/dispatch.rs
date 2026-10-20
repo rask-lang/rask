@@ -985,9 +985,11 @@ impl Interpreter {
         match module {
             Fs => matches!(method,
                 "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
-                | "append_text" | "exists" | "open_handle" | "create_handle" | "absolute_path" | "metadata"
-                | "remove_file" | "remove_dir" | "create_dir" | "create_dir_all"
-                | "rename" | "copy" | "list_dir" | "current_dir" | "home_dir"
+                | "append_text" | "exists" | "open_handle" | "create_handle" | "absolute_path"
+                | "remove_file" | "create_dir" | "create_dir_all"
+                | "rename" | "copy" | "current_dir" | "home_dir"
+                | "stat_load" | "loaded_size" | "loaded_mtime" | "loaded_atime"
+                | "read_dir_names" | "remove_dir_raw" | "kind_raw" | "open_with_handle"
             ),
             Io => matches!(method, "read_line"),
             Net => matches!(method, "listen_handle" | "connect_handle"),

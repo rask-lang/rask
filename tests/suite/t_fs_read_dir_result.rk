@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// `fs.list_dir` and `fs.read_lines` return `Vec<string> or IoError`, written in
-// Rask. Codegen still carried their old native mappings, and a leftover drop
-// rule freed the result of `fs_list_dir` as a bare `Vec`. So matching on the
-// result crashed natively: `free(): invalid pointer` on success, a "Vec.free
-// while one of its elements was being modified" panic on failure.
+// `fs.read_dir` and `fs.read_lines` return a `Vec or IoError`, written in Rask.
+// When the listing was `fs.list_dir`, codegen still carried its old native
+// mapping, and a leftover drop rule freed the result as a bare `Vec`. So
+// matching on the result crashed natively: `free(): invalid pointer` on
+// success, a "Vec.free while one of its elements was being modified" panic on
+// failure.
 
 import fs
+import fs.DirEntry
 
 test "listing a directory that exists" {
     mut found = false
-    match fs.list_dir("/") {
-        Vec<string> as names => { found = names.len() > 0 }
+    match fs.read_dir("/") {
+        Vec<DirEntry> as names => { found = names.len() > 0 }
         IoError as e => { found = false }
     }
     assert found
@@ -19,8 +21,8 @@ test "listing a directory that exists" {
 
 test "listing a directory that doesn't exist is an IoError" {
     mut failed = false
-    match fs.list_dir("/definitely/not/here") {
-        Vec<string> as names => { failed = false }
+    match fs.read_dir("/definitely/not/here") {
+        Vec<DirEntry> as names => { failed = false }
         IoError as e => { failed = true }
     }
     assert failed

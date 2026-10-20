@@ -8,7 +8,10 @@ import fs
 func build(ctx: BuildContext) -> void or Error {
     let lib = "vendor/ngtcp2/lib"
     mut sources: Vec<string> = ["quic/ting_quic.c"]
-    mut names = try fs.list_dir("{ctx.package_dir.as_string()}/{lib}")
+    mut names: Vec<string> = Vec.new()
+    for entry in try fs.read_dir("{ctx.package_dir.as_string()}/{lib}") {
+        names.push(entry.name.clone())
+    }
     names.sort()
     for name in names {
         if name.ends_with(".c") {

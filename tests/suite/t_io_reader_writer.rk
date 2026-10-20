@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.io's Reader and Writer as every stream implements them: counts are
+// `usize`, `read_exact` fills or reports `UnexpectedEof`, `flush` is on the
+// interface, and `io.copy` moves a stream a chunk at a time.
+//
+// Runs with stdin at end of input, like t_io_streams_imported.rk.
+
+import io.{stdin, stdout, stderr, copy, Buffer, IoError, SeekFrom}
+
+func bytes_of(s: string) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for b in s.bytes() {
+        out.push(b)
+    }
+    return out
+}
+
+func zeros(n: usize) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for _ in 0..n {
+        out.push(0)
+    }
+    return out
+}
+
+test "Buffer.read counts in usize and stops at the end" {
+    let buf = Buffer.from(bytes_of("hello"))
+    mut into = zeros(3)
+    let n: usize = buf.read(mutate into)!
+    assert n == 3
+    assert into[0] == 104u8
+    assert into[2] == 108u8
+    let m = buf.read(mutate into)!
+    assert m == 2
+    assert into[1] == 111u8
+    assert buf.read(mutate into)! == 0
+}
+
+test "Buffer.write reports every byte, and len is usize" {
+    let buf = Buffer.new()
+    let n: usize = buf.write(bytes_of("abcd"))!
+    assert n == 4
+    let len: usize = buf.len()
+    assert len == 4
+    buf.flush()!
+}
+
+test "Buffer.read_exact fills the whole buffer" {
+    let buf = Buffer.from(bytes_of("0123456789"))
+    mut into = zeros(4)
+    buf.read_exact(mutate into)!
+    assert into[0] == 48u8
+    assert into[3] == 51u8
+    buf.read_exact(mutate into)!
+    assert into[0] == 52u8
+}
+
+test "Buffer.read_exact past the end is UnexpectedEof" {
+    let buf = Buffer.from(bytes_of("abc"))
+    mut into = zeros(5)
+    match buf.read_exact(mutate into) {
+        IoError as e => assert e is IoError.UnexpectedEof
+        _ => assert false, "read_exact filled five bytes from three"
+    }
+}
+
+test "Buffer.read_text comes from the interface" {
+    let buf = Buffer.from(bytes_of("héllo"))
+    assert buf.read_text()! == "héllo"
+    let bad: Vec<u8> = [0xffu8, 0xfe]
+    assert Buffer.from(bad).read_text() is IoError
+}
+
+test "io.copy moves everything and counts it in u64" {
+    let big = Buffer.new()
+    for i in 0..20000 {
+        let b: Vec<u8> = [(i % 251).wrap<u8>()]
+        big.write_bytes(b)!
+    }
+    let _ = big.seek(SeekFrom.Start(0))
+    let out = Buffer.new()
+    let n: u64 = copy(big, out)!
+    assert n == 20000
+    assert out.len() == 20000
+    let all = out.to_bytes()
+    assert all[0] == 0u8
+    assert all[19999] == (19999 % 251).wrap<u8>()
+}
+
+test "Stdin.read at end of input reads nothing" {
+    mut inp = stdin()
+    ensure inp.close()
+    mut into = zeros(8)
+    let n: usize = inp.read(mutate into)!
+    assert n == 0
+    inp.close()
+}
+
+test "Stdin.read_exact at end of input is UnexpectedEof" {
+    mut inp = stdin()
+    ensure inp.close()
+    mut into = zeros(1)
+    match inp.read_exact(mutate into) {
+        IoError as e => assert e is IoError.UnexpectedEof
+        _ => assert false, "read a byte from an empty stdin"
+    }
+    inp.close()
+}
+
+// Zero bytes, for the reason t_io_streams_imported.rk gives.
+test "Stdout and Stderr write in usize and flush" {
+    mut out = stdout()
+    ensure out.close()
+    let none_bytes: Vec<u8> = []
+    let n: usize = out.write(none_bytes)!
+    assert n == 0
+    out.flush()!
+    out.close()
+
+    mut err = stderr()
+    ensure err.close()
+    let m: usize = err.write(none_bytes)!
+    assert m == 0
+    err.flush()!
+    err.close()
+}

@@ -59,7 +59,10 @@ test "state does not leak into the next test" {
 test "a listing shows the overlay, sorted" {
     try fs.write_text("sim_listed.txt", "x")
     try fs.remove_file("race.rk")
-    let names = try fs.list_dir(".")
+    mut names: Vec<string> = Vec.new()
+    for e in try fs.read_dir(".") {
+        names.push(e.name.clone())
+    }
     mut saw_new = false
     mut saw_removed = false
     for n in names {
