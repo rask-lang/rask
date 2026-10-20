@@ -24,73 +24,12 @@ std.collections Vec.push_all MISSING
 std.collections Vec.try_insert MISSING
 std.fmt Displayable.display MISSING
 std.fmt format UNTESTED
-std.fs DirEntry MISSING
-std.fs File.flush [Writer] MISSING
-std.fs File.metadata MISSING
-std.fs File.read [Reader<Vec<u8>>] MISSING
-std.fs File.read_bytes [Reader] MISSING
-std.fs File.read_text [Reader] MISSING
-std.fs File.write [Writer<Vec<u8>>] MISSING
-std.fs File.write_bytes [Writer<Vec<u8>>] MISSING
-std.fs File.write_text [Writer<string>] MISSING
-std.fs OpenOptions MISSING
-std.fs OpenOptions.append MISSING
-std.fs OpenOptions.create MISSING
-std.fs OpenOptions.new MISSING
-std.fs OpenOptions.read MISSING
-std.fs OpenOptions.truncate MISSING
-std.fs OpenOptions.write MISSING
-std.fs fs.open_with MISSING
-std.fs fs.read_dir MISSING
-std.fs fs.remove_dir MISSING
-std.fs fs.remove_dir_all MISSING
 std.http Headers.iter MISSING
 std.http HttpError VARIANTS
 std.http http.serve UNTESTED
-std.io Buffer.flush [Writer] MISSING
-std.io Buffer.read_exact [Reader<Vec<u8>>] MISSING
-std.io BufferedReader MISSING
-std.io BufferedReader.lines MISSING
-std.io BufferedReader.new MISSING
-std.io BufferedReader.read [Reader<Vec<u8>>] MISSING
-std.io BufferedReader.read_bytes [Reader] MISSING
-std.io BufferedReader.read_exact [Reader<Vec<u8>>] MISSING
-std.io BufferedReader.read_line MISSING
-std.io BufferedReader.read_text [Reader] MISSING
-std.io BufferedReader.with_capacity MISSING
-std.io BufferedWriter MISSING
-std.io BufferedWriter.flush [Writer] MISSING
-std.io BufferedWriter.new MISSING
-std.io BufferedWriter.with_capacity MISSING
-std.io BufferedWriter.write [Writer<Vec<u8>>] MISSING
-std.io BufferedWriter.write_bytes [Writer<Vec<u8>>] MISSING
-std.io BufferedWriter.write_text [Writer<string>] MISSING
-std.io Reader.read_exact MISSING
-std.io Stderr.flush [Writer] MISSING
-std.io Stdin.read_exact [Reader<Vec<u8>>] MISSING
-std.io Stdout.flush [Writer] MISSING
-std.io Writer.flush MISSING
-std.io Buffer.from MISMATCH
-std.io Buffer.len MISMATCH
-std.io Buffer.read [Reader<Vec<u8>>] MISMATCH
-std.io Buffer.write [Writer<Vec<u8>>] MISMATCH
-std.io Reader.read MISMATCH
-std.io Stderr.write [Writer<Vec<u8>>] MISMATCH
-std.io Stdin.read [Reader<Vec<u8>>] MISMATCH
-std.io Stdout.write [Writer<Vec<u8>>] MISMATCH
-std.io Writer.write MISMATCH
-std.io io.copy MISMATCH
 std.iteration Map.take_all MISSING
 std.iteration Vec.take_all MISMATCH
 std.math f64.pow UNTESTED
-std.net TcpConnection.flush [Writer] MISSING
-std.net TcpConnection.read [Reader<Vec<u8>>] MISSING
-std.net TcpConnection.read_bytes [Reader] MISSING
-std.net TcpConnection.read_text [Reader] MISSING
-std.net TcpConnection.write [Writer<Vec<u8>>] MISSING
-std.net TcpConnection.write_bytes [Writer<Vec<u8>>] MISSING
-std.net TcpConnection.write_text [Writer<string>] MISSING
-std.net net.resolve MISSING
 std.os os.exit MISMATCH
 std.os os.pid MISMATCH
 std.random random.choice MISSING

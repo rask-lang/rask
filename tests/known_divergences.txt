@@ -146,3 +146,7 @@ t_stdout_handle_test_output.rk   # handle writes not captured — #1605 (interp 
 
 # A range with 128-bit bounds: the interpreter range holds i64s.
 t_range_over_i128.rk             # interp range over i128 — #1619 (interp run)
+
+# A program's conformance to a stdlib interface: the interface's default
+# methods aren't copied into it, so `io.Reader` asks for `read_text`.
+t_stdlib_interface_default_inherited.rk # stdlib TD2 defaults not inherited — #1624 (both check)
