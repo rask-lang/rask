@@ -14,26 +14,6 @@
 #   VARIANTS    an enum whose variants differ from the spec's
 #   UNTESTED    built, and no suite program green on both backends calls it
 
-std.bits Vec.read_f32be MISSING
-std.bits Vec.read_f32le MISSING
-std.bits Vec.read_f64be MISSING
-std.bits Vec.read_f64le MISSING
-std.bits Vec.read_i16be MISSING
-std.bits Vec.read_i16le MISSING
-std.bits Vec.read_i32be MISSING
-std.bits Vec.read_i32le MISSING
-std.bits Vec.read_i64be MISSING
-std.bits Vec.read_i64le MISSING
-std.bits Vec.read_i8 MISSING
-std.bits Vec.read_u16be MISSING
-std.bits Vec.read_u16le MISSING
-std.bits Vec.read_u32be MISSING
-std.bits Vec.read_u32le MISSING
-std.bits Vec.read_u64be MISSING
-std.bits Vec.read_u64le MISSING
-std.bits Vec.read_u8 MISSING
-std.bits Vec.take MISMATCH
-std.bits ParseError VARIANTS
 std.cli Parser.parse UNTESTED   # same
 std.cli cli.parse UNTESTED      # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
 std.collections Map.from MISSING

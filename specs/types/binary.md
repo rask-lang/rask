@@ -102,14 +102,16 @@ extend T {
 
 ## Inline Parsing
 
-For one-off parsing without a struct, use `unpack`:
+For one-off parsing without a struct, read the fields off the front one at a time:
 
 <!-- test: skip -->
 ```rask
-mut (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
+let (magic, rest) = try data.read_u32be()
+let (version, rest) = try rest.read_u8()
+let (length, rest) = try rest.read_u16be()
 ```
 
-See [stdlib/bits.md](../stdlib/bits.md) for `unpack`, `pack`, and related functions.
+See [stdlib/bits.md](../stdlib/bits.md) for the `read_*` methods and `BinaryBuilder`.
 
 ## Error Messages
 

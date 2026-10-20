@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.bits parsing and building: every `read_*` against bytes laid out by
+// hand and by `BinaryBuilder`, and what a short buffer answers.
+
+import bits
+
+func reads_off_the_front() -> bool or bits.BinaryParseError {
+    let data: Vec<u8> = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x00, 0x2A, 0xFF]
+    let (magic, rest) = try data.read_u32be()
+    assert magic == 0xCAFEBABE
+    assert rest.len() == 4
+    let (one, rest2) = try rest.read_u8()
+    assert one == 1
+    let (word, rest3) = try rest2.read_u16le()
+    assert word == 0x2A00
+    let (neg, rest4) = try rest3.read_i8()
+    assert neg == -1
+    assert rest4.len() == 0
+
+    let (le, _) = try data.read_u32le()
+    assert le == 0xBEBAFECA
+    let (be16, _) = try data.read_u16be()
+    assert be16 == 0xCAFE
+    // The receiver is only read: it still holds every byte.
+    assert data.len() == 8
+    return true
+}
+
+test "reads off the front, big and little endian" {
+    let ok = reads_off_the_front() catch e => {
+        println(e.message())
+        assert false
+        return
+    }
+    assert ok
+}
+
+func round_trip() -> bool or bits.BinaryParseError {
+    let data = bits.BinaryBuilder.with_capacity(64)
+        .write_u8(200)
+        .write_i8(-100)
+        .write_u16be(0xBEEF)
+        .write_u16le(0xBEEF)
+        .write_i16be(-12345)
+        .write_i16le(-12345)
+        .write_u32be(0xDEADBEEF)
+        .write_u32le(0xDEADBEEF)
+        .write_i32be(-123456789)
+        .write_i32le(-123456789)
+        .write_u64be(0x0123456789ABCDEF)
+        .write_u64le(0x0123456789ABCDEF)
+        .write_i64be(-1234567890123)
+        .write_i64le(-1234567890123)
+        .write_f32be(1.5)
+        .write_f32le(-2.25)
+        .write_f64be(3.141592653589793)
+        .write_f64le(-0.5)
+        .write_bytes([7, 8, 9])
+    assert data.len() == 85
+    let r0 = data.build()
+
+    let (a, r1) = try r0.read_u8()
+    assert a == 200
+    let (b, r2) = try r1.read_i8()
+    assert b == -100
+    let (c, r3) = try r2.read_u16be()
+    assert c == 0xBEEF
+    let (d, r4) = try r3.read_u16le()
+    assert d == 0xBEEF
+    let (e, r5) = try r4.read_i16be()
+    assert e == -12345
+    let (f, r6) = try r5.read_i16le()
+    assert f == -12345
+    let (g, r7) = try r6.read_u32be()
+    assert g == 0xDEADBEEF
+    let (h, r8) = try r7.read_u32le()
+    assert h == 0xDEADBEEF
+    let (i, r9) = try r8.read_i32be()
+    assert i == -123456789
+    let (j, r10) = try r9.read_i32le()
+    assert j == -123456789
+    let (k, r11) = try r10.read_u64be()
+    assert k == 0x0123456789ABCDEF
+    let (l, r12) = try r11.read_u64le()
+    assert l == 0x0123456789ABCDEF
+    let (m, r13) = try r12.read_i64be()
+    assert m == -1234567890123
+    let (n, r14) = try r13.read_i64le()
+    assert n == -1234567890123
+    let (o, r15) = try r14.read_f32be()
+    assert o == 1.5
+    let (p, r16) = try r15.read_f32le()
+    assert p == -2.25
+    let (q, r17) = try r16.read_f64be()
+    assert q == 3.141592653589793
+    let (s, r18) = try r17.read_f64le()
+    assert s == -0.5
+    let (tail, r19) = try r18.read_bytes(3)
+    assert tail.len() == 3
+    assert tail[0] == 7
+    assert tail[2] == 9
+    assert r19.len() == 0
+    return true
+}
+
+test "every read round-trips through the builder" {
+    let ok = round_trip() catch e => {
+        println(e.message())
+        assert false
+        return
+    }
+    assert ok
+}
+
+test "the builder lays bytes out in the order it says" {
+    let out = bits.BinaryBuilder.new().write_u16be(0x0102).write_u16le(0x0102).write_f32be(1.5).build()
+    assert out.len() == 8
+    assert out[0] == 0x01
+    assert out[1] == 0x02
+    assert out[2] == 0x02
+    assert out[3] == 0x01
+    // 1.5f32 is 0x3FC00000.
+    assert out[4] == 0x3F
+    assert out[5] == 0xC0
+    assert out[7] == 0x00
+}
+
+func empty_head() -> bool or bits.BinaryParseError {
+    let data: Vec<u8> = [1, 2, 3]
+    let (head, rest) = try data.read_bytes(0)
+    assert head.len() == 0
+    assert rest.len() == 3
+    assert rest[0] == 1
+    return true
+}
+
+test "read_bytes(0) is the empty head and the whole buffer" {
+    let ok = empty_head() catch e => {
+        println(e.message())
+        assert false
+        return
+    }
+    assert ok
+}
+
+func short(data: Vec<u8>, what: string) -> string {
+    let failed = if what == "u8" {
+        data.read_u8() is bits.BinaryParseError
+    } else {
+        false
+    }
+    if failed {
+        return "u8 failed"
+    }
+    if what == "u32" {
+        let (v, _) = data.read_u32be() catch e => return e.message()
+        return "read {v}"
+    }
+    if what == "f64" {
+        let (v, _) = data.read_f64le() catch e => return e.message()
+        return "read {v}"
+    }
+    if what == "bytes" {
+        let (v, _) = data.read_bytes(3) catch e => return e.message()
+        return "read {v.len()}"
+    }
+    return "u8 read"
+}
+
+func end_counts(data: Vec<u8>) -> string {
+    let (v, _) = data.read_i16be() catch e => {
+        match e {
+            bits.BinaryParseError.UnexpectedEnd(expected, actual) => return "{expected} {actual}"
+            bits.BinaryParseError.InvalidData(message) => return message
+        }
+    }
+    return "read {v}"
+}
+
+test "reading past the end is an error, not a panic" {
+    let two: Vec<u8> = [1, 2]
+    let empty: Vec<u8> = []
+    assert short(two, "u32") == "unexpected end: expected 4 bytes, got 2"
+    assert short(empty, "u32") == "unexpected end: expected 4 bytes, got 0"
+    assert short(two, "f64") == "unexpected end: expected 8 bytes, got 2"
+    assert short(two, "bytes") == "unexpected end: expected 3 bytes, got 2"
+    assert short(empty, "u8") == "u8 failed"
+    assert short(two, "u8") == "u8 read"
+    assert end_counts(empty) == "2 0"
+    assert end_counts([7]) == "2 1"
+    assert end_counts(two) == "read 258"
+}
