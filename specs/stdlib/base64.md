@@ -47,6 +47,9 @@ enum Base64Error {
     BadLength(usize)        // not a valid base64 length
     BadPadding              // "=" somewhere other than the end, or too much of it
 }
+extend Base64Error {
+    func message(self) -> string
+}
 ```
 
 ## Error Messages
@@ -68,7 +71,9 @@ FIX: Strip them first:
 | Case | Rule | Handling |
 |------|------|----------|
 | Empty input | — | `encode([])` is `""`; `decode("")` is `[]` |
-| Padding when `padding: false` | B2 | Rejected — the caller asked for none |
+| Padding on URL-safe input | B1 | Accepted. `padding:` is an encode choice; decode doesn't ask |
+| `"="` mid-input, or more than fills the last group | B2 | `BadPadding` |
+| A data length of 4n+1 — `"Zm9vY"` | B2 | `BadLength`: six bits can't make a byte |
 | Missing padding on standard input | B1 | Accepted. Length still has to be valid |
 | Non-zero bits in the final partial group | B2 | Accepted, bits discarded — rejecting it breaks real encoders |
 

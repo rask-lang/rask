@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.base64, RFC 4648. Encode picks the alphabet and the padding; decode
+// takes either alphabet with or without padding (B1), and rejects anything
+// else (B2), whitespace included (B3).
+
+import base64
+
+func bytes_of(s: string) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for b in s.bytes() {
+        out.push(b)
+    }
+    return out
+}
+
+func decoded(s: string) -> string {
+    let bytes = base64.decode(s) catch e => {
+        match e {
+            base64.Base64Error.BadCharacter(byte, at) => return "bad {byte} at {at}"
+            base64.Base64Error.BadLength(len) => return "length {len}"
+            base64.Base64Error.BadPadding => return "padding"
+        }
+    }
+    let text = string.from_utf8(bytes) catch _ => {
+        return "not utf-8"
+    }
+    return "'{text}'"
+}
+
+test "std.base64 — the RFC 4648 test vectors" {
+    assert base64.encode(bytes_of("")) == ""
+    assert base64.encode(bytes_of("f")) == "Zg=="
+    assert base64.encode(bytes_of("fo")) == "Zm8="
+    assert base64.encode(bytes_of("foo")) == "Zm9v"
+    assert base64.encode(bytes_of("foob")) == "Zm9vYg=="
+    assert base64.encode(bytes_of("fooba")) == "Zm9vYmE="
+    assert base64.encode(bytes_of("foobar")) == "Zm9vYmFy"
+    assert base64.encode(bytes_of("Hello world")) == "SGVsbG8gd29ybGQ="
+}
+
+test "std.base64 — and back" {
+    assert decoded("") == "''"
+    assert decoded("Zg==") == "'f'"
+    assert decoded("Zm8=") == "'fo'"
+    assert decoded("Zm9v") == "'foo'"
+    assert decoded("Zm9vYg==") == "'foob'"
+    assert decoded("Zm9vYmE=") == "'fooba'"
+    assert decoded("Zm9vYmFy") == "'foobar'"
+}
+
+test "std.base64 — url_safe swaps the two symbols, padding can be dropped" {
+    let data: Vec<u8> = [251, 255, 191]
+    assert base64.encode(data) == "+/+/"
+    assert base64.encode(data, url_safe: true) == "-_-_"
+
+    let one: Vec<u8> = [251]
+    assert base64.encode(one) == "+w=="
+    assert base64.encode(one, padding: false) == "+w"
+    assert base64.encode(one, url_safe: true, padding: false) == "-w"
+}
+
+test "std.base64/B1 — decode takes either alphabet, padded or not" {
+    let plain = base64.decode("+/+/") catch _ => {
+        assert false
+        return
+    }
+    let url = base64.decode("-_-_") catch _ => {
+        assert false
+        return
+    }
+    assert plain.len() == 3
+    assert url.len() == 3
+    for i in 0..3 {
+        assert plain[i] == url[i]
+    }
+    assert plain[0] == 251
+    assert plain[1] == 255
+    assert plain[2] == 191
+
+    assert decoded("Zg") == "'f'"
+    assert decoded("Zm8") == "'fo'"
+    assert decoded("Zm9vYg") == "'foob'"
+}
+
+test "std.base64 — every byte value round-trips, both alphabets" {
+    mut all: Vec<u8> = Vec.new()
+    for i in 0..256 {
+        all.push(i.wrap<u8>())
+    }
+    let a = base64.encode(all)
+    let b = base64.encode(all, url_safe: true, padding: false)
+    let from_a = base64.decode(a) catch _ => {
+        assert false
+        return
+    }
+    let from_b = base64.decode(b) catch _ => {
+        assert false
+        return
+    }
+    assert from_a.len() == 256
+    assert from_b.len() == 256
+    for i in 0..256 {
+        assert from_a[i] == i.wrap<u8>()
+        assert from_b[i] == i.wrap<u8>()
+    }
+}
+
+test "std.base64/B2 — characters outside both alphabets are rejected" {
+    assert decoded("Zm9v!") == "bad 33 at 4"
+    assert decoded("Zm*v") == "bad 42 at 2"
+}
+
+test "std.base64/B2 — a length that can't hold whole bytes" {
+    assert decoded("Z") == "length 1"
+    assert decoded("Zm9vY") == "length 5"
+}
+
+test "std.base64/B2 — padding only at the end, and only enough" {
+    assert decoded("Zg=a") == "padding"
+    assert decoded("Z=g=") == "padding"
+    assert decoded("Zg=") == "padding"
+    assert decoded("Zg===") == "padding"
+    assert decoded("Zm9v=") == "padding"
+    assert decoded("=") == "padding"
+}
+
+test "std.base64/B3 — whitespace is not stripped" {
+    assert decoded("Zm9v\nYmFy") == "bad 10 at 4"
+    assert decoded(" Zm9v") == "bad 32 at 0"
+}
+
+test "std.base64 — stray bits in the last group are dropped" {
+    // "Zh" carries "f" plus four set bits RFC 4648 says should be zero.
+    assert decoded("Zh==") == "'f'"
+    assert decoded("Zh") == "'f'"
+}
+
+test "std.base64 — errors say what went wrong" {
+    let e = base64.Base64Error.BadLength(5)
+    assert e.message().contains("5 characters")
+    let c = base64.Base64Error.BadCharacter(byte: 10, at: 76)
+    assert c.message().contains("offset 76")
+    assert base64.Base64Error.BadPadding.message().contains("padding")
+}
+
+func main() {
+    println(base64.encode(bytes_of("Hello world")))
+    println(base64.encode(bytes_of("Hello world"), url_safe: true, padding: false))
+    println(decoded("SGVsbG8gd29ybGQ="))
+    println(decoded("SGVsbG8gd29ybGQ"))
+    println(decoded("SGVs\nbG8="))
+}

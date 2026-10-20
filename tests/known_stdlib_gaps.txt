@@ -14,9 +14,6 @@
 #   VARIANTS    an enum whose variants differ from the spec's
 #   UNTESTED    built, and no suite program green on both backends calls it
 
-std.base64 Base64Error MISSING
-std.base64 base64.decode MISSING
-std.base64 base64.encode MISSING
 std.bits Vec.read_f32be MISSING
 std.bits Vec.read_f32le MISSING
 std.bits Vec.read_f64be MISSING
