@@ -6293,7 +6293,7 @@ impl<'a> MirLowerer<'a> {
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3765"));
             Some(super::option_of(elem))
-        } else if qualified_name == "Random_choice" {
+        } else if matches!(qualified_name.as_str(), "Random_choice" | "random_choice") {
             // `choice(v)` answers `T?`, and the payload type sizes the slot the
             // DerefOption adapter copies into. From the stub metadata it came
             // back as a bare `T` → i64, so a `Vec<string>` handed back the

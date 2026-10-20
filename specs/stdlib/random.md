@@ -20,7 +20,7 @@ One `Random` type plus module-level convenience functions. Explicit generator fo
 |------|-------------|
 | **M1: Typed generation** | `rng.u64()`, `rng.i64()`, `rng.f64()`, `rng.f32()`, `rng.bool()` generate typed random values |
 | **M2: Range** | `rng.range(lo, hi)` returns value in `[lo, hi)` — panics if `lo >= hi` |
-| **M3: Collections** | `rng.shuffle(vec)` does in-place Fisher-Yates; `rng.choice(vec)` returns `T?` (`none` if empty) |
+| **M3: Collections** | `rng.shuffle(mutate vec)` does in-place Fisher-Yates; `rng.choice(vec)` returns `T?` (`none` if empty) |
 
 <!-- surface -->
 ```rask
@@ -43,10 +43,10 @@ extend Random {
 
 <!-- test: skip -->
 ```rask
-let rng = Random.from_seed(42)
+mut rng = Random.from_seed(42)
 let a = rng.range(0, 100)       // deterministic for seed 42
 let b = rng.f64()               // [0.0, 1.0)
-rng.shuffle(items)
+rng.shuffle(mutate items)
 ```
 
 ## Module Convenience Functions
@@ -54,7 +54,7 @@ rng.shuffle(items)
 | Rule | Description |
 |------|-------------|
 | **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Random |
-| **C2: Same API** | Every `Random` instance method (M1–M3) has a `random.*` mirror: `random.u64()`, `random.i64()`, `random.f64()`, `random.f32()`, `random.bool()`, `random.range(lo, hi)`, `random.shuffle(vec)`, `random.choice(vec)` |
+| **C2: Same API** | Every `Random` instance method (M1–M3) has a `random.*` mirror: `random.u64()`, `random.i64()`, `random.f64()`, `random.f32()`, `random.bool()`, `random.range(lo, hi)`, `random.shuffle(mutate vec)`, `random.choice(vec)` |
 
 <!-- surface -->
 ```rask
@@ -117,10 +117,10 @@ FIX: Use rng.range(5, 6) for a single value.
 <!-- test: parse -->
 ```rask
 test "shuffle is deterministic with seed" {
-    let rng = Random.from_seed(12345)
-    let items = Vec.from([1, 2, 3, 4, 5])
-    rng.shuffle(items)
-    assert items[0] == 3
+    mut rng = Random.from_seed(12345)
+    mut items = Vec.from([1, 2, 3, 4, 5])
+    rng.shuffle(mutate items)
+    assert items[0] == 5
 }
 ```
 

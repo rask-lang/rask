@@ -58,7 +58,7 @@ test "std.random — an unseeded generator is freed too" {
 test "std.random — one per turn" {
     mut total = 0
     for i in 1..11 {
-        mut r = Random.from_seed(i.clamp<i64>())
+        mut r = Random.from_seed(i.to<u64>()!)
         total = total + r.range(0, 2)
     }
     assert total >= 0

@@ -788,20 +788,23 @@ void      rask_link_register_struct(void *base, int64_t field_count, const int32
 typedef struct RaskRng RaskRng;
 
 RaskRng *rask_rng_new(void);
-RaskRng *rask_rng_from_seed(int64_t seed);
+RaskRng *rask_rng_from_seed(uint64_t seed);
 void     rask_rng_free(RaskRng *rng);
-int64_t  rask_rng_u64(RaskRng *rng);
+uint64_t rask_rng_u64(RaskRng *rng);
 int64_t  rask_rng_i64(RaskRng *rng);
 double   rask_rng_f64(RaskRng *rng);
-double   rask_rng_f32(RaskRng *rng);
+float    rask_rng_f32(RaskRng *rng);
 int64_t  rask_rng_bool(RaskRng *rng);
 int64_t  rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi);
-void     rask_random_shuffle(RaskRng *rng, RaskVec *v);
-void    *rask_random_choice(RaskRng *rng, RaskVec *v);
+void     rask_rng_shuffle(RaskRng *rng, RaskVec *v);
+void    *rask_rng_choice(RaskRng *rng, RaskVec *v);
 
 // Module-level convenience (thread-local PRNG)
 double   rask_random_f64(void);
-double   rask_random_f32(void);
+float    rask_random_f32(void);
+uint64_t rask_random_u64(void);
+void     rask_random_shuffle(RaskVec *v);
+void    *rask_random_choice(RaskVec *v);
 int64_t  rask_random_i64(void);
 int64_t  rask_random_bool(void);
 int64_t  rask_random_range(int64_t lo, int64_t hi);
