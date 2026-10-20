@@ -312,8 +312,6 @@ std.digest digest.sha1 MISSING
 std.digest digest.sha256 MISSING
 std.fmt Displayable.display MISSING
 std.fmt format UNTESTED
-std.fmt print UNTESTED
-std.fmt println UNTESTED
 std.fs DirEntry MISSING
 std.fs File.flush [Writer] MISSING
 std.fs File.metadata MISSING
@@ -334,7 +332,6 @@ std.fs fs.open_with MISSING
 std.fs fs.read_dir MISSING
 std.fs fs.remove_dir MISSING
 std.fs fs.remove_dir_all MISSING
-std.fs fs.open UNTESTED
 std.hex HexError MISSING
 std.hex hex.decode MISSING
 std.hex hex.encode MISSING
@@ -376,9 +373,6 @@ std.io Writer.write MISMATCH
 std.io io.copy MISMATCH
 std.iteration Map.take_all MISSING
 std.iteration Vec.take_all MISMATCH
-std.json json.decode UNTESTED
-std.json json.encode UNTESTED
-std.json json.encode_pretty UNTESTED
 std.math f64.abs MISSING
 std.math f64.ceil MISSING
 std.math f64.floor MISSING
@@ -483,5 +477,4 @@ std.url url.encode MISSING
 std.url url.encode_query MISSING
 std.url url.parse MISSING
 std.url url.parse_query MISSING
-std.fs fs.create_file UNTESTED
 std.reflect reflect.interfaces UNBUILT

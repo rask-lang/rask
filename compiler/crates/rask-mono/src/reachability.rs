@@ -1602,6 +1602,32 @@ impl<'a> Monomorphizer<'a> {
 
     /// Whether the `json.decode` call `id` builds a `JsonValue`: the ok side of
     /// its type, which is what lowering reads to choose `json.parse`.
+    /// `json.decode<JsonValue>` lowers to a call to `json.parse` (same job,
+    /// already written in Rask), so that body has to be reachable even though
+    /// the source never names it. Any other `T` needs its decode defaults.
+    ///
+    /// Keyed on the checker's target, not on how the call was spelled: a
+    /// syntactic `json.decode` test sat in one branch of the method-call walk,
+    /// and a call that reached another branch, or `import json as j`, got a
+    /// `json_parse` nobody compiled (#1435, #1600). Asked of the checker's type
+    /// for the call too, as lowering asks it: the written argument is a
+    /// spelling, and `json.JsonValue` didn't match one.
+    fn note_json_decode(&mut self, id: NodeId) {
+        let is_decode = matches!(
+            self.call_target(id),
+            Some(Callee::Method { recv: Type::UnresolvedNamed(m), method, .. })
+                if m == "json" && method == "decode"
+        );
+        if !is_decode {
+            return;
+        }
+        if self.decodes_json_value(id) {
+            self.enqueue("json_parse".to_string(), Vec::new());
+        } else {
+            self.note_decode_defaults(id);
+        }
+    }
+
     fn decodes_json_value(&self, id: NodeId) -> bool {
         let Some(typed) = self.typed else { return false };
         let ty = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id));
@@ -1732,6 +1758,7 @@ impl<'a> Monomorphizer<'a> {
         }
         if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.note_map_key_fns(expr.id);
+            self.note_json_decode(expr.id);
         }
 
         match &expr.kind {
@@ -1917,21 +1944,6 @@ impl<'a> Monomorphizer<'a> {
                             self.enqueue(method.clone(), type_args.clone());
                         } else {
                             self.enqueue(format!("{}_{}", name, method), type_args.clone());
-                        }
-                        // `json.decode<JsonValue>` lowers to a call to
-                        // `json.parse` — same job, already written in Rask — so
-                        // that body has to be reachable even though the source
-                        // never names it. Asked of the checker's type for the
-                        // call, as lowering asks it: the written argument is a
-                        // spelling, and `json.JsonValue` didn't match one, so
-                        // the call reached a `json_parse` nobody compiled
-                        // (#1435).
-                        if name == "json" && method == "decode" {
-                            if self.decodes_json_value(expr.id) {
-                                self.enqueue("json_parse".to_string(), Vec::new());
-                            } else {
-                                self.note_decode_defaults(expr.id);
-                            }
                         }
                     }
 

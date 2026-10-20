@@ -2822,6 +2822,12 @@ impl TypeChecker {
             }
 
             if self.is_builtin_function(name) {
+                // CALL6 holds for a builtin too: the call reaches the symbol the
+                // resolver bound, and leaving it unrecorded made `println` look
+                // uncalled to anything reading targets (#1600).
+                if let Some(sym) = callee {
+                    self.call_targets.insert(call_id, super::Callee::Free(sym));
+                }
                 // std.fmt/D3/D4 on `print(x)` comes from the desugar pass, which
                 // rewrites each argument to `x.to_string()` — the same shape
                 // `{x}` becomes. Nothing to check here (#772).
@@ -3914,6 +3920,16 @@ impl TypeChecker {
                     let names = stub.params.iter().map(|(n, _)| n.clone()).collect();
                     self.note_param_names(call_id, names);
                 }
+                // The same record `time.sleep` imported bare gets, so the two
+                // spellings of one call agree on its target (#1600).
+                self.call_targets.insert(
+                    call_id,
+                    super::Callee::Method {
+                        recv: Type::UnresolvedNamed(module.to_string()),
+                        method: method.to_string(),
+                        package: None,
+                    },
+                );
                 return self.check_module_method(module, method, args, type_args, span);
             }
         }
