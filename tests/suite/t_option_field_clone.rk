@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `.clone()` on an optional struct field — #1611.
+//
+// Building a struct from another's `string?` field is E0909 unless the field
+// is cloned, and the checker suggests exactly that. Natively the clone then
+// fails to compile:
+//
+//     interp:  passes
+//     native:  error: codegen 'main': Function not found: Option_clone
+//
+// Cloning an optional local works on both; only the field read goes wrong.
+
+struct Holder {
+    s: string?
+}
+
+test "clone of an optional local" {
+    let s: string? = "x"
+    let t = s.clone()
+    assert (t ?? "none") == "x"
+}
+
+test "clone of an optional field" {
+    let a = Holder(s: "x")
+    let b = Holder(s: a.s.clone())
+    assert (b.s ?? "none") == "x"
+    let c = Holder(s: none)
+    let d = Holder(s: c.s.clone())
+    assert d.s == none
+}
