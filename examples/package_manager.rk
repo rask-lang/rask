@@ -11,7 +11,7 @@
 // enum-based CLI dispatch, try/else error context, pattern matching at scale.
 
 import fs
-import cli
+import os
 import std
 import http
 import json
@@ -1246,7 +1246,7 @@ func run(args: CliArgs) -> void or FetchError {
 }
 
 func main() {
-    let args = cli.args()
+    let args = os.args()
     let cli_args = parse_cli_args(args) catch e => {
         println("rask-fetch: {e.message()}")
         print_usage()

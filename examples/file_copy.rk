@@ -4,7 +4,7 @@
 //               try...else error wrapping, string interpolation, file I/O
 
 import fs
-import cli
+import os
 import std
 
 enum CopyError {
@@ -141,7 +141,7 @@ func format_size(bytes: u64) -> string {
 }
 
 func main() {
-    let args = cli.args()
+    let args = os.args()
 
     let opts = parse_args(args) catch e => {
         println("rcopy: {e.message()}")
