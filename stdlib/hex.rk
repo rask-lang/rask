@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Hex encoding (std.hex). Bytes as text, two lowercase digits per byte out, any
+// case in. Pure Rask, so both backends run the same code.
+
+/// Why `hex.decode` rejected its input.
+public enum HexError {
+    BadCharacter(byte: u8, at: usize)
+    OddLength(usize)
+}
+
+extend HexError {
+    public func message(self) -> string {
+        match self {
+            HexError.BadCharacter(byte, at) => return "invalid character in hex input: byte {byte} at offset {at} is not a hex digit"
+            HexError.OddLength(len) => return "hex input has odd length {len}: every byte takes two digits"
+        }
+    }
+}
+
+struct hex { }
+
+extend hex {
+    /// Two digits per byte, lowercase unless `upper`.
+    public func encode(data: Vec<u8>, upper: bool = false) -> string {
+        let digits = if upper { "0123456789ABCDEF" } else { "0123456789abcdef" }
+        mut out = StringBuilder.with_capacity(data.len() * 2)
+        for b in data {
+            out.push_char(digits.char_at((b >> 4) as usize) ?? '0')
+            out.push_char(digits.char_at((b & 15) as usize) ?? '0')
+        }
+        return out.build()
+    }
+
+    /// Bare hex digits in either case. No prefix, no separators.
+    public func decode(s: string) -> Vec<u8> or HexError {
+        let len = s.len()
+        // Characters first: "de:ad:be:ef" is odd-length too, and the colon is
+        // the thing to fix.
+        for i in 0..len {
+            let b = s.byte_at(i) ?? 0
+            if hex_nibble(b) < 0 {
+                return HexError.BadCharacter(byte: b, at: i)
+            }
+        }
+        if len % 2 != 0 {
+            return HexError.OddLength(len)
+        }
+        mut out: Vec<u8> = Vec.with_capacity(len / 2)
+        mut i: usize = 0
+        while i < len {
+            let hi = hex_nibble(s.byte_at(i) ?? 0)
+            let lo = hex_nibble(s.byte_at(i + 1) ?? 0)
+            out.push((hi * 16 + lo).wrap<u8>())
+            i = i + 2
+        }
+        return out
+    }
+}
+
+/// The value of one ASCII hex digit, or -1.
+func hex_nibble(b: u8) -> i32 {
+    if b >= 48 && b <= 57 {
+        return (b as i32) - 48
+    }
+    if b >= 65 && b <= 70 {
+        return (b as i32) - 55
+    }
+    if b >= 97 && b <= 102 {
+        return (b as i32) - 87
+    }
+    return -1
+}

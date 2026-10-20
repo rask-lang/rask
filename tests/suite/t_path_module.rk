@@ -44,17 +44,28 @@ test "std.path — the pieces of a path" {
     assert f.file_name() ?? "-" == "c.txt"
     assert f.extension() ?? "-" == "txt"
     assert f.stem() ?? "-" == "c"
-    assert(f.has_extension())
+    assert(f.has_extension("txt"))
+    assert(!f.has_extension("md"))
+    // The argument is the extension, not a suffix: no dot, no partial match.
+    assert(!f.has_extension(".txt"))
+    assert(!f.has_extension("xt"))
 
     let noext = p("/a/README")
     assert noext.extension() ?? "-" == "-"
     assert noext.stem() ?? "-" == "README"
-    assert(!noext.has_extension())
+    assert(!noext.has_extension("txt"))
+    assert(!noext.has_extension(""))
 
     // A leading dot is the whole name, not an extension.
     let dotfile = p("/a/.bashrc")
     assert dotfile.extension() ?? "-" == "-"
     assert dotfile.stem() ?? "-" == ".bashrc"
+    assert(!dotfile.has_extension("bashrc"))
+
+    // Only the last extension counts.
+    let tarball = p("/a/b.tar.gz")
+    assert(tarball.has_extension("gz"))
+    assert(!tarball.has_extension("tar.gz"))
 }
 
 test "std.path — parent" {

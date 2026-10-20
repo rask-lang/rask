@@ -14,9 +14,6 @@
 #   VARIANTS    an enum whose variants differ from the spec's
 #   UNTESTED    built, and no suite program green on both backends calls it
 
-std.base64 Base64Error MISSING
-std.base64 base64.decode MISSING
-std.base64 base64.encode MISSING
 std.bits Vec.read_f32be MISSING
 std.bits Vec.read_f32le MISSING
 std.bits Vec.read_f64be MISSING
@@ -332,9 +329,6 @@ std.fs fs.open_with MISSING
 std.fs fs.read_dir MISSING
 std.fs fs.remove_dir MISSING
 std.fs fs.remove_dir_all MISSING
-std.hex HexError MISSING
-std.hex hex.decode MISSING
-std.hex hex.encode MISSING
 std.http Headers.iter MISSING
 std.http HttpError VARIANTS
 std.http http.serve UNTESTED
@@ -393,7 +387,6 @@ std.net TcpConnection.write_text [Writer<string>] MISSING
 std.net net.resolve MISSING
 std.os os.exit MISMATCH
 std.os os.pid MISMATCH
-std.path Path.has_extension MISMATCH
 std.random random.choice MISSING
 std.random random.shuffle MISSING
 std.random random.u64 MISSING
