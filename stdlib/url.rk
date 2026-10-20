@@ -77,13 +77,13 @@ extend Url {
             query = url.encode_query(pairs)
         }
         return Url(
-            scheme: self.scheme,
-            host: self.host,
-            explicit_port: self.explicit_port,
-            path: self.path,
-            query: query,
-            fragment: url_copy(self.fragment),
-            user: url_copy(self.user),
+            scheme: self.scheme
+            host: self.host
+            explicit_port: self.explicit_port
+            path: self.path
+            query: query
+            fragment: url_copy(self.fragment)
+            user: url_copy(self.user)
         )
     }
 }
@@ -103,7 +103,7 @@ Url implements Displayable {
         // "mailto:a@b" has no authority; "file:///etc" has an empty one. A
         // path starting with "/" reads the same either way, so "//" goes in
         // whenever there's something to put there or the path allows it.
-        if !self.host.is_empty() || self.user? || port_shown? || self.path.starts_with("/") {
+        if !self.host.is_empty() || (self.user?) || (port_shown?) || self.path.starts_with("/") {
             out.push("//")
             if self.user? as u {
                 out.push(u)
@@ -145,13 +145,13 @@ Url implements Div<string> {
             "{self.path}/{url.encode(segment)}"
         }
         return Url(
-            scheme: self.scheme,
-            host: self.host,
-            explicit_port: self.explicit_port,
-            path: path,
-            query: url_copy(self.query),
-            fragment: url_copy(self.fragment),
-            user: url_copy(self.user),
+            scheme: self.scheme
+            host: self.host
+            explicit_port: self.explicit_port
+            path: path
+            query: url_copy(self.query)
+            fragment: url_copy(self.fragment)
+            user: url_copy(self.user)
         )
     }
 }
@@ -236,7 +236,7 @@ extend url {
             if !url_is_host(host) {
                 return UrlError.BadHost(host)
             }
-            if host.is_empty() && (user? || explicit_port?) {
+            if host.is_empty() && ((user?) || (explicit_port?)) {
                 return UrlError.BadHost(host)
             }
         }
@@ -283,13 +283,13 @@ extend url {
         }
 
         return Url(
-            scheme: scheme.to_lowercase(),
-            host: host,
-            explicit_port: explicit_port,
-            path: path,
-            query: query,
-            fragment: fragment,
-            user: user,
+            scheme: scheme.to_lowercase()
+            host: host
+            explicit_port: explicit_port
+            path: path
+            query: query
+            fragment: fragment
+            user: user
         )
     }
 
@@ -361,7 +361,8 @@ extend url {
 // ─── Internals ──────────────────────────────────────────────────
 
 /// A copy of an optional field. Workaround: `self.field.clone()` is what this
-/// should be, and native can't compile it yet (#1611).
+/// should be, and inside a stdlib body that call is never rewritten to the
+/// wrapper's clone, so native can't compile it (#1621).
 func url_copy(s: string?) -> string? {
     if s? as x {
         return x.clone()
@@ -433,7 +434,7 @@ func url_port(p: string) -> u16 or UrlError {
 }
 
 func url_is_alpha(b: u8) -> bool {
-    return (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+    return b >= 65 && b <= 90 || b >= 97 && b <= 122
 }
 
 func url_is_digit(b: u8) -> bool {

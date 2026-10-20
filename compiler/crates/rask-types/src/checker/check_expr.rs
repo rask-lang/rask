@@ -789,6 +789,9 @@ impl TypeChecker {
                 if method == "eq" && args.len() == 1 && self.operator_calls.contains(&expr.id) {
                     self.pending_wrapper_eq.push((expr.id, object.id, args[0].expr.id));
                 }
+                if method == "clone" && args.is_empty() {
+                    self.pending_wrapper_clone.push((expr.id, object.id));
+                }
                 // ST1: `staged()` hands back a working copy and commits it when
                 // a scope exits, so it only means anything as the source of
                 // one. `let v = s.staged()` type-checked as an ordinary method

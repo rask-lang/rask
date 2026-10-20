@@ -243,8 +243,16 @@ pub struct TypeChecker {
     /// the operand types settle: two equal wrappers that need their parts'
     /// own `eq` go through the wrapper's function.
     pub(super) pending_wrapper_eq: Vec<(NodeId, NodeId, NodeId)>,
+    /// `.clone()` calls, as (call, receiver) nodes, decided the same way: a
+    /// wrapper has no `clone` of its own to call, so the call goes through
+    /// the one written for its type, or is the value itself when a copy is
+    /// a clone (#1611).
+    pub(super) pending_wrapper_clone: Vec<(NodeId, NodeId)>,
     /// Those decided: call node → (callee node, function name).
-    pub(super) wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    pub(super) wrapper_calls: HashMap<NodeId, (NodeId, String)>,
+    /// `.clone()` calls on a wrapper a copy duplicates, `i64?`: the call is
+    /// its receiver.
+    pub(super) copied_clones: std::collections::HashSet<NodeId>,
     /// Each method call's argument nodes, in order. Method arguments are
     /// checked as types inside the solver; this is how a coercion decided
     /// there finds the expression it applies to.
@@ -635,7 +643,9 @@ impl TypeChecker {
             next_derived_id: derive::DERIVED_ID_BASE,
             derived_names: 0,
             pending_wrapper_eq: Vec::new(),
-            wrapper_eq_calls: HashMap::new(),
+            pending_wrapper_clone: Vec::new(),
+            copied_clones: std::collections::HashSet::new(),
+            wrapper_calls: HashMap::new(),
             method_call_args: HashMap::new(),
             sequence_coercions: HashMap::new(),
             local_types: Vec::new(),
@@ -1171,7 +1181,8 @@ impl TypeChecker {
             inferred_fn_ret,
             inferred_fn_params,
             derived_decls: self.derived_decls,
-            wrapper_eq_calls: self.wrapper_eq_calls,
+            wrapper_calls: self.wrapper_calls,
+            copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,
             wrapper_fns: self.wrapper_fns,
             derived_generic_methods: self.derived_generic_methods,

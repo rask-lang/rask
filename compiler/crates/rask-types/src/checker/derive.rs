@@ -15,7 +15,7 @@
 //! `eq` — a tuple holding a `Vec`, an optional user struct — gets a free
 //! function, `derived#eq#N`, written from its shape. A field of that type
 //! calls it, a `==` on two of them is rewritten to call it
-//! (`TypedProgram::wrapper_eq_calls`), and a map keyed by one hashes and
+//! (`TypedProgram::wrapper_calls`), and a map keyed by one hashes and
 //! compares through the pair (`TypedProgram::wrapper_fns`) (#1392).
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, ImplDecl, Param};
@@ -521,7 +521,31 @@ impl TypeChecker {
             self.resolved.resolutions.insert(callee, sym);
             self.node_types.insert(callee, Type::fn_borrowing(vec![a.clone(), a.clone()], Type::Bool));
             self.call_targets.insert(call, super::type_defs::Callee::Free(sym));
-            self.wrapper_eq_calls.insert(call, (callee, name));
+            self.wrapper_calls.insert(call, (callee, name));
+        }
+
+        // `.clone()` on a wrapper has no method to reach: `T?`, `T or E` and
+        // tuples aren't types anything declares methods on. The call goes
+        // through the wrapper's own `clone`, or is the value itself when a
+        // copy is already a clone. Natively it was a call to an
+        // `Option_clone` nothing emits (#1611).
+        let pending = std::mem::take(&mut self.pending_wrapper_clone);
+        for (call, recv) in pending {
+            let Some(ty) = self.node_types.get(&recv).map(|t| self.ctx.apply(t)) else { continue };
+            if !Self::is_wrapper(&ty) || !is_concrete(&ty) {
+                continue;
+            }
+            if Self::clones_by_copy(&ty) {
+                self.copied_clones.insert(call);
+                continue;
+            }
+            let Some(name) = self.wrapper_fns(&ty).clone else { continue };
+            let sym = self.wrapper_symbols[&name];
+            let callee = self.derived_id();
+            self.resolved.resolutions.insert(callee, sym);
+            self.node_types.insert(callee, Type::fn_borrowing(vec![ty.clone()], ty.clone()));
+            self.call_targets.insert(call, super::type_defs::Callee::Free(sym));
+            self.wrapper_calls.insert(call, (callee, name));
         }
 
         // The program's own expressions only: a stdlib body's types are its

@@ -491,8 +491,7 @@ func csv_cell_json(kind: string, cell: string) -> string or CsvBadCell {
 }
 
 func csv_is_int_type(t: string) -> bool {
-    return t == "i8" || t == "i16" || t == "i32" || t == "i64" || t == "isize"
-        || t == "u8" || t == "u16" || t == "u32" || t == "u64" || t == "usize"
+    return t == "i8" || t == "i16" || t == "i32" || t == "i64" || t == "isize" || t == "u8" || t == "u16" || t == "u32" || t == "u64" || t == "usize"
 }
 
 /// Digits with an optional leading "-", inside the type's range.
@@ -551,7 +550,7 @@ func csv_is_json_number(s: string) -> bool {
         i = i + 1
     }
     let int_len = i - int_start
-    if int_len == 0 || (int_len > 1 && (s.byte_at(int_start) ?? 0) == 48) {
+    if int_len == 0 || int_len > 1 && (s.byte_at(int_start) ?? 0) == 48 {
         return false
     }
     if i < len && (s.byte_at(i) ?? 0) == 46 {
@@ -734,6 +733,9 @@ func csv_json_unquote(s: string, i: usize) -> string {
         let e = s.byte_at(j + 1) ?? 0
         if e == 110 {
             out.push("\n")
+            // \uXXXX; json.encode only writes these for control characters,
+            // so there's no surrogate pair to join.
+            // \" \\ \/ stand for themselves.
         } else if e == 116 {
             out.push("\t")
         } else if e == 114 {
@@ -743,8 +745,6 @@ func csv_json_unquote(s: string, i: usize) -> string {
         } else if e == 102 {
             out.push_char(char.from_u32(12) ?? ' ')
         } else if e == 117 {
-            // \uXXXX; json.encode only writes these for control characters,
-            // so there's no surrogate pair to join.
             mut n: u32 = 0
             for k in j + 2..j + 6 {
                 let h = s.byte_at(k) ?? 48
@@ -756,7 +756,6 @@ func csv_json_unquote(s: string, i: usize) -> string {
             run = j
             continue
         } else {
-            // \" \\ \/ stand for themselves.
             out.push(s[j + 1..j + 2].to_string())
         }
         j = j + 2
