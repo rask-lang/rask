@@ -180,6 +180,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("fs.rk", include_str!("../../../../stdlib/fs.rk")),
     ("net.rk", include_str!("../../../../stdlib/net.rk")),
     ("json.rk", include_str!("../../../../stdlib/json.rk")),
+    ("hex.rk", include_str!("../../../../stdlib/hex.rk")),
     ("cli.rk", include_str!("../../../../stdlib/cli.rk")),
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),

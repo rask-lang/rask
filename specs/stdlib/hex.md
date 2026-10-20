@@ -43,6 +43,9 @@ enum HexError {
     BadCharacter(byte: u8, at: usize)
     OddLength(usize)
 }
+extend HexError {
+    func message(self) -> string
+}
 ```
 
 ## Error Messages
@@ -50,7 +53,7 @@ enum HexError {
 ```
 ERROR [std.hex/H3]: invalid character in hex input
 
-WHY: "0x" at offset 0 is not hex. hex.decode takes bare hex digits.
+WHY: "x" at offset 1 is not a hex digit. hex.decode takes bare digits, no "0x".
 
 FIX: Drop the prefix:
 

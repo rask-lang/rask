@@ -351,9 +351,6 @@ std.fs fs.read_lines UNTESTED
 std.fs fs.remove_file UNTESTED
 std.fs fs.rename UNTESTED
 std.fs fs.write_bytes UNTESTED
-std.hex HexError MISSING
-std.hex hex.decode MISSING
-std.hex hex.encode MISSING
 std.http Headers.has MISSING
 std.http Headers.iter MISSING
 std.http HttpError VARIANTS
