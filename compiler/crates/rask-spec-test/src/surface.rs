@@ -38,6 +38,9 @@ pub struct SurfaceFn {
     /// A method an interface requires. It has no body of its own to run, so
     /// only its signature is compared.
     pub required: bool,
+    /// An interface method with a default body: every conformance that
+    /// doesn't write its own gets this one ([`inherit_defaults`]).
+    pub has_default: bool,
     /// 1-based line in the file it came from.
     pub line: usize,
 }
@@ -116,6 +119,31 @@ pub struct SurfaceType {
 pub struct Surface {
     pub fns: Vec<SurfaceFn>,
     pub types: Vec<SurfaceType>,
+    /// Every `X implements I`, as (X, I) with type arguments dropped.
+    pub conformances: Vec<(String, String)>,
+}
+
+/// Give each conformance the interface's default methods it doesn't write
+/// itself. `File implements Reader` with no `read_text` of its own still has
+/// `File.read_text`, the one `Reader` supplies, and a spec promising it is
+/// promising that one. Run over the whole stdlib at once: an interface and a
+/// conformance to it can sit in different files.
+pub fn inherit_defaults(fns: &mut Vec<SurfaceFn>, conformances: &[(String, String)]) {
+    let defaults: Vec<SurfaceFn> = fns.iter().filter(|f| f.required && f.has_default).cloned().collect();
+    for (owner, iface) in conformances {
+        for d in defaults.iter().filter(|d| &d.owner == iface) {
+            let written = fns.iter().any(|f| &f.owner == owner && f.name == d.name && f.via.as_ref() == Some(iface));
+            if !written {
+                fns.push(SurfaceFn {
+                    owner: owner.clone(),
+                    via: Some(iface.clone()),
+                    required: false,
+                    has_default: false,
+                    ..d.clone()
+                });
+            }
+        }
+    }
 }
 
 /// A spec's promised surface.
@@ -219,6 +247,9 @@ fn collect(decls: &[Decl], line_of: &dyn Fn(usize) -> usize, out: &mut Surface) 
             DeclKind::Impl(imp) => {
                 let owner = owner_name(&imp.target_ty);
                 let via = imp.interface.as_ref().map(owner_name);
+                if let Some(iface) = &via {
+                    out.conformances.push((owner.clone(), iface.clone()));
+                }
                 for m in &imp.methods {
                     out.fns.push(surface_fn(&owner, via.clone(), m, line_of));
                 }
@@ -287,6 +318,7 @@ fn surface_fn(owner: &str, via: Option<String>, f: &FnDecl, line_of: &dyn Fn(usi
         is_pub: f.is_pub,
         unimplemented: f.attrs.iter().any(|a| a.is("unimplemented")),
         required: false,
+        has_default: !f.body.is_empty() && !f.body_lives_elsewhere(),
         line: line_of(f.span.start),
     }
 }
