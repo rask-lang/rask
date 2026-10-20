@@ -284,8 +284,6 @@ std.collections Vec.from_raw_parts MISSING
 std.collections Vec.modify_many MISSING
 std.collections Vec.push_all MISSING
 std.collections Vec.try_insert MISSING
-std.collections Vec.is_full UNTESTED
-std.collections Vec.remaining UNTESTED
 std.csv CsvError MISSING
 std.csv csv.decode MISSING
 std.csv csv.encode MISSING
@@ -336,61 +334,12 @@ std.fs fs.open_with MISSING
 std.fs fs.read_dir MISSING
 std.fs fs.remove_dir MISSING
 std.fs fs.remove_dir_all MISSING
-std.fs fs.absolute_path UNTESTED
-std.fs fs.append_text UNTESTED
-std.fs fs.copy UNTESTED
-std.fs fs.create_dir UNTESTED
-std.fs fs.create_dir_all UNTESTED
-std.fs fs.current_dir UNTESTED
-std.fs fs.home_dir UNTESTED
-std.fs fs.metadata UNTESTED
 std.fs fs.open UNTESTED
-std.fs fs.read_bytes UNTESTED
-std.fs fs.read_lines UNTESTED
-std.fs fs.remove_file UNTESTED
-std.fs fs.rename UNTESTED
-std.fs fs.write_bytes UNTESTED
 std.hex HexError MISSING
 std.hex hex.decode MISSING
 std.hex hex.encode MISSING
 std.http Headers.iter MISSING
 std.http HttpError VARIANTS
-std.http Headers.get UNTESTED
-std.http Headers.len UNTESTED
-std.http Headers.remove UNTESTED
-std.http Headers.set UNTESTED
-std.http HttpClient.delete UNTESTED
-std.http HttpClient.get UNTESTED
-std.http HttpClient.new UNTESTED
-std.http HttpClient.post UNTESTED
-std.http HttpClient.put UNTESTED
-std.http HttpClient.request UNTESTED
-std.http HttpClient.with_header UNTESTED
-std.http HttpClient.with_max_redirects UNTESTED
-std.http HttpClient.with_timeout UNTESTED
-std.http Request.new UNTESTED
-std.http Request.query_param UNTESTED
-std.http Request.query_params UNTESTED
-std.http Request.with_body UNTESTED
-std.http Request.with_header UNTESTED
-std.http Response.bad_request UNTESTED
-std.http Response.created UNTESTED
-std.http Response.internal_error UNTESTED
-std.http Response.is_client_error UNTESTED
-std.http Response.is_error UNTESTED
-std.http Response.is_ok UNTESTED
-std.http Response.is_redirect UNTESTED
-std.http Response.is_server_error UNTESTED
-std.http Response.json UNTESTED
-std.http Response.no_content UNTESTED
-std.http Response.not_found UNTESTED
-std.http Response.redirect UNTESTED
-std.http Response.with_header UNTESTED
-std.http Response.with_status UNTESTED
-std.http http.delete UNTESTED
-std.http http.post UNTESTED
-std.http http.put UNTESTED
-std.http http.request UNTESTED
 std.http http.serve UNTESTED
 std.io Buffer.flush [Writer] MISSING
 std.io Buffer.read_exact [Reader<Vec<u8>>] MISSING
@@ -425,17 +374,8 @@ std.io Stdin.read [Reader<Vec<u8>>] MISMATCH
 std.io Stdout.write [Writer<Vec<u8>>] MISMATCH
 std.io Writer.write MISMATCH
 std.io io.copy MISMATCH
-std.io Buffer.write_bytes [Writer<Vec<u8>>] UNTESTED
-std.io Stdin.read_bytes [Reader] UNTESTED
-std.io Stdin.read_text [Reader] UNTESTED
-std.io Stdout.write_bytes [Writer<Vec<u8>>] UNTESTED
-std.io io.read_line UNTESTED
-std.io io.stderr UNTESTED
-std.io io.stdin UNTESTED
-std.io io.stdout UNTESTED
 std.iteration Map.take_all MISSING
 std.iteration Vec.take_all MISMATCH
-std.json JsonValue.as_bool UNTESTED
 std.json json.decode UNTESTED
 std.json json.encode UNTESTED
 std.json json.encode_pretty UNTESTED
@@ -457,10 +397,6 @@ std.net TcpConnection.write [Writer<Vec<u8>>] MISSING
 std.net TcpConnection.write_bytes [Writer<Vec<u8>>] MISSING
 std.net TcpConnection.write_text [Writer<string>] MISSING
 std.net net.resolve MISSING
-std.net TcpConnection.remote_addr UNTESTED
-std.net net.tcp_connect UNTESTED
-std.net net.tcp_listen UNTESTED
-std.net net.udp_bind UNTESTED
 std.os os.exit MISMATCH
 std.os os.pid MISMATCH
 std.path Path.has_extension MISMATCH
@@ -472,10 +408,6 @@ std.random Random.from_seed MISMATCH
 std.random Random.shuffle MISMATCH
 std.random Random.u64 MISMATCH
 std.random random.f32 MISMATCH
-std.random Random.f64 UNTESTED
-std.random random.bool UNTESTED
-std.random random.f64 UNTESTED
-std.random random.i64 UNTESTED
 std.random random.range UNTESTED
 std.reflect reflect.has_field UNBUILT
 std.reflect reflect.has_method UNBUILT
@@ -491,9 +423,6 @@ std.strings StringView.index_of MISSING
 std.strings string.get MISSING
 std.strings string.span MISSING
 std.strings string.replace MISMATCH
-std.strings Span.len UNTESTED
-std.strings StringBuilder.with_capacity UNTESTED
-std.strings cstring.as_ptr UNTESTED
 std.strings cstring.from_ptr UNTESTED
 std.terminal Color MISSING
 std.terminal ColorMode MISSING
@@ -517,7 +446,6 @@ std.time Duration.micros MISMATCH
 std.time Duration.millis MISMATCH
 std.time Duration.nanos MISMATCH
 std.time Duration.seconds MISMATCH
-std.time Duration.as_micros UNTESTED
 std.tls Certificate MISSING
 std.tls Config MISSING
 std.tls Config.new MISSING
@@ -556,5 +484,4 @@ std.url url.encode_query MISSING
 std.url url.parse MISSING
 std.url url.parse_query MISSING
 std.fs fs.create_file UNTESTED
-std.http Headers.contains UNTESTED
 std.reflect reflect.interfaces UNBUILT

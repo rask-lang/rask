@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Vec.is_full` and `Vec.remaining` (std.collections CP1–CP3): only a bounded
+// vector can be full, and only a bounded one has a number of slots left.
+
+test "a fixed vector counts down to full" {
+    mut v: Vec<i64> = Vec.fixed(3)
+    assert !v.is_full()
+    assert v.remaining() == 3
+    v.push(10)
+    assert v.remaining() == 2
+    v.push(20)
+    v.push(30)
+    assert v.is_full()
+    assert v.remaining() == 0
+    let _ = v.pop()
+    assert !v.is_full()
+    assert v.remaining() == 1
+}
+
+test "a full vector refuses try_push and stays full" {
+    mut v: Vec<i64> = Vec.fixed(1)
+    v.push(1)
+    assert v.is_full()
+    assert v.try_push(2) is GrowError<i64>
+    assert v.len() == 1
+    assert v.is_full()
+}
+
+test "a zero bound is full from the start" {
+    let v: Vec<i64> = Vec.fixed(0)
+    assert v.is_full()
+    assert v.remaining() == 0
+}
+
+test "an unbounded vector is never full and has no remaining count" {
+    mut v: Vec<i64> = Vec.new()
+    assert !v.is_full()
+    assert v.remaining() is none
+    for i in 0..100 {
+        v.push(i)
+    }
+    assert !v.is_full()
+    assert v.remaining() is none
+
+    // A capacity hint isn't a bound (CP1).
+    let w: Vec<i64> = Vec.with_capacity(2)
+    assert !w.is_full()
+    assert w.remaining() is none
+}

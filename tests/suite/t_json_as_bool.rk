@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `JsonValue.as_bool`: a JSON boolean reads as itself, anything else, including
+// the string "true" and the number 1, as none.
+
+import json
+import json.JsonValue
+
+func value(text: string) -> JsonValue {
+    return json.decode<JsonValue>(text)!
+}
+
+test "true and false read as themselves" {
+    assert value("true").as_bool() == true
+    assert value("false").as_bool() == false
+}
+
+test "other kinds of value aren't booleans" {
+    assert value("1").as_bool() is none
+    assert value("0").as_bool() is none
+    assert value("\"true\"").as_bool() is none
+    assert value("null").as_bool() is none
+    assert value("[true]").as_bool() is none
+}
+
+test "a boolean field of an object" {
+    let doc = value("{{\"on\": true, \"off\": false}}")
+    let fields = doc.as_object()!
+    assert fields.get("on")!.as_bool() == true
+    assert fields.get("off")!.as_bool() == false
+}
+

@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `File` from `create_file`/`open` imported by name, closed by hand under an
+// `ensure`. The explicit close should cancel the ensure, as it does when the
+// call is spelled `fs.create_file(...)` (t_month_io.rk).
+//
+// Natively it doesn't: the binding's type isn't known to lowering when it came
+// from an imported name, so `w.close()` emits no `resource_consume`, the ensure
+// closes the handle a second time, and glibc aborts with "double free
+// detected" (#1601). The interpreter is right.
+
+import fs
+import fs.{create_file, open, read_text, remove_file}
+import os
+
+func fresh_dir() -> string {
+    let out = os.Command.new("mktemp").arg("-d").run()!
+    return out.stdout.trim().to_string()
+}
+
+test "create_file, write, close under an ensure" {
+    let dir = fresh_dir()
+    let p = "{dir}/w.txt"
+    let w = create_file(p)!
+    ensure w.close()
+    w.write_text("written")!
+    let _ = w.close()
+    assert read_text(p)! == "written"
+    remove_file(p)!
+    let _ = os.Command.new("rm").arg("-rf").arg(dir).run()
+}
+
+test "open, read, close under an ensure" {
+    let dir = fresh_dir()
+    let p = "{dir}/r.txt"
+    fs.write_text(p, "prewritten")!
+    let r = open(p)!
+    ensure r.close()
+    let got = r.read_text()!
+    let _ = r.close()
+    assert got == "prewritten"
+    let _ = os.Command.new("rm").arg("-rf").arg(dir).run()
+}

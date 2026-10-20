@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The unseeded `random.*` shortcuts and `Random.f64`. The shortcuts aren't
+// reproducible, so these assert ranges and that both outcomes turn up, not
+// exact values. A seeded generator is exact and is checked against itself.
+//
+// `random.range` imported by name doesn't type-check yet; it's in
+// t_random_range_imported.rk (#1604). Imported by name at all so
+// `rask stdlib-coverage` sees the calls (#1600).
+
+import random.i64 as any_int
+import random.f64 as unit
+import random.bool as coin
+import random.Random
+
+test "f64 stays in [0, 1) and isn't stuck" {
+    mut lo = 1.0
+    mut hi = 0.0
+    for _ in 0..200 {
+        let x = unit()
+        assert x >= 0.0 && x < 1.0
+        if x < lo: lo = x
+        if x > hi: hi = x
+    }
+    assert lo < 0.25
+    assert hi > 0.75
+}
+
+test "bool gives both answers" {
+    mut heads = 0
+    for _ in 0..200 {
+        if coin(): heads += 1
+    }
+    assert heads > 20
+    assert heads < 180
+}
+
+test "i64 draws differ and cover both signs" {
+    mut neg = false
+    mut pos = false
+    let first = any_int()
+    mut all_same = true
+    for _ in 0..64 {
+        let n = any_int()
+        if n != first: all_same = false
+        if n < 0: neg = true
+        if n > 0: pos = true
+    }
+    assert !all_same
+    assert neg
+    assert pos
+}
+
+test "Random.f64 is in [0, 1) and repeats for a seed" {
+    mut a = Random.from_seed(99)
+    mut b = Random.from_seed(99)
+    mut distinct = false
+    let first = a.f64()
+    assert first == b.f64()
+    for _ in 0..100 {
+        let x = a.f64()
+        assert x >= 0.0 && x < 1.0
+        assert x == b.f64()
+        if x != first: distinct = true
+    }
+    assert distinct
+}

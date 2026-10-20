@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.http values, no network: `Headers`, building a `Request`, and the
+// `Response` constructors and status predicates.
+
+import http.{Headers, Request, Response, Method}
+
+test "headers: set, get, contains, len" {
+    mut h = Headers.new()
+    assert h.len() == 0
+    h.set("Content-Type", "text/plain")
+    h.set("X-Trace", "abc")
+    assert h.len() == 2
+    assert h.contains("Content-Type")
+    assert !h.contains("Accept")
+    assert h.get("X-Trace") == "abc"
+    assert h.get("Accept") is none
+}
+
+test "headers: set replaces an existing value" {
+    mut h = Headers.new()
+    h.set("X-Count", "1")
+    h.set("X-Count", "2")
+    assert h.len() == 1
+    assert h.get("X-Count") == "2"
+}
+
+test "headers: remove hands back the value it removed" {
+    mut h = Headers.new()
+    h.set("X-Gone", "bye")
+    h.set("X-Kept", "hi")
+    assert h.remove("X-Gone") == "bye"
+    assert h.remove("X-Gone") is none
+    assert h.len() == 1
+    assert !h.contains("X-Gone")
+    assert h.get("X-Kept") == "hi"
+}
+
+test "request: new, with_header, with_body" {
+    let req = Request.new(Method.Post, "/items")
+        .with_header("X-One", "1")
+        .with_header("X-Two", "2")
+        .with_body("payload")
+    assert req.method == Method.Post
+    assert req.url == "/items"
+    assert req.body == "payload"
+    assert req.headers.len() == 2
+    assert req.headers.get("X-Two") == "2"
+}
+
+test "request: a fresh request has no headers and no body" {
+    let req = Request.new(Method.Get, "/")
+    assert req.headers.len() == 0
+    assert req.body == ""
+}
+
+test "request: query_param picks one parameter out of the url" {
+    let req = Request.new(Method.Get, "/search?q=rask&page=2&flag")
+    assert req.query_param("q") == "rask"
+    assert req.query_param("page") == "2"
+    assert req.query_param("flag") == ""
+    assert req.query_param("missing") is none
+}
+
+test "request: query_params collects every pair" {
+    let req = Request.new(Method.Get, "/search?a=1&b=two&&c=")
+    let params = req.query_params()
+    assert params.len() == 3
+    assert params.get("a") == "1"
+    assert params.get("b") == "two"
+    assert params.get("c") == ""
+}
+
+test "request: no query string, no parameters" {
+    let req = Request.new(Method.Get, "/plain")
+    assert req.query_params().len() == 0
+    assert req.query_param("a") is none
+}
+
+test "response: the status constructors" {
+    let c = Response.created("made")
+    assert c.status == 201
+    assert c.body == "made"
+
+    let n = Response.no_content()
+    assert n.status == 204
+    assert n.body == ""
+
+    let nf = Response.not_found()
+    assert nf.status == 404
+
+    let br = Response.bad_request("bad input")
+    assert br.status == 400
+    assert br.body == "bad input"
+
+    let ie = Response.internal_error("boom")
+    assert ie.status == 500
+    assert ie.body == "boom"
+}
+
+test "response: json sets the content type" {
+    let r = Response.json("{{\"a\":1}}")
+    assert r.status == 200
+    assert r.body == "{{\"a\":1}}"
+    assert r.headers.get("Content-Type") == "application/json"
+}
+
+test "response: redirect points Location at the target" {
+    let r = Response.redirect("/elsewhere")
+    assert r.status == 302
+    assert r.headers.get("Location") == "/elsewhere"
+}
+
+test "response: with_status and with_header" {
+    let r = Response.new(200, "body")
+        .with_status(418)
+        .with_header("X-Teapot", "yes")
+    assert r.status == 418
+    assert r.body == "body"
+    assert r.headers.get("X-Teapot") == "yes"
+}
+
+test "response: status predicates at each range's edges" {
+    assert Response.new(200, "").is_ok()
+    assert Response.new(299, "").is_ok()
+    assert !Response.new(300, "").is_ok()
+
+    assert Response.new(301, "").is_redirect()
+    assert !Response.new(299, "").is_redirect()
+    assert !Response.new(400, "").is_redirect()
+
+    assert Response.new(404, "").is_client_error()
+    assert !Response.new(500, "").is_client_error()
+
+    assert Response.new(503, "").is_server_error()
+    assert !Response.new(499, "").is_server_error()
+
+    assert Response.new(400, "").is_error()
+    assert Response.new(599, "").is_error()
+    assert !Response.new(302, "").is_error()
+    assert !Response.new(600, "").is_error()
+}

@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.net over loopback through names imported from the module, and
+// `TcpConnection.remote_addr` on both ends of a connection. Imported by name so
+// `rask stdlib-coverage` sees the calls (#1600).
+
+import net.{tcp_listen, tcp_connect, udp_bind}
+import io.IoError
+
+test "a connection's remote address is the other end's address" {
+    mut listener = tcp_listen("127.0.0.1:0")!
+    let addr = listener.local_addr()
+    mut client = tcp_connect(addr)!
+    mut server = listener.accept()!
+
+    // The client sees the listener's address; the server sees the client's
+    // ephemeral port, on loopback.
+    assert client.remote_addr() == addr
+    let peer = server.remote_addr()
+    assert peer.starts_with("127.0.0.1:")
+    assert peer != addr
+
+    client.write_text("ping")!
+    let _ = client.close()
+    let got = server.read_text()!
+    assert got == "ping"
+    let _ = server.close()
+    let _ = listener.close()
+}
+
+test "connecting where nothing listens is an IoError" {
+    mut listener = tcp_listen("127.0.0.1:0")!
+    let addr = listener.local_addr()
+    let _ = listener.close()
+    match tcp_connect(addr) {
+        IoError as e => assert e.message() != ""
+        TcpConnection as c => {
+            let _ = c.close()
+            assert false, "connected to a closed port"
+        }
+    }
+}
+
+test "tcp_listen refuses an address without a port" {
+    match tcp_listen("not-an-address") {
+        IoError as e => assert e.message() != ""
+        TcpListener as l => {
+            let _ = l.close()
+            assert false, "bound a malformed address"
+        }
+    }
+}
+
+test "udp_bind picks a port, and a datagram to itself comes back" {
+    let s = udp_bind("127.0.0.1:0")!
+    ensure s.close()
+    let addr = s.local_addr()
+    assert addr.starts_with("127.0.0.1:")
+    assert !addr.ends_with(":0")
+    s.send_to([4u8, 2], addr)!
+    let got = s.receive_from()!
+    assert got.data.len() == 2
+    assert got.data[0] == 4u8
+    assert got.from == addr
+}
