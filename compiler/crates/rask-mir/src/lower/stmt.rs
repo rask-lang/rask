@@ -2548,7 +2548,7 @@ impl<'a> MirLowerer<'a> {
             // A `for mutate` over a Vec takes each element out and writes it
             // back (`Vec_lend` … `Vec_write_back`). A map's binding comes from
             // its entries snapshot, and the value is lent below.
-            let read = if mutate && !is_map { "Vec_lend" } else { "Vec_get" };
+            let read = if mutate && !is_map { "Vec_lend" } else { "Vec_index" };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
                 func: FunctionRef::internal(read.to_string()),

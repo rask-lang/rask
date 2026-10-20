@@ -5,7 +5,7 @@ struct time { }
 
 extend time {
     /// Sleep for the given duration.
-    @native("rask_sleep_ns")
+    @native("rask_sleep_ns", returns: status)
     @blocks
     public func sleep(duration: Duration) -> void or SysError {}
 

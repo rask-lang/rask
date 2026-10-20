@@ -98,7 +98,7 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/types.rs` — MirType→Cranelift type mapping
 - `src/layouts.rs` — struct/enum memory layout for Cranelift
 - `src/closures.rs` — closure codegen
-- `src/dispatch.rs` — interface dispatch, `src/vtable.rs` — vtable layout
+- `src/dispatch.rs` — stdlib calls into the C runtime: built from `@native("sym")` declarations plus `rask_runtime.h`, and an internal table for names MIR mints. `src/vtable.rs` — vtable layout
 - `src/debug_info.rs` — DWARF debug info
 - Struct layout bug: check `layouts.rs` and `rask-mono` layout computation
 

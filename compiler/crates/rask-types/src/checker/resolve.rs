@@ -1578,7 +1578,7 @@ impl TypeChecker {
             // Primitive integer types — resolve operator methods directly
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                self.resolve_integer_method(&ty, &method, &args, &ret, span)
+                self.resolve_integer_method(&ty, &method, &args, &ret, call_node, span)
             }
             // Primitive float types
             Type::F32 | Type::F64 => {
@@ -2078,11 +2078,6 @@ impl TypeChecker {
                 self.unify(ret, &self.ordering_type(), span)
             }
             "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            // CH3: runtime construction returns `char?` — `none` on invalid scalar.
-            "from_u32" if args.len() == 1 => {
-                self.unify(&args[0], &Type::U32, span)?;
-                self.unify(ret, &Type::option(Type::Char), span)
-            }
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::Char,
                 method: method.to_string(),
@@ -3643,14 +3638,19 @@ impl TypeChecker {
     }
 
     /// Resolve methods on primitive integer types (i8..i128, u8..u128).
-    /// Desugared operators (add, bit_and, etc.) resolve here instead of
-    /// bouncing through HasMethod → unsolved constraint suppression.
+    ///
+    /// The operators (add, bit_and, compare, …) and `hash` are the widths'
+    /// conformances, which the compiler registers, so they're answered here
+    /// with diagnostics that know what a mixed operand is. Every named method
+    /// is declared in stdlib/int.rk and typed from that declaration.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_integer_method(
         &mut self,
         ty: &Type,
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128);
@@ -3679,7 +3679,7 @@ impl TypeChecker {
             }
             // Unary → same type
             "neg" if args.is_empty() && is_signed => self.unify(ret, ty, span),
-            "bit_not" | "abs" if args.is_empty() => self.unify(ret, ty, span),
+            "bit_not" if args.is_empty() => self.unify(ret, ty, span),
             // Comparison → bool
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
                 // The comparison answers `bool` whatever is wrong with the
@@ -3702,90 +3702,39 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }
-            "to_float" if args.is_empty() => self.unify(ret, &Type::F64, span),
-            // std.bits B1 — bit inspection and permutation. All of these answer
-            // in the receiver's own type: a count can't exceed the width, so
-            // there's no reason to widen it to a separate counter type.
-            "count_ones" | "count_zeros"
-            | "leading_zeros" | "trailing_zeros"
-            | "leading_ones" | "trailing_ones"
-            | "reverse_bits" | "swap_bytes"
-                if args.is_empty() => self.unify(ret, ty, span),
-            "rotate_left" | "rotate_right" if args.len() == 1 => {
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, ty, span)
-            }
-            // type.integer-overflow OV5/SH2 — the ways out of the checked
-            // default. Same two operands and the same answer type as the
-            // operator each one shadows; only what happens on overflow differs.
-            // The shift forms take an amount of the receiver's own type, the
-            // way `shl` does.
-            "wrapping_add" | "wrapping_sub" | "wrapping_mul"
-            | "saturating_add" | "saturating_sub" | "saturating_mul"
-            | "wrapping_shl" | "wrapping_shr"
-                if args.len() == 1
-                    && !matches!(ty, Type::I128 | Type::U128) => {
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, ty, span)
-            }
-            // UN1: the last-resort hatch — no overflow check at all, UB if it
-            // actually overflows. Same shape as `wrapping_*` (same type in,
-            // same type out); the only difference is the compiler makes you
-            // say `unsafe` before it'll let you have it.
-            "unchecked_add" | "unchecked_sub" | "unchecked_mul"
-                if args.len() == 1
-                    && !matches!(ty, Type::I128 | Type::U128) => {
-                // Recorded whether or not it's actually inside `unsafe` — an
-                // out-of-context call still gets flagged below, but `rask
-                // unsafe`'s report is about auditing the unsafe surface a
-                // file already has, and this op belongs on it either way
-                // (every other unsafe op here — transmute, raw pointer
-                // deref, extern calls, union access — records unconditionally
-                // too).
-                self.unsafe_ops.push((span, super::UnsafeCategory::UncheckedArith));
-                if !self.in_unsafe {
-                    self.errors.push(TypeError::UnsafeRequired {
-                        operation: format!(".{}() — UB on overflow (type.overflow/UN1)", method),
-                        span,
-                    });
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, ty, span)
-            }
-            // The same table's fallible forms. `checked_*` hands back `T?` —
-            // `none` when the answer doesn't exist — and `overflowing_*` hands
-            // back both the wrapped answer and whether it wrapped.
-            "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
-                if args.len() == 1
-                    && !matches!(ty, Type::I128 | Type::U128) => {
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::option(ty.clone()), span)
-            }
-            "overflowing_add" | "overflowing_sub" | "overflowing_mul"
-                if args.len() == 1
-                    && !matches!(ty, Type::I128 | Type::U128) => {
-                let _ = self.unify(&args[0], ty, span);
-                let pair = Type::Tuple(vec![ty.clone(), Type::Bool]);
-                self.unify(ret, &pair, span)
-            }
-            // std.bits B2/B3 — byte order. Same width in, same width out;
-            // bits.rk documents these as methods on the integer types and
-            // uses them (`hton_u16` is `x.to_be()`), but nothing registered
-            // them, so the stdlib's own definitions didn't resolve.
-            "to_be" | "to_le" if args.is_empty() => self.unify(ret, ty, span),
             // HA1: every integer width is Hashable, and `Hashable` is
             // `hash(self) -> u64`. The interface table said so and this didn't, so the
             // conformance held while the call was rejected (#813).
             "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            _ => Err(TypeError::NoSuchMethod {
-                ty: ty.clone(),
-                method: method.to_string(),
-                span,
-            }),
+            _ => {
+                let width = ty.to_string();
+                // UN1: `unchecked_add` and its siblings are declared `unsafe`
+                // — no overflow check at all, UB if it actually overflows — so
+                // the call has to be written inside `unsafe`. Recorded whether
+                // or not it is: `rask unsafe`'s report audits the unsafe
+                // surface a file has, and this op belongs on it either way.
+                if rask_stdlib::lookup_method(&width, method).is_some_and(|m| m.is_unsafe) {
+                    self.unsafe_ops.push((span, super::UnsafeCategory::UncheckedArith));
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: format!(".{}() — UB on overflow (type.overflow/UN1)", method),
+                            span,
+                        });
+                    }
+                }
+                self.resolve_declared_primitive_method(&width, ty, method, args, ret, call_node, span)
+                    .unwrap_or_else(|| Err(TypeError::NoSuchMethod {
+                        ty: ty.clone(),
+                        method: method.to_string(),
+                        span,
+                    }))
+            }
         }
     }
 
-    /// Resolve methods on primitive float types (f32, f64).
+    /// The float operators (`add`, `eq`, `compare`, …), which the compiler
+    /// registers for both widths. Every named float method is declared in
+    /// stdlib/float.rk, and the caller tries that declaration first.
     pub(super) fn resolve_float_method(
         &mut self,
         ty: &Type,
@@ -3794,28 +3743,8 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        use rask_stdlib::FloatSig;
-
-        let no_such = || TypeError::NoSuchMethod {
-            ty: ty.clone(),
-            method: method.to_string(),
-            span,
-        };
-        let entry = rask_stdlib::float_methods::lookup(method).ok_or_else(no_such)?;
-
-        // Arity comes from the signature shape; a call with the wrong count
-        // isn't this method.
-        let wants_arg = matches!(
-            entry.sig,
-            FloatSig::BinaryFloat | FloatSig::BinaryInt | FloatSig::Comparison | FloatSig::Compare
-        );
-        if wants_arg != (args.len() == 1) {
-            return Err(no_such());
-        }
-
-        match entry.sig {
-            FloatSig::Unary => self.unify(ret, ty, span),
-            FloatSig::BinaryFloat => {
+        match method {
+            "add" | "sub" | "mul" | "div" | "rem" if args.len() == 1 => {
                 // The other side of #816: `f64 + i64` was accepted too, and the
                 // discarded unify is why nothing said so. #816 added the
                 // int/float guard and left the discard, so every *other* wrong
@@ -3834,23 +3763,16 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, ty, span)
             }
-            FloatSig::BinaryInt => {
-                let _ = self.unify(&args[0], &Type::I32, span);
-                self.unify(ret, ty, span)
-            }
-            FloatSig::Predicate | FloatSig::Comparison => {
-                if entry.sig == FloatSig::Comparison {
-                    if let Err(bad) =
-                        self.reject_incomparable_operand(method, ty, &args[0], span)
-                    {
-                        let _ = self.unify(ret, &Type::Bool, span);
-                        return Err(bad);
-                    }
-                    let _ = self.unify(&args[0], ty, span);
+            "neg" if args.is_empty() => self.unify(ret, ty, span),
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
+                    let _ = self.unify(ret, &Type::Bool, span);
+                    return Err(bad);
                 }
+                let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &Type::Bool, span)
             }
-            FloatSig::Compare => {
+            "compare" if args.len() == 1 => {
                 if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
                     let ord = self.ordering_type();
                     let _ = self.unify(ret, &ord, span);
@@ -3859,8 +3781,11 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], ty, span);
                 self.unify(ret, &self.ordering_type(), span)
             }
-            FloatSig::ToString => self.unify(ret, &Type::String, span),
-            FloatSig::ToInt => self.unify(ret, &Type::I64, span),
+            _ => Err(TypeError::NoSuchMethod {
+                ty: ty.clone(),
+                method: method.to_string(),
+                span,
+            }),
         }
     }
 

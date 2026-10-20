@@ -26,3 +26,90 @@ extend f64 {
     @native("rask_f64_from_bits")
     public func from_bits(bits: u64) -> f64 {}
 }
+
+// The float methods, written once for `f32` and `f64` (`WIDTH_FAMILIES` in
+// rask-stdlib) with `Self` as the width. Native codegen calls the libm or
+// `math.c` function named here at double width; an `f32` receiver is widened
+// on the way in and its answer rounded back.
+//
+// The operators (`add`, `eq`, `compare`, …) aren't here: the compiler
+// registers those for every float and lowers them to instructions.
+
+extend Float {
+    @native("fabs")
+    public func abs(self) -> Self {}
+
+    @native("floor")
+    public func floor(self) -> Self {}
+
+    @native("ceil")
+    public func ceil(self) -> Self {}
+
+    /// Half away from zero.
+    @native("round")
+    public func round(self) -> Self {}
+
+    @native("trunc")
+    public func trunc(self) -> Self {}
+
+    /// What `trunc` leaves behind, with the receiver's sign.
+    @native("math_fract")
+    public func fract(self) -> Self {}
+
+    @native("sqrt")
+    public func sqrt(self) -> Self {}
+
+    @native("pow")
+    public func pow(self, exp: Self) -> Self {}
+
+    @native("pow")
+    public func powf(self, exp: Self) -> Self {}
+
+    /// The exponent reaches the call as a float: there is one `pow` in libm.
+    @native("pow")
+    public func powi(self, exp: i32) -> Self {}
+
+    @native("math_sin")
+    public func sin(self) -> Self {}
+
+    @native("math_cos")
+    public func cos(self) -> Self {}
+
+    @native("math_tan")
+    public func tan(self) -> Self {}
+
+    @native("math_asin")
+    public func asin(self) -> Self {}
+
+    @native("math_acos")
+    public func acos(self) -> Self {}
+
+    @native("math_atan")
+    public func atan(self) -> Self {}
+
+    @native("math_exp")
+    public func exp(self) -> Self {}
+
+    /// The natural logarithm.
+    @native("math_ln")
+    public func ln(self) -> Self {}
+
+    @native("math_log2")
+    public func log2(self) -> Self {}
+
+    @native("math_log10")
+    public func log10(self) -> Self {}
+
+    @native("math_is_nan")
+    public func is_nan(self) -> bool {}
+
+    @native("math_is_inf")
+    public func is_inf(self) -> bool {}
+
+    @native("math_is_finite")
+    public func is_finite(self) -> bool {}
+
+    /// Toward zero, as an `i64`.
+    @builtin
+    public func to_int(self) -> i64 {}
+}

@@ -2,9 +2,10 @@
 //! Which methods a stdlib type or module has, by name, for "did you mean" and
 //! the interpreter's drift tests, and which layer each lives in.
 //!
-//! A type declared in `stdlib/*.rk` answers from its declaration. Only the
-//! compiler's own types — the integers, `bool`, the SIMD vectors, `Atomic` —
-//! have lists here, because nothing declares them.
+//! A type declared in `stdlib/*.rk` answers from its declaration, the
+//! primitives included (stdlib/int.rk, float.rk, char.rk). Only the compiler's
+//! own types with no stdlib file — the SIMD vectors, `Atomic` — have lists
+//! here.
 
 /// Where a stdlib type or module lives in the compilation pipeline.
 ///
@@ -51,36 +52,6 @@ pub fn module_layer(module: &str) -> StdlibLayer {
 // ---------------------------------------------------------------------------
 // Instance methods by type
 // ---------------------------------------------------------------------------
-
-const SIGNED_INT_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem", "mod", "neg",
-    "eq", "lt", "le", "gt", "ge",
-    "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "abs", "to_string", "to_float",
-];
-
-const UNSIGNED_INT_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem", "mod",
-    "eq", "lt", "le", "gt", "ge",
-    "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "to_string", "to_float",
-];
-
-const I128_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem", "neg",
-    "eq", "lt", "le", "gt", "ge",
-    "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "abs", "to_string",
-];
-
-const U128_METHODS: &[&str] = &[
-    "add", "sub", "mul", "div", "rem",
-    "eq", "lt", "le", "gt", "ge",
-    "bit_and", "bit_or", "bit_xor", "shl", "shr", "bit_not",
-    "to_string",
-];
-
-const BOOL_METHODS: &[&str] = &["eq", "lt", "le", "gt", "ge", "compare", "to_string"];
 
 /// A compiler type's methods, each with the argument counts it accepts.
 ///
@@ -188,15 +159,10 @@ pub fn is_rask_implemented(type_name: &str) -> bool {
 /// ones its declaration in `stdlib/*.rk` has. A hand list per type drifted from
 /// the declarations, so "did you mean" offered methods that didn't exist.
 ///
-/// The integers, `bool`, the SIMD vectors and `Atomic` have no declaration —
-/// they're the compiler's own — so they answer from the lists above.
+/// The SIMD vectors and `Atomic` have no declaration — they're the
+/// compiler's own — so they answer from the lists above.
 pub fn type_method_names(type_name: &str) -> Vec<&'static str> {
     let compiler_type: &[&str] = match type_name {
-        "i8" | "i16" | "i32" | "i64" => SIGNED_INT_METHODS,
-        "u8" | "u16" | "u32" | "u64" => UNSIGNED_INT_METHODS,
-        "i128" => I128_METHODS,
-        "u128" => U128_METHODS,
-        "bool" => BOOL_METHODS,
         "Atomic" => ATOMIC_METHODS,
         "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" => SIMD_METHODS,
         _ => return declared_method_names(type_name),
@@ -294,7 +260,23 @@ mod tests {
 
     #[test]
     fn compiler_types_answer_from_their_lists() {
-        assert!(type_method_names("i64").contains(&"abs"));
         assert!(type_method_names("Atomic").contains(&"fetch_add"));
+    }
+
+    /// Every integer width has the methods stdlib/int.rk writes once for the
+    /// family, and every float width float.rk's.
+    #[test]
+    fn primitive_widths_answer_from_their_family_block() {
+        for width in ["i8", "i32", "u8", "u64", "i128", "u128"] {
+            let names = type_method_names(width);
+            assert!(names.contains(&"count_ones"), "{width}: {names:?}");
+            let narrow = !width.ends_with("128");
+            assert_eq!(names.contains(&"checked_add"), narrow, "{width}: {names:?}");
+        }
+        for width in ["f32", "f64"] {
+            let names = type_method_names(width);
+            assert!(names.contains(&"floor"), "{width}: {names:?}");
+            assert!(names.contains(&"to_bits"), "{width}: {names:?}");
+        }
     }
 }

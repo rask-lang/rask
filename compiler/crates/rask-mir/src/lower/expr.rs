@@ -6000,6 +6000,19 @@ impl<'a> MirLowerer<'a> {
             let mut chars = base.chars();
             !matches!((chars.next(), chars.next()),
                       (Some(c), None) if c.is_ascii_uppercase())
+        })
+        // An integer method is declared once per width (stdlib/int.rk), and
+        // the checker records the width it resolved on. The runtime has one
+        // entry per family — `i64_abs` serves every signed width up to 64 —
+        // so the name collapses the way an undeclared one always did.
+        .map(|prefix| {
+            if rask_ast::primitives::is_machine_integer(&prefix) {
+                super::builtin_method_prefix_for_name(&prefix)
+                    .map(str::to_string)
+                    .unwrap_or(prefix)
+            } else {
+                prefix
+            }
         });
         // `to_int` / `to_float` are one machine instruction, so lower them to a
         // Cast instead of hunting for a `f64_to_int` symbol that never existed.
@@ -6007,6 +6020,12 @@ impl<'a> MirLowerer<'a> {
             self.try_lower_numeric_conversion(method.as_str(), args, &obj_op, &obj_ty)
         {
             return Ok(handled);
+        }
+        // An unsigned value is its own magnitude. stdlib/int.rk declares `abs`
+        // for every width, and the runtime's `abs` entries are signed ones, so
+        // `u32.abs()` reached codegen as a `u64_abs` nothing answered.
+        if method == "abs" && args.is_empty() && obj_ty.is_unsigned() {
+            return Ok((obj_op, obj_ty));
         }
 
         // Resolve the receiver's stdlib type prefix, then mangle to
@@ -6237,9 +6256,8 @@ impl<'a> MirLowerer<'a> {
             None
         };
         let ret_ty = if qualified_name == "Vec_get" {
-            // `.get()` returns T? (Option, none on OOB per V3). The call is
-            // renamed to Vec_get_opt below so codegen uses the NULL-encoding
-            // runtime + DerefOption adapter. The element (Option payload)
+            // `.get()` returns T? (Option, none on OOB per V3); `v[i]` is
+            // `Vec_index`, which panics instead. The element (Option payload)
             // type sizes the result slot, so it must be right even when the
             // Vec wasn't push-tracked in this function (e.g. returned from a
             // callee): take the checker's `T?` payload first, then tracking.
@@ -6542,9 +6560,6 @@ impl<'a> MirLowerer<'a> {
             let by_slot = Self::parse_variant_for_slot(&ret_ty)
                 .expect("checked just above");
             (by_slot.to_string(), all_args)
-        } else if qualified_name == "Vec_get" {
-            // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
-            ("Vec_get_opt".to_string(), all_args)
         } else if qualified_name == "Vec_join" {
             // `Vec_join` takes strings. Anything else is written the way it
             // prints, which the runtime can't tell from a width: a one-byte
@@ -9093,7 +9108,7 @@ impl<'a> MirLowerer<'a> {
     /// here, where the element type is known and `debug_render_value` is the
     /// same renderer a struct field goes through.
     ///
-    /// Elements are read with `Vec_get`, which hands back the address of the
+    /// Elements are read with `Vec_index`, which hands back the address of the
     /// element in place for anything that lives in its slot — nothing is copied
     /// out, so nothing needs releasing afterwards.
     fn debug_render_vec_loop(
@@ -9174,7 +9189,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![vec_op.clone(), MirOperand::Local(idx)],
         }));
         let rendered = self.debug_render_value(
@@ -9292,7 +9307,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(pairs), MirOperand::Local(idx)],
         }));
         let key_local = self.builder.alloc_temp(key_ty.clone());
@@ -9458,7 +9473,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(entries), MirOperand::Local(idx)],
         }));
 

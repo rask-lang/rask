@@ -17,12 +17,12 @@ extend os {
     public func env_or(name: string, default: string) -> string {}
 
     /// Set an environment variable.
-    @native
+    @native("rask_os_set_env")
     @ambient
     public func set_env(name: string, value: string) {}
 
     /// Remove an environment variable.
-    @native
+    @native("rask_os_remove_env")
     @ambient
     public func remove_env(name: string) {}
 
@@ -32,12 +32,12 @@ extend os {
     public func env_vars() -> Vec<(string, string)> {}
 
     /// Get command-line arguments.
-    @native
+    @native("rask_os_args")
     @ambient
     public func args() -> Vec<string> {}
 
     /// Exit the process with a status code.
-    @native
+    @native("rask_os_exit")
     @ambient
     public func exit(code: i64) {}
 
@@ -47,12 +47,12 @@ extend os {
     public func pid() -> i64 {}
 
     /// Get the operating system name.
-    @native
+    @native("rask_os_platform")
     @ambient
     public func platform() -> string {}
 
     /// Get the CPU architecture.
-    @native
+    @native("rask_os_arch")
     @ambient
     public func arch() -> string {}
 

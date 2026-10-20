@@ -34,7 +34,7 @@ impl Interpreter {
     pub(crate) fn stdlib_native_symbol(type_name: &str, method: &str) -> Option<String> {
         rask_stdlib::StubRegistry::load()
             .lookup_method(type_name, method)
-            .and_then(|m| m.native.clone())
+            .and_then(|m| m.native.as_ref().map(|n| n.symbol.clone()))
             .filter(|s| !s.is_empty())
     }
 }

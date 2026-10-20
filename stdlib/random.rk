@@ -26,7 +26,7 @@ extend random {
     public func bool() -> bool {}
 
     /// Generate a random integer in [low, high).
-    @native("rask_random_range")
+    @native("rask_random_range", panics: true)
     @ambient
     public func range(low: i64, high: i64) -> i64 {}
 }
@@ -66,14 +66,14 @@ extend Random {
     public func bool(mutate self) -> bool {}
 
     /// Generate a random integer in [low, high).
-    @native("rask_rng_range")
+    @native("rask_rng_range", panics: true)
     public func range(mutate self, low: i64, high: i64) -> i64 {}
 
     /// Shuffle a vector in place.
-    @native
-    public func shuffle(mutate self, vec: Vec<T>) {}
+    @native("rask_random_shuffle", panics: true)
+    public func shuffle<T>(mutate self, vec: Vec<T>) {}
 
     /// Pick a random element from a vector.
-    @native
-    public func choice(mutate self, vec: Vec<T>) -> Option<T> {}
+    @native("rask_random_choice")
+    public func choice<T>(mutate self, vec: Vec<T>) -> Option<T> {}
 }

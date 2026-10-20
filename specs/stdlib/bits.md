@@ -14,6 +14,8 @@ Methods on all integer types.
 |------|-------------|
 | **B1: Integer methods** | `count_ones`, `count_zeros`, `leading_zeros`, `trailing_zeros`, `leading_ones`, `trailing_ones`, `reverse_bits`, `rotate_left`, `rotate_right`, `swap_bytes` are methods on all integer types |
 
+`isize` and `usize` are `i64` and `u64` under another name, so their methods are those types' methods.
+
 <!-- surface -->
 ```rask
 extend i8 {
@@ -144,32 +146,6 @@ extend u128 {
     func swap_bytes(self) -> u128
     func rotate_left(self, n: u128) -> u128
     func rotate_right(self, n: u128) -> u128
-}
-
-extend isize {
-    func count_ones(self) -> isize
-    func count_zeros(self) -> isize
-    func leading_zeros(self) -> isize
-    func trailing_zeros(self) -> isize
-    func leading_ones(self) -> isize
-    func trailing_ones(self) -> isize
-    func reverse_bits(self) -> isize
-    func swap_bytes(self) -> isize
-    func rotate_left(self, n: isize) -> isize
-    func rotate_right(self, n: isize) -> isize
-}
-
-extend usize {
-    func count_ones(self) -> usize
-    func count_zeros(self) -> usize
-    func leading_zeros(self) -> usize
-    func trailing_zeros(self) -> usize
-    func leading_ones(self) -> usize
-    func trailing_ones(self) -> usize
-    func reverse_bits(self) -> usize
-    func swap_bytes(self) -> usize
-    func rotate_left(self, n: usize) -> usize
-    func rotate_right(self, n: usize) -> usize
 }
 ```
 
@@ -320,32 +296,6 @@ extend u128 {
     func from_be_bytes(bytes: [u8; 16]) -> u128
     func from_le_bytes(bytes: [u8; 16]) -> u128
     func from_ne_bytes(bytes: [u8; 16]) -> u128
-}
-
-extend isize {
-    func to_be(self) -> isize
-    func to_le(self) -> isize
-    func from_be(x: isize) -> isize
-    func from_le(x: isize) -> isize
-    func to_be_bytes(self) -> [u8; 8]
-    func to_le_bytes(self) -> [u8; 8]
-    func to_ne_bytes(self) -> [u8; 8]
-    func from_be_bytes(bytes: [u8; 8]) -> isize
-    func from_le_bytes(bytes: [u8; 8]) -> isize
-    func from_ne_bytes(bytes: [u8; 8]) -> isize
-}
-
-extend usize {
-    func to_be(self) -> usize
-    func to_le(self) -> usize
-    func from_be(x: usize) -> usize
-    func from_le(x: usize) -> usize
-    func to_be_bytes(self) -> [u8; 8]
-    func to_le_bytes(self) -> [u8; 8]
-    func to_ne_bytes(self) -> [u8; 8]
-    func from_be_bytes(bytes: [u8; 8]) -> usize
-    func from_le_bytes(bytes: [u8; 8]) -> usize
-    func from_ne_bytes(bytes: [u8; 8]) -> usize
 }
 ```
 

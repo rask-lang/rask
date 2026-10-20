@@ -405,6 +405,8 @@ impl Interpreter {
             "integer overflow: {} {} {} exceeds u128 range [0, 340282366920938463463374607431768211455]", a, op, b
         ));
         match method {
+            // An unsigned value is its own magnitude.
+            "abs" => Ok(Value::Uint128(a)),
             "add" => { let b = self.expect_uint128(args, 0)?; a.checked_add(b).map(Value::Uint128).ok_or_else(|| overflow("+", b)) }
             "sub" => { let b = self.expect_uint128(args, 0)?; a.checked_sub(b).map(Value::Uint128).ok_or_else(|| overflow("-", b)) }
             "mul" => { let b = self.expect_uint128(args, 0)?; a.checked_mul(b).map(Value::Uint128).ok_or_else(|| overflow("*", b)) }

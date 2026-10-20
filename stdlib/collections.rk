@@ -27,19 +27,19 @@ extend Vec<T> {
     public func is_empty(self) -> bool {}
 
     /// Maximum capacity, if bounded — `none` when the vector may grow freely.
-    @native
+    @native("rask_vec_bound")
     public func capacity(self) -> Option<usize> {}
 
     /// True if this vector has a capacity bound.
-    @native
+    @native("rask_vec_is_bounded")
     public func is_bounded(self) -> bool {}
 
     /// True if this vector is bounded and at its bound.
-    @native
+    @native("rask_vec_is_full")
     public func is_full(self) -> bool {}
 
     /// Room left before the bound — `none` when the vector is unbounded.
-    @native
+    @native("rask_vec_remaining")
     public func remaining(self) -> Option<usize> {}
 
     /// How many elements the allocation has room for — the same unit as
@@ -100,12 +100,12 @@ extend Vec<T> {
     public func clear(mutate self) {}
 
     /// Insert a value at the given index, shifting later elements right.
-    @native("rask_vec_insert_at")
+    @native("rask_vec_insert_at", panics: true)
     @grows
     public func insert(mutate self, index: i64, take value: T) {}
 
     /// Remove and return the element at the given index.
-    @native("rask_vec_remove_at")
+    @native("rask_vec_remove_at", panics: true)
     @shrinks
     public func remove(mutate self, index: i64) -> T {}
 
@@ -126,7 +126,7 @@ extend Vec<T> {
 
     /// Reserve space for at least `additional` more elements. Panics on OOM,
     /// and on a request past a bounded vector's bound.
-    @native("rask_vec_reserve")
+    @native("rask_vec_reserve", panics: true)
     @grows
     public func reserve(mutate self, additional: usize) {}
 
@@ -147,7 +147,7 @@ extend Vec<T> {
     }
 
     /// Get element at index (borrows).
-    @native("rask_vec_get")
+    @native("rask_vec_get_opt")
     public func get(self, index: i64) -> Option<T> {}
 
     /// Get the first element.
@@ -167,7 +167,7 @@ extend Vec<T> {
     public func modify(mutate self, index: i64, f: func(mutate T) -> R) -> Option<R> {}
 
     /// Swap elements at two indices.
-    @native("rask_vec_swap")
+    @native("rask_vec_swap", panics: true)
     public func swap(mutate self, i: i64, j: i64) {}
 
     /// Drain all elements into an iterator, leaving the vec empty.
@@ -333,7 +333,7 @@ extend Vec<T> {
     public func clone(self) -> Vec<T> {}
 
     /// Set element at index. Panics if out of bounds.
-    @native("rask_vec_set")
+    @native("rask_vec_set", panics: true)
     public func set(mutate self, index: i64, take value: T) {}
 
     /// Give back allocation past `to` elements — or past the current length,
@@ -522,7 +522,7 @@ extend Map<K, V> {
     public func new() -> Map<K, V> {}
 
     /// Create a map with pre-allocated capacity.
-    @native
+    @native("rask_map_new_cap")
     public func with_capacity(n: usize) -> Map<K, V> {}
 
     /// Number of entries.
@@ -534,7 +534,7 @@ extend Map<K, V> {
     public func is_empty(self) -> bool {}
 
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
-    @native("rask_map_insert")
+    @native("rask_map_insert_displaced")
     @grows
     public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
 

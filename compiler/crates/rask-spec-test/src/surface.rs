@@ -184,14 +184,23 @@ fn surface_blocks(markdown: &str) -> Vec<(usize, String)> {
 
 /// What a Rask source declares, numbering lines from 1.
 pub fn source_surface(source: &str) -> Result<Surface, String> {
+    stdlib_source_surface(source, |_| {})
+}
+
+/// The same, with `prepare` applied to the parsed declarations first. The
+/// stdlib's own loader rewrites some of what's written (one `extend Integer`
+/// block becomes one block per width), and the gate has to read what the
+/// checker reads.
+pub fn stdlib_source_surface(source: &str, prepare: impl FnOnce(&mut Vec<Decl>)) -> Result<Surface, String> {
     let lex = rask_lexer::Lexer::new(source).tokenize();
     if let Some(e) = lex.errors.first() {
         return Err(format!("{:?}", e));
     }
-    let parsed = rask_parser::Parser::new(lex.tokens).parse();
+    let mut parsed = rask_parser::Parser::new(lex.tokens).parse();
     if let Some(e) = parsed.errors.first() {
         return Err(e.message.clone());
     }
+    prepare(&mut parsed.decls);
     let line_of = |offset: usize| 1 + source[..offset.min(source.len())].matches('\n').count();
     let mut surface = Surface::default();
     collect(&parsed.decls, &line_of, &mut surface);

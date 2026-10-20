@@ -111,7 +111,11 @@ fn stdlib_surface() -> StdlibSurface {
     let mut fns = HashMap::new();
     let mut types = HashMap::new();
     for (file, source, _) in rask_stdlib::stubs::stub_sources() {
-        let s = surface::source_surface(source).unwrap_or_else(|e| {
+        let s = surface::stdlib_source_surface(source, |decls| {
+            let mut next_id = u32::MAX / 2;
+            rask_stdlib::stubs::expand_width_families(decls, &mut next_id);
+        })
+        .unwrap_or_else(|e| {
             eprintln!("{}: stdlib/{} doesn't parse: {}", output::error_label(), file, e);
             process::exit(2);
         });

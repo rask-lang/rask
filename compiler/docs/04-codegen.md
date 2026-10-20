@@ -264,9 +264,14 @@ The environment is a stack-allocated block containing captured variables.
 
 ### Method dispatch (`dispatch.rs`)
 
-The codegen layer maintains a dispatch table mapping MIR method names to C
-runtime functions. For example, `Vec.push` maps to `rask_vec_push` in the C
-runtime.
+A stdlib method's call is built from its declaration: `@native("rask_vec_push")
+public func push(mutate self, take value: T)` in `stdlib/collections.rk` gives
+`Vec_push` its C symbol, the symbol's prototype in `rask_runtime.h` gives the
+registers, and the declared types say how arguments and the result cross (a `T`
+goes by address, a `string` comes back through an out-parameter, and so on).
+What the types can't say goes on the attribute (`panics: true`, `returns: …`).
+Names MIR mints for itself, and compiler types with no stdlib file, live in a
+small internal table next to it.
 
 
 ## Linking (`rask-cli/src/commands/link.rs`)

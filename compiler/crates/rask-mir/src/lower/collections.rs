@@ -826,7 +826,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_local_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
 

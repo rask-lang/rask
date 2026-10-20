@@ -777,7 +777,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(present_block);
         let elem = self.builder.alloc_temp(elem_ty.clone());
         // `modify` takes the element out and writes it back; `read` only looks.
-        let read = if method == "modify" { "Vec_lend" } else { "Vec_get" };
+        let read = if method == "modify" { "Vec_lend" } else { "Vec_index" };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
             func: FunctionRef::internal(read.to_string()),
@@ -1084,7 +1084,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_local),
-                func: FunctionRef::internal("Vec_get".to_string()),
+                func: FunctionRef::internal("Vec_index".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
@@ -2055,7 +2055,7 @@ impl<'a> MirLowerer<'a> {
         let other_elem = self.builder.alloc_temp(other_elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(other_elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(other_vec), MirOperand::Local(pair_idx)],
         }));
 
@@ -2302,7 +2302,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(vec_local), MirOperand::Local(ex_idx)],
         }));
         let (key_op, key_ty) = self.inline_closure_body(closure, MirOperand::Local(elem), elem_ty)?;

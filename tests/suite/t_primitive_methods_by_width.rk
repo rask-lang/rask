@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The integer, float, bool and char methods, at narrow and wide widths.
+//
+// These are declared in stdlib (int.rk, float.rk, char.rk) once for every
+// width, and the checker types each call from that declaration. The answers
+// have to come back at the receiver's own width on both backends.
+
+test "integer methods keep the receiver's width" {
+    let a: i32 = -7
+    let b: i32 = a.abs()
+    assert(b == 7)
+    let c: u8 = 0b1011_0000
+    let ones: u8 = c.count_ones()
+    assert(ones == 3)
+    let lz: u8 = c.leading_zeros()
+    assert(lz == 0)
+    let tz: u8 = c.trailing_zeros()
+    assert(tz == 4)
+    let r: u8 = c.rotate_left(1)
+    assert(r == 0b0110_0001)
+    let w: u8 = c.wrapping_add(0x60)
+    assert(w == 0x10)
+    let s: u8 = c.saturating_add(0xff)
+    assert(s == 255)
+    assert(c.checked_add(0x60) == none)
+    assert((c.checked_add(1) ?? 0) == 0b1011_0001)
+    let (o, wrapped) = c.overflowing_add(0x60)
+    assert(o == 0x10)
+    assert(wrapped)
+    let big: i64 = -9
+    assert(big.abs() == 9)
+    let f: f64 = big.to_float()
+    assert(f == -9.0)
+    let x: u16 = 0x1234
+    assert(x.swap_bytes() == 0x3412)
+    // An unsigned value is its own magnitude. Natively this was a call to a
+    // `u64_abs` no runtime entry answered.
+    let un: u32 = 5
+    assert(un.abs() == 5)
+    let wide: u128 = 7
+    assert(wide.abs() == 7)
+}
+
+test "128-bit integers" {
+    let n: i128 = -170141183460469231731687303715884105727
+    let m: i128 = n.abs()
+    assert(m == 170141183460469231731687303715884105727)
+    let u: u128 = 1
+    let top: u128 = u.rotate_right(1)
+    assert(top.leading_zeros() == 0)
+}
+
+test "float methods" {
+    let x: f64 = 2.5
+    assert(x.floor() == 2.0)
+    assert(x.ceil() == 3.0)
+    assert(x.trunc() == 2.0)
+    assert((x.fract() - 0.5).abs() < 1e-12)
+    assert(x.powi(2) == 6.25)
+    assert(x.powf(2.0) == 6.25)
+    assert((4.0).sqrt() == 2.0)
+    assert(!x.is_nan())
+    assert(x.is_finite())
+    let y: f32 = 2.0
+    let r: f32 = y.sqrt()
+    assert(r > 1.41421 && r < 1.41422)
+    assert(y.floor() == 2.0)
+}
+
+test "bool and char" {
+    let t = true
+    assert(t.to_string() == "true")
+    let c = 'a'
+    assert(c.is_alphabetic())
+    assert((char.from_u32(98) ?? 'z') == 'b')
+    assert(char.from_u32(0xD800) == none)
+}

@@ -425,6 +425,10 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // called `map_something`.
     ("Vec_debug", Internal::FreshFromReceiver),
 
+    // Two floats in total order, for `sort`, `min` and `max` over a float
+    // vector. Scalars in, an ordering out.
+    ("f64_compare", Internal::FreshFromReceiver),
+
     ("string_pad", Internal::FreshFromReceiver),
     ("string_concat", Internal::FreshFromReceiver),
     ("string_new", Internal::NoReceiver),
@@ -854,19 +858,18 @@ fn internal_spelling(base: &str) -> Option<Internal> {
         .iter()
         .find(|(n, _)| *n == base)
         .map(|(_, i)| *i)
-        .or_else(|| float_table_spelling(base))
+        .or_else(|| number_rendering_spelling(base))
 }
 
-/// A float method from `float_methods::FLOAT_METHODS`, or one of the
-/// renderings formatting lowers to (`{x}`, `{x:debug}`, `{x:e}`, `{x:.2}`). A
-/// float is a scalar, so there's nothing to borrow or keep, and a `to_string`
-/// hands back a fresh string. Read off the table rather than listed here, so
-/// a method added there is accounted for without a second line.
-fn float_table_spelling(base: &str) -> Option<Internal> {
+/// One of the renderings formatting lowers a number to (`{x}`, `{x:debug}`,
+/// `{x:x}`, `{x:e}`, `{x:.2}`). A number is a scalar, so there's nothing to
+/// borrow or keep, and each hands back a fresh string. The numbers' methods
+/// themselves are declared in stdlib/int.rk and float.rk and answer from there.
+fn number_rendering_spelling(base: &str) -> Option<Internal> {
     let (head, method) = base.split_once('_')?;
-    let known = matches!(head, "f32" | "f64")
-        && (crate::float_methods::lookup(method).is_some()
-            || matches!(method, "to_string" | "debug" | "to_exp" | "to_precision"));
+    let number = rask_ast::primitives::is_integer(head) || rask_ast::primitives::is_float(head);
+    let known = number
+        && matches!(method, "to_string" | "debug" | "to_base" | "to_exp" | "to_precision");
     known.then_some(Internal::FreshFromReceiver)
 }
 

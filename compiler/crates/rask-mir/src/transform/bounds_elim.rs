@@ -3,7 +3,7 @@
 //! Bounds check elimination pass (comp.advanced BE1-BE4).
 //!
 //! Uses interval analysis to prove indices are in-bounds, then rewrites
-//! Vec_get/Vec_index → Vec_get_unchecked to skip runtime bounds checks.
+//! Vec_index → Vec_get_unchecked to skip runtime bounds checks.
 
 use crate::analysis::intervals;
 use crate::transform::pass::{MirPass, PassContext};
@@ -25,7 +25,7 @@ impl MirPass for BoundsCheckElimPass {
             return;
         };
 
-        // Collect rewrites: (block_id, stmt_idx) for in-bounds Vec_get calls
+        // Collect rewrites: (block_id, stmt_idx) for in-bounds Vec_index calls
         let mut rewrites = Vec::new();
 
         for op in &index_ops {
@@ -41,11 +41,11 @@ impl MirPass for BoundsCheckElimPass {
             }
         }
 
-        // Apply rewrites: Vec_get/Vec_index → Vec_get_unchecked
+        // Apply rewrites: Vec_index → Vec_get_unchecked
         for (block_id, stmt_idx) in rewrites {
             let block = func.blocks.iter_mut().find(|b| b.id == block_id).unwrap();
             if let MirStmtKind::Call { func: ref mut fref, .. } = block.statements[stmt_idx].kind {
-                if fref.name == "Vec_get" || fref.name == "Vec_index" {
+                if fref.name == "Vec_index" {
                     fref.name = "Vec_get_unchecked".into();
                 }
             }

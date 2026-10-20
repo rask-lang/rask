@@ -207,7 +207,7 @@ extend string {
     public func bytes(self) -> Iterator<u8> {}
 
     /// Iterate over (byte_index, char) pairs.
-    @native
+    @native("rask_string_char_indices")
     public func char_indices(self) -> Iterator<(usize, char)> {}
 
     /// Split by separator.

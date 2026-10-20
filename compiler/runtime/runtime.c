@@ -1556,12 +1556,6 @@ int64_t rask_map_from(int64_t pairs_ptr) {
     return (int64_t)(uintptr_t)rask_map_new(8, 8, NULL, 0, NULL, 0);
 }
 
-// Stub: generic json.encode — returns JSON string representation.
-void rask_json_encode(RaskStr *out, int64_t value_ptr) {
-    (void)value_ptr;
-    rask_string_from_bytes(out, "{}", 2);
-}
-
 // ─── JSON module ──────────────────────────────────────────────────
 
 // Growable JSON buffer

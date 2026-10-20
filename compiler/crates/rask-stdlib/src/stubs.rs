@@ -119,7 +119,75 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
     let mut decls = parser.parse().decls;
     *next_id = parser.next_node_id();
     qualify_private_helpers(&mut decls, filename.trim_end_matches(".rk"));
+    expand_width_families(&mut decls, next_id);
     Some(decls)
+}
+
+/// The primitive types a family block in the stdlib (`extend Integer`,
+/// `extend Float`) is written for.
+///
+/// Every integer width answers `count_ones`, each at its own width, and the
+/// same for the float methods. Spelling that out per width is ten copies of one
+/// block kept in step by hand; written against the family, it is one. The
+/// block is filed under each member with `Self` read as that member, so every
+/// reader of the stdlib — the checker, the registry, both backends — sees
+/// `extend i8 { … }` through `extend u128 { … }` and nothing family-shaped.
+///
+/// `isize` and `usize` aren't members: they are `i64` and `u64` under another
+/// name, not types with methods of their own.
+pub const WIDTH_FAMILIES: &[(&str, &[&str])] = &[
+    ("Integer", &["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"]),
+    // The integers that fit a register. The overflow hatches have no 128-bit
+    // forms yet, so stdlib/int.rk declares them here.
+    ("MachineInteger", &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]),
+    ("Float", &["f32", "f64"]),
+];
+
+/// Replace each block extending a family in `WIDTH_FAMILIES` with one block per
+/// member type.
+///
+/// Only declarations: a body would be shared node for node by every copy, and
+/// every pass keys what it learns about an expression by its node.
+pub fn expand_width_families(decls: &mut Vec<Decl>, next_id: &mut u32) {
+    let mut out = Vec::with_capacity(decls.len());
+    for decl in decls.drain(..) {
+        let family = match &decl.kind {
+            DeclKind::Impl(i) if i.interface.is_none() => i
+                .target_ty
+                .bare_name()
+                .and_then(|n| WIDTH_FAMILIES.iter().find(|(f, _)| *f == n)),
+            _ => None,
+        };
+        let (Some((family, members)), DeclKind::Impl(block)) = (family, &decl.kind) else {
+            out.push(decl);
+            continue;
+        };
+        if let Some(m) = block.methods.iter().find(|m| !m.body.is_empty()) {
+            panic!(
+                "`extend {family}` in the stdlib declares `{}` with a body. A block \
+                 written for every width is copied once per width, and a body's \
+                 nodes can't be shared — give the method a marker instead \
+                 (`@builtin` or `@native`)",
+                m.name
+            );
+        }
+        for member in members.iter() {
+            let member_ty = TypeExpr::named(member.to_string());
+            let as_member = |t: &TypeExpr| t.substitute(&|n| (n == "Self").then(|| member_ty.clone()));
+            let mut copy = block.clone();
+            copy.target_ty = member_ty.clone();
+            for m in &mut copy.methods {
+                for p in &mut m.params {
+                    p.ty = p.ty.as_ref().map(as_member);
+                }
+                m.ret_ty = m.ret_ty.as_ref().map(as_member);
+            }
+            let id = rask_ast::NodeId(*next_id);
+            *next_id += 1;
+            out.push(Decl { id, kind: DeclKind::Impl(copy), span: decl.span });
+        }
+    }
+    *decls = out;
 }
 
 /// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there;
@@ -195,6 +263,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("math.rk", include_str!("../../../../stdlib/math.rk")),
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("float.rk", include_str!("../../../../stdlib/float.rk")),
+    ("int.rk", include_str!("../../../../stdlib/int.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
@@ -271,9 +340,14 @@ pub struct MethodStub {
     /// could a test — which is how `f64.floor()` shipped working on the
     /// interpreter and missing from codegen (#687).
     ///
-    /// `Some(symbol)` names the implementation; `Some("")` means `@native` with
-    /// no symbol given, for the ones resolved by another route.
-    pub native: Option<std::string::String>,
+    /// `Some` with a symbol names the C entry point, and native codegen builds
+    /// its call from this declaration (`rask_codegen::dispatch`). An empty
+    /// symbol means `@native` alone, for the ones lowered by another route.
+    pub native: Option<NativeDecl>,
+    /// The type parameters in scope: the extended type's (`T` of `extend
+    /// Vec<T>`) and the method's own. A parameter or return of one of these
+    /// is a value of a width only the call site knows.
+    pub type_params: Vec<String>,
     /// The stub has a Rask body — the implementation is right here, and both
     /// backends run it. The registry couldn't answer this before, which meant
     /// nothing could distinguish "written in Rask" from "declared only".
@@ -281,6 +355,8 @@ pub struct MethodStub {
     /// Declared `comptime func` — evaluated by the comptime engine, so the
     /// keyword already says where the body lives.
     pub is_comptime: bool,
+    /// Declared `unsafe func`: the call has to be written inside `unsafe`.
+    pub is_unsafe: bool,
     /// Interface bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
     /// checker builds module signatures from these stubs, and without the bound
@@ -305,6 +381,68 @@ pub struct TypeStub {
     pub source_file: String,
     /// Byte offset span of the type name within the stub source.
     pub span: Span,
+}
+
+/// What a `@native(...)` attribute says about the C entry point behind it.
+///
+/// Native codegen calls the symbol with an argument and return convention it
+/// reads off the declaration's types. These are the facts the types can't
+/// carry, written as labelled arguments:
+///
+/// - `panics: true` — the C function can panic, so the call records its site
+///   first and the report names the program's line.
+/// - `returns: …` — how the C side hands back a result whose type alone
+///   doesn't say (see `NativeReturn`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeDecl {
+    /// Empty for `@native` with no symbol.
+    pub symbol: String,
+    pub panics: bool,
+    pub returns: Option<NativeReturn>,
+}
+
+/// How a C entry point reports what a declaration's return type can't spell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeReturn {
+    /// The address of a value the C side keeps holding, not a fresh one:
+    /// `Args.program()` answers the string inside the parsed arguments.
+    Pointer,
+    /// A negative return is the failure: `void or E`'s error, with nothing
+    /// to carry.
+    Negative,
+    /// 0 for success, or a `RASK_CHAN_*` code the error enum has a variant for.
+    Status,
+    /// The C side can't fail and returns nothing; the `void or E` is always
+    /// its success.
+    Nothing,
+}
+
+impl NativeDecl {
+    /// Read `@native`, `@native("sym")` or `@native("sym", label: value, …)`.
+    ///
+    /// The stdlib is the only writer, so a label or value this doesn't know is
+    /// a typo in `stdlib/*.rk` and fails loudly rather than being dropped.
+    fn from_attr(a: &rask_ast::attr::Attr, owner: &str) -> NativeDecl {
+        let mut out = NativeDecl {
+            symbol: a.positional().and_then(|v| v.string()).unwrap_or_default(),
+            ..NativeDecl::default()
+        };
+        for (label, value) in a.labelled() {
+            match (label, value.literal(), value.ident()) {
+                ("panics", Some(rask_ast::expr::Literal::Bool(b)), _) => out.panics = b,
+                ("returns", _, Some("pointer")) => out.returns = Some(NativeReturn::Pointer),
+                ("returns", _, Some("negative")) => out.returns = Some(NativeReturn::Negative),
+                ("returns", _, Some("status")) => out.returns = Some(NativeReturn::Status),
+                ("returns", _, Some("nothing")) => out.returns = Some(NativeReturn::Nothing),
+                _ => panic!(
+                    "`@{a}` on `{owner}`: `{label}` isn't something `@native` takes. \
+                     It takes `panics: true` and `returns: pointer | negative | \
+                     status | nothing`"
+                ),
+            }
+        }
+        out
+    }
 }
 
 /// A stub parameter's declared mode.
@@ -759,6 +897,17 @@ fn fn_to_method_stub(
         })
         .collect();
     let own_type_params: Vec<bool> = params.iter().map(|(_, ty)| ty == own_ty).collect();
+    // The block's parameters are the bare names its header passes the type
+    // (`extend Vec<T>`), the way the resolver puts them in scope; a concrete
+    // argument (`extend Sequence<string>`) isn't one.
+    let type_params: Vec<String> = own_ty
+        .args()
+        .iter()
+        .filter_map(TypeExpr::bare_name)
+        .filter(|n| !rask_ast::primitives::is_builtin_scalar_or_string(n))
+        .map(str::to_string)
+        .chain(f.type_params.iter().map(|p| p.name.clone()))
+        .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
@@ -781,10 +930,10 @@ fn fn_to_method_stub(
         builtin: f.attrs.iter().any(|a| a.is("builtin")),
         has_body: !f.body.is_empty(),
         is_comptime: f.is_comptime,
-        // `@native` alone is the empty symbol; `@native("sym")` names one.
-        native: rask_ast::attr::find(&f.attrs, "native").map(|a| {
-            a.positional().and_then(|v| v.string()).unwrap_or_default()
-        }),
+        is_unsafe: f.is_unsafe,
+        native: rask_ast::attr::find(&f.attrs, "native")
+            .map(|a| NativeDecl::from_attr(a, &f.name)),
+        type_params,
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),

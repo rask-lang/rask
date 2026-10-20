@@ -231,9 +231,10 @@ Stdin implements Reader {
 
 extend Stdin {
     /// Read a single line from stdin.
-    @native("rask_io_read_line")
     @blocks
-    public func read_line(self) -> string or IoError {}
+    public func read_line(self) -> string or IoError {
+        return io.read_line()
+    }
 
     /// Close the handle.
     ///

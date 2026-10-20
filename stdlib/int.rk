@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// The integer widths' named methods.
+//
+// Written once for the family and filed under each of i8 … u128, with `Self`
+// as that width (`WIDTH_FAMILIES` in rask-stdlib). Every one is `@builtin`:
+// the compiler lowers the call to instructions, on both backends.
+//
+// The operators (`add`, `eq`, `compare`, …) and `hash` aren't here. Those are
+// the primitives' conformances to the interfaces in ops.rk and builtins, which
+// the compiler registers for every width (type.operator-resolution/OR2).
+
+extend Integer {
+    /// The magnitude. An unsigned value is its own.
+    @builtin
+    public func abs(self) -> Self {}
+
+    /// The value as an `f64`, rounded to the nearest one past 2^53.
+    @builtin
+    public func to_float(self) -> f64 {}
+
+    // ── Bits (std.bits/B1) ──────────────────────────────────────
+    // Counts answer at the receiver's width: a count can't exceed it.
+
+    @builtin
+    public func count_ones(self) -> Self {}
+
+    @builtin
+    public func count_zeros(self) -> Self {}
+
+    @builtin
+    public func leading_zeros(self) -> Self {}
+
+    @builtin
+    public func trailing_zeros(self) -> Self {}
+
+    @builtin
+    public func leading_ones(self) -> Self {}
+
+    @builtin
+    public func trailing_ones(self) -> Self {}
+
+    @builtin
+    public func reverse_bits(self) -> Self {}
+
+    @builtin
+    public func swap_bytes(self) -> Self {}
+
+    @builtin
+    public func rotate_left(self, n: Self) -> Self {}
+
+    @builtin
+    public func rotate_right(self, n: Self) -> Self {}
+
+    // ── Byte order (std.bits/B2, B3) ────────────────────────────
+
+    @builtin
+    public func to_be(self) -> Self {}
+
+    @builtin
+    public func to_le(self) -> Self {}
+
+}
+
+// The ways out of the checked default (type.integer-overflow/OV5, SH2). Each
+// takes the same two operands as the operator it shadows; only what happens on
+// overflow differs.
+//
+// Every width but the 128-bit pair: neither backend has these at 128 bits
+// yet, so the family is i8 … u64.
+extend MachineInteger {
+    @builtin
+    public func wrapping_add(self, other: Self) -> Self {}
+
+    @builtin
+    public func wrapping_sub(self, other: Self) -> Self {}
+
+    @builtin
+    public func wrapping_mul(self, other: Self) -> Self {}
+
+    @builtin
+    public func wrapping_shl(self, n: Self) -> Self {}
+
+    @builtin
+    public func wrapping_shr(self, n: Self) -> Self {}
+
+    @builtin
+    public func saturating_add(self, other: Self) -> Self {}
+
+    @builtin
+    public func saturating_sub(self, other: Self) -> Self {}
+
+    @builtin
+    public func saturating_mul(self, other: Self) -> Self {}
+
+    /// `none` when the answer doesn't fit.
+    @builtin
+    public func checked_add(self, other: Self) -> Self? {}
+
+    @builtin
+    public func checked_sub(self, other: Self) -> Self? {}
+
+    @builtin
+    public func checked_mul(self, other: Self) -> Self? {}
+
+    /// `none` on overflow and on division by zero.
+    @builtin
+    public func checked_div(self, other: Self) -> Self? {}
+
+    /// The wrapped answer, and whether it wrapped.
+    @builtin
+    public func overflowing_add(self, other: Self) -> (Self, bool) {}
+
+    @builtin
+    public func overflowing_sub(self, other: Self) -> (Self, bool) {}
+
+    @builtin
+    public func overflowing_mul(self, other: Self) -> (Self, bool) {}
+
+    /// No overflow check at all: undefined behaviour if it overflows
+    /// (type.overflow/UN1).
+    @builtin
+    public unsafe func unchecked_add(self, other: Self) -> Self {}
+
+    @builtin
+    public unsafe func unchecked_sub(self, other: Self) -> Self {}
+
+    @builtin
+    public unsafe func unchecked_mul(self, other: Self) -> Self {}
+}
