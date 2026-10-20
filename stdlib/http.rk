@@ -97,6 +97,13 @@ extend Headers {
     public func len(self) -> usize {
         return self.entries.len()
     }
+
+    /// Each header as `(name, value)`, names lowercased (H1), in no
+    /// particular order. A sequence a type hands out of a method of its own
+    /// (type.sequence/SEQ6): `for (name, value) in headers.iter()`.
+    public func iter(self) -> Sequence<(string, string)> {
+        return self.entries.as_sequence()
+    }
 }
 
 public struct Request {
@@ -249,27 +256,23 @@ extend Response {
 // ─── Errors ──────────────────────────────────────────────────────
 
 public enum HttpError {
-    InternalServerError(string)
     ConnectionFailed(string)
     Timeout
     InvalidUrl(string)
     InvalidResponse(string)
     TooManyRedirects
     Io(string)
-    NotFound
 }
 
 extend HttpError {
     public func message(self) -> string {
         match self {
-            HttpError.InternalServerError(msg) => return "internal server error: {msg}"
             HttpError.ConnectionFailed(msg) => return "connection failed: {msg}"
             HttpError.Timeout => return "request timed out"
             HttpError.InvalidUrl(msg) => return "invalid URL: {msg}"
             HttpError.InvalidResponse(msg) => return "invalid response: {msg}"
             HttpError.TooManyRedirects => return "too many redirects"
             HttpError.Io(msg) => return "I/O error: {msg}"
-            HttpError.NotFound => return "not found"
         }
     }
 }
