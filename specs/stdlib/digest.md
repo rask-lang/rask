@@ -17,9 +17,9 @@ module name keeps them apart: `digest.sha256(bytes)` reads as the noun it is.
 <!-- surface -->
 ```rask
 extend digest {
-    func sha256(data: Vec<u8>) -> [32]u8
-    func sha1(data: Vec<u8>) -> [20]u8
-    func md5(data: Vec<u8>) -> [16]u8
+    func sha256(data: Vec<u8>) -> [u8; 32]
+    func sha1(data: Vec<u8>) -> [u8; 20]
+    func md5(data: Vec<u8>) -> [u8; 16]
     func crc32(data: Vec<u8>) -> u32
 }
 ```
@@ -27,11 +27,13 @@ extend digest {
 <!-- test: skip -->
 ```rask
 let sum = digest.sha256(contents)
-println(hex.encode(sum))         // "e3b0c44298fc1c149afb..."
+println(hex.encode(sum.to_vec()))    // "e3b0c44298fc1c149afb..."
 ```
 
 Digests are byte arrays. Rendering is `hex.encode` or `base64.encode` — there's no
-`sha256_hex` sibling, because the two modules compose (`std.api/SD2`).
+`sha256_hex` sibling, because the two modules compose (`std.api/SD2`). Those take a
+`Vec<u8>` and there's no slice type to take both, so the array goes through
+`.to_vec()` on the way.
 
 ## Incremental
 
@@ -40,8 +42,14 @@ For data you don't have all at once — a file you're streaming, a socket:
 <!-- test: skip -->
 ```rask
 mut d = digest.Sha256.new()
-for chunk in file.chunks(64 * 1024) {
-    d.update(try chunk)
+let zeros: [u8; 65536] = [0; 65536]
+mut buf = zeros.to_vec()
+loop {
+    let n = try reader.read(mutate buf)
+    if n == 0 {
+        break
+    }
+    d.update(buf.take(n).to_vec())
 }
 let sum = d.build()
 ```
@@ -59,22 +67,22 @@ struct Crc32 { }
 
 extend Sha256 {
     func new() -> Sha256
-    func update(mutate self, chunk: Vec<u8>)
-    func build(take self) -> [32]u8
+    func update(mutate self, chunk: Vec<u8>) -> void
+    func build(take self) -> [u8; 32]
 }
 extend Sha1 {
     func new() -> Sha1
-    func update(mutate self, chunk: Vec<u8>)
-    func build(take self) -> [20]u8
+    func update(mutate self, chunk: Vec<u8>) -> void
+    func build(take self) -> [u8; 20]
 }
 extend Md5 {
     func new() -> Md5
-    func update(mutate self, chunk: Vec<u8>)
-    func build(take self) -> [16]u8
+    func update(mutate self, chunk: Vec<u8>) -> void
+    func build(take self) -> [u8; 16]
 }
 extend Crc32 {
     func new() -> Crc32
-    func update(mutate self, chunk: Vec<u8>)
+    func update(mutate self, chunk: Vec<u8>) -> void
     func build(take self) -> u32
 }
 ```
@@ -83,7 +91,7 @@ extend Crc32 {
 
 | Rule | Description |
 |------|-------------|
-| **D1: Fixed-size output** | Digests are `[N]u8` arrays, not `Vec<u8>` — the size is known and the value is `Copy`. Compare them with `==` |
+| **D1: Fixed-size output** | Digests are `[u8; N]` arrays, not `Vec<u8>`: the size is in the type and there's no heap allocation. Compare them with `==`, key a `Map` with them. MD5's 16 bytes are `Copy`; SHA-1's 20 and SHA-256's 32 are over the threshold and move |
 | **D2: One-shot and incremental agree** | `digest.sha256(data)` and a `Sha256` fed the same bytes in any chunking give the same result. The one-shot is the builder with the loop written for you |
 | **D3: Not a MAC** | These are unkeyed. Authenticating a message needs HMAC, and appending a secret to a digest is the classic length-extension mistake. HMAC and signatures are a `crypto` package |
 | **D4: MD5 and SHA-1 are for reading old formats** | They exist because Git objects, legacy checksums and existing file formats use them. They are broken for anything adversarial and the docs say so at the function |
@@ -120,7 +128,7 @@ FIX: Use sha256 unless an existing format requires MD5:
 | Empty input | D2 | The well-known empty digest, not an error |
 | `update` with an empty chunk | D2 | No-op |
 | `build()` called twice | — | `build()` consumes the builder (`take self`), so it can't be |
-| Digest of a `string` | D1 | Pass `s.as_bytes()`. Hashing text means hashing an encoding, and being explicit about which is the point |
+| Digest of a `string` | D1 | Pass `s.bytes().to_vec()`. Hashing text means hashing an encoding, and being explicit about which is the point |
 | Comparing digests for equality | D1 | `==` on the arrays. Constant-time comparison is a `crypto` concern |
 
 ---
