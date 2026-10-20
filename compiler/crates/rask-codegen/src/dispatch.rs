@@ -1165,6 +1165,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("os_pid", "rask_os_pid", &[], Some(types::I64), false),
+        StdlibEntry::simple("terminal_is_tty", "rask_terminal_is_tty", &[], Some(types::I8), false),
+        StdlibEntry::simple("terminal_size", "rask_terminal_size", &[], Some(types::I64), false),
         StdlibEntry::simple("os_signal_forward", "rask_os_signal_forward", &[types::I64, types::I64], Some(types::I64), false),
         // struct.targets/EX3 + ctrl.panic/P5: immediate exit, no unwind, no
         // ensures. Declared `@native` in stdlib/os.rk with no entry here, so

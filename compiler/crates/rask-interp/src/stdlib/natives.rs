@@ -23,6 +23,9 @@ impl Interpreter {
             "rask_sim_enable_faults" => Some(Ok(Value::Bool(false))),
             #[cfg(not(target_arch = "wasm32"))]
             "rask_io_read_line" => Some(self.io_read_line()),
+            // stdlib/terminal.rk: the same two questions runtime/args.c answers.
+            "rask_terminal_is_tty" => Some(Ok(Value::Bool(stdout_is_tty()))),
+            "rask_terminal_size" => Some(Ok(Value::Int(stdout_size(), crate::value::IntKind::I64))),
             #[cfg(not(target_arch = "wasm32"))]
             _ => self.call_net_native(symbol, _args),
             #[cfg(target_arch = "wasm32")]
@@ -37,4 +40,28 @@ impl Interpreter {
             .and_then(|m| m.native.clone())
             .filter(|s| !s.is_empty())
     }
+}
+
+fn stdout_is_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal()
+}
+
+/// Columns << 16 | rows, or -1 when stdout isn't a terminal or reports 0x0.
+#[cfg(unix)]
+fn stdout_size() -> i64 {
+    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: TIOCGWINSZ writes one `winsize` through the pointer and nothing else.
+    if unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } != 0 {
+        return -1;
+    }
+    if ws.ws_col == 0 || ws.ws_row == 0 {
+        return -1;
+    }
+    ((ws.ws_col as i64) << 16) | ws.ws_row as i64
+}
+
+#[cfg(not(unix))]
+fn stdout_size() -> i64 {
+    -1
 }

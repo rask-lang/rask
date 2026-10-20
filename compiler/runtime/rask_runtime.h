@@ -1454,6 +1454,10 @@ void    rask_os_platform(RaskStr *out);
 void    rask_os_arch(RaskStr *out);
 RaskVec *rask_os_env_vars(void);
 
+// std.terminal: the two questions about stdout that need the OS.
+int8_t  rask_terminal_is_tty(void);
+int64_t rask_terminal_size(void);
+
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
