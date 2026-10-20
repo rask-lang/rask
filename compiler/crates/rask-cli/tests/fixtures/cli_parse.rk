@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.cli against the process's real arguments: `cli.parse()` and
+// `Parser.parse()` read `os.args()`, and `--help`/`--version` exit, so none of
+// it can run inside a test block. The suite's t_cli_quick.rk and
+// t_cli_builder.rk cover the parsing itself through `parse_from`.
+import cli
+
+func main() -> void or cli.CliError {
+    mut quick = cli.parse()
+    let name = quick.option("name", "n") ?? "nobody"
+    println("quick: verbose={quick.flag("verbose", "v")} name={name} rest={quick.positional().len()}")
+
+    let p = cli.Parser.new("demo")
+        .version("2.1")
+        .description("Shows what it was given")
+        .flag("verbose", "v", "Talk more")
+        .option("name", "n", "Who to greet")
+        .positional("file", "Input")
+    mut args = try p.parse()
+    println("builder: name={args.option("name", "") ?? "nobody"} file={args.positional()[0]}")
+}

@@ -1008,7 +1008,13 @@ impl<'a> Monomorphizer<'a> {
             one => vec![one.clone()],
         };
         for arm in arms {
-            let name = format!("{}_message", arm);
+            // A module-qualified error, `cli.CliError`, has its methods under
+            // the type's own name: the module is how the program reached it.
+            let qualified = matches!(&arm, TypeExpr::Named { path, args } if path.len() > 1 && args.is_empty());
+            let name = match arm.last_segment() {
+                Some(last) if qualified => format!("{last}_message"),
+                _ => format!("{}_message", arm),
+            };
             if self.method_table.contains_key(&name) {
                 self.enqueue(name, Vec::new());
             }
