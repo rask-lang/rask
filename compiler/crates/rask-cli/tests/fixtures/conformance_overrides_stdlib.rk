@@ -14,13 +14,13 @@ import http.Method
 import json.JsonValue
 
 Method implements Displayable {
-    public func to_string(self) -> string {
+    public func display(self) -> string {
         return "method"
     }
 }
 
 JsonValue implements Displayable {
-    public func to_string(self) -> string {
+    public func display(self) -> string {
         return "json"
     }
 }

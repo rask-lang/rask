@@ -1152,7 +1152,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     ty
                 ))
                 .with_code("E0826")
-                .with_primary(*span, format!("`{}` has no `to_string()`", ty))
+                .with_primary(*span, format!("`{}` has no `display()`", ty))
                 .with_why(format!(
                     "{} renders this value through `Displayable`. Structs and enums opt in, \
                      so the compiler never invents output that looks intentional but isn't \
@@ -1182,7 +1182,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         );
                 } else {
                     diag = diag.with_fix(format!(
-                        "give it one: `{} implements Displayable {{ func to_string(self) -> string {{ … }} }}`",
+                        "give it one: `{} implements Displayable {{ func display(self) -> string {{ … }} }}`",
                         ty
                     ))
                     .with_note(format!(
@@ -1193,6 +1193,18 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
                 diag
             }
+            RenderNotConvert { ty, span } => Diagnostic::error(format!(
+                "`{}` has no `to_string` — render it with `display()`",
+                ty
+            ))
+            .with_code("E0921")
+            .with_primary(*span, "`to_string()` converts text, and this isn't text")
+            .with_why(
+                "rendering is not conversion: `display()` turns a value into something a person \
+                 reads, `to_string()` turns something that already is text — a char, a slice, a \
+                 `StringView`, a `Span` — into a `string` [std.fmt/D1]",
+            )
+            .with_fix("value.display()   // or interpolate it: \"{value}\""),
             UnboundedTypeParamMethod { param, method, bounds, span } => {
                 let bound_list = if bounds.is_empty() {
                     format!("`{}` has no bounds", param)

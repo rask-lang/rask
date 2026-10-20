@@ -60,7 +60,7 @@ extend Number {
         return self.raw <= other.raw
     }
 
-    func to_string(self) -> string {
+    func display(self) -> string {
         let int_part = self.raw >> FRAC_BITS
         let frac_raw = if self.raw < 0 {
             -self.raw & 0xFFFFFFFF

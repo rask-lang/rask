@@ -951,6 +951,16 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// #1033: `to_string()` converts text; a value that only renders gets E0921,
+/// once per call, and the text conversions on the same lines still check.
+#[test]
+fn to_string_on_a_renderer_is_e0921() {
+    let (failed, out) = compile_error_output("to_string_renders.rk");
+    assert!(failed, "to_string on a number, a bool and a struct must not compile: {out}");
+    assert_eq!(out.matches("E0921").count(), 3, "one error per call: {out}");
+    assert!(out.contains("display()"), "the fix names display(): {out}");
+}
+
 /// #1537: a field default is a compile-time constant (type.structs/FD1). One
 /// that reaches I/O, declared or `@default`, is rejected where it's written,
 /// named by its field rather than by the method desugar wrote for it.
@@ -3548,7 +3558,7 @@ fn check_succeeds(source: &str) -> bool {
 #[test]
 fn discover_vec_push_len() {
     assert!(check_succeeds(
-        "func main() {\n    mut v = Vec<i32>.new()\n    v.push(1)\n    println(v.len().to_string())\n}"
+        "func main() {\n    mut v = Vec<i32>.new()\n    v.push(1)\n    println(v.len().display())\n}"
     ), "Vec.new/push/len should pass type check");
 }
 
@@ -3562,7 +3572,7 @@ fn discover_vec_pop() {
 #[test]
 fn discover_string_len_contains() {
     assert!(check_succeeds(
-        "func main() {\n    let s = \"hello\"\n    println(s.len().to_string())\n    s.contains(\"ell\")\n}"
+        "func main() {\n    let s = \"hello\"\n    println(s.len().display())\n    s.contains(\"ell\")\n}"
     ), "string.len/contains should pass type check");
 }
 
@@ -3577,7 +3587,7 @@ fn discover_string_trim() {
 #[test]
 fn discover_map_insert_len() {
     assert!(check_succeeds(
-        "func main() {\n    mut m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    println(m.len().to_string())\n}"
+        "func main() {\n    mut m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    println(m.len().display())\n}"
     ), "Map.new/insert/len should pass type check");
 }
 
@@ -3596,10 +3606,23 @@ fn discover_println_print() {
 }
 
 #[test]
-fn discover_to_string() {
+fn discover_display() {
     assert!(check_succeeds(
+        "func main() {\n    let s = 42.display()\n    println(s)\n}"
+    ), "i32.display should pass type check");
+}
+
+/// std.fmt/D1: a number renders, it doesn't convert — `to_string` is for
+/// what already holds text, and on a number it's E0921 pointing at
+/// `display()`.
+#[test]
+fn to_string_on_a_number_points_at_display() {
+    assert!(!check_succeeds(
         "func main() {\n    let s = 42.to_string()\n    println(s)\n}"
-    ), "i32.to_string should pass type check");
+    ), "i32.to_string should be rejected");
+    assert!(check_succeeds(
+        "func main() {\n    let c = 'x'\n    println(c.to_string())\n    println(\"ab\"[0..1].to_string())\n}"
+    ), "char and slice to_string are conversions");
 }
 
 // ─── C import tests (CI1–CI5) ──────────────────────────────

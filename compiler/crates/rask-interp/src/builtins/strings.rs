@@ -66,7 +66,7 @@ impl Interpreter {
                 let h = crate::builtins::fnv1a(guard.as_bytes());
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
-            "to_string" => Ok(Value::String(Arc::clone(s))),
+            "to_string" | "display" => Ok(Value::String(Arc::clone(s))),
             "debug" => {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))

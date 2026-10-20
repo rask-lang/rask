@@ -407,6 +407,11 @@ extend StringView {
     @native("rask_string_unshare")
     public func to_string(self) -> string {}
 
+    /// Render the view's text (Displayable, std.strings). The same copy as
+    /// `to_string`: a view is text, so rendering it is converting it.
+    @native("rask_string_unshare")
+    public func display(self) -> string {}
+
     /// Sub-view. Same as slicing then .view() — references the original buffer.
     @native("rask_string_clone")
     public func view(self) -> StringView {}

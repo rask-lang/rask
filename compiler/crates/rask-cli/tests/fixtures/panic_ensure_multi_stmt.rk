@@ -5,7 +5,7 @@
 struct Ledger9 { total: i32 }
 extend Ledger9 {
     func show(self) {
-        println(self.total.to_string())
+        println(self.total.display())
     }
 }
 func main() {

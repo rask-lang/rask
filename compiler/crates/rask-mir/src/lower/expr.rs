@@ -9904,7 +9904,7 @@ impl<'a> MirLowerer<'a> {
                     Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
                     None => {
                         let (op, _) = self
-                            .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
+                            .try_lower_to_string(object, &"display".to_string(), &[], obj_op, obj_ty)?
                             .unwrap_or_else(|| (obj_op.clone(), MirType::String));
                         op
                     }
@@ -9930,8 +9930,9 @@ impl<'a> MirLowerer<'a> {
         Ok(Some((padded, MirType::String)))
     }
 
-    /// `.to_string()` on a primitive → type-specific runtime call. Types with
-    /// their own to_string fall through to normal dispatch.
+    /// `.display()` on a primitive, or `.to_string()` on a char or string →
+    /// type-specific runtime call. Types with their own method fall through
+    /// to normal dispatch.
     fn try_lower_to_string(
         &mut self,
         object: &Expr,
@@ -9943,18 +9944,18 @@ impl<'a> MirLowerer<'a> {
         // to_string(): route to type-specific runtime function.
         // Types with their own to_string in stdlib dispatch (Path, etc.)
         // fall through to normal method dispatch.
-        if method == "to_string" && args.is_empty() {
-            // Check if the type checker knows this is a type with its own to_string
+        if (method == "display" || method == "to_string") && args.is_empty() {
+            // Check if the type checker knows this is a type with its own method
             let has_own_to_string = self.ctx.lookup_raw_type(object.id)
                 .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
                 .map(|prefix| {
-                    let qualified = format!("{}_to_string", prefix);
+                    let qualified = format!("{}_{}", prefix, method);
                     rask_stdlib::mir_metadata::lookup(&qualified).is_some()
                 })
                 .unwrap_or(false);
 
             // A struct or enum receiver has a layout name to dispatch on, so
-            // its own `to_string` wins — including a user `Displayable` impl,
+            // its own `display` wins — including a user `Displayable` impl,
             // which the stdlib stub check above can't see. Without this the
             // catch-all below reached `i64_to_string` and printed the
             // receiver's address as a decimal number (#471).

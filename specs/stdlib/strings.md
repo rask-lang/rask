@@ -859,7 +859,7 @@ extend HtmlTag: Renderable {
 builder.push("tag {value}")
 // ≈
 builder.push("tag ")
-builder.push(value.to_string())
+builder.push(value.display())
 ```
 
 ### Patterns & Guidance

@@ -2,5 +2,5 @@
 func main() {
     mut m = Map.new()
     m.insert("a", 1)
-    println(m["zz"].to_string())
+    println(m["zz"].display())
 }

@@ -2785,12 +2785,15 @@ impl ComptimeInterpreter {
             // A string's own `to_string` is the identity. Without it a
             // `const GREETING = comptime { … "{name}".to_string() }` fell out
             // of folding and ran at runtime (#1072).
-            "to_string" if matches!(obj, ComptimeValue::String(_)) => Ok(obj.clone()),
+            "to_string" | "display" if matches!(obj, ComptimeValue::String(_)) => Ok(obj.clone()),
             // Every other scalar renders the way `Display` does, which is what
             // an interpolation asks for. Without it a comptime string with a
             // number in it — `"banner {n}"` — fell out of folding on the
             // rendering rather than on anything it was doing.
-            "to_string" if args.is_empty() => Ok(ComptimeValue::String(obj.to_display_string())),
+            "display" if args.is_empty() => Ok(ComptimeValue::String(obj.to_display_string())),
+            "to_string" if args.is_empty() && matches!(obj, ComptimeValue::Char(_)) => {
+                Ok(ComptimeValue::String(obj.to_display_string()))
+            }
             // The string methods that are a pure function of their input, so a
             // fold and a run give the same answer. Each one is the same Rust
             // std call the interpreter makes — the interpreter is the

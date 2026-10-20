@@ -5,4 +5,4 @@
 // and sometimes not is one nobody can reason about (#1552).
 const D: i64 = comptime { todo("write the table") }
 
-func main() { println(D.to_string()) }
+func main() { println(D.display()) }

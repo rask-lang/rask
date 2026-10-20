@@ -27,7 +27,7 @@ import time.Duration
 /// What the echo server answers: method, url, body, and one header.
 func describe(req: Request) -> string {
     let tag = req.headers.get("X-Test") ?? "-"
-    return "{req.method.to_string()} {req.url} [{req.body}] x={tag}"
+    return "{req.method.display()} {req.url} [{req.body}] x={tag}"
 }
 
 func reply(req: Request) -> Response {

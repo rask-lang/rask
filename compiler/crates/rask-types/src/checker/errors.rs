@@ -155,6 +155,12 @@ pub enum TypeError {
         interpolated: bool,
         span: Span,
     },
+    /// std.fmt/D1: `to_string()` on a value that renders but holds no text.
+    #[error("`{ty}` has no `to_string` — render it with `display()`")]
+    RenderNotConvert {
+        ty: String,
+        span: Span,
+    },
     /// #314: method called on a type param whose bounds don't provide it.
     #[error("no method '{method}' provided by the bounds on `{param}`")]
     UnboundedTypeParamMethod {
@@ -1687,6 +1693,7 @@ impl TypeError {
             | NoSuchModuleFunction { .. }
             | PrivateModuleFunction { .. }
             | NotDisplayable { .. }
+            | RenderNotConvert { .. }
             | UnboundedTypeParamMethod { .. }
             | CannotInfer { .. }
             | InvalidTypeString(..)

@@ -28,19 +28,19 @@ func main() {
     println("is_inf {x.is_inf()}")
     println("is_finite {x.is_finite()}")
     println("to_int {x.to_int()}")
-    println("to_string {x.to_string()}")
+    println("to_string {x.display()}")
     println("rem {(7.5) % (2.0)}")
 
     let n = -42
     println("int abs {n.abs()}")
     println("int computed abs {(0 - 7).abs()}")
     println("int to_float {n.to_float()}")
-    println("int to_string {n.to_string()}")
+    println("int to_string {n.display()}")
 
     let c = 'q'
     println("char upper {c.to_uppercase()}")
     println("char is_alpha {c.is_alphabetic()}")
     println("char len_utf8 {c.len_utf8()}")
 
-    println("bool {(1 < 2).to_string()}")
+    println("bool {(1 < 2).display()}")
 }

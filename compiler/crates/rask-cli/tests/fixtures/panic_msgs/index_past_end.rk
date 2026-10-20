@@ -2,5 +2,5 @@
 func main() {
     mut v = Vec.new()
     v.push(1)
-    println(v[5].to_string())
+    println(v[5].display())
 }

@@ -3,5 +3,5 @@ func lookup(k: i64) -> i64? {
     return none
 }
 func main() {
-    println(lookup(1)!.to_string())
+    println(lookup(1)!.display())
 }

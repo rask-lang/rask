@@ -54,12 +54,12 @@ extend Method {
 }
 
 // std.fmt/D3: an enum opts into Displayable by declaring the conformance — a
-// bare `extend` with a `to_string` in it doesn't count. Without this header
-// `format_http_request` couldn't call `req.method.to_string()`, so `rask check
+// bare `extend` with a `display` in it doesn't count. Without this header
+// `format_http_request` couldn't call `req.method.display()`, so `rask check
 // stdlib/fmt.rk` failed on a stdlib file.
 Method implements Displayable {
-    // Serialize to the standard HTTP method string.
-    public func to_string(self) -> string {
+    // The standard HTTP method string.
+    public func display(self) -> string {
         match self {
             Method.Get => return "GET"
             Method.Head => return "HEAD"
@@ -405,7 +405,7 @@ func format_http_response(resp: Response) -> string {
 
     // Status line
     out.push("HTTP/1.1 ")
-    out.push(resp.status.to_string())
+    out.push(resp.status.display())
     out.push(" ")
     out.push(reason_phrase(resp.status))
     out.push("\r\n")
@@ -421,7 +421,7 @@ func format_http_response(resp: Response) -> string {
     // socket, and says so, so a client doesn't wait for a second one.
     out.push("Connection: close\r\n")
     out.push("Content-Length: ")
-    out.push(resp.body.len().to_string())
+    out.push(resp.body.len().display())
     out.push("\r\n\r\n")
 
     // Body
@@ -624,7 +624,7 @@ func format_http_request(req: Request, host: string) -> string {
     mut out = StringBuilder.new()
 
     // Request line
-    out.push(req.method.to_string())
+    out.push(req.method.display())
     out.push(" ")
     out.push(req.url)
     out.push(" HTTP/1.1\r\n")
@@ -648,7 +648,7 @@ func format_http_request(req: Request, host: string) -> string {
     // Content-Length for bodies
     if req.body.len() > 0 {
         out.push("Content-Length: ")
-        out.push(req.body.len().to_string())
+        out.push(req.body.len().display())
         out.push("\r\n")
     }
 

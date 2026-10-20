@@ -20,13 +20,13 @@ func main() {}
 
 test "a comptime module const answers method calls" {
     assert TRI == 15
-    assert TRI.to_string() == "15"
+    assert TRI.display() == "15"
     assert "{TRI}" == "15"
 }
 
 test "a plain module const answers method calls" {
     assert PLAIN == 15
-    assert PLAIN.to_string() == "15"
+    assert PLAIN.display() == "15"
     assert LABEL.len() == 2
 }
 

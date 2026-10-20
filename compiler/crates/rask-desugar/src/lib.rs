@@ -814,18 +814,18 @@ impl Desugarer {
                     self.desugar_expr(&mut arg.expr);
                 }
                 // std.fmt/D3/D4: `print(x)` renders x, so it goes through
-                // `to_string` exactly like `{x}` does. It didn't, and each
+                // `display` exactly like `{x}` does. It didn't, and each
                 // backend had its own idea of what to print — native the
                 // address of an aggregate's storage and a char's code point,
                 // the interpreter a debug rendering that ignored the type's own
-                // `to_string`. Both wrong even for a type that opted in: a
+                // renderer. Both wrong even for a type that opted in: a
                 // `Point` with a Displayable impl printed 140729371079408
                 // natively and `Point { x: 1, y: 2 }` on interp, where `{p}`
                 // gave `(1, 2)` on both (#772).
                 //
                 // Desugaring rather than teaching two renderers about
                 // Displayable keeps one renderer, and gets the type check for
-                // free — a value that can't render fails on the `to_string`
+                // free — a value that can't render fails on the `display`
                 // call, with the message interpolation already produces.
                 if Self::is_render_builtin(func) {
                     for arg in args.iter_mut() {
@@ -1416,16 +1416,16 @@ impl Desugarer {
         matches!(&func.kind, ExprKind::Ident(n) if n == "print" || n == "println")
     }
 
-    /// A bare string literal is already the text — wrapping it in `to_string()`
+    /// A bare string literal is already the text — wrapping it in `display()`
     /// would allocate a copy of every `print("\n")` in the program for nothing.
     /// An interpolation has already become a `__concat` chain by this point, so
-    /// it isn't a `String` node and does get wrapped; `string.to_string()` is
+    /// it isn't a `String` node and does get wrapped; `string.display()` is
     /// identity, and skipping it would need a type the desugar pass doesn't have.
     fn already_a_string_literal(e: &Expr) -> bool {
         matches!(&e.kind, ExprKind::String(_))
     }
 
-    /// Render one value as a string: `to_string()` when there's no spec,
+    /// Render one value as a string: `display()` when there's no spec,
     /// `__fmt(…)` with the spec's five constants when there is (std.fmt/CM5).
     fn render_expr(&mut self, inner: Expr, spec: Option<rask_ast::fmt_spec::FormatSpec>) -> Expr {
         let span = inner.span;
@@ -1434,7 +1434,7 @@ impl Desugarer {
                 id: self.fresh_id(),
                 kind: ExprKind::MethodCall {
                     object: Box::new(inner),
-                    method: "to_string".to_string(),
+                    method: "display".to_string(),
                     type_args: None,
                     args: vec![],
                 },

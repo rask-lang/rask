@@ -57,7 +57,7 @@ struct Shown<Output> {
 }
 
 Shown<Output> implements Displayable where Output: Displayable {
-    func to_string(self) -> string {
+    func display(self) -> string {
         let x: Output = self.v.clone()
         return "Shown({x})"
     }
@@ -112,7 +112,7 @@ test "an extend block's parameters named Duration and Buffer" {
 
 test "a conformance block's parameter, with a where bound" {
     let s = Shown(v: 7)
-    assert s.to_string() == "Shown(7)"
+    assert s.display() == "Shown(7)"
     assert "{s}" == "Shown(7)"
 }
 
