@@ -2202,6 +2202,9 @@ impl<'a> FunctionBuilder<'a> {
                     UnaryOp::LeadingZeros => builder.ins().clz(val),
                     UnaryOp::TrailingZeros => builder.ins().ctz(val),
                     UnaryOp::ReverseBits => builder.ins().bitrev(val),
+                    // One byte has no order to swap, and Cranelift's bswap
+                    // refuses an i8.
+                    UnaryOp::SwapBytes if builder.func.dfg.value_type(val) == types::I8 => val,
                     UnaryOp::SwapBytes => builder.ins().bswap(val),
                 };
                 Ok(result)
@@ -6333,11 +6336,22 @@ impl<'a> FunctionBuilder<'a> {
             return Self::plain_exit_value(builder, value, ctx);
         }
 
-        if let Some((_, ss, size)) = Self::return_stack_info(value, ctx.stack_slot_map) {
-            // A small aggregate goes back in a register, loaded; a wider one
-            // as its address, which `exit_value` copies into the destination.
-            if size <= 8 {
-                return Ok(Some(builder.ins().stack_load(types::I64, ss, 0)));
+        // A small aggregate goes back in a register, loaded; a wider one as its
+        // address, which `exit_value` copies into the destination.
+        //
+        // Loaded through the address the local holds now, not from its own
+        // slot: `out_v1 = out` points `out_v1` at `out`'s storage and leaves
+        // its slot unwritten, so a `[u8; 8]` built in `out` and returned as
+        // `out_v1` read back whatever the slot held before.
+        if let Some(MirOperand::Local(id)) = value {
+            let held = Self::operand_mir_type(&MirOperand::Local(*id), ctx.locals)
+                .filter(|t| t.passed_by_address())
+                .and_then(|t| t.slot_size());
+            if let Some(size) = held.filter(|s| *s <= 8) {
+                let addr = Self::lower_operand(builder, &MirOperand::Local(*id), ctx)?;
+                let word = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+                Self::copy_aggregate(builder, addr, word, size);
+                return Ok(Some(builder.ins().stack_load(types::I64, word, 0)));
             }
         }
         Self::plain_exit_value(builder, value, ctx)
@@ -6480,20 +6494,6 @@ impl<'a> FunctionBuilder<'a> {
         let size = local.ty.slot_size()?;
         let var = ctx.var_map.get(id)?;
         Some((builder.use_var(*var), size))
-    }
-
-    /// Check if a return value comes from a stack-allocated aggregate local.
-    /// Returns the (stack_slot, size) if so.
-    fn return_stack_info(
-        value: Option<&MirOperand>,
-        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
-    ) -> Option<(LocalId, StackSlot, u32)> {
-        if let Some(MirOperand::Local(id)) = value {
-            if let Some((ss, size)) = stack_slot_map.get(id) {
-                return Some((*id, *ss, *size));
-            }
-        }
-        None
     }
 
     /// Put a call's aggregate answer into the destination's slot.

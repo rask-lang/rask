@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A method that shares an interface method's name, on a type nothing boxes.
+//
+// What an interface call hands back was decided across every function named
+// `Something_read_bytes`, boxed or not. `Chunk.read_bytes` below doesn't hand
+// back a fresh vector, so the one `io.copy` gets from `reader.read_bytes()` was
+// nobody's and leaked natively. Only the types some `any` box holds can be
+// behind the call.
+
+import io
+
+struct Chunk {
+    data: Vec<u8>
+}
+
+extend Chunk {
+    func read_bytes(self, n: usize) -> Vec<u8> {
+        mut head: Vec<u8> = Vec.new()
+        for i in 0..n {
+            head.push(self.data[i])
+        }
+        return head
+    }
+}
+
+test "io.copy through a reader beside an unboxed namesake" {
+    let data: Vec<u8> = [120, 121, 122]
+    mut src = io.Buffer.from(data)
+    mut dst = io.Buffer.new()
+    let n = io.copy(src, dst) catch _ => -1
+    assert n == 3
+    assert dst.to_bytes().len() == 3
+}
+
+test "the namesake itself" {
+    let c = Chunk(data: [1, 2, 3])
+    let head = c.read_bytes(2)
+    assert head.len() == 2
+    assert head[1] == 2
+}

@@ -145,11 +145,15 @@ pub fn spec_surface(path: &Path, markdown: &str) -> SpecSurface {
             out.errors.push((first_line, format!("{:?}", e)));
             continue;
         }
-        let parsed = rask_parser::Parser::new(lex.tokens).parse();
+        let mut parsed = rask_parser::Parser::new(lex.tokens).parse();
         if let Some(e) = parsed.errors.first() {
             out.errors.push((first_line, e.message.clone()));
             continue;
         }
+        // A spec promises `extend Integer { … }` the way the stdlib writes it:
+        // once, for every width.
+        let mut next_id = u32::MAX / 2;
+        rask_stdlib::stubs::expand_width_families(&mut parsed.decls, &mut next_id);
         let line_of = |offset: usize| first_line + code[..offset.min(code.len())].matches('\n').count();
         collect(&parsed.decls, &line_of, &mut out.surface);
     }

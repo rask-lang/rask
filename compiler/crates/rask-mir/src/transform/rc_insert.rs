@@ -1239,6 +1239,10 @@ fn field_paths(func: &MirFunction) -> HashMap<LocalId, (LocalId, Vec<u32>)> {
 /// - A closure out of an aggregate is the closure the aggregate owns, the
 ///   same way: the struct frees the block when it dies, so `let g = h.f`
 ///   has to keep `h` alive for as long as `g` is called (#1334).
+/// - An aggregate with one of those in it, for the same reason: `(n, rest)`
+///   read off a `(u32, Vec<u8>) or E` is the vector the result owns, and
+///   counted as unrelated the result was released, vector and all, before
+///   `rest` was read.
 fn part_of_field(
     dst: LocalId,
     base: LocalId,
@@ -1249,8 +1253,22 @@ fn part_of_field(
         return false;
     }
     match ty_of.get(&dst) {
-        Some(t) if aggregates.contains(&dst) && aggregate_may_hold_string(t) => true,
+        Some(t) if aggregates.contains(&dst) && (aggregate_may_hold_string(t) || holds_a_handle(t)) => true,
         Some(MirType::Ptr) | Some(MirType::Heap(_)) | Some(MirType::FuncPtr(_)) => true,
+        _ => false,
+    }
+}
+
+/// A tuple or array with a container handle in it.
+///
+/// Not a `T?` or `T or E`: one of those read off an aggregate is a view of it
+/// (`view_of_field`), and counted as a part as well it was handed on and
+/// never released.
+fn holds_a_handle(ty: &MirType) -> bool {
+    let slot = |t: &MirType| matches!(t, MirType::Ptr) || holds_a_handle(t);
+    match ty {
+        MirType::Tuple(elems) => elems.iter().any(slot),
+        MirType::Array { elem, .. } => slot(elem),
         _ => false,
     }
 }

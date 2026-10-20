@@ -124,30 +124,44 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
 }
 
 /// The primitive types a family block in the stdlib (`extend Integer`,
-/// `extend Float`) is written for.
+/// `extend Float`) is written for, each with its size in bytes.
 ///
 /// Every integer width answers `count_ones`, each at its own width, and the
 /// same for the float methods. Spelling that out per width is ten copies of one
 /// block kept in step by hand; written against the family, it is one. The
-/// block is filed under each member with `Self` read as that member, so every
-/// reader of the stdlib — the checker, the registry, both backends — sees
-/// `extend i8 { … }` through `extend u128 { … }` and nothing family-shaped.
+/// block is filed under each member with `Self` read as that member and
+/// `BYTES` as its size, so every reader of the stdlib — the checker, the
+/// registry, both backends — sees `extend i8 { … }` through `extend u128 { … }`
+/// and nothing family-shaped. `BYTES` is what lets a family method name an
+/// array as wide as the value: `to_be_bytes(self) -> [u8; BYTES]`.
 ///
 /// `isize` and `usize` aren't members: they are `i64` and `u64` under another
 /// name, not types with methods of their own.
-pub const WIDTH_FAMILIES: &[(&str, &[&str])] = &[
-    ("Integer", &["i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128"]),
+pub const WIDTH_FAMILIES: &[(&str, &[(&str, u8)])] = &[
+    (
+        "Integer",
+        &[
+            ("i8", 1), ("i16", 2), ("i32", 4), ("i64", 8), ("i128", 16),
+            ("u8", 1), ("u16", 2), ("u32", 4), ("u64", 8), ("u128", 16),
+        ],
+    ),
     // The integers that fit a register. The overflow hatches have no 128-bit
     // forms yet, so stdlib/int.rk declares them here.
-    ("MachineInteger", &["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"]),
-    ("Float", &["f32", "f64"]),
+    (
+        "MachineInteger",
+        &[("i8", 1), ("i16", 2), ("i32", 4), ("i64", 8), ("u8", 1), ("u16", 2), ("u32", 4), ("u64", 8)],
+    ),
+    ("Float", &[("f32", 4), ("f64", 8)]),
 ];
 
 /// Replace each block extending a family in `WIDTH_FAMILIES` with one block per
 /// member type.
 ///
-/// Only declarations: a body would be shared node for node by every copy, and
-/// every pass keys what it learns about an expression by its node.
+/// A method with a body gets its own copy of it per member, every expression
+/// and statement renumbered: each pass keys what it learns about a node by its
+/// id, and `self >> 8` is a different instruction in the `u8` copy than in the
+/// `i128` one. `Self` and `BYTES` are filled in wherever they appear, in types
+/// and as names in a body (`Self.from_le_bytes(b)`, `0..BYTES`).
 pub fn expand_width_families(decls: &mut Vec<Decl>, next_id: &mut u32) {
     let mut out = Vec::with_capacity(decls.len());
     for decl in decls.drain(..) {
@@ -158,36 +172,65 @@ pub fn expand_width_families(decls: &mut Vec<Decl>, next_id: &mut u32) {
                 .and_then(|n| WIDTH_FAMILIES.iter().find(|(f, _)| *f == n)),
             _ => None,
         };
-        let (Some((family, members)), DeclKind::Impl(block)) = (family, &decl.kind) else {
+        let Some((_, members)) = family else {
             out.push(decl);
             continue;
         };
-        if let Some(m) = block.methods.iter().find(|m| !m.body.is_empty()) {
-            panic!(
-                "`extend {family}` in the stdlib declares `{}` with a body. A block \
-                 written for every width is copied once per width, and a body's \
-                 nodes can't be shared — give the method a marker instead \
-                 (`@builtin` or `@native`)",
-                m.name
-            );
-        }
-        for member in members.iter() {
-            let member_ty = TypeExpr::named(member.to_string());
-            let as_member = |t: &TypeExpr| t.substitute(&|n| (n == "Self").then(|| member_ty.clone()));
-            let mut copy = block.clone();
-            copy.target_ty = member_ty.clone();
-            for m in &mut copy.methods {
-                for p in &mut m.params {
-                    p.ty = p.ty.as_ref().map(as_member);
-                }
-                m.ret_ty = m.ret_ty.as_ref().map(as_member);
-            }
-            let id = rask_ast::NodeId(*next_id);
+        for (member, bytes) in members.iter() {
+            let mut copy = decl.clone();
+            copy.id = rask_ast::NodeId(*next_id);
             *next_id += 1;
-            out.push(Decl { id, kind: DeclKind::Impl(copy), span: decl.span });
+            rask_ast::rewrite::rewrite_decl(&mut copy, &mut AsMember { member, bytes: *bytes, next_id });
+            if let DeclKind::Impl(block) = &mut copy.kind {
+                block.target_ty = TypeExpr::named(member.to_string());
+            }
+            out.push(copy);
         }
     }
     *decls = out;
+}
+
+/// One member's copy of a family block: `Self` and `BYTES` filled in, every
+/// node given a fresh id.
+struct AsMember<'a> {
+    member: &'a str,
+    bytes: u8,
+    next_id: &'a mut u32,
+}
+
+impl AsMember<'_> {
+    fn fresh(&mut self) -> rask_ast::NodeId {
+        let id = rask_ast::NodeId(*self.next_id);
+        *self.next_id += 1;
+        id
+    }
+}
+
+impl rask_ast::rewrite::Rewrite for AsMember<'_> {
+    fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        e.id = self.fresh();
+        match &e.kind {
+            ExprKind::Ident(n) if n == "Self" => e.kind = ExprKind::Ident(self.member.to_string()),
+            ExprKind::Ident(n) if n == "BYTES" => e.kind = ExprKind::Int(self.bytes as i128, None),
+            _ => {}
+        }
+    }
+
+    fn body(&mut self, b: &mut Vec<rask_ast::stmt::Stmt>) {
+        for stmt in b.iter_mut() {
+            stmt.id = self.fresh();
+        }
+    }
+
+    fn ty(&mut self, t: &mut TypeExpr) {
+        let (member, bytes) = (self.member, self.bytes);
+        *t = t.substitute(&|n| match n {
+            "Self" => Some(TypeExpr::named(member.to_string())),
+            "BYTES" => Some(TypeExpr::Int(bytes.to_string())),
+            _ => None,
+        });
+    }
 }
 
 /// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there;

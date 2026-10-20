@@ -3,8 +3,9 @@
 // The integer widths' named methods.
 //
 // Written once for the family and filed under each of i8 … u128, with `Self`
-// as that width (`WIDTH_FAMILIES` in rask-stdlib). Every one is `@builtin`:
-// the compiler lowers the call to instructions, on both backends.
+// as that width and `BYTES` as its size (`WIDTH_FAMILIES` in rask-stdlib). A
+// `@builtin` is lowered to instructions by the compiler, on both backends; a
+// body is copied per width and compiled like any other.
 //
 // The operators (`add`, `eq`, `compare`, …) and `hash` aren't here. Those are
 // the primitives' conformances to the interfaces in ops.rk and builtins, which
@@ -53,12 +54,62 @@ extend Integer {
     public func rotate_right(self, n: Self) -> Self {}
 
     // ── Byte order (std.bits/B2, B3) ────────────────────────────
+    // `to_be` and `to_le` are the only two that know the host's order. The
+    // rest are written in terms of them and of shifts, which don't.
 
     @builtin
     public func to_be(self) -> Self {}
 
     @builtin
     public func to_le(self) -> Self {}
+
+    /// A big-endian value in the host's order: the same swap as `to_be`.
+    public func from_be(x: Self) -> Self {
+        return x.to_be()
+    }
+
+    public func from_le(x: Self) -> Self {
+        return x.to_le()
+    }
+
+    /// The bytes, least significant first.
+    public func to_le_bytes(self) -> [u8; BYTES] {
+        mut out: [u8; BYTES] = [0; BYTES]
+        mut shift: Self = 0
+        for i in 0..BYTES {
+            out[i] = (self >> shift).wrap<u8>()
+            shift = shift + 8
+        }
+        return out
+    }
+
+    /// The bytes, most significant first: network order.
+    public func to_be_bytes(self) -> [u8; BYTES] {
+        return self.swap_bytes().to_le_bytes()
+    }
+
+    /// The bytes as the host stores them.
+    public func to_ne_bytes(self) -> [u8; BYTES] {
+        return self.to_le().to_le_bytes()
+    }
+
+    public func from_le_bytes(bytes: [u8; BYTES]) -> Self {
+        mut v: Self = 0
+        mut shift: Self = 0
+        for i in 0..BYTES {
+            v = v | bytes[i].wrap<Self>() << shift
+            shift = shift + 8
+        }
+        return v
+    }
+
+    public func from_be_bytes(bytes: [u8; BYTES]) -> Self {
+        return Self.from_le_bytes(bytes).swap_bytes()
+    }
+
+    public func from_ne_bytes(bytes: [u8; BYTES]) -> Self {
+        return Self.from_le_bytes(bytes).to_le()
+    }
 }
 
 // The ways out of the checked default (type.integer-overflow/OV5, SH2). Each
