@@ -82,6 +82,21 @@ impl Shapes {
                 _ => {}
             }
         }
+        // A program's own function owns its name the same way its own struct
+        // does. `func time(x)` called as `time(1)` was built as the stdlib's
+        // `time` namespace struct, which has no fields, so the call failed
+        // with "takes its fields by name" (#1581).
+        for decl in decls {
+            let name = match &decl.kind {
+                DeclKind::Fn(f) => &f.name,
+                DeclKind::Extern(e) => &e.name,
+                _ => continue,
+            };
+            let own_struct = decls.iter().any(|d| matches!(&d.kind, DeclKind::Struct(s) if last_segment(&s.name) == name));
+            if !own_struct {
+                shapes.structs.remove(name.as_str());
+            }
+        }
         shapes
     }
 
