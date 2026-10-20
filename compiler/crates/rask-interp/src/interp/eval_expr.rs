@@ -1474,6 +1474,17 @@ impl Interpreter {
                             return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                     }
+                    // A stdlib module's own call from inside one of its bodies,
+                    // run against a program that imported names from the
+                    // module but never the module: `fs.create_file`'s
+                    // `fs.create_handle(path)` reached here as a package and
+                    // failed as an undefined variable (#1602). The module's
+                    // seams are answered by its module dispatch.
+                    if let Some(kind) = ModuleKind::from_name(pkg_name) {
+                        return self
+                            .call_module_method(&kind, method, arg_vals)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::UndefinedVariable(method.clone()),
                         expr.span,

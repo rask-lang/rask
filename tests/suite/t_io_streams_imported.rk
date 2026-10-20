@@ -4,12 +4,7 @@
 //
 // Like t_read_line_eof.rk, this runs with stdin at end of input, so every read
 // from it is empty or an EOF error.
-//
-// `import io` is here only for the interpreter: it runs the stream methods'
-// bodies against this program's imports, and their `io.read_std_bytes(...)`
-// is "undefined variable" unless the program bound `io` too (#1602).
 
-import io
 import io.{stdin, stdout, stderr, read_line, Buffer, IoError, SeekFrom}
 
 test "read_line at end of input is UnexpectedEof" {

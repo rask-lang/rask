@@ -4,9 +4,9 @@
 // stream methods call `io.read_std_bytes(...)`.
 //
 // The interpreter runs those bodies against this program's imports, where
-// `fs` and `io` aren't bound, and fails with "undefined variable
-// `create_handle`" / "`read_std_bytes`" (#1602). Adding `import fs`
-// makes it pass. Native is right.
+// `fs` and `io` aren't bound, and failed with "undefined variable
+// `create_handle`" / "`read_std_bytes`" (#1602). A stdlib module named from
+// inside its own body now reaches the module's dispatch either way.
 
 import fs.{create_file, open, read_text, remove_file}
 import io.{stdin, IoError}
