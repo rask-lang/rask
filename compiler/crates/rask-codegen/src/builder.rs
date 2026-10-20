@@ -2202,6 +2202,9 @@ impl<'a> FunctionBuilder<'a> {
                     UnaryOp::LeadingZeros => builder.ins().clz(val),
                     UnaryOp::TrailingZeros => builder.ins().ctz(val),
                     UnaryOp::ReverseBits => builder.ins().bitrev(val),
+                    // One byte has no order to swap, and Cranelift's bswap
+                    // refuses an i8.
+                    UnaryOp::SwapBytes if builder.func.dfg.value_type(val) == types::I8 => val,
                     UnaryOp::SwapBytes => builder.ins().bswap(val),
                 };
                 Ok(result)
