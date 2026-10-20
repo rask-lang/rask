@@ -238,15 +238,15 @@ mod tests {
     }
 
     #[test]
-    fn cli_args_returns_vec_string() {
+    fn cli_parse_from_takes_vec_string() {
         use crate::types::GenericArg;
         let bm = BuiltinModules::new();
-        let sig = bm.get_method("cli", "args").unwrap();
-        assert!(sig.params.is_empty());
-        assert_eq!(sig.ret, Type::UnresolvedGeneric {
+        let sig = bm.get_method("cli", "parse_from").unwrap();
+        assert_eq!(sig.params, vec![Type::UnresolvedGeneric {
             name: "Vec".to_string(),
             args: vec![GenericArg::Type(Box::new(Type::String))],
-        });
+        }]);
+        assert_eq!(sig.ret, Type::UnresolvedNamed("Args".to_string()));
     }
 
     #[test]

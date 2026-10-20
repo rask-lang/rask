@@ -27,7 +27,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         | "Vec" | "Map" | "Rack" | "Link"
         | "Result" | "Option"
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
-        | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
+        | "JsonValue" | "Path" | "Duration" => StdlibLayer::Pure,
 
         "Handle" | "Sender" | "Receiver" | "Shared" | "Atomic"
         | "File" | "Metadata"
@@ -143,7 +143,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "TcpListener", "TcpConnection",
     "JsonValue",
     "Duration", "Instant",
-    "Path", "Args",
+    "Path",
     "Handle", "Sender", "Receiver", "Shared",
     "Atomic",
     "f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8",
@@ -170,9 +170,13 @@ pub const REGISTERED_MODULES: &[&str] = &[
 /// two drifted three times in one week — native lost the url, the
 /// interpreter never closed a connection, native dropped response headers
 /// (#1378).
+///
+/// Then `cli`: a C parser and a Rust one that read `--output out.txt`
+/// differently.
 pub const RASK_IMPLEMENTED_TYPES: &[&str] = &[
     "Path", "Handles", "Wide",
     "Request", "Response", "Headers", "Method", "HttpServer", "Responder", "HttpClient",
+    "Args", "Parser", "CliError",
 ];
 
 /// True when this type's methods live in Rask rather than in the backends.

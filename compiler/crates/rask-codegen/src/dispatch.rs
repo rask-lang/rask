@@ -1052,21 +1052,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("File_write_line_raw", "rask_file_write_line", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Stdlib module calls ─────────────────────────────────
-        StdlibEntry::simple("cli_args", "rask_cli_args", &[], Some(types::I64), false),
-        StdlibEntry::simple("cli_parse", "rask_args_parse", &[], Some(types::I64), false),
-        StdlibEntry::simple("Args_flag", "rask_args_flag", &[types::I64, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry {
-            mir_name: "Args_option", c_name: "rask_args_option",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry {
-            mir_name: "Args_option_or", c_name: "rask_args_option_or",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("Args_positional", "rask_args_positional", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Args_program", "rask_args_program", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("std_exit", "rask_exit", &[types::I64], None, false),
 
         // ── IO module ───────────────────────────────────────────

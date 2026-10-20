@@ -4675,7 +4675,7 @@ impl<'a> MirLowerer<'a> {
             }
             if let Some(name) = object.name() {
                 match (name, method.as_str()) {
-                    ("cli", "args") | ("fs", "read_lines") => return Some(MirType::String),
+                    ("fs", "read_lines") => return Some(MirType::String),
                     ("fs", "read_bytes") => return Some(MirType::U8),
                     _ => {}
                 }

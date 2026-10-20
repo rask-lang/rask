@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.cli quick API: `cli.parse_from` with no schema.
+//
+// The quick API was C natively and Rust on the interpreter, and they disagreed
+// on `--output out.txt`: C took `out.txt` as the value, the interpreter as a
+// positional. It's one Rask body now. Without a schema nothing can know
+// `--output` takes a value until someone asks, so `option` is what claims the
+// next word, and `positional` returns what nobody claimed.
+//
+// `cli.parse()` is `parse_from(os.args())`; it's run with real arguments by
+// rask-cli's compile_run tests, since a test block has no argv to give it.
+
+import cli
+
+func argv(words: Vec<string>) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    out.push("prog")
+    for w in words {
+        out.push(w)
+    }
+    return out
+}
+
+test "program is argv[0]" {
+    let args = cli.parse_from(argv(Vec.new()))
+    assert args.program() == "prog"
+}
+
+test "no arguments: nothing set, no positionals" {
+    mut args = cli.parse_from(argv(Vec.new()))
+    assert !args.flag("verbose", "v")
+    assert args.option("output", "o") is none
+    assert args.positional().is_empty()
+}
+
+test "long and short flags" {
+    let args = cli.parse_from(argv(["--verbose", "-q"]))
+    assert args.flag("verbose", "v")
+    assert args.flag("quiet", "q")
+    assert !args.flag("force", "f")
+}
+
+test "a combined group sets each letter" {
+    let args = cli.parse_from(argv(["-vn"]))
+    assert args.flag("verbose", "v")
+    assert args.flag("number", "n")
+    assert !args.flag("force", "f")
+}
+
+test "an empty short name only matches the long form" {
+    let args = cli.parse_from(argv(["-x", "--dry-run"]))
+    assert args.flag("dry-run", "")
+    assert !args.flag("extra", "")
+}
+
+test "all four option spellings" {
+    mut a = cli.parse_from(argv(["--output", "a.txt"]))
+    assert (a.option("output", "o") ?? "") == "a.txt"
+    mut b = cli.parse_from(argv(["--output=b.txt"]))
+    assert (b.option("output", "o") ?? "") == "b.txt"
+    mut c = cli.parse_from(argv(["-o", "c.txt"]))
+    assert (c.option("output", "o") ?? "") == "c.txt"
+    mut d = cli.parse_from(argv(["-o=d.txt"]))
+    assert (d.option("output", "o") ?? "") == "d.txt"
+}
+
+test "?? gives an option a default" {
+    mut args = cli.parse_from(argv(["in.txt"]))
+    let output = args.option("output", "o") ?? "out.txt"
+    assert output == "out.txt"
+}
+
+test "the last of a repeated option wins" {
+    mut args = cli.parse_from(argv(["-o", "first", "--output=second"]))
+    assert (args.option("output", "o") ?? "") == "second"
+}
+
+test "an option at the end has no value" {
+    mut args = cli.parse_from(argv(["--output"]))
+    assert args.option("output", "o") is none
+}
+
+test "an option's value isn't positional once asked for" {
+    mut args = cli.parse_from(argv(["--verbose", "a.txt", "--output", "out.txt", "b.txt"]))
+    assert args.flag("verbose", "v")
+    assert (args.option("output", "o") ?? "") == "out.txt"
+    let files = args.positional()
+    assert files.len() == 2
+    assert files[0] == "a.txt"
+    assert files[1] == "b.txt"
+}
+
+test "an unasked option's value reads as positional" {
+    let args = cli.parse_from(argv(["--output", "out.txt", "in.txt"]))
+    let files = args.positional()
+    assert files.len() == 2
+    assert files[0] == "out.txt"
+}
+
+test "-- ends flags, and a lone - is positional" {
+    mut args = cli.parse_from(argv(["-", "--", "--verbose", "-o", "x"]))
+    assert !args.flag("verbose", "v")
+    assert args.option("output", "o") is none
+    let rest = args.positional()
+    assert rest.len() == 4
+    assert rest[0] == "-"
+    assert rest[1] == "--verbose"
+    assert rest[2] == "-o"
+    assert rest[3] == "x"
+}

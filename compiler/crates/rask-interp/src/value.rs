@@ -581,7 +581,7 @@ impl Value {
 pub enum ModuleKind {
     Fs,     // fs.read_file, fs.write_file, etc.
     Io,     // io.read_line, io.print, etc.
-    Cli,    // cli.parse, cli.Parser (also legacy cli.args)
+    Cli,    // cli.parse, cli.Parser
     Std,    // std.exit (legacy alias for os.exit)
     Env,    // env.var, env.vars (legacy alias for os.env)
     Time,   // time.Instant, time.Duration, time.sleep

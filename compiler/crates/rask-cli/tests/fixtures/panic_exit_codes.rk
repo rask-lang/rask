@@ -11,10 +11,10 @@
 // This fixture is the *panic* half; each case is run separately by the test,
 // since the first one to fire ends the program. Which case runs is chosen by
 // the argument so one file covers them all.
-import cli
+import os
 
 func main() {
-    let which = cli.args().get(1) ?? "overflow"
+    let which = os.args().get(1) ?? "overflow"
 
     if which == "overflow" {
         let a: i32 = 2147483647

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Simple grep - Pattern search using module syntax
 // Usage: rask run simple_grep.rk <pattern> <file>
-// Demonstrates: cli.args, fs.read_lines, string methods, T or E, Vec, loops
+// Demonstrates: os.args, fs.read_lines, string methods, T or E, Vec, loops
 
 import fs
-import cli
+import os
 import std
 
 enum GrepError {
@@ -40,7 +40,7 @@ func grep_file(pattern: string, path: string) -> i32 or GrepError {
 }
 
 func main() {
-    let args = cli.args()
+    let args = os.args()
     let argc = args.len()
 
     if argc < 3 {

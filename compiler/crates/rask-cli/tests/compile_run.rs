@@ -2010,6 +2010,48 @@ fn every_panic_kind_exits_101_on_both_backends() {
     }
 }
 
+// std.cli reading the real argv. `--help` and `--version` print and exit 0,
+// and a rejected argument comes back out of main as exit 1 — none of which a
+// test block can do, so the suite tests stop at `parse_from`.
+#[test]
+fn cli_parse_reads_argv_on_both_backends() {
+    let rask = rask_binary();
+    let fixture = fixture("cli_parse.rk");
+    let help = "demo 2.1\nShows what it was given\n\nUsage: demo [options] <file>\n\n\
+                Arguments:\n  <file>              Input\n\n\
+                Options:\n  -v, --verbose       Talk more\n  -n, --name <value>  Who to greet\n  \
+                -h, --help          Show this help\n      --version       Show version\n";
+    let quick0 = "quick: verbose=false name=nobody rest=0\n";
+    let cases: [(&[&str], i32, String, &str); 4] = [
+        (
+            &["-v", "in.txt", "--name=ann"],
+            0,
+            "quick: verbose=true name=ann rest=1\nbuilder: name=ann file=in.txt\n".to_string(),
+            "",
+        ),
+        (&["--help"], 0, format!("{quick0}{help}"), ""),
+        (&["--version"], 0, format!("{quick0}demo 2.1\n"), ""),
+        (&["--bogus", "x"], 1, "quick: verbose=false name=nobody rest=1\n".to_string(), "unknown flag: --bogus"),
+    ];
+    for (argv, want_code, want_out, want_err) in &cases {
+        for mode in ["--interp", "--native"] {
+            let out = Command::new(&rask)
+                .args(["run", mode])
+                .arg(&fixture)
+                .arg("--")
+                .args(*argv)
+                .env("RASK_RUNTIME_DIR", runtime_dir())
+                .output()
+                .expect("failed to run rask");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(*want_code), "{mode} {argv:?}\n{stdout}{stderr}");
+            assert_eq!(stdout, *want_out, "{mode} {argv:?}\n{stderr}");
+            assert!(stderr.contains(want_err), "{mode} {argv:?}: {stderr}");
+        }
+    }
+}
+
 // The other half of EX4, and the reason the two codes exist: an error returned
 // from main is the program saying no, not the program hitting a bug.
 #[test]

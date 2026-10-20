@@ -1,41 +1,432 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-/// Command-line interface utilities.
+// Argument parsing is string handling, so it's written in Rask and both
+// backends run this one copy. It used to be a C parser and a Rust parser that
+// disagreed: given `--output out.txt`, C took `out.txt` as the option's value
+// and the interpreter took it as a positional.
+
+import os
+import string.StringBuilder
+
+/// Command-line argument parsing.
 struct cli { }
 
 extend cli {
-    /// Get command-line arguments as a list of strings.
-    @native("rask_cli_args")
-    @ambient
-    public func args() -> Vec<string> {}
+    /// Parse the process arguments without a schema. See `parse_from`.
+    public func parse() -> Args {
+        return cli.parse_from(os.args())
+    }
 
-    /// Parse command-line arguments into a structured Args object.
-    @native("rask_args_parse")
-    @ambient
-    public func parse() -> Args {}
+    /// Parse `argv` without a schema. `argv[0]` is the program name, the way
+    /// `os.args()` returns it.
+    public func parse_from(argv: Vec<string>) -> Args {
+        mut words: Vec<string> = Vec.new()
+        mut taken: Vec<bool> = Vec.new()
+        mut i: usize = 1
+        while i < argv.len() {
+            words.push(argv[i])
+            taken.push(false)
+            i += 1
+        }
+        return Args(argv0: argv.get(0) ?? "", words: words, taken: taken)
+    }
 }
 
-/// Parsed command-line arguments with flag/option/positional access.
-public struct Args { }
+/// Parsed arguments. From `cli.parse` the words are kept as typed; from
+/// `Parser.parse` they're spelled out in long form, so the short name is
+/// optional there.
+public struct Args {
+    argv0: string
+    words: Vec<string>
+    // Words an option took as its value, which `positional` skips.
+    taken: Vec<bool>
+}
 
 extend Args {
-    /// Check if a flag was passed (long or short form).
-    @native("rask_args_flag")
-    public func flag(self, long: string, short: string) -> bool {}
+    /// Whether `--long`, `-short` or a group holding `short` (`-vn`) was passed.
+    /// `short` may be empty.
+    public func flag(self, long: string, short: string) -> bool {
+        mut i: usize = 0
+        while i < self.words.len() {
+            let w = self.words[i]
+            if w == "--" {
+                return false
+            }
+            if w == "--{long}" {
+                return true
+            }
+            if is_short_group(w) && !short.is_empty() && w.contains(short) {
+                return true
+            }
+            i += 1
+        }
+        return false
+    }
 
-    /// Get an option value by long or short name.
-    @native("rask_args_option")
-    public func option(self, long: string, short: string) -> Option<string> {}
+    /// The value of `--long value`, `--long=value`, `-short value` or
+    /// `-short=value`; the last one wins when it's repeated. Without a schema,
+    /// asking is what tells `Args` the next word is a value, so ask for options
+    /// before calling `positional`.
+    public func option(mutate self, long: string, short: string) -> string? {
+        mut found: string? = none
+        mut i: usize = 0
+        while i < self.words.len() {
+            let w = self.words[i]
+            if w == "--" {
+                break
+            }
+            if names_option(w, long, short) {
+                if w.index_of("=")? as eq {
+                    found = w[eq + 1..w.len()].to_string()
+                } else if i + 1 < self.words.len() && self.words[i + 1] != "--" {
+                    i += 1
+                    self.taken[i] = true
+                    found = self.words[i]
+                }
+            }
+            i += 1
+        }
+        return found
+    }
 
-    /// Get an option value or a default.
-    @native("rask_args_option_or")
-    public func option_or(self, long: string, short: string, default: string) -> string {}
+    /// The words that aren't flags, options or option values. Everything after
+    /// `--` counts, and so does a lone `-`.
+    public func positional(self) -> Vec<string> {
+        mut out: Vec<string> = Vec.new()
+        mut rest = false
+        mut i: usize = 0
+        while i < self.words.len() {
+            let w = self.words[i]
+            if rest {
+                out.push(w)
+            } else if w == "--" {
+                rest = true
+            } else if !self.taken[i] && (w == "-" || !w.starts_with("-")) {
+                out.push(w)
+            }
+            i += 1
+        }
+        return out
+    }
 
-    /// Get positional arguments (after flags/options).
-    @native("rask_args_positional")
-    public func positional(self) -> Vec<string> {}
+    /// The program name, `argv[0]`.
+    public func program(self) -> string {
+        return self.argv0
+    }
+}
 
-    /// Get the program name (argv[0]).
-    @native("rask_args_program")
-    public func program(self) -> string {}
+// `-v`, `-vn`: one dash, then flag letters.
+func is_short_group(w: string) -> bool {
+    return w.len() >= 2 && w.starts_with("-") && !w.starts_with("--") && !w.contains("=")
+}
+
+// Whether `w` is `--long`, `--long=…`, `-short` or `-short=…`.
+func names_option(w: string, long: string, short: string) -> bool {
+    if w == "--{long}" || w.starts_with("--{long}=") {
+        return true
+    }
+    if short.is_empty() {
+        return false
+    }
+    return w == "-{short}" || w.starts_with("-{short}=")
+}
+
+// ─── Builder ─────────────────────────────────────────────────────
+
+/// A schema for a program's arguments: what it accepts, and the `--help` text
+/// that describes it.
+public struct Parser {
+    name: string
+    version_text: string?
+    about: string?
+    opts: Vec<OptionSpec>
+    positionals: Vec<PositionalSpec>
+}
+
+struct OptionSpec {
+    long: string
+    short: string
+    help: string
+    takes_value: bool
+    required: bool
+}
+
+struct PositionalSpec {
+    name: string
+    help: string
+}
+
+extend Parser {
+    /// A parser for the program called `name`.
+    public func new(name: string) -> Parser {
+        return Parser(name: name, version_text: none, about: none, opts: Vec.new(), positionals: Vec.new())
+    }
+
+    /// Set the version `--version` prints. Without one there's no `--version`.
+    public func version(take self, version: string) -> Parser {
+        mut out = self
+        out.version_text = version
+        return out
+    }
+
+    /// Set the line under the name in `--help`.
+    public func description(take self, text: string) -> Parser {
+        mut out = self
+        out.about = text
+        return out
+    }
+
+    /// Accept `--long` (and `-short`, unless `short` is empty).
+    public func flag(take self, long: string, short: string, help: string) -> Parser {
+        mut out = self
+        out.opts.push(OptionSpec(long: long, short: short, help: help, takes_value: false, required: false))
+        return out
+    }
+
+    /// Accept `--long value`. A required option missing from the arguments is
+    /// `CliError.MissingRequired`.
+    public func option(take self, long: string, short: string, help: string, required: bool = false) -> Parser {
+        mut out = self
+        out.opts.push(OptionSpec(long: long, short: short, help: help, takes_value: true, required: required))
+        return out
+    }
+
+    /// Require a positional argument. They're matched in the order they're
+    /// declared; words past the last one are kept, so it can stand for a list.
+    public func positional(take self, name: string, help: string) -> Parser {
+        mut out = self
+        out.positionals.push(PositionalSpec(name: name, help: help))
+        return out
+    }
+
+    /// Parse the process arguments. See `parse_from`.
+    public func parse(self) -> Args or CliError {
+        return self.parse_from(os.args())
+    }
+
+    /// Parse `argv` against this schema. `--help` and `-h` print `help()` and
+    /// exit 0, and so does `--version` when a version is set.
+    public func parse_from(self, argv: Vec<string>) -> Args or CliError {
+        mut flags: Vec<string> = Vec.new()
+        mut pos: Vec<string> = Vec.new()
+        mut seen: Vec<string> = Vec.new()
+        mut rest = false
+        mut i: usize = 1
+        while i < argv.len() {
+            let w = argv[i]
+            i += 1
+            if rest {
+                pos.push(w)
+                continue
+            }
+            if w == "--" {
+                rest = true
+                continue
+            }
+            if w == "-" || !w.starts_with("-") {
+                pos.push(w)
+                continue
+            }
+            if w == "--help" || w == "-h" {
+                println(self.help())
+                os.exit(0)
+            }
+            if self.version_text? as v {
+                if w == "--version" {
+                    println("{self.name} {v}")
+                    os.exit(0)
+                }
+            }
+
+            if w.starts_with("--") {
+                mut key = w[2..w.len()].to_string()
+                mut inline: string? = none
+                if key.index_of("=")? as eq {
+                    inline = key[eq + 1..key.len()].to_string()
+                    key = key[0..eq].to_string()
+                }
+                let spec = self.find_long(key) ?? {
+                    return CliError.UnknownFlag("--{key}")
+                }
+                if !spec.takes_value {
+                    if inline is none {
+                        flags.push("--{key}")
+                        continue
+                    }
+                    return CliError.UnknownFlag(w)
+                }
+                mut value = ""
+                if inline? as v {
+                    value = v
+                } else if i < argv.len() {
+                    value = argv[i]
+                    i += 1
+                } else {
+                    return CliError.MissingValue("--{key}")
+                }
+                flags.push("--{key}={value}")
+                seen.push(key)
+                continue
+            }
+
+            // One dash: `-o=value`, or a group of letters where the last may
+            // be an option taking the next word.
+            let body = w[1..w.len()].to_string()
+            if body.index_of("=")? as eq {
+                let letter = body[0..eq].to_string()
+                let spec = self.find_short(letter) ?? {
+                    return CliError.UnknownFlag("-{letter}")
+                }
+                if !spec.takes_value {
+                    return CliError.UnknownFlag(w)
+                }
+                flags.push("--{spec.long}={body[eq + 1..body.len()]}")
+                seen.push(spec.long)
+                continue
+            }
+            mut k: usize = 0
+            while k < body.len() {
+                let letter = body[k..k + 1].to_string()
+                let spec = self.find_short(letter) ?? {
+                    return CliError.UnknownFlag("-{letter}")
+                }
+                k += 1
+                if !spec.takes_value {
+                    flags.push("--{spec.long}")
+                    continue
+                }
+                if k < body.len() || i >= argv.len() {
+                    return CliError.MissingValue("-{letter}")
+                }
+                flags.push("--{spec.long}={argv[i]}")
+                seen.push(spec.long)
+                i += 1
+            }
+        }
+
+        for spec in self.opts {
+            if spec.required && !seen.contains(spec.long) {
+                return CliError.MissingRequired("--{spec.long}")
+            }
+        }
+        if pos.len() < self.positionals.len() {
+            return CliError.MissingRequired("<{self.positionals[pos.len()].name}>")
+        }
+
+        mut words = flags
+        words.push("--")
+        mut taken: Vec<bool> = Vec.new()
+        for _w in words {
+            taken.push(false)
+        }
+        for p in pos {
+            words.push(p)
+            taken.push(false)
+        }
+        return Args(argv0: argv.get(0) ?? self.name, words: words, taken: taken)
+    }
+
+    /// The `--help` text.
+    public func help(self) -> string {
+        mut rows: Vec<(string, string)> = Vec.new()
+        for p in self.positionals {
+            rows.push(("<{p.name}>", p.help))
+        }
+        let arg_rows = rows.len()
+        for o in self.opts {
+            mut left = "    --{o.long}"
+            if !o.short.is_empty() {
+                left = "-{o.short}, --{o.long}"
+            }
+            if o.takes_value {
+                left = "{left} <value>"
+            }
+            mut right = o.help
+            if o.required {
+                right = "{right} (required)"
+            }
+            rows.push((left, right))
+        }
+        rows.push(("-h, --help", "Show this help"))
+        if self.version_text? {
+            rows.push(("    --version", "Show version"))
+        }
+
+        mut width: usize = 0
+        for r in rows {
+            if r.0.len() > width {
+                width = r.0.len()
+            }
+        }
+
+        mut out = StringBuilder.new()
+        out.push(self.name)
+        if self.version_text? as v {
+            out.push(" {v}")
+        }
+        out.push("\n")
+        if self.about? as text {
+            out.push("{text}\n")
+        }
+        out.push("\nUsage: {self.name} [options]")
+        for p in self.positionals {
+            out.push(" <{p.name}>")
+        }
+        out.push("\n")
+        mut i: usize = 0
+        while i < rows.len() {
+            if i == 0 && arg_rows > 0 {
+                out.push("\nArguments:\n")
+            }
+            if i == arg_rows {
+                out.push("\nOptions:\n")
+            }
+            let left = rows[i].0
+            out.push("  {left}{" ".repeat(width - left.len() + 2)}{rows[i].1}")
+            if i + 1 < rows.len() {
+                out.push("\n")
+            }
+            i += 1
+        }
+        return out.build()
+    }
+
+    func find_long(self, long: string) -> OptionSpec? {
+        for o in self.opts {
+            if o.long == long {
+                return o
+            }
+        }
+        return none
+    }
+
+    func find_short(self, short: string) -> OptionSpec? {
+        for o in self.opts {
+            if !o.short.is_empty() && o.short == short {
+                return o
+            }
+        }
+        return none
+    }
+}
+
+/// Why `Parser.parse` rejected the arguments. Each payload is the argument as
+/// the user would type it: `--pattern`, `-x`, `<file>`.
+public enum CliError {
+    /// A required option or positional wasn't given.
+    MissingRequired(string)
+    /// A flag or option the parser doesn't know, or a flag given a value.
+    UnknownFlag(string)
+    /// An option at the end of the arguments, with nothing after it.
+    MissingValue(string)
+}
+
+extend CliError {
+    public func message(self) -> string {
+        match self {
+            CliError.MissingRequired(what) => return "missing required argument: {what}"
+            CliError.UnknownFlag(what) => return "unknown flag: {what}"
+            CliError.MissingValue(what) => return "missing value for {what}"
+        }
+    }
 }
