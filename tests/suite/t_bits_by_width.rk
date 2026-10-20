@@ -1,0 +1,602 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every std.bits integer method at every width, both backends.
+//
+// One test per width, the same shape each time. The value has
+// its top bit set and uneven runs of ones and zeros at both ends, so a
+// count taken over the wrong width, or a byte order mixed up, shows.
+
+test "i8" {
+    let x: i8 = -63
+    let zero: i8 = 0
+    // B1
+    assert x.count_ones() == 3
+    assert x.count_zeros() == 5
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 0
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 1
+    assert zero.leading_zeros() == 8
+    assert zero.trailing_zeros() == 8
+    assert zero.count_zeros() == 8
+    assert x.reverse_bits() == -125
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == -63
+    assert x.rotate_left(3) == 14
+    assert x.rotate_right(3) == 56
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(8) == x
+    assert x.rotate_right(8) == x
+    assert x.rotate_left(11) == 14
+    assert x.rotate_right(11) == 56
+    // B2: the host is little-endian
+    assert x.to_be() == -63
+    assert x.to_le() == x
+    assert i8.from_be(x.to_be()) == x
+    assert i8.from_le(x.to_le()) == x
+    assert i8.from_be(x) == -63
+    assert i8.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    let le = x.to_le_bytes()
+    assert le[0] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0xC1
+    assert i8.from_be_bytes(be) == x
+    assert i8.from_le_bytes(le) == x
+    assert i8.from_ne_bytes(ne) == x
+    assert i8.from_be_bytes(le) == -63
+    assert i8.from_le_bytes([0xC1]) == x
+}
+
+test "i16" {
+    let x: i16 = -16126
+    let zero: i16 = 0
+    // B1
+    assert x.count_ones() == 4
+    assert x.count_zeros() == 12
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 1
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 16
+    assert zero.trailing_zeros() == 16
+    assert zero.count_zeros() == 16
+    assert x.reverse_bits() == 16515
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 705
+    assert x.rotate_left(3) == 2070
+    assert x.rotate_right(3) == 22560
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(16) == x
+    assert x.rotate_right(16) == x
+    assert x.rotate_left(19) == 2070
+    assert x.rotate_right(19) == 22560
+    // B2: the host is little-endian
+    assert x.to_be() == 705
+    assert x.to_le() == x
+    assert i16.from_be(x.to_be()) == x
+    assert i16.from_le(x.to_le()) == x
+    assert i16.from_be(x) == 705
+    assert i16.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    let le = x.to_le_bytes()
+    assert le[0] == 0x02
+    assert le[1] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x02
+    assert ne[1] == 0xC1
+    assert i16.from_be_bytes(be) == x
+    assert i16.from_le_bytes(le) == x
+    assert i16.from_ne_bytes(ne) == x
+    assert i16.from_be_bytes(le) == 705
+    assert i16.from_le_bytes([0x02, 0xC1]) == x
+}
+
+test "i32" {
+    let x: i32 = -1056799996
+    let zero: i32 = 0
+    // B1
+    assert x.count_ones() == 8
+    assert x.count_zeros() == 24
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 2
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 32
+    assert zero.trailing_zeros() == 32
+    assert zero.count_zeros() == 32
+    assert x.reverse_bits() == 549535875
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 75694785
+    assert x.rotate_left(3) == 135534630
+    assert x.rotate_right(3) == -1742712736
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(32) == x
+    assert x.rotate_right(32) == x
+    assert x.rotate_left(35) == 135534630
+    assert x.rotate_right(35) == -1742712736
+    // B2: the host is little-endian
+    assert x.to_be() == 75694785
+    assert x.to_le() == x
+    assert i32.from_be(x.to_be()) == x
+    assert i32.from_le(x.to_le()) == x
+    assert i32.from_be(x) == 75694785
+    assert i32.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    assert be[2] == 0x83
+    assert be[3] == 0x04
+    let le = x.to_le_bytes()
+    assert le[0] == 0x04
+    assert le[1] == 0x83
+    assert le[2] == 0x02
+    assert le[3] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x04
+    assert ne[1] == 0x83
+    assert ne[2] == 0x02
+    assert ne[3] == 0xC1
+    assert i32.from_be_bytes(be) == x
+    assert i32.from_le_bytes(le) == x
+    assert i32.from_ne_bytes(ne) == x
+    assert i32.from_be_bytes(le) == 75694785
+    assert i32.from_le_bytes([0x04, 0x83, 0x02, 0xC1]) == x
+}
+
+test "i64" {
+    let x: i64 = -4538921419001133304
+    let zero: i64 = 0
+    // B1
+    assert x.count_ones() == 18
+    assert x.count_zeros() == 46
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 3
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 64
+    assert zero.trailing_zeros() == 64
+    assert zero.count_zeros() == 64
+    assert x.reverse_bits() == 1216359619522281603
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 614467042535473857
+    assert x.rotate_left(3) == 582116795410036806
+    assert x.rotate_right(3) == 1738477831838552289
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(64) == x
+    assert x.rotate_right(64) == x
+    assert x.rotate_left(67) == 582116795410036806
+    assert x.rotate_right(67) == 1738477831838552289
+    // B2: the host is little-endian
+    assert x.to_be() == 614467042535473857
+    assert x.to_le() == x
+    assert i64.from_be(x.to_be()) == x
+    assert i64.from_le(x.to_le()) == x
+    assert i64.from_be(x) == 614467042535473857
+    assert i64.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    assert be[2] == 0x83
+    assert be[3] == 0x04
+    assert be[4] == 0x85
+    assert be[5] == 0x06
+    assert be[6] == 0x87
+    assert be[7] == 0x08
+    let le = x.to_le_bytes()
+    assert le[0] == 0x08
+    assert le[1] == 0x87
+    assert le[2] == 0x06
+    assert le[3] == 0x85
+    assert le[4] == 0x04
+    assert le[5] == 0x83
+    assert le[6] == 0x02
+    assert le[7] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x08
+    assert ne[1] == 0x87
+    assert ne[2] == 0x06
+    assert ne[3] == 0x85
+    assert ne[4] == 0x04
+    assert ne[5] == 0x83
+    assert ne[6] == 0x02
+    assert ne[7] == 0xC1
+    assert i64.from_be_bytes(be) == x
+    assert i64.from_le_bytes(le) == x
+    assert i64.from_ne_bytes(ne) == x
+    assert i64.from_be_bytes(le) == 614467042535473857
+    assert i64.from_le_bytes([0x08, 0x87, 0x06, 0x85, 0x04, 0x83, 0x02, 0xC1]) == x
+}
+
+test "i128" {
+    let x: i128 = -83728321786992504373719316414698975440
+    let zero: i128 = 0
+    // B1
+    assert x.count_ones() == 43
+    assert x.count_zeros() == 85
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 4
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 128
+    assert zero.trailing_zeros() == 128
+    assert zero.count_zeros() == 128
+    assert x.reverse_bits() == 17204365160694584378233671163456864387
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 64545737377233718443185943936927728321
+    assert x.rotate_left(3) == 10738159545936891936994683545944619398
+    assert x.rotate_right(3) == 32069255641743244886206911377133654502
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(128) == x
+    assert x.rotate_right(128) == x
+    assert x.rotate_left(131) == 10738159545936891936994683545944619398
+    assert x.rotate_right(131) == 32069255641743244886206911377133654502
+    // B2: the host is little-endian
+    assert x.to_be() == 64545737377233718443185943936927728321
+    assert x.to_le() == x
+    assert i128.from_be(x.to_be()) == x
+    assert i128.from_le(x.to_le()) == x
+    assert i128.from_be(x) == 64545737377233718443185943936927728321
+    assert i128.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    assert be[2] == 0x83
+    assert be[3] == 0x04
+    assert be[4] == 0x85
+    assert be[5] == 0x06
+    assert be[6] == 0x87
+    assert be[7] == 0x08
+    assert be[8] == 0x89
+    assert be[9] == 0x0A
+    assert be[10] == 0x8B
+    assert be[11] == 0x0C
+    assert be[12] == 0x8D
+    assert be[13] == 0x0E
+    assert be[14] == 0x8F
+    assert be[15] == 0x30
+    let le = x.to_le_bytes()
+    assert le[0] == 0x30
+    assert le[1] == 0x8F
+    assert le[2] == 0x0E
+    assert le[3] == 0x8D
+    assert le[4] == 0x0C
+    assert le[5] == 0x8B
+    assert le[6] == 0x0A
+    assert le[7] == 0x89
+    assert le[8] == 0x08
+    assert le[9] == 0x87
+    assert le[10] == 0x06
+    assert le[11] == 0x85
+    assert le[12] == 0x04
+    assert le[13] == 0x83
+    assert le[14] == 0x02
+    assert le[15] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x30
+    assert ne[1] == 0x8F
+    assert ne[2] == 0x0E
+    assert ne[3] == 0x8D
+    assert ne[4] == 0x0C
+    assert ne[5] == 0x8B
+    assert ne[6] == 0x0A
+    assert ne[7] == 0x89
+    assert ne[8] == 0x08
+    assert ne[9] == 0x87
+    assert ne[10] == 0x06
+    assert ne[11] == 0x85
+    assert ne[12] == 0x04
+    assert ne[13] == 0x83
+    assert ne[14] == 0x02
+    assert ne[15] == 0xC1
+    assert i128.from_be_bytes(be) == x
+    assert i128.from_le_bytes(le) == x
+    assert i128.from_ne_bytes(ne) == x
+    assert i128.from_be_bytes(le) == 64545737377233718443185943936927728321
+    assert i128.from_le_bytes([0x30, 0x8F, 0x0E, 0x8D, 0x0C, 0x8B, 0x0A, 0x89, 0x08, 0x87, 0x06, 0x85, 0x04, 0x83, 0x02, 0xC1]) == x
+}
+
+test "u8" {
+    let x: u8 = 193
+    let zero: u8 = 0
+    // B1
+    assert x.count_ones() == 3
+    assert x.count_zeros() == 5
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 0
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 1
+    assert zero.leading_zeros() == 8
+    assert zero.trailing_zeros() == 8
+    assert zero.count_zeros() == 8
+    assert x.reverse_bits() == 131
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 193
+    assert x.rotate_left(3) == 14
+    assert x.rotate_right(3) == 56
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(8) == x
+    assert x.rotate_right(8) == x
+    assert x.rotate_left(11) == 14
+    assert x.rotate_right(11) == 56
+    // B2: the host is little-endian
+    assert x.to_be() == 193
+    assert x.to_le() == x
+    assert u8.from_be(x.to_be()) == x
+    assert u8.from_le(x.to_le()) == x
+    assert u8.from_be(x) == 193
+    assert u8.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    let le = x.to_le_bytes()
+    assert le[0] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0xC1
+    assert u8.from_be_bytes(be) == x
+    assert u8.from_le_bytes(le) == x
+    assert u8.from_ne_bytes(ne) == x
+    assert u8.from_be_bytes(le) == 193
+    assert u8.from_le_bytes([0xC1]) == x
+}
+
+test "u16" {
+    let x: u16 = 49410
+    let zero: u16 = 0
+    // B1
+    assert x.count_ones() == 4
+    assert x.count_zeros() == 12
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 1
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 16
+    assert zero.trailing_zeros() == 16
+    assert zero.count_zeros() == 16
+    assert x.reverse_bits() == 16515
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 705
+    assert x.rotate_left(3) == 2070
+    assert x.rotate_right(3) == 22560
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(16) == x
+    assert x.rotate_right(16) == x
+    assert x.rotate_left(19) == 2070
+    assert x.rotate_right(19) == 22560
+    // B2: the host is little-endian
+    assert x.to_be() == 705
+    assert x.to_le() == x
+    assert u16.from_be(x.to_be()) == x
+    assert u16.from_le(x.to_le()) == x
+    assert u16.from_be(x) == 705
+    assert u16.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    let le = x.to_le_bytes()
+    assert le[0] == 0x02
+    assert le[1] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x02
+    assert ne[1] == 0xC1
+    assert u16.from_be_bytes(be) == x
+    assert u16.from_le_bytes(le) == x
+    assert u16.from_ne_bytes(ne) == x
+    assert u16.from_be_bytes(le) == 705
+    assert u16.from_le_bytes([0x02, 0xC1]) == x
+}
+
+test "u32" {
+    let x: u32 = 3238167300
+    let zero: u32 = 0
+    // B1
+    assert x.count_ones() == 8
+    assert x.count_zeros() == 24
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 2
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 32
+    assert zero.trailing_zeros() == 32
+    assert zero.count_zeros() == 32
+    assert x.reverse_bits() == 549535875
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 75694785
+    assert x.rotate_left(3) == 135534630
+    assert x.rotate_right(3) == 2552254560
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(32) == x
+    assert x.rotate_right(32) == x
+    assert x.rotate_left(35) == 135534630
+    assert x.rotate_right(35) == 2552254560
+    // B2: the host is little-endian
+    assert x.to_be() == 75694785
+    assert x.to_le() == x
+    assert u32.from_be(x.to_be()) == x
+    assert u32.from_le(x.to_le()) == x
+    assert u32.from_be(x) == 75694785
+    assert u32.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    assert be[2] == 0x83
+    assert be[3] == 0x04
+    let le = x.to_le_bytes()
+    assert le[0] == 0x04
+    assert le[1] == 0x83
+    assert le[2] == 0x02
+    assert le[3] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x04
+    assert ne[1] == 0x83
+    assert ne[2] == 0x02
+    assert ne[3] == 0xC1
+    assert u32.from_be_bytes(be) == x
+    assert u32.from_le_bytes(le) == x
+    assert u32.from_ne_bytes(ne) == x
+    assert u32.from_be_bytes(le) == 75694785
+    assert u32.from_le_bytes([0x04, 0x83, 0x02, 0xC1]) == x
+}
+
+test "u64" {
+    let x: u64 = 13907822654708418312
+    let zero: u64 = 0
+    // B1
+    assert x.count_ones() == 18
+    assert x.count_zeros() == 46
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 3
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 64
+    assert zero.trailing_zeros() == 64
+    assert zero.count_zeros() == 64
+    assert x.reverse_bits() == 1216359619522281603
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 614467042535473857
+    assert x.rotate_left(3) == 582116795410036806
+    assert x.rotate_right(3) == 1738477831838552289
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(64) == x
+    assert x.rotate_right(64) == x
+    assert x.rotate_left(67) == 582116795410036806
+    assert x.rotate_right(67) == 1738477831838552289
+    // B2: the host is little-endian
+    assert x.to_be() == 614467042535473857
+    assert x.to_le() == x
+    assert u64.from_be(x.to_be()) == x
+    assert u64.from_le(x.to_le()) == x
+    assert u64.from_be(x) == 614467042535473857
+    assert u64.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    assert be[2] == 0x83
+    assert be[3] == 0x04
+    assert be[4] == 0x85
+    assert be[5] == 0x06
+    assert be[6] == 0x87
+    assert be[7] == 0x08
+    let le = x.to_le_bytes()
+    assert le[0] == 0x08
+    assert le[1] == 0x87
+    assert le[2] == 0x06
+    assert le[3] == 0x85
+    assert le[4] == 0x04
+    assert le[5] == 0x83
+    assert le[6] == 0x02
+    assert le[7] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x08
+    assert ne[1] == 0x87
+    assert ne[2] == 0x06
+    assert ne[3] == 0x85
+    assert ne[4] == 0x04
+    assert ne[5] == 0x83
+    assert ne[6] == 0x02
+    assert ne[7] == 0xC1
+    assert u64.from_be_bytes(be) == x
+    assert u64.from_le_bytes(le) == x
+    assert u64.from_ne_bytes(ne) == x
+    assert u64.from_be_bytes(le) == 614467042535473857
+    assert u64.from_le_bytes([0x08, 0x87, 0x06, 0x85, 0x04, 0x83, 0x02, 0xC1]) == x
+}
+
+test "u128" {
+    let x: u128 = 256554045133945959089655291017069236016
+    let zero: u128 = 0
+    // B1
+    assert x.count_ones() == 43
+    assert x.count_zeros() == 85
+    assert x.leading_zeros() == 0
+    assert x.trailing_zeros() == 4
+    assert x.leading_ones() == 2
+    assert x.trailing_ones() == 0
+    assert zero.leading_zeros() == 128
+    assert zero.trailing_zeros() == 128
+    assert zero.count_zeros() == 128
+    assert x.reverse_bits() == 17204365160694584378233671163456864387
+    assert x.reverse_bits().reverse_bits() == x
+    assert x.swap_bytes() == 64545737377233718443185943936927728321
+    assert x.rotate_left(3) == 10738159545936891936994683545944619398
+    assert x.rotate_right(3) == 32069255641743244886206911377133654502
+    // A rotation turns modulo the width: by the width is no turn at all.
+    assert x.rotate_left(128) == x
+    assert x.rotate_right(128) == x
+    assert x.rotate_left(131) == 10738159545936891936994683545944619398
+    assert x.rotate_right(131) == 32069255641743244886206911377133654502
+    // B2: the host is little-endian
+    assert x.to_be() == 64545737377233718443185943936927728321
+    assert x.to_le() == x
+    assert u128.from_be(x.to_be()) == x
+    assert u128.from_le(x.to_le()) == x
+    assert u128.from_be(x) == 64545737377233718443185943936927728321
+    assert u128.from_le(x) == x
+    // B3
+    let be = x.to_be_bytes()
+    assert be[0] == 0xC1
+    assert be[1] == 0x02
+    assert be[2] == 0x83
+    assert be[3] == 0x04
+    assert be[4] == 0x85
+    assert be[5] == 0x06
+    assert be[6] == 0x87
+    assert be[7] == 0x08
+    assert be[8] == 0x89
+    assert be[9] == 0x0A
+    assert be[10] == 0x8B
+    assert be[11] == 0x0C
+    assert be[12] == 0x8D
+    assert be[13] == 0x0E
+    assert be[14] == 0x8F
+    assert be[15] == 0x30
+    let le = x.to_le_bytes()
+    assert le[0] == 0x30
+    assert le[1] == 0x8F
+    assert le[2] == 0x0E
+    assert le[3] == 0x8D
+    assert le[4] == 0x0C
+    assert le[5] == 0x8B
+    assert le[6] == 0x0A
+    assert le[7] == 0x89
+    assert le[8] == 0x08
+    assert le[9] == 0x87
+    assert le[10] == 0x06
+    assert le[11] == 0x85
+    assert le[12] == 0x04
+    assert le[13] == 0x83
+    assert le[14] == 0x02
+    assert le[15] == 0xC1
+    let ne = x.to_ne_bytes()
+    assert ne[0] == 0x30
+    assert ne[1] == 0x8F
+    assert ne[2] == 0x0E
+    assert ne[3] == 0x8D
+    assert ne[4] == 0x0C
+    assert ne[5] == 0x8B
+    assert ne[6] == 0x0A
+    assert ne[7] == 0x89
+    assert ne[8] == 0x08
+    assert ne[9] == 0x87
+    assert ne[10] == 0x06
+    assert ne[11] == 0x85
+    assert ne[12] == 0x04
+    assert ne[13] == 0x83
+    assert ne[14] == 0x02
+    assert ne[15] == 0xC1
+    assert u128.from_be_bytes(be) == x
+    assert u128.from_le_bytes(le) == x
+    assert u128.from_ne_bytes(ne) == x
+    assert u128.from_be_bytes(le) == 64545737377233718443185943936927728321
+    assert u128.from_le_bytes([0x30, 0x8F, 0x0E, 0x8D, 0x0C, 0x8B, 0x0A, 0x89, 0x08, 0x87, 0x06, 0x85, 0x04, 0x83, 0x02, 0xC1]) == x
+}
