@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `string.from_char` with `import string.StringBuilder` in scope — #1614.
+//
+// The import made the interpreter bind `string` as a package, shadowing the
+// type. A package call looks for `string$from_char`, which a bodiless
+// `@native` declaration never registers:
+//
+//     interp:  undefined variable `from_char`
+//     native:  passes
+//
+// It reached stdlib code too: `csv.write_rows` failed on the interpreter in
+// any program that also imported StringBuilder.
+
+import string.StringBuilder
+
+test "string.from_char under an import of the string file" {
+    assert string.from_char('x') == "x"
+    mut b = StringBuilder.new()
+    b.push(string.from_char('y'))
+    assert b.build() == "y"
+}
+
+test "a Rask-bodied string function too" {
+    let s = string.from_utf8([104u8, 105u8]) catch _ => "bad"
+    assert s == "hi"
+}

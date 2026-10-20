@@ -1238,6 +1238,14 @@ impl Interpreter {
     /// Register external package names so `pkg.func()` works at runtime.
     pub fn register_packages(&mut self, names: &[String]) {
         for name in names {
+            // `import string.StringBuilder` names the `string` stub file, but
+            // `string` already means the type, and its constructor reaches
+            // every function the file declares. Binding a package over it
+            // left `string.from_char` looking for `string$from_char`, which
+            // a bodiless `@native` never registers.
+            if crate::value::TypeConstructorKind::from_name(name).is_some() {
+                continue;
+            }
             self.env.define(name.clone(), Value::Package(name.clone()));
         }
     }
