@@ -117,7 +117,7 @@ extend TcpListener {
     public func local_addr(self) -> string {}
 
     /// Close the listener.
-    @native("rask_net_close")
+    @native("rask_net_close", returns: nothing)
     @blocks
     public func close(take self) -> void or IoError {}
 
@@ -206,7 +206,7 @@ extend TcpConnection {
     func read_some_raw(self, max: i64) -> Vec<u8>? {}
 
     /// Close the connection.
-    @native("rask_net_close")
+    @native("rask_net_close", returns: nothing)
     @blocks
     public func close(take self) -> void or IoError {}
 
@@ -322,7 +322,7 @@ extend UdpSocket {
     public func local_addr(self) -> string {}
 
     /// Close the socket.
-    @native("rask_net_close")
+    @native("rask_net_close", returns: nothing)
     public func close(take self) -> void or IoError {}
 
     /// 0 when sent, -1 with errno set, -2 when `addr` doesn't resolve.

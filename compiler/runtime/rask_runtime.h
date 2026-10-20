@@ -290,6 +290,7 @@ RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_iter_take(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
+RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(const void *field, int64_t size, void *out);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
@@ -297,6 +298,13 @@ int64_t  rask_field_take(const void *field, int64_t size, void *out);
 // (rask_abi.h).
 void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
+// A float's bit pattern at its own width, every NaN as the one quiet NaN.
+uint32_t rask_f32_to_bits(float f);
+float    rask_f32_from_bits(uint32_t bits);
+uint64_t rask_f64_to_bits(double d);
+double   rask_f64_from_bits(uint64_t bits);
+
+
 // `pass`: how the comparator takes the two elements, a RASK_SORT_PASS_* code
 // (rask_abi.h). Lowering knows which; the width doesn't say. Lowering picks one
 // in `sort_pass` (rask-mir lower/expr.rs).
@@ -338,6 +346,7 @@ void        rask_string_from_bytes(RaskStr *out, const char *data, int64_t len);
 // RC operations — codegen calls after inline tag check (RC5)
 void        rask_string_free(const RaskStr *s);
 void        rask_string_clone(const RaskStr *s);
+void        rask_string_unshare(RaskStr *out, const RaskStr *s);
 
 // `RASK_STRING_DEBUG=1`: a released string buffer is poisoned and kept rather
 // than returned to the allocator, so the next retain or release of it says so
@@ -384,6 +393,7 @@ int64_t     rask_string_find(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_rfind(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_parse_int(const RaskStr *s);
 double      rask_string_parse_float(const RaskStr *s);
+int64_t     rask_string_parse_int_into(const RaskStr *s, int64_t *out);
 
 // String-producing operations (out-param: RaskStr *out as first param)
 void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
@@ -430,7 +440,9 @@ int64_t     rask_string_builder_is_empty(int64_t handle);
 RaskVec    *rask_string_lines(const RaskStr *s);
 RaskVec    *rask_string_split(const RaskStr *s, const RaskStr *sep);
 RaskVec    *rask_string_split_whitespace(const RaskStr *s);
+RaskVec    *rask_string_bytes(const RaskStr *s);
 RaskVec    *rask_string_chars(const RaskStr *s);
+RaskVec    *rask_string_char_indices(const RaskStr *s);
 
 // Conversion to string (out-param)
 void        rask_i64_to_string(RaskStr *out, int64_t val);
@@ -813,6 +825,8 @@ int64_t     rask_file_close(int64_t file);
 // calls above it need it.
 const char *rask_io_error_text(int32_t err);
 void rask_io_error_message(RaskStr *out, int32_t err);
+int32_t rask_io_errno(void);
+int32_t rask_io_error_kind(int32_t err);
 
 // How a string-out-param call ended: `RASK_STROUT_*`. ERROR means *err_out
 // holds the message (IoError.Other), EOF that the input ran out.
@@ -837,6 +851,7 @@ int64_t     rask_io_std_read_bytes(int64_t max);
 // Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
 
 int64_t rask_time_Instant_now(void);
+int64_t rask_time_wall_clock_nanos(void);
 int64_t rask_time_Instant_elapsed(int64_t instant_ns);
 int64_t rask_time_Duration_from_nanos(int64_t ns);
 int64_t rask_time_Duration_from_millis(int64_t ms);
@@ -857,6 +872,11 @@ int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 // Basic TCP socket operations.
 
 int64_t rask_net_tcp_listen(const RaskStr *addr);
+int8_t  rask_net_resolves(const RaskStr *addr);
+int64_t rask_net_udp_bind(const RaskStr *addr);
+int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr);
+int64_t rask_net_udp_receive(int64_t fd);
+int64_t rask_net_udp_try_receive(int64_t fd);
 int64_t rask_net_tcp_connect(const RaskStr *addr);
 int64_t rask_net_tcp_accept(int64_t listen_fd);
 void    rask_net_close(int64_t fd);
@@ -878,6 +898,10 @@ int64_t rask_metadata_modified(int64_t meta_ptr);
 
 // ─── Args parsing ───────────────────────────────────────────
 int64_t rask_args_parse(void);
+RaskVec *rask_cli_args(void);
+void    rask_exit(int64_t code);
+// Sim runs only: turn on the faults `mask` names. False outside sim.
+int64_t rask_sim_enable_faults(int64_t mask);
 int64_t rask_args_flag(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
 int64_t rask_args_option(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
 void    rask_args_option_or(RaskStr *out, int64_t args_ptr, int64_t long_ptr,
@@ -900,7 +924,6 @@ void         rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskStr *key, int64_
 void         rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *raw_json);
 void         rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf);
 
-void         rask_json_encode(RaskStr *out, int64_t value_ptr);
 void         rask_json_encode_string(RaskStr *out, const RaskStr *s);
 void         rask_json_encode_i64(RaskStr *out, int64_t val);
 

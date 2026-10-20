@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `byte_at` past the end is `none` on both backends.
+//
+// Native answered `some(0)`: the runtime returned 0 for a miss and the
+// dispatch row passed the return through as the payload. The row is built
+// from the declaration now, which says `u8?`, and a scalar option comes back
+// as a negative return for `none`.
+
+test "byte_at past the end is none" {
+    let s = "hi"
+    assert((s.byte_at(0) ?? 0) == 104)
+    assert((s.byte_at(1) ?? 0) == 105)
+    assert(s.byte_at(2) == none)
+    assert(s.byte_at(100) == none)
+    assert(("".byte_at(0) ?? 7) == 7)
+}

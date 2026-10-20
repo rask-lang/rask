@@ -3,6 +3,7 @@
 //! Rask code generator — MIR → native code via Cranelift.
 
 pub mod c_abi;
+mod c_header;
 mod types;
 mod builder;
 pub mod closures;

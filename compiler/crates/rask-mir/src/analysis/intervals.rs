@@ -191,7 +191,7 @@ pub struct IndexOp {
     pub len_local: Option<LocalId>,
     /// Span of the indexing operation.
     pub span: crate::Span,
-    /// Whether this is a Vec_get (vs ArrayIndex).
+    /// Whether this is a Vec_index (vs ArrayIndex).
     pub is_vec_get: bool,
 }
 
@@ -219,8 +219,8 @@ impl IntervalAnalysis {
                                 len_locals.insert(*dst, LenSource { collection: *collection });
                             }
                         }
-                        // Vec_get(collection, index) — the indexing operation
-                        if fref.name == "Vec_get" || fref.name == "Vec_index" {
+                        // Vec_index(collection, index) — the indexing operation
+                        if fref.name == "Vec_index" {
                             if args.len() >= 2 {
                                 if let (Some(MirOperand::Local(collection)), Some(idx_op)) =
                                     (args.first(), args.get(1))
@@ -612,7 +612,7 @@ pub fn is_in_bounds(
 
     let index_interval = state.get(op.index);
 
-    // For Vec_get: check against the length local's interval
+    // For Vec_index: check against the length local's interval
     if let Some(len_local) = op.len_local {
         let len_interval = state.get(len_local);
         // Absolute interval proof: index.hi < len.lo
@@ -684,7 +684,7 @@ mod tests {
         MirStmt {
             kind: MirStmtKind::Call {
                 dst: Some(local(dst)),
-                func: FunctionRef::internal("Vec_get".into()),
+                func: FunctionRef::internal("Vec_index".into()),
                 args: vec![
                     MirOperand::Local(local(vec_local)),
                     MirOperand::Local(local(idx_local)),
@@ -802,7 +802,7 @@ mod tests {
         // _1: len = Vec_len(vec)
         // _2: i (counter, starts at 0)
         // _3: cond = i < len
-        // _4: result = Vec_get(vec, i)
+        // _4: result = Vec_index(vec, i)
         // _5: i_next = i + 1
 
         let func = MirFunction {
@@ -841,7 +841,7 @@ mod tests {
                 MirBlock {
                     id: block(2),
                     statements: vec![
-                        call_vec_get(4, 0, 2),     // result = Vec_get(vec, i)
+                        call_vec_get(4, 0, 2),     // result = Vec_index(vec, i)
                         assign_add(5, 2, 1),       // i_next = i + 1
                         MirStmt {                   // i = i_next (copy)
                             kind: MirStmtKind::Assign {
@@ -869,7 +869,7 @@ mod tests {
             panic!("expected analysis to run");
         };
 
-        // Should find one indexing op (Vec_get in block 2)
+        // Should find one indexing op (Vec_index in block 2)
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].block, block(2));
         assert_eq!(ops[0].index, local(2));

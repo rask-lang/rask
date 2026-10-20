@@ -269,9 +269,14 @@ pub struct MethodStub {
     /// could a test — which is how `f64.floor()` shipped working on the
     /// interpreter and missing from codegen (#687).
     ///
-    /// `Some(symbol)` names the implementation; `Some("")` means `@native` with
-    /// no symbol given, for the ones resolved by another route.
-    pub native: Option<std::string::String>,
+    /// `Some` with a symbol names the C entry point, and native codegen builds
+    /// its call from this declaration (`rask_codegen::dispatch`). An empty
+    /// symbol means `@native` alone, for the ones lowered by another route.
+    pub native: Option<NativeDecl>,
+    /// The type parameters in scope: the extended type's (`T` of `extend
+    /// Vec<T>`) and the method's own. A parameter or return of one of these
+    /// is a value of a width only the call site knows.
+    pub type_params: Vec<String>,
     /// The stub has a Rask body — the implementation is right here, and both
     /// backends run it. The registry couldn't answer this before, which meant
     /// nothing could distinguish "written in Rask" from "declared only".
@@ -303,6 +308,68 @@ pub struct TypeStub {
     pub source_file: String,
     /// Byte offset span of the type name within the stub source.
     pub span: Span,
+}
+
+/// What a `@native(...)` attribute says about the C entry point behind it.
+///
+/// Native codegen calls the symbol with an argument and return convention it
+/// reads off the declaration's types. These are the facts the types can't
+/// carry, written as labelled arguments:
+///
+/// - `panics: true` — the C function can panic, so the call records its site
+///   first and the report names the program's line.
+/// - `returns: …` — how the C side hands back a result whose type alone
+///   doesn't say (see `NativeReturn`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeDecl {
+    /// Empty for `@native` with no symbol.
+    pub symbol: String,
+    pub panics: bool,
+    pub returns: Option<NativeReturn>,
+}
+
+/// How a C entry point reports what a declaration's return type can't spell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeReturn {
+    /// The address of a value the C side keeps holding, not a fresh one:
+    /// `Args.program()` answers the string inside the parsed arguments.
+    Pointer,
+    /// A negative return is the failure: `void or E`'s error, with nothing
+    /// to carry.
+    Negative,
+    /// 0 for success, or a `RASK_CHAN_*` code the error enum has a variant for.
+    Status,
+    /// The C side can't fail and returns nothing; the `void or E` is always
+    /// its success.
+    Nothing,
+}
+
+impl NativeDecl {
+    /// Read `@native`, `@native("sym")` or `@native("sym", label: value, …)`.
+    ///
+    /// The stdlib is the only writer, so a label or value this doesn't know is
+    /// a typo in `stdlib/*.rk` and fails loudly rather than being dropped.
+    fn from_attr(a: &rask_ast::attr::Attr, owner: &str) -> NativeDecl {
+        let mut out = NativeDecl {
+            symbol: a.positional().and_then(|v| v.string()).unwrap_or_default(),
+            ..NativeDecl::default()
+        };
+        for (label, value) in a.labelled() {
+            match (label, value.literal(), value.ident()) {
+                ("panics", Some(rask_ast::expr::Literal::Bool(b)), _) => out.panics = b,
+                ("returns", _, Some("pointer")) => out.returns = Some(NativeReturn::Pointer),
+                ("returns", _, Some("negative")) => out.returns = Some(NativeReturn::Negative),
+                ("returns", _, Some("status")) => out.returns = Some(NativeReturn::Status),
+                ("returns", _, Some("nothing")) => out.returns = Some(NativeReturn::Nothing),
+                _ => panic!(
+                    "`@{a}` on `{owner}`: `{label}` isn't something `@native` takes. \
+                     It takes `panics: true` and `returns: pointer | negative | \
+                     status | nothing`"
+                ),
+            }
+        }
+        out
+    }
 }
 
 /// A stub parameter's declared mode.
@@ -757,6 +824,17 @@ fn fn_to_method_stub(
         })
         .collect();
     let own_type_params: Vec<bool> = params.iter().map(|(_, ty)| ty == own_ty).collect();
+    // The block's parameters are the bare names its header passes the type
+    // (`extend Vec<T>`), the way the resolver puts them in scope; a concrete
+    // argument (`extend Sequence<string>`) isn't one.
+    let type_params: Vec<String> = own_ty
+        .args()
+        .iter()
+        .filter_map(TypeExpr::bare_name)
+        .filter(|n| !rask_ast::primitives::is_builtin_scalar_or_string(n))
+        .map(str::to_string)
+        .chain(f.type_params.iter().map(|p| p.name.clone()))
+        .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
@@ -779,10 +857,9 @@ fn fn_to_method_stub(
         builtin: f.attrs.iter().any(|a| a.is("builtin")),
         has_body: !f.body.is_empty(),
         is_comptime: f.is_comptime,
-        // `@native` alone is the empty symbol; `@native("sym")` names one.
-        native: rask_ast::attr::find(&f.attrs, "native").map(|a| {
-            a.positional().and_then(|v| v.string()).unwrap_or_default()
-        }),
+        native: rask_ast::attr::find(&f.attrs, "native")
+            .map(|a| NativeDecl::from_attr(a, &f.name)),
+        type_params,
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
