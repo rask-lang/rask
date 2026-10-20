@@ -274,7 +274,6 @@ std.bits usize.trailing_ones MISSING
 std.bits usize.trailing_zeros MISSING
 std.bits Vec.take MISMATCH
 std.bits ParseError VARIANTS
-std.cli - NO-SURFACE
 std.collections Map.from MISSING
 std.collections Vec.from MISSING
 std.collections Vec.from_raw_parts MISSING
@@ -471,3 +470,5 @@ std.url url.encode_query MISSING
 std.url url.parse MISSING
 std.url url.parse_query MISSING
 std.reflect reflect.interfaces UNBUILT
+std.cli cli.parse UNTESTED      # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
+std.cli Parser.parse UNTESTED   # same
