@@ -1005,9 +1005,8 @@ impl Interpreter {
             Path => false, // Path module has no module-level methods
             Async => matches!(method, "cancelled"),
             Thread => matches!(method, "Thread" | "ThreadPool"),
-            Http => false,
+            Http | Cli => false,
             Env => matches!(method, "var" | "vars"),
-            Cli => matches!(method, "args" | "parse"),
             Reflect => false,
         }
     }
