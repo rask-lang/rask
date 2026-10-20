@@ -144,3 +144,6 @@ t_random_range_imported.rk       # imported random.range result type open — #1
 # Test output written through an `io.stdout()` handle goes to the terminal on
 # the interpreter instead of under the test.
 t_stdout_handle_test_output.rk   # handle writes not captured — #1605 (interp output)
+
+# A range with 128-bit bounds: the interpreter range holds i64s.
+t_range_over_i128.rk             # interp range over i128 — #1619 (interp run)
