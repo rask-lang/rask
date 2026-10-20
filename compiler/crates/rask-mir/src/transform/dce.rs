@@ -22,10 +22,18 @@ pub fn eliminate_dead_code(func: &mut MirFunction) -> usize {
 }
 
 /// Remove blocks not reachable from the entry block.
-fn remove_unreachable_blocks(func: &mut MirFunction) -> usize {
+pub fn remove_unreachable_blocks(func: &mut MirFunction) -> usize {
     let reachable = cfg::reachable_blocks(func);
     let before = func.blocks.len();
     func.blocks.retain(|b| reachable.contains(&b.id));
+    // A phi input from a block that's gone names a path that never runs.
+    for block in &mut func.blocks {
+        for stmt in &mut block.statements {
+            if let MirStmtKind::Phi { args, .. } = &mut stmt.kind {
+                args.retain(|(from, _)| reachable.contains(from));
+            }
+        }
+    }
     before - func.blocks.len()
 }
 

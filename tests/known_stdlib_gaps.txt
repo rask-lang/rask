@@ -200,12 +200,6 @@ std.collections Vec.from_raw_parts MISSING
 std.collections Vec.modify_many MISSING
 std.collections Vec.push_all MISSING
 std.collections Vec.try_insert MISSING
-std.csv CsvError MISSING
-std.csv csv.decode MISSING
-std.csv csv.encode MISSING
-std.csv csv.rows MISSING
-std.csv csv.stream MISSING
-std.csv csv.write_rows MISSING
 std.fmt Displayable.display MISSING
 std.fmt format UNTESTED
 std.fs DirEntry MISSING
@@ -332,16 +326,4 @@ std.tls Verification MISSING
 std.tls tls.connect MISSING
 std.tls tls.listen MISSING
 std.tls tls.wrap MISSING
-std.url Url MISSING
-std.url Url.display [Displayable] MISSING
-std.url Url.div [Div<string>] MISSING
-std.url Url.params MISSING
-std.url Url.port MISSING
-std.url Url.query MISSING
-std.url Url.with_query MISSING
-std.url UrlError MISSING
-std.url url.decode MISSING
-std.url url.encode MISSING
-std.url url.encode_query MISSING
-std.url url.parse MISSING
-std.url url.parse_query MISSING
+std.url Url.display [Displayable] MISSING  # Url implements Displayable through to_string, the name stdlib/fmt.rk still declares; closes with std.fmt Displayable.display

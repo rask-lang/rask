@@ -1537,7 +1537,23 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand),
 
             // Function call — direct or through closure
-            ExprKind::Call { func, args } => self.lower_call(expr, func, args),
+            ExprKind::Call { func, args } => {
+                let result = self.lower_call(expr, func, args)?;
+                // `panic(…)`, `todo()`: control never comes back. Code after
+                // it — a `catch` arm's value flowing to the merge — goes in a
+                // block nothing reaches, so no pass reads it as a path that
+                // runs. Without this, `return f() catch _ => { panic(…) }`
+                // looked like it could return the panic's "value", and the
+                // container `f` built was nobody's to free.
+                if matches!(self.ctx.lookup_raw_type(expr.id), Some(rask_types::Type::Never))
+                    && self.builder.current_block_unterminated()
+                {
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    let dead = self.builder.create_block();
+                    self.builder.switch_to_block(dead);
+                }
+                Ok(result)
+            }
 
             // If expression (spec L1)
             ExprKind::If {

@@ -1,0 +1,507 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// URLs (std.url), RFC 3986. One `Url` with the parts as fields, the port worked
+// out from the scheme, and the one percent-encoder. Pure Rask, so both backends
+// run the same code.
+//
+// Path, query and fragment are stored as written, still percent-encoded. That
+// keeps `%2F` inside a segment from turning into a separator, and makes
+// `to_string()` give back what was parsed. Escapes are checked at parse time,
+// so reading a query parameter later can't fail.
+
+/// Why a URL or an escape was rejected.
+public enum UrlError {
+    NoScheme
+    BadScheme(string)
+    BadPort(string)
+    BadEscape(string)
+    BadHost(string)
+}
+
+extend UrlError {
+    public func message(self) -> string {
+        match self {
+            UrlError.NoScheme => return "URL has no scheme: url.parse takes absolute URLs like \"https://example.com/\""
+            UrlError.BadScheme(s) => return "URL scheme \"{s}\" must start with a letter and hold only letters, digits, \"+\", \"-\" and \".\""
+            UrlError.BadPort(p) => return "URL port \"{p}\" is not a number from 0 to 65535"
+            UrlError.BadEscape(e) => return "bad percent-escape \"{e}\": \"%\" takes two hex digits, and the decoded bytes must be UTF-8"
+            UrlError.BadHost(h) => return "URL host \"{h}\" is not a valid host"
+        }
+    }
+}
+
+/// A parsed absolute URL.
+public struct Url {
+    public scheme: string
+    public host: string
+    public explicit_port: u16?
+    public path: string
+    public query: string?
+    public fragment: string?
+    public user: string?
+}
+
+extend Url {
+    /// The port to connect to: the one written, else the scheme's default.
+    public func port(self) -> u16? {
+        if self.explicit_port? as p {
+            return p
+        }
+        return url_default_port(self.scheme)
+    }
+
+    /// The first value of query parameter `key`, decoded. A key written with
+    /// no `=` has the value "".
+    public func param(self, key: string) -> string? {
+        for pair in self.params() {
+            if pair.0 == key {
+                return pair.1
+            }
+        }
+        return none
+    }
+
+    /// Every query parameter in order, decoded, repeats included.
+    public func params(self) -> Vec<(string, string)> {
+        if self.query? as q {
+            // Escapes were checked by url.parse, so this can't fail.
+            return url.parse_query(q) catch _ => Vec.new()
+        }
+        return Vec.new()
+    }
+
+    /// The same URL with its query replaced by `pairs`. No pairs, no query.
+    public func with_query(self, pairs: Vec<(string, string)>) -> Url {
+        mut query: string? = none
+        if !pairs.is_empty() {
+            query = url.encode_query(pairs)
+        }
+        return Url(
+            scheme: self.scheme,
+            host: self.host,
+            explicit_port: self.explicit_port,
+            path: self.path,
+            query: query,
+            fragment: url_copy(self.fragment),
+            user: url_copy(self.user),
+        )
+    }
+}
+
+Url implements Displayable {
+    /// Reassemble the URL. A port that equals the scheme's default is dropped.
+    public func to_string(self) -> string {
+        mut out = StringBuilder.new()
+        out.push(self.scheme)
+        out.push(":")
+        mut port_shown: u16? = none
+        if self.explicit_port? as p {
+            if url_default_port(self.scheme) != p {
+                port_shown = p
+            }
+        }
+        // "mailto:a@b" has no authority; "file:///etc" has an empty one. A
+        // path starting with "/" reads the same either way, so "//" goes in
+        // whenever there's something to put there or the path allows it.
+        if !self.host.is_empty() || self.user? || port_shown? || self.path.starts_with("/") {
+            out.push("//")
+            if self.user? as u {
+                out.push(u)
+                out.push("@")
+            }
+            if self.host.contains(":") {
+                out.push("[")
+                out.push(self.host)
+                out.push("]")
+            } else {
+                out.push(self.host)
+            }
+            if port_shown? as p {
+                out.push(":{p}")
+            }
+        }
+        out.push(self.path)
+        if self.query? as q {
+            out.push("?")
+            out.push(q)
+        }
+        if self.fragment? as f {
+            out.push("#")
+            out.push(f)
+        }
+        return out.build()
+    }
+}
+
+/// `u / "segment"` appends one path segment, percent-encoding it, the way
+/// `Path` appends a component. Query and fragment are kept.
+Url implements Div<string> {
+    type Out = Url
+
+    public func div(self, segment: string) -> Url {
+        let path = if self.path.ends_with("/") {
+            "{self.path}{url.encode(segment)}"
+        } else {
+            "{self.path}/{url.encode(segment)}"
+        }
+        return Url(
+            scheme: self.scheme,
+            host: self.host,
+            explicit_port: self.explicit_port,
+            path: path,
+            query: url_copy(self.query),
+            fragment: url_copy(self.fragment),
+            user: url_copy(self.user),
+        )
+    }
+}
+
+struct url { }
+
+extend url {
+    /// Parse an absolute URL. Scheme and host are lowercased; the rest keeps
+    /// its case and its escapes.
+    public func parse(s: string) -> Url or UrlError {
+        let len = s.len()
+        // The scheme ends at the first ":", which has to come before any
+        // "/", "?" or "#" — otherwise there's no scheme, only a path.
+        mut colon = len
+        for i in 0..len {
+            let b = s.byte_at(i) ?? 0
+            if b == 58 {
+                colon = i
+                break
+            }
+            if b == 47 || b == 63 || b == 35 {
+                break
+            }
+        }
+        if colon == len || colon == 0 {
+            return UrlError.NoScheme
+        }
+        let scheme = s[0..colon].to_string()
+        if !url_is_scheme(scheme) {
+            return UrlError.BadScheme(scheme)
+        }
+
+        mut host = ""
+        mut user: string? = none
+        mut explicit_port: u16? = none
+        mut pos = colon + 1
+        if s[pos..len].starts_with("//") {
+            pos = pos + 2
+            mut end = len
+            for i in pos..len {
+                let b = s.byte_at(i) ?? 0
+                if b == 47 || b == 63 || b == 35 {
+                    end = i
+                    break
+                }
+            }
+            mut hostport = s[pos..end].to_string()
+            pos = end
+            if hostport.last_index_of("@")? as at {
+                let u = hostport[0..at].to_string()
+                try url_check_escapes(u)
+                user = u
+                hostport = hostport[at + 1..hostport.len()].to_string()
+            }
+            mut port_text: string? = none
+            if hostport.starts_with("[") {
+                // IPv6 literal. The brackets aren't part of the host.
+                let close = hostport.index_of("]") ?? 0
+                if close == 0 {
+                    return UrlError.BadHost(hostport)
+                }
+                host = hostport[1..close].to_string()
+                let after = hostport[close + 1..hostport.len()].to_string()
+                if after.starts_with(":") {
+                    port_text = after[1..after.len()].to_string()
+                } else if !after.is_empty() {
+                    return UrlError.BadHost(hostport)
+                }
+            } else if hostport.last_index_of(":")? as c {
+                host = hostport[0..c].to_string()
+                port_text = hostport[c + 1..hostport.len()].to_string()
+            } else {
+                host = hostport
+            }
+            if port_text? as p {
+                // "http://x:/" is allowed and means no port was given.
+                if !p.is_empty() {
+                    explicit_port = try url_port(p)
+                }
+            }
+            host = host.to_lowercase()
+            if !url_is_host(host) {
+                return UrlError.BadHost(host)
+            }
+            if host.is_empty() && (user? || explicit_port?) {
+                return UrlError.BadHost(host)
+            }
+        }
+
+        // Path runs to "?" or "#", query to "#", fragment to the end.
+        mut path_end = len
+        mut query_start = len
+        mut frag_start = len
+        for i in pos..len {
+            let b = s.byte_at(i) ?? 0
+            if b == 35 {
+                frag_start = i
+                if path_end == len {
+                    path_end = i
+                }
+                break
+            }
+            if b == 63 && query_start == len {
+                query_start = i
+                path_end = i
+            }
+        }
+        mut path = s[pos..path_end].to_string()
+        try url_check_escapes(path)
+        if path.is_empty() {
+            path = "/"
+        }
+        mut query: string? = none
+        if query_start < len {
+            let q_end = if frag_start < len { frag_start } else { len }
+            let q = s[query_start + 1..q_end].to_string()
+            try url_check_escapes(q)
+            if !q.is_empty() {
+                query = q
+            }
+        }
+        mut fragment: string? = none
+        if frag_start < len {
+            let f = s[frag_start + 1..len].to_string()
+            try url_check_escapes(f)
+            if !f.is_empty() {
+                fragment = f
+            }
+        }
+
+        return Url(
+            scheme: scheme.to_lowercase(),
+            host: host,
+            explicit_port: explicit_port,
+            path: path,
+            query: query,
+            fragment: fragment,
+            user: user,
+        )
+    }
+
+    /// Percent-encode everything outside the unreserved set
+    /// (letters, digits, "-", ".", "_", "~").
+    public func encode(s: string) -> string {
+        let digits = "0123456789ABCDEF"
+        let len = s.len()
+        mut out = StringBuilder.with_capacity(len)
+        for i in 0..len {
+            let b = s.byte_at(i) ?? 0
+            if url_is_unreserved(b) {
+                out.push_char(char.from_u32(b as u32) ?? '?')
+            } else {
+                out.push_char('%')
+                out.push_char(digits.char_at((b >> 4) as usize) ?? '0')
+                out.push_char(digits.char_at((b & 15) as usize) ?? '0')
+            }
+        }
+        return out.build()
+    }
+
+    /// Undo percent-encoding. "+" stays "+": that rule belongs to query
+    /// strings, and `parse_query` applies it.
+    public func decode(s: string) -> string or UrlError {
+        return url_decode(s, false)
+    }
+
+    /// `k=v` pairs joined with "&", each side encoded.
+    public func encode_query(pairs: Vec<(string, string)>) -> string {
+        mut out = StringBuilder.new()
+        mut first = true
+        for pair in pairs {
+            if !first {
+                out.push("&")
+            }
+            first = false
+            out.push(url.encode(pair.0))
+            out.push("=")
+            out.push(url.encode(pair.1))
+        }
+        return out.build()
+    }
+
+    /// Split a bare query string (no "?") or a form body into decoded pairs.
+    /// "+" is a space here. A key with no "=" gets the value "".
+    public func parse_query(s: string) -> Vec<(string, string)> or UrlError {
+        mut out: Vec<(string, string)> = Vec.new()
+        if s.is_empty() {
+            return out
+        }
+        for part in s.split("&") {
+            if part.is_empty() {
+                continue
+            }
+            if part.index_of("=")? as eq {
+                let key = try url_decode(part[0..eq].to_string(), true)
+                let value = try url_decode(part[eq + 1..part.len()].to_string(), true)
+                out.push((key, value))
+            } else {
+                let key = try url_decode(part.to_string(), true)
+                out.push((key, ""))
+            }
+        }
+        return out
+    }
+}
+
+// ─── Internals ──────────────────────────────────────────────────
+
+/// A copy of an optional field. Workaround: `self.field.clone()` is what this
+/// should be, and native can't compile it yet (#1611).
+func url_copy(s: string?) -> string? {
+    if s? as x {
+        return x.clone()
+    }
+    return none
+}
+
+func url_default_port(scheme: string) -> u16? {
+    match scheme {
+        "http" => return 80
+        "https" => return 443
+        "ws" => return 80
+        "wss" => return 443
+        "ftp" => return 21
+        "ssh" => return 22
+        _ => return none
+    }
+}
+
+/// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+func url_is_scheme(s: string) -> bool {
+    let first = s.byte_at(0) ?? 0
+    if !url_is_alpha(first) {
+        return false
+    }
+    for i in 1..s.len() {
+        let b = s.byte_at(i) ?? 0
+        if !(url_is_alpha(b) || url_is_digit(b) || b == 43 || b == 45 || b == 46) {
+            return false
+        }
+    }
+    return true
+}
+
+/// No controls, spaces, or characters the grammar keeps out of a host.
+func url_is_host(s: string) -> bool {
+    for i in 0..s.len() {
+        let b = s.byte_at(i) ?? 0
+        if b <= 32 || b == 127 {
+            return false
+        }
+        // " < > \ ^ ` { | } / ? # @ [ ]
+        if b == 34 || b == 60 || b == 62 || b == 92 || b == 94 || b == 96 || b == 123 || b == 124 || b == 125 {
+            return false
+        }
+        if b == 47 || b == 63 || b == 35 || b == 64 || b == 91 || b == 93 {
+            return false
+        }
+    }
+    return true
+}
+
+func url_port(p: string) -> u16 or UrlError {
+    if p.len() > 5 {
+        return UrlError.BadPort(p)
+    }
+    mut n: u32 = 0
+    for i in 0..p.len() {
+        let b = p.byte_at(i) ?? 0
+        if !url_is_digit(b) {
+            return UrlError.BadPort(p)
+        }
+        n = n * 10 + ((b - 48) as u32)
+    }
+    if n > 65535 {
+        return UrlError.BadPort(p)
+    }
+    return n.wrap<u16>()
+}
+
+func url_is_alpha(b: u8) -> bool {
+    return (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+}
+
+func url_is_digit(b: u8) -> bool {
+    return b >= 48 && b <= 57
+}
+
+func url_is_unreserved(b: u8) -> bool {
+    return url_is_alpha(b) || url_is_digit(b) || b == 45 || b == 46 || b == 95 || b == 126
+}
+
+func url_hex_value(b: u8) -> i32 {
+    if b >= 48 && b <= 57 {
+        return (b as i32) - 48
+    }
+    if b >= 65 && b <= 70 {
+        return (b as i32) - 55
+    }
+    if b >= 97 && b <= 102 {
+        return (b as i32) - 87
+    }
+    return -1
+}
+
+/// The escape starting at `i`, as written, for an error message: "%zz", "%4",
+/// or "%" at the end of the input.
+func url_escape_text(s: string, i: usize) -> string {
+    let end = if i + 3 < s.len() { i + 3 } else { s.len() }
+    return s[i..end].to_string()
+}
+
+/// Every "%" is followed by two hex digits.
+func url_check_escapes(s: string) -> void or UrlError {
+    let len = s.len()
+    for i in 0..len {
+        if (s.byte_at(i) ?? 0) == 37 {
+            let hi = url_hex_value(s.byte_at(i + 1) ?? 0)
+            let lo = url_hex_value(s.byte_at(i + 2) ?? 0)
+            if i + 2 >= len || hi < 0 || lo < 0 {
+                return UrlError.BadEscape(url_escape_text(s, i))
+            }
+        }
+    }
+}
+
+func url_decode(s: string, plus_is_space: bool) -> string or UrlError {
+    let len = s.len()
+    mut bytes: Vec<u8> = Vec.with_capacity(len)
+    mut i: usize = 0
+    while i < len {
+        let b = s.byte_at(i) ?? 0
+        if b == 37 {
+            let hi = url_hex_value(s.byte_at(i + 1) ?? 0)
+            let lo = url_hex_value(s.byte_at(i + 2) ?? 0)
+            if i + 2 >= len || hi < 0 || lo < 0 {
+                return UrlError.BadEscape(url_escape_text(s, i))
+            }
+            bytes.push((hi * 16 + lo).wrap<u8>())
+            i = i + 3
+        } else if b == 43 && plus_is_space {
+            bytes.push(32)
+            i = i + 1
+        } else {
+            bytes.push(b)
+            i = i + 1
+        }
+    }
+    // "%FF" is a well-formed escape for a byte that isn't UTF-8 on its own.
+    return string.from_utf8(bytes) catch _ => {
+        return UrlError.BadEscape(s)
+    }
+}

@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A suffix after a nested generic's `>>` belongs to the outer type — #1612.
+//
+// `Vec<Vec<i64>> or E` used to parse as `Vec<Vec<i64> or E>` and
+// `Vec<Vec<i64>>?` as `Vec<Vec<i64>?>`: the `>>` was split into two `>`, and
+// the inner type looked for an `or`/`?` while the outer `>` was still pending.
+
+import io
+
+func grid(fail: bool) -> Vec<Vec<i64>> or io.IoError {
+    if fail {
+        return io.IoError.Other("no grid")
+    }
+    mut v: Vec<Vec<i64>> = Vec.new()
+    v.push([1, 2])
+    v.push([3])
+    return v
+}
+
+func maybe_grid(some: bool) -> Vec<Vec<i64>>? {
+    if !some {
+        return none
+    }
+    mut v: Vec<Vec<i64>> = Vec.new()
+    v.push([7])
+    return v
+}
+
+test "or after >> is the outer result" {
+    let g = grid(false) catch _ => {
+        assert false
+        return
+    }
+    assert g.len() == 2
+    assert g[0][1] == 2
+    let failed = grid(true) catch _ => {
+        return
+    }
+    assert failed.len() == 99
+}
+
+test "? after >> is the outer optional" {
+    if maybe_grid(true)? as g {
+        assert g[0][0] == 7
+    } else {
+        assert false
+    }
+    assert maybe_grid(false) == none
+}

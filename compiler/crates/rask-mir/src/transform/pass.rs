@@ -131,6 +131,10 @@ impl PassManager {
         // ever consults — a warning about a name that had no answer to get
         // wrong.
         pm.add(UnmappedSpellingReportPass);
+        // Before the drop pass: it asks what every definition of a name holds,
+        // and one in a block nothing reaches — the code after a `panic` — is
+        // not a path the value takes.
+        pm.add(UnreachableBlockPass);
         pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
@@ -259,6 +263,17 @@ impl MirPass for DeadCodeEliminationPass {
     fn name(&self) -> &str { "dce" }
     fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::dce::eliminate_dead_code(func);
+    }
+}
+
+/// Remove blocks nothing reaches. `dce` does it too, at the end; this is for
+/// the ownership passes in between.
+pub struct UnreachableBlockPass;
+
+impl MirPass for UnreachableBlockPass {
+    fn name(&self) -> &str { "unreachable_blocks" }
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
+        crate::transform::dce::remove_unreachable_blocks(func);
     }
 }
 

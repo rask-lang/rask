@@ -1,0 +1,357 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.csv: typed decode/encode through the derived codec (C1, C6), columns by
+// name (C2), automatic quoting (C3), row validation (C4), missing column vs
+// empty cell (C5), raw rows both ways, streaming from a reader, and every
+// error variant.
+
+import csv
+import io
+import string.StringBuilder
+
+struct Sale {
+    region: string
+    units: u32
+    revenue: f64
+}
+
+struct Loose {
+    name: string
+    count: i64
+    ratio: f64
+    ok: bool
+    note: string?
+}
+
+struct Renamed {
+    region: string
+    @rename("total")
+    revenue: f64
+}
+
+struct Defaults {
+    id: i64
+    @default(7)
+    level: i64
+    tag: string?
+}
+
+struct Small {
+    n: u8
+    m: i8
+}
+
+func sales(text: string) -> Vec<Sale> {
+    return csv.decode<Sale>(text) catch e => {
+        panic("decode failed: {e.message()}")
+    }
+}
+
+func show(s: Vec<Sale>) -> string {
+    mut parts: Vec<string> = Vec.new()
+    for x in s {
+        parts.push("{x.region}/{x.units}/{x.revenue}")
+    }
+    return parts.join(" ")
+}
+
+/// The error decoding `text` as Sale gives, as "Variant(payload)".
+func sale_error(text: string) -> string {
+    let v = csv.decode<Sale>(text) catch e => {
+        return describe(e)
+    }
+    return "ok {v.len()}"
+}
+
+func describe(e: csv.CsvError) -> string {
+    match e {
+        csv.CsvError.MissingColumn(name) => return "MissingColumn({name})"
+        csv.CsvError.DuplicateColumn(name) => return "DuplicateColumn({name})"
+        csv.CsvError.ColumnCount(row, expected, found) => return "ColumnCount({row},{expected},{found})"
+        csv.CsvError.BadValue(row, column, reason) => return "BadValue({row},{column}): {reason}"
+        csv.CsvError.UnclosedQuote(row) => return "UnclosedQuote({row})"
+        csv.CsvError.Io(_) => return "Io"
+    }
+}
+
+func rows_text(text: string) -> string {
+    let rows = csv.rows(text) catch e => {
+        return describe(e)
+    }
+    mut out: Vec<string> = Vec.new()
+    for row in rows {
+        out.push("[{row.join("|")}]")
+    }
+    return out.join("")
+}
+
+test "std.csv/C1 — decode into structs" {
+    let s = sales("region,units,revenue\nnorth,3,1.5\nsouth,10,20\n")
+    assert show(s) == "north/3/1.5 south/10/20"
+}
+
+test "std.csv/C2 — columns by name, order and extras don't matter" {
+    let s = sales("revenue,extra,region,units\n2.5,x,west,4\n")
+    assert show(s) == "west/4/2.5"
+}
+
+test "std.csv/C2 — headers: false maps by position" {
+    let s = csv.decode<Sale>("east,1,0.5\nwest,2,1\n", headers: false) catch e => {
+        panic(e.message())
+    }
+    assert show(s) == "east/1/0.5 west/2/1"
+}
+
+test "std.csv — delimiter and quote are parameters" {
+    let s = csv.decode<Sale>("region;units;revenue\n'a;b';1;2\n", delimiter: ';', quote: '\'') catch e => {
+        panic(e.message())
+    }
+    assert show(s) == "a;b/1/2"
+    let tabs = csv.decode<Sale>("region\tunits\trevenue\nx\t1\t2\n", delimiter: '\t') catch e => {
+        panic(e.message())
+    }
+    assert show(tabs) == "x/1/2"
+}
+
+test "std.csv — quoting, CRLF, blank lines, BOM, trailing newline" {
+    let text = "\u{FEFF}region,units,revenue\r\n\"say \"\"hi\"\"\",1,2\r\n\r\n\"two\nlines\",3,4\r\n"
+    let s = sales(text)
+    assert s.len() == 2
+    assert s[0].region == "say \"hi\""
+    assert s[1].region == "two\nlines"
+    assert s[1].units == 3
+}
+
+test "std.csv/C5 — an empty cell is the type's blank" {
+    let v = csv.decode<Loose>("name,count,ratio,ok,note\n,,,,\nx,-5,1e3,TRUE,hi\n") catch e => {
+        panic(e.message())
+    }
+    assert v[0].name == ""
+    assert v[0].count == 0
+    assert v[0].ratio == 0.0
+    assert !v[0].ok
+    assert v[0].note == none
+    assert v[1].count == -5
+    assert v[1].ratio == 1000.0
+    assert v[1].ok
+    assert (v[1].note ?? "-") == "hi"
+}
+
+test "std.csv/C5 — an optional or defaulted field doesn't need its column" {
+    let v = csv.decode<Defaults>("id\n1\n2\n") catch e => {
+        panic(e.message())
+    }
+    assert v.len() == 2
+    assert v[1].id == 2
+    assert v[1].level == 7
+    assert v[1].tag == none
+}
+
+test "std.csv/C6 — @rename names the column" {
+    let v = csv.decode<Renamed>("region,total\nn,9.5\n") catch e => {
+        panic(e.message())
+    }
+    assert v[0].revenue == 9.5
+    assert csv.encode(v) == "region,total\nn,9.5\n"
+}
+
+test "std.csv/C3 — encode writes a header and quotes only what needs it" {
+    let s: Vec<Sale> = [
+        Sale(region: "plain", units: 1, revenue: 1.5),
+        Sale(region: "a,b", units: 2, revenue: 2.0),
+        Sale(region: "say \"hi\"", units: 3, revenue: 0.25),
+        Sale(region: "two\nlines", units: 4, revenue: 4.0),
+    ]
+    let text = csv.encode(s)
+    assert text == "region,units,revenue\nplain,1,1.5\n\"a,b\",2,2\n\"say \"\"hi\"\"\",3,0.25\n\"two\nlines\",4,4\n"
+    assert show(sales(text)) == show(s)
+}
+
+test "std.csv — encode options" {
+    let s: Vec<Sale> = [Sale(region: "a;b", units: 1, revenue: 2.0)]
+    assert csv.encode(s, delimiter: ';') == "region;units;revenue\n\"a;b\";1;2\n"
+    assert csv.encode(s, delimiter: ';', quote: '\'') == "region;units;revenue\n'a;b';1;2\n"
+    assert csv.encode(s, headers: false) == "a;b,1,2\n"
+    let none_yet: Vec<Sale> = Vec.new()
+    assert csv.encode(none_yet) == "region,units,revenue\n"
+}
+
+test "std.csv — encode writes none as an empty cell" {
+    let v: Vec<Loose> = [Loose(name: "x", count: 1, ratio: 0.5, ok: true, note: none)]
+    assert csv.encode(v) == "name,count,ratio,ok,note\nx,1,0.5,true,\n"
+}
+
+test "std.csv — rows: untyped and ragged" {
+    assert rows_text("a,b,c\n1\n\"x,y\",\n") == "[a|b|c][1][x,y|]"
+    assert rows_text("") == ""
+    let semi = csv.rows("a;'b;c'\n", delimiter: ';', quote: '\'') catch _ => Vec.new()
+    assert semi[0][1] == "b;c"
+}
+
+test "std.csv — write_rows quotes what needs it" {
+    let rows: Vec<Vec<string>> = [["a", "b,c"], ["q\"", ""]]
+    assert csv.write_rows(rows) == "a,\"b,c\"\n\"q\"\"\",\n"
+    let semi: Vec<Vec<string>> = [["a;b", "c"]]
+    assert csv.write_rows(semi, delimiter: ';') == "\"a;b\";c\n"
+    assert csv.write_rows(semi, delimiter: ';', quote: '\'') == "'a;b';c\n"
+}
+
+test "std.csv/C5 — MissingColumn" {
+    assert sale_error("region,units,total\nn,1,2\n") == "MissingColumn(revenue)"
+}
+
+test "std.csv/C2 — DuplicateColumn" {
+    assert sale_error("region,units,revenue,units\nn,1,2,3\n") == "DuplicateColumn(units)"
+}
+
+test "std.csv/C4 — ColumnCount, with the row a spreadsheet would show" {
+    assert sale_error("region,units,revenue\nn,1,2\ns,1\n") == "ColumnCount(3,3,2)"
+    assert sale_error("region,units,revenue\nn,1,2,9\n") == "ColumnCount(2,3,4)"
+}
+
+test "std.csv/C6 — BadValue names the row and column" {
+    assert sale_error("region,units,revenue\nn,abc,1\n") == "BadValue(2,units): \"abc\" is not a whole number"
+    assert sale_error("region,units,revenue\nn,-1,1\n") == "BadValue(2,units): -1 doesn't fit in u32"
+    assert sale_error("region,units,revenue\nn,1,1.2.3\n") == "BadValue(2,revenue): \"1.2.3\" is not a number"
+    let small = csv.decode<Small>("n,m\n256,0\n") catch e => {
+        assert describe(e) == "BadValue(2,n): 256 doesn't fit in u8"
+        return
+    }
+    assert small.len() == 99
+}
+
+test "std.csv — BadValue for a bool" {
+    let v = csv.decode<Loose>("name,count,ratio,ok,note\nx,1,1,yes,\n") catch e => {
+        assert describe(e) == "BadValue(2,ok): \"yes\" is not true or false"
+        return
+    }
+    assert v.len() == 99
+}
+
+test "std.csv — UnclosedQuote" {
+    assert sale_error("region,units,revenue\n\"open,1,2\n") == "UnclosedQuote(2)"
+    assert rows_text("a\n\"b\n") == "UnclosedQuote(2)"
+}
+
+test "std.csv — every error has a message" {
+    assert csv.CsvError.MissingColumn(name: "revenue").message().contains("revenue")
+    assert csv.CsvError.DuplicateColumn(name: "units").message().contains("twice")
+    assert csv.CsvError.ColumnCount(row: 3, expected: 3, found: 2).message().contains("row 3")
+    assert csv.CsvError.BadValue(row: 2, column: "units", reason: "bad").message().contains("units")
+    assert csv.CsvError.UnclosedQuote(row: 4).message().contains("row 4")
+    assert csv.CsvError.Io(io.IoError.Other("disk gone")).message().contains("disk gone")
+}
+
+// ─── stream ─────────────────────────────────────────────────────
+
+/// Fails every read.
+struct BrokenReader {
+    why: string
+}
+
+BrokenReader implements Reader {
+    public func read(self, mutate buf: Vec<u8>) -> i64 or io.IoError {
+        return io.IoError.Other(self.why)
+    }
+
+    public func read_bytes(self) -> Vec<u8> or io.IoError {
+        return io.IoError.Other(self.why)
+    }
+
+    public func read_text(self) -> string or io.IoError {
+        return io.IoError.Other(self.why)
+    }
+}
+
+/// Every item `stream` yields for `text`, as "region/units/revenue" or the
+/// error's description.
+func streamed(text: string) -> string {
+    let source = io.Buffer.from(text.bytes().to_vec())
+    mut out: Vec<string> = Vec.new()
+    for item in csv.stream<Sale>(source) {
+        let s = item catch e => {
+            out.push(describe(e))
+            continue
+        }
+        out.push("{s.region}/{s.units}/{s.revenue}")
+    }
+    return out.join(" ")
+}
+
+test "std.csv — stream yields what decode returns" {
+    let text = "region,units,revenue\nnorth,3,1.5\n\nsouth,10,20"
+    assert streamed(text) == show(sales(text))
+    assert streamed("") == ""
+    assert streamed("region,units,revenue\n") == ""
+}
+
+test "std.csv — stream across many reads" {
+    // Far more than one read's worth, with quoted line breaks and two-byte
+    // characters landing wherever the reads happen to split.
+    mut b = StringBuilder.new()
+    b.push("\u{FEFF}units,revenue,region\r\n")
+    for i in 0..1000 {
+        b.push("{i},{i}.5,\"ø{i}\nx\"\r\n")
+    }
+    let source = io.Buffer.from(b.build().bytes().to_vec())
+    mut count = 0
+    mut last = ""
+    for item in csv.stream<Sale>(source) {
+        let s = item catch e => {
+            panic(e.message())
+        }
+        assert s.units == count
+        last = s.region
+        count = count + 1
+    }
+    assert count == 1000
+    assert last == "ø999\nx"
+}
+
+test "std.csv — stream options" {
+    let semi = io.Buffer.from("x;1;2\n'a;b';3;4\n".bytes().to_vec())
+    mut got: Vec<string> = Vec.new()
+    for item in csv.stream<Sale>(semi, delimiter: ';', quote: '\'', headers: false) {
+        let s = item catch e => {
+            panic(e.message())
+        }
+        got.push(s.region)
+    }
+    assert got.join("|") == "x|a;b"
+}
+
+test "std.csv — stream carries on past a bad record" {
+    let text = "region,units,revenue\nn,1,2\nbad,x,1\ns,2\nlast,3,3"
+    assert streamed(text) == "n/1/2 BadValue(3,units): \"x\" is not a whole number ColumnCount(4,3,2) last/3/3"
+}
+
+test "std.csv — stream stops at a header or quoting error" {
+    assert streamed("region,units\nn,1\n") == "MissingColumn(revenue)"
+    assert streamed("region,region,units,revenue\n") == "DuplicateColumn(region)"
+    assert streamed("region,units,revenue\nn,1,2\n\"open,1,2\nmore\n") == "n/1/2 UnclosedQuote(3)"
+}
+
+test "std.csv — stream reports bytes that aren't UTF-8" {
+    let bytes: Vec<u8> = [114, 101, 103, 105, 111, 110, 10, 255, 10]
+    mut errors: Vec<string> = Vec.new()
+    for item in csv.stream<Sale>(io.Buffer.from(bytes)) {
+        let _ = item catch e => {
+            errors.push(describe(e))
+            continue
+        }
+    }
+    assert errors.len() == 1
+    assert errors[0].starts_with("BadValue(1,): ")
+}
+
+test "std.csv — Io: a failed read ends the stream" {
+    mut errors: Vec<string> = Vec.new()
+    for item in csv.stream<Sale>(BrokenReader(why: "disk gone")) {
+        let _ = item catch e => {
+            errors.push(e.message())
+            continue
+        }
+    }
+    assert errors.len() == 1
+    assert errors[0].contains("disk gone")
+}

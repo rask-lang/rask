@@ -3150,6 +3150,23 @@ fn error_move_in_loop_body() {
 }
 
 #[test]
+fn ok_move_into_return_inside_loop() {
+    // The move happens on the way out, so no later iteration sees it (#1613).
+    assert!(check_succeeds(
+        "func take_vec(take v: Vec<i32>) -> i64 { return 0 }\nfunc f(n: i64) -> i64 {\n    let v = Vec<i32>.new()\n    mut i = 0\n    loop {\n        i = i + 1\n        if i < n {\n            continue\n        }\n        return take_vec(v)\n    }\n}\nfunc main() {\n    let x = f(3)\n}"
+    ), "a move right before `return` in a loop body never reaches the next iteration");
+}
+
+#[test]
+fn error_move_before_continue() {
+    let output = check_output(
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    loop {\n        if true {\n            take_vec(v)\n            continue\n        }\n        return\n    }\n}"
+    );
+    assert!(output.contains("E0813"),
+        "a move followed by `continue` reaches the next iteration: {}", output);
+}
+
+#[test]
 fn ok_move_in_both_branches() {
     assert!(check_succeeds(
         "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    if true {\n        take_vec(v)\n    } else {\n        take_vec(v)\n    }\n}"
