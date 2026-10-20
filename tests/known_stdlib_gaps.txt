@@ -456,19 +456,7 @@ std.tls Verification MISSING
 std.tls tls.connect MISSING
 std.tls tls.listen MISSING
 std.tls tls.wrap MISSING
-std.url Url MISSING
-std.url Url.display [Displayable] MISSING
-std.url Url.div [Div<string>] MISSING
-std.url Url.params MISSING
-std.url Url.port MISSING
-std.url Url.query MISSING
-std.url Url.with_query MISSING
-std.url UrlError MISSING
-std.url url.decode MISSING
-std.url url.encode MISSING
-std.url url.encode_query MISSING
-std.url url.parse MISSING
-std.url url.parse_query MISSING
+std.url Url.display [Displayable] MISSING  # Url implements Displayable through to_string, the name stdlib/fmt.rk still declares; closes with std.fmt Displayable.display
 std.reflect reflect.interfaces UNBUILT
 std.cli cli.parse UNTESTED      # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
 std.cli Parser.parse UNTESTED   # same
