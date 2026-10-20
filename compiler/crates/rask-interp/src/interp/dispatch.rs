@@ -421,6 +421,12 @@ impl Interpreter {
             // that finds Rask bodies was never consulted for one.
             // `string.to_cstring()` is the first such method (#949).
             Value::String(_) => "string".to_string(),
+            // The integer widths, for the methods int.rk writes in Rask
+            // (`to_be_bytes`, `from_le`, …). An untyped literal is an i64.
+            Value::Int(_, crate::value::IntKind::Untyped) => "i64".to_string(),
+            Value::Int(_, kind) => kind.name().to_string(),
+            Value::Int128(_) => "i128".to_string(),
+            Value::Uint128(_) => "u128".to_string(),
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Rack(_) => "Rack".to_string(),
