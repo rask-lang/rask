@@ -22,6 +22,24 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 | `Map<K,V>` | Key-value associative | `Map.new()`, `Map.with_capacity(n)`, `Map.from([(K,V); N])` |
 | `Set<T>` | Unique values | `Set.new()` |
 
+<!-- surface -->
+```rask
+struct Vec<T> { }
+struct Map<K, V> { }
+struct Set<T> { }
+
+extend Vec<T> {
+    func new() -> Vec<T>
+    func with_capacity(n: usize) -> Vec<T>
+    func fixed(n: usize) -> Vec<T>
+}
+
+extend Map<K, V> {
+    func new() -> Map<K, V>
+    func with_capacity(n: usize) -> Map<K, V>
+}
+```
+
 ## Set
 
 | Rule | Description |
@@ -31,6 +49,18 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 | **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
 | **C7a: Equal and Cloneable, nothing else** | Two maps are `==` when they hold the same keys with equal values, two sets when they hold the same values, in any insertion order. `clone()` copies every entry. Neither has an order or a hash (type.generics/EQ4a) |
 | **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so. A loop needs neither: `for v in s` walks the set where it is, through its `as_sequence` (type.sequence/SEQ48), in the map's order |
+
+<!-- surface -->
+```rask
+extend Set<T> {
+    func new() -> Set<T>
+    func contains(self, value: T) -> bool
+    func insert(mutate self, take value: T) -> bool
+    func remove(mutate self, value: T) -> bool
+    func to_vec(self) -> Vec<T>
+    func as_sequence(self) -> Sequence<T>
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -70,7 +100,7 @@ Growth operations panic on failure (C2). Fallible `try_` variants return `T or E
 | `vec.try_reserve(n)` | `void or ReserveError` | Returns why; nothing was rejected, so nothing comes back |
 | `map.insert(k, v)` | `V?` | Panics |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum GrowError<T> {
     Full(T),      // Bounded collection at capacity
@@ -82,6 +112,23 @@ enum ReserveError {
     NoMemory,
 }
 
+extend Vec<T> {
+    func push(mutate self, take value: T)
+    func try_push(mutate self, take value: T) -> void or GrowError<T>
+    func push_all(mutate self, items: Sequence<T>)
+    func try_push_all(mutate self, items: Sequence<T>) -> void or GrowError<T>
+    func try_insert(mutate self, index: i64, take value: T) -> void or GrowError<T>
+    func reserve(mutate self, additional: usize)
+    func try_reserve(mutate self, additional: usize) -> void or ReserveError
+}
+
+extend Map<K, V> {
+    func insert(mutate self, take key: K, take value: V) -> V?
+}
+```
+
+<!-- test: parse -->
+```rask
 vec.push(x)                 // Panics on OOM or full (like Rust/Go)
 try vec.try_push(x)         // Propagate error (bounded collections, embedded)
 ```
@@ -100,6 +147,17 @@ keeps its own type.
 |--------|-----------|-----------|
 | `Vec.from(arr)` | `[T; N] -> Vec<T>` | Copy array elements into new Vec |
 | `Map.from(pairs)` | `[[K,V]; N] -> Map<K,V>` | Build Map from key-value pair arrays |
+
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func from(arr: [T; N]) -> Vec<T>
+}
+
+extend Map<K, V> {
+    func from(pairs: [(K, V); N]) -> Map<K, V>
+}
+```
 
 Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is equivalent to `[1, 2, 3]`. The explicit constructor exists for API clarity.
 
@@ -161,6 +219,18 @@ first place is the bug that error is pointing at.
 | `vec.remove_unordered(i)` | `T` | none | Yes (OOB) |
 | `vec.pop()` | `T?` | none | No |
 
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func get(self, index: i64) -> T?
+    func get_clone(self, index: i64) -> T?
+    func insert(mutate self, index: i64, take value: T)
+    func remove(mutate self, index: i64) -> T
+    func remove_unordered(mutate self, index: i64) -> T
+    func pop(mutate self) -> T?
+}
+```
+
 ### Positional Insert/Remove
 
 | Rule | Description |
@@ -214,6 +284,17 @@ let name = with vec[i] as v { v.name.clone() }
 | `map.insert_if_missing(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
 | `map.modify_with_default(k, \|\| v, \|mutate v: V\| R)` | `R` | Insert default if missing, then mutate. One hash lookup. Panics on alloc failure |
 
+<!-- surface -->
+```rask
+extend Map<K, V> {
+    func get(self, key: K) -> V?
+    func get_clone(self, key: K) -> V?
+    func remove(mutate self, key: K) -> V?
+    func insert_if_missing(mutate self, take key: K, f: func() -> V)
+    func modify_with_default<R>(mutate self, key: K, default: func() -> V, f: func(mutate V) -> R) -> R
+}
+```
+
 Named for what they do — `ensure` is taken by the cleanup keyword (`ctrl.ensure`) and means something else.
 
 <!-- test: parse -->
@@ -236,6 +317,14 @@ map.modify_with_default(user_id, || User.new(user_id), |mutate u: User| {
 | `vec.swap(i, j)` | `()` | Swap two indices (panics if equal) |
 | `vec.modify_many([i, j, k], \|[a, b, c]\| R)` | `R?` | Mutate multiple (panics if duplicates) |
 
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func swap(mutate self, i: i64, j: i64)
+    func modify_many<R>(mutate self, indices: Vec<i64>, f: func(mutate Vec<T>) -> R) -> R?
+}
+```
+
 ## Iteration
 
 See `std.iteration` for full iteration spec.
@@ -253,6 +342,14 @@ for item in vec.take_all() { }   // item: T (consuming iteration)
 |--------|---------|-------|
 | `vec.remove_where(\|x\| bool)` | `usize` | Remove matching, return count. No allocation |
 | `vec.take_where(\|x\| bool)` | `Vec<T>` | Remove matching and return them. Allocates |
+
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func remove_where(mutate self, f: func(T) -> bool) -> usize
+    func take_where(mutate self, f: func(T) -> bool) -> Vec<T>
+}
+```
 
 Two forms: count or collect. There is no `retain` — invert the predicate on `remove_where`.
 
@@ -273,6 +370,15 @@ Two forms: count or collect. There is no `retain` — invert the predicate on `r
 | `vec.sort()` | `() -> void` | Stable sort, `T: Comparable` |
 | `vec.sort_by(cmp)` | `(\|T, T\| -> Ordering) -> void` | Stable sort with custom comparator |
 | `vec.sort_by_key(f)` | `(\|T\| -> K) -> void` where `K: Comparable` | Stable sort by extracted key |
+
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func sort(mutate self)
+    func sort_by(mutate self, cmp: func(T, T) -> Ordering)
+    func sort_by_key<K: Comparable>(mutate self, f: func(T) -> K)
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -295,6 +401,17 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 | `vec.reverse()` | `(mutate self)` | none | In-place reversal |
 | `vec.remove_adjacent_duplicates()` | `(mutate self)` | `T: Equal` | The name says the limitation: only runs of equal neighbors collapse. Sort first for full dedup |
 
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func contains(self, item: T) -> bool
+    func first(self) -> T?
+    func last(self) -> T?
+    func reverse(mutate self)
+    func remove_adjacent_duplicates(mutate self)
+}
+```
+
 <!-- test: skip -->
 ```rask
 mut items = [3, 1, 4, 1, 5]
@@ -314,6 +431,15 @@ items.remove_adjacent_duplicates()      // [1, 3, 4, 5]
 | `map.contains(k)` | `bool` | Check key existence without copying value |
 | `map.keys()` | expression-scoped iterator | Iterate over keys |
 | `map.values()` | expression-scoped iterator | Iterate over values |
+
+<!-- surface -->
+```rask
+extend Map<K, V> {
+    func contains(self, key: K) -> bool
+    func keys(self) -> Iterator<K>
+    func values(self) -> Iterator<V>
+}
+```
 
 <!-- test: parse -->
 ```rask
@@ -340,6 +466,13 @@ vec.shrink(n)      // give back everything past n, or past len when that's large
 vec.shrink(to: n)  // the same, named
 ```
 
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func shrink(mutate self, to: usize = 0)
+}
+```
+
 ## Capacity Introspection
 
 | Method | Returns | Semantics |
@@ -349,6 +482,18 @@ vec.shrink(to: n)  // the same, named
 | `vec.is_bounded()` | `bool` | `capacity()?` |
 | `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
 | `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink()` gives the difference back |
+
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func len(self) -> usize
+    func capacity(self) -> usize?
+    func is_bounded(self) -> bool
+    func is_full(self) -> bool
+    func remaining(self) -> usize?
+    func allocated(self) -> usize
+}
+```
 
 ## Comptime Collections
 
@@ -374,11 +519,13 @@ const PRIMES: Vec<u32> = comptime {
 
 ## FFI
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-vec.as_ptr() -> *T             // unsafe (immutable access)
-vec.as_mut_ptr() -> *T         // unsafe (mutable access)
-Vec.from_raw_parts(ptr, len, cap) -> Vec<T>  // unsafe
+extend Vec<T> {
+    unsafe func as_ptr(self) -> *T                  // immutable access
+    unsafe func as_mut_ptr(mutate self) -> *T       // mutable access
+    unsafe func from_raw_parts(ptr: *T, len: usize, cap: usize) -> Vec<T>
+}
 ```
 
 A `Vec<T>`'s elements sit side by side, each `T`'s own size apart, so `as_ptr()` is a C array of `T`: a `Vec<u8>` is a byte buffer and `p.offset(1)` is the next element. I chose that over giving every scalar a word-wide slot, which wasted seven bytes of every byte and made the pointer step disagree with the layout (#985).

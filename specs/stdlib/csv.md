@@ -61,10 +61,15 @@ For files with no header, ragged rows, or columns you're discovering as you go.
 
 ## Options
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-csv.decode<T>(text: string, delimiter: char = ',', quote: char = '"', headers: bool = true)
-csv.rows(text: string, delimiter: char = ',', quote: char = '"')
+extend csv {
+    func decode<T: Decode>(text: string, delimiter: char = ',', quote: char = '"', headers: bool = true) -> Vec<T> or CsvError
+    func encode<T: Encode>(records: Vec<T>) -> string
+    func stream<T: Decode, R: Reader>(source: R, delimiter: char = ',', quote: char = '"', headers: bool = true) -> Sequence<T or CsvError>
+    func rows(text: string, delimiter: char = ',', quote: char = '"') -> Sequence<Vec<string>>
+    func write_rows(rows: Vec<Vec<string>>) -> string
+}
 ```
 
 Semicolon-delimited European exports and tab-separated files are the same parser
@@ -83,7 +88,7 @@ with a different character — a parameter, not a `csv.Tsv` type or a builder ch
 
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum CsvError {
     MissingColumn(name: string)

@@ -13,10 +13,12 @@ parameters, because they're the same operation with a different table
 
 ## API
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-base64.encode(data: Vec<u8>, url_safe: bool = false, padding: bool = true) -> string
-base64.decode(s: string) -> Vec<u8> or Base64Error
+extend base64 {
+    func encode(data: Vec<u8>, url_safe: bool = false, padding: bool = true) -> string
+    func decode(s: string) -> Vec<u8> or Base64Error
+}
 ```
 
 <!-- test: skip -->
@@ -38,7 +40,7 @@ let bytes = try base64.decode(token)
 
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum Base64Error {
     BadCharacter(byte: u8, at: usize)

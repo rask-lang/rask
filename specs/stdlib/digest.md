@@ -14,12 +14,14 @@ module name keeps them apart: `digest.sha256(bytes)` reads as the noun it is.
 
 ## One-shot
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-digest.sha256(data: Vec<u8>) -> [32]u8
-digest.sha1(data: Vec<u8>) -> [20]u8
-digest.md5(data: Vec<u8>) -> [16]u8
-digest.crc32(data: Vec<u8>) -> u32
+extend digest {
+    func sha256(data: Vec<u8>) -> [32]u8
+    func sha1(data: Vec<u8>) -> [20]u8
+    func md5(data: Vec<u8>) -> [16]u8
+    func crc32(data: Vec<u8>) -> u32
+}
 ```
 
 <!-- test: skip -->
@@ -47,6 +49,35 @@ let sum = d.build()
 `Sha256`, `Sha1`, `Md5` and `Crc32` all have `new()`, `update(chunk)`, `build()`.
 `build()` because that's the terminating verb for every builder in the stdlib
 (`spec.canonical-patterns`) — `StringBuilder`, `JsonWriter`, this.
+
+<!-- surface -->
+```rask
+struct Sha256 { }
+struct Sha1 { }
+struct Md5 { }
+struct Crc32 { }
+
+extend Sha256 {
+    func new() -> Sha256
+    func update(mutate self, chunk: Vec<u8>)
+    func build(take self) -> [32]u8
+}
+extend Sha1 {
+    func new() -> Sha1
+    func update(mutate self, chunk: Vec<u8>)
+    func build(take self) -> [20]u8
+}
+extend Md5 {
+    func new() -> Md5
+    func update(mutate self, chunk: Vec<u8>)
+    func build(take self) -> [16]u8
+}
+extend Crc32 {
+    func new() -> Crc32
+    func update(mutate self, chunk: Vec<u8>)
+    func build(take self) -> u32
+}
+```
 
 ## Core Rules
 

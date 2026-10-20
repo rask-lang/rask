@@ -22,6 +22,25 @@ One `Random` type plus module-level convenience functions. Explicit generator fo
 | **M2: Range** | `rng.range(lo, hi)` returns value in `[lo, hi)` — panics if `lo >= hi` |
 | **M3: Collections** | `rng.shuffle(vec)` does in-place Fisher-Yates; `rng.choice(vec)` returns `T?` (`none` if empty) |
 
+<!-- surface -->
+```rask
+struct Random { }
+
+extend Random {
+    func new() -> Random
+    func from_seed(seed: u64) -> Random
+
+    func u64(mutate self) -> u64
+    func i64(mutate self) -> i64
+    func f64(mutate self) -> f64
+    func f32(mutate self) -> f32
+    func bool(mutate self) -> bool
+    func range(mutate self, lo: i64, hi: i64) -> i64
+    func shuffle<T>(mutate self, mutate vec: Vec<T>)
+    func choice<T>(mutate self, vec: Vec<T>) -> T?
+}
+```
+
 <!-- test: skip -->
 ```rask
 let rng = Random.from_seed(42)
@@ -36,6 +55,20 @@ rng.shuffle(items)
 |------|-------------|
 | **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Random |
 | **C2: Same API** | Every `Random` instance method (M1–M3) has a `random.*` mirror: `random.u64()`, `random.i64()`, `random.f64()`, `random.f32()`, `random.bool()`, `random.range(lo, hi)`, `random.shuffle(vec)`, `random.choice(vec)` |
+
+<!-- surface -->
+```rask
+extend random {
+    func u64() -> u64
+    func i64() -> i64
+    func f64() -> f64
+    func f32() -> f32
+    func bool() -> bool
+    func range(lo: i64, hi: i64) -> i64
+    func shuffle<T>(mutate vec: Vec<T>)
+    func choice<T>(vec: Vec<T>) -> T?
+}
+```
 
 <!-- test: parse -->
 ```rask

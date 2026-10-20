@@ -16,7 +16,7 @@ One vocabulary for whole-stream I/O, everywhere (interfaces, `File`, `TcpConnect
 | **E1: Single error type** | All I/O operations return `T or IoError` |
 | **E2: OS mapping** | Variants map to OS-level error categories; `Other(string)` is the catch-all |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum IoError {
     NotFound(string)
@@ -40,7 +40,7 @@ enum IoError {
 | **R3: Read text** | `read_text()` reads all as UTF-8 string. Fails on invalid UTF-8 |
 | **R4: Read exact** | `read_exact(buf)` fills `buf` completely or returns `UnexpectedEof` |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 interface Reader {
     func read(self, mutate buf: Vec<u8>) -> usize or IoError
@@ -66,7 +66,7 @@ Owned byte results are `Vec<u8>`; byte inputs are `Vec<u8>` views — everywhere
 | **W3: Flush** | `flush()` flushes internal buffers to the underlying sink |
 | **W4: Write text** | `write_text(data)` writes a whole string (its UTF-8 bytes). Mirror of `read_text` |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 interface Writer {
     func write(self, data: Vec<u8>) -> usize or IoError
@@ -84,7 +84,7 @@ interface Writer {
 | **K2: SeekFrom** | Position specified as `SeekFrom.Start(n)`, `SeekFrom.End(n)`, or `SeekFrom.Current(n)` |
 | **K3: Position** | `position()` returns the current stream position without seeking |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum SeekFrom {
     Start(i64)
@@ -100,6 +100,14 @@ interface Seeker {
 
 `File` and `Buffer` implement `Seeker`. Standard streams do not — they are sequential.
 
+<!-- surface -->
+```rask
+File implements Seeker {
+    func seek(self, pos: SeekFrom) -> i64 or IoError
+    func position(self) -> i64 or IoError
+}
+```
+
 Past the end is legal — the position moves and a read from there gives nothing. A negative *absolute* position is not, and the interface bodies reject it rather than leaving it to the backends: C's `fseek` fails on one and Rust's `SeekFrom::Start` takes a `u64` and would clamp.
 
 ## Buffered Wrappers
@@ -110,13 +118,43 @@ Past the end is legal — the position moves and a read from there gives nothing
 | **B2: BufferedWriter** | Wraps `Writer` with internal buffer (default 8KB). Flushes on full buffer, explicit `flush()`, or drop (best-effort) |
 | **B3: Linearity inherited** | Buffered wrappers inherit linearity from their inner type |
 
+<!-- surface -->
+```rask
+struct BufferedReader<R> { }
+
+extend BufferedReader<R> {
+    func new(take inner: R) -> BufferedReader<R>
+    func with_capacity(capacity: usize, take inner: R) -> BufferedReader<R>
+    func read_line(self) -> string or IoError         // strips trailing newline
+    func lines(self) -> Sequence<string or IoError>   // lazy line sequence
+}
+
+BufferedReader<R> implements Reader {
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
+    func read_text(self) -> string or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
+}
+
+struct BufferedWriter<W> { }
+
+extend BufferedWriter<W> {
+    func new(take inner: W) -> BufferedWriter<W>
+    func with_capacity(capacity: usize, take inner: W) -> BufferedWriter<W>
+}
+
+BufferedWriter<W> implements Writer {
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
+    func flush(self) -> void or IoError
+}
+```
+
 <!-- test: skip -->
 ```rask
 let reader = BufferedReader.new(file)              // default 8KB
 let reader = BufferedReader.with_capacity(4096, file)
-
-reader.read_line() -> string or IoError         // strips trailing newline
-reader.lines() -> Sequence<string or IoError>   // lazy line sequence
 ```
 
 <!-- test: skip -->
@@ -145,6 +183,52 @@ for line in reader.lines() {
 | `Stdin` | `Reader` | Yes |
 | `Stdout` | `Writer` | Yes |
 | `Stderr` | `Writer` | Yes |
+
+<!-- surface -->
+```rask
+@resource
+struct Stdin { }
+@resource
+struct Stdout { }
+@resource
+struct Stderr { }
+
+Stdin implements Reader {
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
+    func read_text(self) -> string or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
+}
+extend Stdin {
+    func close(take self)
+}
+
+Stdout implements Writer {
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
+    func flush(self) -> void or IoError
+}
+extend Stdout {
+    func close(take self)
+}
+
+Stderr implements Writer {
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
+    func flush(self) -> void or IoError
+}
+extend Stderr {
+    func close(take self)
+}
+
+extend io {
+    func stdin() -> Stdin
+    func stdout() -> Stdout
+    func stderr() -> Stderr
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -178,6 +262,35 @@ let result = string.from_utf8(buf.to_bytes())  // "hello world"
 | `to_bytes(self)` | `Vec<u8>` | Every byte written, from the start — not just what's left to read. A copy, which is what `to_` says |
 | `len(self)` | `usize` | Total bytes written |
 
+<!-- surface -->
+```rask
+struct Buffer { }
+
+extend Buffer {
+    func new() -> Buffer
+    func from(data: Vec<u8>) -> Buffer
+    func to_bytes(self) -> Vec<u8>
+    func len(self) -> usize
+}
+
+Buffer implements Reader {
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
+    func read_bytes(self) -> Vec<u8> or IoError
+    func read_text(self) -> string or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
+}
+Buffer implements Writer {
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_bytes(self, data: Vec<u8>) -> void or IoError
+    func write_text(self, data: string) -> void or IoError
+    func flush(self) -> void or IoError
+}
+Buffer implements Seeker {
+    func seek(self, pos: SeekFrom) -> i64 or IoError
+    func position(self) -> i64 or IoError
+}
+```
+
 No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.
 
 ## Convenience Functions
@@ -190,6 +303,14 @@ No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.
 |----------|-----------|-------------|
 | `io.read_line()` | `-> string or IoError` | Read one line from stdin (strips newline) |
 | `io.copy(reader, writer)` | `-> u64 or IoError` | Copy all bytes, returns total copied |
+
+<!-- surface -->
+```rask
+extend io {
+    func read_line() -> string or IoError
+    func copy(reader: any Reader, writer: any Writer) -> u64 or IoError
+}
+```
 
 ## Interface Implementations Summary
 

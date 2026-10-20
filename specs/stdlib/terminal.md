@@ -21,21 +21,26 @@ const PATH  = terminal.Style.new().color(.cyan)
 println(format("{}: {} could not be read", ERROR.apply("error"), PATH.apply(file)))
 ```
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-Style.new() -> Style
-style.color(c: Color) -> Style       // foreground
-style.on(c: Color) -> Style          // background
-style.bold() -> Style
-style.dim() -> Style
-style.italic() -> Style
-style.underline() -> Style
-style.apply(s: string) -> string     // wrap in escapes, or return s unchanged
+struct Style { }
+
+extend Style {
+    func new() -> Style
+    func color(self, c: Color) -> Style       // foreground
+    func on(self, c: Color) -> Style          // background
+    func bold(self) -> Style
+    func dim(self) -> Style
+    func italic(self) -> Style
+    func underline(self) -> Style
+    func apply(self, s: string) -> string     // wrap in escapes, or return s unchanged
+    func codes(self) -> (string, string)      // see "Styling by hand"
+}
 ```
 
 `Color` is an enum, so adding a colour doesn't add a method:
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum Color {
     Black, Red, Green, Yellow, Blue, Magenta, Cyan, White,
@@ -47,16 +52,15 @@ enum Color {
 
 ## Detection and Size
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-terminal.is_tty() -> bool
-terminal.width() -> u16?             // columns, none when not a terminal
-terminal.height() -> u16?
-terminal.set_color(mode: ColorMode)  // .auto (default), .always, .never
-```
+extend terminal {
+    func is_tty() -> bool
+    func width() -> u16?             // columns, none when not a terminal
+    func height() -> u16?
+    func set_color(mode: ColorMode)  // .auto (default), .always, .never
+}
 
-<!-- test: parse -->
-```rask
 enum ColorMode { Auto, Always, Never }
 ```
 

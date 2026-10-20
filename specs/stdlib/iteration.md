@@ -142,6 +142,16 @@ for e in world.nodes() {
 | `Vec<T>` | `.take_all()` | `Vec<T>`, iterated as `T` |
 | `Map<K,V>` | `.take_all()` | `Vec<(K, V)>`, iterated as `(K, V)` |
 
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func take_all(take self) -> Vec<T>
+}
+extend Map<K, V> {
+    func take_all(take self) -> Vec<(K, V)>
+}
+```
+
 <!-- test: skip -->
 ```rask
 for file in files.take_all() {

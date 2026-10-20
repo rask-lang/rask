@@ -34,6 +34,17 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `is_copy<T>()` | `-> bool` | Whether T is implicitly copyable (≤16 bytes, all fields Copy) |
 | `is_resource<T>()` | `-> bool` | Whether T is a linear resource type |
 
+<!-- surface -->
+```rask
+extend reflect {
+    func size_of<T>() -> usize
+    func align_of<T>() -> usize
+    func name_of<T>() -> string
+    func is_copy<T>() -> bool
+    func is_resource<T>() -> bool
+}
+```
+
 ### Type Category
 
 | Function | Signature | Description |
@@ -46,6 +57,20 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `is_integer<T>()` | `-> bool` | Whether T is an integer type (`i8`–`i64`, `u8`–`u64`, `usize`) |
 | `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
 | `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Interface`, closures, resources) |
+
+<!-- surface -->
+```rask
+extend reflect {
+    func is_struct<T>() -> bool
+    func is_enum<T>() -> bool
+    func is_optional<T>() -> bool
+    func is_vec<T>() -> bool
+    func is_map<T>() -> bool
+    func is_integer<T>() -> bool
+    func is_float<T>() -> bool
+    func is_flat<T>() -> bool
+}
+```
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
@@ -74,8 +99,13 @@ comptime {
 | `fields<T>()` | `-> Vec<FieldInfo>` | All fields of a struct (compile error if not a struct) |
 | `has_field<T>(name: string)` | `-> bool` | Whether struct has a field with this name |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
+extend reflect {
+    func fields<T>() -> Vec<FieldInfo>
+    func has_field<T>(name: string) -> bool
+}
+
 struct FieldInfo {
     name: string
     type_name: string
@@ -113,8 +143,13 @@ So there are two different questions and they have different answers:
 | `methods<T>()` | `-> Vec<MethodInfo>` | All methods of a type |
 | `has_method<T>(name: string)` | `-> bool` | Whether type has a method with this name |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
+extend reflect {
+    func methods<T>() -> Vec<MethodInfo>
+    func has_method<T>(name: string) -> bool
+}
+
 struct MethodInfo {
     name: string
     is_public: bool
@@ -130,6 +165,14 @@ struct MethodInfo {
 | `implements<T, Interface>()` | `-> bool` | Whether T satisfies Interface (structural or explicit) |
 | `interface_names<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
+<!-- surface -->
+```rask
+extend reflect {
+    func implements<T, Interface>() -> bool
+    func interface_names<T>() -> Vec<string>
+}
+```
+
 `implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
 
 ## Enum Variants
@@ -138,8 +181,12 @@ struct MethodInfo {
 |----------|-----------|-------------|
 | `variants<T>()` | `-> Vec<VariantInfo>` | All variants of an enum (compile error if not an enum) |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
+extend reflect {
+    func variants<T>() -> Vec<VariantInfo>
+}
+
 struct VariantInfo {
     name: string
     has_fields: bool

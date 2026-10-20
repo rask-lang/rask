@@ -22,7 +22,7 @@ would be ceremony. `Url` is for when you actually need the parts.
 
 ## Type
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct Url {
     scheme: string          // "https"
@@ -38,10 +38,15 @@ Fields are public and plain. Anything that needs computing is a method.
 
 ## Parsing
 
+<!-- surface -->
+```rask
+extend url {
+    func parse(s: string) -> Url or UrlError
+}
+```
+
 <!-- test: skip -->
 ```rask
-url.parse(s: string) -> Url or UrlError
-
 let u = try url.parse("https://example.com:8080/path?page=1#top")
 u.scheme        // "https"
 u.host          // "example.com"
@@ -52,14 +57,20 @@ u.query("page") // "1"
 
 ## Methods
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-u.port() -> u16?                            // explicit port, else the scheme's default (U2)
-u.query(key: string) -> string?             // one parameter, percent-decoded
-u.params() -> Iterator<(string, string)>    // all of them, in order, decoded
-u.with_query(pairs: Vec<(string, string)>) -> Url
-u.display() -> string                       // Displayable — reassembles the URL
-u / segment -> Url                          // append a path segment, encoding it
+extend Url {
+    func port(self) -> u16?                             // explicit port, else the scheme's default (U2)
+    func query(self, key: string) -> string?            // one parameter, percent-decoded
+    func params(self) -> Iterator<(string, string)>     // all of them, in order, decoded
+    func with_query(self, pairs: Vec<(string, string)>) -> Url
+}
+Url implements Displayable {
+    func display(self) -> string                        // reassembles the URL
+}
+Url implements Div<string> {
+    func div(self, segment: string) -> Url              // append a path segment, encoding it
+}
 ```
 
 `/` appends a path segment the same way `Path` does (`std.path`), so the two
@@ -73,13 +84,15 @@ let endpoint = api / "users" / user_id      // ".../v1/users/12%20a"
 
 ## Percent-Encoding
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-url.encode(s: string) -> string             // "hello world" -> "hello%20world"
-url.decode(s: string) -> string or UrlError
+extend url {
+    func encode(s: string) -> string            // "hello world" -> "hello%20world"
+    func decode(s: string) -> string or UrlError
 
-url.encode_query(pairs: Vec<(string, string)>) -> string   // "a=1&b=2"
-url.parse_query(s: string) -> Vec<(string, string)> or UrlError
+    func encode_query(pairs: Vec<(string, string)>) -> string   // "a=1&b=2"
+    func parse_query(s: string) -> Vec<(string, string)> or UrlError
+}
 ```
 
 `encode` escapes everything outside the unreserved set — correct for a path
@@ -95,7 +108,7 @@ matter for signing.
 
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum UrlError {
     NoScheme                // "example.com/path" — relative URLs aren't parsed

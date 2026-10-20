@@ -10,10 +10,12 @@ wire dump.
 
 ## API
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-hex.encode(data: Vec<u8>, upper: bool = false) -> string
-hex.decode(s: string) -> Vec<u8> or HexError
+extend hex {
+    func encode(data: Vec<u8>, upper: bool = false) -> string
+    func decode(s: string) -> Vec<u8> or HexError
+}
 ```
 
 <!-- test: skip -->
@@ -35,7 +37,7 @@ let bytes = try hex.decode("deadbeef")
 
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum HexError {
     BadCharacter(byte: u8, at: usize)

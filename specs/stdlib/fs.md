@@ -14,7 +14,7 @@ Two tiers: convenience functions (open/close internally) and `File` handles with
 | **F1: Linear resource** | `File` is `@resource`. `file.close()` (takes ownership) is the only way to consume it |
 | **F2: Reader/Writer** | `File` implements `Reader` and `Writer` interfaces |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 @resource
 struct File {
@@ -60,6 +60,19 @@ Same vocabulary as the `Reader`/`Writer` methods — `fs.read_text(path)` is `op
 | `fs.append_text` | `(path: string, content: string) -> void or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 
+<!-- surface -->
+```rask
+extend fs {
+    func read_text(path: string) -> string or IoError
+    func read_bytes(path: string) -> Vec<u8> or IoError
+    func read_lines(path: string) -> Vec<string> or IoError
+    func write_text(path: string, content: string) -> void or IoError
+    func write_bytes(path: string, data: Vec<u8>) -> void or IoError
+    func append_text(path: string, content: string) -> void or IoError
+    func exists(path: string) -> bool
+}
+```
+
 <!-- test: parse -->
 ```rask
 let content = try fs.read_text("config.txt")
@@ -78,6 +91,15 @@ try fs.write_text("output.txt", "hello world")
 | `fs.create` | `(path: string) -> File or IoError` |
 | `fs.open_with` | `(path: string, opts: OpenOptions) -> File or IoError` |
 
+<!-- surface -->
+```rask
+extend fs {
+    func open(path: string) -> File or IoError
+    func create(path: string) -> File or IoError
+    func open_with(path: string, opts: OpenOptions) -> File or IoError
+}
+```
+
 <!-- test: skip -->
 ```rask
 let file = try fs.open("data.txt")
@@ -91,6 +113,20 @@ process(data)
 | Rule | Description |
 |------|-------------|
 | **F5: Builder pattern** | Each method returns a new `OpenOptions` for chaining |
+
+<!-- surface -->
+```rask
+struct OpenOptions { }
+
+extend OpenOptions {
+    func new() -> OpenOptions
+    func read(self, on: bool) -> OpenOptions
+    func write(self, on: bool) -> OpenOptions
+    func append(self, on: bool) -> OpenOptions
+    func create(self, on: bool) -> OpenOptions
+    func truncate(self, on: bool) -> OpenOptions
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -124,9 +160,27 @@ ensure file.close()
 | `fs.current_dir` | `() -> Path` | Current working directory |
 | `fs.home_dir` | `() -> Path?` | User home directory, `none` if unknown |
 
+<!-- surface -->
+```rask
+extend fs {
+    func read_dir(path: string) -> Vec<DirEntry> or IoError
+    func create_dir(path: string) -> void or IoError
+    func create_dir_all(path: string) -> void or IoError
+    func remove_file(path: string) -> void or IoError
+    func remove_dir(path: string) -> void or IoError
+    func remove_dir_all(path: string) -> void or IoError
+    func rename(from: string, to: string) -> void or IoError
+    func copy(from: string, to: string) -> void or IoError
+    func absolute_path(path: string) -> string or IoError
+    func metadata(path: string) -> Metadata or IoError
+    func current_dir() -> Path
+    func home_dir() -> Path?
+}
+```
+
 ## Metadata and DirEntry
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 struct Metadata {
     size: u64

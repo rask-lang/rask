@@ -62,17 +62,18 @@ loop {
 
 ## Config
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-tls.Config.new() -> Config
-config.with_cert(cert: string, key: string) -> Config     // PEM paths, server side
-config.with_ca(path: string) -> Config                    // pin a CA instead of the system store
-config.with_alpn(protocols: Vec<string>) -> Config        // ["h2", "http/1.1"]
-config.with_verification(v: Verification) -> Config
-```
+struct Config { }
 
-<!-- test: parse -->
-```rask
+extend Config {
+    func new() -> Config
+    func with_cert(take self, cert: string, key: string) -> Config     // PEM paths, server side
+    func with_ca(take self, path: string) -> Config                    // pin a CA instead of the system store
+    func with_alpn(take self, protocols: Vec<string>) -> Config        // ["h2", "http/1.1"]
+    func with_verification(take self, v: Verification) -> Config
+}
+
 enum Verification {
     Full            // default: chain and hostname
     ChainOnly       // hostname mismatch allowed — a pinned CA with a bare IP
@@ -86,11 +87,29 @@ enum Verification {
 `read_text`, `write_text`, `close` — so code written against one works against the
 other. Plus:
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-conn.peer_certificate() -> Certificate?
-conn.protocol() -> string?       // the ALPN protocol agreed, if any
-conn.tls_version() -> string     // "TLSv1.3"
+@resource
+struct TlsConnection { }
+
+TlsConnection implements Reader {
+    func read(self, buf: Vec<u8>) -> usize or IoError
+    func read_text(self) -> string or IoError
+}
+
+TlsConnection implements Writer {
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_text(self, data: string) -> void or IoError
+}
+
+extend TlsConnection {
+    func close(take self) -> void or IoError
+    func peer_certificate(self) -> Certificate?
+    func protocol(self) -> string?       // the ALPN protocol agreed, if any
+    func tls_version(self) -> string     // "TLSv1.3"
+}
+
+struct Certificate { }
 ```
 
 ## Core Rules
@@ -104,9 +123,26 @@ conn.tls_version() -> string     // "TLSv1.3"
 | **L5: Modern protocol versions only** | TLS 1.2 and 1.3. SSLv3, TLS 1.0 and 1.1 are not configurable back on — a knob for them is a knob for downgrade attacks |
 | **L6: Provider is an implementation detail** | The library underneath is not in the API. No provider handles, no library-specific config, nothing that would change if it were swapped |
 
+<!-- surface -->
+```rask
+extend tls {
+    func connect(addr: string) -> TlsConnection or TlsError
+    func wrap(take conn: TcpConnection, host: string) -> TlsConnection or TlsError
+    func listen(addr: string, config: Config) -> TlsListener or TlsError
+}
+
+@resource
+struct TlsListener { }
+
+extend TlsListener {
+    func accept(self) -> TlsConnection or TlsError
+    func close(take self) -> void or IoError
+}
+```
+
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum TlsError {
     Handshake(string)

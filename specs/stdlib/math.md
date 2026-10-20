@@ -29,6 +29,19 @@ Dedicated `math` module for functions that don't attach to a single value (trig,
 | **T2: Inverse trig** | `math.asin`, `math.acos`, `math.atan` return radians |
 | **T3: atan2** | `math.atan2(y, x)` — two-argument arc tangent |
 
+<!-- surface -->
+```rask
+extend math {
+    func sin(x: f64) -> f64
+    func cos(x: f64) -> f64
+    func tan(x: f64) -> f64
+    func asin(x: f64) -> f64
+    func acos(x: f64) -> f64
+    func atan(x: f64) -> f64
+    func atan2(y: f64, x: f64) -> f64
+}
+```
+
 ## Exponential and Logarithmic Functions
 
 | Rule | Description |
@@ -37,11 +50,28 @@ Dedicated `math` module for functions that don't attach to a single value (trig,
 | **L2: ln** | `math.ln(x)` is natural log (not `log` — avoids base ambiguity) |
 | **L3: Explicit base** | `math.log2(x)` and `math.log10(x)` for base-2 and base-10 |
 
+<!-- surface -->
+```rask
+extend math {
+    func exp(x: f64) -> f64
+    func ln(x: f64) -> f64
+    func log2(x: f64) -> f64
+    func log10(x: f64) -> f64
+}
+```
+
 ## Multi-Argument Functions
 
 | Rule | Description |
 |------|-------------|
 | **M1: hypot** | `math.hypot(x, y)` computes sqrt(x^2 + y^2) without overflow |
+
+<!-- surface -->
+```rask
+extend math {
+    func hypot(x: f64, y: f64) -> f64
+}
+```
 
 ## Generic Comparison Functions (Prelude)
 
@@ -52,6 +82,13 @@ These are always available — no import needed. They work on any `Comparable` t
 | **G1: min** | `min(a, b)` returns the smaller of two values. `T: Comparable` |
 | **G2: max** | `max(a, b)` returns the larger of two values. `T: Comparable` |
 | **G3: clamp** | `clamp(value, lo, hi)` restricts value to [lo, hi]. `T: Comparable` |
+
+<!-- surface -->
+```rask
+func min<T: Comparable>(a: T, b: T) -> T
+func max<T: Comparable>(a: T, b: T) -> T
+func clamp<T: Comparable>(value: T, lo: T, hi: T) -> T
+```
 
 <!-- test: skip -->
 ```rask
@@ -72,6 +109,14 @@ There is no `math.min`/`math.max`/`math.clamp` and no `.min()`/`.max()` methods 
 | Rule | Description |
 |------|-------------|
 | **V1: Angle conversion** | `math.to_radians(degrees)` and `math.to_degrees(radians)` |
+
+<!-- surface -->
+```rask
+extend math {
+    func to_radians(degrees: f64) -> f64
+    func to_degrees(radians: f64) -> f64
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -101,6 +146,25 @@ let clamped = clamp(150.0, 0.0, 100.0)  // 100.0 (prelude)
 | `is_nan()` | f64 | `x.is_nan()` |
 | `is_inf()` | f64 | `x.is_inf()` |
 | `is_finite()` | f64 | `x.is_finite()` |
+
+<!-- surface -->
+```rask
+extend f64 {
+    func abs(self) -> f64
+    func sqrt(self) -> f64
+    func pow(self, n: f64) -> f64
+    func floor(self) -> f64
+    func ceil(self) -> f64
+    func round(self) -> f64
+    func is_nan(self) -> bool
+    func is_inf(self) -> bool
+    func is_finite(self) -> bool
+}
+
+extend i64 {
+    func abs(self) -> i64
+}
+```
 
 ## Error Messages
 

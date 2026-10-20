@@ -15,6 +15,13 @@
 | **F3: Named** | `{name}` captures variable from scope. Cannot mix with positional |
 | **F4: Escape** | `{{` and `}}` produce literal `{` and `}` |
 
+Arguments after the template are compiler support (CM1), so the declaration has the template alone.
+
+<!-- surface -->
+```rask
+func format(template: string) -> string
+```
+
 ## Format Specifiers
 
 | Rule | Description |
@@ -86,6 +93,13 @@ ASCII (`std.strings/U4`).
 | **D4: Required for {}** | `format("{}", x)` calls `display()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `display()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
 | **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `display()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
 
+<!-- surface -->
+```rask
+interface Displayable {
+    func display(self) -> string
+}
+```
+
 **Rendering is not conversion.** `display()` makes a value presentable to a
 person; `to_string()` converts something that already is text into a `string`
 (`StringView`, a slice, `Span`, `cstring`, `Path`). Keeping one verb for both
@@ -138,6 +152,13 @@ extend AppError {
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
 | **G6: Wrappers** | A `T?` renders as `Option.Some(v)` or `Option.None`, a `T or E` as `Result.Ok(v)` or `Result.Err(e)`, with the payload in its own debug form; a union error renders as the member it holds. A `Link<T>` renders as the node it names |
 
+<!-- surface -->
+```rask
+interface Debug {
+    func debug(self) -> string
+}
+```
+
 The verb matches the interface and the specifier — `Debug`, `{:debug}`, `debug()`.
 
 G5 exists because a map has no order to report. Iteration order is unspecified
@@ -161,6 +182,12 @@ println(format("{:debug}", p))    // Point(x: 1, y: 2)
 | **I2: Field access** | `{point.x}` works for dotted field access |
 | **I3: No expressions** | `{x + y}` is an error — use `format()` for expressions |
 | **I4: No constants** | `{0}`, `{true}`, `{"x"}` are errors. A constant goes in the text as written; a hole is for a value only known when the string is built. `{0}` is `format`'s positional placeholder (F2) and means nothing outside it |
+
+<!-- surface -->
+```rask
+func println(msg: string)
+func print(msg: string)
+```
 
 <!-- test: skip -->
 ```rask

@@ -46,7 +46,7 @@ struct Point { x: f64, y: f64 }
 | **E16: Opt-out** | `@no_encode` on a struct prevents auto-derive of `Encode`. `@no_decode` prevents `Decode`. For types where automatic serialization is semantically wrong |
 | **E17: Enum auto-derive** | Enums auto-derive `Encode`/`Decode` when all variant payloads are `Encode`/`Decode` types |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 interface Encode { }
 interface Decode { }
