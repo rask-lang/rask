@@ -456,10 +456,6 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 self.call_cstring_method(&guard.fields, method)
             }
-            Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
-                let guard = s.lock().unwrap();
-                self.call_args_method(&guard.fields, method, args)
-            }
             Value::Struct(ref s) if s.lock().unwrap().name == "BuildContext" => {
                 if method == "step" {
                     return self.call_build_step(args);

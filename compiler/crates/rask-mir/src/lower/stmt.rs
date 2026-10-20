@@ -1698,7 +1698,7 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {
             if let Some(obj_name) = object.name() {
                 match (obj_name, method.as_str()) {
-                    ("cli", "args") | ("fs", "read_lines") => {
+                    ("fs", "read_lines") => {
                         self.meta_mut(name).elem_type = Some(MirType::String);
                     }
                     ("fs", "read_bytes") => {
@@ -1840,7 +1840,7 @@ impl<'a> MirLowerer<'a> {
                 self.meta_mut(name).type_prefix = Some(prefix.as_str().to_string());
             }
         }
-        // Also track for simple function calls (e.g. cli.args())
+        // Also track for simple function calls
         if let ExprKind::Call { func, .. } = &init.kind {
             if let Some(func_name) = func.name() {
                 if let Some(prefix) = super::func_return_type_prefix(func_name) {

@@ -71,11 +71,6 @@ fn dummy_value(type_name: &str) -> Value {
                 None,
             )
         }
-        "Args" => Value::new_struct(
-            "Args".to_string(),
-            IndexMap::new(),
-            None,
-        ),
         "Handle" => Value::Handle(Arc::new(HandleInner {
             handle: Mutex::new(None),
             cancel: Default::default(),

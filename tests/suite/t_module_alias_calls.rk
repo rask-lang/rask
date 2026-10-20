@@ -13,14 +13,14 @@ import time as tm
 
 func main() {
     let start = tm.Instant.now()
-    println("{c.args().len() > 0}")
+    println("{c.parse_from(["prog"]).program()}")
     println("{files.exists("/definitely/not/here")}")
     println("{mt.cos(0.0)}")
     println("{start.elapsed().as_nanos() >= 0}")
 }
 
 test "module functions through an alias" {
-    assert c.args().len() > 0
+    assert c.parse_from(["prog"]).program() == "prog"
     assert !files.exists("/definitely/not/here")
     assert mt.cos(0.0) == 1.0
 }

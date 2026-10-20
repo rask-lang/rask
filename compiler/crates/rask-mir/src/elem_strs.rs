@@ -209,9 +209,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // the caller still holds.
     ("os_env_vars", 0, 0, "Vec_free"),
     ("os_args", 0, 0, "Vec_free"),
-    // `cli.args()` is the same argv as `os.args()`, built the same way, and
-    // was left off: every program that read its arguments leaked them.
-    ("cli_args", 0, 0, "Vec_free"),
     // A `Shared` box carries no element description — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing

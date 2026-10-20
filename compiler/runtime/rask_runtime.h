@@ -876,15 +876,6 @@ int64_t rask_metadata_size(int64_t meta_ptr);
 int64_t rask_metadata_accessed(int64_t meta_ptr);
 int64_t rask_metadata_modified(int64_t meta_ptr);
 
-// ─── Args parsing ───────────────────────────────────────────
-int64_t rask_args_parse(void);
-int64_t rask_args_flag(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
-int64_t rask_args_option(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
-void    rask_args_option_or(RaskStr *out, int64_t args_ptr, int64_t long_ptr,
-                            int64_t short_ptr, int64_t default_ptr);
-int64_t rask_args_positional(int64_t args_ptr);
-int64_t rask_args_program(int64_t args_ptr);
-
 // Response reading (reads until EOF for Connection: close pattern).
 
 // ─── JSON module ────────────────────────────────────────────

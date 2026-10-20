@@ -4,7 +4,6 @@
 //! Routes `module.method()` calls to the appropriate stdlib module handler.
 
 mod async_mod;
-mod cli;
 mod env;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod fs;
@@ -84,10 +83,10 @@ impl Interpreter {
             ModuleKind::Path => self.call_path_module_method(method, args),
             ModuleKind::Async => self.call_async_method(method, args),
             ModuleKind::Thread => self.call_thread_method(method, args),
-            // All of it is Rask (stdlib/http.rk), which `call_module_method`
-            // falls back to.
-            ModuleKind::Http => Err(RuntimeError::NoSuchMethod {
-                ty: "http".to_string(),
+            // All of it is Rask (stdlib/http.rk, stdlib/cli.rk), which
+            // `call_module_method` falls back to.
+            ModuleKind::Http | ModuleKind::Cli => Err(RuntimeError::NoSuchMethod {
+                ty: module.name().to_string(),
                 method: method.to_string(),
             }),
 
@@ -99,7 +98,6 @@ impl Interpreter {
 
             // Legacy aliases — forward to new modules
             ModuleKind::Env => self.call_env_method(method, args),
-            ModuleKind::Cli => self.call_cli_module_method(method, args),
             ModuleKind::Std => self.call_os_method(method, args),
         }
     }
