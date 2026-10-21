@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: rendering a `cstring` (std.fmt/D1, E0826).
+//
+// Every value renders with `to_string()` except the one whose text can fail to
+// come back: C promises nothing about encoding, so a `cstring` gives its text
+// through `decode() -> string or Utf8Error` and isn't Displayable. The error
+// points at `decode()` rather than suggesting a conformance on a stdlib type.
+
+import string.cstring
+
+func main() {
+    let c = "hi".to_cstring()!
+    // ERROR: `cstring` does not implement `Displayable` [E0826]
+    println(c.to_string())
+
+    // ERROR: same through a placeholder
+    println("{c}")
+
+    // Fine: the text, with the failure handled.
+    println(c.decode() catch _ => "<not utf-8>")
+}

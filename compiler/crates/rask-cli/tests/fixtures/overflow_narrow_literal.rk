@@ -2,5 +2,5 @@
 // declared width, not at the default i32 (#328).
 func main() {
     let x: u8 = 200 + 100
-    println(x.display())
+    println(x.to_string())
 }

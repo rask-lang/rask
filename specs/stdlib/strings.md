@@ -597,8 +597,8 @@ extend cstring {
 }
 ```
 
-C promises nothing about encoding, so getting text back out of a `cstring` can
-fail, and it's `decode()`.
+A `cstring` isn't `Displayable`. C promises nothing about encoding, so getting
+text back out can fail, and a fallible conversion is `decode()`, not `to_string()`.
 
 `c"literal"` is the one line above that isn't built yet. Everything else is,
 on both backends — the round trip and the refusal are in
@@ -860,7 +860,7 @@ extend HtmlTag: Renderable {
 builder.push("tag {value}")
 // ≈
 builder.push("tag ")
-builder.push(value.display())
+builder.push(value.to_string())
 ```
 
 ### Patterns & Guidance

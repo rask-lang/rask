@@ -7,11 +7,11 @@ func fib(n: i32) -> i32 {
 }
 
 func main() {
-    println(fib(10).display())
+    println(fib(10).to_string())
 
     mut sum = 0
     for i in 0..5 {
         sum = sum + i
     }
-    println(sum.display())
+    println(sum.to_string())
 }

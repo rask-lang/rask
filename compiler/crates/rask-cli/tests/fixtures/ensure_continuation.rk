@@ -18,6 +18,6 @@ func run(flag: bool) -> i64 {
 }
 
 func main() {
-    println(run(true).display())
-    println(run(false).display())
+    println(run(true).to_string())
+    println(run(false).to_string())
 }

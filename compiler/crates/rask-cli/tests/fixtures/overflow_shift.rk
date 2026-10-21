@@ -2,5 +2,5 @@
 func main() {
     let x: i32 = 1
     let n: i32 = 40
-    println((x << n).display())
+    println((x << n).to_string())
 }

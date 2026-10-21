@@ -8,4 +8,4 @@ const SUM: i64 = comptime {
     n
 }
 
-func main() { println(SUM.display()) }
+func main() { println(SUM.to_string()) }

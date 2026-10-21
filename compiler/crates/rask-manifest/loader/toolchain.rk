@@ -15,16 +15,16 @@ public func toolchain_load(text: string) -> string {
     return match load_package(text) {
         Package as p => one("ok", package_json(p)),
         LoadError as e => one("error", JsonValue.String(e.message())),
-    }.display()
+    }.to_string()
 }
 
 // {"ok": "<rewritten file>"} or {"error": "..."}.
 public func toolchain_migrate(text: string, to: string) -> string {
-    let version = to.parse<i64>() catch _ => return one("error", JsonValue.String("version must be a whole number, got `{to}`")).display()
+    let version = to.parse<i64>() catch _ => return one("error", JsonValue.String("version must be a whole number, got `{to}`")).to_string()
     return match migrate(text, package_schema(), version) {
         string as out => one("ok", JsonValue.String(out)),
         LoadError as e => one("error", JsonValue.String(e.message())),
-    }.display()
+    }.to_string()
 }
 
 // "" when the history replays to the shape, else what's wrong.

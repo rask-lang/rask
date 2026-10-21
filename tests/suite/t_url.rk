@@ -22,7 +22,7 @@ func parse_error(s: string) -> string {
             url.UrlError.BadHost(x) => return "BadHost({x})"
         }
     }
-    return "ok {u.display()}"
+    return "ok {u.to_string()}"
 }
 
 func decoded(s: string) -> string {
@@ -67,25 +67,25 @@ test "std.url/U1 — path and query keep their case and their escapes" {
     let u = parsed("http://x/A%2Fb/C?K=V%20w")
     assert u.path == "/A%2Fb/C"
     assert (u.query ?? "-") == "K=V%20w"
-    assert u.display() == "http://x/A%2Fb/C?K=V%20w"
+    assert u.to_string() == "http://x/A%2Fb/C?K=V%20w"
 }
 
 test "std.url/U1 — IPv6 host loses its brackets, display puts them back" {
     let u = parsed("http://[::1]:8080/")
     assert u.host == "::1"
     assert (u.port() ?? 0) == 8080
-    assert u.display() == "http://[::1]:8080/"
+    assert u.to_string() == "http://[::1]:8080/"
 }
 
 test "std.url/U1 — no authority" {
     let u = parsed("mailto:someone@example.com")
     assert u.host == ""
     assert u.path == "someone@example.com"
-    assert u.display() == "mailto:someone@example.com"
+    assert u.to_string() == "mailto:someone@example.com"
     let f = parsed("file:///etc/hosts")
     assert f.host == ""
     assert f.path == "/etc/hosts"
-    assert f.display() == "file:///etc/hosts"
+    assert f.to_string() == "file:///etc/hosts"
 }
 
 test "std.url/U2 — the port defaults from the scheme" {
@@ -102,13 +102,13 @@ test "std.url/U2 — the port defaults from the scheme" {
 test "std.url/U2 — an explicit default port is dropped on display" {
     let u = parsed("https://x:443/a")
     assert (u.port() ?? 0) == 443
-    assert u.display() == "https://x/a"
-    assert parsed("https://x:8443/a").display() == "https://x:8443/a"
+    assert u.to_string() == "https://x/a"
+    assert parsed("https://x:8443/a").to_string() == "https://x:8443/a"
 }
 
 test "std.url — to_string reassembles every part" {
     let s = "https://bob@example.com:8080/a/b?x=1&y=2#frag"
-    assert parsed(s).display() == s
+    assert parsed(s).to_string() == s
 }
 
 test "std.url/U4 — param decodes, misses are none" {
@@ -130,20 +130,20 @@ test "std.url — params lists every pair in order" {
 test "std.url — with_query replaces the query" {
     let u = parsed("http://x/p?old=1#f")
     let next = u.with_query([("q", "a b"), ("n", "1")])
-    assert next.display() == "http://x/p?q=a%20b&n=1#f"
+    assert next.to_string() == "http://x/p?q=a%20b&n=1#f"
     assert (next.param("q") ?? "-") == "a b"
     let none_left = u.with_query(Vec.new())
     assert none_left.query == none
-    assert none_left.display() == "http://x/p#f"
+    assert none_left.to_string() == "http://x/p#f"
 }
 
 test "std.url — / appends an encoded segment" {
     let api = parsed("https://api.example.com/v1")
     let endpoint = api / "users" / "12 a"
-    assert endpoint.display() == "https://api.example.com/v1/users/12%20a"
+    assert endpoint.to_string() == "https://api.example.com/v1/users/12%20a"
     assert (parsed("http://x") / "a").path == "/a"
     assert (parsed("http://x/dir/") / "a/b").path == "/dir/a%2Fb"
-    assert (parsed("http://x/v1?k=1") / "u").display() == "http://x/v1/u?k=1"
+    assert (parsed("http://x/v1?k=1") / "u").to_string() == "http://x/v1/u?k=1"
 }
 
 test "std.url/U3 — encode escapes everything outside the unreserved set" {

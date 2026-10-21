@@ -47,14 +47,14 @@ func long_label(n: i64) -> string {
 // The original repro: 19 digits, one past the inline limit.
 test "a passing assert on a long string releases it" {
     let n: i64 = 1234567890123456789
-    assert n.display() == "1234567890123456789"
+    assert n.to_string() == "1234567890123456789"
 }
 
 // One under the limit, which was always clean. Here so a fix that changed the
 // short path would show up.
 test "a short string is inline and needs no release" {
     let n: i64 = 12345678901234
-    assert n.display() == "12345678901234"
+    assert n.to_string() == "12345678901234"
 }
 
 // The leak was per-assert, so a loop is where it added up.

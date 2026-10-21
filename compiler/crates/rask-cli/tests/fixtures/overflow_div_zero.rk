@@ -2,5 +2,5 @@
 func main() {
     let x: i32 = 10
     let z: i32 = 0
-    println((x / z).display())
+    println((x / z).to_string())
 }

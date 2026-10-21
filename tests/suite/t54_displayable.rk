@@ -4,7 +4,7 @@
 struct Point { x: i64, y: i64 }
 
 Point implements Displayable {
-    public func display(self) -> string {
+    public func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
@@ -14,7 +14,7 @@ enum AppError {
     Timeout,
 }
 
-// D5: `message()` alone bridges to Displayable — no display needed.
+// D5: `message()` alone bridges to Displayable — no to_string needed.
 extend AppError {
     public func message(self) -> string {
         match self {
@@ -24,7 +24,7 @@ extend AppError {
     }
 }
 
-// An inherent `display` counts too — the conformance is about *having* the
+// An inherent `to_string` counts too — the conformance is about *having* the
 // method, not about writing `with Displayable` next to it. That is what lets a
 // stdlib type like `StringView` render without a conformance declaration, and
 // what broke when `stdlib/fmt.rk` joined the stub set: a declaration for
@@ -33,23 +33,23 @@ extend AppError {
 struct Tally { hits: i64 }
 
 extend Tally {
-    public func display(self) -> string {
+    public func to_string(self) -> string {
         return "{self.hits} hits"
     }
 }
 
-test "std.fmt/D3 — an inherent display is the conformance" {
+test "std.fmt/D3 — an inherent to_string is the conformance" {
     let t = Tally(hits: 3)
     assert "{t}" == "3 hits"
-    assert t.display() == "3 hits"
+    assert t.to_string() == "3 hits"
     assert format("{}", t) == "3 hits"
 }
 
-test "std.fmt/D3 — a struct that opts in renders through its own display" {
+test "std.fmt/D3 — a struct that opts in renders through its own to_string" {
     let p = Point(x: 1, y: 2)
     assert "{p}" == "(1, 2)"
     assert format("{}", p) == "(1, 2)"
-    assert p.display() == "(1, 2)"
+    assert p.to_string() == "(1, 2)"
 }
 
 test "std.fmt/D5 — an error type renders through message()" {

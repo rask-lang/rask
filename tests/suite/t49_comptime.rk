@@ -345,7 +345,7 @@ test "ctrl.comptime — a method call on a folded const" {
     let neg: i32 = 0 - 5
     assert CT_I16.abs() == 300
     assert neg.abs() == 5
-    assert CT_I64.display() == "101"
+    assert CT_I64.to_string() == "101"
 }
 
 test "ctrl.comptime — a folded const bound to a local keeps its width" {

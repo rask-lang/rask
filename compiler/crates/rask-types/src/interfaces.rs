@@ -1231,7 +1231,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
                 type_params: Vec::new(),
-                name: "display".to_string(),
+                name: "to_string".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
@@ -1394,14 +1394,14 @@ impl<'a> InterfaceChecker<'a> {
     /// Check if a primitive type has a builtin method.
     fn has_builtin_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
-            // Integer types: eq, hash, clone, arithmetic, compare, display
+            // Integer types: eq, hash, clone, arithmetic, compare, to_string
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "hash" | "clone" | "display" | "debug"
+                    "hash" | "clone" | "to_string" | "debug"
                 )
             }
             // Floats: eq, clone, but NOT hash (HA4)
@@ -1410,17 +1410,17 @@ impl<'a> InterfaceChecker<'a> {
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "clone" | "display" | "debug"
+                    "clone" | "to_string" | "debug"
                 )
             }
-            // Bool: eq, hash, clone, compare, display
-            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "display" | "debug"),
-            // Char and string hold text, so they convert (`to_string`) as well
-            // as render (`display`) — std.fmt/D1.
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "display" | "debug"),
-            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "to_string" | "display" | "debug"),
+            // Bool: eq, hash, clone, compare, to_string
+            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
+            // Char: eq, hash, clone, comparison, to_string
+            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
+            // String: eq, hash, clone, len, comparison, to_string
+            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "to_string" | "debug"),
             // Unit: eq, hash, clone
-            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "display" | "debug"),
+            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "to_string" | "debug"),
             _ => false,
         }
     }

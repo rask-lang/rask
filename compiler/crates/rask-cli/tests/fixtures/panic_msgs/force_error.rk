@@ -9,5 +9,5 @@ func fetch() -> i64 or RouteErr9 {
     return RouteErr9(why: "no route")
 }
 func main() {
-    println(fetch()!.display())
+    println(fetch()!.to_string())
 }

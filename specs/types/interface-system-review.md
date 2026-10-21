@@ -96,8 +96,8 @@ Common case: nothing to learn, `dog.greet()` works even when `greet` was defined
 ```rask
 // Package-private: zero boilerplate — clause inferred as `where T: Displayable`
 Ring<T> implements Displayable {
-    func display(self) -> string {
-        return self.items.map(|x| x.display()).join(", ")
+    func to_string(self) -> string {
+        return self.items.map(|x| x.to_string()).join(", ")
     }
 }
 
@@ -211,7 +211,7 @@ extend LogSource {
     func rewind(mutate self) { ... }            // plain method, own block
 }
 LogSource implements Displayable {
-    func display(self) -> string { ... }
+    func to_string(self) -> string { ... }
 }
 LogSource implements Error {
     func message(self) -> string { ... }
@@ -236,7 +236,7 @@ Question: the core five were Equal, Hashable, Comparable, Cloneable, Default —
 | `Map.` usage | 23 | Hashable/Equal earn theirs |
 | `spawn` sites | 52 | Sendability: compiler property, zero declarations ever needed — not an interface |
 | parse-from-string | 29 | Not derivable (format is a choice) — not core |
-| `display` impls (`to_string` at the time) | 6 | Displayable opt-in confirmed correct |
+| `to_string` impls | 6 | Displayable opt-in confirmed correct |
 | `.default()` | 0 | Default is the weakest member (see below) |
 | User-declared interfaces | 14, all domain | No missing core interface |
 

@@ -1145,14 +1145,14 @@ impl ToDiagnostic for rask_types::TypeError {
                      surfacing later as a missing function during codegen"
                 )
             }
-            NotDisplayable { ty, is_collection, is_wrapper, interpolated, span } => {
+            NotDisplayable { ty, is_collection, is_wrapper, interpolated, fallible_text, span } => {
                 let site = if *interpolated { "this placeholder" } else { "this call" };
                 let mut diag = Diagnostic::error(format!(
                     "`{}` does not implement `Displayable`",
                     ty
                 ))
                 .with_code("E0826")
-                .with_primary(*span, format!("`{}` has no `display()`", ty))
+                .with_primary(*span, format!("`{}` has no `to_string()`", ty))
                 .with_why(format!(
                     "{} renders this value through `Displayable`. Structs and enums opt in, \
                      so the compiler never invents output that looks intentional but isn't \
@@ -1180,9 +1180,16 @@ impl ToDiagnostic for rask_types::TypeError {
                             "supply the missing case — `{value ?? \"none\"}` — or narrow \
                              first with `if value? as v { … }`",
                         );
+                } else if let Some(m) = fallible_text {
+                    diag = diag
+                        .with_note(format!(
+                            "a `{ty}`'s text can fail to come back, so it doesn't render; \
+                             `{m}()` answers it as `string or` an error"
+                        ))
+                        .with_fix(format!("value.{m}() catch e => \"…\"   // or `try value.{m}()`"));
                 } else {
                     diag = diag.with_fix(format!(
-                        "give it one: `{} implements Displayable {{ func display(self) -> string {{ … }} }}`",
+                        "give it one: `{} implements Displayable {{ func to_string(self) -> string {{ … }} }}`",
                         ty
                     ))
                     .with_note(format!(
@@ -1193,18 +1200,6 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
                 diag
             }
-            RenderNotConvert { ty, span } => Diagnostic::error(format!(
-                "`{}` has no `to_string` — render it with `display()`",
-                ty
-            ))
-            .with_code("E0921")
-            .with_primary(*span, "`to_string()` converts text, and this isn't text")
-            .with_why(
-                "rendering is not conversion: `display()` turns a value into something a person \
-                 reads, `to_string()` turns something that already is text — a char, a slice, a \
-                 `StringView`, a `Span` — into a `string` [std.fmt/D1]",
-            )
-            .with_fix("value.display()   // or interpolate it: \"{value}\""),
             UnboundedTypeParamMethod { param, method, bounds, span } => {
                 let bound_list = if bounds.is_empty() {
                     format!("`{}` has no bounds", param)

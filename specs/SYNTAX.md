@@ -531,7 +531,7 @@ extend Shape {
 
 ```rask
 interface Displayable {
-    func display(self) -> string
+    func to_string(self) -> string
 }
 
 interface Comparable {
@@ -542,7 +542,7 @@ interface Comparable {
 **Conformance is declared:** a type satisfies an interface through `Type implements Interface` (`type.generics/G1`):
 ```rask
 Point implements Displayable {
-    func display(self) -> string {
+    func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
@@ -560,7 +560,7 @@ LogSource implements Reader {
 }
 
 LogSource implements Displayable {
-    func display(self) -> string { ... }
+    func to_string(self) -> string { ... }
 }
 
 LogSource implements Error {

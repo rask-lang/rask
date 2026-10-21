@@ -212,7 +212,7 @@ impl Interpreter {
             }
             // An unsigned receiver holds its bit pattern in the i64 slot, so
             // the top half of u64 prints negative without the width (#517).
-            "display" | "debug" => {
+            "to_string" | "debug" => {
                 let text = if kind.is_unsigned() {
                     (a as u64).to_string()
                 } else {
@@ -341,7 +341,7 @@ impl Interpreter {
                 RuntimeError::IntegerOverflow(format!("integer overflow: negating {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a))),
             "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Int128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds i128 range [-170141183460469231731687303715884105728, 170141183460469231731687303715884105727]", a, b))) }
-            "display" | "debug" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "to_string" | "debug" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             // HA1, over all 16 little-endian bytes.
             "hash" => Ok(Value::Int(
                 crate::builtins::fnv1a(&(a as u128).to_le_bytes()) as i64,
@@ -442,7 +442,7 @@ impl Interpreter {
             "bit_not" => Ok(Value::Uint128(!a)),
             "pow" => { let b = self.expect_shift_amount(args, 0)?; a.checked_pow(b as u32).map(Value::Uint128).ok_or_else(||
                 RuntimeError::IntegerOverflow(format!("integer overflow: {} ** {} exceeds u128 range [0, 340282366920938463463374607431768211455]", a, b))) }
-            "display" | "debug" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "to_string" | "debug" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             // HA1, over all 16 little-endian bytes.
             "hash" => Ok(Value::Int(
                 crate::builtins::fnv1a(&a.to_le_bytes()) as i64,
@@ -533,7 +533,7 @@ impl Interpreter {
             "is_nan" => Ok(Value::Bool(a.is_nan())),
             "is_inf" => Ok(Value::Bool(a.is_infinite())),
             "is_finite" => Ok(Value::Bool(a.is_finite())),
-            "display" | "debug" => Ok(Value::String(Arc::new(Mutex::new(
+            "to_string" | "debug" => Ok(Value::String(Arc::new(Mutex::new(
                 k.format(a),
             )))),
             "to_int" => Ok(Value::int(a as i64)),
@@ -585,7 +585,7 @@ impl Interpreter {
             "gt" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a & !b)) }
             "ge" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a >= b)) }
             "compare" => { let b = self.expect_bool(args, 0)?; Ok(Value::ordering(a.cmp(&b))) }
-            "display" | "debug" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
+            "to_string" | "debug" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
             "hash" => Ok(Value::Int(
                 crate::builtins::fnv1a(&[a as u8]) as i64,
                 crate::value::IntKind::U64,
@@ -623,7 +623,7 @@ impl Interpreter {
             "to_uppercase" => Ok(Value::Char(c.to_uppercase().next().unwrap_or(c))),
             "to_lowercase" => Ok(Value::Char(c.to_lowercase().next().unwrap_or(c))),
             "len_utf8" => Ok(Value::int(c.len_utf8() as i64)),
-            "to_string" | "display" => Ok(Value::String(Arc::new(Mutex::new(c.to_string())))),
+            "to_string" => Ok(Value::String(Arc::new(Mutex::new(c.to_string())))),
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
             "ne" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c != other)) }
             // Unicode scalar order (type.operators support table)

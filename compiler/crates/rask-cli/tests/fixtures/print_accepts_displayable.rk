@@ -5,7 +5,7 @@
 struct Point { x: i64, y: i64 }
 
 Point implements Displayable {
-    func display(self) -> string {
+    func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
 }

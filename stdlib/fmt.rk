@@ -13,17 +13,13 @@
 /// User-facing rendering. Structs must opt in via
 /// `Type implements Displayable`. Primitives implement it by default (D2).
 ///
-/// format("{}", x) calls display() — compile error if not implemented (D4).
+/// format("{}", x) calls to_string() — compile error if not implemented (D4).
 ///
 /// Error bridge (D5): types with message(self) -> string auto-satisfy
-/// Displayable — display() delegates to message(). No boilerplate for
+/// Displayable — to_string() delegates to message(). No boilerplate for
 /// error types in format("{}", err).
-///
-/// Rendering is not conversion (D1): `to_string()` is the other verb, for
-/// what already holds text (a char, a slice, `StringView`, `Span`,
-/// `cstring`), and it isn't part of this interface.
 public interface Displayable {
-    func display(self) -> string
+    func to_string(self) -> string
 }
 
 // ─── Debug ──────────────────────────────────────────────────────

@@ -4,5 +4,5 @@ func main() {
     v.push(10)
     v.push(20)
     v.push(30)
-    println(v.len().display())
+    println(v.len().to_string())
 }
