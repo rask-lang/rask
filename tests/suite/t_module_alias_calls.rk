@@ -6,21 +6,18 @@
 // by its spelling, so `c` was no module, and lowering looked for a variable.
 // Types through an alias (`tm.Instant`) already worked.
 
-import cli as c
 import fs as files
 import math as mt
 import time as tm
 
 func main() {
     let start = tm.Instant.now()
-    println("{c.parse_from(["prog"]).program()}")
     println("{files.exists("/definitely/not/here")}")
     println("{mt.cos(0.0)}")
     println("{start.elapsed().as_nanos() >= 0}")
 }
 
 test "module functions through an alias" {
-    assert c.parse_from(["prog"]).program() == "prog"
     assert !files.exists("/definitely/not/here")
     assert mt.cos(0.0) == 1.0
 }

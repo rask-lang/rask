@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// std.cli builder: `cli.Parser`, its `--help` text and `CliError`.
+// std.cli: `cli.Parser`, the `Args` it resolves, its `--help` text and
+// `CliError`.
 //
-// A schema knows which names take values, so the builder resolves every word
-// up front and the `Args` it returns doesn't depend on what's asked first.
+// A schema knows which names take values, so the parser sorts every word up
+// front and `Args` is plain data to read.
 // `--help` and `--version` print and exit, which a test block can't survive;
 // rask-cli's compile_run tests run those with real arguments. The text they
 // print is `help()`, checked here.
@@ -32,26 +33,27 @@ func error_text(argv: Vec<string>) -> string {
 
 test "flags and options resolve, in any spelling" {
     let p = grep_parser()
-    mut args = p.parse_from(["mygrep", "-i", "--max-count", "3", "needle", "a.txt", "b.txt"])!
+    let args = p.parse_from(["mygrep", "-i", "--max-count", "3", "needle", "a.txt", "b.txt"])!
     assert args.program() == "mygrep"
-    assert args.flag("ignore-case", "i")
-    assert (args.option("max-count", "m") ?? "") == "3"
+    assert args.flag("ignore-case")
+    assert (args.option("max-count") ?? "") == "3"
     let pos = args.positional()
     assert pos.len() == 3
     assert pos[0] == "needle"
     assert pos[2] == "b.txt"
 }
 
-test "the builder's Args answers to the long name alone" {
+test "Args answers to the long name, however it was spelled" {
     let p = grep_parser()
-    mut args = p.parse_from(["mygrep", "-im", "5", "needle", "f"])!
-    assert args.flag("ignore-case", "")
-    assert (args.option("max-count", "") ?? "") == "5"
+    let args = p.parse_from(["mygrep", "-im", "5", "needle", "f"])!
+    assert args.flag("ignore-case")
+    assert (args.option("max-count") ?? "") == "5"
 }
 
-test "an option's value is never positional, asked or not" {
+test "an option's value is never positional, and the last one wins" {
     let p = grep_parser()
     let args = p.parse_from(["mygrep", "-m=2", "needle", "--max-count", "4", "f"])!
+    assert (args.option("max-count") ?? "") == "4"
     let pos = args.positional()
     assert pos.len() == 2
     assert pos[0] == "needle"
@@ -61,11 +63,31 @@ test "an option's value is never positional, asked or not" {
 test "-- makes the rest positional" {
     let p = grep_parser()
     let args = p.parse_from(["mygrep", "--", "--ignore-case", "-"])!
-    assert !args.flag("ignore-case", "i")
+    assert !args.flag("ignore-case")
     let pos = args.positional()
     assert pos.len() == 2
     assert pos[0] == "--ignore-case"
     assert pos[1] == "-"
+}
+
+test "flags not passed, and names the schema doesn't have" {
+    let p = cli.Parser.new("t").flag("verbose", "v", "").flag("number", "n", "").option("out", "o", "")
+    let args = p.parse_from(["t", "-vn", "--out=-5", "x"])!
+    assert args.flag("verbose")
+    assert args.flag("number")
+    assert (args.option("out") ?? "") == "-5"
+    let none_given = p.parse_from(["t"])!
+    assert !none_given.flag("verbose")
+    assert none_given.option("out") is none
+    assert none_given.positional().is_empty()
+    assert !args.flag("extra")
+    assert args.option("extra") is none
+}
+
+test "an option's value may start with a dash" {
+    let p = cli.Parser.new("t").option("offset", "", "")
+    let args = p.parse_from(["t", "--offset", "-5"])!
+    assert (args.option("offset") ?? "") == "-5"
 }
 
 test "an unknown flag is an error" {
@@ -89,8 +111,8 @@ test "a missing positional is an error" {
 test "a required option" {
     let p = cli.Parser.new("tool").option("config", "c", "Config file", required: true)
     assert failure(p, ["tool"]) == "missing required argument: --config"
-    mut args = p.parse_from(["tool", "-c", "x.toml"])!
-    assert (args.option("config", "c") ?? "") == "x.toml"
+    let args = p.parse_from(["tool", "-c", "x.toml"])!
+    assert (args.option("config") ?? "") == "x.toml"
 }
 
 test "help text" {

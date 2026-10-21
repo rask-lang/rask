@@ -1,112 +1,50 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 // Argument parsing is string handling, so it's written in Rask and both
-// backends run this one copy. It used to be a C parser and a Rust parser that
-// disagreed: given `--output out.txt`, C took `out.txt` as the option's value
-// and the interpreter took it as a positional.
+// backends run this one copy.
+//
+// There's no schema-less parse. Whether `--output out.txt` is an option and
+// its value or a flag and a file depends on what `--output` is, and only a
+// schema says that.
 
 import os
 import string.StringBuilder
 
-/// Command-line argument parsing.
-struct cli { }
-
-extend cli {
-    /// Parse the process arguments without a schema. See `parse_from`.
-    public func parse() -> Args {
-        return cli.parse_from(os.args())
-    }
-
-    /// Parse `argv` without a schema. `argv[0]` is the program name, the way
-    /// `os.args()` returns it.
-    public func parse_from(argv: Vec<string>) -> Args {
-        mut words: Vec<string> = Vec.new()
-        mut taken: Vec<bool> = Vec.new()
-        mut i: usize = 1
-        while i < argv.len() {
-            words.push(argv[i])
-            taken.push(false)
-            i += 1
-        }
-        return Args(argv0: argv.get(0) ?? "", words: words, taken: taken)
-    }
-}
-
-/// Parsed arguments. From `cli.parse` the words are kept as typed; from
-/// `Parser.parse` they're spelled out in long form, so the short name is
-/// optional there.
+/// Arguments as a `Parser` resolved them. Flags and options are under their
+/// long name, whichever spelling was typed.
 public struct Args {
     argv0: string
-    words: Vec<string>
-    // Words an option took as its value, which `positional` skips.
-    taken: Vec<bool>
+    // Long names of the flags passed.
+    flags: Vec<string>
+    // Long names of the options passed, and each one's last value.
+    names: Vec<string>
+    values: Vec<string>
+    pos: Vec<string>
 }
 
 extend Args {
-    /// Whether `--long`, `-short` or a group holding `short` (`-vn`) was passed.
-    /// `short` may be empty.
-    public func flag(self, long: string, short: string) -> bool {
+    /// Whether the flag `--long` was passed, in any spelling.
+    public func flag(self, long: string) -> bool {
+        return self.flags.contains(long)
+    }
+
+    /// The value of the option `--long`, in any spelling. Repeated, the last
+    /// one wins.
+    public func option(self, long: string) -> string? {
         mut i: usize = 0
-        while i < self.words.len() {
-            let w = self.words[i]
-            if w == "--" {
-                return false
-            }
-            if w == "--{long}" {
-                return true
-            }
-            if is_short_group(w) && !short.is_empty() && w.contains(short) {
-                return true
+        while i < self.names.len() {
+            if self.names[i] == long {
+                return self.values[i]
             }
             i += 1
         }
-        return false
+        return none
     }
 
-    /// The value of `--long value`, `--long=value`, `-short value` or
-    /// `-short=value`; the last one wins when it's repeated. Without a schema,
-    /// asking is what tells `Args` the next word is a value, so ask for options
-    /// before calling `positional`.
-    public func option(mutate self, long: string, short: string) -> string? {
-        mut found: string? = none
-        mut i: usize = 0
-        while i < self.words.len() {
-            let w = self.words[i]
-            if w == "--" {
-                break
-            }
-            if names_option(w, long, short) {
-                if w.index_of("=")? as eq {
-                    found = w[eq + 1..w.len()].to_string()
-                } else if i + 1 < self.words.len() && self.words[i + 1] != "--" {
-                    i += 1
-                    self.taken[i] = true
-                    found = self.words[i]
-                }
-            }
-            i += 1
-        }
-        return found
-    }
-
-    /// The words that aren't flags, options or option values. Everything after
-    /// `--` counts, and so does a lone `-`.
+    /// The words that aren't flags, options or option values, in order.
+    /// Everything after `--` counts, and so does a lone `-`.
     public func positional(self) -> Vec<string> {
-        mut out: Vec<string> = Vec.new()
-        mut rest = false
-        mut i: usize = 0
-        while i < self.words.len() {
-            let w = self.words[i]
-            if rest {
-                out.push(w)
-            } else if w == "--" {
-                rest = true
-            } else if !self.taken[i] && (w == "-" || !w.starts_with("-")) {
-                out.push(w)
-            }
-            i += 1
-        }
-        return out
+        return self.pos.clone()
     }
 
     /// The program name, `argv[0]`.
@@ -115,23 +53,21 @@ extend Args {
     }
 }
 
-// `-v`, `-vn`: one dash, then flag letters.
-func is_short_group(w: string) -> bool {
-    return w.len() >= 2 && w.starts_with("-") && !w.starts_with("--") && !w.contains("=")
+// Record `value` for option `long`, replacing an earlier one.
+func set_value(mutate names: Vec<string>, mutate values: Vec<string>, long: string, value: string) {
+    mut i: usize = 0
+    while i < names.len() {
+        if names[i] == long {
+            values[i] = value
+            return
+        }
+        i += 1
+    }
+    names.push(long)
+    values.push(value)
 }
 
-// Whether `w` is `--long`, `--long=…`, `-short` or `-short=…`.
-func names_option(w: string, long: string, short: string) -> bool {
-    if w == "--{long}" || w.starts_with("--{long}=") {
-        return true
-    }
-    if short.is_empty() {
-        return false
-    }
-    return w == "-{short}" || w.starts_with("-{short}=")
-}
-
-// ─── Builder ─────────────────────────────────────────────────────
+// ─── Parser ──────────────────────────────────────────────────────
 
 /// A schema for a program's arguments: what it accepts, and the `--help` text
 /// that describes it.
@@ -208,8 +144,9 @@ extend Parser {
     /// exit 0, and so does `--version` when a version is set.
     public func parse_from(self, argv: Vec<string>) -> Args or CliError {
         mut flags: Vec<string> = Vec.new()
+        mut names: Vec<string> = Vec.new()
+        mut values: Vec<string> = Vec.new()
         mut pos: Vec<string> = Vec.new()
-        mut seen: Vec<string> = Vec.new()
         mut rest = false
         mut i: usize = 1
         while i < argv.len() {
@@ -250,7 +187,7 @@ extend Parser {
                 }
                 if !spec.takes_value {
                     if inline is none {
-                        flags.push("--{key}")
+                        flags.push(key)
                         continue
                     }
                     return CliError.UnknownFlag(w)
@@ -264,8 +201,7 @@ extend Parser {
                 } else {
                     return CliError.MissingValue("--{key}")
                 }
-                flags.push("--{key}={value}")
-                seen.push(key)
+                set_value(mutate names, mutate values, key, value)
                 continue
             }
 
@@ -280,8 +216,7 @@ extend Parser {
                 if !spec.takes_value {
                     return CliError.UnknownFlag(w)
                 }
-                flags.push("--{spec.long}={body[eq + 1..body.len()]}")
-                seen.push(spec.long)
+                set_value(mutate names, mutate values, spec.long, body[eq + 1..body.len()].to_string())
                 continue
             }
             mut k: usize = 0
@@ -292,20 +227,19 @@ extend Parser {
                 }
                 k += 1
                 if !spec.takes_value {
-                    flags.push("--{spec.long}")
+                    flags.push(spec.long)
                     continue
                 }
                 if k < body.len() || i >= argv.len() {
                     return CliError.MissingValue("-{letter}")
                 }
-                flags.push("--{spec.long}={argv[i]}")
-                seen.push(spec.long)
+                set_value(mutate names, mutate values, spec.long, argv[i])
                 i += 1
             }
         }
 
         for spec in self.opts {
-            if spec.required && !seen.contains(spec.long) {
+            if spec.required && !names.contains(spec.long) {
                 return CliError.MissingRequired("--{spec.long}")
             }
         }
@@ -313,17 +247,7 @@ extend Parser {
             return CliError.MissingRequired("<{self.positionals[pos.len()].name}>")
         }
 
-        mut words = flags
-        words.push("--")
-        mut taken: Vec<bool> = Vec.new()
-        for _w in words {
-            taken.push(false)
-        }
-        for p in pos {
-            words.push(p)
-            taken.push(false)
-        }
-        return Args(argv0: argv.get(0) ?? self.name, words: words, taken: taken)
+        return Args(argv0: argv.get(0) ?? self.name, flags: flags, names: names, values: values, pos: pos)
     }
 
     /// The `--help` text.

@@ -2031,17 +2031,15 @@ fn cli_parse_reads_argv_on_both_backends() {
                 Arguments:\n  <file>              Input\n\n\
                 Options:\n  -v, --verbose       Talk more\n  -n, --name <value>  Who to greet\n  \
                 -h, --help          Show this help\n      --version       Show version\n";
-    let quick0 = "quick: verbose=false name=nobody rest=0\n";
-    let cases: [(&[&str], i32, String, &str); 4] = [
-        (
-            &["-v", "in.txt", "--name=ann"],
-            0,
-            "quick: verbose=true name=ann rest=1\nbuilder: name=ann file=in.txt\n".to_string(),
-            "",
-        ),
-        (&["--help"], 0, format!("{quick0}{help}"), ""),
-        (&["--version"], 0, format!("{quick0}demo 2.1\n"), ""),
-        (&["--bogus", "x"], 1, "quick: verbose=false name=nobody rest=1\n".to_string(), "unknown flag: --bogus"),
+    let cases: [(&[&str], i32, String, &str); 7] = [
+        (&["-v", "in.txt", "--name=ann"], 0, "verbose=true name=ann file=in.txt rest=1\n".to_string(), ""),
+        // The schema says `--name` takes a value, so `bob` isn't the file.
+        (&["--name", "bob", "a.txt"], 0, "verbose=false name=bob file=a.txt rest=1\n".to_string(), ""),
+        (&["-vn", "cy", "a", "b"], 0, "verbose=true name=cy file=a rest=2\n".to_string(), ""),
+        (&["--help"], 0, help.to_string(), ""),
+        (&["--version"], 0, "demo 2.1\n".to_string(), ""),
+        (&["--bogus", "x"], 1, String::new(), "unknown flag: --bogus"),
+        (&[], 1, String::new(), "missing required argument: <file>"),
     ];
     for (argv, want_code, want_out, want_err) in &cases {
         for mode in ["--interp", "--native"] {

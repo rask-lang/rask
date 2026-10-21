@@ -136,7 +136,7 @@ fn build_cache() -> MetadataCache {
     let mut method_symbols = HashSet::new();
 
     for type_name in reg.type_names() {
-        // `fs`, `io`, `cli` are namespaces of free functions; `string`,
+        // `fs`, `io`, `json` are namespaces of free functions; `string`,
         // `cstring`, `Vec` are types you can hold a value of. Capitalization
         // used to be the whole test, with `string` written in as the one
         // exception — so the second lowercase type, `cstring`, was filed as a
@@ -1237,7 +1237,7 @@ mod tests {
         assert!(types.contains("Vec"), "missing Vec type");
         assert!(types.contains("string"), "missing string type");
         assert!(mods.contains("fs"), "missing fs module");
-        assert!(mods.contains("cli"), "missing cli module");
+        assert!(mods.contains("json"), "missing json module");
     }
 
     #[test]

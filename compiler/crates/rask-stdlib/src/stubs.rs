@@ -1145,7 +1145,7 @@ mod tests {
         let reg = StubRegistry::load();
         let expected = [
             "Vec", "Map", "Rack", "Link", "string", "Option", "Result", "File", "Random",
-            "fs", "net", "json", "cli", "io", "std", "http",
+            "fs", "net", "json", "io", "std", "http",
             "JsonValue", "JsonError",
             "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
             "Method", "HttpError",
@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn module_types_loaded() {
         let reg = StubRegistry::load();
-        for module in &["fs", "net", "json", "cli", "io", "std"] {
+        for module in &["fs", "net", "json", "io", "std"] {
             let ts = reg.get_type(module);
             assert!(ts.is_some(), "Missing module type: {}", module);
         }
