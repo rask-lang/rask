@@ -15,12 +15,14 @@ extend ProxyError {
         }
     }
 
-    public func to_http_error(self) -> HttpError {
+    /// The response a client gets when proxying fails: a gateway error for
+    /// an upstream that's down or slow, a 404 when no route matches.
+    public func to_response(self) -> Response {
         return match self {
-            ProxyError.UpstreamUnreachable => HttpError.InternalServerError("upstream unreachable".to_string())
-            ProxyError.UpstreamTimeout => HttpError.InternalServerError("upstream timeout".to_string())
-            ProxyError.BadResponse => HttpError.InternalServerError("bad response from upstream".to_string())
-            ProxyError.NoMatchingRoute => HttpError.NotFound
+            ProxyError.UpstreamUnreachable => Response.new(502, self.message())
+            ProxyError.UpstreamTimeout => Response.new(504, self.message())
+            ProxyError.BadResponse => Response.new(502, self.message())
+            ProxyError.NoMatchingRoute => Response.not_found()
         }
     }
 }

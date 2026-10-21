@@ -234,7 +234,7 @@ extend Value {
                 return "false"
             }
             Value.Int(n) => return "{n}"
-            Value.Num(n) => return n.to_string()
+            Value.Num(n) => return n.display()
             Value.Str(_) => return "<string>"
             Value.Array(_) => return "<array>"
             Value.MapVal(_) => return "<map>"
