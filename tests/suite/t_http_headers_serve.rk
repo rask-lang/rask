@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Headers.iter()` hands out the pairs, names lowercased, as a sequence
+// (type.sequence/SEQ6). And `http.serve` reports a listen it can't make
+// instead of looping on nothing.
+
+import http
+import http.Headers
+import http.HttpError
+import http.Request
+import http.Response
+
+test "a for loop walks the headers, names lowercased" {
+    mut h = Headers.new()
+    h.set("Content-Type", "text/plain")
+    h.set("X-Trace", "abc {h.len()}")
+    mut seen: Vec<string> = Vec.new()
+    for (name, value) in h.iter() {
+        seen.push("{name}: {value}")
+    }
+    seen.sort()
+    assert seen == ["content-type: text/plain", "x-trace: abc 1"]
+}
+
+test "the sequence starts a chain" {
+    mut h = Headers.new()
+    h.set("Accept", "*/*")
+    h.set("X-One", "1")
+    h.set("X-Two", "2")
+    let custom = h.iter().filter(|pair| pair.0.starts_with("x-")).count()
+    assert custom == 2
+}
+
+func echo(req: Request) -> Response {
+    return Response.ok(req.path())
+}
+
+test "serve reports an address it can't listen on" {
+    let result = http.serve("not an address", echo)
+    if result is HttpError.Io(msg) {
+        assert msg == "listen failed"
+    } else {
+        assert false
+    }
+}

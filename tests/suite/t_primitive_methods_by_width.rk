@@ -69,7 +69,7 @@ test "float methods" {
 
 test "bool and char" {
     let t = true
-    assert(t.to_string() == "true")
+    assert(t.display() == "true")
     let c = 'a'
     assert(c.is_alphabetic())
     assert((char.from_u32(98) ?? 'z') == 'b')

@@ -121,7 +121,7 @@ struct Reading {
 // Pushes sensor readings through a channel. The Sender is moved into the
 // closure that wraps this on Thread.spawn — main keeps the Receiver.
 func interrupt_handler(tx: Sender<Reading>, start_time: time.Instant, sample_rate_hz: i64) {
-    let period_ns = 1000000000 / sample_rate_hz
+    let period = time.Duration.seconds(1) / sample_rate_hz
     mut sequence: i64 = 0
 
     while sequence < sample_rate_hz * 2 {
@@ -137,7 +137,7 @@ func interrupt_handler(tx: Sender<Reading>, start_time: time.Instant, sample_rat
         }
 
         sequence += 1
-        time.sleep(time.Duration.millis(period_ns / 1000000))
+        time.sleep(period)
     }
 }
 
@@ -260,7 +260,7 @@ func main() {
     )
 
     let start_time = time.Instant.now()
-    let process_period_ns = 1000000000 / PROCESS_RATE_HZ
+    let process_period = time.Duration.seconds(1) / PROCESS_RATE_HZ
     let deadline_ns = HARD_DEADLINE_US * 1000
 
     // Start interrupt handler on separate thread. `own` moves the Sender
@@ -296,7 +296,7 @@ func main() {
         cycle += 1
 
         // Sleep until next cycle
-        time.sleep(time.Duration.millis(process_period_ns / 1000000))
+        time.sleep(process_period)
     }
 
     // Keep draining until every sample the ISR will ever send has been taken,

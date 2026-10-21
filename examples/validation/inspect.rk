@@ -25,7 +25,7 @@ duck interface Inspectable {
 // Config and BuildInfo satisfy Inspectable purely by shape — no `extend with`.
 extend Config {
     func describe(self) -> string {
-        return "config {self.to_string()}"
+        return "config {self.display()}"
     }
 }
 

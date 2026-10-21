@@ -5,7 +5,7 @@
 func main() {
     mut v = Vec.new()
     v.push(0)
-    ensure println(v[0].to_string())
+    ensure println(v[0].display())
     with v[0] as item {
         item = 99
         panic("boom")

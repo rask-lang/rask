@@ -896,6 +896,8 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     // An array receiver's view and the copy back into it: both only read.
     ("rask_vec_view", &[]),
     ("rask_vec_copy_back", &[]),
+    // `Map.from` on a held array copies each pair in; the array keeps its own.
+    ("rask_map_insert_pairs", &[]),
     ("rask_free", &[0]),
     // A failed `assert a == b` prints both sides and stops; it keeps nothing.
     ("assert_fail_cmp_i64", &[]),

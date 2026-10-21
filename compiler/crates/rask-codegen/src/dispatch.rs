@@ -197,6 +197,9 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Vec_free_view", "rask_vec_free_view", &[types::I64], None, false),
         StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64], None, false),
+        // `Map.from(pairs)` on an array held somewhere (map, pairs, count,
+        // value offset, pair size).
+        StdlibEntry::simple("rask_map_insert_pairs", "rask_map_insert_pairs", &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         // Giving back the reference a captured variable's slot held, on the way
         // to the slot holding another one. Spelled apart from the refcount

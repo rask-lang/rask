@@ -325,6 +325,9 @@ fn calls_in(path: &Path) -> Exercised {
     };
     let typed = &checked.typed;
     let mut out = Exercised::default();
+    if checked.format_calls.iter().any(|s| s.file_id < rask_stdlib::stubs::STDLIB_FILE_ID_BASE) {
+        out.calls.insert((String::new(), "format".to_string()));
+    }
     for decl in checked.decls.iter().filter(|d| d.span.file_id < rask_stdlib::stubs::STDLIB_FILE_ID_BASE) {
         rask_ast::visit::walk_decl(decl, &mut |e| {
             if !matches!(e.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {

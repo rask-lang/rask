@@ -54,7 +54,7 @@ extend Version {
         )
     }
 
-    func to_string(self) -> string {
+    func display(self) -> string {
         return "{self.major}.{self.minor}.{self.patch}"
     }
 }
@@ -121,12 +121,12 @@ extend Constraint {
         }
     }
 
-    func to_string(self) -> string {
+    func display(self) -> string {
         match self {
-            Compatible(v) => return "^{v.to_string()}"
-            Tilde(v) => return "~{v.to_string()}"
-            Exact(v) => return "={v.to_string()}"
-            Minimum(v) => return ">={v.to_string()}"
+            Compatible(v) => return "^{v.display()}"
+            Tilde(v) => return "~{v.display()}"
+            Exact(v) => return "={v.display()}"
+            Minimum(v) => return ">={v.display()}"
         }
     }
 }
@@ -453,7 +453,7 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
 }
 
 func local_fetch(root: string, name: string, version: Version) -> string or RegistryError {
-    let ver_str = version.to_string()
+    let ver_str = version.display()
     let pkg_path = "{root}/{name}/{ver_str}"
     if !fs.exists(pkg_path) {
         return RegistryError.PackageNotFound("{name}@{ver_str}")
@@ -588,7 +588,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
 }
 
 func http_fetch(base_url: string, name: string, version: Version) -> string or RegistryError {
-    let ver_str = version.to_string()
+    let ver_str = version.display()
     let url = "{base_url}/packages/{name}/{ver_str}/download"
     let resp = http.get(url) is Response as r else {
         return RegistryError.NetworkError("failed to download {name}@{ver_str}")
@@ -653,8 +653,8 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
         if constraint.satisfies(existing.meta.version) {
             return existing
         }
-        let con_str = constraint.to_string()
-        let ver_str = existing.meta.version.to_string()
+        let con_str = constraint.display()
+        let ver_str = existing.meta.version.display()
         return FetchError.Resolve(ResolveError.Conflict(name, ver_str, con_str))
     }
 
@@ -670,7 +670,7 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
     let meta = candidates.first() ?? {
-        return FetchError.Resolve(ResolveError.NoMatch(name, constraint.to_string()))
+        return FetchError.Resolve(ResolveError.NoMatch(name, constraint.display()))
     }
 
     mut link = graph.packages.insert(ResolvedPkg(
@@ -719,7 +719,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
     for pkg in graph.packages.nodes() {
         if pkg.meta.checksum.is_empty() { continue }
         let name = pkg.meta.name
-        let ver_str = pkg.meta.version.to_string()
+        let ver_str = pkg.meta.version.display()
         let cache_path = "{cache_dir}/{name}-{ver_str}"
 
         if fs.exists(cache_path) {
@@ -827,14 +827,14 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
     // Verify checksum if present
     if !item.checksum.is_empty() {
         let content = fs.read_text("{pkg_path}/meta.json") is string as c else {
-            return "fetch   {item.name}@{item.version.to_string()}"
+            return "fetch   {item.name}@{item.version.display()}"
         }
         verify_checksum(content, item.checksum, item.name) catch e => {
             return FetchError.Registry(e)
         }
     }
 
-    return "fetch   {item.name}@{item.version.to_string()}"
+    return "fetch   {item.name}@{item.version.display()}"
 }
 
 // ─── Lock File ──────────────────────────────────────────────────────
@@ -861,7 +861,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 
         out.push("[[package]]\n")
         out.push("name = \"{pkg.meta.name}\"\n")
-        let ver_str = pkg.meta.version.to_string()
+        let ver_str = pkg.meta.version.display()
         out.push("version = \"{ver_str}\"\n")
         out.push("checksum = \"{pkg.meta.checksum}\"\n")
 
@@ -994,7 +994,7 @@ func print_dep_graph(graph: DepGraph) {
 
 func print_node(pkg: Link<ResolvedPkg>, depth: usize) {
     let indent = "  ".repeat(depth)
-    let ver = pkg.meta.version.to_string()
+    let ver = pkg.meta.version.display()
     if depth == 0 {
         println("{indent}{pkg.meta.name}@{ver} (root)")
     } else {
@@ -1013,7 +1013,7 @@ func print_lock_diff(old_lock: Map<string, LockedPackage>, graph: DepGraph) {
 
     for pkg in graph.packages.nodes() {
         if pkg.meta.checksum.is_empty() { continue }
-        let ver = pkg.meta.version.to_string()
+        let ver = pkg.meta.version.display()
 
         if old_lock.contains(pkg.meta.name) {
             let locked = old_lock.get(pkg.meta.name) ?? {
@@ -1165,7 +1165,7 @@ func run(args: CliArgs) -> void or FetchError {
 
     println("Loading manifest: {args.manifest_path}")
     let manifest = try load_manifest(args.manifest_path)
-    println("Package: {manifest.name}@{manifest.version.to_string()}")
+    println("Package: {manifest.name}@{manifest.version.display()}")
     println("Dependencies: {manifest.deps.len()}")
     println("")
 
@@ -1212,7 +1212,7 @@ func run(args: CliArgs) -> void or FetchError {
             mut drift = false
             for pkg in graph.packages.nodes() {
                 if pkg.meta.checksum.is_empty() { continue }
-                let ver = pkg.meta.version.to_string()
+                let ver = pkg.meta.version.display()
 
                 if old_lock.contains(pkg.meta.name) {
                     let locked = old_lock.get(pkg.meta.name) ?? {

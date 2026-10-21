@@ -4,5 +4,5 @@ func main() {
     let s2 = "world"
     let combined = "{s} {s2}"
     println(combined)
-    println(s.len().to_string())
+    println(s.len().display())
 }

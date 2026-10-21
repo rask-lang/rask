@@ -162,8 +162,8 @@ extend Document {
         return ()
     }
 
-    // Display the document
-    func display(self) {
+    // Print the document, numbered
+    func show(self) {
         for i in 0..self.line_count() {
             let line = self.get_line(i)!
             println("{i + 1}: {line}")
@@ -274,7 +274,7 @@ func main() -> void or EditError | fs.IoError {
                 try doc.save(path)
                 println("Saved to {path}")
             }
-            Print => doc.display()
+            Print => doc.show()
             Quit => {
                 if doc.modified {
                     println("Warning: unsaved changes")

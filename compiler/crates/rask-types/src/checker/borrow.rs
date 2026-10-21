@@ -718,7 +718,7 @@ impl TypeChecker {
         if method_name.starts_with("get") || matches!(method_name,
             "read" | "len" | "is_empty" | "contains" | "find"
             | "iter" | "values" | "keys" | "handles"
-            | "starts_with" | "ends_with" | "to_string" | "to_owned" | "clone"
+            | "starts_with" | "ends_with" | "to_string" | "display" | "to_owned" | "clone"
             | "trim" | "trim_start" | "trim_end"
             | "split" | "split_whitespace" | "lines" | "chars"
         ) {

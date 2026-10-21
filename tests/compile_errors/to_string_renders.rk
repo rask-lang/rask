@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `to_string()` on a value that renders but isn't text
+// (std.fmt/D1, E0921).
+//
+// Two verbs: `display()` renders a value for a person, `to_string()` converts
+// what already holds text. A number, a bool and a Displayable struct render;
+// none of them has text in it to convert, so the call names the other verb.
+
+struct Point { x: i64, y: i64 }
+
+Point implements Displayable {
+    func display(self) -> string {
+        return "({self.x}, {self.y})"
+    }
+}
+
+func main() {
+    let n = 42
+    // ERROR: `i32` has no `to_string` [E0921]
+    println(n.to_string())
+
+    // ERROR: `bool` has no `to_string` [E0921]
+    println(true.to_string())
+
+    let p = Point(x: 1, y: 2)
+    // ERROR: `Point` has no `to_string` [E0921]
+    println(p.to_string())
+
+    // Fine: these convert text.
+    println('x'.to_string())
+    println("abc"[0..2].to_string())
+    println(n.display())
+    println(p.display())
+}

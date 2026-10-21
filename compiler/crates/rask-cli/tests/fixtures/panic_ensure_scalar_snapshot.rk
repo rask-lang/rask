@@ -5,7 +5,7 @@
 // Native used to skip any ensure body that mentioned a scalar at all (#299).
 func main() {
     let attempt = 7
-    ensure println(attempt.to_string())
+    ensure println(attempt.display())
     println("body")
     panic("boom")
 }

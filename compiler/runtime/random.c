@@ -69,10 +69,10 @@ RaskRng *rask_rng_new(void) {
     return rng;
 }
 
-RaskRng *rask_rng_from_seed(int64_t seed) {
+RaskRng *rask_rng_from_seed(uint64_t seed) {
     RaskRng *rng = (RaskRng *)rask_alloc(sizeof(RaskRng));
     *rng = (RaskRng){0};
-    rng_seed(rng, (uint64_t)seed);
+    rng_seed(rng, seed);
     return rng;
 }
 
@@ -84,8 +84,8 @@ void rask_rng_free(RaskRng *rng) {
     rask_free(rng);
 }
 
-int64_t rask_rng_u64(RaskRng *rng) {
-    return (int64_t)rng_next_u64(rng);
+uint64_t rask_rng_u64(RaskRng *rng) {
+    return rng_next_u64(rng);
 }
 
 int64_t rask_rng_i64(RaskRng *rng) {
@@ -96,8 +96,8 @@ double rask_rng_f64(RaskRng *rng) {
     return (double)(rng_next_u64(rng) >> 11) / (double)(1ULL << 53);
 }
 
-double rask_rng_f32(RaskRng *rng) {
-    return (double)((float)(rng_next_u64(rng) >> 40) / (float)(1U << 24));
+float rask_rng_f32(RaskRng *rng) {
+    return (float)(rng_next_u64(rng) >> 40) / (float)(1U << 24);
 }
 
 int64_t rask_rng_bool(RaskRng *rng) {
@@ -118,7 +118,7 @@ int64_t rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi) {
 //
 // Neither `shuffle` nor `choice` had a native entry point: both reached codegen
 // as "Function not found" while the interpreter ran them (#857).
-void rask_random_shuffle(RaskRng *rng, RaskVec *v) {
+void rask_rng_shuffle(RaskRng *rng, RaskVec *v) {
     if (!rng || !v) return;
     int64_t len = rask_vec_len(v);
     for (int64_t i = len - 1; i >= 1; i--) {
@@ -129,7 +129,7 @@ void rask_random_shuffle(RaskRng *rng, RaskVec *v) {
 
 // Random.choice(vec) -> T? — a pointer to the element, or NULL for an empty
 // Vec, which the DerefOption adapter turns into `none`.
-void *rask_random_choice(RaskRng *rng, RaskVec *v) {
+void *rask_rng_choice(RaskRng *rng, RaskVec *v) {
     if (!rng || !v) return NULL;
     int64_t len = rask_vec_len(v);
     if (len <= 0) return NULL;
@@ -173,7 +173,10 @@ static RaskRng *get_tl_rng(void) {
 }
 
 double  rask_random_f64(void)                   { return rask_rng_f64(get_tl_rng()); }
-double  rask_random_f32(void)                   { return rask_rng_f32(get_tl_rng()); }
+float   rask_random_f32(void)                   { return rask_rng_f32(get_tl_rng()); }
+uint64_t rask_random_u64(void)                  { return rask_rng_u64(get_tl_rng()); }
+void    rask_random_shuffle(RaskVec *v)         { rask_rng_shuffle(get_tl_rng(), v); }
+void   *rask_random_choice(RaskVec *v)          { return rask_rng_choice(get_tl_rng(), v); }
 int64_t rask_random_i64(void)                   { return rask_rng_i64(get_tl_rng()); }
 int64_t rask_random_bool(void)                  { return rask_rng_bool(get_tl_rng()); }
 int64_t rask_random_range(int64_t lo, int64_t hi) { return rask_rng_range(get_tl_rng(), lo, hi); }

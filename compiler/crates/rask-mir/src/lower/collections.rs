@@ -129,12 +129,20 @@ impl<'a> MirLowerer<'a> {
     /// string in the key slot and hashed it as a word. Every later lookup
     /// missed — the map had the entry and could not find it (#812 is the same
     /// bug on `Map.new`, fixed there and not here).
+    ///
+    /// `arg` is a literal of pairs or an array held somewhere. A held array
+    /// keeps its own entries, so the map takes a copy of each
+    /// (`rask_map_insert_pairs`).
     pub(super) fn lower_map_from_pairs(
         &mut self,
         call: &Expr,
         written: &[TypeExpr],
-        elems: &[Expr],
+        arg: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
+        let elems: &[Expr] = match &arg.kind {
+            ExprKind::Array(elems) => elems,
+            _ => &[],
+        };
         // The checker knows the map's own type; the spelling answers when it
         // doesn't (`Map<string, i64>.from(…)` inside a stdlib body has no
         // recorded type). The first pair is the last resort.
@@ -185,6 +193,29 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal(ctor.to_string()),
             args,
         }));
+
+        if !matches!(arg.kind, ExprKind::Array(_)) {
+            let (arr_op, arr_ty) = self.lower_expr(arg)?;
+            let MirType::Array { elem, len } = &arr_ty else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "Map.from takes a fixed array of pairs, and this argument lowered as {arr_ty:?}"
+                )));
+            };
+            let MirType::Tuple(fields) = elem.as_ref() else {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "Map.from takes `(key, value)` pairs, and these lowered as {elem:?}"
+                )));
+            };
+            let mut args = self.map_entries_args(MirOperand::Local(map_local), &fields[0], &fields[1]);
+            args.insert(1, arr_op);
+            args.insert(2, MirOperand::Constant(MirConst::Int(*len as i64)));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("rask_map_insert_pairs".to_string()),
+                args,
+            }));
+            return Ok((MirOperand::Local(map_local), MirType::Ptr));
+        }
 
         for elem in elems {
             let (key_op, val_op) = match &elem.kind {

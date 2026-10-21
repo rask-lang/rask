@@ -28,6 +28,6 @@ func main() {
         }
     }
     with C.read() as c {
-        println(c.n.to_string())
+        println(c.n.display())
     }
 }

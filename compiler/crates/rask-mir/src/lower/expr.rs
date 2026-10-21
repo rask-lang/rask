@@ -5549,11 +5549,25 @@ impl<'a> MirLowerer<'a> {
                                 if let ExprKind::Array(elems) = &args[0].expr.kind {
                                     return self.lower_vec_from_array_with(elems, None, Some(expr.id)).map(Some);
                                 }
+                                // An array held somewhere: the Vec gets copies
+                                // and the array keeps its own elements, so it's
+                                // the view an array method borrows, cloned.
+                                let (arr_op, arr_ty) = self.lower_expr(&args[0].expr)?;
+                                if let Some((view, _)) = self.array_receiver_as_vec(&arr_op, &arr_ty) {
+                                    let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: Some(vec_local),
+                                        func: FunctionRef::internal("Vec_clone".to_string()),
+                                        args: vec![view],
+                                    }));
+                                    return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
+                                }
+                                return Err(LoweringError::InvalidConstruct(format!(
+                                    "Vec.from takes a fixed array, and this argument lowered as {arr_ty:?}"
+                                )));
                             }
                             if base == "Map" && method == "from" && args.len() == 1 {
-                                if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_map_from_pairs(expr, written_args, elems).map(Some);
-                                }
+                                return self.lower_map_from_pairs(expr, written_args, &args[0].expr).map(Some);
                             }
                         }
 
@@ -6186,13 +6200,22 @@ impl<'a> MirLowerer<'a> {
             _ => &[],
         };
         // An entry is a `(key, value)` tuple, laid out by the caller.
-        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter") && all_args.len() == 1 {
+        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter" | "Map_take_all") && all_args.len() == 1 {
             if let (Some(key), Some(val)) = (
                 self.container_elem_mir_type(object.id, 0),
                 self.container_elem_mir_type(object.id, 1),
             ) {
                 let map = all_args[0].clone();
                 all_args = self.map_entries_args(map, &key, &val);
+                // `take_all` hands its entries over, so the Vec it builds has
+                // to know what each pair owns.
+                if qualified_name == "Map_take_all" {
+                    let desc = |i: usize, fallback: &MirType| {
+                        self.container_elem_type(object.id, i).unwrap_or_else(|| fallback.clone())
+                    };
+                    let pair = MirType::Tuple(vec![desc(0, &key), desc(1, &val)]);
+                    all_args.push(crate::elem_strs::elem(pair));
+                }
             }
         }
 
@@ -6293,7 +6316,7 @@ impl<'a> MirLowerer<'a> {
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3765"));
             Some(super::option_of(elem))
-        } else if qualified_name == "Random_choice" {
+        } else if matches!(qualified_name.as_str(), "Random_choice" | "random_choice") {
             // `choice(v)` answers `T?`, and the payload type sizes the slot the
             // DerefOption adapter copies into. From the stub metadata it came
             // back as a bare `T` → i64, so a `Vec<string>` handed back the
@@ -9881,7 +9904,7 @@ impl<'a> MirLowerer<'a> {
                     Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
                     None => {
                         let (op, _) = self
-                            .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
+                            .try_lower_to_string(object, &"display".to_string(), &[], obj_op, obj_ty)?
                             .unwrap_or_else(|| (obj_op.clone(), MirType::String));
                         op
                     }
@@ -9907,8 +9930,9 @@ impl<'a> MirLowerer<'a> {
         Ok(Some((padded, MirType::String)))
     }
 
-    /// `.to_string()` on a primitive → type-specific runtime call. Types with
-    /// their own to_string fall through to normal dispatch.
+    /// `.display()` on a primitive, or `.to_string()` on a char or string →
+    /// type-specific runtime call. Types with their own method fall through
+    /// to normal dispatch.
     fn try_lower_to_string(
         &mut self,
         object: &Expr,
@@ -9920,18 +9944,18 @@ impl<'a> MirLowerer<'a> {
         // to_string(): route to type-specific runtime function.
         // Types with their own to_string in stdlib dispatch (Path, etc.)
         // fall through to normal method dispatch.
-        if method == "to_string" && args.is_empty() {
-            // Check if the type checker knows this is a type with its own to_string
+        if (method == "display" || method == "to_string") && args.is_empty() {
+            // Check if the type checker knows this is a type with its own method
             let has_own_to_string = self.ctx.lookup_raw_type(object.id)
                 .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
                 .map(|prefix| {
-                    let qualified = format!("{}_to_string", prefix);
+                    let qualified = format!("{}_{}", prefix, method);
                     rask_stdlib::mir_metadata::lookup(&qualified).is_some()
                 })
                 .unwrap_or(false);
 
             // A struct or enum receiver has a layout name to dispatch on, so
-            // its own `to_string` wins — including a user `Displayable` impl,
+            // its own `display` wins — including a user `Displayable` impl,
             // which the stdlib stub check above can't see. Without this the
             // catch-all below reached `i64_to_string` and printed the
             // receiver's address as a decimal number (#471).

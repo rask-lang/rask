@@ -6,7 +6,7 @@
 struct Counter { n: i32 }
 extend Counter {
     func show(self) {
-        println(self.n.to_string())
+        println(self.n.display())
     }
 }
 func main() {

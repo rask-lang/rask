@@ -63,6 +63,9 @@ void rask_test_expect_fail(void) {
 // interpreter has always joined them with "; "; this matches it.
 static __thread int rask_check_failures = 0;
 static __thread char rask_check_last_msg[2048] = {0};
+// Inside a test the runner reports the failed checks with the result, so the
+// message isn't printed as well. Outside one there is no runner to report it.
+static __thread int rask_in_test = 0;
 
 // check_fail — record failure without unwinding (test continues)
 //
@@ -85,7 +88,9 @@ void rask_check_fail(const char *msg) {
         snprintf(rask_check_last_msg + used, sizeof(rask_check_last_msg) - used,
                  "; %s", text);
     }
-    fprintf(stderr, "%s\n", text);
+    if (!rask_in_test) {
+        fprintf(stderr, "%s\n", text);
+    }
 }
 
 void rask_check_fail_msg_at(const char *msg, const char *file,
@@ -216,6 +221,7 @@ static int test_run_one(test_fn fn, const char *name) {
     rask_test_expects_fail = 0;
     rask_check_failures = 0;
     rask_check_last_msg[0] = '\0';
+    rask_in_test = 1;
 
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
@@ -235,9 +241,19 @@ static int test_run_one(test_fn fn, const char *name) {
 
     int64_t elapsed_ns = clock_ns() - start;
     rask_panic_remove();
+    rask_in_test = 0;
 
     int was_skipped = rask_test_skipped;
     int expects_fail = rask_test_expects_fail;
+
+    // A failed check is a failure like a panic, and has to count before
+    // expect_fail inverts the answer — it was folded in afterwards, so a test
+    // whose expected failure was a `check` reported "expected failure but
+    // test passed".
+    if (!failed && rask_check_failures > 0) {
+        failed = 1;
+        error_msg = strdup(rask_check_last_msg);
+    }
 
     // Handle skipped tests — use panic message as skip reason
     if (was_skipped) {
@@ -278,13 +294,6 @@ static int test_run_one(test_fn fn, const char *name) {
             fflush(stdout);
             return 1;
         }
-    }
-
-    // Check failures also count as failure
-    if (!failed && rask_check_failures > 0) {
-        failed = 1;
-        // Use last check message as error
-        error_msg = strdup(rask_check_last_msg);
     }
 
 #ifdef RASK_SIM

@@ -4,5 +4,5 @@ func main() {
     mut v = Vec<u8>.new()
     v.push(200)
     let x = v[0]
-    println((x + x).to_string())
+    println((x + x).display())
 }

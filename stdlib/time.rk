@@ -23,19 +23,19 @@ public struct Duration { }
 extend Duration {
     /// Create a duration from whole seconds.
     @native("rask_time_Duration_seconds")
-    public func seconds(n: i64) -> Duration {}
+    public func seconds(n: u64) -> Duration {}
 
     /// Create a duration from milliseconds.
     @native("rask_time_Duration_millis")
-    public func millis(n: i64) -> Duration {}
+    public func millis(n: u64) -> Duration {}
 
     /// Create a duration from microseconds.
     @native("rask_time_Duration_micros")
-    public func micros(n: i64) -> Duration {}
+    public func micros(n: u64) -> Duration {}
 
     /// Create a duration from nanoseconds.
     @native("rask_time_Duration_nanos")
-    public func nanos(n: i64) -> Duration {}
+    public func nanos(n: u64) -> Duration {}
 
     /// Create a duration from fractional seconds.
     @native("rask_time_Duration_from_secs_f64")
@@ -128,7 +128,7 @@ extend SystemTime {
         if self.nanos < earlier.nanos {
             return TimeError.Backwards
         }
-        return Duration.nanos(self.nanos - earlier.nanos)
+        return Duration.nanos((self.nanos - earlier.nanos).wrap<u64>())
     }
 
     /// Duration since this time was captured. Fails if the clock went backward.
@@ -242,7 +242,7 @@ Duration implements Sub {
 /// A4: scale a duration. Both directions — `d * 3` and `3 * d`.
 Duration implements Mul<i64> {
     public func mul(self, n: i64) -> Duration {
-        return Duration.nanos(self.as_nanos().wrap<i64>() * n)
+        return Duration.nanos((self.as_nanos().wrap<i64>() * n).wrap<u64>())
     }
 }
 
@@ -250,13 +250,13 @@ i64 implements Mul<Duration> {
     type Out = Duration
 
     public func mul(self, span: Duration) -> Duration {
-        return Duration.nanos(span.as_nanos().wrap<i64>() * self)
+        return Duration.nanos((span.as_nanos().wrap<i64>() * self).wrap<u64>())
     }
 }
 
 Duration implements Div<i64> {
     public func div(self, n: i64) -> Duration {
-        return Duration.nanos(self.as_nanos().wrap<i64>() / n)
+        return Duration.nanos((self.as_nanos().wrap<i64>() / n).wrap<u64>())
     }
 }
 
@@ -293,6 +293,6 @@ SystemTime implements Sub<SystemTime> {
     type Out = Duration
 
     public func sub(self, other: SystemTime) -> Duration {
-        return Duration.nanos(self.nanos - other.nanos)
+        return Duration.nanos((self.nanos - other.nanos).wrap<u64>())
     }
 }

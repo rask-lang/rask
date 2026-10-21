@@ -53,14 +53,14 @@ Memo implements Labeled {
 // and the program's takes the slot — so a second program block is reported
 // against the program's first, never against the stdlib's.
 Method implements Displayable {
-    func to_string(self) -> string {
+    func display(self) -> string {
         return "first"
     }
 }
 
 // ERROR: the program's own first block is the one this collides with (E0407)
 Method implements Displayable {
-    func to_string(self) -> string {
+    func display(self) -> string {
         return "second"
     }
 }

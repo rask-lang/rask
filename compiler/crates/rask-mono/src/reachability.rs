@@ -1822,7 +1822,7 @@ impl<'a> Monomorphizer<'a> {
                     let body = if method == "encode_pretty" {
                         "JsonValue_to_string_pretty".to_string()
                     } else {
-                        "JsonValue_to_string".to_string()
+                        "JsonValue_display".to_string()
                     };
                     self.call_rewrites.insert(expr.id, body.clone());
                     self.enqueue(body, Vec::new());
@@ -1897,14 +1897,14 @@ impl<'a> Monomorphizer<'a> {
                         .filter(|q| self.method_table.contains_key(q))
                         .unwrap_or(plain);
                     // A `{x}` and a `{x:>10}` both need the receiver's own
-                    // rendering — `to_string`, or `message` for an error type
+                    // rendering — `display`, or `message` for an error type
                     // that gets Displayable from it (std.fmt/D5). Neither name
                     // is what the call says, so resolve it here and record the
                     // answer for lowering; nothing downstream can see which of
                     // the two a given type actually defines.
-                    if method_name == "to_string" || method_name == "__fmt" {
+                    if method_name == "display" || method_name == "__fmt" {
                         let renderer = [
-                            format!("{}_to_string", type_name),
+                            format!("{}_display", type_name),
                             format!("{}_message", type_name),
                         ]
                         .into_iter()
@@ -1988,12 +1988,12 @@ impl<'a> Monomorphizer<'a> {
                         Some((Callee::Method { recv, method: m, package }, typed)) => {
                             match rask_types::receiver_name(recv, &typed.types) {
                                 Some(name) => {
-                                    // `{x}` reaches `to_string` or, for an error
+                                    // `{x}` reaches `display` or, for an error
                                     // type, `message` (std.fmt/D5) — same
                                     // resolution the branch above does.
-                                    let candidates = if m == "to_string" || m == "__fmt" {
+                                    let candidates = if m == "display" || m == "__fmt" {
                                         vec![
-                                            format!("{name}_to_string"),
+                                            format!("{name}_display"),
                                             format!("{name}_message"),
                                         ]
                                     } else {

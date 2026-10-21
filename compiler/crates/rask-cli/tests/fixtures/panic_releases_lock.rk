@@ -15,8 +15,8 @@ const ACC: Shared<Acc9, Mutex> = Shared.mutex(Acc9(checking: 100, savings: 0))
 
 func report() {
     with ACC.read() as a {
-        println(a.checking.to_string())
-        println(a.savings.to_string())
+        println(a.checking.display())
+        println(a.savings.display())
     }
 }
 

@@ -45,10 +45,10 @@ func main() {
     println("{r.last_value()}")
 
     // A conformance's method has no visibility of its own: `JsonValue
-    // implements Displayable` declares `to_string` without `public`, and it's
+    // implements Displayable` declares `display` without `public`, and it's
     // callable.
     let v = JsonValue.Bool(true)
-    println(v.to_string())
+    println(v.display())
 
     let o = Other(p: p)
     println("{o.peek()}")

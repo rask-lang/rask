@@ -5,5 +5,5 @@ func apply(f: |i32| -> i32, x: i32) -> i32 {
 
 func main() {
     let double = |x: i32| -> i32 { return x * 2 }
-    println(apply(double, 21).to_string())
+    println(apply(double, 21).display())
 }

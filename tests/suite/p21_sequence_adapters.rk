@@ -132,7 +132,7 @@ test "type.sequence/SEQ29 — to_map builds a Map from a sequence of pairs" {
 }
 
 test "type.sequence/SEQ30 — join concatenates a sequence of strings" {
-    let csv: string = count_to_five().take(3).map(|x| x.to_string()).join(",")
+    let csv: string = count_to_five().take(3).map(|x| x.display()).join(",")
     assert csv == "1,2,3"
 }
 

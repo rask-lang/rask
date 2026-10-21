@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.random with the spec's types: a seed and `u64()` are unsigned, `f32()`
+// is an `f32`, and `shuffle` says `mutate` at the call. Each `Random` method
+// has a `random.*` mirror on the thread's own generator (C1, C2) — `u64`,
+// `shuffle` and `choice` were missing from the mirror.
+
+import random
+import random.Random
+
+test "a seed is a u64, and the whole range of one works" {
+    let big: u64 = 18446744073709551615
+    mut a = Random.from_seed(big)
+    mut b = Random.from_seed(big)
+    let x: u64 = a.u64()
+    assert x == b.u64()
+}
+
+test "u64 reaches past i64's range" {
+    mut r = Random.from_seed(7)
+    mut high = false
+    for _ in 0..64 {
+        let x: u64 = r.u64()
+        if x > 9223372036854775807 {
+            high = true
+        }
+    }
+    assert high
+}
+
+test "f32 is an f32 in [0, 1)" {
+    mut r = Random.from_seed(3)
+    for _ in 0..100 {
+        let x: f32 = r.f32()
+        assert x >= 0.0 && x < 1.0
+    }
+    for _ in 0..100 {
+        let y: f32 = random.f32()
+        assert y >= 0.0 && y < 1.0
+    }
+}
+
+test "a seeded shuffle is a permutation, the same one each time" {
+    mut a = Random.from_seed(12345)
+    mut b = Random.from_seed(12345)
+    mut xs: Vec<i64> = [1, 2, 3, 4, 5, 6, 7, 8]
+    mut ys: Vec<i64> = [1, 2, 3, 4, 5, 6, 7, 8]
+    a.shuffle(mutate xs)
+    b.shuffle(mutate ys)
+    assert xs == ys
+    xs.sort()
+    assert xs == [1, 2, 3, 4, 5, 6, 7, 8]
+}
+
+test "choice picks an element, and nothing from nothing" {
+    mut r = Random.from_seed(9)
+    let words: Vec<string> = ["alpha", "beta", "gamma"]
+    let w = r.choice(words) ?? "none"
+    assert words.contains(w)
+    let empty: Vec<string> = Vec.new()
+    assert r.choice(empty) is none
+}
+
+test "the module mirror: u64, range, shuffle, choice" {
+    let x: u64 = random.u64()
+    assert x >= 0
+    for _ in 0..50 {
+        let d = random.range(1, 7)
+        assert d >= 1 && d < 7
+    }
+    mut xs: Vec<i64> = [5, 4, 3, 2, 1]
+    random.shuffle(mutate xs)
+    xs.sort()
+    assert xs == [1, 2, 3, 4, 5]
+    let pick = random.choice(xs) ?? 0
+    assert pick >= 1 && pick <= 5
+    let none_left: Vec<i64> = Vec.new()
+    assert random.choice(none_left) is none
+}
+
+test "the module generator keeps its state between calls" {
+    mut seen_different = false
+    let first = random.u64()
+    for _ in 0..10 {
+        if random.u64() != first {
+            seen_different = true
+        }
+    }
+    assert seen_different
+}

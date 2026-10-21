@@ -10,4 +10,4 @@ const D: i64 = comptime {
     n
 }
 
-func main() { println(D.to_string()) }
+func main() { println(D.display()) }

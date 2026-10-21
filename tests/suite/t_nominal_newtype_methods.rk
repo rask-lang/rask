@@ -40,7 +40,7 @@ test "methods on a newtype over a string" {
 
 test "the underlying value's own methods still reach through" {
     let u = UserId(5)
-    assert u.value.to_string() == "5"
+    assert u.value.display() == "5"
 }
 
 test "a newtype as a map key" {

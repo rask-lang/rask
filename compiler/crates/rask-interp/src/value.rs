@@ -1670,6 +1670,8 @@ impl Value {
     pub fn as_u64(&self) -> Result<u64, String> {
         match self {
             Value::Int(n, _) if *n >= 0 => Ok(*n as u64),
+            // A `u64` past i64's range is held as its bit pattern.
+            Value::Int(n, IntKind::U64) => Ok(*n as u64),
             Value::Int(n, _) => Err(format!("Cannot convert negative integer {} to u64", n)),
             _ => Err(format!("Expected integer, found {}", self.type_name())),
         }

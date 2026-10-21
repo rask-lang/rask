@@ -6737,6 +6737,9 @@ impl<'a> OwnershipChecker<'a> {
     /// { out.push(Change.Rename { at: s }) }`). LP4 has value mode lend
     /// whatever the source; `take_all()` is the consuming walk (LP7).
     fn loop_lender(&self, iter: &Expr) -> Option<String> {
+        if self.is_take_all(iter) {
+            return None;
+        }
         let place = Self::place_text(iter).or_else(|| Self::call_text(iter))?;
         let ty = self.node_ty(&iter.id)?;
         let lends = match ty {
@@ -6748,6 +6751,22 @@ impl<'a> OwnershipChecker<'a> {
             _ => false,
         };
         lends.then_some(place)
+    }
+
+    /// A call the checker dispatched to `Vec.take_all` or `Map.take_all`: it
+    /// hands back a `Vec` like any other call, but the loop over it owns each
+    /// element (std.iteration/T2, ctrl.loops/LP7) — MIR moves them out one by
+    /// one instead of freeing them with the temporary.
+    fn is_take_all(&self, expr: &Expr) -> bool {
+        match self.program.call_targets.get(&expr.id) {
+            Some(rask_types::Callee::Method { recv, method, .. }) if method == "take_all" => {
+                matches!(
+                    rask_types::receiver_name(recv, &self.program.types).as_deref(),
+                    Some("Vec" | "Map")
+                )
+            }
+            _ => false,
+        }
     }
 
     /// `sites()` or `items.clone()`, for a message.
