@@ -200,7 +200,6 @@ Plain indices for lightweight stored references — offsets for diagnostics, ser
 | `s[i..j].span()` | `Span` | The slice's byte range. Works on any expression-scoped slice — `s.trim().span()`, split items |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
-| `span.to_string(source)` | `string` | Allocates copy (panics if OOB) |
 | `span.start`, `span.end` | `usize` | Read indices |
 | `span.len()` | `usize` | `end - start` |
 
@@ -212,7 +211,6 @@ struct Span {
 }
 
 extend Span {
-    func to_string(self, source: string) -> string
     func len(self) -> usize
 }
 extend string {
@@ -583,7 +581,7 @@ extend string {
 | `s.to_cstring()` | `cstring or NullByteError` (fails if `\0` present) |
 | `s.first_nul()` | Byte offset of the first interior `\0`, or -1 |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
-| `cstring.to_string()` | `string or Utf8Error` |
+| `cstring.decode()` | `string or Utf8Error` — fails on bytes that aren't UTF-8 |
 
 <!-- surface -->
 ```rask
@@ -595,9 +593,12 @@ extend string {
 }
 extend cstring {
     unsafe func as_ptr(self) -> *u8
-    func to_string(self) -> string or Utf8Error
+    func decode(self) -> string or Utf8Error
 }
 ```
+
+C promises nothing about encoding, so getting text back out of a `cstring` can
+fail, and it's `decode()`.
 
 `c"literal"` is the one line above that isn't built yet. Everything else is,
 on both backends — the round trip and the refusal are in

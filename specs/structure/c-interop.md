@@ -111,7 +111,7 @@ out-parameter instead.
 |------|-------------|
 | **ST1: to_cstring** | `s.to_cstring()` returns `cstring or NullByteError` — an owned, NUL-terminated copy. Refuses a string holding an interior `\0`, since C would read that as a shorter string |
 | **ST2: ptr + len** | `.as_ptr()` + `.len()` for pointer+length APIs. Borrowed, not owned, and unchecked |
-| **ST3: back again** | `cstring.to_string()` returns `string or Utf8Error` — the bytes came from C, which promises nothing about encoding |
+| **ST3: back again** | `cstring.decode()` returns `string or Utf8Error` — the bytes came from C, which promises nothing about encoding. |
 | **ST4: Lifetime** | A `cstring` owns its buffer and frees it when it goes. A pointer from `.as_ptr()` owns nothing and is invalid once its source is dropped |
 
 Full method list: [std.strings](../stdlib/strings.md#c-interop).

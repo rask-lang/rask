@@ -25,12 +25,12 @@ import string.cstring
 import string.NullByteError
 import string.Utf8Error
 
-/// The round trip, both halves. `to_string` is fallible because the bytes came
+/// The round trip, both halves. `decode` is fallible because the bytes came
 /// from C — here they came from a Rask string a moment earlier, so they are
 /// always valid, and the arm is unreachable.
 func round_trip(s: string) -> string or NullByteError {
     let c = try s.to_cstring()
-    return c.to_string() catch _ => "<not utf-8>"
+    return c.decode() catch _ => "<not utf-8>"
 }
 
 test "a plain string converts and comes back" {
@@ -80,7 +80,7 @@ test "the copy outlives the string it came from" {
         assert false
         return
     }
-    assert (c.to_string() catch _ => "") == "owned"
+    assert (c.decode() catch _ => "") == "owned"
 }
 
 // Every conversion here leaks its terminated copy, and nothing in this file can

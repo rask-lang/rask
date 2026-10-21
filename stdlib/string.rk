@@ -436,14 +436,15 @@ extend cstring {
     /// Back to a Rask string, reading up to the terminator.
     ///
     /// Fallible because C promises nothing about encoding — the bytes may be
-    /// anything at all. `from_utf8` is the validator both backends already
-    /// share, so the trip back stops being native here rather than growing a
-    /// second copy of it in the runtime.
-    public func to_string(self) -> string or Utf8Error {
+    /// anything at all, so this is `decode` rather than a rendering.
+    /// `from_utf8` is the validator both backends already share, so the trip
+    /// back stops being native here rather than growing a second copy of it
+    /// in the runtime.
+    public func decode(self) -> string or Utf8Error {
         return string.from_utf8(self.bytes())
     }
 
-    /// The bytes up to the terminator, unvalidated. `to_string` is the public
+    /// The bytes up to the terminator, unvalidated. `decode` is the public
     /// way back; this is the half of it that reads.
     @native("rask_cstring_bytes")
     func bytes(self) -> Vec<u8> {}
