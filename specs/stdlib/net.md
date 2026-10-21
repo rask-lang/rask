@@ -242,7 +242,7 @@ WHY: Another process is already listening on this address.
 - Multicast
 - Raw sockets
 - `SocketAddr` / `IpAddr` types
-- TLS / HTTPS
+- TLS: a package, not the stdlib ([tls.md](../packages/tls.md))
 - Unix domain sockets
 
 ### See Also

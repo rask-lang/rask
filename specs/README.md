@@ -174,7 +174,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [csv.md](stdlib/csv.md) | CSV — typed decode into structs, raw rows, streaming |
 | [digest.md](stdlib/digest.md) | SHA-256, SHA-1, MD5, CRC32 |
 | [terminal.md](stdlib/terminal.md) | ANSI styling as a value, terminal detection |
-| [tls.md](stdlib/tls.md) | TLS client and server, dial or upgrade |
+| [tls.md](packages/tls.md) | TLS client and server, as a package (not the stdlib) |
 | [testing.md](stdlib/testing.md) | Test conventions |
 
 ## Tooling — Developer tools

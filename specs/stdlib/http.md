@@ -312,6 +312,7 @@ WHY: Could not establish TCP connection to the remote host.
 | `ensure` + explicit `respond()` | Safe — ensure's respond is a no-op if already sent | S2 |
 | Redirect loop | `HttpError.TooManyRedirects` (default limit: 10) | C1 |
 | Invalid URL | `HttpError.InvalidUrl` | C1 |
+| `https://` URL | `HttpError.InvalidUrl`: TLS is a package ([tls.md](../packages/tls.md)), and the client has no way to take one yet | C1 |
 | Response body too large | Reads fully into memory (no streaming in v1) | T2 |
 | Connection timeout | `HttpError.Timeout` (default: 30s for module functions) | C1 |
 | Malformed HTTP response | `HttpError.InvalidResponse` | C1 |
@@ -328,7 +329,7 @@ WHY: Could not establish TCP connection to the remote host.
 
 **C4 (HttpClient not @resource):** Connection pools are an optimization, not a correctness obligation. Forcing `.close()` on every client adds ceremony for the 99% case. Pooled connections close on drop — this is the one place I'm OK with implicit cleanup because there's no data loss risk.
 
-**C1 (shared internal client):** Module-level functions (`http.get`, etc.) reuse a shared internal client for connection pooling. Without this, every call does a fresh TCP+TLS handshake. Use `HttpClient.new()` when you need isolation or custom settings.
+**C1 (shared internal client):** Module-level functions (`http.get`, etc.) reuse a shared internal client for connection pooling. Without this, every call does a fresh TCP handshake. Use `HttpClient.new()` when you need isolation or custom settings.
 
 **S4 (serve):** Covers the common pattern of "listen, accept in a loop, spawn a task per request." Three lines instead of ten. For anything more complex (graceful shutdown, connection limits), use `http.listen` and the accept loop directly.
 

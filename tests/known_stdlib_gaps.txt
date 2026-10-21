@@ -19,27 +19,3 @@ std.reflect reflect.align_of UNTESTED
 std.reflect reflect.is_copy UNTESTED
 std.reflect reflect.size_of UNTESTED
 std.strings string.span MISSING  # on a slice it has to answer the slice's range in its source, and slices are copies until #492
-std.tls Certificate MISSING
-std.tls Config MISSING
-std.tls Config.new MISSING
-std.tls Config.with_alpn MISSING
-std.tls Config.with_ca MISSING
-std.tls Config.with_cert MISSING
-std.tls Config.with_verification MISSING
-std.tls TlsConnection MISSING
-std.tls TlsConnection.close MISSING
-std.tls TlsConnection.peer_certificate MISSING
-std.tls TlsConnection.protocol MISSING
-std.tls TlsConnection.read [Reader<Vec<u8>>] MISSING
-std.tls TlsConnection.read_text [Reader] MISSING
-std.tls TlsConnection.tls_version MISSING
-std.tls TlsConnection.write [Writer<Vec<u8>>] MISSING
-std.tls TlsConnection.write_text [Writer<string>] MISSING
-std.tls TlsError MISSING
-std.tls TlsListener MISSING
-std.tls TlsListener.accept MISSING
-std.tls TlsListener.close MISSING
-std.tls Verification MISSING
-std.tls tls.connect MISSING
-std.tls tls.listen MISSING
-std.tls tls.wrap MISSING

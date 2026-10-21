@@ -591,7 +591,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     if rest.starts_with("http://") {
         rest = rest[7..].to_string()
     } else if rest.starts_with("https://") {
-        return HttpError.InvalidUrl("HTTPS not supported yet")
+        return HttpError.InvalidUrl("https:// needs TLS, which is a package rather than the stdlib, and HttpClient can't take one yet")
     }
 
     // Split host+port from path at first /

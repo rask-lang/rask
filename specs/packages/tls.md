@@ -1,9 +1,17 @@
-<!-- id: std.tls -->
-<!-- status: decided -->
-<!-- summary: TLS client and server over TCP — dial or upgrade, verification on by default, provider behind a C shim -->
+<!-- id: pkg.tls -->
+<!-- status: proposed -->
+<!-- summary: TLS client and server over TCP, as a package — dial or upgrade, verification on by default -->
 <!-- depends: stdlib/net.md, stdlib/io.md, memory/resource-types.md -->
 
-# TLS
+# TLS (a package, not the stdlib)
+
+TLS isn't in the stdlib. Rask can't yet write it soundly itself: crypto must
+not branch on secrets, and nothing in the language can promise a function
+stays constant-time, nor reach the CPU's AES instructions. Linking a provider
+into every toolchain is the other road, and it ships someone else's CVEs with
+the compiler. So this is the API a `tls` package should offer, built on rustls
+through `compile_rust()` (`struct.build`). The stdlib's `HttpClient` refuses
+`https://` until it can take a TLS transport from such a package.
 
 Encrypted connections. Two ways in: dial one, or upgrade a TCP connection you
 already have.
@@ -62,7 +70,7 @@ loop {
 
 ## Config
 
-<!-- surface -->
+<!-- test: parse -->
 ```rask
 struct Config { }
 
@@ -87,7 +95,7 @@ enum Verification {
 `read_text`, `write_text`, `close` — so code written against one works against the
 other. Plus:
 
-<!-- surface -->
+<!-- test: parse -->
 ```rask
 @resource
 struct TlsConnection { }
@@ -123,7 +131,7 @@ struct Certificate { }
 | **L5: Modern protocol versions only** | TLS 1.2 and 1.3. SSLv3, TLS 1.0 and 1.1 are not configurable back on — a knob for them is a knob for downgrade attacks |
 | **L6: Provider is an implementation detail** | The library underneath is not in the API. No provider handles, no library-specific config, nothing that would change if it were swapped |
 
-<!-- surface -->
+<!-- test: parse -->
 ```rask
 extend tls {
     func connect(addr: string) -> TlsConnection or TlsError
@@ -142,7 +150,7 @@ extend TlsListener {
 
 ## Errors
 
-<!-- surface -->
+<!-- test: parse -->
 ```rask
 enum TlsError {
     Handshake(string)

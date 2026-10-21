@@ -43,7 +43,7 @@ Re-measure these rather than trusting them — each line names the command.
 | Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 822 of 851, 29 registered gaps | `tests/stdlib_coverage_gate.sh` |
+| Stdlib items a spec promises that exist and run on both backends | 822 of 827, 5 registered gaps | `tests/stdlib_coverage_gate.sh` |
 | Open bugs | 64 of 106 open issues | issue search |
 | Open design questions | 20 | issue search |
 
