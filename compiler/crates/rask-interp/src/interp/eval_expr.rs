@@ -1405,8 +1405,15 @@ impl Interpreter {
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                         Value::Module(ModuleKind::Reflect) => {
+                            // `implements<T, I>` names two.
+                            let rest: Vec<TypeExpr> = type_args
+                                .iter()
+                                .flatten()
+                                .skip(1)
+                                .map(|t| self.resolve_type_param(t))
+                                .collect();
                             return self
-                                .call_reflect_method(method, &first_type)
+                                .call_reflect_method(method, &first_type, &rest, arg_vals)
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                         // `"3.5".parse<f64>()` — without the target, parse has
