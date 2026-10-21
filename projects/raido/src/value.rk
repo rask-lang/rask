@@ -60,7 +60,7 @@ extend Number {
         return self.raw <= other.raw
     }
 
-    func display(self) -> string {
+    func to_string(self) -> string {
         let int_part = self.raw >> FRAC_BITS
         let frac_raw = if self.raw < 0 {
             -self.raw & 0xFFFFFFFF
@@ -234,7 +234,7 @@ extend Value {
                 return "false"
             }
             Value.Int(n) => return "{n}"
-            Value.Num(n) => return n.display()
+            Value.Num(n) => return n.to_string()
             Value.Str(_) => return "<string>"
             Value.Array(_) => return "<array>"
             Value.MapVal(_) => return "<map>"

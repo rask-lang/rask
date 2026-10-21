@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
-use super::type_defs::{Callee, MethodSig, TypeDef};
+use super::type_defs::{Callee, MethodSig, SelfParam, TypeDef};
 use super::type_table::TypeOwner;
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
@@ -579,40 +579,31 @@ impl TypeChecker {
         }
     }
 
-    /// Does this type declare a method called `name` — in its body or an
-    /// `extend` block?
-    fn declares_method(&self, ty: &Type, name: &str) -> bool {
+    /// A no-argument method answering `string or E` — how a type whose text
+    /// can fail to come back (`cstring.decode`) offers it instead of rendering.
+    fn fallible_text_method(&self, ty: &Type) -> Option<String> {
         let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else {
-            return false;
+            return None;
         };
-        match self.types.get(*id) {
+        let methods = match self.types.get(*id) {
             Some(TypeDef::Struct { methods, .. })
             | Some(TypeDef::Enum { methods, .. })
-            | Some(TypeDef::NominalAlias { methods, .. }) => methods.iter().any(|m| m.name == name),
-            _ => false,
-        }
-    }
-
-    /// A receiver `to_string()` is the wrong verb for: one that renders
-    /// (a number, a bool, a Displayable aggregate) and declares no conversion
-    /// of its own. Still-open types and type parameters aren't decided here.
-    fn renders_but_does_not_convert(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Var(_) | Type::Error | Type::Never => false,
-            Type::UnresolvedNamed(name) if self.types.is_type_param_in_scope(name) => false,
-            Type::String | Type::Char => false,
-            t if Self::is_numeric_primitive(t) => true,
-            Type::Bool | Type::Unit => true,
-            Type::Named(_) | Type::Generic { .. } => {
-                !self.declares_method(ty, "to_string") && self.is_displayable(ty)
-            }
-            _ => false,
-        }
+            | Some(TypeDef::NominalAlias { methods, .. }) => methods,
+            _ => return None,
+        };
+        methods
+            .iter()
+            .find(|m| {
+                m.params.is_empty()
+                    && !matches!(m.self_param, SelfParam::None)
+                    && matches!(&m.ret, Type::Result { ok, err } if **ok == Type::String && **err != Type::None)
+            })
+            .map(|m| m.name.clone())
     }
 
     /// std.fmt/D2–D5: can `{}` render this on its own?
     ///
-    /// Primitives can (D2). Structs and enums opt in with `display`, or get
+    /// Primitives can (D2). Structs and enums opt in with `to_string`, or get
     /// it for free from `message()` (D3, D5). An optional or a result can't —
     /// there may be nothing to show, and the caller has to say what happens
     /// then. Anything else keeps rendering the way it does today.
@@ -622,17 +613,17 @@ impl TypeChecker {
             Type::Named(id) | Type::Generic { base: id, .. } => {
                 // A nominal newtype inherits nothing it didn't ask for
                 // (type.aliases/T10), so its `implements` list is the answer —
-                // and an `extend` block that writes `display` counts too.
+                // and an `extend` block that writes `to_string` counts too.
                 if let Some(TypeDef::NominalAlias { with_interfaces, methods, .. }) = self.types.get(*id) {
                     return with_interfaces.iter().any(|t| t.is_name("Displayable"))
-                        || methods.iter().any(|m| m.name == "display" || m.name == "message");
+                        || methods.iter().any(|m| m.name == "to_string" || m.name == "message");
                 }
                 let has = |name: &str| {
                     crate::interfaces::implements_interface(&self.types, ty, name)
                 };
                 has("Displayable") || has("Error")
             }
-            // std.fmt/D3: a container has no `display`. `{v}` on one used to
+            // std.fmt/D3: a container has no `to_string`. `{v}` on one used to
             // pass this gate and then print the buffer's address natively —
             // the interpreter refused at run time with "no method to_string on
             // type Vec", so the two backends disagreed about a program that
@@ -883,25 +874,10 @@ impl TypeChecker {
             return Ok(progress);
         }
 
-        // std.fmt/D1–D5: `display()` comes from Displayable. Primitives have
+        // std.fmt/D1–D5: `to_string()` comes from Displayable. Primitives have
         // it, aggregates opt in. `{x}` desugars to this call, so both forms are
         // checked in one place.
-        //
-        // Rendering is not conversion (D1): `to_string()` is the other verb,
-        // for what already holds text — a string, a char, and the types that
-        // declare one (`StringView`, `Span`, `cstring`). It isn't a
-        // second spelling of `display`, so on anything else it's an error
-        // that names the right one.
-        if method == "to_string" && args.is_empty() {
-            let ty_now = self.ctx.apply(&ty);
-            if matches!(ty_now, Type::String | Type::Char) {
-                return self.unify(&ret, &Type::String, span);
-            }
-            if self.renders_but_does_not_convert(&ty_now) {
-                return Err(TypeError::RenderNotConvert { ty: self.render_type(&ty_now), span });
-            }
-        }
-        let renders_here = (method == "display" && args.is_empty())
+        let renders_here = (method == "to_string" && args.is_empty())
             || (method == "__fmt" && args.len() == 5);
         if renders_here {
             // The answer is a string either way, so pin that now — deferring it
@@ -924,7 +900,7 @@ impl TypeChecker {
             }
             // `{:debug}` is the free half of the D3 split: developer-facing
             // output for every type, no opt-in. Only `{}` and a bare
-            // `display()` need Displayable.
+            // `to_string()` need Displayable.
             let is_debug = call_node
                 .map(|n| self.debug_fmt_calls.contains(&n))
                 .unwrap_or(false);
@@ -944,6 +920,7 @@ impl TypeChecker {
                     is_collection,
                     is_wrapper: matches!(ty, Type::Result { .. }) || ty.is_option(),
                     interpolated: method == "__fmt",
+                    fallible_text: self.fallible_text_method(&ty),
                     span,
                 });
             }
@@ -1615,7 +1592,7 @@ impl TypeChecker {
                     self.unify(&args[0], &Type::Bool, span)?;
                     self.unify(&ret, &self.ordering_type(), span)
                 }
-                "display" if args.is_empty() => self.unify(&ret, &Type::String, span),
+                "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
                 "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
                 _ => Err(TypeError::NoSuchMethod { ty, method, span }),
             },

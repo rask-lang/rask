@@ -192,7 +192,7 @@ extend LogSource {
     func rewind(mutate self) { ... }            // plain method, own block
 }
 LogSource implements Displayable {
-    func display(self) -> string { ... }
+    func to_string(self) -> string { ... }
 }
 LogSource implements Error {
     func message(self) -> string { ... }
@@ -378,8 +378,8 @@ ran `libb`'s body and printed `b:7`.
 <!-- test: skip -->
 ```rask
 Ring<T> implements Displayable where T: Displayable {
-    func display(self) -> string {
-        return self.items.map(|x| x.display()).join(", ")
+    func to_string(self) -> string {
+        return self.items.map(|x| x.to_string()).join(", ")
     }
 }
 ```
@@ -722,7 +722,7 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Hashable`: Equal | `hash(self) -> u64` | Yes — all Hashable fields, no floats (HA1) |
 | `Cloneable` | `clone(self) -> Self` | Yes — all Cloneable fields, no raw pointers (CL1) |
 | `Error` | `message(self) -> string` | Yes — enums, from variant names + payloads (`type.errors/ER6`); structs declare |
-| `Displayable` | `display(self) -> string` | No — opt-in (user-facing output is intentional) |
+| `Displayable` | `to_string(self) -> string` | No — opt-in (user-facing output is intentional) |
 | `Debug` | `debug(self) -> string` | Yes — all types |
 | `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |
 | `Convert<From, To>` | `convert(self: From) -> To` | No |

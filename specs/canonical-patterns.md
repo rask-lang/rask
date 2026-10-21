@@ -104,8 +104,8 @@ let str = path.as_string()
 let s = view.to_string()
 let lower = name.to_lowercase()
 
-// display — render a value for a person to read (Displayable)
-let s = point.display()
+// to_string — render any value for a person to read (Displayable)
+let s = point.to_string()
 
 // into_* — consumes source, produces new type
 let owned = view.into_string()
@@ -120,7 +120,7 @@ let vec = list.into_vec()
 | `into_*` | Consuming conversion | new type (takes ownership) | `into_string()`, `into_vec()` |
 | `as_*` | Cheap view or cast — hands back what the value already has, allocating nothing | a primitive, a raw pointer, a `string`, or a field read as it stands | `as_ptr()`, `as_string()` |
 | `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
-| `display` | Render for a person | `string` | `Displayable` — `point.display()` |
+| `to_string` | Render for a person | `string` | `Displayable` — `point.to_string()`, `42.to_string()` |
 | `debug` | Render for a developer | `string` | `Debug` — `value.debug()` |
 | `is_*` | Boolean predicate | `bool` | `is_empty()`, `is_valid()` |
 | `has_*` | Containment predicate | `bool` | `has_field(name)`, `has_extension(ext)` |
@@ -132,7 +132,7 @@ let vec = list.into_vec()
 
 **Count the causes, then pick the return type.** `try_push` can fail because the collection is bounded and full or because the allocator said no, and the caller does different things about each, so it answers `void or GrowError<T>` and carries the rejected value back. `try_read` fails for exactly one reason — someone else holds the lock — and an error type for that carries nothing a caller could branch on, so it answers `T?`. Same as the probe rule below: inventing a one-variant error enum is ceremony charged for information that doesn't exist. `conc.sync/R3` is the case in hand; this row used to demand `T or E` flatly and made the lint report that spec as a violation of this one.
 
-**Rendering is not conversion:** `to_string()` is for types that already hold text — a `StringView`, a string slice, a `Span`, a `cstring`. `display()` is for turning a value into something a person reads. A `Point` has no text in it to convert, so it gets `display()`; keeping one verb for both also collided with fallible conversions like `cstring.to_string() -> string or Utf8Error`, which no `Displayable` signature can match (`std.fmt/D1`).
+**One rendering verb:** `to_string()` renders any value, a number, a `Point` or a `StringView` alike. The one conversion to text that can fail, `cstring`'s, is `decode()` (`std.fmt/D1`).
 
 **Text units — bytes for machines, graphemes for humans, scalars never:** every index and length is a byte offset; anything a person sees or counts (`width`, `truncate`, `graphemes`, `reverse`) works in graphemes or display columns; Unicode scalars reach user code only through `chars()`. A method taking a "character index" is the anti-pattern — it reads like array indexing and costs a scan from the start, which is how a cursor loop silently goes quadratic (`std.strings/U1`–`U3`).
 

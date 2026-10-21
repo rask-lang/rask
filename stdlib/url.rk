@@ -90,7 +90,7 @@ extend Url {
 
 Url implements Displayable {
     /// Reassemble the URL. A port that equals the scheme's default is dropped.
-    public func display(self) -> string {
+    public func to_string(self) -> string {
         mut out = StringBuilder.new()
         out.push(self.scheme)
         out.push(":")

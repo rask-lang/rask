@@ -2,17 +2,17 @@
 // Identical output required on both backends.
 func main() {
     let max32: i32 = 2147483647
-    println((max32 - 1).display())   // 2147483646
+    println((max32 - 1).to_string())   // 2147483646
 
     let min32: i32 = -2147483648
-    println((min32 + 1).display())   // -2147483647
+    println((min32 + 1).to_string())   // -2147483647
 
     let a: i32 = 46340
-    println((a * a).display())       // 2147395600, fits i32
+    println((a * a).to_string())       // 2147395600, fits i32
 
     let s: i32 = 1
-    println((s << 30).display())     // 1073741824
+    println((s << 30).to_string())     // 1073741824
 
     let big: i64 = 9223372036854775806
-    println((big + 1).display())     // i64 MAX, no overflow
+    println((big + 1).to_string())     // i64 MAX, no overflow
 }

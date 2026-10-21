@@ -12,5 +12,5 @@ extend Point {
 
 func main() {
     let p = Point(x: 10, y: 32)
-    println(p.sum().display())
+    println(p.sum().to_string())
 }

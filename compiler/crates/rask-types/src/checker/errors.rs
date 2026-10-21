@@ -153,12 +153,9 @@ pub enum TypeError {
         /// `Some` when it came from an interpolation, so the message can name
         /// the placeholder instead of a `to_string()` the user never wrote.
         interpolated: bool,
-        span: Span,
-    },
-    /// std.fmt/D1: `to_string()` on a value that renders but holds no text.
-    #[error("`{ty}` has no `to_string` — render it with `display()`")]
-    RenderNotConvert {
-        ty: String,
+        /// A method on the type that answers its text fallibly
+        /// (`cstring.decode`), which is the fix when there is one.
+        fallible_text: Option<String>,
         span: Span,
     },
     /// #314: method called on a type param whose bounds don't provide it.
@@ -1693,7 +1690,6 @@ impl TypeError {
             | NoSuchModuleFunction { .. }
             | PrivateModuleFunction { .. }
             | NotDisplayable { .. }
-            | RenderNotConvert { .. }
             | UnboundedTypeParamMethod { .. }
             | CannotInfer { .. }
             | InvalidTypeString(..)

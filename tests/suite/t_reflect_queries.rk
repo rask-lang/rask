@@ -30,7 +30,7 @@ extend Point {
 }
 
 Point implements Displayable {
-    public func display(self) -> string {
+    public func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
@@ -131,7 +131,7 @@ test "std.reflect/methods lists declared, conformance and derived methods" {
     assert ms[0].name == "sum"
     assert ms[1].name == "scaled"
     assert ms[2].name == "origin"
-    assert ms[3].name == "display"
+    assert ms[3].name == "to_string"
     assert method_names<Point>().contains("eq")
     assert method_names<Point>().contains("clone")
 }
@@ -197,7 +197,7 @@ test "std.reflect/methods on a stdlib type" {
 test "std.reflect/has_method" {
     assert reflect.has_method<Point>("sum")
     assert reflect.has_method<Point>("origin")
-    assert reflect.has_method<Point>("display")
+    assert reflect.has_method<Point>("to_string")
     assert !reflect.has_method<Point>("x")
     let name = "is_empty"
     assert reflect.has_method<Shape>(name)

@@ -13,5 +13,5 @@ func fetch() -> i64 or RouteErr10 {
     return RouteErr10(why: "no route")
 }
 func main() {
-    println(fetch()! "could not reach the service".display())
+    println(fetch()! "could not reach the service".to_string())
 }

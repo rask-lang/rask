@@ -94,14 +94,14 @@ impl Interpreter {
             int_at(0), int_at(1), int_at(2), int_at(3), fill,
         );
 
-        // Debug renders from the value itself and never reads `display`, so
+        // Debug renders from the value itself and never reads `to_string`, so
         // asking for `to_string` first is not just wasted work — it fails on
         // the types Debug exists to cover. `{v:debug}` on a `Vec` died with
         // "no method to_string on type Vec" while native printed `[1, 2]`.
         let display = if matches!(spec.ty, rask_ast::fmt_spec::SpecType::Debug) {
             String::new()
         } else {
-            match self.call_builtin_method(receiver.clone(), "display", vec![], None)? {
+            match self.call_builtin_method(receiver.clone(), "to_string", vec![], None)? {
                 Value::String(s) => s.lock().unwrap().clone(),
                 other => format!("{}", other),
             }
@@ -387,20 +387,20 @@ impl Interpreter {
             _ => {}
         }
 
-        // Generic display fallback — Error→Displayable bridge (D5):
-        // If the type has a user-defined message() method, use it for display().
-        if method == "display" {
+        // Generic to_string fallback — Error→Displayable bridge (D5):
+        // If the type has a user-defined message() method, use it for to_string().
+        if method == "to_string" {
             let type_name = match &receiver {
                 Value::Struct(ref s) => Some(s.lock().unwrap().name.clone()),
                 Value::Enum { name, .. } => Some(name.clone()),
                 _ => None,
             };
             if let Some(ref tn) = type_name {
-                // Check for user-defined display first, then message (Error bridge)
+                // Check for user-defined to_string first, then message (Error bridge)
                 let base_name = tn.find('.').map_or(tn.as_str(), |pos| &tn[..pos]);
                 let has_to_string = self.methods.get(tn)
-                    .and_then(|m| m.get("display"))
-                    .or_else(|| self.methods.get(base_name).and_then(|m| m.get("display")));
+                    .and_then(|m| m.get("to_string"))
+                    .or_else(|| self.methods.get(base_name).and_then(|m| m.get("to_string")));
                 if let Some(method_fn) = has_to_string.filter(|f| !f.body_lives_elsewhere()) {
                     let method_fn = method_fn.clone();
                     return self.call_function(&method_fn, vec![receiver], generics).map_err(|diag| diag.error);

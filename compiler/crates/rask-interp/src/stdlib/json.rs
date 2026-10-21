@@ -38,7 +38,7 @@ impl Interpreter {
                     let body = if method == "encode_pretty" {
                         "to_string_pretty"
                     } else {
-                        "display"
+                        "to_string"
                     };
                     return self.call_rask_method("JsonValue", body, recv, vec![], None);
                 }

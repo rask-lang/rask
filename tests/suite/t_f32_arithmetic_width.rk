@@ -13,14 +13,14 @@ test "an f32 sum lands on the f32 grid" {
     let a: f32 = 0.1
     let b: f32 = 0.2
     let c = a + b
-    assert c.display() == "0.3"
+    assert c.to_string() == "0.3"
 }
 
 test "the same sum at f64 width keeps f64's answer" {
     let a: f64 = 0.1
     let b: f64 = 0.2
     let c = a + b
-    assert c.display() == "0.30000000000000004"
+    assert c.to_string() == "0.30000000000000004"
 }
 
 test "a fixed-timestep accumulator steps the same number of times" {
@@ -43,7 +43,7 @@ test "an f32 division stays at f32 width" {
     let one: f32 = 1.0
     let three: f32 = 3.0
     let third = one / three
-    assert third.display() == "0.33333334"
+    assert third.to_string() == "0.33333334"
 }
 
 test "f32 multiply rounds each step, not just at the end" {
@@ -51,5 +51,5 @@ test "f32 multiply rounds each step, not just at the end" {
     for i in 0..10 {
         x = x * 1.1f32
     }
-    assert x.display() == "2.5937428"
+    assert x.to_string() == "2.5937428"
 }

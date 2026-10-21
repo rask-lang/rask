@@ -113,7 +113,7 @@ test "type.primitives — a 128-bit value renders all of its digits" {
     let a: i128 = 9223372036854775807
     let sum = a + a
     assert "{sum}" == "18446744073709551614"
-    assert sum.display() == "18446744073709551614"
+    assert sum.to_string() == "18446744073709551614"
 
     let u: u128 = 18446744073709551615
     assert "{u + u}" == "36893488147419103230"

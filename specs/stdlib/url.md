@@ -71,7 +71,7 @@ extend Url {
     func with_query(self, pairs: Vec<(string, string)>) -> Url
 }
 Url implements Displayable {
-    func display(self) -> string                        // reassembles the URL
+    func to_string(self) -> string                      // reassembles the URL
 }
 Url implements Div<string> {
     func div(self, segment: string) -> Url              // append a path segment, encoding it
@@ -167,13 +167,13 @@ FIX: Add the scheme:
 | Escape that isn't UTF-8 — `url.decode("%FF")` | U3 | `BadEscape` with the whole input. The result is a `string` |
 | `+` in a query | — | A space for `param`/`params`/`parse_query`. `url.decode` keeps it |
 | Empty port — `"http://x:/"` | U2 | No port written; `port()` is the default |
-| No authority — `"mailto:a@b.c"` | U1 | `host` is `""`, `path` is `"a@b.c"`. `display()` writes no `//` |
-| Explicit default port — `"https://x:443/"` | U2 | `port()` is 443. Round-tripping through `display()` drops the redundant `:443` |
+| No authority — `"mailto:a@b.c"` | U1 | `host` is `""`, `path` is `"a@b.c"`. `to_string()` writes no `//` |
+| Explicit default port — `"https://x:443/"` | U2 | `port()` is 443. Round-tripping through `to_string()` drops the redundant `:443` |
 | Unknown scheme, no port — `"myapp://x/"` | U2 | `port()` is `none` |
 | Uppercase scheme or host | — | Lowercased on parse. Path and query keep their case |
-| IPv6 host — `"http://[::1]:80/"` | U1 | `host` is `"::1"`, brackets stripped. `display()` puts them back |
+| IPv6 host — `"http://[::1]:80/"` | U1 | `host` is `"::1"`, brackets stripped. `to_string()` puts them back |
 | Non-ASCII host (IDN) | — | Kept as-is, not punycoded. IDNA is a package (`std.strings/U3` reasoning — it needs the full Unicode tables) |
-| `%2F` inside a path segment | U3 | Preserved as an escape through parse and `display()` — decoding it would change the path structure |
+| `%2F` inside a path segment | U3 | Preserved as an escape through parse and `to_string()` — decoding it would change the path structure |
 
 ---
 

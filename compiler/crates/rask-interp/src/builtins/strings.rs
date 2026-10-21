@@ -66,7 +66,7 @@ impl Interpreter {
                 let h = crate::builtins::fnv1a(guard.as_bytes());
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
-            "to_string" | "display" => Ok(Value::String(Arc::clone(s))),
+            "to_string" => Ok(Value::String(Arc::clone(s))),
             "debug" => {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))
@@ -317,9 +317,9 @@ impl Interpreter {
     /// one-field struct.
     ///
     /// It has to be nominally distinct from a `string`, not just equal to one —
-    /// `cstring.to_string()` is a Rask body that validates, and a plain
-    /// `Value::String` receiver would be answered by the Rust `to_string` arm
-    /// above before the Rask lookup ever ran (#949).
+    /// `cstring.decode()` is a Rask body that validates, and a plain
+    /// `Value::String` receiver would be answered by the string arms above
+    /// before the Rask lookup ever ran (#949).
     pub(crate) fn cstring_value(bytes: &str) -> Value {
         let mut fields = indexmap::IndexMap::new();
         fields.insert(

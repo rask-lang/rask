@@ -17,7 +17,7 @@ test "printing at the top of each unsigned range" {
     assert "{a}" == "255"
     assert "{b}" == "65535"
     assert "{c}" == "4294967295"
-    assert c.display() == "4294967295"
+    assert c.to_string() == "4294967295"
 }
 
 test "unsigned struct fields" {
