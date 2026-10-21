@@ -27,7 +27,7 @@ test "io.copy through a reader beside an unboxed namesake" {
     let data: Vec<u8> = [120, 121, 122]
     mut src = io.Buffer.from(data)
     mut dst = io.Buffer.new()
-    let n = io.copy(src, dst) catch _ => -1
+    let n = io.copy(src, dst) catch _ => 0
     assert n == 3
     assert dst.to_bytes().len() == 3
 }

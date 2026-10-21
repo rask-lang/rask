@@ -13,8 +13,7 @@
 // (#1608), so those are checked only as far as they work.
 //
 // The client functions are imported by name so `rask stdlib-coverage` sees
-// them (#1600); `import http` is for the server half and for the interpreter,
-// which runs the stdlib bodies against this program's imports (#1602).
+// them (#1600); `import http` is for the server half.
 
 import http
 import http.{post, put, delete, request}

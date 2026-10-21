@@ -137,7 +137,6 @@
 # writing suite coverage for the UNTESTED list (2026-10-20); each file witnesses
 # one bug, and the qualified spelling works on both backends in every case.
 t_fs_handle_imported_ensure.rk   # imported create_file/open — #1601 (native run)
-t_module_helper_unbound_interp.rk # stdlib body can't see its own module — #1602 (interp run)
 t_json_imported_calls.rk         # imported encode_pretty not expanded — #1603 (native compile)
 t_random_range_imported.rk       # imported random.range result type open — #1604 (both check)
 
@@ -148,3 +147,7 @@ t_stdout_handle_test_output.rk   # handle writes not captured — #1605 (interp 
 # A range with 128-bit bounds: the interpreter range holds i64s.
 t_range_over_i128.rk             # interp range over i128 — #1619 (interp run)
 t_comptime_n_array_param.rk       # comptime N from an array argument left unbound — #1623 (native run)
+
+# A program's conformance to a stdlib interface: the interface's default
+# methods aren't copied into it, so `io.Reader` asks for `read_text`.
+t_stdlib_interface_default_inherited.rk # stdlib TD2 defaults not inherited — #1624 (both check)

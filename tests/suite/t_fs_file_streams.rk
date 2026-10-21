@@ -1,0 +1,211 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.fs's handle half: `File` as a Reader and a Writer, `File.metadata`,
+// `OpenOptions` with `open_with`, and the directory calls `read_dir`,
+// `remove_dir` and `remove_dir_all`. Each test works in a fresh `mktemp -d`.
+//
+// Functions are imported by name so `rask stdlib-coverage` sees them (#1600).
+// Every handle is closed by its `ensure` alone, at the end of a helper: an explicit close under an
+// ensure closes twice natively on an imported name (#1601).
+
+import os
+import fs.{open, create_file, open_with, read_dir, remove_dir, remove_dir_all, remove_file, create_dir, create_dir_all, write_text, read_text, exists, OpenOptions, DirEntry}
+import io.{IoError, SeekFrom}
+
+func fresh_dir() -> string {
+    let out = os.Command.new("mktemp").arg("-d").run()!
+    return out.stdout.trim().to_string()
+}
+
+func clean_up(dir: string) {
+    let _ = os.Command.new("rm").arg("-rf").arg(dir).run()
+}
+
+func bytes_of(s: string) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for b in s.bytes() {
+        out.push(b)
+    }
+    return out
+}
+
+func zeros(n: usize) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for _ in 0..n {
+        out.push(0)
+    }
+    return out
+}
+
+/// Write through every Writer method; the size after `flush`.
+func write_all_ways(p: string) -> u64 or IoError {
+    let f = try create_file(p)
+    ensure f.close()
+    let n: usize = try f.write(bytes_of("ab"))
+    if n != 2 {
+        return IoError.Other("write counted {n}")
+    }
+    try f.write_bytes(bytes_of("cd"))
+    try f.write_text("ef")
+    try f.flush()
+    return (try f.metadata()).size
+}
+
+test "File writes through the Writer methods and flushes" {
+    let dir = fresh_dir()
+    let p = "{dir}/w.txt"
+    assert write_all_ways(p)! == 6
+    assert read_text(p)! == "abcdef"
+    clean_up(dir)
+}
+
+/// Read `p` through every Reader method, failing on the first surprise.
+func read_all_ways(p: string) -> void or IoError {
+    let f = try open(p)
+    ensure f.close()
+    mut four = zeros(4)
+    let n: usize = try f.read(mutate four)
+    if n != 4 || four[0] != 48u8 {
+        return IoError.Other("read gave {n}")
+    }
+    try f.read_exact(mutate four)
+    if four[0] != 52u8 {
+        return IoError.Other("read_exact gave {four[0]}")
+    }
+    let rest = try f.read_bytes()
+    if rest.len() != 2 || (try f.read(mutate four)) != 0 {
+        return IoError.Other("read_bytes left {rest.len()}")
+    }
+    let _ = f.seek(SeekFrom.Start(0))
+    if (try f.read_text()) != "0123456789" {
+        return IoError.Other("read_text")
+    }
+    let _ = f.seek(SeekFrom.Start(8))
+    match f.read_exact(mutate four) {
+        IoError as e => {
+            if !(e is IoError.UnexpectedEof) {
+                return e
+            }
+        }
+        _ => return IoError.Other("read_exact filled four bytes from two")
+    }
+    return
+}
+
+test "File reads through the Reader methods" {
+    let dir = fresh_dir()
+    let p = "{dir}/r.txt"
+    write_text(p, "0123456789")!
+    read_all_ways(p)!
+    clean_up(dir)
+}
+
+/// `File.metadata` of `p`, opened for reading.
+func size_of_open(p: string) -> u64 or IoError {
+    let f = try open(p)
+    ensure f.close()
+    let m = try f.metadata()
+    if m.modified <= 0 {
+        return IoError.Other("no modification time")
+    }
+    return m.size
+}
+
+test "File.metadata answers for the open handle" {
+    let dir = fresh_dir()
+    let p = "{dir}/m.txt"
+    write_text(p, "twelve bytes")!
+    assert size_of_open(p)! == 12
+    clean_up(dir)
+}
+
+/// Open `p` with `opts` and write `text` there.
+func write_with(p: string, opts: OpenOptions, text: string) -> void or IoError {
+    let f = try open_with(p, opts)
+    ensure f.close()
+    try f.write_text(text)
+    return
+}
+
+/// Open `p` read-only through `open_with` and read it all.
+func read_with(p: string) -> string or IoError {
+    let f = try open_with(p, OpenOptions.new().read(true))
+    ensure f.close()
+    return f.read_text()
+}
+
+test "OpenOptions: create without truncating, append, truncate, read" {
+    let dir = fresh_dir()
+    let p = "{dir}/o.txt"
+    let opts = OpenOptions.new().write(true).create(true)
+    write_with(p, opts, "hello")!
+    // Same options again: the file is there and isn't emptied.
+    write_with(p, opts, "J")!
+    assert read_text(p)! == "Jello"
+    write_with(p, OpenOptions.new().append(true), "!")!
+    assert read_text(p)! == "Jello!"
+    write_with(p, OpenOptions.new().write(true).truncate(true), "x")!
+    assert read_with(p)! == "x"
+    clean_up(dir)
+}
+
+test "OpenOptions that open for nothing are refused" {
+    let dir = fresh_dir()
+    let p = "{dir}/none.txt"
+    assert write_with(p, OpenOptions.new(), "") is IoError
+    assert write_with(p, OpenOptions.new().read(true).create(true), "") is IoError
+    assert write_with(p, OpenOptions.new().append(true).truncate(true), "") is IoError
+    // Write without create on a missing file: nothing to open.
+    assert write_with(p, OpenOptions.new().write(true), "") is IoError
+    assert !exists(p)
+    clean_up(dir)
+}
+
+test "read_dir lists names and joined paths" {
+    let dir = fresh_dir()
+    write_text("{dir}/a.txt", "a")!
+    write_text("{dir}/b.txt", "b")!
+    create_dir("{dir}/sub")!
+    let entries: Vec<DirEntry> = read_dir(dir)!
+    assert entries.len() == 3
+    mut names: Vec<string> = Vec.new()
+    for e in entries {
+        names.push(e.name.clone())
+        assert e.path == "{dir}/{e.name}"
+    }
+    names.sort()
+    assert names[0] == "a.txt"
+    assert names[2] == "sub"
+    let slashed = read_dir("{dir}/")!
+    assert slashed[0].path == "{dir}/{slashed[0].name}"
+    assert read_dir("{dir}/missing") is IoError
+    clean_up(dir)
+}
+
+test "remove_dir takes an empty directory, and remove_file never takes one" {
+    let dir = fresh_dir()
+    create_dir("{dir}/empty")!
+    assert remove_file("{dir}/empty") is IoError
+    remove_dir("{dir}/empty")!
+    assert !exists("{dir}/empty")
+    create_dir("{dir}/full")!
+    write_text("{dir}/full/f", "x")!
+    assert remove_dir("{dir}/full") is IoError
+    assert remove_dir("{dir}/full/f") is IoError
+    assert exists("{dir}/full/f")
+    clean_up(dir)
+}
+
+test "remove_dir_all removes a tree and leaves a linked target alone" {
+    let dir = fresh_dir()
+    create_dir_all("{dir}/t/a/b")!
+    write_text("{dir}/t/top.txt", "1")!
+    write_text("{dir}/t/a/b/deep.txt", "2")!
+    create_dir("{dir}/keep")!
+    write_text("{dir}/keep/k.txt", "3")!
+    let _ = os.Command.new("ln").arg("-s").arg("{dir}/keep").arg("{dir}/t/link").run()
+    remove_dir_all("{dir}/t")!
+    assert !exists("{dir}/t")
+    assert read_text("{dir}/keep/k.txt")! == "3"
+    assert remove_dir_all("{dir}/t") is IoError
+    clean_up(dir)
+}

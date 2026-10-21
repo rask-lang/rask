@@ -108,7 +108,8 @@ struct StdlibSurface {
 }
 
 fn stdlib_surface() -> StdlibSurface {
-    let mut fns = HashMap::new();
+    let mut all: Vec<(SurfaceFn, &'static str)> = Vec::new();
+    let mut conformances = Vec::new();
     let mut types = HashMap::new();
     for (file, source, _) in rask_stdlib::stubs::stub_sources() {
         let s = surface::stdlib_source_surface(source, |decls| {
@@ -119,13 +120,27 @@ fn stdlib_surface() -> StdlibSurface {
             eprintln!("{}: stdlib/{} doesn't parse: {}", output::error_label(), file, e);
             process::exit(2);
         });
-        for f in s.fns {
-            fns.insert(f.key(), (f, file));
-        }
+        all.extend(s.fns.into_iter().map(|f| (f, file)));
+        conformances.extend(s.conformances.into_iter().map(|c| (c, file)));
         for t in s.types {
             types.insert(t.name.clone(), (t, file));
         }
     }
+    // An inherited default is reported against the file of the conformance
+    // that inherits it.
+    let mut fns: Vec<SurfaceFn> = all.iter().map(|(f, _)| f.clone()).collect();
+    let pairs: Vec<(String, String)> = conformances.iter().map(|(c, _)| c.clone()).collect();
+    let before = fns.len();
+    surface::inherit_defaults(&mut fns, &pairs);
+    for f in fns.drain(before..) {
+        let file = conformances
+            .iter()
+            .find(|((o, i), _)| *o == f.owner && Some(i) == f.via.as_ref())
+            .map(|(_, file)| *file)
+            .unwrap_or("");
+        all.push((f, file));
+    }
+    let fns = all.into_iter().map(|(f, file)| (f.key(), (f, file))).collect();
     StdlibSurface { fns, types }
 }
 

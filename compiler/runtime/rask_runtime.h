@@ -822,18 +822,27 @@ int64_t     rask_fwrite_vec(int64_t fptr, const RaskVec *v);
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C struct fields
 int32_t     rask_libc_rename(const char *from, const char *to);
-int32_t     rask_libc_remove(const char *path);
+int32_t     rask_libc_unlink(const char *path);
 int32_t     rask_libc_mkdir(const char *path, uint32_t mode);
 int32_t     rask_libc_access(const char *path, int32_t mode);
 void       *rask_libc_fopen(const char *path, const char *mode);
 void       *rask_libc_opendir(const char *path);
 const char *rask_libc_readdir(void *dir);
 int32_t     rask_libc_closedir(void *dir);
-int64_t     rask_stat_size(const char *path);
-int64_t     rask_stat_mtime(const char *path);
-int64_t     rask_stat_atime(const char *path);
 int64_t     rask_fs_open(const RaskStr *path);
 int64_t     rask_fs_create(const RaskStr *path);
+int64_t     rask_fs_open_with(const RaskStr *path, int64_t flags);
+int64_t     rask_fs_read_dir_names(const RaskStr *path);
+int64_t     rask_fs_remove_dir(const RaskStr *path);
+int64_t     rask_fs_kind(const RaskStr *path);
+
+// One stat into a thread-local slot, then its fields read off one at a time:
+// Rask can't hold a `struct stat`. The loads are 0, or -1 with errno set.
+int64_t     rask_fs_stat_load(const RaskStr *path);
+int64_t     rask_file_stat_load(int64_t file);
+uint64_t    rask_stat_loaded_size(void);
+int64_t     rask_stat_loaded_mtime(void);
+int64_t     rask_stat_loaded_atime(void);
 
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
@@ -863,6 +872,8 @@ int32_t rask_io_error_kind(int32_t err);
 // holds the message (IoError.Other), EOF that the input ran out.
 
 int64_t     rask_file_read_bytes(int64_t file);
+int64_t     rask_file_read_some(int64_t file, int64_t max);
+int64_t     rask_file_flush(int64_t file);
 int64_t     rask_file_write(int64_t file, const RaskStr *content);
 int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);
 int64_t     rask_file_write_line(int64_t file, const RaskStr *content);
@@ -904,6 +915,7 @@ int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 
 int64_t rask_net_tcp_listen(const RaskStr *addr);
 int8_t  rask_net_resolves(const RaskStr *addr);
+int64_t rask_net_resolve(const RaskStr *host);
 int64_t rask_net_udp_bind(const RaskStr *addr);
 int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr);
 int64_t rask_net_udp_receive(int64_t fd);

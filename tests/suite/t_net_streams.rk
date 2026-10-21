@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `TcpConnection` as a Reader and a Writer over loopback, and `net.resolve`.
+// Imported by name so `rask stdlib-coverage` sees the calls (#1600).
+
+import net.{tcp_listen, tcp_connect, resolve}
+import io.IoError
+
+func bytes_of(s: string) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for b in s.bytes() {
+        out.push(b)
+    }
+    return out
+}
+
+func zeros(n: usize) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for _ in 0..n {
+        out.push(0)
+    }
+    return out
+}
+
+test "a connection reads and writes through the stream interfaces" {
+    let listener = tcp_listen("127.0.0.1:0")!
+    let addr = listener.local_addr()
+    let client = tcp_connect(addr)!
+    let server = listener.accept()!
+
+    let n: usize = client.write(bytes_of("head"))!
+    assert n == 4
+    client.write_bytes(bytes_of("body"))!
+    client.write_text("tail")!
+    client.flush()!
+
+    mut four = zeros(4)
+    server.read_exact(mutate four)!
+    assert four[0] == 104u8
+    // `read` may come back short; read_exact is what promises all of it.
+    mut more = zeros(4)
+    let got = server.read(mutate more)!
+    assert got > 0 && got <= 4
+    assert more[0] == 98u8
+    if got < 4 {
+        mut rest = zeros(4 - got)
+        server.read_exact(mutate rest)!
+    }
+    let _ = client.close()
+    let bytes = server.read_bytes()!
+    assert bytes.len() == 4
+    assert bytes[0] == 116u8
+    let _ = server.close()
+    let _ = listener.close()
+}
+
+test "read_text decodes what the peer sent before closing" {
+    let listener = tcp_listen("127.0.0.1:0")!
+    let client = tcp_connect(listener.local_addr())!
+    let server = listener.accept()!
+    client.write_text("héllo")!
+    let _ = client.close()
+    assert server.read_text()! == "héllo"
+    mut one = zeros(1)
+    assert server.read(mutate one)! == 0
+    let _ = server.close()
+    let _ = listener.close()
+}
+
+test "resolve: an IP literal is itself" {
+    let v4 = resolve("127.0.0.1")!
+    assert v4.len() == 1
+    assert v4[0] == "127.0.0.1"
+    let v6 = resolve("::1")!
+    assert v6.len() == 1
+    assert v6[0] == "::1"
+}
+
+test "resolve: a name that can't exist is an IoError" {
+    match resolve("no such host") {
+        IoError as e => assert e.message() == "could not resolve no such host"
+        Vec<string> as addrs => assert false, "resolved to {addrs.len()} addresses"
+    }
+}

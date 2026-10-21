@@ -72,9 +72,10 @@ loop {
 struct TcpConnection { }
 
 TcpConnection implements Reader {
-    func read(self, buf: Vec<u8>) -> usize or IoError
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
 }
 
 TcpConnection implements Writer {
@@ -151,6 +152,7 @@ try socket.send_to(d.data, d.from)
 |------|-------------|
 | **D1: Resolve** | `net.resolve(host)` returns IP address strings for a hostname |
 | **D2: No caching** | The stdlib does not cache DNS results. OS resolver caching applies |
+| **D3: Unknown names fail** | A name that resolves to nothing is `IoError.Other("could not resolve <host>")`, the error `tcp_connect` gives for it. An empty `Vec` would be a failure nobody checks |
 
 <!-- surface -->
 ```rask
@@ -216,7 +218,7 @@ WHY: Another process is already listening on this address.
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
 | UDP datagram over 65507 bytes | `IoError` from `send_to`, nothing sent | U3 |
 | UDP datagram to a port nobody bound | Sent; it's gone, and the sender isn't told | U4 |
-| DNS resolution with no results | Empty `Vec` | D1 |
+| DNS resolution for an unknown name | `IoError.Other` | D3 |
 | DNS resolution for IP literal | Returns the IP itself | D1 |
 
 ---

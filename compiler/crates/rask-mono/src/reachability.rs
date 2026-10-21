@@ -159,6 +159,14 @@ pub struct Monomorphizer<'a> {
     /// where `A` came from, so without this the receiver's instantiation has no
     /// name to bind to (#814).
     method_owners: HashMap<String, MethodOwner>,
+    /// Types with a type parameter that carries an interface bound
+    /// (`BufferedReader<R: Reader>`). Their methods call through that
+    /// parameter, so a body only exists per instantiation — see the widening
+    /// in `visit_expr`.
+    bounded_generic_owners: HashSet<String>,
+    /// (instance layout, method) → the symbol its vtable slot holds, for the
+    /// instances `mark_boxed_instance_methods` queued.
+    pub vtable_symbols: HashMap<(String, String), String>,
 }
 
 /// The generic type a method is declared on.
@@ -348,6 +356,19 @@ impl<'a> Monomorphizer<'a> {
             owner_params.insert(bare, params);
         }
 
+        let bounded_generic_owners: HashSet<String> = decls
+            .iter()
+            .filter_map(|decl| match &decl.kind {
+                DeclKind::Struct(s) if s.type_params.iter().any(|p| !p.bounds.is_empty()) => {
+                    Some(s.name.trim().to_string())
+                }
+                DeclKind::Enum(e) if e.type_params.iter().any(|p| !p.bounds.is_empty()) => {
+                    Some(e.name.trim().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+
         // Every type a method could belong to. `Type_method`-shaped free
         // functions are registered as instance methods below, and without this
         // the "type" half was whatever came before the first underscore —
@@ -509,6 +530,8 @@ impl<'a> Monomorphizer<'a> {
             interface_coercions: HashMap::new(),
             decls,
             method_owners,
+            bounded_generic_owners,
+            vtable_symbols: HashMap::new(),
         }
     }
 
@@ -908,10 +931,62 @@ impl<'a> Monomorphizer<'a> {
         for method in methods {
             if let Some(qualified_names) = self.method_by_bare_name.get(&method).cloned() {
                 for qname in qualified_names {
-                    self.enqueue(qname, Vec::new());
+                    if !self.needs_instantiation(&qname) {
+                        self.enqueue(qname, Vec::new());
+                    }
                 }
             }
         }
+    }
+
+    /// The vtable methods of the value boxed at `id`, when it's an instance of
+    /// a type that `needs_instantiation`. The widening above skips those, and
+    /// this is the one place that knows the instance: `io.copy(reader, …)`
+    /// with a `BufferedReader<Buffer>` needs `BufferedReader_read$Buffer`.
+    fn mark_boxed_instance_methods(&mut self, id: NodeId, interface_name: &str) {
+        let Some(typed) = self.typed else { return };
+        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)).cloned() else {
+            return;
+        };
+        let Type::Generic { base, args } = &ty else { return };
+        let name = typed.types.type_name(*base);
+        if !self.bounded_generic_owners.contains(&name) {
+            return;
+        }
+        let Some(methods) = self.interface_methods.get(interface_name).cloned() else { return };
+        for method in methods {
+            let qualified = format!("{name}_{method}");
+            let Some(owner) = self.method_owners.get(&qualified) else { continue };
+            let bindings: Vec<TypeBinding> = owner
+                .params
+                .iter()
+                .zip(args.iter())
+                .filter_map(|(param, arg)| match arg {
+                    rask_types::GenericArg::Type(t) => Some(TypeBinding::new(param.clone(), t.as_ref().clone())),
+                    _ => None,
+                })
+                .collect();
+            // The vtable is named after the instance's layout
+            // (`BufferedReader$Buffer`) and the body after the method
+            // (`BufferedReader_read$Buffer`); codegen joins the two here.
+            let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
+            if let Some(layout) = crate::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
+                let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
+                self.vtable_symbols.insert((layout, method.clone()), symbol);
+            }
+            self.enqueue(qualified, bindings);
+        }
+    }
+
+    /// A method of a type whose parameter has an interface bound
+    /// (`BufferedReader<R: Reader>`). Its body calls through `R`, so there is
+    /// no template to lower on its own: an instance is reached through a call
+    /// the checker pinned to it, which binds `R`. A widened call has nothing
+    /// to bind it with.
+    fn needs_instantiation(&self, qualified: &str) -> bool {
+        self.method_owners
+            .get(qualified)
+            .is_some_and(|o| self.bounded_generic_owners.contains(&o.base))
     }
 
     /// Set the external package module names for cross-package call discovery.
@@ -1761,6 +1836,7 @@ impl<'a> Monomorphizer<'a> {
         // with no written-out cast — the checker flags these by NodeId.
         if let Some(interface_name) = self.interface_coercions.get(&expr.id).cloned() {
             self.mark_interface_object_methods(&interface_name);
+            self.mark_boxed_instance_methods(expr.id, &interface_name);
         }
         if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.note_map_key_fns(expr.id);
@@ -2014,6 +2090,16 @@ impl<'a> Monomorphizer<'a> {
                                         None if is_primitive_receiver(&name) => {
                                             Dispatch::Intrinsic
                                         }
+                                        // A `@builtin` the checker pinned to its
+                                        // type — `Shared.read` — is lowered by
+                                        // the compiler itself. Widening it made
+                                        // every `with x.read()` reach every
+                                        // stream's `read`.
+                                        None if rask_stdlib::lookup_method(&name, m)
+                                            .is_some_and(|s| s.builtin) =>
+                                        {
+                                            Dispatch::Intrinsic
+                                        }
                                         None => Dispatch::Unknown,
                                     }
                                 }
@@ -2073,8 +2159,11 @@ impl<'a> Monomorphizer<'a> {
                                 let derived = self
                                     .typed
                                     .map(|t| &t.derived_generic_methods);
+                                // Nor one that `needs_instantiation`.
                                 for qname in qualified_names.clone() {
-                                    if !derived.is_some_and(|d| d.contains(&qname)) {
+                                    if !derived.is_some_and(|d| d.contains(&qname))
+                                        && !self.needs_instantiation(&qname)
+                                    {
                                         self.enqueue(qname, type_args.clone());
                                     }
                                 }

@@ -5939,6 +5939,13 @@ impl<'a> MirLowerer<'a> {
         let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
         let callee_sig = {
             let mut keys: Vec<String> = Vec::new();
+            // A method of a generic type is emitted per instantiation
+            // (`BufferedReader_read$Buffer`), and that is the only name its
+            // signature is filed under. Without it a `mutate` argument to one
+            // went by value into a parameter the body reads through a pointer.
+            if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
+                keys.push(mangled.clone());
+            }
             if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
                 keys.push(format!("{}_{}", prefix, dispatch_method));
             }
@@ -10233,9 +10240,39 @@ impl<'a> MirLowerer<'a> {
             if let Some(methods) = self.ctx.interface_methods.get(interface_name) {
                 if let Some(idx) = methods.iter().position(|m| m == method) {
                     let vtable_offset = crate::vtable_layout::method_offset(idx);
-                    let mut arg_operands = Vec::new();
+                    // A `mutate` argument goes by address, as it does to the
+                    // conformer's method called directly — that body is the one
+                    // the vtable lands in, and it reads its parameter through a
+                    // pointer. Lowered as a plain expression it handed over the
+                    // value, so `r.read(mutate buf)` through an `any Reader`
+                    // filled nothing and read `buf.len()` as 0.
+                    let mut sig = super::FuncSig {
+                        ret_ty: MirType::Void,
+                        scalar_mutate_params: Vec::with_capacity(args.len()),
+                        aggregate_mutate_params: Vec::with_capacity(args.len()),
+                        ret_vec_elem: None,
+                        param_tys: Vec::new(),
+                    };
                     for arg in args {
-                        let (op, _) = self.lower_expr(&arg.expr)?;
+                        let mode = match arg.mode {
+                            rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting => {
+                                rask_ast::ty::ParamMode::Mutate
+                            }
+                            _ => rask_ast::ty::ParamMode::Borrow,
+                        };
+                        let ty = self
+                            .ctx
+                            .lookup_raw_type(arg.expr.id)
+                            .map(|t| self.ctx.type_to_mir(t))
+                            .unwrap_or(MirType::Ptr);
+                        let (scalar, aggregate) = super::mutate_param_passing(mode, "", &ty);
+                        sig.scalar_mutate_params.push(scalar);
+                        sig.aggregate_mutate_params.push(aggregate);
+                    }
+                    let wb_mark = self.elem_writebacks.len();
+                    let mut arg_operands = Vec::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        let (op, _) = self.lower_arg_for_param(&arg.expr, Some(&sig), i)?;
                         arg_operands.push(op);
                     }
                     // Resolve return type from type checker or fall back to i64
@@ -10255,6 +10292,7 @@ impl<'a> MirLowerer<'a> {
                         vtable_offset,
                         args: arg_operands,
                     }));
+                    self.flush_elem_writebacks(wb_mark);
                     return Ok(Some((MirOperand::Local(result_local), ret_ty)));
                 }
             }

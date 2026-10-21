@@ -416,7 +416,11 @@ fn collect_vtables(
                 let vt_methods = methods.iter().enumerate()
                     .map(|(i, method_name)| rask_codegen::vtable::VTableMethod {
                         name: method_name.clone(),
-                        func_name: format!("{}_{}", concrete_type, method_name),
+                        func_name: mono
+                            .vtable_symbols
+                            .get(&(concrete_type.clone(), method_name.clone()))
+                            .cloned()
+                            .unwrap_or_else(|| format!("{}_{}", concrete_type, method_name)),
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();

@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's type conforming to a stdlib interface inherits the interface's
+// default methods, the way a stdlib type does (type.generics/TD2).
+//
+// `io.Reader` has default bodies for `read_text` and `read_exact`. `Buffer`,
+// `File` and `TcpConnection` get them; a program's `Reader` doesn't. The
+// defaults are copied into each conformer during desugaring, and a program is
+// desugared without the stdlib's interfaces in view, so this conformance is
+// rejected as missing `read_text` (#1624). Copying alone wouldn't do: the
+// copied body names `IoError` and io.rk's private helpers, which a program's
+// scope doesn't have.
+
+import io
+
+struct Bytes {
+    data: Vec<u8>
+}
+
+Bytes implements io.Reader {
+    func read(self, mutate buf: Vec<u8>) -> usize or io.IoError {
+        mut n: usize = 0
+        while n < buf.len() && n < self.data.len() {
+            buf[n] = self.data[n]
+            n += 1
+        }
+        return n
+    }
+
+    func read_bytes(self) -> Vec<u8> or io.IoError {
+        return self.data.clone()
+    }
+}
+
+test "the defaults come with the conformance" {
+    let b = Bytes(data: [104u8, 105])
+    assert b.read_text()! == "hi"
+    mut two: Vec<u8> = [0u8, 0]
+    b.read_exact(mutate two)!
+    assert two[1] == 105u8
+}

@@ -34,7 +34,7 @@ test "the stdlib's any Writer takes a stdlib Buffer" {
     let xyz: Vec<u8> = [120, 121, 122]
     mut src = Buffer.from(xyz)
     mut dst = Buffer.new()
-    let n = io.copy(src, dst) catch _ => -1
+    let n = io.copy(src, dst) catch _ => 0
     assert n == 3
     assert dst.to_bytes().len() == 3
 }
