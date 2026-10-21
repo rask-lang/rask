@@ -153,6 +153,9 @@ pub enum TypeError {
         /// `Some` when it came from an interpolation, so the message can name
         /// the placeholder instead of a `to_string()` the user never wrote.
         interpolated: bool,
+        /// A method on the type that answers its text fallibly
+        /// (`cstring.decode`), which is the fix when there is one.
+        fallible_text: Option<String>,
         span: Span,
     },
     /// #314: method called on a type param whose bounds don't provide it.

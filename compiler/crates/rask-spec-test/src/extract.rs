@@ -157,6 +157,12 @@ fn parse_annotation_multi(lines: &[&str], start: usize) -> Option<(Expectation, 
         return None;
     }
 
+    // A surface block is declarations without bodies; parsing is all a spec
+    // test can ask of it. The coverage gate does the rest.
+    if trimmed == crate::surface::SURFACE_MARKER {
+        return Some((Expectation::Parse, 1));
+    }
+
     // Single-line annotation (ends with -->)
     if trimmed.ends_with("-->") {
         let content = trimmed

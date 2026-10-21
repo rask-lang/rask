@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Duration.as_micros`: whole microseconds, truncating anything finer.
+
+import time.Duration
+
+test "each constructor's unit converts to microseconds" {
+    assert Duration.seconds(2).as_micros() == 2_000_000
+    assert Duration.millis(7).as_micros() == 7_000
+    assert Duration.micros(42).as_micros() == 42
+    assert Duration.nanos(5_000).as_micros() == 5
+}
+
+test "sub-microsecond parts are truncated, not rounded" {
+    assert Duration.nanos(999).as_micros() == 0
+    assert Duration.nanos(1_999).as_micros() == 1
+}
+
+test "as_micros agrees with as_nanos and as_millis" {
+    let d = Duration.micros(123_456)
+    assert d.as_micros() * 1_000 == d.as_nanos()
+    assert d.as_micros() / 1_000 == d.as_millis()
+    assert (d + Duration.micros(4)).as_micros() == 123_460
+}

@@ -241,11 +241,12 @@ func find_block_for_key(index: Vec<BlockIndex>, key: string) -> i32? {
 func discover_sstables(dir: string) -> Vec<SstMeta> {
     mut metas = Vec.new()
 
-    let files = fs.list_dir(dir) is Vec<string> as f else {
+    let entries = fs.read_dir(dir) catch _ => {
         return metas
     }
 
-    for file in files {
+    for entry in entries {
+        let file = entry.name
         if !file.ends_with(".sst") { continue }
 
         let stem = file[0..file.len() - 4].to_string()

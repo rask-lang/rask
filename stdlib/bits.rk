@@ -1,21 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Bit manipulation, byte order, binary parsing/building (std.bits).
+// Binary parsing and building (std.bits).
+//
+// The integer methods std.bits also promises (count_ones … rotate_right,
+// to_be … from_ne_bytes) are in int.rk, written once for every width.
 
-// ── Bit operations on integer types (B1) ────────────────────────────
-
-// Methods defined via extend on each integer type.
-// count_ones, count_zeros, leading_zeros, trailing_zeros, leading_ones, trailing_ones,
-// reverse_bits, rotate_left, rotate_right, swap_bytes
-// are built-in methods on all integer types — registered in builtins.
-
-// ── Byte order conversion (B2, B3) ──────────────────────────────────
-
-// to_be, to_le, from_be, from_le are methods on integer types.
-// to_be_bytes, to_le_bytes, to_ne_bytes produce byte arrays.
-// T.from_be_bytes, T.from_le_bytes, T.from_ne_bytes parse them.
-
-// ── Binary parsing (P1-P4) ──────────────────────────────────────────
+// ── Binary parsing (P3–P5) ──────────────────────────────────────────
 
 public enum BinaryParseError {
     UnexpectedEnd(expected: usize, actual: usize)
@@ -31,7 +21,145 @@ extend BinaryParseError {
     }
 }
 
-// ── Binary building (K1-K2) ─────────────────────────────────────────
+extend Vec<u8> {
+    public func read_u8(self) -> (u8, Vec<u8>) or BinaryParseError {
+        let b = try first1(self)
+        return (b[0], after(self, 1))
+    }
+
+    public func read_i8(self) -> (i8, Vec<u8>) or BinaryParseError {
+        let b = try first1(self)
+        return (i8.from_le_bytes(b), after(self, 1))
+    }
+
+    public func read_u16be(self) -> (u16, Vec<u8>) or BinaryParseError {
+        let b = try first2(self)
+        return (u16.from_be_bytes(b), after(self, 2))
+    }
+
+    public func read_u16le(self) -> (u16, Vec<u8>) or BinaryParseError {
+        let b = try first2(self)
+        return (u16.from_le_bytes(b), after(self, 2))
+    }
+
+    public func read_i16be(self) -> (i16, Vec<u8>) or BinaryParseError {
+        let b = try first2(self)
+        return (i16.from_be_bytes(b), after(self, 2))
+    }
+
+    public func read_i16le(self) -> (i16, Vec<u8>) or BinaryParseError {
+        let b = try first2(self)
+        return (i16.from_le_bytes(b), after(self, 2))
+    }
+
+    public func read_u32be(self) -> (u32, Vec<u8>) or BinaryParseError {
+        let b = try first4(self)
+        return (u32.from_be_bytes(b), after(self, 4))
+    }
+
+    public func read_u32le(self) -> (u32, Vec<u8>) or BinaryParseError {
+        let b = try first4(self)
+        return (u32.from_le_bytes(b), after(self, 4))
+    }
+
+    public func read_i32be(self) -> (i32, Vec<u8>) or BinaryParseError {
+        let b = try first4(self)
+        return (i32.from_be_bytes(b), after(self, 4))
+    }
+
+    public func read_i32le(self) -> (i32, Vec<u8>) or BinaryParseError {
+        let b = try first4(self)
+        return (i32.from_le_bytes(b), after(self, 4))
+    }
+
+    public func read_u64be(self) -> (u64, Vec<u8>) or BinaryParseError {
+        let b = try first8(self)
+        return (u64.from_be_bytes(b), after(self, 8))
+    }
+
+    public func read_u64le(self) -> (u64, Vec<u8>) or BinaryParseError {
+        let b = try first8(self)
+        return (u64.from_le_bytes(b), after(self, 8))
+    }
+
+    public func read_i64be(self) -> (i64, Vec<u8>) or BinaryParseError {
+        let b = try first8(self)
+        return (i64.from_be_bytes(b), after(self, 8))
+    }
+
+    public func read_i64le(self) -> (i64, Vec<u8>) or BinaryParseError {
+        let b = try first8(self)
+        return (i64.from_le_bytes(b), after(self, 8))
+    }
+
+    public func read_f32be(self) -> (f32, Vec<u8>) or BinaryParseError {
+        let b = try first4(self)
+        return (f32.from_bits(u32.from_be_bytes(b)), after(self, 4))
+    }
+
+    public func read_f32le(self) -> (f32, Vec<u8>) or BinaryParseError {
+        let b = try first4(self)
+        return (f32.from_bits(u32.from_le_bytes(b)), after(self, 4))
+    }
+
+    public func read_f64be(self) -> (f64, Vec<u8>) or BinaryParseError {
+        let b = try first8(self)
+        return (f64.from_bits(u64.from_be_bytes(b)), after(self, 8))
+    }
+
+    public func read_f64le(self) -> (f64, Vec<u8>) or BinaryParseError {
+        let b = try first8(self)
+        return (f64.from_bits(u64.from_le_bytes(b)), after(self, 8))
+    }
+
+    /// The first `n` bytes, and the rest.
+    public func read_bytes(self, n: usize) -> (Vec<u8>, Vec<u8>) or BinaryParseError {
+        try need(self, n)
+        mut head: Vec<u8> = Vec.with_capacity(n)
+        for i in 0..n {
+            head.push(self[i])
+        }
+        return (head, after(self, n))
+    }
+}
+
+/// Fails unless `data` holds at least `n` bytes.
+func need(data: Vec<u8>, n: usize) -> void or BinaryParseError {
+    if data.len() < n {
+        return BinaryParseError.UnexpectedEnd(expected: n, actual: data.len())
+    }
+}
+
+func first1(data: Vec<u8>) -> [u8; 1] or BinaryParseError {
+    try need(data, 1)
+    return [data[0]]
+}
+
+func first2(data: Vec<u8>) -> [u8; 2] or BinaryParseError {
+    try need(data, 2)
+    return [data[0], data[1]]
+}
+
+func first4(data: Vec<u8>) -> [u8; 4] or BinaryParseError {
+    try need(data, 4)
+    return [data[0], data[1], data[2], data[3]]
+}
+
+func first8(data: Vec<u8>) -> [u8; 8] or BinaryParseError {
+    try need(data, 8)
+    return [data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7]]
+}
+
+/// A copy of `data` from byte `n` on.
+func after(data: Vec<u8>, n: usize) -> Vec<u8> {
+    mut rest: Vec<u8> = Vec.with_capacity(data.len() - n)
+    for i in n..data.len() {
+        rest.push(data[i])
+    }
+    return rest
+}
+
+// ── Binary building (K2) ────────────────────────────────────────────
 
 public struct BinaryBuilder {
     data: Vec<u8>
@@ -41,42 +169,135 @@ extend BinaryBuilder {
     public func new() -> BinaryBuilder {
         return BinaryBuilder(data: Vec.new())
     }
+
     public func with_capacity(n: usize) -> BinaryBuilder {
         return BinaryBuilder(data: Vec.with_capacity(n))
     }
+
     public func write_u8(take self, value: u8) -> BinaryBuilder {
         mut b = self
         b.data.push(value)
         return b
     }
+
+    public func write_i8(take self, value: i8) -> BinaryBuilder {
+        mut b = self
+        b.data.push(value.wrap<u8>())
+        return b
+    }
+
     public func write_u16be(take self, value: u16) -> BinaryBuilder {
         mut b = self
-        b.data.push((value >> 8).wrap<u8>())
-        b.data.push(value.wrap<u8>())
+        for byte in value.to_be_bytes() {
+            b.data.push(byte)
+        }
         return b
     }
+
     public func write_u16le(take self, value: u16) -> BinaryBuilder {
         mut b = self
-        b.data.push(value.wrap<u8>())
-        b.data.push((value >> 8).wrap<u8>())
+        for byte in value.to_le_bytes() {
+            b.data.push(byte)
+        }
         return b
     }
+
+    public func write_i16be(take self, value: i16) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_be_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_i16le(take self, value: i16) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_le_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
     public func write_u32be(take self, value: u32) -> BinaryBuilder {
         mut b = self
-        b.data.push((value >> 24).wrap<u8>())
-        b.data.push((value >> 16).wrap<u8>())
-        b.data.push((value >> 8).wrap<u8>())
-        b.data.push(value.wrap<u8>())
+        for byte in value.to_be_bytes() {
+            b.data.push(byte)
+        }
         return b
     }
+
     public func write_u32le(take self, value: u32) -> BinaryBuilder {
         mut b = self
-        b.data.push(value.wrap<u8>())
-        b.data.push((value >> 8).wrap<u8>())
-        b.data.push((value >> 16).wrap<u8>())
-        b.data.push((value >> 24).wrap<u8>())
+        for byte in value.to_le_bytes() {
+            b.data.push(byte)
+        }
         return b
     }
+
+    public func write_i32be(take self, value: i32) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_be_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_i32le(take self, value: i32) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_le_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_u64be(take self, value: u64) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_be_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_u64le(take self, value: u64) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_le_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_i64be(take self, value: i64) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_be_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_i64le(take self, value: i64) -> BinaryBuilder {
+        mut b = self
+        for byte in value.to_le_bytes() {
+            b.data.push(byte)
+        }
+        return b
+    }
+
+    public func write_f32be(take self, value: f32) -> BinaryBuilder {
+        return self.write_u32be(value.to_bits())
+    }
+
+    public func write_f32le(take self, value: f32) -> BinaryBuilder {
+        return self.write_u32le(value.to_bits())
+    }
+
+    public func write_f64be(take self, value: f64) -> BinaryBuilder {
+        return self.write_u64be(value.to_bits())
+    }
+
+    public func write_f64le(take self, value: f64) -> BinaryBuilder {
+        return self.write_u64le(value.to_bits())
+    }
+
     public func write_bytes(take self, bytes: Vec<u8>) -> BinaryBuilder {
         mut b = self
         for byte in bytes {
@@ -84,10 +305,12 @@ extend BinaryBuilder {
         }
         return b
     }
-    public func build(take self) -> Vec<u8> {
-        return self.data
-    }
+
     public func len(self) -> usize {
         return self.data.len()
+    }
+
+    public func build(take self) -> Vec<u8> {
+        return self.data
     }
 }

@@ -9,7 +9,7 @@ use crate::types::{FnParam, Type};
 use rask_ast::ty::TypeExpr;
 
 /// Modules with type-checked signatures.
-const TYPED_MODULES: &[&str] = &["fs", "net", "json", "cli", "io", "std"];
+const TYPED_MODULES: &[&str] = &["fs", "net", "json", "io", "std"];
 
 /// Registry of builtin modules and their methods.
 #[derive(Debug, Default, Clone)]
@@ -147,7 +147,6 @@ mod tests {
         assert!(bm.is_module("fs"));
         assert!(bm.is_module("net"));
         assert!(bm.is_module("json"));
-        assert!(bm.is_module("cli"));
         assert!(bm.is_module("io"));
         assert!(bm.is_module("std"));
         assert!(!bm.is_module("random"));
@@ -235,18 +234,6 @@ mod tests {
         let sig = bm.get_method("std", "exit").unwrap();
         assert_eq!(sig.params, vec![Type::I64]);
         assert_eq!(sig.ret, Type::Never);
-    }
-
-    #[test]
-    fn cli_args_returns_vec_string() {
-        use crate::types::GenericArg;
-        let bm = BuiltinModules::new();
-        let sig = bm.get_method("cli", "args").unwrap();
-        assert!(sig.params.is_empty());
-        assert_eq!(sig.ret, Type::UnresolvedGeneric {
-            name: "Vec".to_string(),
-            args: vec![GenericArg::Type(Box::new(Type::String))],
-        });
     }
 
     #[test]

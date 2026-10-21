@@ -17,11 +17,29 @@ Single `os` module: env vars, args, exit, platform info, subprocess spawning, an
 | **E4: Remove** | `os.remove_env(key)` unsets an env var |
 | **E5: List all** | `os.env_vars()` returns `Vec<(string, string)>` |
 
+<!-- surface -->
+```rask
+extend os {
+    func env(key: string) -> string?
+    func env_or(key: string, default: string) -> string
+    func set_env(key: string, value: string)
+    func remove_env(key: string)
+    func env_vars() -> Vec<(string, string)>
+}
+```
+
 ## Command-Line Arguments
 
 | Rule | Description |
 |------|-------------|
 | **A1: Raw args** | `os.args()` returns `Vec<string>` including program name at index 0 |
+
+<!-- surface -->
+```rask
+extend os {
+    func args() -> Vec<string>
+}
+```
 
 ## Process Control
 
@@ -30,12 +48,28 @@ Single `os` module: env vars, args, exit, platform info, subprocess spawning, an
 | **P1: Exit** | `os.exit(code: i32)` exits the process; return type is `!` (never) |
 | **P2: PID** | `os.pid()` returns `u32` |
 
+<!-- surface -->
+```rask
+extend os {
+    func exit(code: i32) -> Never
+    func pid() -> u32
+}
+```
+
 ## Platform Info
 
 | Rule | Description |
 |------|-------------|
 | **I1: Platform** | `os.platform()` returns `"linux"`, `"macos"`, `"windows"`, or `"wasm"` |
 | **I2: Architecture** | `os.arch()` returns `"x86_64"`, `"aarch64"`, or `"wasm32"` |
+
+<!-- surface -->
+```rask
+extend os {
+    func platform() -> string
+    func arch() -> string
+}
+```
 
 <!-- test: parse -->
 ```rask
@@ -60,7 +94,7 @@ func main() {
 |------|-------------|
 | **SY1: Shared error type** | `SysError` covers rare platform-level failures (sleep, clock operations). One shared type instead of a one-variant enum per syscall. Implements `Error` (`type.errors/ER4`) |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum SysError {
     Unsupported(string)     // operation not available on this platform
@@ -75,14 +109,14 @@ These are "should never happen" failures — most callers `try` them upward or c
 
 | Rule | Description |
 |------|-------------|
-| **C1: Command builder** | `Command` configures program, args, env, working directory, and I/O before execution |
+| **C1: Command builder** | `Command` configures program, args, env, working directory, and I/O before execution. The env setter is `set_env`: `os.env(key)` already reads one, and a builder step spelled like a getter misleads |
 | **C2: Run** | `command.run()` executes to completion and captures output |
 | **C3: Spawn** | `command.spawn()` starts the process and returns a linear `Process` handle |
 | **C4: Process resource** | `Process` is `@resource` — must be consumed via `wait()` or `kill_and_wait()` |
 | **C5: Poll doesn't consume** | `poll()` answers `none` while the child runs and its `Output` once it has exited, either way leaving the handle to be consumed later |
 | **C6: Piped streams stay open** | `spawn` leaves the configured pipes open in the parent, so `write_stdin` has somewhere to write and `read_stdout` something to read. `wait` closes stdin first — a child reading to EOF would never exit |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct Command { }
 
@@ -90,7 +124,7 @@ extend Command {
     func new(program: string) -> Command
     func arg(take self, arg: string) -> Command
     func args(take self, args: Vec<string>) -> Command
-    func env(take self, key: string, value: string) -> Command
+    func set_env(take self, key: string, value: string) -> Command
     func working_dir(take self, dir: string) -> Command
     func stdin(take self, cfg: Stdio) -> Command
     func stdout(take self, cfg: Stdio) -> Command
@@ -105,12 +139,12 @@ enum Stdio { Inherit, Piped, Null }
 
 ### Output
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct Output {
-    public status: i32
-    public stdout: string
-    public stderr: string
+    status: i32
+    stdout: string
+    stderr: string
 }
 
 extend Output {
@@ -120,7 +154,7 @@ extend Output {
 
 ### Process
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 @resource
 struct Process { }
@@ -166,7 +200,7 @@ let output = try proc.wait()
 | **SG2: Channel-based** | `os.signals(list)` returns a `Receiver<Signal>` from the concurrency module |
 | **SG3: Default restored** | When the receiver is dropped, the default OS signal behavior is restored |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 enum Signal {
     Interrupt       // SIGINT (Ctrl+C)
@@ -176,7 +210,9 @@ enum Signal {
     User2           // SIGUSR2
 }
 
-os.signals(list: Vec<Signal>) -> Receiver<Signal> or IoError
+extend os {
+    func signals(list: Vec<Signal>) -> Receiver<Signal> or IoError
+}
 ```
 
 <!-- test: skip -->

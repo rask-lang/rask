@@ -1623,6 +1623,18 @@ fn error_not_displayable() {
     );
 }
 
+/// std.fmt/D1: a `cstring` isn't Displayable — its text can fail to come back
+/// — so rendering one is E0826, and the fix names `decode()` instead of a
+/// conformance nobody can add to a stdlib type.
+#[test]
+fn error_cstring_points_at_decode() {
+    let (failed, out) = compile_error_output("cstring_not_displayable.rk");
+    assert!(failed, "rendering a cstring must be rejected: {out}");
+    assert_eq!(out.matches("E0826").count(), 2, "the call and the placeholder: {out}");
+    assert!(out.contains("decode()"), "the fix names decode(): {out}");
+    assert!(!out.contains("implements Displayable {"), "no conformance suggestion: {out}");
+}
+
 // A bare literal used to bind to whatever type it met first, so
 // `func f() -> string { return 1 }` type-checked. Found chasing #383, where a
 // `T? or E` return silently accepted anything numeric.
@@ -2006,6 +2018,46 @@ fn every_panic_kind_exits_101_on_both_backends() {
                 String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr),
             );
+        }
+    }
+}
+
+// std.cli reading the real argv. `--help` and `--version` print and exit 0,
+// and a rejected argument comes back out of main as exit 1 — none of which a
+// test block can do, so the suite tests stop at `parse_from`.
+#[test]
+fn cli_parse_reads_argv_on_both_backends() {
+    let rask = rask_binary();
+    let fixture = fixture("cli_parse.rk");
+    let help = "demo 2.1\nShows what it was given\n\nUsage: demo [options] <file>\n\n\
+                Arguments:\n  <file>              Input\n\n\
+                Options:\n  -v, --verbose       Talk more\n  -n, --name <value>  Who to greet\n  \
+                -h, --help          Show this help\n      --version       Show version\n";
+    let cases: [(&[&str], i32, String, &str); 7] = [
+        (&["-v", "in.txt", "--name=ann"], 0, "verbose=true name=ann file=in.txt rest=1\n".to_string(), ""),
+        // The schema says `--name` takes a value, so `bob` isn't the file.
+        (&["--name", "bob", "a.txt"], 0, "verbose=false name=bob file=a.txt rest=1\n".to_string(), ""),
+        (&["-vn", "cy", "a", "b"], 0, "verbose=true name=cy file=a rest=2\n".to_string(), ""),
+        (&["--help"], 0, help.to_string(), ""),
+        (&["--version"], 0, "demo 2.1\n".to_string(), ""),
+        (&["--bogus", "x"], 1, String::new(), "unknown flag: --bogus"),
+        (&[], 1, String::new(), "missing required argument: <file>"),
+    ];
+    for (argv, want_code, want_out, want_err) in &cases {
+        for mode in ["--interp", "--native"] {
+            let out = Command::new(&rask)
+                .args(["run", mode])
+                .arg(&fixture)
+                .arg("--")
+                .args(*argv)
+                .env("RASK_RUNTIME_DIR", runtime_dir())
+                .output()
+                .expect("failed to run rask");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(*want_code), "{mode} {argv:?}\n{stdout}{stderr}");
+            assert_eq!(stdout, *want_out, "{mode} {argv:?}\n{stderr}");
+            assert!(stderr.contains(want_err), "{mode} {argv:?}: {stderr}");
         }
     }
 }
@@ -3108,6 +3160,23 @@ fn error_move_in_loop_body() {
 }
 
 #[test]
+fn ok_move_into_return_inside_loop() {
+    // The move happens on the way out, so no later iteration sees it (#1613).
+    assert!(check_succeeds(
+        "func take_vec(take v: Vec<i32>) -> i64 { return 0 }\nfunc f(n: i64) -> i64 {\n    let v = Vec<i32>.new()\n    mut i = 0\n    loop {\n        i = i + 1\n        if i < n {\n            continue\n        }\n        return take_vec(v)\n    }\n}\nfunc main() {\n    let x = f(3)\n}"
+    ), "a move right before `return` in a loop body never reaches the next iteration");
+}
+
+#[test]
+fn error_move_before_continue() {
+    let output = check_output(
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    loop {\n        if true {\n            take_vec(v)\n            continue\n        }\n        return\n    }\n}"
+    );
+    assert!(output.contains("E0813"),
+        "a move followed by `continue` reaches the next iteration: {}", output);
+}
+
+#[test]
 fn ok_move_in_both_branches() {
     assert!(check_succeeds(
         "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    if true {\n        take_vec(v)\n    } else {\n        take_vec(v)\n    }\n}"
@@ -3539,8 +3608,8 @@ fn discover_println_print() {
 #[test]
 fn discover_to_string() {
     assert!(check_succeeds(
-        "func main() {\n    let s = 42.to_string()\n    println(s)\n}"
-    ), "i32.to_string should pass type check");
+        "func main() {\n    let s = 42.to_string()\n    println(s)\n    let c = 'x'\n    println(c.to_string())\n    println(\"ab\"[0..1].to_string())\n}"
+    ), "i32, char and slice to_string should pass type check");
 }
 
 // ─── C import tests (CI1–CI5) ──────────────────────────────
@@ -5893,7 +5962,7 @@ fn package_diagnostic_names_the_right_file() {
 // The f64 method set lived in four hand-maintained lists — checker, interpreter,
 // codegen dispatch, drift registry — and they disagreed. `x.floor()` passed the
 // checker, ran on the interpreter, and failed native codegen with "Function not
-// found: f64_floor". They all read rask_stdlib::FLOAT_METHODS now; this test
+// found: f64_floor". They all read the declarations in stdlib/float.rk now; this test
 // runs the whole primitive surface through both backends and compares.
 #[test]
 fn primitive_methods_agree_on_both_backends() {

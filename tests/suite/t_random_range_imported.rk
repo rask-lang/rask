@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `random.range` imported by name. `random.range(-3, 4)` checks and runs; the
+// imported `pick(-3, 4)` leaves its result's type open on both backends:
+// "couldn't work out the type of `n`" (#1604). The zero-argument
+// shortcuts, imported the same way, are fine (t_random_draws.rk).
+
+import random.range as pick
+
+test "range stays in [low, high) and reaches both ends" {
+    mut saw_low = false
+    mut saw_high = false
+    for _ in 0..400 {
+        let n = pick(-3, 4)
+        assert n >= -3 && n < 4
+        if n == -3: saw_low = true
+        if n == 3: saw_high = true
+    }
+    assert saw_low
+    assert saw_high
+}

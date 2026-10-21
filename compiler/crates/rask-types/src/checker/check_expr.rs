@@ -789,6 +789,9 @@ impl TypeChecker {
                 if method == "eq" && args.len() == 1 && self.operator_calls.contains(&expr.id) {
                     self.pending_wrapper_eq.push((expr.id, object.id, args[0].expr.id));
                 }
+                if method == "clone" && args.is_empty() {
+                    self.pending_wrapper_clone.push((expr.id, object.id));
+                }
                 // ST1: `staged()` hands back a working copy and commits it when
                 // a scope exits, so it only means anything as the source of
                 // one. `let v = s.staged()` type-checked as an ordinary method
@@ -2822,6 +2825,12 @@ impl TypeChecker {
             }
 
             if self.is_builtin_function(name) {
+                // CALL6 holds for a builtin too: the call reaches the symbol the
+                // resolver bound, and leaving it unrecorded made `println` look
+                // uncalled to anything reading targets (#1600).
+                if let Some(sym) = callee {
+                    self.call_targets.insert(call_id, super::Callee::Free(sym));
+                }
                 // std.fmt/D3/D4 on `print(x)` comes from the desugar pass, which
                 // rewrites each argument to `x.to_string()` — the same shape
                 // `{x}` becomes. Nothing to check here (#772).
@@ -3103,8 +3112,10 @@ impl TypeChecker {
                 for arg in args { self.infer_expr(&arg.expr); }
                 match self.types.get(type_id) {
                     Some(TypeDef::Struct { name, fields, .. }) => {
+                        // As written: a program `Color` shadowing the
+                        // stdlib's carries a `Color#N` symbol in the table.
                         let (name, fields) = (
-                            name.clone(),
+                            self.types.written_name(name).to_string(),
                             fields.iter().map(|(f, _)| f.clone()).collect(),
                         );
                         self.errors.push(TypeError::TypeCalledAsFunction {
@@ -3116,7 +3127,7 @@ impl TypeChecker {
                         Type::Error
                     }
                     Some(TypeDef::Enum { name, .. }) => {
-                        let name = name.clone();
+                        let name = self.types.written_name(name).to_string();
                         self.errors.push(TypeError::TypeCalledAsFunction {
                             name,
                             kind: "an enum".to_string(),
@@ -3868,10 +3879,7 @@ impl TypeChecker {
         // constraint and return. The type-namespace one is why `Vec.new<string>()`
         // lost its `<string>` (#1084).
         if let Some(ta) = type_args {
-            let written: Vec<Type> = ta
-                .iter()
-                .map(|ty| self.resolve_type_arg(ty, span))
-                .collect();
+            let written = self.resolve_method_type_args(object.name(), method, ta, span);
             self.written_method_type_args.insert(call_id, written);
         }
 
@@ -3914,6 +3922,16 @@ impl TypeChecker {
                     let names = stub.params.iter().map(|(n, _)| n.clone()).collect();
                     self.note_param_names(call_id, names);
                 }
+                // The same record `time.sleep` imported bare gets, so the two
+                // spellings of one call agree on its target (#1600).
+                self.call_targets.insert(
+                    call_id,
+                    super::Callee::Method {
+                        recv: Type::UnresolvedNamed(module.to_string()),
+                        method: method.to_string(),
+                        package: None,
+                    },
+                );
                 return self.check_module_method(module, method, args, type_args, span);
             }
         }
@@ -4600,7 +4618,7 @@ impl TypeChecker {
         // which is what `time.sleep(d)` files too. The solved constraint
         // records the target.
         if !type_args.is_empty() {
-            let written: Vec<Type> = type_args.iter().map(|ty| self.resolve_type_arg(ty, span)).collect();
+            let written = self.resolve_method_type_args(Some(module), function, type_args, span);
             self.written_method_type_args.insert(call_id, written);
         }
         let slots = self.stub_static_param_types(module, function);
@@ -4818,6 +4836,34 @@ impl TypeChecker {
                 self.errors.push(err);
             }
         }
+    }
+
+    /// The type arguments a method call wrote, resolved.
+    ///
+    /// `reflect.implements<T, I>()` is the one call whose second argument
+    /// names an interface rather than a type — and `Equal` or `Hashable` has
+    /// no declaration to resolve as a type at all. It stands as the interface's
+    /// object type, which is what the name means anywhere a type is wanted.
+    fn resolve_method_type_args(
+        &mut self,
+        receiver: Option<&str>,
+        method: &str,
+        written: &[TypeExpr],
+        span: Span,
+    ) -> Vec<Type> {
+        let interface_slot = (receiver == Some("reflect") && method == "implements").then_some(1);
+        written
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                if Some(i) == interface_slot {
+                    self.check_interface_named(ty, span);
+                    self.types.interface_object_written(ty)
+                } else {
+                    self.resolve_type_arg(ty, span)
+                }
+            })
+            .collect()
     }
 
     /// A type written as a call's type argument: `json.decode<Vec<Point>>`.

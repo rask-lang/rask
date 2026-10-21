@@ -29,17 +29,17 @@ public struct Handle<T> {
 
 extend Handle<T> {
     /// Wait for the result.
-    @native("rask_handle_join")
+    @native("rask_handle_join", panics: true)
     @blocks
     public func join(take self) -> T or JoinError {}
 
     /// Let it run on without waiting.
-    @native("rask_handle_detach")
+    @native("rask_handle_detach", panics: true)
     public func detach(take self) -> void {}
 
     /// Ask it to stop, then wait. It stops only where it checks `cancelled()`,
     /// and whatever it returns then is the result.
-    @native("rask_handle_cancel")
+    @native("rask_handle_cancel", panics: true)
     @ambient
     public func cancel(take self) -> T or JoinError {}
 }
@@ -148,14 +148,14 @@ extend Sender<T> {
     public func send(self, take value: T) -> void or SendError {}
 
     /// Non-blocking send. Returns error if full or closed.
-    @native("rask_channel_try_send_ptr")
+    @native("rask_channel_try_send_ptr", returns: negative)
     public func try_send(self, value: T) -> void or TrySendError {}
 
     /// Explicitly close this end. Consumes the sender: closing *is* dropping
     /// it, and the channel closes when the last sender goes. Declaring it
     /// `self` said the handle survived the call, so the frame dropped it a
     /// second time on the way out — `tx.close()!` then aborted the process.
-    @native("rask_sender_close_i64")
+    @native("rask_sender_close_i64", returns: negative)
     public func close(take self) -> void or CloseError {}
 }
 
@@ -174,7 +174,7 @@ extend Receiver<T> {
 
     /// Explicitly close this end. Consumes the receiver, for the same reason
     /// `Sender.close` consumes the sender.
-    @native("rask_recver_close_i64")
+    @native("rask_recver_close_i64", returns: negative)
     public func close(take self) -> void or CloseError {}
 }
 

@@ -94,7 +94,7 @@ impl Interpreter {
             int_at(0), int_at(1), int_at(2), int_at(3), fill,
         );
 
-        // Debug renders from the value itself and never reads `display`, so
+        // Debug renders from the value itself and never reads `to_string`, so
         // asking for `to_string` first is not just wasted work — it fails on
         // the types Debug exists to cover. `{v:debug}` on a `Vec` died with
         // "no method to_string on type Vec" while native printed `[1, 2]`.

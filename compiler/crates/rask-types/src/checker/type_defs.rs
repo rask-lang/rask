@@ -482,56 +482,13 @@ impl TypedProgram {
     /// Done here, by the entry points that check a program, rather than by
     /// whoever runs next: every pass after this one reads the declarations,
     /// and none of them should have to know the checker wrote some.
-    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
-        struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>);
-        impl rask_ast::rewrite::Rewrite for Calls<'_> {
-            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-                use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
-                let Some((callee, name)) = self.0.get(&e.id) else { return };
-                let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
-                let ExprKind::MethodCall { object, mut args, .. } = old else {
-                    e.kind = old;
-                    return;
-                };
-                let rhs = args.remove(0);
-                e.kind = ExprKind::Call {
-                    func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
-                    args: vec![
-                        CallArg { name: None, mode: ArgMode::Default, expr: *object },
-                        CallArg { name: None, mode: ArgMode::Default, expr: rhs.expr },
-                    ],
-                };
-            }
-        }
-        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_eq_calls));
-
-        // A collection standing in for a `Sequence<E>` (SEQ48) gets the
-        // `as_sequence()` the checker typed for it. The wrapping call is the
-        // node the slot's type and the call's target were recorded on.
-        // The walk goes on into the wrapped value, which still has its own
-        // id, so each one is wrapped once.
-        struct ChainHeads<'a>(&'a HashMap<NodeId, NodeId>, std::collections::HashSet<NodeId>);
-        impl rask_ast::rewrite::Rewrite for ChainHeads<'_> {
-            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-                use rask_ast::expr::{Expr, ExprKind};
-                let Some(call) = self.0.get(&e.id) else { return };
-                if !self.1.insert(e.id) {
-                    return;
-                }
-                let span = e.span;
-                let value = std::mem::replace(e, Expr { id: *call, kind: ExprKind::Bool(false), span });
-                e.kind = ExprKind::MethodCall {
-                    object: Box::new(value),
-                    method: "as_sequence".to_string(),
-                    type_args: None,
-                    args: Vec::new(),
-                };
-            }
-        }
-        if !self.sequence_coercions.is_empty() {
-            rask_ast::rewrite::rewrite_decls(decls, &mut ChainHeads(&self.sequence_coercions, Default::default()));
-        }
-
+    /// Write each call the checker placed into its declaration: arguments in
+    /// parameter order, defaults filled in. `attach_derived` does it for the
+    /// program; the stdlib bodies native compiles are fresh copies of the ones
+    /// that were checked, so the compile path does it for those too — without
+    /// that, a stdlib body calling a method with a default argument reached
+    /// codegen one argument short.
+    pub fn place_args(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
         // Calls the checker placed: each argument moves to its parameter, and
         // a parameter left out gets its default. Where that would change
         // which argument's code runs first, those arguments are bound to
@@ -587,6 +544,63 @@ impl TypedProgram {
                 &mut Places { placed: &self.arg_places, hoists: &self.arg_hoists, done: Default::default() },
             );
         }
+    }
+
+    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>, &'a std::collections::HashSet<NodeId>);
+        impl rask_ast::rewrite::Rewrite for Calls<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
+                if self.1.contains(&e.id) {
+                    if let ExprKind::MethodCall { object, .. } = &e.kind {
+                        *e = object.as_ref().clone();
+                    }
+                    return;
+                }
+                let Some((callee, name)) = self.0.get(&e.id) else { return };
+                let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
+                let ExprKind::MethodCall { object, mut args, .. } = old else {
+                    e.kind = old;
+                    return;
+                };
+                let mut call_args = vec![CallArg { name: None, mode: ArgMode::Default, expr: *object }];
+                call_args.extend(args.drain(..).map(|a| CallArg { name: None, mode: ArgMode::Default, expr: a.expr }));
+                e.kind = ExprKind::Call {
+                    func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
+                    args: call_args,
+                };
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_calls, &self.copied_clones));
+
+        // A collection standing in for a `Sequence<E>` (SEQ48) gets the
+        // `as_sequence()` the checker typed for it. The wrapping call is the
+        // node the slot's type and the call's target were recorded on.
+        // The walk goes on into the wrapped value, which still has its own
+        // id, so each one is wrapped once.
+        struct ChainHeads<'a>(&'a HashMap<NodeId, NodeId>, std::collections::HashSet<NodeId>);
+        impl rask_ast::rewrite::Rewrite for ChainHeads<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{Expr, ExprKind};
+                let Some(call) = self.0.get(&e.id) else { return };
+                if !self.1.insert(e.id) {
+                    return;
+                }
+                let span = e.span;
+                let value = std::mem::replace(e, Expr { id: *call, kind: ExprKind::Bool(false), span });
+                e.kind = ExprKind::MethodCall {
+                    object: Box::new(value),
+                    method: "as_sequence".to_string(),
+                    type_args: None,
+                    args: Vec::new(),
+                };
+            }
+        }
+        if !self.sequence_coercions.is_empty() {
+            rask_ast::rewrite::rewrite_decls(decls, &mut ChainHeads(&self.sequence_coercions, Default::default()));
+        }
+
+        self.place_args(decls);
 
         if !self.struct_shorthand_patterns.is_empty() {
             struct_shorthands(decls, &self.struct_shorthand_patterns);
@@ -638,7 +652,7 @@ impl TypedProgram {
         }
 
         let mut derived = std::mem::take(&mut self.derived_decls);
-        rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_eq_calls));
+        rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_calls, &self.copied_clones));
         decls.extend(derived);
 
         // A transparent alias is the type it names. The checker resolves one
@@ -839,9 +853,13 @@ pub struct TypedProgram {
     /// Declarations the checker wrote and checked (`checker/derive.rs`).
     /// `attach_derived` moves them into the program.
     pub derived_decls: Vec<rask_ast::decl::Decl>,
-    /// `==` calls on two wrappers that go through the wrapper's `eq`:
-    /// call node → (callee node, function name). Applied by `attach_derived`.
-    pub wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    /// Method calls on a wrapper (`==`, `.clone()`) that go through the
+    /// function written for its type: call node → (callee node, function
+    /// name). Applied by `attach_derived`.
+    pub wrapper_calls: HashMap<NodeId, (NodeId, String)>,
+    /// `.clone()` on a wrapper a copy duplicates: the call is its receiver.
+    /// Applied by `attach_derived`.
+    pub copied_clones: std::collections::HashSet<NodeId>,
     /// A collection filling a `Sequence<E>` slot: value node → the node of
     /// the `as_sequence()` call `attach_derived` wraps it in (SEQ48).
     pub sequence_coercions: HashMap<NodeId, NodeId>,

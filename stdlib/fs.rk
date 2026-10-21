@@ -32,7 +32,7 @@ extern "C" func rask_libc_access(path: *u8, mode: i32) -> i32
 
 extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
 
-extern "C" func rask_libc_remove(path: *u8) -> i32
+extern "C" func rask_libc_unlink(path: *u8) -> i32
 
 extern "C" func rask_libc_mkdir(path: *u8, mode: u32) -> i32
 
@@ -42,29 +42,6 @@ extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
 @memory_only
 extern "C" func strlen(s: *u8) -> u64
-
-extern "C" func rask_libc_opendir(path: *u8) -> *u8
-
-extern "C" func rask_libc_readdir(dir: *u8) -> *u8
-
-extern "C" func rask_libc_closedir(dir: *u8) -> i32
-
-extern "C" func rask_stat_load(path: *u8) -> i32
-
-@memory_only
-extern "C" func rask_stat_loaded_size() -> u64
-
-@memory_only
-extern "C" func rask_stat_loaded_mtime() -> i64
-
-@memory_only
-extern "C" func rask_stat_loaded_atime() -> i64
-
-extern "C" func rask_stat_size(path: *u8) -> i64
-
-extern "C" func rask_stat_mtime(path: *u8) -> i64
-
-extern "C" func rask_stat_atime(path: *u8) -> i64
 
 extern "C" func getcwd(buf: *u8, size: u64) -> *u8
 
@@ -246,9 +223,9 @@ extend fs {
         return
     }
 
-    /// Remove a file.
+    /// Remove a file or a link. A directory is an error: that's `remove_dir`.
     public func remove_file(path: string) -> void or IoError {
-        let r = unsafe rask_libc_remove(path.as_ptr())
+        let r = unsafe rask_libc_unlink(path.as_ptr())
         if r != 0 {
             return IoError.last_os_error()
         }
@@ -290,48 +267,127 @@ extend fs {
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
-    /// List entries in a directory.
-    public func list_dir(path: string) -> Vec<string> or IoError {
-        let dir = unsafe rask_libc_opendir(path.as_ptr())
-        if unsafe dir.is_null() {
+    /// The entries in a directory, without `.` and `..`, in the order the
+    /// filesystem lists them — which is no particular order.
+    ///
+    /// Each entry's `path` is `path` and the name joined, so it can be handed
+    /// straight back to any `fs` call. `list_dir` gave the names alone, which
+    /// every caller then had to join; it's gone.
+    public func read_dir(path: string) -> Vec<DirEntry> or IoError {
+        if fs.read_dir_names(path) is Vec<string> as names {
+            let sep = if path.ends_with("/") { "" } else { "/" }
+            mut entries: Vec<DirEntry> = Vec.with_capacity(names.len())
+            for name in names {
+                entries.push(DirEntry(name: name.clone(), path: "{path}{sep}{name}"))
+            }
+            return entries
+        }
+        return IoError.last_os_error()
+    }
+
+    /// Remove an empty directory. A file is an error: that's `remove_file`.
+    public func remove_dir(path: string) -> void or IoError {
+        if fs.remove_dir_raw(path) != 0 {
             return IoError.last_os_error()
         }
-        mut entries: Vec<string> = Vec.new()
-        loop {
-            let name_ptr = unsafe rask_libc_readdir(dir)
-            if unsafe name_ptr.is_null() { break }
-            let name_len: u64 = unsafe strlen(name_ptr)
-            let name = unsafe string.from_raw(name_ptr, name_len as usize)
-            // Skip . and ..
-            if name != "." {
-                if name != ".." {
-                    entries.push(name)
-                }
+        return
+    }
+
+    /// Remove a directory and everything in it. A symlink inside is removed
+    /// as a link; what it points at is left alone.
+    public func remove_dir_all(path: string) -> void or IoError {
+        for entry in try fs.read_dir(path) {
+            let kind = fs.kind_raw(entry.path)
+            if kind < 0 {
+                return IoError.last_os_error()
+            }
+            if kind == 2 {
+                try fs.remove_dir_all(entry.path)
+            } else {
+                try fs.remove_file(entry.path)
             }
         }
-        unsafe rask_libc_closedir(dir)
-        return entries
+        return fs.remove_dir(path)
+    }
+
+    /// Open a file the way `opts` says (F5). Asking for no access, or for
+    /// `create`/`truncate` without a way to write, is an error rather than a
+    /// guess at what was meant.
+    public func open_with(path: string, opts: OpenOptions) -> File or IoError {
+        if !opts.reading && !opts.writing && !opts.appending {
+            return IoError.Other("OpenOptions asks for no access: set read, write or append")
+        }
+        if (opts.creating || opts.truncating) && !opts.writing && !opts.appending {
+            return IoError.Other("OpenOptions: create and truncate need write or append")
+        }
+        if opts.truncating && opts.appending {
+            return IoError.Other("OpenOptions: truncate and append can't both be set")
+        }
+        mut flags: i64 = 0
+        if opts.reading {
+            flags = flags + 1
+        }
+        if opts.writing {
+            flags = flags + 2
+        }
+        if opts.appending {
+            flags = flags + 4
+        }
+        if opts.creating {
+            flags = flags + 8
+        }
+        if opts.truncating {
+            flags = flags + 16
+        }
+        if fs.open_with_handle(path, flags) is File as f {
+            return f
+        }
+        return IoError.last_os_error()
     }
 
     /// Get metadata for a file or directory.
     ///
-    /// Written here rather than left to `rask_fs_metadata`, which signalled
-    /// failure by returning a nullptr pointer that codegen handed back as a
-    /// `Metadata` — so the `catch` never ran and `meta.size` read through nullptr.
-    /// A `T or E` needs the error built on this side (#674).
+    /// One stat, with the error built on this side (#674): the runtime used
+    /// to hand back a null pointer as a `Metadata`, and the `catch` never ran.
     public func metadata(path: string) -> Metadata or IoError {
-        let p = unsafe path.as_ptr()
-        if (unsafe {
-            rask_stat_load(p)
-        }) != 0 {
+        if fs.stat_load(path) != 0 {
             return IoError.last_os_error()
         }
-        return Metadata(
-            size: unsafe rask_stat_loaded_size()
-            modified: unsafe rask_stat_loaded_mtime()
-            accessed: unsafe rask_stat_loaded_atime()
-        )
+        return fs.loaded_metadata()
     }
+
+    /// The fields of the last stat, from either load.
+    func loaded_metadata() -> Metadata {
+        return Metadata(size: fs.loaded_size(), modified: fs.loaded_mtime(), accessed: fs.loaded_atime())
+    }
+
+    // The seams under the functions above. Each failure is -1 or `none` with
+    // the OS error left for `IoError.last_os_error`.
+
+    @native("rask_fs_read_dir_names")
+    @blocks
+    func read_dir_names(path: string) -> Vec<string>? {}
+    @native("rask_fs_remove_dir")
+    @blocks
+    func remove_dir_raw(path: string) -> i64 {}
+    /// What `path` is, not following a link: 1 file, 2 directory,
+    /// 3 symlink, 4 anything else, or -1.
+    @native("rask_fs_kind")
+    @blocks
+    func kind_raw(path: string) -> i64 {}
+    /// `flags`: 1 read, 2 write, 4 append, 8 create, 16 truncate.
+    @native("rask_fs_open_with")
+    @blocks
+    func open_with_handle(path: string, flags: i64) -> File? {}
+    @native("rask_fs_stat_load")
+    @blocks
+    func stat_load(path: string) -> i64 {}
+    @native("rask_stat_loaded_size")
+    func loaded_size() -> u64 {}
+    @native("rask_stat_loaded_mtime")
+    func loaded_mtime() -> i64 {}
+    @native("rask_stat_loaded_atime")
+    func loaded_atime() -> i64 {}
 
     /// Current working directory.
     public func current_dir() -> Path {
@@ -415,6 +471,85 @@ func write_all_then_close(f: *u8, ptr: *u8, size: usize) -> void or IoError {
         return IoError.last_os_error()
     }
     return
+}
+
+extend File {
+    /// Size and times of the open file, from the handle rather than a path,
+    /// so a file renamed or removed since it was opened still answers.
+    /// Unwritten bytes are flushed first, so `size` counts what this handle
+    /// wrote.
+    public func metadata(self) -> Metadata or IoError {
+        if self.stat_raw() != 0 {
+            return IoError.last_os_error()
+        }
+        return fs.loaded_metadata()
+    }
+
+    /// `fstat` into the slot `fs.loaded_metadata` reads: 0, or -1.
+    @native("rask_file_stat_load")
+    @blocks
+    func stat_raw(self) -> i64 {}
+}
+
+/// How `fs.open_with` opens a file (F5). Every setter hands back a new value,
+/// so a chain reads left to right: `OpenOptions.new().write(true).create(true)`.
+/// All off to start with.
+public struct OpenOptions {
+    reading: bool
+    writing: bool
+    appending: bool
+    creating: bool
+    truncating: bool
+}
+
+extend OpenOptions {
+    /// Nothing set. `open_with` refuses this as it stands: say what to open for.
+    public func new() -> OpenOptions {
+        return OpenOptions(reading: false, writing: false, appending: false, creating: false, truncating: false)
+    }
+
+    /// Open for reading.
+    public func read(self, on: bool) -> OpenOptions {
+        mut o = self
+        o.reading = on
+        return o
+    }
+
+    /// Open for writing, from the start of the file.
+    public func write(self, on: bool) -> OpenOptions {
+        mut o = self
+        o.writing = on
+        return o
+    }
+
+    /// Open for writing, every write going to the end.
+    public func append(self, on: bool) -> OpenOptions {
+        mut o = self
+        o.appending = on
+        return o
+    }
+
+    /// Create the file if it isn't there.
+    public func create(self, on: bool) -> OpenOptions {
+        mut o = self
+        o.creating = on
+        return o
+    }
+
+    /// Empty the file on open.
+    public func truncate(self, on: bool) -> OpenOptions {
+        mut o = self
+        o.truncating = on
+        return o
+    }
+}
+
+/// One entry from `fs.read_dir`.
+public struct DirEntry {
+    /// The file name, no directory.
+    public name: string
+    /// The directory and the name joined: usable as a path as it stands.
+    public path: string
 }
 
 /// File metadata: size, access time, modification time.

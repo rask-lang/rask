@@ -87,22 +87,53 @@ extend IoError {
 }
 
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`
-/// mirror the Writer trio (specs/stdlib/io.md R1-R3).
+/// mirror the Writer trio (specs/stdlib/io.md R1-R4).
 public interface Reader {
     /// `buf` is `mutate` because that's the whole point of `read` — it fills
     /// the caller's buffer. Without it the interface was unimplementable: any body
     /// that wrote into `buf` was rejected as mutating a read-only parameter.
-    func read(self, mutate buf: Vec<u8>) -> i64 or IoError
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
-    func read_text(self) -> string or IoError
+
+    /// Everything left, as UTF-8 (R3). One body for every reader: which bytes
+    /// are legal and what a bad one reports is not something each stream
+    /// should decide for itself.
+    func read_text(self) -> string or IoError {
+        let bytes = try self.read_bytes()
+        let text = string.from_utf8(bytes) catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return text
+    }
+
+    /// Fill all of `buf`, or fail with `UnexpectedEof` (R4). Built on `read`,
+    /// which may hand back fewer bytes than asked for at any call.
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError {
+        let want = buf.len()
+        mut filled: usize = 0
+        while filled < want {
+            mut chunk = zeroed(want - filled)
+            let n = try self.read(mutate chunk)
+            if n == 0 {
+                return IoError.UnexpectedEof
+            }
+            for i in 0..n {
+                buf[filled + i] = chunk[i]
+            }
+            filled = filled + n
+        }
+        return
+    }
 }
 
-/// Writable stream: bytes out, `IoError` back. Mirror of Reader (W1-W2, W4;
-/// no `flush` — not every writer buffers).
+/// Writable stream: bytes out, `IoError` back. Mirror of Reader (W1-W4).
 public interface Writer {
-    func write(self, data: Vec<u8>) -> i64 or IoError
+    func write(self, data: Vec<u8>) -> usize or IoError
     func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
+    /// Push anything the writer is holding to where it's going (W3). A
+    /// writer that holds nothing says so with an empty body.
+    func flush(self) -> void or IoError
 }
 
 /// Where a seek measures from (std.io/K2).
@@ -173,13 +204,24 @@ extend io {
     /// Copy all bytes from reader to writer. Returns total bytes copied.
     ///
     /// C1: no handles to acquire. Written in Rask over the two interfaces, so any
-    /// Reader/Writer pair works and both backends agree — there was no native
-    /// entry point for this at all before.
-    public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError {
-        let bytes = try reader.read_bytes()
-        let n = bytes.len().wrap<i64>()
-        try writer.write_bytes(bytes)
-        return n
+    /// Reader/Writer pair works and both backends agree. A chunk at a time, so
+    /// a stream bigger than memory copies too; the total is a `u64` for the
+    /// same reason — it counts bytes that went past, not bytes held.
+    public func copy(reader: any Reader, writer: any Writer) -> u64 or IoError {
+        mut chunk = zeroed(8192)
+        mut total: u64 = 0
+        loop {
+            let n = try reader.read(mutate chunk)
+            if n == 0 {
+                return total
+            }
+            mut part: Vec<u8> = Vec.with_capacity(n)
+            for i in 0..n {
+                part.push(chunk[i])
+            }
+            try writer.write_bytes(part)
+            total = total + n.wrap<u64>()
+        }
     }
 }
 
@@ -196,17 +238,15 @@ public struct Stdin {
 
 Stdin implements Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
-    public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
-        let want = buf.len().wrap<i64>()
+    public func read(self, mutate buf: Vec<u8>) -> usize or IoError {
+        let want = buf.len()
         if want == 0 {
             return 0
         }
-        let got = io.read_std_bytes(want)
-        let n = got.len().wrap<i64>()
-        mut i: i64 = 0
-        while i < n {
-            buf.set(i, got.get(i) ?? 0)
-            i = i + 1
+        let got = io.read_std_bytes(want.wrap<i64>())
+        let n = got.len()
+        for i in 0..n {
+            buf[i] = got[i]
         }
         return n
     }
@@ -218,22 +258,14 @@ Stdin implements Reader {
         // enough that a runaway producer can't exhaust memory.
         return io.read_std_bytes(16777216)
     }
-
-    /// Read all remaining bytes as UTF-8 string.
-    public func read_text(self) -> string or IoError {
-        let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes) catch e => {
-            return IoError.Other("stream is not valid UTF-8: {e.message()}")
-        }
-        return text
-    }
 }
 
 extend Stdin {
     /// Read a single line from stdin.
-    @native("rask_io_read_line")
     @blocks
-    public func read_line(self) -> string or IoError {}
+    public func read_line(self) -> string or IoError {
+        return io.read_line()
+    }
 
     /// Close the handle.
     ///
@@ -255,12 +287,12 @@ public struct Stdout {
 
 Stdout implements Writer {
     /// Write bytes. Returns number of bytes written.
-    public func write(self, data: Vec<u8>) -> i64 or IoError {
+    public func write(self, data: Vec<u8>) -> usize or IoError {
         let n = io.write_std_bytes(self.stream, data)
         if n < 0 {
             return IoError.last_os_error()
         }
-        return n
+        return n.wrap<usize>()
     }
 
     /// Write all bytes, retrying partial writes.
@@ -277,17 +309,17 @@ Stdout implements Writer {
         }
         return
     }
-}
 
-extend Stdout {
-    /// Flush buffered output.
+    /// Push what stdio is holding.
     public func flush(self) -> void or IoError {
         if io.flush_std(self.stream) < 0 {
             return IoError.last_os_error()
         }
         return
     }
+}
 
+extend Stdout {
     /// Close the handle. See `Stdin.close` for why it takes `self`.
     ///
     /// The stream itself stays open — closing the process's own stdout is not
@@ -308,12 +340,12 @@ public struct Stderr {
 
 Stderr implements Writer {
     /// Write bytes. Returns number of bytes written.
-    public func write(self, data: Vec<u8>) -> i64 or IoError {
+    public func write(self, data: Vec<u8>) -> usize or IoError {
         let n = io.write_std_bytes(self.stream, data)
         if n < 0 {
             return IoError.last_os_error()
         }
-        return n
+        return n.wrap<usize>()
     }
 
     /// Write all bytes, retrying partial writes.
@@ -330,17 +362,17 @@ Stderr implements Writer {
         }
         return
     }
-}
 
-extend Stderr {
-    /// Flush buffered output.
+    /// Push what stdio is holding.
     public func flush(self) -> void or IoError {
         if io.flush_std(self.stream) < 0 {
             return IoError.last_os_error()
         }
         return
     }
+}
 
+extend Stderr {
     /// Close the handle. See `Stdin.close` for why it takes `self`.
     ///
     /// The stream itself stays open — closing the process's own stdout is not
@@ -375,7 +407,7 @@ public struct Buffer {
 Buffer implements Reader {
     /// Read up to `buf.len()` bytes into `buf`, starting at the read position.
     /// Returns how many were copied — 0 once the buffer is exhausted (R1).
-    public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
+    public func read(self, mutate buf: Vec<u8>) -> usize or IoError {
         let total = self.data.len().wrap<i64>()
         let want = buf.len().wrap<i64>()
         mut copied: i64 = 0
@@ -388,7 +420,7 @@ Buffer implements Reader {
             }
             at = from
         }
-        return copied
+        return copied.wrap<usize>()
     }
 
     /// Read everything left, and leave the position at the end (R2).
@@ -405,28 +437,16 @@ Buffer implements Reader {
         }
         return out
     }
-
-    /// Read everything left as UTF-8 (R3). Invalid bytes are an `IoError`, the
-    /// way every other failure on a stream is.
-    public func read_text(self) -> string or IoError {
-        let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes) catch e => {
-            return IoError.Other("stream is not valid UTF-8: {e.message()}")
-        }
-        return text
-    }
 }
 
 Buffer implements Writer {
     /// Append bytes, and report how many went in (W1). A memory buffer never
     /// writes short, so that's always all of them.
-    public func write(self, data: Vec<u8>) -> i64 or IoError {
-        mut written: i64 = 0
+    public func write(self, data: Vec<u8>) -> usize or IoError {
         for byte in data {
             self.data.push(byte)
-            written = written + 1
         }
-        return written
+        return data.len()
     }
 
     /// Append every byte (W2).
@@ -443,6 +463,11 @@ Buffer implements Writer {
             self.data.push(s.byte_at(i.wrap<usize>()) ?? 0)
             i = i + 1
         }
+        return
+    }
+
+    /// Nothing to push: the bytes are already where they're going.
+    public func flush(self) -> void or IoError {
         return
     }
 }
@@ -469,8 +494,8 @@ extend Buffer {
     }
 
     /// Total bytes written.
-    public func len(self) -> i64 {
-        return self.data.len().wrap<i64>()
+    public func len(self) -> usize {
+        return self.data.len()
     }
 }
 
@@ -557,16 +582,24 @@ Buffer implements Seeker {
 @handle
 public struct File { }
 
-extend File {
-    /// The two halves of `Seeker`, as the backends see them: a position or -1.
-    /// The interface methods below turn -1 into an `IoError` and take the
-    /// `SeekFrom` apart, which is work neither backend should be doing.
-    @native("rask_file_seek")
-    @blocks
-    func seek_raw(self, whence: i64, offset: i64) -> i64 {}
-    @native("rask_file_position")
-    @blocks
-    func position_raw(self) -> i64 {}
+/// F2: a file is a stream like any other. `read_text` and `read_exact` come
+/// from the interface.
+File implements Reader {
+    /// Read up to `buf.len()` bytes from the current position. 0 at the end.
+    public func read(self, mutate buf: Vec<u8>) -> usize or IoError {
+        let want = buf.len()
+        if want == 0 {
+            return 0
+        }
+        if self.read_some_raw(want.wrap<i64>()) is Vec<u8> as got {
+            let n = got.len()
+            for i in 0..n {
+                buf[i] = got[i]
+            }
+            return n
+        }
+        return IoError.last_os_error()
+    }
 
     /// Read from the current position to the end.
     public func read_bytes(self) -> Vec<u8> or IoError {
@@ -575,22 +608,14 @@ extend File {
         }
         return IoError.last_os_error()
     }
+}
 
-    /// Read from the current position to the end, as UTF-8.
-    public func read_text(self) -> string or IoError {
-        let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes) catch e => {
-            return IoError.Other("stream is not valid UTF-8: {e.message()}")
-        }
-        return text
-    }
-
-    /// Write a string to the file.
-    public func write(self, data: string) -> void or IoError {
-        if self.write_raw(data) != 0 {
-            return IoError.last_os_error()
-        }
-        return
+File implements Writer {
+    /// Write every byte of `data`; a file never takes a short write that a
+    /// retry would finish, so the count is all of them.
+    public func write(self, data: Vec<u8>) -> usize or IoError {
+        try self.write_bytes(data)
+        return data.len()
     }
 
     /// Write all bytes, retrying partial writes.
@@ -601,13 +626,33 @@ extend File {
         return
     }
 
-    /// Write a string.
+    /// Write a string's UTF-8 bytes.
     public func write_text(self, data: string) -> void or IoError {
         if self.write_raw(data) != 0 {
             return IoError.last_os_error()
         }
         return
     }
+
+    /// Hand what stdio is holding to the OS.
+    public func flush(self) -> void or IoError {
+        if self.flush_raw() != 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
+}
+
+extend File {
+    /// The two halves of `Seeker`, as the backends see them: a position or -1.
+    /// The interface methods below turn -1 into an `IoError` and take the
+    /// `SeekFrom` apart, which is work neither backend should be doing.
+    @native("rask_file_seek")
+    @blocks
+    func seek_raw(self, whence: i64, offset: i64) -> i64 {}
+    @native("rask_file_position")
+    @blocks
+    func position_raw(self) -> i64 {}
 
     /// Write a string followed by a newline.
     public func write_line(self, data: string) -> void or IoError {
@@ -626,8 +671,8 @@ extend File {
         return
     }
 
-    /// The writes and close as the backends see them: 0, or -1 with the OS
-    /// error left for `IoError.last_os_error`. The runtime can't build an
+    /// The writes, flush and close as the backends see them: 0, or -1 with the
+    /// OS error left for `IoError.last_os_error`. The runtime can't build an
     /// `IoError`, so the bodies above do. These used to be the public methods
     /// themselves and returned nothing natively, so a failed write read as a
     /// success.
@@ -640,6 +685,9 @@ extend File {
     @native("rask_file_write_line")
     @blocks
     func write_line_raw(self, data: string) -> i64 {}
+    @native("rask_file_flush")
+    @blocks
+    func flush_raw(self) -> i64 {}
     @native("rask_file_close")
     @blocks
     func close_raw(self) -> i64 {}
@@ -651,4 +699,290 @@ extend File {
     @native("rask_file_read_bytes")
     @blocks
     func read_bytes_raw(self) -> Vec<u8>? {}
+
+    /// One read of up to `max` bytes: empty at the end of the file, `none`
+    /// when it failed.
+    @native("rask_file_read_some")
+    @blocks
+    func read_some_raw(self, max: i64) -> Vec<u8>? {}
+}
+
+// ─── Buffered wrappers ──────────────────────────────────────
+
+/// A zero-filled buffer of `n` bytes, the shape `read` fills.
+func zeroed(n: usize) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.with_capacity(n)
+    for _ in 0..n {
+        out.push(0)
+    }
+    return out
+}
+
+/// A `Reader` that reads its inner reader a chunk at a time (B1), so small
+/// reads and lines don't each cost a call into the stream.
+///
+/// What's held is `held[at..]`. Both live in a `Shared<_, Local>` for the
+/// reason `Buffer`'s cursor does: `Reader` takes `self`, and reading has to
+/// change them. Two boxes rather than one holding a struct, because a box
+/// holding a struct with a `Vec` in it never frees the `Vec` natively (#1571).
+public struct BufferedReader<R: Reader> {
+    inner: R
+    capacity: usize
+    held: Shared<Vec<u8>, Local>
+    at: Shared<usize, Local>
+}
+
+extend BufferedReader<R> {
+    /// Wrap `inner` with an 8 KiB buffer.
+    public func new(take inner: R) -> BufferedReader<R> {
+        return BufferedReader.with_capacity(8192, inner)
+    }
+
+    /// Wrap `inner`, reading `capacity` bytes at a time. 0 reads one.
+    public func with_capacity(capacity: usize, take inner: R) -> BufferedReader<R> {
+        let cap = if capacity == 0 { 1 } else { capacity }
+        return BufferedReader(inner, capacity: cap, held: Shared.local(Vec.new()), at: Shared.local(0))
+    }
+
+    /// The next line, without its `\n` or `\r\n`. A last line with no newline
+    /// still counts; past the end is `UnexpectedEof`, as `io.read_line` says it.
+    public func read_line(self) -> string or IoError {
+        mut line: Vec<u8> = Vec.new()
+        loop {
+            if (try self.fill()) == 0 {
+                if line.is_empty() {
+                    return IoError.UnexpectedEof
+                }
+                break
+            }
+            let b = next_held(self.held, self.at) ?? 10
+            if b == 10 {
+                break
+            }
+            line.push(b)
+        }
+        if !line.is_empty() && line[line.len() - 1] == 13 {
+            line.pop()
+        }
+        let text = string.from_utf8(line) catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return text
+    }
+
+    /// Every line left, read as the loop asks for them. Ends at the end of
+    /// the stream; a failed read is yielded once and ends it too.
+    public func lines(self) -> Sequence<string or IoError> {
+        return |yield| {
+            loop {
+                let line = self.read_line() catch e => {
+                    if e != IoError.UnexpectedEof {
+                        yield(line_error(e))
+                    }
+                    return
+                }
+                if !yield(line_ok(line)) {
+                    return
+                }
+            }
+        }
+    }
+
+    /// Unwrap the reader. Bytes already read into the buffer and not handed
+    /// out are dropped with it.
+    public func take(take self) -> R {
+        return self.inner
+    }
+
+    /// How many bytes are held, reading a chunk from `inner` when none are.
+    /// 0 is the end of the stream.
+    func fill(self) -> usize or IoError {
+        let left = held_count(self.held, self.at)
+        if left > 0 {
+            return left
+        }
+        mut chunk = zeroed(self.capacity)
+        let n = try self.inner.read(mutate chunk)
+        // Refilled in place. Workaround: assigning a new Vec to `h` leaks the
+        // old one natively (#1626).
+        with self.held.write() as h {
+            h.clear()
+            for i in 0..n {
+                h.push(chunk[i])
+            }
+        }
+        with self.at.write() as a {
+            a = 0
+        }
+        return n
+    }
+}
+
+/// How many of `held` are past `at`: held and not handed out yet.
+///
+/// Free functions over the two boxes, not methods: a private method that calls
+/// another on `self` is taken to mutate it (GC9), and `read`, which takes
+/// `self`, couldn't call one.
+func held_count(held: Shared<Vec<u8>, Local>, at: Shared<usize, Local>) -> usize {
+    mut total: usize = 0
+    with held.read() as h {
+        total = h.len()
+    }
+    mut from: usize = 0
+    with at.read() as a {
+        from = a
+    }
+    return total - from
+}
+
+/// Hand out the next held byte, if there is one.
+func next_held(held: Shared<Vec<u8>, Local>, at: Shared<usize, Local>) -> u8? {
+    mut from: usize = 0
+    with at.read() as a {
+        from = a
+    }
+    mut b: u8? = none
+    with held.read() as h {
+        if from < h.len() {
+            b = h[from]
+        }
+    }
+    if b is u8 {
+        with at.write() as a {
+            a = from + 1
+        }
+    }
+    return b
+}
+
+func line_ok(line: string) -> string or IoError {
+    return line
+}
+
+func line_error(take e: IoError) -> string or IoError {
+    return e
+}
+
+BufferedReader<R> implements Reader {
+    /// Up to `buf.len()` bytes, from what's held first. A read at least as
+    /// big as the buffer, with nothing held, goes straight to `inner`.
+    public func read(self, mutate buf: Vec<u8>) -> usize or IoError {
+        let want = buf.len()
+        if want == 0 {
+            return 0
+        }
+        if held_count(self.held, self.at) == 0 && want >= self.capacity {
+            return self.inner.read(mutate buf)
+        }
+        if (try self.fill()) == 0 {
+            return 0
+        }
+        mut copied: usize = 0
+        while copied < want {
+            let b = next_held(self.held, self.at) ?? {
+                break
+            }
+            buf[copied] = b
+            copied = copied + 1
+        }
+        return copied
+    }
+
+    /// What's held, then everything left in `inner`.
+    public func read_bytes(self) -> Vec<u8> or IoError {
+        mut out: Vec<u8> = Vec.new()
+        while next_held(self.held, self.at) is u8 as b {
+            out.push(b)
+        }
+        let rest = try self.inner.read_bytes()
+        for b in rest {
+            out.push(b)
+        }
+        return out
+    }
+}
+
+/// A `Writer` that collects small writes and hands them to its inner writer
+/// a buffer at a time (B2). Bytes reach `inner` when the buffer fills, on
+/// `flush()`, and on `take()`.
+public struct BufferedWriter<W: Writer> {
+    inner: W
+    capacity: usize
+    held: Shared<Vec<u8>, Local>
+}
+
+extend BufferedWriter<W> {
+    /// Wrap `inner` with an 8 KiB buffer.
+    public func new(take inner: W) -> BufferedWriter<W> {
+        return BufferedWriter.with_capacity(8192, inner)
+    }
+
+    /// Wrap `inner`, holding up to `capacity` bytes before writing them.
+    public func with_capacity(capacity: usize, take inner: W) -> BufferedWriter<W> {
+        return BufferedWriter(inner, capacity, held: Shared.local(Vec.new()))
+    }
+
+    /// Unwrap the writer, flushing what's held first. Best effort, as B2
+    /// says a drop is: call `flush()` before this when the error matters.
+    public func take(take self) -> W {
+        let _ = self.flush()
+        return self.inner
+    }
+
+    /// Write out what's held, and hold nothing.
+    func write_held(self) -> void or IoError {
+        mut out: Vec<u8> = Vec.new()
+        with self.held.write() as h {
+            out = h.clone()
+            h.clear()
+        }
+        if !out.is_empty() {
+            try self.inner.write_bytes(out)
+        }
+        return
+    }
+}
+
+BufferedWriter<W> implements Writer {
+    /// Take all of `data` (W1): a buffered writer never writes short.
+    public func write(self, data: Vec<u8>) -> usize or IoError {
+        try self.write_bytes(data)
+        return data.len()
+    }
+
+    /// Hold `data`, writing out what's held first if it wouldn't fit. Data at
+    /// least as big as the buffer goes straight through.
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        mut held: usize = 0
+        with self.held.read() as h {
+            held = h.len()
+        }
+        if held + data.len() > self.capacity {
+            try self.write_held()
+        }
+        if data.len() >= self.capacity {
+            return self.inner.write_bytes(data)
+        }
+        with self.held.write() as h {
+            for b in data {
+                h.push(b)
+            }
+        }
+        return
+    }
+
+    /// A string's UTF-8 bytes, held like any others.
+    public func write_text(self, data: string) -> void or IoError {
+        mut bytes: Vec<u8> = Vec.with_capacity(data.len())
+        for b in data.bytes() {
+            bytes.push(b)
+        }
+        return self.write_bytes(bytes)
+    }
+
+    /// Write out what's held, then flush `inner` (W3).
+    public func flush(self) -> void or IoError {
+        try self.write_held()
+        return self.inner.flush()
+    }
 }

@@ -442,8 +442,9 @@ struct json { }
 
 extend json {
     /// Encode a value as a JSON string.
-    /// Compiler-expanded at MIR level for structs via comptime for + reflect.
-    @native("rask_json_encode")
+    /// Lowered at MIR level for every argument type, so there is no runtime
+    /// entry point behind it.
+    @native
     public func encode<T: Encode>(value: T) -> string {}
 
     /// Decode a JSON string into a typed value.

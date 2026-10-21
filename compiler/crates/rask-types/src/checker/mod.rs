@@ -41,6 +41,7 @@ pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::resolve_type_expr;
+pub(crate) use declarations::is_type_param_name;
 pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
@@ -243,8 +244,16 @@ pub struct TypeChecker {
     /// the operand types settle: two equal wrappers that need their parts'
     /// own `eq` go through the wrapper's function.
     pub(super) pending_wrapper_eq: Vec<(NodeId, NodeId, NodeId)>,
+    /// `.clone()` calls, as (call, receiver) nodes, decided the same way: a
+    /// wrapper has no `clone` of its own to call, so the call goes through
+    /// the one written for its type, or is the value itself when a copy is
+    /// a clone (#1611).
+    pub(super) pending_wrapper_clone: Vec<(NodeId, NodeId)>,
     /// Those decided: call node → (callee node, function name).
-    pub(super) wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    pub(super) wrapper_calls: HashMap<NodeId, (NodeId, String)>,
+    /// `.clone()` calls on a wrapper a copy duplicates, `i64?`: the call is
+    /// its receiver.
+    pub(super) copied_clones: std::collections::HashSet<NodeId>,
     /// Each method call's argument nodes, in order. Method arguments are
     /// checked as types inside the solver; this is how a coercion decided
     /// there finds the expression it applies to.
@@ -635,7 +644,9 @@ impl TypeChecker {
             next_derived_id: derive::DERIVED_ID_BASE,
             derived_names: 0,
             pending_wrapper_eq: Vec::new(),
-            wrapper_eq_calls: HashMap::new(),
+            pending_wrapper_clone: Vec::new(),
+            copied_clones: std::collections::HashSet::new(),
+            wrapper_calls: HashMap::new(),
             method_call_args: HashMap::new(),
             sequence_coercions: HashMap::new(),
             local_types: Vec::new(),
@@ -1171,7 +1182,8 @@ impl TypeChecker {
             inferred_fn_ret,
             inferred_fn_params,
             derived_decls: self.derived_decls,
-            wrapper_eq_calls: self.wrapper_eq_calls,
+            wrapper_calls: self.wrapper_calls,
+            copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,
             wrapper_fns: self.wrapper_fns,
             derived_generic_methods: self.derived_generic_methods,
@@ -1506,11 +1518,15 @@ pub fn typecheck_with_stdlib_lenient(
     // here too, and `path / "x"` in path.rk is an operator like any other.
     let stdlib = rask_stdlib::StubRegistry::compilable();
     checker.operator_calls.extend(stdlib.operator_calls);
-    let bodies: Vec<Decl> = stdlib
+    // A module const goes ahead of the bodies, which read its type.
+    let (consts, rest): (Vec<Decl>, Vec<Decl>) = stdlib
         .decls
         .into_iter()
-        .filter(|d| matches!(d.kind,
-            rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
+        .partition(|d| matches!(d.kind, rask_ast::decl::DeclKind::Const(_)));
+    let bodies: Vec<Decl> = consts
+        .into_iter()
+        .chain(rest.into_iter().filter(|d| matches!(d.kind,
+            rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_))))
         .collect();
     let (mut typed, errors) = checker.check_lenient_with_stdlib(&bodies, decls);
     typed.attach_derived(decls);

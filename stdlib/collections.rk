@@ -13,6 +13,13 @@ extend Vec<T> {
     @native("rask_vec_with_capacity")
     public func with_capacity(n: usize) -> Vec<T> {}
 
+    /// A Vec holding each of an array's elements.
+    ///
+    /// Lowered by the compiler: a Rask body needs `N` bound at the call, and
+    /// native monomorphization doesn't bind a comptime parameter yet (#1623).
+    @builtin
+    public func from<comptime N: usize>(arr: [T; N]) -> Vec<T> {}
+
     /// Create a bounded vector that cannot grow beyond n elements (CP2, CP3).
     /// Pre-allocated at creation, and `push` past the bound panics.
     @native("rask_vec_fixed")
@@ -27,19 +34,19 @@ extend Vec<T> {
     public func is_empty(self) -> bool {}
 
     /// Maximum capacity, if bounded — `none` when the vector may grow freely.
-    @native
+    @native("rask_vec_bound")
     public func capacity(self) -> Option<usize> {}
 
     /// True if this vector has a capacity bound.
-    @native
+    @native("rask_vec_is_bounded")
     public func is_bounded(self) -> bool {}
 
     /// True if this vector is bounded and at its bound.
-    @native
+    @native("rask_vec_is_full")
     public func is_full(self) -> bool {}
 
     /// Room left before the bound — `none` when the vector is unbounded.
-    @native
+    @native("rask_vec_remaining")
     public func remaining(self) -> Option<usize> {}
 
     /// How many elements the allocation has room for — the same unit as
@@ -89,6 +96,16 @@ extend Vec<T> {
         }
     }
 
+    /// Push every element of `items`. Panics if bounded and full, or on OOM.
+    ///
+    /// What goes in is a copy, for the reason `try_push_all` gives.
+    @grows
+    public func push_all(mutate self, items: Sequence<T>) -> void {
+        for item in items {
+            self.push(item.clone())
+        }
+    }
+
     /// Remove and return the last element.
     @native("rask_vec_pop")
     @shrinks
@@ -100,12 +117,23 @@ extend Vec<T> {
     public func clear(mutate self) {}
 
     /// Insert a value at the given index, shifting later elements right.
-    @native("rask_vec_insert_at")
+    @native("rask_vec_insert_at", panics: true)
     @grows
     public func insert(mutate self, index: i64, take value: T) {}
 
+    /// Insert at `index`, handing the value back instead of panicking when the
+    /// vector is at its bound. An index past the end still panics, as it does
+    /// for `insert`: that's a bug in the caller, not a full collection.
+    @grows
+    public func try_insert(mutate self, index: i64, take value: T) -> void or GrowError<T> {
+        if self.is_full() {
+            return GrowError.Full(value)
+        }
+        self.insert(index, value)
+    }
+
     /// Remove and return the element at the given index.
-    @native("rask_vec_remove_at")
+    @native("rask_vec_remove_at", panics: true)
     @shrinks
     public func remove(mutate self, index: i64) -> T {}
 
@@ -126,7 +154,7 @@ extend Vec<T> {
 
     /// Reserve space for at least `additional` more elements. Panics on OOM,
     /// and on a request past a bounded vector's bound.
-    @native("rask_vec_reserve")
+    @native("rask_vec_reserve", panics: true)
     @grows
     public func reserve(mutate self, additional: usize) {}
 
@@ -147,7 +175,7 @@ extend Vec<T> {
     }
 
     /// Get element at index (borrows).
-    @native("rask_vec_get")
+    @native("rask_vec_get_opt")
     public func get(self, index: i64) -> Option<T> {}
 
     /// Get the first element.
@@ -167,13 +195,65 @@ extend Vec<T> {
     public func modify(mutate self, index: i64, f: func(mutate T) -> R) -> Option<R> {}
 
     /// Swap elements at two indices.
-    @native("rask_vec_swap")
+    @native("rask_vec_swap", panics: true)
     public func swap(mutate self, i: i64, j: i64) {}
 
-    /// Drain all elements into an iterator, leaving the vec empty.
+    /// Mutate several elements in one call. `f` gets them in `indices` order,
+    /// as a Vec it may change in place but not resize. `none` when an index is
+    /// out of range; a repeated index panics (D1).
+    ///
+    /// The elements are moved out for the call and put back after, so `f`
+    /// holds each one alone and no slot is reachable twice. Removing from the
+    /// highest index down keeps the lower ones in place, and inserting from
+    /// the lowest up puts each back where it was.
+    public func modify_many<R>(mutate self, indices: Vec<i64>, f: func(mutate Vec<T>) -> R) -> R? {
+        let n = self.len().wrap<i64>()
+        let k = indices.len()
+        mut i: usize = 0
+        while i < k {
+            let at = indices[i]
+            if at < 0 || at >= n {
+                return none
+            }
+            mut j = i + 1
+            while j < k {
+                if indices[j] == at {
+                    panic("modify_many: index {at} appears twice")
+                }
+                j = j + 1
+            }
+            i = i + 1
+        }
+
+        mut labels = indices.clone()
+        labels.sort_by(|a, b| b.compare(a))
+        mut parts: Vec<T> = Vec.with_capacity(k)
+        for at in labels {
+            parts.push(self.remove(at))
+        }
+        reorder_parallel(mutate parts, mutate labels, indices)
+
+        let result = f(mutate parts)
+        if parts.len() != k {
+            panic("modify_many: the callback resized its Vec from {k} to {parts.len()}")
+        }
+
+        mut ascending = indices.clone()
+        ascending.sort()
+        reorder_parallel(mutate parts, mutate labels, ascending)
+        mut p: usize = 0
+        for item in parts.take_all() {
+            self.insert(ascending[p], item)
+            p = p + 1
+        }
+        return result
+    }
+
+    /// Move every element out into a new Vec, leaving this one empty with
+    /// its bound and its buffer (std.iteration/T1, T2).
     @native("rask_vec_take_all")
     @shrinks
-    public func take_all(mutate self) -> Iterator<T> {}
+    public func take_all(mutate self) -> Vec<T> {}
 
     /// A sequence over these elements — the chain head a collection stands for
     /// (SEQ48). Compiler-inserted where a Vec fills a `Sequence<T>` slot; not a
@@ -333,7 +413,7 @@ extend Vec<T> {
     public func clone(self) -> Vec<T> {}
 
     /// Set element at index. Panics if out of bounds.
-    @native("rask_vec_set")
+    @native("rask_vec_set", panics: true)
     public func set(mutate self, index: i64, take value: T) {}
 
     /// Give back allocation past `to` elements — or past the current length,
@@ -512,6 +592,25 @@ extend ReserveError {
     }
 }
 
+/// Swap `items` into `target`'s order, given that `labels[i]` names where
+/// `items[i]` came from. Both are reordered together, so afterwards
+/// `labels == target`. `modify_many`'s bookkeeping; quadratic, and called with
+/// a handful of indices.
+func reorder_parallel<T>(mutate items: Vec<T>, mutate labels: Vec<i64>, target: Vec<i64>) {
+    mut i: usize = 0
+    while i < target.len() {
+        mut m = i
+        while labels[m] != target[i] {
+            m = m + 1
+        }
+        if m != i {
+            items.swap(i.wrap<i64>(), m.wrap<i64>())
+            labels.swap(i.wrap<i64>(), m.wrap<i64>())
+        }
+        i = i + 1
+    }
+}
+
 /// A hash map from keys to values.
 @handle(release: "rask_map_free")
 public struct Map<K, V> { }
@@ -521,8 +620,13 @@ extend Map<K, V> {
     @native("rask_map_new")
     public func new() -> Map<K, V> {}
 
+    /// A map holding each `(key, value)` pair. A key that appears twice
+    /// keeps the later value. Lowered by the compiler, like `Vec.from`.
+    @builtin
+    public func from<comptime N: usize>(pairs: [(K, V); N]) -> Map<K, V> {}
+
     /// Create a map with pre-allocated capacity.
-    @native
+    @native("rask_map_new_cap")
     public func with_capacity(n: usize) -> Map<K, V> {}
 
     /// Number of entries.
@@ -534,7 +638,7 @@ extend Map<K, V> {
     public func is_empty(self) -> bool {}
 
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
-    @native("rask_map_insert")
+    @native("rask_map_insert_displaced")
     @grows
     public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
 
@@ -611,6 +715,12 @@ extend Map<K, V> {
             }
         }
     }
+
+    /// Move every entry out as `(key, value)` pairs, leaving the map empty
+    /// (std.iteration/T1, T2). The order is the map's, which is unspecified.
+    @native("rask_map_take_all")
+    @shrinks
+    public func take_all(mutate self) -> Vec<(K, V)> {}
 
     /// Iterate over keys.
     @native("rask_map_keys")

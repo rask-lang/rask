@@ -1537,7 +1537,23 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand),
 
             // Function call — direct or through closure
-            ExprKind::Call { func, args } => self.lower_call(expr, func, args),
+            ExprKind::Call { func, args } => {
+                let result = self.lower_call(expr, func, args)?;
+                // `panic(…)`, `todo()`: control never comes back. Code after
+                // it — a `catch` arm's value flowing to the merge — goes in a
+                // block nothing reaches, so no pass reads it as a path that
+                // runs. Without this, `return f() catch _ => { panic(…) }`
+                // looked like it could return the panic's "value", and the
+                // container `f` built was nobody's to free.
+                if matches!(self.ctx.lookup_raw_type(expr.id), Some(rask_types::Type::Never))
+                    && self.builder.current_block_unterminated()
+                {
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    let dead = self.builder.create_block();
+                    self.builder.switch_to_block(dead);
+                }
+                Ok(result)
+            }
 
             // If expression (spec L1)
             ExprKind::If {
@@ -4967,7 +4983,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(result);
         }
 
-        if let Some(r) = self.try_lower_reflect_call(object, method, type_args)? {
+        if let Some(r) = self.try_lower_reflect_call(object, method, type_args, args)? {
             return Ok(r);
         }
 
@@ -5533,11 +5549,25 @@ impl<'a> MirLowerer<'a> {
                                 if let ExprKind::Array(elems) = &args[0].expr.kind {
                                     return self.lower_vec_from_array_with(elems, None, Some(expr.id)).map(Some);
                                 }
+                                // An array held somewhere: the Vec gets copies
+                                // and the array keeps its own elements, so it's
+                                // the view an array method borrows, cloned.
+                                let (arr_op, arr_ty) = self.lower_expr(&args[0].expr)?;
+                                if let Some((view, _)) = self.array_receiver_as_vec(&arr_op, &arr_ty) {
+                                    let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: Some(vec_local),
+                                        func: FunctionRef::internal("Vec_clone".to_string()),
+                                        args: vec![view],
+                                    }));
+                                    return Ok(Some((MirOperand::Local(vec_local), MirType::Ptr)));
+                                }
+                                return Err(LoweringError::InvalidConstruct(format!(
+                                    "Vec.from takes a fixed array, and this argument lowered as {arr_ty:?}"
+                                )));
                             }
                             if base == "Map" && method == "from" && args.len() == 1 {
-                                if let ExprKind::Array(elems) = &args[0].expr.kind {
-                                    return self.lower_map_from_pairs(expr, written_args, elems).map(Some);
-                                }
+                                return self.lower_map_from_pairs(expr, written_args, &args[0].expr).map(Some);
                             }
                         }
 
@@ -5909,6 +5939,13 @@ impl<'a> MirLowerer<'a> {
         let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
         let callee_sig = {
             let mut keys: Vec<String> = Vec::new();
+            // A method of a generic type is emitted per instantiation
+            // (`BufferedReader_read$Buffer`), and that is the only name its
+            // signature is filed under. Without it a `mutate` argument to one
+            // went by value into a parameter the body reads through a pointer.
+            if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
+                keys.push(mangled.clone());
+            }
             if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
                 keys.push(format!("{}_{}", prefix, dispatch_method));
             }
@@ -6000,6 +6037,19 @@ impl<'a> MirLowerer<'a> {
             let mut chars = base.chars();
             !matches!((chars.next(), chars.next()),
                       (Some(c), None) if c.is_ascii_uppercase())
+        })
+        // An integer method is declared once per width (stdlib/int.rk), and
+        // the checker records the width it resolved on. The runtime has one
+        // entry per family — `i64_abs` serves every signed width up to 64 —
+        // so the name collapses the way an undeclared one always did.
+        .map(|prefix| {
+            if rask_ast::primitives::is_machine_integer(&prefix) {
+                super::builtin_method_prefix_for_name(&prefix)
+                    .map(str::to_string)
+                    .unwrap_or(prefix)
+            } else {
+                prefix
+            }
         });
         // `to_int` / `to_float` are one machine instruction, so lower them to a
         // Cast instead of hunting for a `f64_to_int` symbol that never existed.
@@ -6007,6 +6057,12 @@ impl<'a> MirLowerer<'a> {
             self.try_lower_numeric_conversion(method.as_str(), args, &obj_op, &obj_ty)
         {
             return Ok(handled);
+        }
+        // An unsigned value is its own magnitude. stdlib/int.rk declares `abs`
+        // for every width, and the runtime's `abs` entries are signed ones, so
+        // `u32.abs()` reached codegen as a `u64_abs` nothing answered.
+        if method == "abs" && args.is_empty() && obj_ty.is_unsigned() {
+            return Ok((obj_op, obj_ty));
         }
 
         // Resolve the receiver's stdlib type prefix, then mangle to
@@ -6151,13 +6207,22 @@ impl<'a> MirLowerer<'a> {
             _ => &[],
         };
         // An entry is a `(key, value)` tuple, laid out by the caller.
-        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter") && all_args.len() == 1 {
+        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter" | "Map_take_all") && all_args.len() == 1 {
             if let (Some(key), Some(val)) = (
                 self.container_elem_mir_type(object.id, 0),
                 self.container_elem_mir_type(object.id, 1),
             ) {
                 let map = all_args[0].clone();
                 all_args = self.map_entries_args(map, &key, &val);
+                // `take_all` hands its entries over, so the Vec it builds has
+                // to know what each pair owns.
+                if qualified_name == "Map_take_all" {
+                    let desc = |i: usize, fallback: &MirType| {
+                        self.container_elem_type(object.id, i).unwrap_or_else(|| fallback.clone())
+                    };
+                    let pair = MirType::Tuple(vec![desc(0, &key), desc(1, &val)]);
+                    all_args.push(crate::elem_strs::elem(pair));
+                }
             }
         }
 
@@ -6237,9 +6302,8 @@ impl<'a> MirLowerer<'a> {
             None
         };
         let ret_ty = if qualified_name == "Vec_get" {
-            // `.get()` returns T? (Option, none on OOB per V3). The call is
-            // renamed to Vec_get_opt below so codegen uses the NULL-encoding
-            // runtime + DerefOption adapter. The element (Option payload)
+            // `.get()` returns T? (Option, none on OOB per V3); `v[i]` is
+            // `Vec_index`, which panics instead. The element (Option payload)
             // type sizes the result slot, so it must be right even when the
             // Vec wasn't push-tracked in this function (e.g. returned from a
             // callee): take the checker's `T?` payload first, then tracking.
@@ -6259,7 +6323,7 @@ impl<'a> MirLowerer<'a> {
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3765"));
             Some(super::option_of(elem))
-        } else if qualified_name == "Random_choice" {
+        } else if matches!(qualified_name.as_str(), "Random_choice" | "random_choice") {
             // `choice(v)` answers `T?`, and the payload type sizes the slot the
             // DerefOption adapter copies into. From the stub metadata it came
             // back as a bare `T` → i64, so a `Vec<string>` handed back the
@@ -6542,9 +6606,6 @@ impl<'a> MirLowerer<'a> {
             let by_slot = Self::parse_variant_for_slot(&ret_ty)
                 .expect("checked just above");
             (by_slot.to_string(), all_args)
-        } else if qualified_name == "Vec_get" {
-            // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
-            ("Vec_get_opt".to_string(), all_args)
         } else if qualified_name == "Vec_join" {
             // `Vec_join` takes strings. Anything else is written the way it
             // prints, which the runtime can't tell from a width: a one-byte
@@ -7073,11 +7134,15 @@ impl<'a> MirLowerer<'a> {
         object: &Expr,
         method: &str,
         type_args: &Option<Vec<TypeExpr>>,
+        args: &[CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
         use rask_types::reflect::{self, ReflectAnswer};
 
         if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
             return Ok(None);
+        }
+        if let Some(r) = self.try_lower_reflect_table_query(method, type_args, args)? {
+            return Ok(Some(r));
         }
         // `fields` as the iterable of a `comptime for` is unrolled in stmt.rs
         // and never reaches here. Reaching here means it was used as an
@@ -9093,7 +9158,7 @@ impl<'a> MirLowerer<'a> {
     /// here, where the element type is known and `debug_render_value` is the
     /// same renderer a struct field goes through.
     ///
-    /// Elements are read with `Vec_get`, which hands back the address of the
+    /// Elements are read with `Vec_index`, which hands back the address of the
     /// element in place for anything that lives in its slot — nothing is copied
     /// out, so nothing needs releasing afterwards.
     fn debug_render_vec_loop(
@@ -9174,7 +9239,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![vec_op.clone(), MirOperand::Local(idx)],
         }));
         let rendered = self.debug_render_value(
@@ -9292,7 +9357,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(pairs), MirOperand::Local(idx)],
         }));
         let key_local = self.builder.alloc_temp(key_ty.clone());
@@ -9458,7 +9523,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal("Vec_index".to_string()),
             args: vec![MirOperand::Local(entries), MirOperand::Local(idx)],
         }));
 
@@ -9947,58 +10012,68 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         ty: &TypeExpr,
     ) -> Result<TypedOperand, LoweringError> {
-        let consts = self.reflect_field_consts(ty)?;
+        let rows = self
+            .reflect_field_consts(ty)?
+            .iter()
+            .map(|fc| {
+                vec![
+                    ("name", MirConst::String(fc.name.clone())),
+                    ("type_name", MirConst::String(fc.type_name.clone())),
+                    ("offset", MirConst::Int(fc.offset as i64)),
+                    ("size", MirConst::Int(fc.size as i64)),
+                    ("is_public", MirConst::Bool(fc.is_public)),
+                    ("serial_name", MirConst::String(fc.serial_name.clone())),
+                    ("is_skipped", MirConst::Bool(fc.is_skipped)),
+                    ("has_default", MirConst::Bool(fc.has_default)),
+                ]
+                .into_iter()
+                .map(|(n, c)| (n, MirOperand::Constant(c)))
+                .collect()
+            })
+            .collect();
+        self.lower_info_vec("FieldInfo", rows)
+    }
 
-        let Some((idx, layout)) = self.ctx.find_struct("FieldInfo") else {
-            return Err(LoweringError::InvalidConstruct(
-                "reflect.fields<T>() as a value needs `FieldInfo`, which this program \
-                 never names — add `import std.reflect`"
-                    .into(),
-            ));
+    /// A `Vec<S>` of reflect info structs, element `i` built from `rows[i]`
+    /// by field name. What `fields`, `methods` and `variants` hand back when
+    /// used as a value.
+    fn lower_info_vec(
+        &mut self,
+        struct_name: &str,
+        rows: Vec<Vec<(&'static str, MirOperand)>>,
+    ) -> Result<TypedOperand, LoweringError> {
+        let Some((idx, layout)) = self.ctx.find_struct(struct_name) else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect needs `{struct_name}`, which this program never names — add \
+                 `import std.reflect`"
+            )));
         };
-        // Offset and MIR type of each FieldInfo field, in declaration order,
-        // so the stores below don't depend on the layout's field order.
-        let field_at = |name: &str| -> Option<(u32, MirType)> {
-            layout
-                .fields
-                .iter()
-                .find(|f| f.name == name)
-                .map(|f| (f.offset, self.ctx.type_to_mir(&f.ty)))
-        };
-        let slots: Vec<(&'static str, u32, MirType)> = [
-            "name", "type_name", "offset", "size", "is_public", "serial_name",
-            "is_skipped", "has_default",
-        ]
-        .into_iter()
-        .filter_map(|n| field_at(n).map(|(off, ty)| (n, off, ty)))
-        .collect();
+        // Offset and MIR type of each field, so the stores below don't depend
+        // on the layout's field order.
+        let slots: Vec<(String, u32, MirType)> = layout
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.offset, self.ctx.type_to_mir(&f.ty)))
+            .collect();
         let elem_ty = MirType::Struct(crate::types::StructLayoutId::new(
             idx, layout.size, layout.align,
         ));
         let elem_size = elem_ty.size();
 
-        let array_ty = MirType::Array {
+        let arr = self.builder.alloc_temp(MirType::Array {
             elem: Box::new(elem_ty.clone()),
-            len: consts.len() as u32,
-        };
-        let arr = self.builder.alloc_temp(array_ty);
-        for (i, fc) in consts.iter().enumerate() {
+            len: rows.len() as u32,
+        });
+        for (i, row) in rows.iter().enumerate() {
             let base = i as u32 * elem_size;
-            for (name, off, ty) in &slots {
-                let value = match *name {
-                    "name" => MirConst::String(fc.name.clone()),
-                    "type_name" => MirConst::String(fc.type_name.clone()),
-                    "offset" => MirConst::Int(fc.offset as i64),
-                    "size" => MirConst::Int(fc.size as i64),
-                    "is_public" => MirConst::Bool(fc.is_public),
-                    "serial_name" => MirConst::String(fc.serial_name.clone()),
-                    "is_skipped" => MirConst::Bool(fc.is_skipped),
-                    _ => MirConst::Bool(fc.has_default),
+            for (name, value) in row {
+                let Some((_, off, ty)) = slots.iter().find(|(n, _, _)| n == name) else {
+                    continue;
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: arr,
                     offset: base + off,
-                    value: MirOperand::Constant(value),
+                    value: value.clone(),
                     // A string is 16 bytes of value and the operand is their
                     // address; a bool is one byte and a wider store would run
                     // over the field beside it.
@@ -10007,20 +10082,224 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
         }
+        Ok(self.vec_from_static(arr, rows.len(), elem_ty))
+    }
 
+    /// `rask_vec_from_static` over an array local already filled in.
+    fn vec_from_static(&mut self, arr: crate::LocalId, len: usize, elem_ty: MirType) -> TypedOperand {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
             func: FunctionRef::internal("rask_vec_from_static".to_string()),
             args: vec![
                 MirOperand::Local(arr),
-                MirOperand::Constant(MirConst::Int(consts.len() as i64)),
-                MirOperand::Constant(MirConst::Int(elem_size as i64)),
+                MirOperand::Constant(MirConst::Int(len as i64)),
+                MirOperand::Constant(MirConst::Int(elem_ty.size() as i64)),
                 crate::elem_strs::elem(elem_ty.clone()),
             ],
         }));
         self.collected_elem_types.insert(vec_local, elem_ty);
-        Ok((MirOperand::Local(vec_local), MirType::I64))
+        (MirOperand::Local(vec_local), MirType::I64)
+    }
+
+    /// A `Vec<string>` of constants.
+    fn lower_string_vec(&mut self, items: Vec<String>) -> TypedOperand {
+        let elem_ty = MirType::String;
+        let elem_size = elem_ty.size();
+        let len = items.len();
+        let arr = self.builder.alloc_temp(MirType::Array {
+            elem: Box::new(elem_ty.clone()),
+            len: len as u32,
+        });
+        for (i, item) in items.into_iter().enumerate() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: arr,
+                offset: i as u32 * elem_size,
+                value: MirOperand::Constant(MirConst::String(item)),
+                store_size: elem_size,
+                field: None,
+            }));
+        }
+        self.vec_from_static(arr, len, elem_ty)
+    }
+
+    /// The `reflect` queries the checker's type table answers, plus
+    /// `variants`. Each folds to constants: the answers are worked out in
+    /// `rask_types::reflect` (and `rask_mono::reflect` for variants), from the
+    /// same table and layouts the interpreter reads.
+    fn try_lower_reflect_table_query(
+        &mut self,
+        method: &str,
+        type_args: &Option<Vec<TypeExpr>>,
+        args: &[CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        use rask_types::reflect;
+        if !matches!(
+            method,
+            "methods" | "has_method" | "has_field" | "interfaces" | "implements" | "variants"
+        ) {
+            return Ok(None);
+        }
+        let written: &[TypeExpr] = type_args.as_deref().unwrap_or_default();
+        let Some(ty) = written.first() else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect.{method}() needs the type it's asking about: write `reflect.{method}<T>()`"
+            )));
+        };
+        let refused = LoweringError::InvalidConstruct;
+        let types = self.ctx.type_defs;
+        Ok(Some(match method {
+            "methods" => {
+                let rows = reflect::methods(types, ty)
+                    .map_err(refused)?
+                    .into_iter()
+                    .map(|m| {
+                        vec![
+                            ("name", MirOperand::Constant(MirConst::String(m.name))),
+                            ("is_public", MirOperand::Constant(MirConst::Bool(m.is_public))),
+                            ("param_count", MirOperand::Constant(MirConst::Int(m.param_count as i64))),
+                            ("return_type_name", MirOperand::Constant(MirConst::String(m.return_type_name))),
+                        ]
+                    })
+                    .collect();
+                self.lower_info_vec("MethodInfo", rows)?
+            }
+            "has_method" => {
+                let names: Vec<String> =
+                    reflect::methods(types, ty).map_err(refused)?.into_iter().map(|m| m.name).collect();
+                self.lower_name_in(method, args, &names)?
+            }
+            "has_field" => {
+                let names = reflect::field_names(types, ty);
+                self.lower_name_in(method, args, &names)?
+            }
+            "interfaces" => {
+                let names = reflect::interfaces(types, ty).map_err(refused)?;
+                self.lower_string_vec(names)
+            }
+            "implements" => {
+                let Some(iface) = written.get(1) else {
+                    return Err(LoweringError::InvalidConstruct(
+                        "reflect.implements needs the interface too: reflect.implements<T, I>()".into(),
+                    ));
+                };
+                let b = reflect::implements(types, ty, iface).map_err(refused)?;
+                (MirOperand::Constant(MirConst::Bool(b)), MirType::Bool)
+            }
+            _ => self.lower_reflect_variants_value(ty)?,
+        }))
+    }
+
+    /// Is `args[0]` one of `names`? A name known at compile time — a literal,
+    /// or `field.name` in an unrolled `comptime for` — folds; any other string
+    /// is compared at run time against each.
+    fn lower_name_in(
+        &mut self,
+        method: &str,
+        args: &[CallArg],
+        names: &[String],
+    ) -> Result<TypedOperand, LoweringError> {
+        let Some(arg) = args.first() else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "reflect.{method}<T>(name) needs the name it's asking about"
+            )));
+        };
+        if let Some(name) = self.comptime_field_name(&arg.expr)? {
+            return Ok((MirOperand::Constant(MirConst::Bool(names.contains(&name))), MirType::Bool));
+        }
+        let (op, _) = self.lower_expr(&arg.expr)?;
+        let acc = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
+        }));
+        for name in names {
+            let hit = self.builder.alloc_temp(MirType::Bool);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(hit),
+                func: FunctionRef::internal("string_eq".to_string()),
+                args: vec![op.clone(), MirOperand::Constant(MirConst::String(name.clone()))],
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: acc,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Or,
+                    left: MirOperand::Local(acc),
+                    right: MirOperand::Local(hit),
+                },
+            }));
+        }
+        Ok((MirOperand::Local(acc), MirType::Bool))
+    }
+
+    /// reflect.variants<T>() → Vec<VariantInfo>, each carrying its payload as
+    /// a Vec<FieldInfo>.
+    ///
+    /// Same lookup as `fields`: the instance layout mono emitted for this
+    /// instantiation when there is one, else the shared layout with the
+    /// arguments substituted back into the payload types (#968).
+    fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
+        let base = ty.name().unwrap_or_default();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_mono::field_type).collect();
+        let instance = (!arg_tys.is_empty())
+            .then(|| rask_mono::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .flatten();
+        let layout = instance
+            .as_deref()
+            .and_then(|k| self.ctx.find_enum(k))
+            .or_else(|| self.ctx.find_enum(&base))
+            .map(|(_, l)| l.clone())
+            .ok_or_else(|| {
+                LoweringError::InvalidConstruct(format!(
+                    "reflect.variants<{}>(): not an enum type",
+                    ty.source()
+                ))
+            })?;
+        let subst: Vec<(String, TypeExpr)> = match self.ctx.type_defs.lookup(&base) {
+            Some(rask_types::Type::Named(id)) => match self.ctx.type_defs.get(id) {
+                Some(rask_types::TypeDef::Enum { type_params, .. })
+                    if type_params.len() == ty.args().len() =>
+                {
+                    type_params.iter().cloned().zip(ty.args().iter().cloned()).collect()
+                }
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        let facts = rask_mono::reflect::variant_facts(&layout, self.ctx.type_defs, &subst);
+        let mut rows = Vec::with_capacity(facts.len());
+        for v in facts {
+            let field_rows = v
+                .fields
+                .iter()
+                .map(|p| {
+                    vec![
+                        ("name", MirConst::String(p.name.clone())),
+                        ("type_name", MirConst::String(p.type_name.clone())),
+                        ("offset", MirConst::Int(p.offset as i64)),
+                        ("size", MirConst::Int(p.size as i64)),
+                        // A payload has no visibility or wire annotations of
+                        // its own.
+                        ("is_public", MirConst::Bool(true)),
+                        ("serial_name", MirConst::String(p.name.clone())),
+                        ("is_skipped", MirConst::Bool(false)),
+                        ("has_default", MirConst::Bool(p.has_default)),
+                    ]
+                    .into_iter()
+                    .map(|(n, c)| (n, MirOperand::Constant(c)))
+                    .collect()
+                })
+                .collect();
+            let (fields_vec, _) = self.lower_info_vec("FieldInfo", field_rows)?;
+            rows.push(vec![
+                ("name", MirOperand::Constant(MirConst::String(v.name))),
+                ("has_fields", MirOperand::Constant(MirConst::Bool(!v.fields.is_empty()))),
+                ("field_count", MirOperand::Constant(MirConst::Int(v.fields.len() as i64))),
+                ("fields", fields_vec),
+                ("serial_name", MirOperand::Constant(MirConst::String(v.serial_name))),
+            ]);
+        }
+        self.lower_info_vec("VariantInfo", rows)
     }
 
     /// Which `string_parse_*` runtime writes into this result slot, by the
@@ -10178,9 +10457,39 @@ impl<'a> MirLowerer<'a> {
             if let Some(methods) = self.ctx.interface_methods.get(interface_name) {
                 if let Some(idx) = methods.iter().position(|m| m == method) {
                     let vtable_offset = crate::vtable_layout::method_offset(idx);
-                    let mut arg_operands = Vec::new();
+                    // A `mutate` argument goes by address, as it does to the
+                    // conformer's method called directly — that body is the one
+                    // the vtable lands in, and it reads its parameter through a
+                    // pointer. Lowered as a plain expression it handed over the
+                    // value, so `r.read(mutate buf)` through an `any Reader`
+                    // filled nothing and read `buf.len()` as 0.
+                    let mut sig = super::FuncSig {
+                        ret_ty: MirType::Void,
+                        scalar_mutate_params: Vec::with_capacity(args.len()),
+                        aggregate_mutate_params: Vec::with_capacity(args.len()),
+                        ret_vec_elem: None,
+                        param_tys: Vec::new(),
+                    };
                     for arg in args {
-                        let (op, _) = self.lower_expr(&arg.expr)?;
+                        let mode = match arg.mode {
+                            rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting => {
+                                rask_ast::ty::ParamMode::Mutate
+                            }
+                            _ => rask_ast::ty::ParamMode::Borrow,
+                        };
+                        let ty = self
+                            .ctx
+                            .lookup_raw_type(arg.expr.id)
+                            .map(|t| self.ctx.type_to_mir(t))
+                            .unwrap_or(MirType::Ptr);
+                        let (scalar, aggregate) = super::mutate_param_passing(mode, "", &ty);
+                        sig.scalar_mutate_params.push(scalar);
+                        sig.aggregate_mutate_params.push(aggregate);
+                    }
+                    let wb_mark = self.elem_writebacks.len();
+                    let mut arg_operands = Vec::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        let (op, _) = self.lower_arg_for_param(&arg.expr, Some(&sig), i)?;
                         arg_operands.push(op);
                     }
                     // Resolve return type from type checker or fall back to i64
@@ -10200,6 +10509,7 @@ impl<'a> MirLowerer<'a> {
                         vtable_offset,
                         args: arg_operands,
                     }));
+                    self.flush_elem_writebacks(wb_mark);
                     return Ok(Some((MirOperand::Local(result_local), ret_ty)));
                 }
             }

@@ -13,7 +13,7 @@ Four iteration modes per collection: value (default, read-only), mutable (read-w
 |------|-------------|
 | **I1: Value mode** | Default `for x in collection` yields borrowed elements (read-only). Natural, matches all major languages. A write through the binding is a compile error (E0372) pointing at `for mutate` — before it was enforced the two backends disagreed about what the write meant, one writing through and one dropping it |
 | **I2: Index mode** | Use range `for i in 0..collection.len()` for index-based mutation |
-| **I3: Take-all mode** | `.take_all()` consumes the collection, yields owned values |
+| **I3: Take-all mode** | `.take_all()` moves every element out and leaves the collection empty; the loop owns each one |
 | **I4: Mutable mode** | `for mutate x in collection` yields mutable access to each element. Structural mutation still forbidden |
 
 | Collection | Value Mode (Default) | Mutable Mode | Index Mode | Take All Mode |
@@ -133,7 +133,7 @@ for e in world.nodes() {
 
 | Rule | Description |
 |------|-------------|
-| **T1: Consumes collection** | `.take_all()` takes ownership (`take self`). Collection left empty |
+| **T1: Empties the collection** | `.take_all()` borrows the collection mutably (`mutate self`) and moves every element out. The collection is left empty and still usable — a bounded `Vec` keeps its bound, a `Map` its table |
 | **T2: Hands back a Vec** | `.take_all()` returns the drained `Vec<T>`, not a `Sequence<T>` — a sequence lends its items and this one has to give them away (`type.sequence/SEQ34-SEQ35`). `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns, which is what lets it consume linear elements |
 | **T3: Early exit cleanup** | On `break`/`return`/`try`, remaining items cleaned up in LIFO order |
 
@@ -141,6 +141,21 @@ for e in world.nodes() {
 |------------|--------|--------|
 | `Vec<T>` | `.take_all()` | `Vec<T>`, iterated as `T` |
 | `Map<K,V>` | `.take_all()` | `Vec<(K, V)>`, iterated as `(K, V)` |
+
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func take_all(mutate self) -> Vec<T>
+}
+extend Map<K, V> {
+    func take_all(mutate self) -> Vec<(K, V)>
+}
+```
+
+`mutate self`, not `take self`. Taking the collection would leave nothing to be
+empty — the binding is gone — and every caller that wants to refill it
+(`take_where`, a work queue drained each tick) would have to build a new one.
+Emptying in place keeps the binding, its bound and its buffer.
 
 <!-- test: skip -->
 ```rask

@@ -2157,6 +2157,7 @@ pub fn substitute_type(ty: &Type, map: &HashMap<String, Type>) -> Type {
             params: params.iter().map(|p| p.map(|p| substitute_type(p, map))).collect(),
             ret: Box::new(substitute_type(ret, map)),
         },
+        Type::RawPtr(inner) => Type::RawPtr(Box::new(substitute_type(inner, map))),
         _ => ty.clone(),
     }
 }

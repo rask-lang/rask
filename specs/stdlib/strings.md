@@ -139,6 +139,22 @@ A `StringView` is the storable form of a string slice: it references a byte rang
 | `v.to_string()` | `string` | Copy bytes into an independent string — releases the pin |
 | `v.len()`, `v.chars()`, `v.index_of(pat)`, ... | — | Full read-only string API (V3) |
 
+<!-- surface -->
+```rask
+struct StringView { }
+
+extend string {
+    func view(self) -> StringView
+}
+extend StringView {
+    func view(self) -> StringView           // V6: re-references the original buffer
+    func to_string(self) -> string
+    func len(self) -> usize
+    func chars(self) -> Iterator<char>
+    func index_of(self, pat: string) -> usize?
+}
+```
+
 <!-- test: parse -->
 ```rask
 struct Header {
@@ -180,13 +196,28 @@ Plain indices for lightweight stored references — offsets for diagnostics, ser
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `Span(i, j)` | `Span` | Create span (just start, end indices) |
+| `Span.new(i, j)` | `Span` | Create span (just start, end indices); `Span(start: i, end: j)` is the same |
 | `s[i..j].span()` | `Span` | The slice's byte range. Works on any expression-scoped slice — `s.trim().span()`, split items |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
-| `span.to_string(source)` | `string` | Allocates copy (panics if OOB) |
 | `span.start`, `span.end` | `usize` | Read indices |
 | `span.len()` | `usize` | `end - start` |
+
+<!-- surface -->
+```rask
+struct Span {
+    start: usize
+    end: usize
+}
+
+extend Span {
+    func len(self) -> usize
+}
+extend string {
+    func span(self) -> Span
+    func get(self, span: Span) -> string?
+}
+```
 
 Prefer `StringView` when you want the text itself; prefer `Span` when you want positions (error messages pointing into source, byte offsets in a wire format) or when pinning the source buffer is unacceptable.
 
@@ -211,6 +242,19 @@ Iterators borrow for expression scope only. Cannot be stored.
 | `s.split(pat)` | Expression-scoped slices | Split on pattern |
 | `s.split_whitespace()` | Expression-scoped slices | Split on Unicode whitespace, skip empty |
 
+<!-- surface -->
+```rask
+extend string {
+    func graphemes(self) -> Iterator<string>
+    func chars(self) -> Iterator<char>
+    func bytes(self) -> Iterator<u8>
+    func char_indices(self) -> Iterator<(usize, char)>
+    func lines(self) -> Iterator<string>
+    func split(self, pat: string) -> Iterator<string>
+    func split_whitespace(self) -> Iterator<string>
+}
+```
+
 Slice-yielding iterators are zero-cost per item. To keep items, convert each: `.view()` (zero-copy, pins source — V2) or `.to_string()` (copies).
 
 ## Length and Properties
@@ -221,6 +265,16 @@ Slice-yielding iterators are zero-cost per item. To keep items, convert each: `.
 | `s.width()` | `usize` | Display columns (U2). O(1) for ASCII, else O(n) |
 | `s.is_empty()` | `bool` | O(1) |
 | `s.is_ascii()` | `bool` | O(1) — decided at construction (S10) |
+
+<!-- surface -->
+```rask
+extend string {
+    func len(self) -> usize
+    func width(self) -> usize
+    func is_empty(self) -> bool
+    func is_ascii(self) -> bool
+}
+```
 
 `len` is what you index with; `width` is what you align with. There is no third
 count. "How many characters" as a bare number answers no real question — the
@@ -237,6 +291,15 @@ caller either wants bytes (indexing), columns (layout), or to walk the graphemes
 | `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
 | `slice.to_string()` | `string` | Copy slice bytes into new independent string (allocates) |
 
+<!-- surface -->
+```rask
+extend string {
+    func from_utf8(bytes: Vec<u8>) -> string or Utf8Error
+    func from_char(c: char) -> string
+    func repeat(self, n: usize) -> string
+}
+```
+
 ## String Builder
 
 `StringBuilder` is the sole owner of its buffer — mutation is always O(1) amortized. `string` has no mutation methods.
@@ -250,6 +313,21 @@ caller either wants bytes (indexing), columns (layout), or to walk the graphemes
 | `b.build()` | `(take self) -> string` | Consume builder, return string. Zero-copy |
 | `b.len()` | `(self) -> usize` | Current byte length |
 | `b.is_empty()` | `(self) -> bool` | True if no bytes written |
+
+<!-- surface -->
+```rask
+struct StringBuilder { }
+
+extend StringBuilder {
+    func new() -> StringBuilder
+    func with_capacity(n: usize) -> StringBuilder
+    func push(mutate self, s: string)
+    func push_char(mutate self, c: char)
+    func build(take self) -> string
+    func len(self) -> usize
+    func is_empty(self) -> bool
+}
+```
 
 `build()` consumes the builder and transfers the internal buffer to the new string without copying. The buffer is guaranteed valid UTF-8 by construction — `push` only accepts `string`, `push_char` only accepts `char`. `push` is the one "add to the end of a growable thing" verb — same as `Vec.push`.
 
@@ -269,6 +347,13 @@ No `+` operator and no `concat` function. Interpolation is the one way to combin
 |-----------|--------|-------|
 | `strings.join(sep)` | `string` | Join a `Vec<string>` with separator, allocates |
 
+<!-- surface -->
+```rask
+extend Vec<string> {
+    func join(self, sep: string) -> string
+}
+```
+
 <!-- test: skip -->
 ```rask
 let names = ["Alice", "Bob", "Charlie"]
@@ -286,6 +371,17 @@ let csv = headers.join(",")      // CSV header row
 | `s.starts_with(pat)` | `bool` | Prefix check |
 | `s.ends_with(pat)` | `bool` | Suffix check |
 
+<!-- surface -->
+```rask
+extend string {
+    func index_of(self, pat: string) -> usize?
+    func last_index_of(self, pat: string) -> usize?
+    func contains(self, pat: string) -> bool
+    func starts_with(self, pat: string) -> bool
+    func ends_with(self, pat: string) -> bool
+}
+```
+
 ## Trimming
 
 | Operation | Return | Notes |
@@ -293,6 +389,15 @@ let csv = headers.join(",")      // CSV header row
 | `s.trim()` | Expression-scoped slice | Zero-copy, removes leading/trailing whitespace |
 | `s.trim_start()` | Expression-scoped slice | Leading whitespace only |
 | `s.trim_end()` | Expression-scoped slice | Trailing whitespace only |
+
+<!-- surface -->
+```rask
+extend string {
+    func trim(self) -> string
+    func trim_start(self) -> string
+    func trim_end(self) -> string
+}
+```
 
 Need the trimmed region's offsets rather than its text? `s.trim().span()` — `Span`
 is the type for positions, so trimming doesn't need a second spelling that returns
@@ -305,6 +410,15 @@ a bare `(usize, usize)`.
 | `s.to_uppercase()` | `string` | Full Unicode case mapping — allocates. `"straße"` → `"STRASSE"`, so length can change |
 | `s.to_lowercase()` | `string` | Full Unicode case mapping — allocates |
 | `s.normalized()` | `string` | NFC form (U5). O(1) return for ASCII (already normal), else allocates |
+
+<!-- surface -->
+```rask
+extend string {
+    func to_uppercase(self) -> string
+    func to_lowercase(self) -> string
+    func normalized(self) -> string
+}
+```
 
 Case mapping on `string` is the full 1:many mapping; `char.to_uppercase()` is a
 1:1 scalar mapping and cannot be otherwise, since `ß` uppercases to two
@@ -331,6 +445,14 @@ one comparison that must stay O(1) on the fast path.
 | `s[i]` | `u8` | The byte at byte offset `i`. Panics out of range, like `Vec` |
 | `s.byte_at(i)` | `u8?` | Same read, absent instead of panicking |
 | `s.char_at(i)` | `char?` | The scalar *starting* at byte offset `i`. `none` when out of range or when `i` is inside a character |
+
+<!-- surface -->
+```rask
+extend string {
+    func byte_at(self, i: usize) -> u8?
+    func char_at(self, i: usize) -> char?
+}
+```
 
 All three take byte offsets (U1) and all three are O(1). That's the whole fix:
 `s[i]` used to yield the character at index `i` while `s[i..j]` right beside it
@@ -383,6 +505,13 @@ did themselves.
 |-----------|--------|-------|
 | `s.parse<T>()` | `T or ParseError` | Any numeric `T`, answered at `T`'s width. Trims whitespace |
 
+<!-- surface -->
+```rask
+extend string {
+    func parse<T>(self) -> T or ParseError
+}
+```
+
 One function. `parse<i64>()` and `parse<f64>()` are what `parse_int` and
 `parse_float` were, and three names for one operation is surface growth by name
 where a type parameter already does the job (`std.api/SD2`).
@@ -391,7 +520,7 @@ where a type parameter already does the job (`std.api/SD2`).
 `"-1".parse<u64>()` are both `OutOfRange`, and `parse<u64>` reaches `u64::MAX`.
 The error is a real type (`type.errors/ER4` forbids `string` as an error):
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum ParseError {
     Empty               // no digits found
@@ -408,6 +537,15 @@ enum ParseError {
 | `s.replace(from, to, limit: n)` | `string` | Replace at most `n`, left to right. Absent means all |
 | `s.reverse()` | `string` | Reverse by graphemes (U2), allocates new string |
 | `s.truncate(cols)` | `string` | Cut to at most `cols` display columns, never splitting a grapheme (U2) |
+
+<!-- surface -->
+```rask
+extend string {
+    func replace(self, from: string, to: string, limit: usize? = none) -> string
+    func reverse(self) -> string
+    func truncate(self, cols: usize) -> string
+}
+```
 
 `replace` takes a count as an optional parameter rather than splitting into a
 `replacen` sibling — same operation, one more knob (`std.api/SD2`). The parameter
@@ -427,6 +565,13 @@ composed correctly, so the stdlib does it once.
 | `s1 < s2` | O(n) | Lexicographic |
 | `s.hash()` | O(n) | Not cached |
 
+<!-- surface -->
+```rask
+extend string {
+    func hash(self) -> u64
+}
+```
+
 ## C Interop
 
 | Type/Operation | Description |
@@ -436,13 +581,31 @@ composed correctly, so the stdlib does it once.
 | `s.to_cstring()` | `cstring or NullByteError` (fails if `\0` present) |
 | `s.first_nul()` | Byte offset of the first interior `\0`, or -1 |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
-| `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
-| `cstring.to_string()` | `string or Utf8Error` |
+| `cstring.decode()` | `string or Utf8Error` — fails on bytes that aren't UTF-8 |
+
+<!-- surface -->
+```rask
+struct cstring { }
+
+extend string {
+    func to_cstring(self) -> cstring or NullByteError
+    func first_nul(self) -> i64
+}
+extend cstring {
+    unsafe func as_ptr(self) -> *u8
+    func decode(self) -> string or Utf8Error
+}
+```
+
+A `cstring` isn't `Displayable`. C promises nothing about encoding, so getting
+text back out can fail, and a fallible conversion is `decode()`, not `to_string()`.
 
 `c"literal"` is the one line above that isn't built yet. Everything else is,
 on both backends — the round trip and the refusal are in
 `tests/suite/t_cstring_ffi.rk`, and `examples/19_unsafe.rk` hands the pointer to
 a real `strlen`.
+
+A `cstring` can't adopt a pointer C allocated. Rask would free it with its own allocator, which is only right when C used the same `malloc`. If C interop needs it, the shape is a constructor inside `unsafe` that copies the bytes out.
 
 <!-- test: skip -->
 ```rask
@@ -473,7 +636,7 @@ FIX 2: Copy to an independent string:
 
 FIX 3: Store indices instead:
 
-  let v = Span(0, 5)    // store indices, resolve later
+  let v = Span.new(0, 5)    // store indices, resolve later
 ```
 
 ```
@@ -714,7 +877,7 @@ process(s2[0..3])  // passes "hel" as temporary slice
 let kept = s2[0..3].view()  // storable zero-copy view (V1)
 process(kept)
 
-let span = Span(0, 3)
+let span = Span.new(0, 3)
 process(s2[span])  // same as s2[0..3], user ensures s2 is still valid
 ```
 
@@ -778,14 +941,15 @@ Current interpreter behavior differs from spec in some areas:
 - `.view()` works on both backends. A view is a `RaskStr` sharing the source's buffer and holding a refcount on it, so V1, V2, V4 and V6 hold and a stored view can't dangle
 - What doesn't hold yet is V5's "no copy either way" on a *sub-range*. `s[i..j]` and `s.trim()` allocate today (above), so `s.trim().view()` shares the trimmed copy rather than referencing a range of `s` — one allocation per slice, not per view
 - The header-pointer + start/len layout under "Internal Layout" is what removes that last allocation. Until slices are ranges instead of copies, a view always covers the whole of its (already copied) source, so `start`/`len` have nothing to say
-- Read-only API on a view is `len`, `is_empty`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (`index_of`, `chars`, sub-slicing, comparison) isn't wired up
+- Read-only API on a view is `len`, `is_empty`, `index_of`, `chars`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (the other searches, sub-slicing, comparison) isn't wired up
 
 **Method name aliases:**
 - The interpreter still accepts `s.find(pat)` as an alias for `index_of`
 
-**`replace` has no `limit:` yet:** default arguments don't work on methods
-(rask-lang/rask#1028), so only the two-argument form exists today. The limit
-form lands with that fix.
+**`.span()` isn't built:** on a slice it has to answer the slice's range in
+its source, and a slice is still a copy (above), so there's no range to read.
+On a whole string it would be `Span.new(0, s.len())`, which isn't worth a
+method that's wrong everywhere else. It lands with slices as ranges (#492).
 
 **Text units:**
 - `width`, `graphemes`, `truncate` and `normalized` (U2, U5) are implemented on both backends. The interpreter uses the `unicode-*` crates directly; the native runtime's tables are generated from those same crates by `scripts/gen_unicode_text`, so the two cannot drift. `tests/suite/t_text_units.rk` pins the output against Python's `unicodedata` as an independent reference

@@ -1405,8 +1405,15 @@ impl Interpreter {
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                         Value::Module(ModuleKind::Reflect) => {
+                            // `implements<T, I>` names two.
+                            let rest: Vec<TypeExpr> = type_args
+                                .iter()
+                                .flatten()
+                                .skip(1)
+                                .map(|t| self.resolve_type_param(t))
+                                .collect();
                             return self
-                                .call_reflect_method(method, &first_type)
+                                .call_reflect_method(method, &first_type, &rest, arg_vals)
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                         // `"3.5".parse<f64>()` — without the target, parse has
@@ -1473,6 +1480,17 @@ impl Interpreter {
                         if let Some(result) = self.call_native_symbol(&symbol, &arg_vals) {
                             return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
+                    }
+                    // A stdlib module's own call from inside one of its bodies,
+                    // run against a program that imported names from the
+                    // module but never the module: `fs.create_file`'s
+                    // `fs.create_handle(path)` reached here as a package and
+                    // failed as an undefined variable (#1602). The module's
+                    // seams are answered by its module dispatch.
+                    if let Some(kind) = ModuleKind::from_name(pkg_name) {
+                        return self
+                            .call_module_method(&kind, method, arg_vals)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                     }
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::UndefinedVariable(method.clone()),

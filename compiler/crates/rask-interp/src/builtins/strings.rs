@@ -133,15 +133,22 @@ impl Interpreter {
                 let state = IteratorState::PreComputed { items: lines, index: 0 };
                 Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
-            // No `limit:` yet — default arguments on methods are
-            // rask-lang/rask#1028. An explicit limit still works positionally.
-            "replace" => {
+            // `replace` itself is Rask (stdlib/string.rk) and picks one of
+            // these two by whether it was given a `limit:`. An empty `from`
+            // matches nothing, as in the C runtime.
+            "replace_every" | "replace_at_most" => {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
                 let guard = s.lock().unwrap();
-                let out = match args.get(2) {
-                    Some(Value::Int(n, _)) => guard.replacen(&from, &to, *n as usize),
-                    _ => guard.replace(&from, &to),
+                let out = if from.is_empty() {
+                    guard.clone()
+                } else if method == "replace_at_most" {
+                    let limit = args.get(2).map(|v| v.as_u64()).transpose()
+                        .map_err(RuntimeError::TypeError)?
+                        .unwrap_or(0);
+                    guard.replacen(&from, &to, limit as usize)
+                } else {
+                    guard.replace(&from, &to)
                 };
                 Ok(Value::String(Arc::new(Mutex::new(out))))
             }
@@ -310,9 +317,9 @@ impl Interpreter {
     /// one-field struct.
     ///
     /// It has to be nominally distinct from a `string`, not just equal to one —
-    /// `cstring.to_string()` is a Rask body that validates, and a plain
-    /// `Value::String` receiver would be answered by the Rust `to_string` arm
-    /// above before the Rask lookup ever ran (#949).
+    /// `cstring.decode()` is a Rask body that validates, and a plain
+    /// `Value::String` receiver would be answered by the string arms above
+    /// before the Rask lookup ever ran (#949).
     pub(crate) fn cstring_value(bytes: &str) -> Value {
         let mut fields = indexmap::IndexMap::new();
         fields.insert(

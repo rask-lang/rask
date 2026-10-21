@@ -7,7 +7,7 @@
 // had two layouts. `v.get(i)` copies a whole slot, and on the last element of
 // a packed vector that ran seven bytes past the buffer (valgrind: an 8-byte
 // read "1 bytes inside a block of size 5"). `cstring.bytes` was worse: it made
-// the element as wide as the string, so `to_string` read the wrong bytes for
+// the element as wide as the string, so `decode` read the wrong bytes for
 // anything longer than eight.
 
 import fs
@@ -18,7 +18,7 @@ test "a cstring longer than a word comes back intact" {
         assert false
         return
     }
-    let back = c.to_string() catch e => {
+    let back = c.decode() catch e => {
         assert false
         return
     }

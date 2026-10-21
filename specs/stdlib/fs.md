@@ -14,7 +14,7 @@ Two tiers: convenience functions (open/close internally) and `File` handles with
 | **F1: Linear resource** | `File` is `@resource`. `file.close()` (takes ownership) is the only way to consume it |
 | **F2: Reader/Writer** | `File` implements `Reader` and `Writer` interfaces |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 @resource
 struct File {
@@ -22,9 +22,10 @@ struct File {
 }
 
 File implements Reader {
-    func read(self, buf: Vec<u8>) -> usize or IoError
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
 }
 
 File implements Writer {
@@ -39,6 +40,11 @@ extend File {
     func metadata(self) -> Metadata or IoError
 }
 ```
+
+`read` takes `mutate buf` because filling it is the job; `std.io` has the
+reasoning. `File.metadata()` asks the open handle rather than the path, so a
+file renamed or removed since it was opened still answers, and it flushes first
+so `size` counts what the handle wrote.
 
 No `lines()` on `File`. Line reading is `fs.read_lines(path)` (eager) or `BufferedReader.new(file).lines()` (lazy) — see `std.io`.
 
@@ -60,6 +66,19 @@ Same vocabulary as the `Reader`/`Writer` methods — `fs.read_text(path)` is `op
 | `fs.append_text` | `(path: string, content: string) -> void or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 
+<!-- surface -->
+```rask
+extend fs {
+    func read_text(path: string) -> string or IoError
+    func read_bytes(path: string) -> Vec<u8> or IoError
+    func read_lines(path: string) -> Vec<string> or IoError
+    func write_text(path: string, content: string) -> void or IoError
+    func write_bytes(path: string, data: Vec<u8>) -> void or IoError
+    func append_text(path: string, content: string) -> void or IoError
+    func exists(path: string) -> bool
+}
+```
+
 <!-- test: parse -->
 ```rask
 let content = try fs.read_text("config.txt")
@@ -75,8 +94,17 @@ try fs.write_text("output.txt", "hello world")
 | Function | Signature |
 |----------|-----------|
 | `fs.open` | `(path: string) -> File or IoError` |
-| `fs.create` | `(path: string) -> File or IoError` |
+| `fs.create_file` | `(path: string) -> File or IoError` |
 | `fs.open_with` | `(path: string, opts: OpenOptions) -> File or IoError` |
+
+<!-- surface -->
+```rask
+extend fs {
+    func open(path: string) -> File or IoError
+    func create_file(path: string) -> File or IoError
+    func open_with(path: string, opts: OpenOptions) -> File or IoError
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -90,7 +118,22 @@ process(data)
 
 | Rule | Description |
 |------|-------------|
-| **F5: Builder pattern** | Each method returns a new `OpenOptions` for chaining |
+| **F5: Builder pattern** | Each method returns a new `OpenOptions` for chaining. All off to start with |
+| **F6: Say what to open for** | `open_with` fails with `IoError.Other` when no access is set, when `create` or `truncate` comes without `write` or `append`, and when `truncate` and `append` are both set — rather than guessing which was meant |
+
+<!-- surface -->
+```rask
+struct OpenOptions { }
+
+extend OpenOptions {
+    func new() -> OpenOptions
+    func read(self, on: bool) -> OpenOptions
+    func write(self, on: bool) -> OpenOptions
+    func append(self, on: bool) -> OpenOptions
+    func create(self, on: bool) -> OpenOptions
+    func truncate(self, on: bool) -> OpenOptions
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -103,20 +146,24 @@ struct OpenOptions {
 }
 
 let file = try fs.open_with("log.txt",
-    OpenOptions.new().write(true).append(true).create(true))
+    OpenOptions.new().append(true).create(true))
 ensure file.close()
 ```
+
+`append` is a way of writing, so it doesn't need `write` beside it. "Create,
+don't truncate" — `write(true).create(true)` — is one of the shapes `fopen`'s
+mode strings can't say, which is why `open_with` is built on `open(2)`.
 
 ## Directory and Path Operations
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fs.read_dir` | `(path: string) -> Vec<DirEntry> or IoError` | List directory contents |
+| `fs.read_dir` | `(path: string) -> Vec<DirEntry> or IoError` | List directory contents, without `.` and `..`, in no particular order |
 | `fs.create_dir` | `(path: string) -> void or IoError` | Create single directory |
 | `fs.create_dir_all` | `(path: string) -> void or IoError` | Create directory tree (mkdir -p) |
 | `fs.remove_file` | `(path: string) -> void or IoError` | Remove file — pairs with `remove_dir`, the name says which one it handles |
 | `fs.remove_dir` | `(path: string) -> void or IoError` | Remove empty directory |
-| `fs.remove_dir_all` | `(path: string) -> void or IoError` | Remove directory tree recursively |
+| `fs.remove_dir_all` | `(path: string) -> void or IoError` | Remove directory tree recursively. A symlink inside is removed as a link, never followed |
 | `fs.rename` | `(from: string, to: string) -> void or IoError` | Rename/move file or directory |
 | `fs.copy` | `(from: string, to: string) -> void or IoError` | Copy file |
 | `fs.absolute_path` | `(path: string) -> string or IoError` | Resolve symlinks, make absolute |
@@ -124,9 +171,27 @@ ensure file.close()
 | `fs.current_dir` | `() -> Path` | Current working directory |
 | `fs.home_dir` | `() -> Path?` | User home directory, `none` if unknown |
 
+<!-- surface -->
+```rask
+extend fs {
+    func read_dir(path: string) -> Vec<DirEntry> or IoError
+    func create_dir(path: string) -> void or IoError
+    func create_dir_all(path: string) -> void or IoError
+    func remove_file(path: string) -> void or IoError
+    func remove_dir(path: string) -> void or IoError
+    func remove_dir_all(path: string) -> void or IoError
+    func rename(from: string, to: string) -> void or IoError
+    func copy(from: string, to: string) -> void or IoError
+    func absolute_path(path: string) -> string or IoError
+    func metadata(path: string) -> Metadata or IoError
+    func current_dir() -> Path
+    func home_dir() -> Path?
+}
+```
+
 ## Metadata and DirEntry
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 struct Metadata {
     size: u64
@@ -139,9 +204,15 @@ struct Metadata {
 
 struct DirEntry {
     name: string        // File name (no path)
-    path: string        // Full path
+    path: string        // The directory and the name joined
 }
 ```
+
+`path` is the directory as given and the name joined, not an absolute path, so
+it's usable as it stands with any `fs` call. I picked `read_dir` with entries
+over a names-only `list_dir`: names alone leave the caller to join each one back
+onto the directory before using it, and an entry is where `is_dir` and friends go
+when they come. There is one listing function, not two.
 
 ### Implementation Notes
 

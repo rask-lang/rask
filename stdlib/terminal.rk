@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Terminal styling and properties (std.terminal). Styling is plain string
+// building; only the two questions about stdout need the OS.
+
+import os
+import sync.Atomic
+import sync.Relaxed
+
+/// A colour for text or its background. Bright variants are the second eight of
+/// the 16-colour palette; `Ansi` indexes the 256-colour one.
+public enum Color {
+    Black
+    Red
+    Green
+    Yellow
+    Blue
+    Magenta
+    Cyan
+    White
+    BrightBlack
+    BrightRed
+    BrightGreen
+    BrightYellow
+    BrightBlue
+    BrightMagenta
+    BrightCyan
+    BrightWhite
+    Rgb(r: u8, g: u8, b: u8)
+    Ansi(u8)
+}
+
+extend Color {
+    /// SGR parameters for this colour. `base` is 30 for foreground, 40 for background.
+    func sgr(self, base: i64) -> string {
+        match self {
+            Color.Black => return "{base}"
+            Color.Red => return "{base + 1}"
+            Color.Green => return "{base + 2}"
+            Color.Yellow => return "{base + 3}"
+            Color.Blue => return "{base + 4}"
+            Color.Magenta => return "{base + 5}"
+            Color.Cyan => return "{base + 6}"
+            Color.White => return "{base + 7}"
+            Color.BrightBlack => return "{base + 60}"
+            Color.BrightRed => return "{base + 61}"
+            Color.BrightGreen => return "{base + 62}"
+            Color.BrightYellow => return "{base + 63}"
+            Color.BrightBlue => return "{base + 64}"
+            Color.BrightMagenta => return "{base + 65}"
+            Color.BrightCyan => return "{base + 66}"
+            Color.BrightWhite => return "{base + 67}"
+            Color.Rgb(r, g, b) => return "{base + 8};2;{r};{g};{b}"
+            Color.Ansi(n) => return "{base + 8};5;{n}"
+        }
+    }
+}
+
+/// When styles emit escape codes. `Auto` asks the environment each time.
+public enum ColorMode {
+    Auto
+    Always
+    Never
+}
+
+// What `set_color` last chose, as `ColorMode as i64`. Auto until told otherwise.
+const COLOR_MODE: Atomic<i64> = Atomic<i64>.new(0)
+
+/// A text style: colours and attributes, built once and applied where you print.
+public struct Style {
+    fg: Color?
+    bg: Color?
+    // SGR attribute numbers set, as bits: 1 << 1 bold, 1 << 2 dim, 1 << 3
+    // italic, 1 << 4 underline.
+    attrs: u8
+}
+
+extend Style {
+    /// A style that sets nothing; `apply` returns its input unchanged.
+    public func new() -> Style {
+        return Style(fg: none, bg: none, attrs: 0)
+    }
+
+    /// Foreground colour.
+    public func color(self, c: Color) -> Style {
+        return Style(fg: c, bg: self.bg, attrs: self.attrs)
+    }
+
+    /// Background colour.
+    public func on(self, c: Color) -> Style {
+        return Style(fg: self.fg, bg: c, attrs: self.attrs)
+    }
+
+    public func bold(self) -> Style {
+        return self.with_attr(1)
+    }
+
+    public func dim(self) -> Style {
+        return self.with_attr(2)
+    }
+
+    public func italic(self) -> Style {
+        return self.with_attr(3)
+    }
+
+    public func underline(self) -> Style {
+        return self.with_attr(4)
+    }
+
+    func with_attr(self, sgr: u8) -> Style {
+        return Style(fg: self.fg, bg: self.bg, attrs: self.attrs | 1 << sgr)
+    }
+
+    /// `s` wrapped in this style's escapes, or `s` itself when colour is off (T2).
+    public func apply(self, s: string) -> string {
+        let (start, end) = self.codes()
+        if start.is_empty() {
+            return s
+        }
+        return "{start}{s}{end}"
+    }
+
+    /// The escape that starts this style and the one that resets it, or two
+    /// empty strings when colour is off or the style sets nothing.
+    public func codes(self) -> (string, string) {
+        if !terminal.color_enabled() {
+            return ("", "")
+        }
+        mut params: Vec<string> = Vec.new()
+        for sgr in 1..5 {
+            if (self.attrs & 1 << sgr) != 0 {
+                params.push("{sgr}")
+            }
+        }
+        if self.fg? as c {
+            params.push(c.sgr(30))
+        }
+        if self.bg? as c {
+            params.push(c.sgr(40))
+        }
+        if params.is_empty() {
+            return ("", "")
+        }
+        return ("\u{1b}[{params.join(";")}m", "\u{1b}[0m")
+    }
+}
+
+struct terminal { }
+
+extend terminal {
+    /// Whether stdout is a terminal.
+    @native("rask_terminal_is_tty")
+    @ambient
+    public func is_tty() -> bool {}
+
+    /// Columns of the terminal on stdout, read fresh each call. None when
+    /// stdout isn't a terminal.
+    public func width() -> u16? {
+        let size = terminal.size()
+        if size < 0 {
+            return none
+        }
+        return (size >> 16).wrap<u16>()
+    }
+
+    /// Rows of the terminal on stdout. None when stdout isn't a terminal.
+    public func height() -> u16? {
+        let size = terminal.size()
+        if size < 0 {
+            return none
+        }
+        return (size & 65535).wrap<u16>()
+    }
+
+    /// Override colour detection for every style: what a `--color` flag sets.
+    public func set_color(mode: ColorMode) -> void {
+        COLOR_MODE.store(mode as i64, Relaxed)
+    }
+
+    /// Whether styles emit escapes right now (T3).
+    func color_enabled() -> bool {
+        let mode = COLOR_MODE.load(Relaxed)
+        if mode == 1 {
+            return true
+        }
+        if mode == 2 {
+            return false
+        }
+        // no-color.org: present and non-empty, whatever the value.
+        if os.env("NO_COLOR")? as v {
+            if !v.is_empty() {
+                return false
+            }
+        }
+        if os.env("TERM")? as term {
+            if term == "dumb" {
+                return false
+            }
+        }
+        return terminal.is_tty()
+    }
+
+    /// Stdout's size as columns << 16 | rows, or -1 when it isn't a terminal
+    /// or reports no size.
+    @native("rask_terminal_size")
+    @ambient
+    func size() -> i64 {}
+}

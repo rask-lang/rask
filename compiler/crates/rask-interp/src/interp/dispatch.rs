@@ -421,6 +421,12 @@ impl Interpreter {
             // that finds Rask bodies was never consulted for one.
             // `string.to_cstring()` is the first such method (#949).
             Value::String(_) => "string".to_string(),
+            // The integer widths, for the methods int.rk writes in Rask
+            // (`to_be_bytes`, `from_le`, …). An untyped literal is an i64.
+            Value::Int(_, crate::value::IntKind::Untyped) => "i64".to_string(),
+            Value::Int(_, kind) => kind.name().to_string(),
+            Value::Int128(_) => "i128".to_string(),
+            Value::Uint128(_) => "u128".to_string(),
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Rack(_) => "Rack".to_string(),
@@ -455,10 +461,6 @@ impl Interpreter {
             Value::Struct(ref s) if s.lock().unwrap().name == "cstring" => {
                 let guard = s.lock().unwrap();
                 self.call_cstring_method(&guard.fields, method)
-            }
-            Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
-                let guard = s.lock().unwrap();
-                self.call_args_method(&guard.fields, method, args)
             }
             Value::Struct(ref s) if s.lock().unwrap().name == "BuildContext" => {
                 if method == "step" {
@@ -983,14 +985,16 @@ impl Interpreter {
         match module {
             Fs => matches!(method,
                 "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
-                | "append_text" | "exists" | "open_handle" | "create_handle" | "absolute_path" | "metadata"
-                | "remove_file" | "remove_dir" | "create_dir" | "create_dir_all"
-                | "rename" | "copy" | "list_dir" | "current_dir" | "home_dir"
+                | "append_text" | "exists" | "open_handle" | "create_handle" | "absolute_path"
+                | "remove_file" | "create_dir" | "create_dir_all"
+                | "rename" | "copy" | "current_dir" | "home_dir"
+                | "stat_load" | "loaded_size" | "loaded_mtime" | "loaded_atime"
+                | "read_dir_names" | "remove_dir_raw" | "kind_raw" | "open_with_handle"
             ),
             Io => matches!(method, "read_line"),
             Net => matches!(method, "listen_handle" | "connect_handle"),
             Time => matches!(method, "sleep"),
-            Random => matches!(method, "f32" | "f64" | "i64" | "bool" | "range"),
+            Random => matches!(method, "u64" | "f32" | "f64" | "i64" | "bool" | "range" | "shuffle" | "choice"),
             Math => matches!(method,
                 "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2"
                 | "exp" | "ln" | "log2" | "log10"
@@ -1009,9 +1013,8 @@ impl Interpreter {
             Path => false, // Path module has no module-level methods
             Async => matches!(method, "cancelled"),
             Thread => matches!(method, "Thread" | "ThreadPool"),
-            Http => false,
+            Http | Cli => false,
             Env => matches!(method, "var" | "vars"),
-            Cli => matches!(method, "args" | "parse"),
             Reflect => false,
         }
     }

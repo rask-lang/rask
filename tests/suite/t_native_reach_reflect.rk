@@ -43,3 +43,17 @@ test "reflect predicates" {
     assert(!reflect.is_resource<Row>())
     assert(!reflect.is_vec<Row>())
 }
+
+enum Cell {
+    Empty
+    Full(i64)
+}
+
+test "reflect type-table queries" {
+    assert reflect.has_field<Row>("id")
+    assert !reflect.has_method<Row>("nope")
+    assert reflect.implements<Row, Equal>()
+    assert reflect.interfaces<Row>().len() == 0
+    assert reflect.methods<Row>().len() > 0
+    assert reflect.variants<Cell>()[1].name == "Full"
+}

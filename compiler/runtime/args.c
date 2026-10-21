@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
 extern char **environ;
 
@@ -60,15 +61,30 @@ int64_t rask_os_env(const RaskStr *name, RaskStr *out) {
 }
 
 // os.pid() -> i64
-int64_t rask_os_pid(void) {
-    return (int64_t)getpid();
+uint32_t rask_os_pid(void) {
+    return (uint32_t)getpid();
+}
+
+// terminal.is_tty() — is stdout a terminal?
+int8_t rask_terminal_is_tty(void) {
+    return isatty(STDOUT_FILENO) ? 1 : 0;
+}
+
+// terminal.size() — stdout's columns << 16 | rows, or -1 when it isn't a
+// terminal. A terminal reporting 0x0 (some ptys before the first resize) has
+// no size worth answering with either.
+int64_t rask_terminal_size(void) {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) return -1;
+    if (ws.ws_col == 0 || ws.ws_row == 0) return -1;
+    return ((int64_t)ws.ws_col << 16) | (int64_t)ws.ws_row;
 }
 
 // os.exit(code) — struct.targets/EX3, ctrl.panic/P5: immediate, no unwind, no
 // ensures. `exit` rather than `_exit` so buffered `println` output still reaches
 // the terminal; what it must not do is run the cleanup a panic would.
-_Noreturn void rask_os_exit(int64_t code) {
-    exit((int)code);
+_Noreturn void rask_os_exit(int32_t code) {
+    exit(code);
 }
 
 // os.env_vars() -> Vec<(string, string)>

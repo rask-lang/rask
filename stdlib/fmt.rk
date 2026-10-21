@@ -10,7 +10,7 @@
 
 // ─── Displayable ────────────────────────────────────────────────
 
-/// User-facing string representation. Structs must opt in via
+/// User-facing rendering. Structs must opt in via
 /// `Type implements Displayable`. Primitives implement it by default (D2).
 ///
 /// format("{}", x) calls to_string() — compile error if not implemented (D4).

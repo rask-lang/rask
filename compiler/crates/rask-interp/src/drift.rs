@@ -71,11 +71,6 @@ fn dummy_value(type_name: &str) -> Value {
                 None,
             )
         }
-        "Args" => Value::new_struct(
-            "Args".to_string(),
-            IndexMap::new(),
-            None,
-        ),
         "Handle" => Value::Handle(Arc::new(HandleInner {
             handle: Mutex::new(None),
             cancel: Default::default(),
@@ -318,7 +313,7 @@ const MODULE_FUNCTIONS_WITH_A_RUST_COPY: &[&str] = &[
     "fs.read_text", "fs.read_bytes", "fs.write_text", "fs.write_bytes",
     "fs.exists", "fs.read_lines", "fs.absolute_path", "fs.copy", "fs.rename",
     "fs.remove_file", "fs.create_dir", "fs.create_dir_all", "fs.append_text",
-    "fs.list_dir", "fs.metadata", "fs.current_dir", "fs.home_dir",
+    "fs.current_dir", "fs.home_dir",
 ];
 
 /// A module function written in Rask runs that body on the interpreter too.

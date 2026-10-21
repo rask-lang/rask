@@ -25,7 +25,7 @@ func describe(d: Duration) -> string {
     return "{d.as_millis()}ms"
 }
 
-func make_span(ms: i64) -> Duration {
+func make_span(ms: u64) -> Duration {
     return Duration.millis(ms)
 }
 
@@ -121,7 +121,7 @@ test "std.structure — a whole-module import used for a namespaced call" {
 }
 
 test "std.structure — several imported modules in one expression" {
-    let ms = Duration.millis(math.hypot(0.0, 40.0).to<i64>()!).as_millis()
+    let ms = Duration.millis(math.hypot(0.0, 40.0).to<u64>()!).as_millis()
     assert ms == 40
 }
 

@@ -122,6 +122,10 @@ pub struct DesugarOutput {
     pub errors: Vec<DesugarError>,
     /// OR1: method calls that were operators.
     pub operator_calls: std::collections::HashSet<rask_ast::NodeId>,
+    /// Where a `format(…)` call was compiled into the string-building code its
+    /// template describes (std.fmt/CM5). Nothing calls `format` after this
+    /// pass, so this is the one record that a program used it.
+    pub format_calls: Vec<rask_ast::Span>,
 }
 
 /// Desugar phase, returning any ER26 coverage errors.
@@ -175,6 +179,7 @@ fn desugar_inner_from(
     let output = DesugarOutput {
         errors,
         operator_calls: std::mem::take(&mut desugarer.operator_calls),
+        format_calls: std::mem::take(&mut desugarer.format_calls),
     };
 
     // Defaults need the full declaration list to build their lookup table,
@@ -215,6 +220,8 @@ struct Desugarer {
     /// of them has to resolve against a declared conformance — so the
     /// difference is recorded here rather than guessed at later.
     operator_calls: std::collections::HashSet<rask_ast::NodeId>,
+    /// `format(…)` calls rewritten into string building — see `DesugarOutput`.
+    format_calls: Vec<rask_ast::Span>,
     /// Type names known to implement `Error` (ER37). Every enum qualifies —
     /// ER6 derives `message()` for all of them — plus any struct that writes
     /// one by hand. A single-payload variant whose payload is in this set
@@ -242,6 +249,7 @@ impl Desugarer {
             renumber: false,
             errors: Vec::new(),
             operator_calls: std::collections::HashSet::new(),
+            format_calls: Vec::new(),
             error_message_types: std::collections::HashSet::new(),
             stdlib_message_types: std::collections::HashSet::new(),
             declared_types: std::collections::HashSet::new(),
@@ -1097,7 +1105,24 @@ impl Desugarer {
         if first.name.is_some() {
             return false;
         }
-        let ExprKind::String(template) = &first.expr.kind else { return false };
+        let ExprKind::String(template) = &first.expr.kind else {
+            // CM2: the template is read while compiling. A template that only
+            // exists at run time has nothing to read, and native had no
+            // runtime formatter to fall back on — it failed in codegen while
+            // the interpreter parsed the string as it ran.
+            if !matches!(first.expr.kind, ExprKind::StringInterp(_)) {
+                self.errors.push(DesugarError {
+                    code: "E0338",
+                    label: "not a string literal".to_string(),
+                    message: "format's template has to be a string literal: it's read while compiling, \
+                              so there's nothing to read in a value that only exists at run time. \
+                              Write the template in place, or build the string with interpolation"
+                        .to_string(),
+                    span: first.expr.span,
+                });
+            }
+            return false;
+        };
 
         let template = template.clone();
         let template_span = first.expr.span;
@@ -1141,6 +1166,7 @@ impl Desugarer {
             Some(kind) => kind,
             None => ExprKind::String(String::new()),
         };
+        self.format_calls.push(span);
         true
     }
 

@@ -23,21 +23,23 @@ Three types: `Duration` for time spans, `Instant` for monotonic timestamps, `Sys
 | **D5: Truncation** | Fractional nanoseconds from `seconds_f64` are truncated |
 | **D6: Unit spelling** | `seconds` is spelled out; sub-second units use the common short forms `millis`/`micros`/`nanos`. Constructors are bare unit names, accessors are `as_` + unit |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-// Constructors
-Duration.seconds(n: u64) -> Duration
-Duration.millis(n: u64) -> Duration
-Duration.micros(n: u64) -> Duration
-Duration.nanos(n: u64) -> Duration
-Duration.seconds_f64(secs: f64) -> Duration
+struct Duration { }
 
-// Conversions
-duration.as_seconds() -> u64
-duration.as_millis() -> u64
-duration.as_micros() -> u64
-duration.as_nanos() -> u64
-duration.as_seconds_f64() -> f64
+extend Duration {
+    func seconds(n: u64) -> Duration
+    func millis(n: u64) -> Duration
+    func micros(n: u64) -> Duration
+    func nanos(n: u64) -> Duration
+    func seconds_f64(secs: f64) -> Duration
+
+    func as_seconds(self) -> u64
+    func as_millis(self) -> u64
+    func as_micros(self) -> u64
+    func as_nanos(self) -> u64
+    func as_seconds_f64(self) -> f64
+}
 ```
 
 ## Instant API
@@ -47,10 +49,14 @@ duration.as_seconds_f64() -> f64
 | **I1: Monotonic** | `Instant.now()` never goes backward within a process |
 | **I2: Opaque epoch** | Platform-specific epoch — not UNIX, not serializable |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-Instant.now() -> Instant
-instant.elapsed() -> Duration
+struct Instant { }
+
+extend Instant {
+    func now() -> Instant
+    func elapsed(self) -> Duration
+}
 ```
 
 No `duration_since` on `Instant` — `end - start` is the one way to get the difference (A2). `SystemTime` keeps `duration_since` because its checked form can fail (`TimeError.Backwards`).
@@ -61,9 +67,11 @@ No `duration_since` on `Instant` — `end - start` is the one way to get the dif
 |------|-------------|
 | **S1: Sleep** | `time.sleep(duration)` pauses the task (or blocks the thread) for at least the given duration. A cancel ends it early with `SysError.Cancelled` (`conc.async/CN3`); otherwise it fails only on rare platform-level errors (`std.os/SY1`) |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-time.sleep(duration: Duration) -> void or SysError
+extend time {
+    func sleep(duration: Duration) -> void or SysError
+}
 ```
 
 <!-- test: skip -->
@@ -96,27 +104,23 @@ WHY: Platform-specific sleep failure (rare). See `std.os/SY1`.
 | **W2: UNIX epoch** | Epoch is 1970-01-01 00:00:00 UTC. Serializable (unlike Instant) |
 | **W3: Value type** | Copy, <=16 bytes, no `@resource` |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-SystemTime.now() -> SystemTime
-SystemTime.unix_epoch() -> SystemTime
-SystemTime.from_unix_seconds(seconds: i64) -> SystemTime
-SystemTime.from_unix_millis(millis: i64) -> SystemTime
-```
+struct SystemTime { }
 
-<!-- test: skip -->
-```rask
 extend SystemTime {
+    func now() -> SystemTime
+    func unix_epoch() -> SystemTime
+    func from_unix_seconds(seconds: i64) -> SystemTime
+    func from_unix_millis(millis: i64) -> SystemTime
+
     func unix_seconds(self) -> i64
     func unix_millis(self) -> i64
     func unix_nanos(self) -> i128
     func duration_since(self, earlier: SystemTime) -> Duration or TimeError
     func elapsed(self) -> Duration or TimeError
 }
-```
 
-<!-- test: skip -->
-```rask
 enum TimeError {
     Backwards    // clock went backward (NTP adjustment)
 }
@@ -150,7 +154,49 @@ let since_epoch = try now.duration_since(time.SystemTime.unix_epoch())
 | **A7: SystemTime shift** | `systemtime + duration -> SystemTime`, `systemtime - duration -> SystemTime` |
 | **A8: SystemTime difference** | `systemtime - systemtime -> Duration` (wraps if negative — use `duration_since` for checked) |
 
-Arithmetic is native integer ops on nanosecond values. No overflow checking (wraps).
+Arithmetic is native integer ops on nanosecond values. No overflow checking (wraps). Comparison (A6) is the language's own for value types, so it has no surface here.
+
+<!-- surface -->
+```rask
+Instant implements Add<Duration> {
+    func add(self, span: Duration) -> Instant
+}
+Instant implements Sub<Duration> {
+    func sub(self, span: Duration) -> Instant
+}
+Instant implements Sub<Instant> {
+    func sub(self, earlier: Instant) -> Duration
+}
+
+Duration implements Add {
+    func add(self, other: Duration) -> Duration
+}
+Duration implements Sub {
+    func sub(self, other: Duration) -> Duration
+}
+Duration implements Mul<i64> {
+    func mul(self, n: i64) -> Duration
+}
+i64 implements Mul<Duration> {
+    func mul(self, span: Duration) -> Duration
+}
+Duration implements Div<i64> {
+    func div(self, n: i64) -> Duration
+}
+Duration implements Div<Duration> {
+    func div(self, other: Duration) -> u64
+}
+
+SystemTime implements Add<Duration> {
+    func add(self, span: Duration) -> SystemTime
+}
+SystemTime implements Sub<Duration> {
+    func sub(self, span: Duration) -> SystemTime
+}
+SystemTime implements Sub<SystemTime> {
+    func sub(self, other: SystemTime) -> Duration
+}
+```
 
 <!-- test: skip -->
 ```rask

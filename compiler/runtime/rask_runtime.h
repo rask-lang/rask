@@ -290,6 +290,7 @@ RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_iter_take(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
+RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(const void *field, int64_t size, void *out);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
@@ -297,6 +298,37 @@ int64_t  rask_field_take(const void *field, int64_t size, void *out);
 // (rask_abi.h).
 void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
+// A float's bit pattern at its own width, every NaN as the one quiet NaN.
+uint32_t rask_f32_to_bits(float f);
+float    rask_f32_from_bits(uint32_t bits);
+uint64_t rask_f64_to_bits(double d);
+double   rask_f64_from_bits(uint64_t bits);
+
+// The float methods' entry points (stdlib/float.rk): math.c's wrappers, and
+// the libm functions native code calls directly. Codegen reads its call
+// signatures from these lines.
+double math_sin(double x);
+double math_cos(double x);
+double math_tan(double x);
+double math_asin(double x);
+double math_acos(double x);
+double math_atan(double x);
+double math_exp(double x);
+double math_ln(double x);
+double math_log2(double x);
+double math_log10(double x);
+double math_fract(double x);
+int8_t math_is_nan(double x);
+int8_t math_is_inf(double x);
+int8_t math_is_finite(double x);
+double fabs(double x);
+double floor(double x);
+double ceil(double x);
+double round(double x);
+double trunc(double x);
+double sqrt(double x);
+double pow(double x, double y);
+
 // `pass`: how the comparator takes the two elements, a RASK_SORT_PASS_* code
 // (rask_abi.h). Lowering knows which; the width doesn't say. Lowering picks one
 // in `sort_pass` (rask-mir lower/expr.rs).
@@ -338,6 +370,7 @@ void        rask_string_from_bytes(RaskStr *out, const char *data, int64_t len);
 // RC operations — codegen calls after inline tag check (RC5)
 void        rask_string_free(const RaskStr *s);
 void        rask_string_clone(const RaskStr *s);
+void        rask_string_unshare(RaskStr *out, const RaskStr *s);
 
 // `RASK_STRING_DEBUG=1`: a released string buffer is poisoned and kept rather
 // than returned to the allocator, so the next retain or release of it says so
@@ -384,6 +417,7 @@ int64_t     rask_string_find(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_rfind(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_parse_int(const RaskStr *s);
 double      rask_string_parse_float(const RaskStr *s);
+int64_t     rask_string_parse_int_into(const RaskStr *s, int64_t *out);
 
 // String-producing operations (out-param: RaskStr *out as first param)
 void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
@@ -430,7 +464,9 @@ int64_t     rask_string_builder_is_empty(int64_t handle);
 RaskVec    *rask_string_lines(const RaskStr *s);
 RaskVec    *rask_string_split(const RaskStr *s, const RaskStr *sep);
 RaskVec    *rask_string_split_whitespace(const RaskStr *s);
+RaskVec    *rask_string_bytes(const RaskStr *s);
 RaskVec    *rask_string_chars(const RaskStr *s);
+RaskVec    *rask_string_char_indices(const RaskStr *s);
 
 // Conversion to string (out-param)
 void        rask_i64_to_string(RaskStr *out, int64_t val);
@@ -660,6 +696,10 @@ RaskVec *rask_map_values(const RaskMap *m);
 // The entries as a Vec of `(key, value)` tuples: the value `voff` bytes into
 // each, entries `stride` bytes apart. The caller lays the tuple out.
 RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride);
+RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
+                           const int32_t *pair_offs, int64_t n_pair_offs);
+void     rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
+                               int64_t voff, int64_t stride);
 RaskMap *rask_map_clone(const RaskMap *m);
 // mem.racks/RK3: drop every entry whose value is this link.
 int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
@@ -752,20 +792,23 @@ void      rask_link_register_struct(void *base, int64_t field_count, const int32
 typedef struct RaskRng RaskRng;
 
 RaskRng *rask_rng_new(void);
-RaskRng *rask_rng_from_seed(int64_t seed);
+RaskRng *rask_rng_from_seed(uint64_t seed);
 void     rask_rng_free(RaskRng *rng);
-int64_t  rask_rng_u64(RaskRng *rng);
+uint64_t rask_rng_u64(RaskRng *rng);
 int64_t  rask_rng_i64(RaskRng *rng);
 double   rask_rng_f64(RaskRng *rng);
-double   rask_rng_f32(RaskRng *rng);
+float    rask_rng_f32(RaskRng *rng);
 int64_t  rask_rng_bool(RaskRng *rng);
 int64_t  rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi);
-void     rask_random_shuffle(RaskRng *rng, RaskVec *v);
-void    *rask_random_choice(RaskRng *rng, RaskVec *v);
+void     rask_rng_shuffle(RaskRng *rng, RaskVec *v);
+void    *rask_rng_choice(RaskRng *rng, RaskVec *v);
 
 // Module-level convenience (thread-local PRNG)
 double   rask_random_f64(void);
-double   rask_random_f32(void);
+float    rask_random_f32(void);
+uint64_t rask_random_u64(void);
+void     rask_random_shuffle(RaskVec *v);
+void    *rask_random_choice(RaskVec *v);
 int64_t  rask_random_i64(void);
 int64_t  rask_random_bool(void);
 int64_t  rask_random_range(int64_t lo, int64_t hi);
@@ -779,18 +822,27 @@ int64_t     rask_fwrite_vec(int64_t fptr, const RaskVec *v);
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C struct fields
 int32_t     rask_libc_rename(const char *from, const char *to);
-int32_t     rask_libc_remove(const char *path);
+int32_t     rask_libc_unlink(const char *path);
 int32_t     rask_libc_mkdir(const char *path, uint32_t mode);
 int32_t     rask_libc_access(const char *path, int32_t mode);
 void       *rask_libc_fopen(const char *path, const char *mode);
 void       *rask_libc_opendir(const char *path);
 const char *rask_libc_readdir(void *dir);
 int32_t     rask_libc_closedir(void *dir);
-int64_t     rask_stat_size(const char *path);
-int64_t     rask_stat_mtime(const char *path);
-int64_t     rask_stat_atime(const char *path);
 int64_t     rask_fs_open(const RaskStr *path);
 int64_t     rask_fs_create(const RaskStr *path);
+int64_t     rask_fs_open_with(const RaskStr *path, int64_t flags);
+int64_t     rask_fs_read_dir_names(const RaskStr *path);
+int64_t     rask_fs_remove_dir(const RaskStr *path);
+int64_t     rask_fs_kind(const RaskStr *path);
+
+// One stat into a thread-local slot, then its fields read off one at a time:
+// Rask can't hold a `struct stat`. The loads are 0, or -1 with errno set.
+int64_t     rask_fs_stat_load(const RaskStr *path);
+int64_t     rask_file_stat_load(int64_t file);
+uint64_t    rask_stat_loaded_size(void);
+int64_t     rask_stat_loaded_mtime(void);
+int64_t     rask_stat_loaded_atime(void);
 
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
@@ -813,11 +865,15 @@ int64_t     rask_file_close(int64_t file);
 // calls above it need it.
 const char *rask_io_error_text(int32_t err);
 void rask_io_error_message(RaskStr *out, int32_t err);
+int32_t rask_io_errno(void);
+int32_t rask_io_error_kind(int32_t err);
 
 // How a string-out-param call ended: `RASK_STROUT_*`. ERROR means *err_out
 // holds the message (IoError.Other), EOF that the input ran out.
 
 int64_t     rask_file_read_bytes(int64_t file);
+int64_t     rask_file_read_some(int64_t file, int64_t max);
+int64_t     rask_file_flush(int64_t file);
 int64_t     rask_file_write(int64_t file, const RaskStr *content);
 int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);
 int64_t     rask_file_write_line(int64_t file, const RaskStr *content);
@@ -834,29 +890,36 @@ int64_t     rask_io_std_flush(int64_t which);
 int64_t     rask_io_std_read_bytes(int64_t max);
 
 // ─── Time module ────────────────────────────────────────────
-// Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
+// Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = u64 nanoseconds (D1, D4).
 
 int64_t rask_time_Instant_now(void);
+int64_t rask_time_wall_clock_nanos(void);
 int64_t rask_time_Instant_elapsed(int64_t instant_ns);
-int64_t rask_time_Duration_from_nanos(int64_t ns);
-int64_t rask_time_Duration_from_millis(int64_t ms);
-int64_t rask_time_Duration_as_nanos(int64_t duration_ns);
-int64_t rask_time_Duration_as_millis(int64_t duration_ns);
-int64_t rask_time_Duration_as_micros(int64_t duration_ns);
-int64_t rask_time_Duration_as_secs(int64_t duration_ns);
-double  rask_time_Duration_as_secs_f64(int64_t duration_ns);
-double  rask_time_Duration_as_secs_f32(int64_t duration_ns);
-int64_t rask_time_Duration_seconds(int64_t secs);
-int64_t rask_time_Duration_millis(int64_t ms);
-int64_t rask_time_Duration_micros(int64_t us);
-int64_t rask_time_Duration_nanos(int64_t ns);
-int64_t rask_time_Duration_from_secs_f64(double secs);
+uint64_t rask_time_Duration_from_nanos(uint64_t ns);
+uint64_t rask_time_Duration_from_millis(uint64_t ms);
+uint64_t rask_time_Duration_as_nanos(uint64_t duration_ns);
+uint64_t rask_time_Duration_as_millis(uint64_t duration_ns);
+uint64_t rask_time_Duration_as_micros(uint64_t duration_ns);
+uint64_t rask_time_Duration_as_secs(uint64_t duration_ns);
+double  rask_time_Duration_as_secs_f64(uint64_t duration_ns);
+double  rask_time_Duration_as_secs_f32(uint64_t duration_ns);
+uint64_t rask_time_Duration_seconds(uint64_t secs);
+uint64_t rask_time_Duration_millis(uint64_t ms);
+uint64_t rask_time_Duration_micros(uint64_t us);
+uint64_t rask_time_Duration_nanos(uint64_t ns);
+uint64_t rask_time_Duration_from_secs_f64(double secs);
 int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 
 // ─── Net module ─────────────────────────────────────────────
 // Basic TCP socket operations.
 
 int64_t rask_net_tcp_listen(const RaskStr *addr);
+int8_t  rask_net_resolves(const RaskStr *addr);
+int64_t rask_net_resolve(const RaskStr *host);
+int64_t rask_net_udp_bind(const RaskStr *addr);
+int64_t rask_net_udp_send_to(int64_t fd, int64_t vec_ptr, const RaskStr *addr);
+int64_t rask_net_udp_receive(int64_t fd);
+int64_t rask_net_udp_try_receive(int64_t fd);
 int64_t rask_net_tcp_connect(const RaskStr *addr);
 int64_t rask_net_tcp_accept(int64_t listen_fd);
 void    rask_net_close(int64_t fd);
@@ -876,14 +939,10 @@ int64_t rask_metadata_size(int64_t meta_ptr);
 int64_t rask_metadata_accessed(int64_t meta_ptr);
 int64_t rask_metadata_modified(int64_t meta_ptr);
 
-// ─── Args parsing ───────────────────────────────────────────
-int64_t rask_args_parse(void);
-int64_t rask_args_flag(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
-int64_t rask_args_option(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
-void    rask_args_option_or(RaskStr *out, int64_t args_ptr, int64_t long_ptr,
-                            int64_t short_ptr, int64_t default_ptr);
-int64_t rask_args_positional(int64_t args_ptr);
-int64_t rask_args_program(int64_t args_ptr);
+// ─── Process ────────────────────────────────────────────────
+void    rask_exit(int64_t code);
+// Sim runs only: turn on the faults `mask` names. False outside sim.
+int64_t rask_sim_enable_faults(int64_t mask);
 
 // Response reading (reads until EOF for Connection: close pattern).
 
@@ -900,7 +959,6 @@ void         rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskStr *key, int64_
 void         rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *raw_json);
 void         rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf);
 
-void         rask_json_encode(RaskStr *out, int64_t value_ptr);
 void         rask_json_encode_string(RaskStr *out, const RaskStr *s);
 void         rask_json_encode_i64(RaskStr *out, int64_t val);
 
@@ -1454,14 +1512,18 @@ void    rask_shared_drop_i64(int64_t shared);
 int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
-int64_t rask_os_pid(void);
-_Noreturn void rask_os_exit(int64_t code);
+uint32_t rask_os_pid(void);
+_Noreturn void rask_os_exit(int32_t code);
 void    rask_os_set_env(const RaskStr *name, const RaskStr *value);
 void    rask_os_remove_env(const RaskStr *name);
 RaskVec *rask_os_args(void);
 void    rask_os_platform(RaskStr *out);
 void    rask_os_arch(RaskStr *out);
 RaskVec *rask_os_env_vars(void);
+
+// std.terminal: the two questions about stdout that need the OS.
+int8_t  rask_terminal_is_tty(void);
+int64_t rask_terminal_size(void);
 
 int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
 int64_t rask_cell_get(int64_t cell);

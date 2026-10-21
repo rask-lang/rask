@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.testing T12/T13: `skip("why")` stops a test and reports it skipped, and
+// `expect_fail()` makes a failing test pass — a known bug pinned until it's
+// fixed. The runner reports one skip and three passes here, on both backends.
+
+func feature_ready() -> bool {
+    return false
+}
+
+test "skip stops the test before the part that can't run" {
+    if !feature_ready() {
+        skip("the feature isn't ready")
+    }
+    assert false
+}
+
+test "expect_fail passes a failing assertion" {
+    expect_fail()
+    assert 1 + 1 == 3
+}
+
+test "expect_fail passes a failed check, too" {
+    expect_fail()
+    check "a".len() == 2
+}
+
+test "an ordinary test still passes" {
+    assert "ok".len() == 2
+}

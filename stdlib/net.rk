@@ -58,6 +58,22 @@ extend net {
         return
     }
 
+    /// Every address `host` names, as IP strings (D1). An IP literal is
+    /// itself. A name that resolves to nothing is an error, the one
+    /// `tcp_connect` reports for it — not an empty list nobody checks.
+    public func resolve(host: string) -> Vec<string> or IoError {
+        if net.resolve_raw(host) is Vec<string> as addrs {
+            return addrs
+        }
+        return IoError.Other("could not resolve {host}")
+    }
+
+    /// getaddrinfo's answer, or `none`. It doesn't set errno, so there's no OS
+    /// error to ask about afterwards.
+    @native("rask_net_resolve")
+    @blocks
+    func resolve_raw(host: string) -> Vec<string>? {}
+
     /// The raw `bind`/`listen` pair. -1 means the syscall failed and errno says
     /// why; -2 means the address named nothing that resolves.
     @native("rask_net_tcp_listen")
@@ -117,7 +133,7 @@ extend TcpListener {
     public func local_addr(self) -> string {}
 
     /// Close the listener.
-    @native("rask_net_close")
+    @native("rask_net_close", returns: nothing)
     @blocks
     public func close(take self) -> void or IoError {}
 
@@ -130,13 +146,40 @@ extend TcpListener {
 @handle
 public struct TcpConnection { }
 
-extend TcpConnection {
+/// N6: TCP is a byte stream, so a connection is a `Reader`. `read_text` and
+/// `read_exact` come from the interface.
+TcpConnection implements Reader {
+    /// Whatever has arrived, up to `buf.len()` bytes. 0 once the peer has
+    /// closed its side.
+    public func read(self, mutate buf: Vec<u8>) -> usize or IoError {
+        let want = buf.len()
+        if want == 0 {
+            return 0
+        }
+        if self.read_some_raw(want.wrap<i64>()) is Vec<u8> as got {
+            let n = got.len()
+            for i in 0..n {
+                buf[i] = got[i]
+            }
+            return n
+        }
+        return IoError.last_os_error()
+    }
+
     /// Read until the peer closes the connection.
     public func read_bytes(self) -> Vec<u8> or IoError {
         if self.read_bytes_raw() is Vec<u8> as bytes {
             return bytes
         }
         return IoError.last_os_error()
+    }
+}
+
+TcpConnection implements Writer {
+    /// Write every byte of `data`, and say so (W1).
+    public func write(self, data: Vec<u8>) -> usize or IoError {
+        try self.write_bytes(data)
+        return data.len()
     }
 
     /// Write every byte of `data`.
@@ -147,6 +190,23 @@ extend TcpConnection {
         return
     }
 
+    /// Write text to the connection — its UTF-8 bytes, nothing added.
+    public func write_text(self, data: string) -> void or IoError {
+        mut bytes: Vec<u8> = Vec.with_capacity(data.len())
+        for b in data.bytes() {
+            bytes.push(b)
+        }
+        try self.write_bytes(bytes)
+        return
+    }
+
+    /// Nothing to push: every write goes straight to the socket.
+    public func flush(self) -> void or IoError {
+        return
+    }
+}
+
+extend TcpConnection {
     /// The raw reads and writes: `none` or -1 when the syscall failed, with
     /// errno set. The `IoError` is built above because only Rask can build
     /// one. The adapter that put a negative return straight on the error side
@@ -159,34 +219,6 @@ extend TcpConnection {
     @native("rask_net_write_bytes")
     @blocks
     func write_bytes_raw(self, data: Vec<u8>) -> i64 {}
-
-    /// Read all available data, decoding as UTF-8 text.
-    ///
-    /// Written in Rask over `read_bytes`: which byte sequences are legal, and
-    /// what a bad one reports, is exactly the kind of answer the two backends
-    /// must not decide separately. Before this there was no native entry point
-    /// at all — `conn.read_text()` failed in codegen with "Function not found:
-    /// TcpConnection_read_text" while the interpreter ran it (#863).
-    public func read_text(self) -> string or IoError {
-        let bytes = try self.read_bytes()
-        let text = string.from_utf8(bytes) catch e => {
-            return IoError.Other("stream is not valid UTF-8: {e.message()}")
-        }
-        return text
-    }
-
-    /// Write text to the connection — its UTF-8 bytes, nothing added.
-    public func write_text(self, data: string) -> void or IoError {
-        mut bytes: Vec<u8> = Vec.new()
-        let len = data.len().wrap<i64>()
-        mut i: i64 = 0
-        while i < len {
-            bytes.push(data.byte_at(i.wrap<usize>()) ?? 0)
-            i = i + 1
-        }
-        try self.write_bytes(bytes)
-        return
-    }
 
     /// Get the remote address as "ip:port".
     @native("rask_net_remote_addr")
@@ -206,7 +238,7 @@ extend TcpConnection {
     func read_some_raw(self, max: i64) -> Vec<u8>? {}
 
     /// Close the connection.
-    @native("rask_net_close")
+    @native("rask_net_close", returns: nothing)
     @blocks
     public func close(take self) -> void or IoError {}
 
@@ -322,7 +354,7 @@ extend UdpSocket {
     public func local_addr(self) -> string {}
 
     /// Close the socket.
-    @native("rask_net_close")
+    @native("rask_net_close", returns: nothing)
     public func close(take self) -> void or IoError {}
 
     /// 0 when sent, -1 with errno set, -2 when `addr` doesn't resolve.

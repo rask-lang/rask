@@ -118,7 +118,7 @@ test "the same shape carries a cstring" {
         assert false
         return
     }
-    assert (c.to_string() catch _ => "") == "hei"
+    assert (c.decode() catch _ => "") == "hei"
 }
 
 func main() {

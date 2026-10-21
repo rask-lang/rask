@@ -76,4 +76,9 @@ extend char {
     /// ASCII-only uppercase. Leaves everything else alone.
     @native("rask_char_to_ascii_uppercase")
     public func to_ascii_uppercase(self) -> char {}
+
+    /// The scalar with this value, or `none` for a surrogate or anything past
+    /// U+10FFFF (type.primitives/CH3).
+    @builtin
+    public func from_u32(n: u32) -> char? {}
 }

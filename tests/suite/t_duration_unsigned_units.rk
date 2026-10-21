@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Duration is an unsigned nanosecond count (std.time/D1, D4), so its unit
+// constructors take a `u64` — a count from `len()` or a parsed `u64` goes in
+// with no conversion, and a negative span isn't something you can write.
+
+import time.Duration
+
+test "each unit takes a u64" {
+    let n: u64 = 3
+    assert Duration.seconds(n).as_millis() == 3000
+    assert Duration.millis(n).as_micros() == 3000
+    assert Duration.micros(n).as_nanos() == 3000
+    assert Duration.nanos(n).as_nanos() == 3
+}
+
+test "a count goes straight in" {
+    let frames: Vec<i64> = [1, 2, 3, 4]
+    let d = Duration.millis(frames.len())
+    assert d.as_millis() == 4
+}
+
+test "the range runs past i64" {
+    let big: u64 = 10000000000000000000
+    assert Duration.nanos(big).as_nanos() == big
+    assert Duration.nanos(big).as_millis() == 10000000000000
+}
+
+test "scaling and differences stay unsigned" {
+    let d = Duration.millis(10) * 3
+    assert d.as_millis() == 30
+    let half = d / 2
+    assert half.as_millis() == 15
+    assert (d - half).as_millis() == 15
+}

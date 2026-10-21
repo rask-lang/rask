@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Three small string-side surfaces: `Span.len`, `StringBuilder.with_capacity`,
+// and reading a C string's bytes through `cstring.as_ptr`.
+
+import string.cstring
+import string.StringBuilder
+import builtins.Span
+
+test "Span.len is end minus start" {
+    assert Span(start: 2, end: 7).len() == 5
+    assert Span.new(4, 4).len() == 0
+    let text = "hej på deg"
+    let word = Span.new(4, 7)
+    assert word.len() == 3
+    assert text[word.start..word.end] == "på"
+}
+
+test "with_capacity starts empty and builds like new()" {
+    mut b = StringBuilder.with_capacity(64)
+    assert b.len() == 0
+    b.push("abc")
+    b.push_char('d')
+    for i in 0..3 {
+        b.push("{i}")
+    }
+    assert b.len() == 7
+    assert b.build() == "abcd012"
+}
+
+test "with_capacity(0) still grows" {
+    mut b = StringBuilder.with_capacity(0)
+    for _ in 0..100 {
+        b.push("xy")
+    }
+    let out = b.build()
+    assert out.len() == 200
+    assert out.starts_with("xyxy")
+}
+
+test "as_ptr points at the bytes, and the terminator follows them" {
+    let c = "hey".to_cstring()!
+    let p = unsafe c.as_ptr()
+    assert unsafe p.read() == 104u8
+    assert unsafe p.offset(1).read() == 101u8
+    assert unsafe p.offset(2).read() == 121u8
+    assert unsafe p.offset(3).read() == 0u8
+}
+
+test "an empty cstring's pointer is just the terminator" {
+    let c = "".to_cstring()!
+    let p = unsafe c.as_ptr()
+    assert unsafe p.read() == 0u8
+}

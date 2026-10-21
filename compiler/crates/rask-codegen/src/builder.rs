@@ -287,6 +287,57 @@ enum CallAdapt {
     JoinOutcome(StackSlot, StackSlot),
 }
 
+/// A runtime call whose arguments are adapted by code written for it
+/// (`FunctionBuilder::adapt_by_hand`) instead of from its dispatch entry.
+#[derive(Clone, Copy)]
+enum HandAdapt {
+    VecContains,
+    LinkRegisterStruct,
+    RackInsert,
+    /// A `Shared` strategy's `take`.
+    BoxTake,
+    /// A `Shared` strategy's `set` or `replace`.
+    BoxWrite,
+    /// A `Shared` strategy's constructor.
+    BoxNew,
+    Atomic,
+    Send,
+    Receive,
+    Parse,
+    JoinOutcome,
+    ShareString,
+    Unbuffered,
+}
+
+/// Which calls are adapted by hand, by MIR name. One list: it decides both
+/// that a call is adapted here and how.
+fn hand_adaptation(name: &str) -> Option<HandAdapt> {
+    Some(match name {
+        "Vec_contains" => HandAdapt::VecContains,
+        "Link_register_struct" => HandAdapt::LinkRegisterStruct,
+        "Rack_insert" => HandAdapt::RackInsert,
+        "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
+        "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
+        | "Mutex_replace" => HandAdapt::BoxWrite,
+        "Shared_new" | "Mutex_new" | "Cell_new" => HandAdapt::BoxNew,
+        n if n.starts_with("Atomic_") => HandAdapt::Atomic,
+        "Sender_send" | "send" => HandAdapt::Send,
+        "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
+        n if n.starts_with("string_parse") => HandAdapt::Parse,
+        "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
+        "string_clone" | "string_to_owned" | "string_view" | "StringView_view" => {
+            HandAdapt::ShareString
+        }
+        "Channel_unbuffered" => HandAdapt::Unbuffered,
+        _ => return None,
+    })
+}
+
+/// Whether `name`'s call is adapted by hand rather than from its entry.
+pub(crate) fn hand_adapted(name: &str) -> bool {
+    hand_adaptation(name).is_some()
+}
+
 use rask_mono::runtime_abi::{
     RASK_CHAN_CANCELLED, RASK_CHAN_EMPTY, RASK_CHAN_OK, RASK_JOIN_OK, RASK_JOIN_PANICKED, RASK_STROUT_EOF,
 };
@@ -2151,6 +2202,9 @@ impl<'a> FunctionBuilder<'a> {
                     UnaryOp::LeadingZeros => builder.ins().clz(val),
                     UnaryOp::TrailingZeros => builder.ins().ctz(val),
                     UnaryOp::ReverseBits => builder.ins().bitrev(val),
+                    // One byte has no order to swap, and Cranelift's bswap
+                    // refuses an i8.
+                    UnaryOp::SwapBytes if builder.func.dfg.value_type(val) == types::I8 => val,
                     UnaryOp::SwapBytes => builder.ins().bswap(val),
                 };
                 Ok(result)
@@ -6282,11 +6336,22 @@ impl<'a> FunctionBuilder<'a> {
             return Self::plain_exit_value(builder, value, ctx);
         }
 
-        if let Some((_, ss, size)) = Self::return_stack_info(value, ctx.stack_slot_map) {
-            // A small aggregate goes back in a register, loaded; a wider one
-            // as its address, which `exit_value` copies into the destination.
-            if size <= 8 {
-                return Ok(Some(builder.ins().stack_load(types::I64, ss, 0)));
+        // A small aggregate goes back in a register, loaded; a wider one as its
+        // address, which `exit_value` copies into the destination.
+        //
+        // Loaded through the address the local holds now, not from its own
+        // slot: `out_v1 = out` points `out_v1` at `out`'s storage and leaves
+        // its slot unwritten, so a `[u8; 8]` built in `out` and returned as
+        // `out_v1` read back whatever the slot held before.
+        if let Some(MirOperand::Local(id)) = value {
+            let held = Self::operand_mir_type(&MirOperand::Local(*id), ctx.locals)
+                .filter(|t| t.passed_by_address())
+                .and_then(|t| t.slot_size());
+            if let Some(size) = held.filter(|s| *s <= 8) {
+                let addr = Self::lower_operand(builder, &MirOperand::Local(*id), ctx)?;
+                let word = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+                Self::copy_aggregate(builder, addr, word, size);
+                return Ok(Some(builder.ins().stack_load(types::I64, word, 0)));
             }
         }
         Self::plain_exit_value(builder, value, ctx)
@@ -6429,20 +6494,6 @@ impl<'a> FunctionBuilder<'a> {
         let size = local.ty.slot_size()?;
         let var = ctx.var_map.get(id)?;
         Some((builder.use_var(*var), size))
-    }
-
-    /// Check if a return value comes from a stack-allocated aggregate local.
-    /// Returns the (stack_slot, size) if so.
-    fn return_stack_info(
-        value: Option<&MirOperand>,
-        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
-    ) -> Option<(LocalId, StackSlot, u32)> {
-        if let Some(MirOperand::Local(id)) = value {
-            if let Some((ss, size)) = stack_slot_map.get(id) {
-                return Some((*id, *ss, *size));
-            }
-        }
-        None
     }
 
     /// Put a call's aggregate answer into the destination's slot.
@@ -7816,6 +7867,9 @@ impl<'a> FunctionBuilder<'a> {
         if ctx.internal_fns.contains(func_name) {
             return CallAdapt::None;
         }
+        if let Some(how) = hand_adaptation(func_name) {
+            return Self::adapt_by_hand(builder, how, func_name, args, mir_args, dst, ctx);
+        }
         let (arg_adapt, ret_adapt) = adapt_table
             .get(func_name)
             .copied()
@@ -7924,24 +7978,6 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::StringResult(ss, err_ss)
             }
 
-            ArgAdapt::StringClone => {
-                if let Some(dst_id) = dst {
-                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
-                        if !args.is_empty() {
-                            let src_ptr = args[0];
-                            Self::copy_aggregate(builder, src_ptr, *dst_ss, 16);
-                        }
-                        let dst_addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
-                        args[0] = dst_addr;
-                        CallAdapt::StringOutParam(*dst_ss)
-                    } else {
-                        CallAdapt::None
-                    }
-                } else {
-                    CallAdapt::None
-                }
-            }
-
             ArgAdapt::InPlaceStringMut => {
                 let ss = mir_args.first()
                     .and_then(|op| if let MirOperand::Local(id) = op { Some(id) } else { None })
@@ -7960,20 +7996,6 @@ impl<'a> FunctionBuilder<'a> {
                 return Self::append_out_param(builder, args, dst, ctx);
             }
 
-            ArgAdapt::AppendZero => {
-                args.push(builder.ins().iconst(types::I64, 0));
-                CallAdapt::None
-            }
-
-            ArgAdapt::AtomicCas => {
-                // compare-exchange writes the observed value through an out_ok
-                // pointer; the call returns success as its scalar result.
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, ss, 0));
-                CallAdapt::PopOutParam(ss)
-            }
 
             ArgAdapt::OptionOutParam => {
                 // Hand the callee the destination's payload address so it can
@@ -7997,44 +8019,6 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::OptionOutParam(ss)
             }
 
-            ArgAdapt::ParseOutParam => {
-                // The value comes back through an out-param so the return value
-                // can carry the 0/1 status.
-                //
-                // Load it with the type the runtime actually wrote — the float
-                // entry points store a double, the integer ones an i64 — then
-                // convert to what the destination wants. Loading with the
-                // destination type instead read a double's bits as an integer,
-                // so "42".parse() came out as 4631107791820423168.
-                let writer_ty = if matches!(func_name,
-                    "string_parse_float" | "string_parse_f32" | "string_parse_f64")
-                {
-                    types::F64
-                } else {
-                    types::I64
-                };
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, ss, 0));
-                CallAdapt::ParseResult(ss, writer_ty)
-            }
-
-            ArgAdapt::JoinOutcomeOutParams => {
-                let value_ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                let msg_ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, value_ss, 0));
-                args.push(builder.ins().stack_addr(types::I64, msg_ss, 0));
-                CallAdapt::JoinOutcome(value_ss, msg_ss)
-            }
-
-            ArgAdapt::Custom => {
-                return Self::adapt_stdlib_custom(builder, func_name, args, mir_args, dst, ctx);
-            }
         };
 
         // Apply return adaptation (override if ret_adapt specifies something)
@@ -8051,20 +8035,22 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// Hand-written adaptation for complex cases that need runtime type inspection.
-    fn adapt_stdlib_custom(
+    /// The adaptations `hand_adaptation` names: each needs what the call
+    /// site's operands are, which no dispatch entry can say ahead of time.
+    fn adapt_by_hand(
         builder: &mut ClifFunctionBuilder,
+        how: HandAdapt,
         func_name: &str,
         args: &mut Vec<Value>,
         mir_args: &[MirOperand],
         dst: Option<&LocalId>,
         ctx: &CodegenCtx,
     ) -> CallAdapt {
-        match func_name {
+        match how {
             // Vec.contains: the runtime compares elem_size bytes through a
             // pointer. An aggregate argument is already an address; a scalar
             // has to be spilled so there's something to point at.
-            "Vec_contains" => {
+            HandAdapt::VecContains => {
                 if args.len() >= 2 {
                     let is_aggregate = matches!(
                         mir_args.get(1),
@@ -8084,7 +8070,7 @@ impl<'a> FunctionBuilder<'a> {
             // same (kind, offset) pairs `Rack_insert` passes, read off the same
             // layout. Emitting the pairs at the call site keeps the runtime from
             // needing to know anything about Rask types.
-            "Link_register_struct" => {
+            HandAdapt::LinkRegisterStruct => {
                 let fields = Self::link_field_descriptor(mir_args, 0, ctx);
                 args.push(builder.ins().iconst(types::I64, fields.len() as i64));
                 if fields.is_empty() {
@@ -8108,7 +8094,7 @@ impl<'a> FunctionBuilder<'a> {
             // its size, and the byte offsets of its link fields. `Rack.new()`
             // had no argument to read `T` off, so this is where the runtime
             // learns what it is holding (mem.racks).
-            "Rack_insert" => {
+            HandAdapt::RackInsert => {
                 let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                 if args.len() >= 2 && !is_struct {
                     Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
@@ -8157,13 +8143,11 @@ impl<'a> FunctionBuilder<'a> {
 
             // `take` has no value argument, so it takes the out-param and
             // nothing else.
-            "Cell_take" | "Shared_take" | "Mutex_take" => Self::append_out_param(builder, args, dst, ctx),
+            HandAdapt::BoxTake => Self::append_out_param(builder, args, dst, ctx),
             // `set` and `replace` both take the new value by pointer, so a
             // scalar spills to a slot first. `replace` also gives the old value
             // back, through an out-param of its own.
-            "Cell_set" | "Cell_replace"
-            | "Shared_set" | "Shared_replace"
-            | "Mutex_set" | "Mutex_replace" => {
+            HandAdapt::BoxWrite => {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
@@ -8192,7 +8176,7 @@ impl<'a> FunctionBuilder<'a> {
             // Each strategy's constructor takes the value by pointer, so a
             // scalar spills to a slot first, and its size, which is computed
             // here.
-            "Shared_new" | "Mutex_new" | "Cell_new" => {
+            HandAdapt::BoxNew => {
                 if !args.is_empty() {
                     let (data_size, is_struct) = Self::struct_elem_size(mir_args, 0, ctx);
                     if !is_struct {
@@ -8207,8 +8191,8 @@ impl<'a> FunctionBuilder<'a> {
             // integer extended by its sign, a float or a word-sized struct
             // (GA2) as its raw bytes. A numeric conversion would hand the
             // runtime 1 for 1.5, and a struct is held by address.
-            f if f.starts_with("Atomic_") => {
-                let values: &[usize] = match f {
+            HandAdapt::Atomic => {
+                let values: &[usize] = match func_name {
                     "Atomic_new" => &[0],
                     "Atomic_compare_exchange" | "Atomic_compare_exchange_weak" => &[1, 2],
                     "Atomic_store" | "Atomic_swap" => &[1],
@@ -8241,7 +8225,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Sender_send: wrap value as pointer (structs already are)
-            "Sender_send" | "send" => {
+            HandAdapt::Send => {
                 if args.len() >= 2 {
                     let (_, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_struct {
@@ -8257,7 +8241,7 @@ impl<'a> FunctionBuilder<'a> {
             // [rx, elem_size]. Args out: [rx, out_ptr]. Post-call builds the
             // `T or E` Result the signature promises — the blocking one used to
             // return the payload and panic on a closed channel (#1067).
-            "Receiver_receive" | "Receiver_try_receive" => {
+            HandAdapt::Receive => {
                 let elem_size = match mir_args.get(1) {
                     Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
                     _ => 8,
@@ -8270,7 +8254,63 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::TryRecvResult(ss)
             }
 
-            _ => CallAdapt::None,
+            // The value comes back through an out-param so the return value
+            // can carry the 0/1 status.
+            //
+            // Load it with the type the runtime actually wrote — the float
+            // entry points store a double, the integer ones an i64 — then
+            // convert to what the destination wants. Loading with the
+            // destination type instead read a double's bits as an integer,
+            // so "42".parse() came out as 4631107791820423168.
+            HandAdapt::Parse => {
+                let writer_ty = if matches!(func_name,
+                    "string_parse_float" | "string_parse_f32" | "string_parse_f64")
+                {
+                    types::F64
+                } else {
+                    types::I64
+                };
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                CallAdapt::ParseResult(ss, writer_ty)
+            }
+
+            // join/cancel: the task's value and a 16-byte message string come
+            // back through two out-params, and the call returns how the task
+            // ended (ok/panicked), which becomes the `T or JoinError` tag.
+            HandAdapt::JoinOutcome => {
+                let value_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                let msg_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
+                ));
+                args.push(builder.ins().stack_addr(types::I64, value_ss, 0));
+                args.push(builder.ins().stack_addr(types::I64, msg_ss, 0));
+                CallAdapt::JoinOutcome(value_ss, msg_ss)
+            }
+
+            // Another reference to the same string: the 16 bytes copied into
+            // the destination's slot, then the refcount bumped there.
+            HandAdapt::ShareString => {
+                let Some((dst_ss, _)) = dst.and_then(|id| ctx.stack_slot_map.get(id)) else {
+                    return CallAdapt::None;
+                };
+                if !args.is_empty() {
+                    Self::copy_aggregate(builder, args[0], *dst_ss, 16);
+                }
+                let dst_addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
+                args[0] = dst_addr;
+                CallAdapt::StringOutParam(*dst_ss)
+            }
+
+            // `Channel.unbuffered()` is a buffered channel of capacity zero.
+            HandAdapt::Unbuffered => {
+                args.push(builder.ins().iconst(types::I64, 0));
+                CallAdapt::None
+            }
         }
     }
 

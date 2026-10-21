@@ -24,19 +24,9 @@ Open work, grouped by theme. Bugs are tracked as [GitHub issues](https://github.
 
 ## Stdlib gaps
 
-Percentages are rough coverage vs spec.
-
-- [ ] **Collections (~90%)** — `AllocError` enum, `vec.with()` block syntax, `SliceDescriptor<T>`.
-- [ ] **Time (~85%)** — `SystemTime` type, arithmetic operators on `Duration`.
-- [ ] **FS (~90%)** — `OpenOptions` builder, `DirEntry` struct.
-- [ ] **Net (~70%)** — `UdpSocket`, `net.resolve()` DNS.
-- [ ] **JSON (~70%)** — Typed `encode()`/`decode()` (depends on Encode/Decode interfaces).
-- [ ] **CLI (~60%)** — `cli.Parser` builder, auto-generated `--help`/`--version`, `CliError` enum.
-- [ ] **StringView (0%)** — Zero-copy substrings, spec'd in `std.strings/V1–V6` (#492). New primitive: 16-byte tagged repr sharing the string heap header, `.view()` on strings and expression-scoped slices, read-only string API on views. Needs typecheck + interp + codegen + runtime. Replaces the never-implemented StringPool/StringSlice.
-- [ ] **Encoding (~40%)** — Stub file. Auto-derive and field annotations depend on comptime for.
-- [ ] **Formatting (~40%)** — Stub file. Full compile-time template checking not implemented.
-- [ ] **Bits (~40%)** — Per-integer bit methods (`popcount`, `leading_zeros`) not registered as type methods.
-- [ ] **Testing (~85%)** — Doc test extraction (T14–T15).
+Measured, not listed: `rask stdlib-coverage` prints each module's gaps against
+its spec, and `tests/known_stdlib_gaps.txt` holds the open ones. The list that
+used to be here was typed by hand and had already gone stale.
 
 ## Tooling
 

@@ -15,7 +15,7 @@ Two layers: untyped `JsonValue` enum for dynamic JSON, compiler-generated struct
 | **J2: f64 numbers** | All JSON numbers stored as `f64`. Integers up to 2^53 are exact; larger lose precision |
 | **J3: JsonError** | Parse, type, and missing-field errors reported via `JsonError` enum |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum JsonValue {
     Null
@@ -63,6 +63,18 @@ json.encode_pretty(value)
 | `value["key"]` | `JsonValue?` (object index) |
 | `value[index]` | `JsonValue?` (array index) |
 
+<!-- surface -->
+```rask
+extend JsonValue {
+    func is_null(self) -> bool
+    func as_bool(self) -> bool?
+    func as_number(self) -> f64?
+    func as_string(self) -> string?
+    func as_array(take self) -> Vec<JsonValue>?
+    func as_object(take self) -> Map<string, JsonValue>?
+}
+```
+
 `as_array` and `as_object` take the value, because the container inside is the value's. A borrowed value, like an element of an array or a `get` out of an object, is read in place with `if v is Array(items)`, or copied out with `v.clone().as_array()`.
 
 ## Typed Encoding/Decoding
@@ -75,13 +87,13 @@ json.encode_pretty(value)
 | **J9: Optional fields** | `T?` fields decode `null` or missing as `none`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
 | **J10: Extra keys ignored** | JSON keys not matching a serialized struct field are silently skipped. This includes a key naming a field that is excluded from the wire form (`std.encoding/E13b`) — the field is never filled from input |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-json.encode(value: T) -> string
-json.encode_pretty(value: T) -> string
-json.to_value(value: T) -> JsonValue
-json.decode<T>(input: string) -> T or JsonError
-json.from_value<T>(value: JsonValue) -> T or JsonError
+extend json {
+    func encode<T: Encode>(value: T) -> string
+    func encode_pretty<T: Encode>(value: T) -> string
+    func decode<T: Decode>(input: string) -> T or JsonError
+}
 ```
 
 <!-- test: skip -->

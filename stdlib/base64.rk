@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Base64 (std.base64), RFC 4648. Encode picks the alphabet and padding; decode
+// takes either alphabet, padded or not, and is strict about everything else.
+
+/// Why `base64.decode` rejected its input.
+public enum Base64Error {
+    BadCharacter(byte: u8, at: usize)
+    BadLength(usize)
+    BadPadding
+}
+
+extend Base64Error {
+    public func message(self) -> string {
+        match self {
+            Base64Error.BadCharacter(byte, at) => return "invalid character in base64 input: byte {byte} at offset {at} is in neither alphabet"
+            Base64Error.BadLength(len) => return "base64 input of {len} characters can't be a whole number of bytes"
+            Base64Error.BadPadding => return "base64 padding is wrong: \"=\" belongs only at the end, and only enough to fill the last group"
+        }
+    }
+}
+
+struct base64 { }
+
+extend base64 {
+    /// Standard alphabet and "=" padding unless told otherwise.
+    public func encode(data: Vec<u8>, url_safe: bool = false, padding: bool = true) -> string {
+        let table = if url_safe {
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        } else {
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        }
+        let len = data.len()
+        mut out = StringBuilder.with_capacity((len + 2) / 3 * 4)
+        mut i: usize = 0
+        while i < len {
+            // Up to three bytes make one 24-bit group, read as four sextets.
+            let left = len - i
+            let b0 = data[i] as u32
+            let b1 = if left > 1 { data[i + 1] as u32 } else { 0 }
+            let b2 = if left > 2 { data[i + 2] as u32 } else { 0 }
+            let group = b0 << 16 | b1 << 8 | b2
+            out.push_char(table.char_at((group >> 18 & 63) as usize) ?? 'A')
+            out.push_char(table.char_at((group >> 12 & 63) as usize) ?? 'A')
+            if left > 1 {
+                out.push_char(table.char_at((group >> 6 & 63) as usize) ?? 'A')
+            } else if padding {
+                out.push_char('=')
+            }
+            if left > 2 {
+                out.push_char(table.char_at((group & 63) as usize) ?? 'A')
+            } else if padding {
+                out.push_char('=')
+            }
+            i = i + 3
+        }
+        return out.build()
+    }
+
+    /// Standard or URL-safe, padded or not. Whitespace is not skipped.
+    public func decode(s: string) -> Vec<u8> or Base64Error {
+        let len = s.len()
+        // Everything before the first "=" is data; everything from it on must
+        // be "=". Characters are checked first so a stray newline is reported
+        // as itself, not as a length problem it happens to cause.
+        mut data_len = len
+        for i in 0..len {
+            let b = s.byte_at(i) ?? 0
+            if b == 61 {
+                if data_len == len {
+                    data_len = i
+                }
+            } else if data_len != len {
+                return Base64Error.BadPadding
+            } else if base64_sextet(b) < 0 {
+                return Base64Error.BadCharacter(byte: b, at: i)
+            }
+        }
+        let pad = len - data_len
+        // One leftover character carries 6 bits, less than a byte.
+        if data_len % 4 == 1 {
+            return Base64Error.BadLength(len)
+        }
+        // Padding, when present, fills the last group to four exactly.
+        if pad > 0 && (pad > 2 || len % 4 != 0) {
+            return Base64Error.BadPadding
+        }
+
+        mut out: Vec<u8> = Vec.with_capacity(data_len / 4 * 3 + 2)
+        mut i: usize = 0
+        while i < data_len {
+            let left = data_len - i
+            let c0 = base64_sextet(s.byte_at(i) ?? 0).wrap<u32>()
+            let c1 = base64_sextet(s.byte_at(i + 1) ?? 0).wrap<u32>()
+            let c2 = if left > 2 { base64_sextet(s.byte_at(i + 2) ?? 0).wrap<u32>() } else { 0 }
+            let c3 = if left > 3 { base64_sextet(s.byte_at(i + 3) ?? 0).wrap<u32>() } else { 0 }
+            let group = c0 << 18 | c1 << 12 | c2 << 6 | c3
+            // Bits past the last whole byte are dropped, not checked: some
+            // encoders leave them set.
+            out.push((group >> 16).wrap<u8>())
+            if left > 2 {
+                out.push((group >> 8).wrap<u8>())
+            }
+            if left > 3 {
+                out.push(group.wrap<u8>())
+            }
+            i = i + 4
+        }
+        return out
+    }
+}
+
+/// A character's value in either alphabet, or -1. The two differ only in
+/// "+/" against "-_", so one table covers both.
+func base64_sextet(b: u8) -> i32 {
+    if b >= 65 && b <= 90 {
+        return (b as i32) - 65
+    }
+    if b >= 97 && b <= 122 {
+        return (b as i32) - 71
+    }
+    if b >= 48 && b <= 57 {
+        return (b as i32) + 4
+    }
+    if b == 43 || b == 45 {
+        return 62
+    }
+    if b == 47 || b == 95 {
+        return 63
+    }
+    return -1
+}

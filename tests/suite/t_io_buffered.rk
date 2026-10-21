@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.io's buffered wrappers over an in-memory `Buffer`: BufferedReader's
+// lines and reads, BufferedWriter holding bytes until it fills or flushes,
+// and `take()` handing the inner stream back.
+
+import io.{Buffer, BufferedReader, BufferedWriter, IoError, SeekFrom, copy}
+
+func bytes_of(s: string) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for b in s.bytes() {
+        out.push(b)
+    }
+    return out
+}
+
+func zeros(n: usize) -> Vec<u8> {
+    mut out: Vec<u8> = Vec.new()
+    for _ in 0..n {
+        out.push(0)
+    }
+    return out
+}
+
+test "read_line strips \\n and \\r\\n, keeps a last line without one" {
+    let r = BufferedReader.new(Buffer.from(bytes_of("one\r\ntwo\n\nthree")))
+    assert r.read_line()! == "one"
+    assert r.read_line()! == "two"
+    assert r.read_line()! == ""
+    assert r.read_line()! == "three"
+    match r.read_line() {
+        IoError as e => assert e is IoError.UnexpectedEof
+        string as s => assert false, "a line past the end: {s}"
+    }
+}
+
+test "lines across chunk edges, with a tiny buffer" {
+    let r = BufferedReader.with_capacity(3, Buffer.from(bytes_of("alpha\nbeta\ngamma\n")))
+    mut got: Vec<string> = Vec.new()
+    for line in r.lines() {
+        got.push(line!)
+    }
+    assert got.len() == 3
+    assert got[0] == "alpha"
+    assert got[1] == "beta"
+    assert got[2] == "gamma"
+}
+
+test "read takes what's held first, then the rest" {
+    let r = BufferedReader.with_capacity(4, Buffer.from(bytes_of("abcdefghij")))
+    mut small = zeros(2)
+    let n: usize = r.read(mutate small)!
+    assert n == 2
+    assert small[0] == 97u8
+    // Two bytes are still held from the first chunk.
+    mut more = zeros(8)
+    let m = r.read(mutate more)!
+    assert m == 2
+    assert more[0] == 99u8
+    // Nothing held and a read bigger than the buffer goes straight through.
+    let k = r.read(mutate more)!
+    assert k == 6
+    assert more[5] == 106u8
+    assert r.read(mutate more)! == 0
+}
+
+test "read_exact, read_bytes and read_text through the wrapper" {
+    let r = BufferedReader.with_capacity(2, Buffer.from(bytes_of("headtail and more")))
+    mut head = zeros(4)
+    r.read_exact(mutate head)!
+    assert head[3] == 100u8
+    let rest = r.read_bytes()!
+    assert rest.len() == 13
+    let t = BufferedReader.new(Buffer.from(bytes_of("plain text")))
+    assert t.read_text()! == "plain text"
+    mut too_many = zeros(4)
+    let short = BufferedReader.new(Buffer.from(bytes_of("ab")))
+    assert short.read_exact(mutate too_many) is IoError
+}
+
+test "take hands the reader back where the wrapper left it" {
+    let r = BufferedReader.with_capacity(1, Buffer.from(bytes_of("x\ny")))
+    assert r.read_line()! == "x"
+    let inner = r.take()
+    assert inner.read_text()! == "y"
+}
+
+test "BufferedWriter holds small writes until flush" {
+    let w = BufferedWriter.with_capacity(16, Buffer.new())
+    let n: usize = w.write(bytes_of("ab"))!
+    assert n == 2
+    w.write_bytes(bytes_of("cd"))!
+    w.write_text("ef")!
+    w.flush()!
+    let inner = w.take()
+    assert inner.len() == 6
+    let _ = inner.seek(SeekFrom.Start(0))
+    assert inner.read_text()! == "abcdef"
+}
+
+test "BufferedWriter writes through when the buffer fills, and take flushes" {
+    let w = BufferedWriter.with_capacity(4, Buffer.new())
+    w.write_text("abc")!
+    w.write_text("de")!
+    w.write_bytes(bytes_of("a big one"))!
+    w.write_text("z")!
+    let inner = BufferedWriter.new(Buffer.new()).take()
+    assert inner.len() == 0
+    let all = w.take()
+    let _ = all.seek(SeekFrom.Start(0))
+    assert all.read_text()! == "abcdea big onez"
+}
+
+// Boxed as `any Reader` / `any Writer`: the vtable slots are the instance's
+// own methods (`BufferedReader_read$Buffer`), which nothing else names.
+test "a BufferedReader goes through io.copy" {
+    let src = BufferedReader.with_capacity(2, Buffer.from(bytes_of("streamed")))
+    let dst = Buffer.new()
+    assert copy(src, dst)! == 8
+    let _ = dst.seek(SeekFrom.Start(0))
+    assert dst.read_text()! == "streamed"
+}
+
+test "a BufferedWriter goes through io.copy" {
+    let dst = BufferedWriter.with_capacity(4, Buffer.new())
+    assert copy(Buffer.from(bytes_of("written")), dst)! == 7
+    dst.flush()!
+    assert dst.take().len() == 7
+}

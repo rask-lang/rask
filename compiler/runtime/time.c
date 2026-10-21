@@ -50,66 +50,66 @@ int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns) {
 }
 
 // Duration.from_nanos(n) → identity (duration is already nanoseconds)
-int64_t rask_time_Duration_from_nanos(int64_t ns) {
+uint64_t rask_time_Duration_from_nanos(uint64_t ns) {
     return ns;
 }
 
 // Duration.from_millis(ms) → nanoseconds
-int64_t rask_time_Duration_from_millis(int64_t ms) {
+uint64_t rask_time_Duration_from_millis(uint64_t ms) {
     return ms * 1000000LL;
 }
 
 // duration.as_nanos() → nanoseconds (identity)
-int64_t rask_time_Duration_as_nanos(int64_t duration_ns) {
+uint64_t rask_time_Duration_as_nanos(uint64_t duration_ns) {
     return duration_ns;
 }
 
 // duration.as_secs() → whole seconds
-int64_t rask_time_Duration_as_secs(int64_t duration_ns) {
+uint64_t rask_time_Duration_as_secs(uint64_t duration_ns) {
     return duration_ns / 1000000000LL;
 }
 
 // duration.as_millis() → whole milliseconds
-int64_t rask_time_Duration_as_millis(int64_t duration_ns) {
+uint64_t rask_time_Duration_as_millis(uint64_t duration_ns) {
     return duration_ns / 1000000LL;
 }
 
 // duration.as_micros() → whole microseconds
-int64_t rask_time_Duration_as_micros(int64_t duration_ns) {
+uint64_t rask_time_Duration_as_micros(uint64_t duration_ns) {
     return duration_ns / 1000LL;
 }
 
 // duration.as_secs_f64() → fractional seconds
-double rask_time_Duration_as_secs_f64(int64_t duration_ns) {
+double rask_time_Duration_as_secs_f64(uint64_t duration_ns) {
     return (double)duration_ns / 1000000000.0;
 }
 
 // duration.as_secs_f32() → fractional seconds (f64 ABI, narrower precision)
-double rask_time_Duration_as_secs_f32(int64_t duration_ns) {
+double rask_time_Duration_as_secs_f32(uint64_t duration_ns) {
     return (double)((float)duration_ns / 1000000000.0f);
 }
 
 // Duration.seconds(n) → nanoseconds
-int64_t rask_time_Duration_seconds(int64_t secs) {
+uint64_t rask_time_Duration_seconds(uint64_t secs) {
     return secs * 1000000000LL;
 }
 
 // Duration.millis(n) → nanoseconds
-int64_t rask_time_Duration_millis(int64_t ms) {
+uint64_t rask_time_Duration_millis(uint64_t ms) {
     return ms * 1000000LL;
 }
 
 // Duration.micros(n) → nanoseconds
-int64_t rask_time_Duration_micros(int64_t us) {
+uint64_t rask_time_Duration_micros(uint64_t us) {
     return us * 1000LL;
 }
 
 // Duration.nanos(n) → identity
-int64_t rask_time_Duration_nanos(int64_t ns) {
+uint64_t rask_time_Duration_nanos(uint64_t ns) {
     return ns;
 }
 
 // Duration.from_secs_f64(secs) → nanoseconds
-int64_t rask_time_Duration_from_secs_f64(double secs) {
-    return (int64_t)(secs * 1000000000.0);
+uint64_t rask_time_Duration_from_secs_f64(double secs) {
+    return (uint64_t)(secs * 1000000000.0);
 }

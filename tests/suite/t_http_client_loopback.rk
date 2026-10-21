@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.http's client side against a server on loopback: the `http.post`/`put`/
+// `delete`/`request` shortcuts and `HttpClient` with its builders. The server
+// is a task that answers each request with what it saw, so every assertion is
+// about what actually went over the wire.
+//
+// `http.serve` isn't here: a `using Multitasking` block waits for its tasks,
+// and a cancelled `serve` never returns (#1606), so a test that starts
+// one can't end.
+//
+// `HttpClient.request` sends only the client's default headers, not the
+// request's own, and `with_timeout`/`with_max_redirects` do nothing yet
+// (#1608), so those are checked only as far as they work.
+//
+// The client functions are imported by name so `rask stdlib-coverage` sees
+// them (#1600); `import http` is for the server half.
+
+import http
+import http.{post, put, delete, request}
+import http.{HttpClient, Request, Response, Method, HttpError}
+import net
+import net.TcpConnection
+import time
+import time.Duration
+
+/// What the echo server answers: method, url, body, and one header.
+func describe(req: Request) -> string {
+    let tag = req.headers.get("X-Test") ?? "-"
+    return "{req.method.to_string()} {req.url} [{req.body}] x={tag}"
+}
+
+func reply(req: Request) -> Response {
+    let status: u16 = if req.url.starts_with("/missing") { 404 } else { 200 }
+    return Response.new(status, describe(req))
+}
+
+/// Listen on `addr` and answer `n` requests with `describe`, then close.
+/// A connection that sends no request (`wait_until_up`'s probe) is skipped.
+func answer(addr: string, n: i64) -> void or HttpError {
+    mut server = try http.listen(addr)
+    ensure server.close()
+    mut answered = 0
+    while answered < n {
+        let (req, responder) = server.accept() catch _ => continue
+        try responder.respond(reply(req))
+        answered += 1
+    }
+    return
+}
+
+/// The listener comes up inside a task; connect until it's there.
+func wait_until_up(addr: string) -> bool {
+    for _ in 0..500 {
+        if net.tcp_connect(addr) is TcpConnection as c {
+            let _ = c.close()
+            return true
+        }
+        time.sleep(Duration.millis(5))
+    }
+    return false
+}
+
+/// A server task answering `n` requests, and its address once it's up.
+func start_server(n: i64) -> string {
+    let addr = free_addr()
+    spawn { answer(addr, n) }.detach()
+    assert wait_until_up(addr)
+    return addr
+}
+
+test "post, put and delete send their method and body" {
+    using Multitasking {
+        let addr = start_server(3)
+
+        let p = post("http://{addr}/items", "new thing")!
+        assert p.status == 200
+        assert p.body == "POST /items [new thing] x=-"
+
+        let u = put("http://{addr}/items/7", "changed")!
+        assert u.body == "PUT /items/7 [changed] x=-"
+
+        let d = delete("http://{addr}/items/7")!
+        assert d.is_ok()
+        assert d.body == "DELETE /items/7 [] x=-"
+
+    }
+}
+
+test "request sends a built Request with its headers and body" {
+    using Multitasking {
+        let addr = start_server(2)
+
+        let req = Request.new(Method.Patch, "http://{addr}/thing?q=1")
+            .with_header("X-Test", "built")
+            .with_body("patch body")
+        let r = request(req)!
+        assert r.body == "PATCH /thing?q=1 [patch body] x=built"
+
+        let missing = request(Request.new(Method.Get, "http://{addr}/missing"))!
+        assert missing.status == 404
+        assert missing.is_client_error()
+
+    }
+}
+
+test "HttpClient sends its default header on every method" {
+    using Multitasking {
+        let addr = start_server(5)
+
+        let client = HttpClient.new()
+            .with_header("X-Test", "client")
+            .with_timeout(Duration.seconds(5))
+            .with_max_redirects(0)
+        let base = "http://{addr}"
+
+        assert client.get("{base}/a")!.body == "GET /a [] x=client"
+        assert client.post("{base}/b", "pb")!.body == "POST /b [pb] x=client"
+        assert client.put("{base}/c", "pc")!.body == "PUT /c [pc] x=client"
+        assert client.delete("{base}/d")!.body == "DELETE /d [] x=client"
+        let r = client.request(Request.new(Method.Post, "{base}/e").with_body("pe"))!
+        assert r.body == "POST /e [pe] x=client"
+
+    }
+}
+
+test "a client with no server to talk to gets an HttpError" {
+    mut l = net.tcp_listen("127.0.0.1:0")!
+    let addr = l.local_addr()
+    let _ = l.close()
+    assert HttpClient.new().get("http://{addr}/") is HttpError
+    assert post("http://{addr}/", "x") is HttpError
+}
+
+func free_addr() -> string {
+    mut l = net.tcp_listen("127.0.0.1:0")!
+    let addr = l.local_addr()
+    let _ = l.close()
+    return addr
+}

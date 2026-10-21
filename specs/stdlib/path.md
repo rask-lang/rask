@@ -22,51 +22,68 @@ Single `Path` type wrapping a string. No `PathBuf`/`OsStr`/`OsString` zoo. Non-U
 |------|-------------|------|-------|
 | `Path` | Cross-platform file path | Same as string | No (owns string) |
 
+<!-- surface -->
+```rask
+struct Path { }
+```
+
 ## Constructors
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-Path.from(s: string) -> Path        // normalize separators
+extend Path {
+    func from(s: string) -> Path        // normalize separators
+}
 ```
 
 One constructor. `from` because a Path is built from a string value, matching `Vec.from`/`Map.from`.
 
 ## Component Access
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-path.parent() -> Path?              // "/home/user/file.txt" -> "/home/user"
-path.file_name() -> string?         // "/home/user/file.txt" -> "file.txt"
-path.extension() -> string?         // "/home/user/file.txt" -> "txt"
-path.stem() -> string?              // "/home/user/file.txt" -> "file"
-path.components() -> Vec<string>    // "/home/user" -> ["home", "user"]
+extend Path {
+    func parent(self) -> Path?              // "/home/user/file.txt" -> "/home/user"
+    func file_name(self) -> string?         // "/home/user/file.txt" -> "file.txt"
+    func extension(self) -> string?         // "/home/user/file.txt" -> "txt"
+    func stem(self) -> string?              // "/home/user/file.txt" -> "file"
+    func components(self) -> Vec<string>    // "/home/user" -> ["home", "user"]
+}
 ```
 
 ## Predicates
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-path.is_absolute() -> bool          // starts with "/" or drive letter
-path.is_relative() -> bool          // not absolute
-path.has_extension(ext: string) -> bool  // case-insensitive on Windows
+extend Path {
+    func is_absolute(self) -> bool                  // starts with "/" or drive letter
+    func is_relative(self) -> bool                  // not absolute
+    func has_extension(self, ext: string) -> bool   // case-insensitive on Windows
+}
 ```
 
 ## Manipulation
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-path / other -> Path                // append component with separator
-path.with_extension(ext: string) -> Path   // replace extension
-path.with_file_name(name: string) -> Path  // replace final component
+Path implements Div<string> {
+    func div(self, other: string) -> Path       // append component with separator
+}
+extend Path {
+    func with_extension(self, ext: string) -> Path      // replace extension
+    func with_file_name(self, name: string) -> Path     // replace final component
+}
 ```
 
 `/` is the one way to join paths — there is no `join` method.
 
 ## Conversion
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-path.as_string(self) -> string      // cheap view — Path IS a string
+extend Path {
+    func as_string(self) -> string      // cheap view — Path IS a string
+}
 ```
 
 ## Platform Behavior

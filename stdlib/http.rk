@@ -58,7 +58,7 @@ extend Method {
 // `format_http_request` couldn't call `req.method.to_string()`, so `rask check
 // stdlib/fmt.rk` failed on a stdlib file.
 Method implements Displayable {
-    // Serialize to the standard HTTP method string.
+    // The standard HTTP method string.
     public func to_string(self) -> string {
         match self {
             Method.Get => return "GET"
@@ -96,6 +96,13 @@ extend Headers {
     }
     public func len(self) -> usize {
         return self.entries.len()
+    }
+
+    /// Each header as `(name, value)`, names lowercased (H1), in no
+    /// particular order. A sequence a type hands out of a method of its own
+    /// (type.sequence/SEQ6): `for (name, value) in headers.iter()`.
+    public func iter(self) -> Sequence<(string, string)> {
+        return self.entries.as_sequence()
     }
 }
 
@@ -249,27 +256,23 @@ extend Response {
 // ─── Errors ──────────────────────────────────────────────────────
 
 public enum HttpError {
-    InternalServerError(string)
     ConnectionFailed(string)
     Timeout
     InvalidUrl(string)
     InvalidResponse(string)
     TooManyRedirects
     Io(string)
-    NotFound
 }
 
 extend HttpError {
     public func message(self) -> string {
         match self {
-            HttpError.InternalServerError(msg) => return "internal server error: {msg}"
             HttpError.ConnectionFailed(msg) => return "connection failed: {msg}"
             HttpError.Timeout => return "request timed out"
             HttpError.InvalidUrl(msg) => return "invalid URL: {msg}"
             HttpError.InvalidResponse(msg) => return "invalid response: {msg}"
             HttpError.TooManyRedirects => return "too many redirects"
             HttpError.Io(msg) => return "I/O error: {msg}"
-            HttpError.NotFound => return "not found"
         }
     }
 }
@@ -588,7 +591,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     if rest.starts_with("http://") {
         rest = rest[7..].to_string()
     } else if rest.starts_with("https://") {
-        return HttpError.InvalidUrl("HTTPS not supported yet")
+        return HttpError.InvalidUrl("https:// needs TLS, which is a package rather than the stdlib, and HttpClient can't take one yet")
     }
 
     // Split host+port from path at first /

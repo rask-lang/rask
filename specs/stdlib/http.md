@@ -16,19 +16,19 @@ HTTP/1.1 client and server. Convenience functions for simple requests, `HttpClie
 | **T3: Headers** | Case-insensitive header map |
 | **T4: Method** | Standard HTTP method enum |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct Request {
-    public method: Method
-    public url: string
-    public headers: Headers
-    public body: string
+    method: Method
+    url: string
+    headers: Headers
+    body: string
 }
 
 struct Response {
-    public status: u16
-    public headers: Headers
-    public body: string
+    status: u16
+    headers: Headers
+    body: string
 }
 
 enum Method { Get, Head, Post, Put, Delete, Patch, Options }
@@ -41,7 +41,7 @@ enum Method { Get, Head, Post, Put, Delete, Patch, Options }
 | **H1: Case-insensitive** | Header name lookup is case-insensitive (`"Content-Type"` matches `"content-type"`) |
 | **H2: Multi-value** | Multiple values for the same header are comma-joined per RFC 7230 |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct Headers { }
 
@@ -49,7 +49,7 @@ extend Headers {
     func new() -> Headers
     func get(self, name: string) -> string?
     func set(mutate self, name: string, value: string)
-    func has(self, name: string) -> bool
+    func contains(self, name: string) -> bool
     func remove(mutate self, name: string) -> string?
     func len(self) -> usize
     func iter(self) -> Sequence<(string, string)>
@@ -58,7 +58,7 @@ extend Headers {
 
 ## Request API
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 extend Request {
     func new(method: Method, url: string) -> Request
@@ -78,7 +78,7 @@ extend Request {
 | **R1: Status helpers** | Named constructors for common status codes |
 | **R2: Status categories** | `is_ok()`, `is_error()`, `is_redirect()`, `is_client_error()`, `is_server_error()` check status code ranges |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 extend Response {
     // Constructors
@@ -114,13 +114,15 @@ extend Response {
 | **C3: HttpClient** | Configurable client for timeouts, default headers, connection reuse |
 | **C4: Not a resource** | `HttpClient` is not `@resource` — pooled connections close on drop |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-http.get(url: string) -> Response or HttpError
-http.post(url: string, body: string) -> Response or HttpError
-http.put(url: string, body: string) -> Response or HttpError
-http.delete(url: string) -> Response or HttpError
-http.request(request: Request) -> Response or HttpError
+extend http {
+    func get(url: string) -> Response or HttpError
+    func post(url: string, body: string) -> Response or HttpError
+    func put(url: string, body: string) -> Response or HttpError
+    func delete(url: string) -> Response or HttpError
+    func request(request: Request) -> Response or HttpError
+}
 ```
 
 <!-- test: skip -->
@@ -135,7 +137,7 @@ if resp.is_ok() {
 
 ### HttpClient
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct HttpClient { }
 
@@ -173,9 +175,11 @@ let resp = try client.get("http://api.example.com/users")
 | **S2: Responder** | Linear handle for sending exactly one response per request. Compiler guarantees every accepted request gets a response |
 | **S3: Accept loop** | Server yields `(Request, Responder)` pairs. Spawn tasks for concurrent handling |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-http.listen(addr: string) -> HttpServer or HttpError
+extend http {
+    func listen(addr: string) -> HttpServer or HttpError
+}
 
 @resource
 struct HttpServer { }
@@ -221,12 +225,14 @@ func main() -> void or Error {
 |------|-------------|
 | **S4: serve** | `http.serve(addr, handler)` — one-line server for simple cases. Spawns a green task per request. Requires `using Multitasking` |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-http.serve(
-    addr: string
-    handler: func(Request) -> Response
-) -> void or HttpError
+extend http {
+    func serve(
+        addr: string
+        handler: func(Request) -> Response
+    ) -> void or HttpError
+}
 ```
 
 <!-- test: skip -->
@@ -264,7 +270,7 @@ func handle_users(req: Request) -> Response {
 
 ## HttpError
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 enum HttpError {
     ConnectionFailed(string)
@@ -306,6 +312,7 @@ WHY: Could not establish TCP connection to the remote host.
 | `ensure` + explicit `respond()` | Safe — ensure's respond is a no-op if already sent | S2 |
 | Redirect loop | `HttpError.TooManyRedirects` (default limit: 10) | C1 |
 | Invalid URL | `HttpError.InvalidUrl` | C1 |
+| `https://` URL | `HttpError.InvalidUrl`: TLS is a package ([tls.md](../packages/tls.md)), and the client has no way to take one yet | C1 |
 | Response body too large | Reads fully into memory (no streaming in v1) | T2 |
 | Connection timeout | `HttpError.Timeout` (default: 30s for module functions) | C1 |
 | Malformed HTTP response | `HttpError.InvalidResponse` | C1 |
@@ -322,7 +329,7 @@ WHY: Could not establish TCP connection to the remote host.
 
 **C4 (HttpClient not @resource):** Connection pools are an optimization, not a correctness obligation. Forcing `.close()` on every client adds ceremony for the 99% case. Pooled connections close on drop — this is the one place I'm OK with implicit cleanup because there's no data loss risk.
 
-**C1 (shared internal client):** Module-level functions (`http.get`, etc.) reuse a shared internal client for connection pooling. Without this, every call does a fresh TCP+TLS handshake. Use `HttpClient.new()` when you need isolation or custom settings.
+**C1 (shared internal client):** Module-level functions (`http.get`, etc.) reuse a shared internal client for connection pooling. Without this, every call does a fresh TCP handshake. Use `HttpClient.new()` when you need isolation or custom settings.
 
 **S4 (serve):** Covers the common pattern of "listen, accept in a loop, spawn a task per request." Three lines instead of ten. For anything more complex (graceful shutdown, connection limits), use `http.listen` and the accept loop directly.
 

@@ -581,7 +581,7 @@ impl Value {
 pub enum ModuleKind {
     Fs,     // fs.read_file, fs.write_file, etc.
     Io,     // io.read_line, io.print, etc.
-    Cli,    // cli.parse, cli.Parser (also legacy cli.args)
+    Cli,    // cli.Parser, cli.CliError
     Std,    // std.exit (legacy alias for os.exit)
     Env,    // env.var, env.vars (legacy alias for os.env)
     Time,   // time.Instant, time.Duration, time.sleep
@@ -1670,6 +1670,8 @@ impl Value {
     pub fn as_u64(&self) -> Result<u64, String> {
         match self {
             Value::Int(n, _) if *n >= 0 => Ok(*n as u64),
+            // A `u64` past i64's range is held as its bit pattern.
+            Value::Int(n, IntKind::U64) => Ok(*n as u64),
             Value::Int(n, _) => Err(format!("Cannot convert negative integer {} to u64", n)),
             _ => Err(format!("Expected integer, found {}", self.type_name())),
         }

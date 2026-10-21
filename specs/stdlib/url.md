@@ -15,18 +15,19 @@ would be ceremony. `Url` is for when you actually need the parts.
 
 | Rule | Description |
 |------|-------------|
-| **U1: One type** | `Url` holds the parsed parts as fields. No separate `Authority`, `Host`, `QueryString` types |
+| **U1: One type** | `Url` holds the parsed parts as fields. No separate `Authority`, `Host`, `QueryString` types. Path, query, fragment and user are kept as written, still percent-encoded |
 | **U2: Ports default from the scheme** | `port()` answers what you'd connect to — 443 for `https`, 80 for `http`, 22 for `ssh` — not what was literally written. An unknown scheme with no explicit port gives `none` |
 | **U3: Percent-encoding lives here** | `url.encode`/`url.decode` are the one place that handles `%XX`. It isn't a serialization format, so it doesn't belong beside `base64`/`hex` |
-| **U4: Parsing is fallible, lookup is absent-shaped** | `url.parse` returns `Url or UrlError` — a bad URL is a real error with a reason. `u.query(key)` returns `string?` — a missing parameter is a non-answer (`std.api/SD3`) |
+| **U4: Parsing is fallible, lookup is absent-shaped** | `url.parse` returns `Url or UrlError` — a bad URL is a real error with a reason, and that includes a bad escape anywhere in it. `u.param(key)` returns `string?` — a missing parameter is a non-answer (`std.api/SD3`). Because parse checked every escape, reading parameters can't fail |
 
 ## Type
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 struct Url {
     scheme: string          // "https"
     host: string            // "example.com"
+    explicit_port: u16?     // 8080 — only what was written; port() is what to connect to
     path: string            // "/api/users" — "/" when empty
     query: string?          // "page=1&limit=10" — raw, undecoded
     fragment: string?       // "section"
@@ -36,34 +37,57 @@ struct Url {
 
 Fields are public and plain. Anything that needs computing is a method.
 
+The written port is a field like every other part, so the URL can be put back
+together exactly. It's called `explicit_port` rather than `port` because the name
+`port` belongs to the method, which is the one callers want (U2).
+
 ## Parsing
+
+<!-- surface -->
+```rask
+extend url {
+    func parse(s: string) -> Url or UrlError
+}
+```
 
 <!-- test: skip -->
 ```rask
-url.parse(s: string) -> Url or UrlError
-
 let u = try url.parse("https://example.com:8080/path?page=1#top")
 u.scheme        // "https"
 u.host          // "example.com"
 u.port()        // 8080
 u.path          // "/path"
-u.query("page") // "1"
+u.param("page") // "1"
 ```
 
 ## Methods
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-u.port() -> u16?                            // explicit port, else the scheme's default (U2)
-u.query(key: string) -> string?             // one parameter, percent-decoded
-u.params() -> Iterator<(string, string)>    // all of them, in order, decoded
-u.with_query(pairs: Vec<(string, string)>) -> Url
-u.display() -> string                       // Displayable — reassembles the URL
-u / segment -> Url                          // append a path segment, encoding it
+extend Url {
+    func port(self) -> u16?                             // explicit port, else the scheme's default (U2)
+    func param(self, key: string) -> string?            // one parameter, percent-decoded
+    func params(self) -> Vec<(string, string)>          // all of them, in order, decoded
+    func with_query(self, pairs: Vec<(string, string)>) -> Url
+}
+Url implements Displayable {
+    func to_string(self) -> string                      // reassembles the URL
+}
+Url implements Div<string> {
+    func div(self, segment: string) -> Url              // append a path segment, encoding it
+}
 ```
 
+`param`/`params` are one name in two numbers. The parameter lookup used to be
+`query(key)`, which collided with the `query` field: `u.query` and `u.query("x")`
+would have been two different things under one name.
+
+`params()` hands back a `Vec`, the same shape `url.parse_query` returns. A query
+string is a handful of pairs, and the old `Iterator` return named a protocol
+that's gone (`type.sequence/SEQ20`).
+
 `/` appends a path segment the same way `Path` does (`std.path`), so the two
-read alike:
+read alike. Query and fragment stay where they were:
 
 <!-- test: skip -->
 ```rask
@@ -73,14 +97,20 @@ let endpoint = api / "users" / user_id      // ".../v1/users/12%20a"
 
 ## Percent-Encoding
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-url.encode(s: string) -> string             // "hello world" -> "hello%20world"
-url.decode(s: string) -> string or UrlError
+extend url {
+    func encode(s: string) -> string            // "hello world" -> "hello%20world"
+    func decode(s: string) -> string or UrlError
 
-url.encode_query(pairs: Vec<(string, string)>) -> string   // "a=1&b=2"
-url.parse_query(s: string) -> Vec<(string, string)> or UrlError
+    func encode_query(pairs: Vec<(string, string)>) -> string   // "a=1&b=2"
+    func parse_query(s: string) -> Vec<(string, string)> or UrlError
+}
 ```
+
+`+` means a space in a query string and nowhere else, so `parse_query`,
+`param` and `params` decode it and `url.decode` leaves it alone. `encode` always
+writes a space as `%20`, which both read.
 
 `encode` escapes everything outside the unreserved set — correct for a path
 segment, a query value, or a form field, which is every case that comes up. A URL
@@ -95,7 +125,7 @@ matter for signing.
 
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum UrlError {
     NoScheme                // "example.com/path" — relative URLs aren't parsed
@@ -103,6 +133,9 @@ enum UrlError {
     BadPort(string)         // ":99999" or ":http"
     BadEscape(string)       // "%zz", or "%" at the end of the input
     BadHost(string)
+}
+extend UrlError {
+    func message(self) -> string
 }
 ```
 
@@ -128,14 +161,19 @@ FIX: Add the scheme:
 |------|------|----------|
 | No path — `"https://example.com"` | U1 | `path` is `"/"` |
 | Empty query — `"?"` | U1 | `query` is `none`, not `Some("")` |
-| Repeated key — `"?tag=a&tag=b"` | — | `params()` yields both; `query("tag")` gives the first |
-| Valueless key — `"?debug"` | — | `query("debug")` is `""`, not `none`. It's present |
-| Explicit default port — `"https://x:443/"` | U2 | `port()` is 443. Round-tripping through `display()` drops the redundant `:443` |
+| Repeated key — `"?tag=a&tag=b"` | — | `params()` has both; `param("tag")` gives the first |
+| Valueless key — `"?debug"` | — | `param("debug")` is `""`, not `none`. It's present |
+| Bad escape anywhere — `"http://x/%zz"` | U4 | `BadEscape("%zz")` from `parse` |
+| Escape that isn't UTF-8 — `url.decode("%FF")` | U3 | `BadEscape` with the whole input. The result is a `string` |
+| `+` in a query | — | A space for `param`/`params`/`parse_query`. `url.decode` keeps it |
+| Empty port — `"http://x:/"` | U2 | No port written; `port()` is the default |
+| No authority — `"mailto:a@b.c"` | U1 | `host` is `""`, `path` is `"a@b.c"`. `to_string()` writes no `//` |
+| Explicit default port — `"https://x:443/"` | U2 | `port()` is 443. Round-tripping through `to_string()` drops the redundant `:443` |
 | Unknown scheme, no port — `"myapp://x/"` | U2 | `port()` is `none` |
 | Uppercase scheme or host | — | Lowercased on parse. Path and query keep their case |
-| IPv6 host — `"http://[::1]:80/"` | U1 | `host` is `"::1"`, brackets stripped. `display()` puts them back |
+| IPv6 host — `"http://[::1]:80/"` | U1 | `host` is `"::1"`, brackets stripped. `to_string()` puts them back |
 | Non-ASCII host (IDN) | — | Kept as-is, not punycoded. IDNA is a package (`std.strings/U3` reasoning — it needs the full Unicode tables) |
-| `%2F` inside a path segment | U3 | Preserved as an escape through parse and `display()` — decoding it would change the path structure |
+| `%2F` inside a path segment | U3 | Preserved as an escape through parse and `to_string()` — decoding it would change the path structure |
 
 ---
 

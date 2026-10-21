@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.terminal: a Style is a value (T1), colour is gated on the output (T2),
+// and Auto means a tty with NO_COLOR unset and TERM not dumb (T3). Escapes are
+// shown with ESC in place of the 0x1b byte so a failure reads.
+//
+// Every test sets the colour mode it needs: the mode is process-wide, and
+// tests share the process.
+
+import os
+import terminal
+import terminal.{Style, Color, ColorMode}
+
+func shown(s: string) -> string {
+    return s.replace("\u{1b}", "ESC")
+}
+
+func fg(c: Color) -> string {
+    return shown(Style.new().color(c).apply("x"))
+}
+
+func bg(c: Color) -> string {
+    return shown(Style.new().on(c).apply("x"))
+}
+
+test "T2: Always wraps, Never doesn't" {
+    let err = Style.new().color(Color.Red).bold()
+    terminal.set_color(ColorMode.Always)
+    assert shown(err.apply("error")) == "ESC[1;31merrorESC[0m"
+    terminal.set_color(ColorMode.Never)
+    assert err.apply("error") == "error"
+}
+
+test "the base and bright palettes, both sides" {
+    terminal.set_color(ColorMode.Always)
+    assert fg(Color.Black) == "ESC[30mxESC[0m"
+    assert fg(Color.Red) == "ESC[31mxESC[0m"
+    assert fg(Color.Green) == "ESC[32mxESC[0m"
+    assert fg(Color.Yellow) == "ESC[33mxESC[0m"
+    assert fg(Color.Blue) == "ESC[34mxESC[0m"
+    assert fg(Color.Magenta) == "ESC[35mxESC[0m"
+    assert fg(Color.Cyan) == "ESC[36mxESC[0m"
+    assert fg(Color.White) == "ESC[37mxESC[0m"
+    assert fg(Color.BrightBlack) == "ESC[90mxESC[0m"
+    assert fg(Color.BrightRed) == "ESC[91mxESC[0m"
+    assert fg(Color.BrightGreen) == "ESC[92mxESC[0m"
+    assert fg(Color.BrightYellow) == "ESC[93mxESC[0m"
+    assert fg(Color.BrightBlue) == "ESC[94mxESC[0m"
+    assert fg(Color.BrightMagenta) == "ESC[95mxESC[0m"
+    assert fg(Color.BrightCyan) == "ESC[96mxESC[0m"
+    assert fg(Color.BrightWhite) == "ESC[97mxESC[0m"
+    assert bg(Color.Black) == "ESC[40mxESC[0m"
+    assert bg(Color.White) == "ESC[47mxESC[0m"
+    assert bg(Color.BrightBlack) == "ESC[100mxESC[0m"
+    assert bg(Color.BrightWhite) == "ESC[107mxESC[0m"
+}
+
+test "256-colour and 24-bit colours" {
+    terminal.set_color(ColorMode.Always)
+    assert fg(Color.Ansi(208)) == "ESC[38;5;208mxESC[0m"
+    assert bg(Color.Ansi(0)) == "ESC[48;5;0mxESC[0m"
+    assert fg(Color.Rgb(r: 255, g: 128, b: 0)) == "ESC[38;2;255;128;0mxESC[0m"
+    assert bg(Color.Rgb(r: 1, g: 2, b: 3)) == "ESC[48;2;1;2;3mxESC[0m"
+}
+
+test "T1: attributes, in any order, come out in one escape" {
+    terminal.set_color(ColorMode.Always)
+    assert shown(Style.new().bold().apply("x")) == "ESC[1mxESC[0m"
+    assert shown(Style.new().dim().apply("x")) == "ESC[2mxESC[0m"
+    assert shown(Style.new().italic().apply("x")) == "ESC[3mxESC[0m"
+    assert shown(Style.new().underline().apply("x")) == "ESC[4mxESC[0m"
+    let all = Style.new().underline().on(Color.Blue).italic().color(Color.Yellow).dim().bold()
+    assert shown(all.apply("x")) == "ESC[1;2;3;4;33;44mxESC[0m"
+    // Setting a colour again replaces it.
+    assert fg(Color.Red) == shown(Style.new().color(Color.Green).color(Color.Red).apply("x"))
+}
+
+test "T1: a style is a value; building on it leaves it alone" {
+    terminal.set_color(ColorMode.Always)
+    let base = Style.new().color(Color.Cyan)
+    let loud = base.bold()
+    assert shown(base.apply("p")) == "ESC[36mpESC[0m"
+    assert shown(loud.apply("p")) == "ESC[1;36mpESC[0m"
+}
+
+test "a style that sets nothing changes nothing" {
+    terminal.set_color(ColorMode.Always)
+    assert Style.new().apply("plain") == "plain"
+    let (start, reset) = Style.new().codes()
+    assert start == ""
+    assert reset == ""
+}
+
+test "codes: the start and the reset, gated like apply" {
+    let s = Style.new().color(Color.Green).underline()
+    terminal.set_color(ColorMode.Always)
+    let (start, reset) = s.codes()
+    assert shown(start) == "ESC[4;32m"
+    assert shown(reset) == "ESC[0m"
+    assert "{start}text{reset}" == s.apply("text")
+    terminal.set_color(ColorMode.Never)
+    let (off_start, off_reset) = s.codes()
+    assert off_start == ""
+    assert off_reset == ""
+}
+
+test "nested: the inner apply runs first, the outer reset ends the run" {
+    terminal.set_color(ColorMode.Always)
+    let inner = Style.new().bold().apply("b")
+    let outer = Style.new().color(Color.Red).apply("a{inner}c")
+    assert shown(outer) == "ESC[31maESC[1mbESC[0mcESC[0m"
+}
+
+test "T3: Auto turns colour off for NO_COLOR and a dumb TERM" {
+    let s = Style.new().color(Color.Red)
+    terminal.set_color(ColorMode.Auto)
+    os.set_env("TERM", "xterm-256color")
+    os.set_env("NO_COLOR", "1")
+    assert s.apply("x") == "x"
+    // An empty NO_COLOR counts as unset; then it's the tty that decides.
+    os.set_env("NO_COLOR", "")
+    assert (s.apply("x") != "x") == terminal.is_tty()
+    os.remove_env("NO_COLOR")
+    assert (s.apply("x") != "x") == terminal.is_tty()
+    os.set_env("TERM", "dumb")
+    assert s.apply("x") == "x"
+    // Always overrides the environment, which is what --color=always is for.
+    terminal.set_color(ColorMode.Always)
+    assert s.apply("x") != "x"
+    terminal.set_color(ColorMode.Auto)
+}
+
+test "T4: no terminal, no size" {
+    if !terminal.is_tty() {
+        assert terminal.width() is none
+        assert terminal.height() is none
+    }
+    if terminal.width()? as w {
+        assert w > 0
+        assert terminal.is_tty()
+    }
+    if terminal.height()? as h {
+        assert h > 0
+    }
+}
+
+func main() {
+    terminal.set_color(ColorMode.Always)
+    let err = Style.new().color(Color.Red).bold()
+    println(shown(err.apply("error")))
+    println(shown(Style.new().on(Color.Rgb(r: 9, g: 8, b: 7)).apply("bg")))
+    terminal.set_color(ColorMode.Never)
+    println(err.apply("plain"))
+}

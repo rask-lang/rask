@@ -21,6 +21,16 @@ public func panic(msg: string) {}
 @native
 public func todo(msg: string?) {}
 
+/// Stop this test here and report it skipped, with the reason
+/// (std.testing/T12). Like `panic`, it doesn't return.
+@native
+public func skip(reason: string) {}
+
+/// Invert this test's result: it passes only if it fails (std.testing/T13).
+/// For a test that pins a known bug until the fix lands.
+@native
+public func expect_fail() {}
+
 /// Mark code that should never be reached. Panics if executed.
 /// Returns `!` (Never) so it works in any type context.
 @native
@@ -44,9 +54,11 @@ public func eprintln(msg: string) {}
 @blocks
 public func eprint(msg: string) {}
 
-/// Format values into a string.
-@native
-public func format(fmt: string) -> string {}
+/// Format values into a string. The arguments after the template are
+/// compiler support (std.fmt/CM1): the compiler reads the template and builds
+/// the string in place, so no call to this reaches either backend.
+@builtin
+public func format(template: string) -> string {}
 
 /// The smaller of two values. Works on any Comparable type — numbers,
 /// strings (lexicographic), custom types. No `.min()` method or

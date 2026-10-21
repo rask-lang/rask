@@ -13,6 +13,7 @@ pub mod runtime_abi;
 mod instantiate;
 mod layout;
 mod reachability;
+pub mod reflect;
 
 pub use instantiate::instantiate_function;
 pub use layout::{
@@ -74,6 +75,11 @@ pub struct MonoProgram {
     /// Closures in instantiated bodies that may not reach another task, each
     /// decided from its copy's concrete capture types (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
+    /// (instance layout, method) → the symbol in that vtable slot, for a
+    /// generic instance boxed as `any I`. `BufferedReader$Buffer` and `read`
+    /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
+    /// from each other.
+    pub vtable_symbols: HashMap<(String, String), String>,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -1128,6 +1134,7 @@ fn monomorphize_inner(
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
         instantiated_field_reuses: mono.instantiated_field_reuses,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
+        vtable_symbols: mono.vtable_symbols,
     })
 }
 
@@ -1333,7 +1340,8 @@ mod tests {
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
             derived_decls: Vec::new(),
-            wrapper_eq_calls: std::collections::HashMap::new(),
+            wrapper_calls: std::collections::HashMap::new(),
+            copied_clones: std::collections::HashSet::new(),
             sequence_coercions: std::collections::HashMap::new(),
             wrapper_fns: Vec::new(),
             derived_generic_methods: std::collections::HashSet::new(),

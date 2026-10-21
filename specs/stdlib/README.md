@@ -50,7 +50,6 @@ test ([strings.md](strings.md) `U1`–`U5`).
 |--------|---------|--------|
 | [net](net.md) | TCP/UDP sockets, DNS | Specified |
 | [http](http.md) | HTTP client and server | Specified |
-| [tls](tls.md) | TLS/SSL connections | Specified |
 | [url](url.md) | URL parsing, percent-encoding | Specified |
 
 ### Data Formats
@@ -333,9 +332,8 @@ let resp = try client.post("https://api.example.com/submit")
 
 ## TLS
 
-Encrypted connections over TCP. `tls.connect(addr)` to dial, `tls.wrap(conn, host:)`
-to upgrade an existing connection. Verification is on by default and turning it off
-is explicit at the call site. See [tls.md](tls.md).
+Not in the stdlib: it's a package, specified in [../packages/tls.md](../packages/tls.md),
+which says why.
 
 ---
 

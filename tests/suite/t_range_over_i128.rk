@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A range whose bounds are 128-bit integers.
+//
+// The interpreter's range holds its bounds as i64 and refuses anything else
+// ("range start must be int, got i128"), so a loop over an i128 or u128 range
+// stops there while native runs it.
+
+test "a loop over an i128 range" {
+    let lo: i128 = 3
+    let hi: i128 = 7
+    mut sum: i128 = 0
+    for i in lo..hi {
+        sum = sum + i
+    }
+    assert sum == 18
+}
+
+test "a loop over a u128 range" {
+    let hi: u128 = 4
+    mut n: u128 = 0
+    for i in 0..hi {
+        n = n + i
+    }
+    assert n == 6
+}

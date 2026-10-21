@@ -302,9 +302,11 @@ int64_t rask_string_ge(const RaskStr *a, const RaskStr *b) {
 
 // ─── Read-only operations ───────────────────────────────────
 
+// The byte, or -1 past the end: `byte_at` answers `u8?`, and a negative
+// return is its `none`. Answering 0 there made every miss `some(0)`.
 int64_t rask_string_byte_at(const RaskStr *s, int64_t pos) {
     int64_t len = str_len(s);
-    if (pos < 0 || pos >= len) return 0;
+    if (pos < 0 || pos >= len) return -1;
     return (int64_t)(uint8_t)str_data(s)[pos];
 }
 

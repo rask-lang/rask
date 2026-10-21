@@ -53,12 +53,9 @@ public struct VariantInfo {
 
 struct reflect { }
 
-// Marked `@unimplemented` below: nothing answers them on either backend.
-// `rask_types::reflect::answer` is the one classifier both backends dispatch
-// through, and it returns NoSuchMethod for these — so `@native`, which claims a
-// backend implements it, was a lie the checker had no way to notice. It only
-// started mattering when this file joined the stub set: before that nothing
-// here reached the checker at all.
+// Every one folds to a constant at the call (R1, R5). The answers are worked
+// out once, in `rask_types::reflect` from the checker's type table and in
+// `rask_mono::reflect` from layouts, and both backends dispatch through them.
 extend reflect {
     @native
     public func size_of<T>() -> usize {}
@@ -88,16 +85,16 @@ extend reflect {
     public func is_flat<T>() -> bool {}
     @native
     public func fields<T>() -> Vec<FieldInfo> {}
-    @unimplemented
+    @native
     public func has_field<T>(name: string) -> bool {}
-    @unimplemented
+    @native
     public func methods<T>() -> Vec<MethodInfo> {}
-    @unimplemented
+    @native
     public func has_method<T>(name: string) -> bool {}
-    @unimplemented
+    @native
     public func implements<T, Interface>() -> bool {}
-    @unimplemented
+    @native
     public func interfaces<T>() -> Vec<string> {}
-    @unimplemented
+    @native
     public func variants<T>() -> Vec<VariantInfo> {}
 }

@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a test writes through `io.stdout()` belongs to that test's output, the
+// same as `println`. Native captures both. The interpreter captures `println`
+// and lets the handle's bytes through to the real stdout, so they print above
+// the report instead of under the test (#1605).
+
+import io
+
+test "println is captured" {
+    println("via println")
+}
+
+test "Stdout.write_bytes is captured too" {
+    mut out = io.stdout()
+    ensure out.close()
+    let bytes: Vec<u8> = [0x6fu8, 0x6b, 0x0a]
+    out.write_bytes(bytes)!
+    out.close()
+}
+
+test "Stdout.write_text is captured too" {
+    mut out = io.stdout()
+    ensure out.close()
+    out.write_text("via handle\n")!
+    out.close()
+}

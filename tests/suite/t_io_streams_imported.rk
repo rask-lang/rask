@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The standard streams through names imported from `io`, and the byte-level
+// writers: `Stdout.write_bytes` and `Buffer.write_bytes`.
+//
+// Like t_read_line_eof.rk, this runs with stdin at end of input, so every read
+// from it is empty or an EOF error.
+
+import io.{stdin, stdout, stderr, read_line, Buffer, IoError, SeekFrom}
+
+test "read_line at end of input is UnexpectedEof" {
+    match read_line() {
+        string as line => assert false, "read a line from an empty stdin: {line}"
+        IoError as e => assert e is IoError.UnexpectedEof
+    }
+}
+
+test "Stdin.read_bytes at end of input is empty" {
+    mut inp = stdin()
+    ensure inp.close()
+    let bytes = inp.read_bytes()!
+    assert bytes.len() == 0
+    inp.close()
+}
+
+test "Stdin.read_text at end of input is empty" {
+    mut inp = stdin()
+    ensure inp.close()
+    let text = inp.read_text()!
+    assert text == ""
+    inp.close()
+}
+
+// Zero bytes: real text through the handle shows up in the test's output on
+// native and goes straight to the terminal on the interpreter, so the two runs
+// print differently. That half is t_stdout_handle_test_output.rk.
+test "Stdout.write_bytes takes an empty vector and flushes clean" {
+    mut out = stdout()
+    ensure out.close()
+    let bytes: Vec<u8> = []
+    out.write_bytes(bytes)!
+    out.flush()!
+    out.close()
+}
+
+test "Stderr through the imported name" {
+    mut err = stderr()
+    ensure err.close()
+    let none_bytes: Vec<u8> = []
+    err.write_bytes(none_bytes)!
+    err.close()
+}
+
+test "Buffer.write_bytes appends, and reads back in order" {
+    mut buf = Buffer.new()
+    let a: Vec<u8> = [1u8, 2, 3]
+    let b: Vec<u8> = [250u8]
+    buf.write_bytes(a)!
+    buf.write_bytes(b)!
+    assert buf.len() == 4
+    let all = buf.to_bytes()
+    assert all[0] == 1u8
+    assert all[2] == 3u8
+    assert all[3] == 250u8
+}
+
+test "Buffer.write_bytes mixes with write_text" {
+    mut buf = Buffer.new()
+    buf.write_text("hi ")!
+    let bytes: Vec<u8> = [0x74u8, 0x68, 0x65, 0x72, 0x65]
+    buf.write_bytes(bytes)!
+    let _ = buf.seek(SeekFrom.Start(0))
+    assert buf.read_text()! == "hi there"
+}

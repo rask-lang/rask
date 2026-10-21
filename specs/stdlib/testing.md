@@ -178,6 +178,12 @@ comptime test "factorial" {
 | **T12: Skip** | `skip("reason")` skips the rest of the test |
 | **T13: Expected failure** | `expect_fail()` inverts pass/fail — passing is a failure |
 
+<!-- surface -->
+```rask
+func skip(reason: string)
+func expect_fail()
+```
+
 <!-- test: skip -->
 ```rask
 test "platform specific" {

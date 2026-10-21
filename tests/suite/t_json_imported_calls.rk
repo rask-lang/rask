@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.json through names imported from the module: `encode` and
+// `encode_pretty` should reach the same expansion `json.encode(...)` does.
+//
+// They do on the interpreter. Natively `encode_pretty` fails codegen with
+// "Function not found: json_encode_pretty", and `encode` compiles but answers
+// `{}`, every field dropped (#1603). `decode<T>` imported by name fails both:
+// natively the same way, on the interpreter with "json.decode needs the target
+// type". It isn't here because a file can witness only one failure phase per
+// backend.
+
+import json.{encode, encode_pretty}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+test "encode is compact" {
+    assert encode(Point(x: 3, y: -4)) == "{{\"x\":3,\"y\":-4}}"
+}
+
+test "encode_pretty indents" {
+    assert encode_pretty(Point(x: 3, y: -4)) == "{{\n  \"x\": 3,\n  \"y\": -4\n}}"
+}

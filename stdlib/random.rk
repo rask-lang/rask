@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-/// Module-level shortcuts, seeded fresh each call. Use `Random.new()` instead
-/// when a sequence needs to share state or be reproducible from a seed.
+/// Module-level shortcuts on this thread's own generator (C1). Use
+/// `Random.from_seed()` instead when a sequence has to be reproducible.
 struct random { }
 
 extend random {
+    /// Generate a random unsigned 64-bit integer.
+    @native("rask_random_u64")
+    @ambient
+    public func u64() -> u64 {}
+
     /// Generate a random signed 64-bit integer.
     @native("rask_random_i64")
     @ambient
@@ -18,17 +23,27 @@ extend random {
     /// Generate a random f32 in [0, 1).
     @native("rask_random_f32")
     @ambient
-    public func f32() -> f64 {}
+    public func f32() -> f32 {}
 
     /// Generate a random boolean.
     @native("rask_random_bool")
     @ambient
     public func bool() -> bool {}
 
-    /// Generate a random integer in [low, high).
-    @native("rask_random_range")
+    /// Generate a random integer in [lo, hi). Panics when `lo >= hi`.
+    @native("rask_random_range", panics: true)
     @ambient
-    public func range(low: i64, high: i64) -> i64 {}
+    public func range(lo: i64, hi: i64) -> i64 {}
+
+    /// Shuffle a vector in place (Fisher-Yates).
+    @native("rask_random_shuffle")
+    @ambient
+    public func shuffle<T>(mutate vec: Vec<T>) {}
+
+    /// Pick a random element from a vector — `none` when it's empty.
+    @native("rask_random_choice")
+    @ambient
+    public func choice<T>(vec: Vec<T>) -> Option<T> {}
 }
 
 /// Random number generator.
@@ -43,11 +58,11 @@ extend Random {
 
     /// Create an RNG with a specific seed (deterministic).
     @native("rask_rng_from_seed")
-    public func from_seed(seed: i64) -> Random {}
+    public func from_seed(seed: u64) -> Random {}
 
     /// Generate a random unsigned 64-bit integer.
     @native("rask_rng_u64")
-    public func u64(mutate self) -> i64 {}
+    public func u64(mutate self) -> u64 {}
 
     /// Generate a random signed 64-bit integer.
     @native("rask_rng_i64")
@@ -59,21 +74,21 @@ extend Random {
 
     /// Generate a random f32 in [0, 1).
     @native("rask_rng_f32")
-    public func f32(mutate self) -> f64 {}
+    public func f32(mutate self) -> f32 {}
 
     /// Generate a random boolean.
     @native("rask_rng_bool")
     public func bool(mutate self) -> bool {}
 
-    /// Generate a random integer in [low, high).
-    @native("rask_rng_range")
-    public func range(mutate self, low: i64, high: i64) -> i64 {}
+    /// Generate a random integer in [lo, hi). Panics when `lo >= hi`.
+    @native("rask_rng_range", panics: true)
+    public func range(mutate self, lo: i64, hi: i64) -> i64 {}
 
-    /// Shuffle a vector in place.
-    @native
-    public func shuffle(mutate self, vec: Vec<T>) {}
+    /// Shuffle a vector in place (Fisher-Yates).
+    @native("rask_rng_shuffle")
+    public func shuffle<T>(mutate self, mutate vec: Vec<T>) {}
 
-    /// Pick a random element from a vector.
-    @native
-    public func choice(mutate self, vec: Vec<T>) -> Option<T> {}
+    /// Pick a random element from a vector — `none` when it's empty.
+    @native("rask_rng_choice")
+    public func choice<T>(mutate self, vec: Vec<T>) -> Option<T> {}
 }

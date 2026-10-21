@@ -89,6 +89,9 @@ pub struct CheckResult {
     pub source_files: Vec<(PathBuf, String)>,
     pub effects: EffectMap,
     pub effect_warnings: Vec<EffectWarning>,
+    /// Where `format(…)` was called. Desugar compiles each one into string
+    /// building, so `decls` has no call left to find (std.fmt/CM5).
+    pub format_calls: Vec<rask_ast::Span>,
 }
 
 /// Result of the full compilation pipeline (through monomorphization).
@@ -518,6 +521,7 @@ pub fn check_loaded(
             source_files: source_files.clone(),
             effects,
             effect_warnings,
+            format_calls: desugared.format_calls.clone(),
         },
         diags,
         source_files,
@@ -869,6 +873,7 @@ fn check_package_scoped(
             source_files: source_files.clone(),
             effects,
             effect_warnings,
+            format_calls: desugared.format_calls.clone(),
         },
         diags,
         source_files,
@@ -1023,7 +1028,8 @@ fn finalize_compile_inner(
     write_back_inferred_params(&mut check.decls, &check.typed);
 
     // --- Inject compiled stdlib functions and the types they use ---
-    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let mut stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    check.typed.place_args(&mut stdlib_fn_decls);
     check.decls.extend(stdlib_fn_decls);
 
     // A second copy of every dependency declaration used to be merged here,

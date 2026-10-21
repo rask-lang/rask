@@ -10,7 +10,7 @@
 // heavy string manipulation, and character-level parsing.
 
 import fs
-import cli
+import os
 import std
 import string.StringBuilder
 
@@ -904,7 +904,7 @@ func print_usage() {
 }
 
 func main() {
-    let args = cli.args()
+    let args = os.args()
     mut input_path = ""
     mut output_path = ""
     mut use_stdout = false

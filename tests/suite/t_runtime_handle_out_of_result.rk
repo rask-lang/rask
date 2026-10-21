@@ -19,7 +19,7 @@ import io.IoError
 func write_then_read(path: string) -> string or IoError {
     mut w = try fs.create_file(path)
     ensure w.close()
-    w.write("handle round-trip\n")
+    try w.write_text("handle round-trip\n")
     w.close()
 
     mut f = try fs.open(path)

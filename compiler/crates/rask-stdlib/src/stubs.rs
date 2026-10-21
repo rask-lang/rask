@@ -119,7 +119,118 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
     let mut decls = parser.parse().decls;
     *next_id = parser.next_node_id();
     qualify_private_helpers(&mut decls, filename.trim_end_matches(".rk"));
+    expand_width_families(&mut decls, next_id);
     Some(decls)
+}
+
+/// The primitive types a family block in the stdlib (`extend Integer`,
+/// `extend Float`) is written for, each with its size in bytes.
+///
+/// Every integer width answers `count_ones`, each at its own width, and the
+/// same for the float methods. Spelling that out per width is ten copies of one
+/// block kept in step by hand; written against the family, it is one. The
+/// block is filed under each member with `Self` read as that member and
+/// `BYTES` as its size, so every reader of the stdlib — the checker, the
+/// registry, both backends — sees `extend i8 { … }` through `extend u128 { … }`
+/// and nothing family-shaped. `BYTES` is what lets a family method name an
+/// array as wide as the value: `to_be_bytes(self) -> [u8; BYTES]`.
+///
+/// `isize` and `usize` aren't members: they are `i64` and `u64` under another
+/// name, not types with methods of their own.
+pub const WIDTH_FAMILIES: &[(&str, &[(&str, u8)])] = &[
+    (
+        "Integer",
+        &[
+            ("i8", 1), ("i16", 2), ("i32", 4), ("i64", 8), ("i128", 16),
+            ("u8", 1), ("u16", 2), ("u32", 4), ("u64", 8), ("u128", 16),
+        ],
+    ),
+    // The integers that fit a register. The overflow hatches have no 128-bit
+    // forms yet, so stdlib/int.rk declares them here.
+    (
+        "MachineInteger",
+        &[("i8", 1), ("i16", 2), ("i32", 4), ("i64", 8), ("u8", 1), ("u16", 2), ("u32", 4), ("u64", 8)],
+    ),
+    ("Float", &[("f32", 4), ("f64", 8)]),
+];
+
+/// Replace each block extending a family in `WIDTH_FAMILIES` with one block per
+/// member type.
+///
+/// A method with a body gets its own copy of it per member, every expression
+/// and statement renumbered: each pass keys what it learns about a node by its
+/// id, and `self >> 8` is a different instruction in the `u8` copy than in the
+/// `i128` one. `Self` and `BYTES` are filled in wherever they appear, in types
+/// and as names in a body (`Self.from_le_bytes(b)`, `0..BYTES`).
+pub fn expand_width_families(decls: &mut Vec<Decl>, next_id: &mut u32) {
+    let mut out = Vec::with_capacity(decls.len());
+    for decl in decls.drain(..) {
+        let family = match &decl.kind {
+            DeclKind::Impl(i) if i.interface.is_none() => i
+                .target_ty
+                .bare_name()
+                .and_then(|n| WIDTH_FAMILIES.iter().find(|(f, _)| *f == n)),
+            _ => None,
+        };
+        let Some((_, members)) = family else {
+            out.push(decl);
+            continue;
+        };
+        for (member, bytes) in members.iter() {
+            let mut copy = decl.clone();
+            copy.id = rask_ast::NodeId(*next_id);
+            *next_id += 1;
+            rask_ast::rewrite::rewrite_decl(&mut copy, &mut AsMember { member, bytes: *bytes, next_id });
+            if let DeclKind::Impl(block) = &mut copy.kind {
+                block.target_ty = TypeExpr::named(member.to_string());
+            }
+            out.push(copy);
+        }
+    }
+    *decls = out;
+}
+
+/// One member's copy of a family block: `Self` and `BYTES` filled in, every
+/// node given a fresh id.
+struct AsMember<'a> {
+    member: &'a str,
+    bytes: u8,
+    next_id: &'a mut u32,
+}
+
+impl AsMember<'_> {
+    fn fresh(&mut self) -> rask_ast::NodeId {
+        let id = rask_ast::NodeId(*self.next_id);
+        *self.next_id += 1;
+        id
+    }
+}
+
+impl rask_ast::rewrite::Rewrite for AsMember<'_> {
+    fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+        use rask_ast::expr::ExprKind;
+        e.id = self.fresh();
+        match &e.kind {
+            ExprKind::Ident(n) if n == "Self" => e.kind = ExprKind::Ident(self.member.to_string()),
+            ExprKind::Ident(n) if n == "BYTES" => e.kind = ExprKind::Int(self.bytes as i128, None),
+            _ => {}
+        }
+    }
+
+    fn body(&mut self, b: &mut Vec<rask_ast::stmt::Stmt>) {
+        for stmt in b.iter_mut() {
+            stmt.id = self.fresh();
+        }
+    }
+
+    fn ty(&mut self, t: &mut TypeExpr) {
+        let (member, bytes) = (self.member, self.bytes);
+        *t = t.substitute(&|n| match n {
+            "Self" => Some(TypeExpr::named(member.to_string())),
+            "BYTES" => Some(TypeExpr::Int(bytes.to_string())),
+            _ => None,
+        });
+    }
 }
 
 /// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there;
@@ -135,8 +246,8 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
 ///
 /// The spellings are ones a program can't write by accident. A type is
 /// UpperCamel, so `RawBytes_fs` already has a character no type name has; that
-/// is the package convention too. A function is snake_case, where one
-/// underscore is ordinary, so it gets two.
+/// is the package convention too. A function is snake_case and a const
+/// SCREAMING_CASE, where one underscore is ordinary, so they get two.
 ///
 /// Left alone: a module's lowercase namespace struct (`struct fs { }`), which
 /// the checker finds by the module's name.
@@ -151,6 +262,7 @@ fn qualify_private_helpers(decls: &mut [Decl], module: &str) {
             }
             DeclKind::Struct(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
             DeclKind::Enum(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
+            DeclKind::Const(c) if !c.is_pub => Some((c.name.clone(), format!("{}__{module}", c.name))),
             _ => None,
         })
         .collect();
@@ -180,6 +292,12 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("fs.rk", include_str!("../../../../stdlib/fs.rk")),
     ("net.rk", include_str!("../../../../stdlib/net.rk")),
     ("json.rk", include_str!("../../../../stdlib/json.rk")),
+    ("hex.rk", include_str!("../../../../stdlib/hex.rk")),
+    ("base64.rk", include_str!("../../../../stdlib/base64.rk")),
+    ("digest.rk", include_str!("../../../../stdlib/digest.rk")),
+    ("terminal.rk", include_str!("../../../../stdlib/terminal.rk")),
+    ("url.rk", include_str!("../../../../stdlib/url.rk")),
+    ("csv.rk", include_str!("../../../../stdlib/csv.rk")),
     ("cli.rk", include_str!("../../../../stdlib/cli.rk")),
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
@@ -193,6 +311,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("math.rk", include_str!("../../../../stdlib/math.rk")),
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("float.rk", include_str!("../../../../stdlib/float.rk")),
+    ("int.rk", include_str!("../../../../stdlib/int.rk")),
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
@@ -269,9 +388,14 @@ pub struct MethodStub {
     /// could a test — which is how `f64.floor()` shipped working on the
     /// interpreter and missing from codegen (#687).
     ///
-    /// `Some(symbol)` names the implementation; `Some("")` means `@native` with
-    /// no symbol given, for the ones resolved by another route.
-    pub native: Option<std::string::String>,
+    /// `Some` with a symbol names the C entry point, and native codegen builds
+    /// its call from this declaration (`rask_codegen::dispatch`). An empty
+    /// symbol means `@native` alone, for the ones lowered by another route.
+    pub native: Option<NativeDecl>,
+    /// The type parameters in scope: the extended type's (`T` of `extend
+    /// Vec<T>`) and the method's own. A parameter or return of one of these
+    /// is a value of a width only the call site knows.
+    pub type_params: Vec<String>,
     /// The stub has a Rask body — the implementation is right here, and both
     /// backends run it. The registry couldn't answer this before, which meant
     /// nothing could distinguish "written in Rask" from "declared only".
@@ -279,6 +403,8 @@ pub struct MethodStub {
     /// Declared `comptime func` — evaluated by the comptime engine, so the
     /// keyword already says where the body lives.
     pub is_comptime: bool,
+    /// Declared `unsafe func`: the call has to be written inside `unsafe`.
+    pub is_unsafe: bool,
     /// Interface bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
     /// checker builds module signatures from these stubs, and without the bound
@@ -303,6 +429,68 @@ pub struct TypeStub {
     pub source_file: String,
     /// Byte offset span of the type name within the stub source.
     pub span: Span,
+}
+
+/// What a `@native(...)` attribute says about the C entry point behind it.
+///
+/// Native codegen calls the symbol with an argument and return convention it
+/// reads off the declaration's types. These are the facts the types can't
+/// carry, written as labelled arguments:
+///
+/// - `panics: true` — the C function can panic, so the call records its site
+///   first and the report names the program's line.
+/// - `returns: …` — how the C side hands back a result whose type alone
+///   doesn't say (see `NativeReturn`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeDecl {
+    /// Empty for `@native` with no symbol.
+    pub symbol: String,
+    pub panics: bool,
+    pub returns: Option<NativeReturn>,
+}
+
+/// How a C entry point reports what a declaration's return type can't spell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeReturn {
+    /// The address of a value the C side keeps holding, not a fresh one:
+    /// `Args.program()` answers the string inside the parsed arguments.
+    Pointer,
+    /// A negative return is the failure: `void or E`'s error, with nothing
+    /// to carry.
+    Negative,
+    /// 0 for success, or a `RASK_CHAN_*` code the error enum has a variant for.
+    Status,
+    /// The C side can't fail and returns nothing; the `void or E` is always
+    /// its success.
+    Nothing,
+}
+
+impl NativeDecl {
+    /// Read `@native`, `@native("sym")` or `@native("sym", label: value, …)`.
+    ///
+    /// The stdlib is the only writer, so a label or value this doesn't know is
+    /// a typo in `stdlib/*.rk` and fails loudly rather than being dropped.
+    fn from_attr(a: &rask_ast::attr::Attr, owner: &str) -> NativeDecl {
+        let mut out = NativeDecl {
+            symbol: a.positional().and_then(|v| v.string()).unwrap_or_default(),
+            ..NativeDecl::default()
+        };
+        for (label, value) in a.labelled() {
+            match (label, value.literal(), value.ident()) {
+                ("panics", Some(rask_ast::expr::Literal::Bool(b)), _) => out.panics = b,
+                ("returns", _, Some("pointer")) => out.returns = Some(NativeReturn::Pointer),
+                ("returns", _, Some("negative")) => out.returns = Some(NativeReturn::Negative),
+                ("returns", _, Some("status")) => out.returns = Some(NativeReturn::Status),
+                ("returns", _, Some("nothing")) => out.returns = Some(NativeReturn::Nothing),
+                _ => panic!(
+                    "`@{a}` on `{owner}`: `{label}` isn't something `@native` takes. \
+                     It takes `panics: true` and `returns: pointer | negative | \
+                     status | nothing`"
+                ),
+            }
+        }
+        out
+    }
 }
 
 /// A stub parameter's declared mode.
@@ -379,9 +567,47 @@ impl StubRegistry {
                     registry.process_decl(decl, filename, source);
                 }
             }
+            registry.inherit_interface_defaults();
 
             registry
         })
+    }
+
+    /// TD2: a conformance has every default method of its interface it
+    /// doesn't write itself — `File.read_text` is `Reader`'s. The compiler
+    /// copies the bodies in at desugaring; the registry is read before that,
+    /// so it files the same methods here. Across files: `Reader` is in io.rk
+    /// and `TcpConnection`'s conformance in net.rk.
+    fn inherit_interface_defaults(&mut self) {
+        let mut defaults: Vec<(String, FnDecl, &'static str, &'static str, Span)> = Vec::new();
+        let mut conformances: Vec<(String, TypeExpr, String)> = Vec::new();
+        for (stub_index, (filename, source)) in all_sources().iter().enumerate() {
+            let Some(decls) = &parsed_stdlib()[stub_index] else { continue };
+            for decl in decls {
+                match &decl.kind {
+                    DeclKind::Interface(i) => {
+                        for m in i.methods.iter().filter(|m| !m.body.is_empty()) {
+                            defaults.push((i.name.clone(), m.clone(), filename, source, decl.span));
+                        }
+                    }
+                    DeclKind::Impl(i) => {
+                        if let (Some(iface), Some(target)) = (i.interface.as_ref().and_then(|t| t.name()), i.target_ty.name()) {
+                            conformances.push((target, i.target_ty.clone(), iface));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (target, target_ty, iface) in conformances {
+            let Some(entry) = self.types.get_mut(&target) else { continue };
+            for (_, m, filename, source, span) in defaults.iter().filter(|d| d.0 == iface) {
+                if entry.methods.iter().any(|have| have.name == m.name) {
+                    continue;
+                }
+                entry.methods.push(fn_to_method_stub(m, filename, source, *span, true, &target_ty));
+            }
+        }
     }
 
     /// Return declarations from stdlib .rk files that have compilable function
@@ -399,7 +625,7 @@ impl StubRegistry {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
                     | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_)
-                    | DeclKind::TypeAlias(_) | DeclKind::Interface(_) => {
+                    | DeclKind::TypeAlias(_) | DeclKind::Interface(_) | DeclKind::Const(_) => {
                         decls.push(decl);
                     }
                     _ => {}
@@ -443,6 +669,7 @@ impl StubRegistry {
                         DeclKind::Import(_) => true,
                         DeclKind::TypeAlias(_) => true,
                         DeclKind::Interface(_) => true,
+                        DeclKind::Const(_) => true,
                         _ => false,
                     }
                 } else {
@@ -757,6 +984,17 @@ fn fn_to_method_stub(
         })
         .collect();
     let own_type_params: Vec<bool> = params.iter().map(|(_, ty)| ty == own_ty).collect();
+    // The block's parameters are the bare names its header passes the type
+    // (`extend Vec<T>`), the way the resolver puts them in scope; a concrete
+    // argument (`extend Sequence<string>`) isn't one.
+    let type_params: Vec<String> = own_ty
+        .args()
+        .iter()
+        .filter_map(TypeExpr::bare_name)
+        .filter(|n| !rask_ast::primitives::is_builtin_scalar_or_string(n))
+        .map(str::to_string)
+        .chain(f.type_params.iter().map(|p| p.name.clone()))
+        .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
@@ -779,10 +1017,10 @@ fn fn_to_method_stub(
         builtin: f.attrs.iter().any(|a| a.is("builtin")),
         has_body: !f.body.is_empty(),
         is_comptime: f.is_comptime,
-        // `@native` alone is the empty symbol; `@native("sym")` names one.
-        native: rask_ast::attr::find(&f.attrs, "native").map(|a| {
-            a.positional().and_then(|v| v.string()).unwrap_or_default()
-        }),
+        is_unsafe: f.is_unsafe,
+        native: rask_ast::attr::find(&f.attrs, "native")
+            .map(|a| NativeDecl::from_attr(a, &f.name)),
+        type_params,
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
@@ -907,7 +1145,7 @@ mod tests {
         let reg = StubRegistry::load();
         let expected = [
             "Vec", "Map", "Rack", "Link", "string", "Option", "Result", "File", "Random",
-            "fs", "net", "json", "cli", "io", "std", "http",
+            "fs", "net", "json", "io", "std", "http",
             "JsonValue", "JsonError",
             "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
             "Method", "HttpError",
@@ -975,7 +1213,7 @@ mod tests {
     #[test]
     fn module_types_loaded() {
         let reg = StubRegistry::load();
-        for module in &["fs", "net", "json", "cli", "io", "std"] {
+        for module in &["fs", "net", "json", "io", "std"] {
             let ts = reg.get_type(module);
             assert!(ts.is_some(), "Missing module type: {}", module);
         }

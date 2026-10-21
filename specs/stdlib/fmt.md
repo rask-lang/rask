@@ -15,6 +15,13 @@
 | **F3: Named** | `{name}` captures variable from scope. Cannot mix with positional |
 | **F4: Escape** | `{{` and `}}` produce literal `{` and `}` |
 
+Arguments after the template are compiler support (CM1), so the declaration has the template alone.
+
+<!-- surface -->
+```rask
+func format(template: string) -> string
+```
+
 ## Format Specifiers
 
 | Rule | Description |
@@ -80,26 +87,25 @@ ASCII (`std.strings/U4`).
 
 | Rule | Description |
 |------|-------------|
-| **D1: Interface** | `interface Displayable { func display(self) -> string }` |
+| **D1: Interface** | `interface Displayable { func to_string(self) -> string }`. `to_string()` renders any value; the one conversion to text that can fail, `cstring`'s, is `decode()` and isn't part of this interface |
 | **D2: Primitives** | All primitive types implement `Displayable` by default |
 | **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `Type implements Displayable` |
-| **D4: Required for {}** | `format("{}", x)` calls `display()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `display()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
-| **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `display()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
+| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `to_string()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
+| **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `to_string()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
 
-**Rendering is not conversion.** `display()` makes a value presentable to a
-person; `to_string()` converts something that already is text into a `string`
-(`StringView`, a slice, `Span`, `cstring`, `Path`). Keeping one verb for both
-meant a `Point` — which contains no text at all — "converted to a string", and it
-put the interface in the way of fallible conversions: `cstring.to_string()` returns
-`string or Utf8Error`, which no `Displayable` signature can accommodate. Two jobs,
-two verbs.
+<!-- surface -->
+```rask
+interface Displayable {
+    func to_string(self) -> string
+}
+```
 
 <!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }
 
 Point implements Displayable {
-    func display(self) -> string {
+    func to_string(self) -> string {
         return format("({}, {})", self.x, self.y)
     }
 }
@@ -138,6 +144,13 @@ extend AppError {
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
 | **G6: Wrappers** | A `T?` renders as `Option.Some(v)` or `Option.None`, a `T or E` as `Result.Ok(v)` or `Result.Err(e)`, with the payload in its own debug form; a union error renders as the member it holds. A `Link<T>` renders as the node it names |
 
+<!-- surface -->
+```rask
+interface Debug {
+    func debug(self) -> string
+}
+```
+
 The verb matches the interface and the specifier — `Debug`, `{:debug}`, `debug()`.
 
 G5 exists because a map has no order to report. Iteration order is unspecified
@@ -162,6 +175,12 @@ println(format("{:debug}", p))    // Point(x: 1, y: 2)
 | **I3: No expressions** | `{x + y}` is an error — use `format()` for expressions |
 | **I4: No constants** | `{0}`, `{true}`, `{"x"}` are errors. A constant goes in the text as written; a hole is for a value only known when the string is built. `{0}` is `format`'s positional placeholder (F2) and means nothing outside it |
 
+<!-- surface -->
+```rask
+func println(msg: string)
+func print(msg: string)
+```
+
 <!-- test: skip -->
 ```rask
 let name = "world"
@@ -179,12 +198,12 @@ ERROR [std.fmt/D4]: type does not implement Displayable
 5  |  println(format("{}", my_struct))
    |                       ^^^^^^^^^ `MyStruct` does not implement Displayable
 
-WHY: {} calls display(), which requires the Displayable interface.
+WHY: {} calls to_string(), which requires the Displayable interface.
 
 FIX 1: Add Displayable implementation:
 
   MyStruct implements Displayable {
-      func display(self) -> string { ... }
+      func to_string(self) -> string { ... }
   }
 
 FIX 2: If this is an error type, add message() instead (auto-bridges to Displayable):
@@ -234,12 +253,8 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 
 ## Implementation Notes
 
-`Debug`'s verb is `debug()` on both backends. `Displayable`'s is still spelled
-`to_string()` in the compiler — the split described in D1 is not implemented
-(rask-lang/rask#1033). It isn't a rename: the same resolution path that gives
-Displayable its method is what makes `to_string()` resolve on primitives and on
-`string`, so separating the two verbs means teaching method resolution which
-types own a text conversion, not swapping a string literal.
+`Debug`'s verb is `debug()` and `Displayable`'s is `to_string()`, on both
+backends. `{x}` and `print(x)` desugar to `x.to_string()`.
 
 Two more gaps in this spec, both filed: `{:debug}` is checked against
 `Displayable` instead of `Debug`, so a plain struct is rejected and the two
@@ -268,7 +283,7 @@ isn't implemented.
 
 **D3 (structs opt-in):** Auto-deriving Displayable would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Displayable is for users, so you write it.
 
-**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `display()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `display()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `Type implements Displayable`.
+**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `to_string()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `to_string()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `Type implements Displayable`.
 
 **I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
 
@@ -278,7 +293,7 @@ Columns is the only answer that makes the example true. It costs a flag test for
 
 S6 exists because the actual table-formatting task is two passes — measure the widest cell, then pad every row to it — and a format string with only literal widths can't express the second pass. Padding to a name from scope reuses the `{name}` capture rule rather than inventing `{:width$}`.
 
-**D1/G1 (`display` and `debug` as verbs):** `to_string` was doing two unrelated jobs. On `StringView`, a slice, `Span` or `cstring` it's a conversion — there are bytes, they become a `string`. On a `Point` there is no text to convert; it's rendering. Naming both `to_string` also broke `cstring`, whose conversion is fallible (`string or Utf8Error`) and so can't match any `Displayable` signature. Splitting the verbs fixes both, and `to_debug_string` collapses to `debug` on the way, which finally matches the interface and the `{:debug}` specifier it serves.
+**D1/G1 (`to_string` and `debug` as verbs):** `to_string()` renders any value, and a slice or a `StringView` rendering as its own text is the same operation, so there is no second verb. The one conversion that can fail, `cstring`'s, is `decode()`, which is why `cstring` isn't `Displayable`. `debug()` is the developer-facing twin, matching `{:debug}`.
 
 ### Patterns & Guidance
 
@@ -297,7 +312,7 @@ println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
 struct Color { r: u8, g: u8, b: u8 }
 
 Color implements Displayable {
-    func display(self) -> string {
+    func to_string(self) -> string {
         return format("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
 }

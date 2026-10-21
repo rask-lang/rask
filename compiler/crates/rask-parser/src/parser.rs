@@ -1149,7 +1149,9 @@ impl Parser {
     fn parse_type_name(&mut self) -> Result<TypeExpr, ParseError> {
         let base = self.parse_base_type()?;
 
-        if self.check(&TokenKind::Or) {
+        // After a split `>>` the `or` belongs to the enclosing type:
+        // `Vec<Vec<i64>> or E` is a Vec or an E, not a Vec of results.
+        if !self.pending_gt && self.check(&TokenKind::Or) {
             self.advance();
             let error_ty = self.parse_error_type()?;
             return Ok(TypeExpr::Result { ok: Box::new(base), err: Box::new(error_ty) });
@@ -1442,6 +1444,11 @@ impl Parser {
     /// OPT31). The lexer hands back `??` as one token — in type position
     /// there is no coalescing operator, so it is just two markers.
     fn parse_optional_suffix(&mut self, mut base: TypeExpr) -> TypeExpr {
+        // A split `>>` already closed an enclosing generic: in
+        // `Vec<Vec<i64>>?` the `?` is the outer Vec's, not the inner one's.
+        if self.pending_gt {
+            return base;
+        }
         loop {
             if self.match_token(&TokenKind::QuestionQuestion) {
                 base = TypeExpr::Optional(Box::new(TypeExpr::Optional(Box::new(base))));

@@ -417,3 +417,5 @@
 # #1200).
 #
 # Format: one basename per line, then `# N allocations`.
+
+t_http_client_loopback.rk   # 55 allocations — #1609 a server task answering a request leaks its headers Map

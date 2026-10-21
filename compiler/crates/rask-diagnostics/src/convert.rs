@@ -1145,7 +1145,7 @@ impl ToDiagnostic for rask_types::TypeError {
                      surfacing later as a missing function during codegen"
                 )
             }
-            NotDisplayable { ty, is_collection, is_wrapper, interpolated, span } => {
+            NotDisplayable { ty, is_collection, is_wrapper, interpolated, fallible_text, span } => {
                 let site = if *interpolated { "this placeholder" } else { "this call" };
                 let mut diag = Diagnostic::error(format!(
                     "`{}` does not implement `Displayable`",
@@ -1180,6 +1180,13 @@ impl ToDiagnostic for rask_types::TypeError {
                             "supply the missing case — `{value ?? \"none\"}` — or narrow \
                              first with `if value? as v { … }`",
                         );
+                } else if let Some(m) = fallible_text {
+                    diag = diag
+                        .with_note(format!(
+                            "a `{ty}`'s text can fail to come back, so it doesn't render; \
+                             `{m}()` answers it as `string or` an error"
+                        ))
+                        .with_fix(format!("value.{m}() catch e => \"…\"   // or `try value.{m}()`"));
                 } else {
                     diag = diag.with_fix(format!(
                         "give it one: `{} implements Displayable {{ func to_string(self) -> string {{ … }} }}`",

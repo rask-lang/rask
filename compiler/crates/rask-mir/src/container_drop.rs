@@ -814,16 +814,46 @@ pub(crate) fn params_a_callee_keeps(
     }
 }
 
+/// Every function a vtable can hold, with the method it answers for.
+///
+/// A vtable is built per (concrete type, interface) pair some `InterfaceBox`
+/// boxes, and its entries are that type's `{concrete}_{method}` functions
+/// (`collect_vtables` in rask-compiler). So what can sit behind an interface
+/// call is the methods of the types the program boxes.
+///
+/// Any `Something_method` used to count. A `Chunk.read_bytes` nothing ever
+/// boxed then had a say in what `reader.read_bytes()` hands back, and since
+/// it didn't hand back a container it made, the `Vec` every real reader
+/// returns was nobody's and leaked.
+fn vtable_candidates(fns: &[MirFunction]) -> Vec<(&str, &MirFunction)> {
+    let boxed: HashSet<&str> = fns
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::InterfaceBox { concrete_type, .. } => Some(concrete_type.as_str()),
+            _ => None,
+        })
+        .collect();
+    fns.iter()
+        .filter_map(|func| {
+            let head = func.name.rsplit("::").next().unwrap_or(&func.name);
+            let method = boxed
+                .iter()
+                .filter_map(|ty| head.strip_prefix(*ty)?.strip_prefix('_'))
+                .find(|m| !m.is_empty())?;
+            Some((method, func))
+        })
+        .collect()
+}
+
 /// Per interface method, which of its arguments an implementation keeps.
 ///
 /// The same question `params_a_callee_keeps` answers, asked of a call that has
 /// no function name to ask about — an interface call names a method and a vtable
-/// slot. The answer is taken across every function in the program that could
-/// be behind that slot, which by name is any `Something_method`, and a call is
-/// a borrow only when all of them borrow. So a name that merely looks like an
-/// implementation can only make the answer more conservative, never less, and
-/// an unknown argument is "kept" — a leak, where the other way is a double
-/// free.
+/// slot. The answer is taken across every function that could be behind that
+/// slot (`vtable_candidates`), and a call is a borrow only when all of them
+/// borrow. A method with no candidate at all keeps every argument: a leak,
+/// where the other way is a double free.
 ///
 /// `self` isn't in an interface call's argument list, so the implementation's
 /// parameters are read one to the right.
@@ -832,13 +862,7 @@ fn interface_method_args_kept(
     kept: &HashMap<String, Vec<bool>>,
 ) -> HashMap<String, Vec<bool>> {
     let mut candidates: HashMap<&str, Vec<&[bool]>> = HashMap::new();
-    for func in fns {
-        let head = func.name.rsplit("::").next().unwrap_or(&func.name);
-        let base = head.split('$').next().unwrap_or(head);
-        let Some((ty, method)) = base.split_once('_') else { continue };
-        if ty.is_empty() || method.is_empty() {
-            continue;
-        }
+    for (method, func) in vtable_candidates(fns) {
         let Some(flags) = kept.get(&func.name) else { continue };
         if flags.is_empty() {
             continue;
@@ -874,13 +898,7 @@ fn interface_methods_that_hand_back(
     handing: &HashMap<String, HandBack>,
 ) -> HashMap<String, HandBack> {
     let mut per_method: HashMap<&str, Option<HandBack>> = HashMap::new();
-    for func in fns {
-        let head = func.name.rsplit("::").next().unwrap_or(&func.name);
-        let base = head.split('$').next().unwrap_or(head);
-        let Some((ty, method)) = base.split_once('_') else { continue };
-        if ty.is_empty() || method.is_empty() {
-            continue;
-        }
+    for (method, func) in vtable_candidates(fns) {
         // Only a container the implementation built: a vtable call has no
         // argument list this pass reads the way `pass_edges` needs.
         let mine = handing.get(&func.name).filter(|b| b.made().is_some()).cloned();

@@ -644,6 +644,53 @@ RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride) {
     return v;
 }
 
+// `Map.from(pairs)` on an array held somewhere: insert a copy of each
+// `(key, value)` tuple, laid out as `rask_map_entries` lays one out. The array
+// keeps its own, so each entry is retained the way `rask_map_clone` retains
+// one. A repeated key keeps the later value and releases the earlier.
+void rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
+                           int64_t voff, int64_t stride) {
+    if (!m || !pairs) return;
+    char *key_copy = (char *)rask_alloc(m->key_size);
+    char *val_copy = (char *)rask_alloc(m->val_size);
+    for (int64_t i = 0; i < count; i++) {
+        const char *pair = pairs + i * stride;
+        memcpy(key_copy, pair, (size_t)m->key_size);
+        memcpy(val_copy, pair + voff, (size_t)m->val_size);
+        map_retain_entry(m, key_copy, val_copy);
+        rask_map_insert(m, key_copy, val_copy);
+    }
+    rask_realloc(key_copy, m->key_size, 0);
+    rask_realloc(val_copy, m->val_size, 0);
+}
+
+// `m.take_all()`: every entry moved out into a Vec of `(key, value)` tuples,
+// laid out as `rask_map_entries` lays one out, and the map left empty with its
+// table. A move, so nothing is retained on the way out or released on the way
+// in — what the map held now belongs to the Vec, whose element map lowering
+// works out from the tuple's type (unlike `entries`, which only borrows and
+// can get by on a guess).
+RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
+                           const int32_t *pair_offs, int64_t n_pair_offs) {
+    if (!m) return rask_vec_new(stride, pair_offs, n_pair_offs);
+    map_check_no_borrows(m, "take_all");
+    RaskVec *v = rask_vec_with_capacity(stride, m->len, pair_offs, n_pair_offs);
+    char *pair = (char *)rask_alloc(stride);
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) {
+            memset(pair, 0, (size_t)stride);
+            memcpy(pair, m->keys + i * m->key_size, (size_t)m->key_size);
+            memcpy(pair + voff, m->vals + i * m->val_size, (size_t)m->val_size);
+            rask_vec_push(v, pair);
+        }
+        m->states[i] = MAP_EMPTY;
+    }
+    rask_free(pair);
+    m->len = 0;
+    m->tombstones = 0;
+    return v;
+}
+
 RaskMap *rask_map_clone(const RaskMap *m) {
     if (!m) return rask_map_new(8, 8, NULL, 0, NULL, 0);
     RaskMap *dst = rask_map_new_custom(m->key_size, m->val_size, m->hash_fn, m->eq_fn);

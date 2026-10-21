@@ -523,7 +523,7 @@ impl TypeChecker {
         }
     }
 
-    fn check_interface_named(&mut self, interface: &TypeExpr, span: Span) {
+    pub(super) fn check_interface_named(&mut self, interface: &TypeExpr, span: Span) {
         if !matches!(interface, TypeExpr::Named { .. }) {
             return;
         }
@@ -1238,6 +1238,9 @@ impl TypeChecker {
             .map(|m| {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
                 sig.owner_bounds = condition.clone();
+                if interface.is_some() {
+                    receiver_as_written(m, &mut sig);
+                }
                 if let Some(filed) = interface.as_ref().and_then(|(t, name)| {
                     rask_ast::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
                 }) {
@@ -1704,7 +1707,15 @@ impl TypeChecker {
     }
 
     pub(super) fn register_interface(&mut self, t: &InterfaceDecl) {
-        let methods = t.methods.iter().map(|m| self.method_signature(m, &[], &[])).collect();
+        let methods = t
+            .methods
+            .iter()
+            .map(|m| {
+                let mut sig = self.method_signature(m, &[], &[]);
+                receiver_as_written(m, &mut sig);
+                sig
+            })
+            .collect();
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
@@ -2851,7 +2862,7 @@ fn parse_binary_struct_fields(
 }
 
 /// PC1: single uppercase ASCII letter — always a type parameter in signatures.
-pub(super) fn is_type_param_name(name: &str) -> bool {
+pub(crate) fn is_type_param_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
 }
@@ -3123,4 +3134,17 @@ pub(super) fn projection_names(written: &TypeExpr) -> Vec<String> {
         }
     });
     out
+}
+
+/// An interface member's receiver, and a conformance method's, is the one
+/// written: the interface fixes it, and a call through `any I` goes by that.
+/// GC9's inference is for private helpers, and every interface member is
+/// private as written. Applied to them it read `Reader.read_text`'s default —
+/// which calls `self.read_bytes()` — as `mutate self`, so `let b = Buffer.new()`
+/// couldn't call `b.read_text()`, and no `Buffer` filled an `any Reader`.
+fn receiver_as_written(m: &FnDecl, sig: &mut MethodSig) {
+    let wrote_mutate = m.params.iter().any(|p| p.name == "self" && p.is_mutate);
+    if sig.self_param == SelfParam::Mutate && !wrote_mutate {
+        sig.self_param = SelfParam::Value;
+    }
 }

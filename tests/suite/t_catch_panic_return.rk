@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `return f() catch _ => { panic(…) }` hands its caller what `f` built — #1615.
+//
+// Native leaked the vector. `panic` was lowered as an ordinary call with code
+// after it, so the catch arm's "value" flowed to the return beside the real
+// one, and a name holding the vector on one path and the panic's result on the
+// other was nobody's to free. Every helper of this shape leaked what it
+// returned, under RASK_LEAK_CHECK=1 (the answers were all right).
+
+import hex
+
+enum Odd {
+    Length
+}
+
+extend Odd {
+    func message(self) -> string {
+        return "odd length"
+    }
+}
+
+func make(n: i64) -> Vec<string> or Odd {
+    if n % 2 == 1 {
+        return Odd.Length
+    }
+    mut v: Vec<string> = Vec.new()
+    for i in 0..n {
+        v.push("item {i}")
+    }
+    return v
+}
+
+func items(n: i64) -> Vec<string> {
+    return make(n) catch e => {
+        panic("make failed: {e.message()}")
+    }
+}
+
+func bytes(s: string) -> Vec<u8> {
+    let v = hex.decode(s) catch _ => {
+        panic("bad hex")
+    }
+    return v
+}
+
+test "a helper that panics on error returns what it unwrapped" {
+    let v = items(4)
+    assert v.len() == 4
+    assert v[3] == "item 3"
+}
+
+test "the same through a stdlib call and a binding" {
+    let b = bytes("00ff")
+    assert b.len() == 2
+    assert b[1] == 255
+}

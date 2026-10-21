@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's own function may share a stdlib module's name (#1581).
+//
+// Each stdlib module keeps its functions on a namespace struct of the same
+// name (`struct time { }`). A call to the program's `time(1)` used to be built
+// as that struct and fail with "takes its fields by name". Nothing here
+// imports a module, so the names are the program's.
+
+func time(x: i64) -> i64 {
+    return x + 1
+}
+
+func terminal(code: string) -> string {
+    return "T{code}"
+}
+
+func fs(parts: Vec<string>) -> i64 {
+    return parts.len().wrap<i64>()
+}
+
+test "a function named like a stdlib module is the program's own" {
+    assert time(1) == 2
+    assert terminal("1") == "T1"
+    mut parts: Vec<string> = Vec.new()
+    parts.push("a")
+    parts.push("b")
+    assert fs(parts) == 2
+}

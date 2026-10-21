@@ -55,7 +55,7 @@ calls the native that writes.
 | Mark | Natives |
 |------|---------|
 | `@blocks` | the print functions; `fs`'s open and create; `File`'s raw read, write, seek and close; stdio reads, writes and flush; socket listen, connect, accept, read, write and close; process run, wait and pipe I/O; `time.sleep`; `Handle.join`, `Sender.send`, `Receiver.receive` |
-| `@ambient` | environment variables, args, `os.pid`, `os.exit`, platform and arch; process spawn and poll; signals; `cli.args`, `cli.parse`; the clock (`Instant.now`, `elapsed`, wall time); the global random source and `Random.new`; socket addresses; `errno`; `async.cancelled`, `Handle.cancel` |
+| `@ambient` | environment variables, args, `os.pid`, `os.exit`, platform and arch; process spawn and poll; signals; the clock (`Instant.now`, `elapsed`, wall time); the global random source and `Random.new`; socket addresses; `errno`; `async.cancelled`, `Handle.cancel` |
 | none | everything else: strings, collections, math, json, reflection, `Duration`, a seeded `Random` |
 
 A call is matched on the callee the type checker resolved, not on how the call is spelled. `t.join()` on a `Handle<i64>` is `Handle.join` whatever the variable is called, and `parts.join(",")` on a `Vec<string>` is `Vec.join`, which blocks on nothing.

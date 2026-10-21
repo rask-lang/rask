@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.collections: `Vec.from` and `Map.from` on a literal and on an array
+// held in a variable, `push_all`, `try_insert` against a bound, and
+// `modify_many` handing several elements to one closure.
+
+test "Vec.from takes a literal or a held array, and the array keeps its own" {
+    let v = Vec.from([10, 20, 30])
+    assert v.len() == 3
+    assert v[2] == 30
+    let words: [string; 3] = ["a", "b {v.len()}", "c"]
+    mut w = Vec.from(words)
+    w.push("d")
+    assert w.len() == 4
+    assert w[1] == "b 3"
+    assert words[1] == "b 3"
+}
+
+test "Map.from takes pairs, and a repeated key keeps the later value" {
+    let m: Map<i64, string> = Map.from([(1, "one"), (2, "two")])
+    assert m[1] == "one"
+    assert m[2] == "two"
+    let held: [(string, i64); 3] = [("x", 1), ("y", 2), ("x", 3)]
+    let n = Map.from(held)
+    assert n.len() == 2
+    assert n["x"] == 3
+    assert held[0].0 == "x"
+}
+
+test "push_all appends a Vec or a chain" {
+    mut v: Vec<i64> = [1, 2]
+    let more: Vec<i64> = [3, 4, 5]
+    v.push_all(more)
+    v.push_all(more.filter(|x| x > 4))
+    assert v == [1, 2, 3, 4, 5, 5]
+    mut names: Vec<string> = Vec.new()
+    let src: Vec<string> = ["p {v.len()}", "q"]
+    names.push_all(src)
+    assert names[0] == "p 6"
+    assert src.len() == 2
+}
+
+test "try_insert hands the value back at the bound" {
+    mut b: Vec<string> = Vec.fixed(2)
+    b.push("last")
+    if b.try_insert(0, "first") is GrowError.Full(_) {
+        assert false
+    }
+    assert b == ["first", "last"]
+    if b.try_insert(1, "middle") is GrowError.Full(back) {
+        assert back == "middle"
+    } else {
+        assert false
+    }
+    assert b.len() == 2
+}
+
+test "modify_many mutates several elements in the order asked" {
+    mut v: Vec<string> = ["a", "b", "c", "d"]
+    let n = v.modify_many([3, 0], |mutate parts: Vec<string>| {
+        parts[0] = "D"
+        parts[1] = "A"
+        return parts.len()
+    })
+    assert n == 2
+    assert v == ["A", "b", "c", "D"]
+}
+
+test "modify_many can swap through the closure" {
+    mut v: Vec<i64> = [1, 2, 3, 4, 5]
+    let r = v.modify_many([1, 3], |mutate parts: Vec<i64>| {
+        parts.swap(0, 1)
+        return 0
+    })
+    assert r == 0
+    assert v == [1, 4, 3, 2, 5]
+}
+
+test "modify_many is none for an index out of range, and leaves the Vec alone" {
+    mut v: Vec<i64> = [1, 2, 3]
+    let r = v.modify_many([0, 7], |mutate parts: Vec<i64>| {
+        parts[0] = 100
+        return 1
+    })
+    assert r is none
+    assert v == [1, 2, 3]
+}

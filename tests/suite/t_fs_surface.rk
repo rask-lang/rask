@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The whole-path half of std.fs, each function on a fresh `mktemp -d`
+// directory that the test removes again.
+//
+// The functions are imported by name. `fs.copy(...)` is the same call, but
+// `rask stdlib-coverage` doesn't see a module-qualified call yet (#1600).
+
+import os
+import fs.{
+    read_text, read_bytes, write_text, write_bytes, exists,
+    read_lines, absolute_path, copy, rename, remove_file, create_dir,
+    create_dir_all, append_text, metadata, current_dir, home_dir,
+}
+import io.IoError
+
+func fresh_dir() -> string {
+    let out = os.Command.new("mktemp").arg("-d").run()!
+    return out.stdout.trim().to_string()
+}
+
+func clean_up(dir: string) {
+    let _ = os.Command.new("rm").arg("-rf").arg(dir).run()
+}
+
+test "write_bytes and read_bytes round-trip every byte value" {
+    let dir = fresh_dir()
+    let p = "{dir}/bytes.bin"
+    mut data: Vec<u8> = Vec.new()
+    for i in 0..256 {
+        data.push(i.wrap<u8>())
+    }
+    write_bytes(p, data)!
+    let back = read_bytes(p)!
+    assert back.len() == 256
+    assert back[0] == 0
+    assert back[10] == 10
+    assert back[255] == 255
+    assert metadata(p)!.size == 256
+    clean_up(dir)
+}
+
+test "read_bytes on a missing path is an error" {
+    let dir = fresh_dir()
+    assert read_bytes("{dir}/nope") is IoError
+    clean_up(dir)
+}
+
+test "read_lines splits on newlines and drops the trailing one" {
+    let dir = fresh_dir()
+    let p = "{dir}/lines.txt"
+    write_text(p, "alpha\nbeta\n\ngamma\n")!
+    let lines = read_lines(p)!
+    assert lines.len() == 4
+    assert lines[0] == "alpha"
+    assert lines[1] == "beta"
+    assert lines[2] == ""
+    assert lines[3] == "gamma"
+    clean_up(dir)
+}
+
+test "append_text adds to the end, and creates a missing file" {
+    let dir = fresh_dir()
+    let p = "{dir}/log.txt"
+    append_text(p, "one")!
+    append_text(p, ",two")!
+    append_text(p, ",three")!
+    assert read_text(p)! == "one,two,three"
+    clean_up(dir)
+}
+
+test "copy duplicates and leaves the source in place" {
+    let dir = fresh_dir()
+    let src = "{dir}/src.txt"
+    let dst = "{dir}/dst.txt"
+    write_text(src, "copied")!
+    copy(src, dst)!
+    assert read_text(dst)! == "copied"
+    assert read_text(src)! == "copied"
+    assert copy("{dir}/missing", "{dir}/x") is IoError
+    assert !exists("{dir}/x")
+    clean_up(dir)
+}
+
+test "rename moves the file and the old name is gone" {
+    let dir = fresh_dir()
+    let src = "{dir}/before.txt"
+    let dst = "{dir}/after.txt"
+    write_text(src, "moved")!
+    rename(src, dst)!
+    assert !exists(src)
+    assert read_text(dst)! == "moved"
+    assert rename(src, dst) is IoError
+    clean_up(dir)
+}
+
+test "remove_file deletes, and a second remove is an error" {
+    let dir = fresh_dir()
+    let p = "{dir}/gone.txt"
+    write_text(p, "x")!
+    assert exists(p)
+    remove_file(p)!
+    assert !exists(p)
+    assert remove_file(p) is IoError
+    clean_up(dir)
+}
+
+test "create_dir makes one level and refuses an existing one" {
+    let dir = fresh_dir()
+    let sub = "{dir}/sub"
+    create_dir(sub)!
+    assert exists(sub)
+    write_text("{sub}/inside.txt", "ok")!
+    assert read_text("{sub}/inside.txt")! == "ok"
+    assert create_dir(sub) is IoError
+    assert create_dir("{dir}/no/such/parent") is IoError
+    clean_up(dir)
+}
+
+test "create_dir_all makes every level and tolerates existing ones" {
+    let dir = fresh_dir()
+    let deep = "{dir}/a/b/c"
+    create_dir_all(deep)!
+    assert exists("{dir}/a")
+    assert exists("{dir}/a/b")
+    assert exists(deep)
+    create_dir_all(deep)!
+    write_text("{dir}/a/file", "x")!
+    assert create_dir_all("{dir}/a/file/under") is IoError
+    clean_up(dir)
+}
+
+test "metadata reports a file's size" {
+    let dir = fresh_dir()
+    let p = "{dir}/sized.txt"
+    write_text(p, "12345")!
+    let m = metadata(p)!
+    assert m.size == 5
+    assert m.modified > 0
+    assert metadata("{dir}/nope") is IoError
+    clean_up(dir)
+}
+
+test "absolute_path resolves dot segments" {
+    let dir = fresh_dir()
+    create_dir("{dir}/x")!
+    let canon = absolute_path(dir)!
+    assert canon.starts_with("/")
+    assert absolute_path("{dir}/x/../x/.")! == "{canon}/x"
+    assert absolute_path("{dir}/missing") is IoError
+    clean_up(dir)
+}
+
+test "current_dir is absolute and matches the canonical '.'" {
+    let cwd = current_dir()
+    assert cwd.is_absolute()
+    assert absolute_path(".")! == cwd.as_string()
+}
+
+test "home_dir is HOME" {
+    let home = home_dir()
+    if os.env("HOME")? as h {
+        assert home!.as_string() == h
+    } else {
+        assert home is none
+    }
+}

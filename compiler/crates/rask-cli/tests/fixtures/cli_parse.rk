@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.cli against the process's real arguments: `Parser.parse()` reads
+// `os.args()`, and `--help`/`--version` exit, so none of it can run inside a
+// test block. The suite's t_cli_builder.rk covers the parsing itself through
+// `parse_from`.
+import cli
+
+func main() -> void or cli.CliError {
+    let p = cli.Parser.new("demo")
+        .version("2.1")
+        .description("Shows what it was given")
+        .flag("verbose", "v", "Talk more")
+        .option("name", "n", "Who to greet")
+        .positional("file", "Input")
+    let args = try p.parse()
+    let pos = args.positional()
+    println("verbose={args.flag("verbose")} name={args.option("name") ?? "nobody"} file={pos[0]} rest={pos.len()}")
+}

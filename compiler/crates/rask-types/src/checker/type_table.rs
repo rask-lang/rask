@@ -563,6 +563,29 @@ impl TypeTable {
         self.method_access.get(&(id, method.to_string()))
     }
 
+    /// Callable from everywhere: declared `public`, in a conformance block
+    /// (TV1), or supplied by the checker. `method` is the declared name.
+    pub fn method_is_public(&self, id: TypeId, method: &str) -> bool {
+        !self.method_access.contains_key(&(id, method.to_string()))
+    }
+
+    /// The conformances source wrote for this type (`T implements I`), each
+    /// as its applied interface, in the order they were written. Derived ones
+    /// (`Equal`, `Debug`, …) have no block behind them and aren't here.
+    pub fn written_conformances(&self, type_id: TypeId) -> Vec<TypeExpr> {
+        let mut found: Vec<((u16, usize), TypeExpr)> = self
+            .conformance_spans
+            .iter()
+            .filter(|((id, _), _)| *id == type_id)
+            .filter_map(|((_, key), sites)| {
+                let first = sites.iter().map(|s| (s.span.file_id, s.span.start)).min()?;
+                Some((first, key.applied.clone()))
+            })
+            .collect();
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.into_iter().map(|(_, t)| t).collect()
+    }
+
     /// Every type that declares methods, paired with the declarations carrying them.
     pub fn types_with_methods(&self) -> impl Iterator<Item = (TypeId, &[NodeId])> {
         self.type_method_decls.iter().map(|(id, decls)| (*id, decls.as_slice()))

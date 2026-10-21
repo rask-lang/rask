@@ -10,10 +10,12 @@ wire dump.
 
 ## API
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-hex.encode(data: Vec<u8>, upper: bool = false) -> string
-hex.decode(s: string) -> Vec<u8> or HexError
+extend hex {
+    func encode(data: Vec<u8>, upper: bool = false) -> string
+    func decode(s: string) -> Vec<u8> or HexError
+}
 ```
 
 <!-- test: skip -->
@@ -35,11 +37,14 @@ let bytes = try hex.decode("deadbeef")
 
 ## Errors
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
 enum HexError {
     BadCharacter(byte: u8, at: usize)
     OddLength(usize)
+}
+extend HexError {
+    func message(self) -> string
 }
 ```
 
@@ -48,7 +53,7 @@ enum HexError {
 ```
 ERROR [std.hex/H3]: invalid character in hex input
 
-WHY: "0x" at offset 0 is not hex. hex.decode takes bare hex digits.
+WHY: "x" at offset 1 is not a hex digit. hex.decode takes bare digits, no "0x".
 
 FIX: Drop the prefix:
 

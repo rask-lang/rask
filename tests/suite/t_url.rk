@@ -1,0 +1,223 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.url: take a URL apart and put it back (U1), the port to connect to (U2),
+// percent-encoding (U3), and the errors parse can give (U4).
+
+import url
+
+func parsed(s: string) -> url.Url {
+    return url.parse(s) catch e => {
+        panic("parse failed for {s}: {e.message()}")
+    }
+}
+
+/// The error parse gives for `s`, as "Variant(payload)".
+func parse_error(s: string) -> string {
+    let u = url.parse(s) catch e => {
+        match e {
+            url.UrlError.NoScheme => return "NoScheme"
+            url.UrlError.BadScheme(x) => return "BadScheme({x})"
+            url.UrlError.BadPort(x) => return "BadPort({x})"
+            url.UrlError.BadEscape(x) => return "BadEscape({x})"
+            url.UrlError.BadHost(x) => return "BadHost({x})"
+        }
+    }
+    return "ok {u.to_string()}"
+}
+
+func decoded(s: string) -> string {
+    return url.decode(s) catch e => {
+        match e {
+            url.UrlError.BadEscape(x) => return "BadEscape({x})"
+            _ => return "other"
+        }
+    }
+}
+
+func pairs_text(pairs: Vec<(string, string)>) -> string {
+    mut parts: Vec<string> = Vec.new()
+    for p in pairs {
+        parts.push("{p.0}={p.1}")
+    }
+    return parts.join("|")
+}
+
+test "std.url/U1 — the parts are fields" {
+    let u = parsed("https://example.com:8080/path?page=1#top")
+    assert u.scheme == "https"
+    assert u.host == "example.com"
+    assert (u.explicit_port ?? 0) == 8080
+    assert u.path == "/path"
+    assert (u.query ?? "-") == "page=1"
+    assert (u.fragment ?? "-") == "top"
+    assert u.user == none
+}
+
+test "std.url/U1 — user, case, empty path, empty query and fragment" {
+    let u = parsed("HTTP://alice@Example.COM?#")
+    assert u.scheme == "http"
+    assert u.host == "example.com"
+    assert (u.user ?? "-") == "alice"
+    assert u.path == "/"
+    assert u.query == none
+    assert u.fragment == none
+}
+
+test "std.url/U1 — path and query keep their case and their escapes" {
+    let u = parsed("http://x/A%2Fb/C?K=V%20w")
+    assert u.path == "/A%2Fb/C"
+    assert (u.query ?? "-") == "K=V%20w"
+    assert u.to_string() == "http://x/A%2Fb/C?K=V%20w"
+}
+
+test "std.url/U1 — IPv6 host loses its brackets, display puts them back" {
+    let u = parsed("http://[::1]:8080/")
+    assert u.host == "::1"
+    assert (u.port() ?? 0) == 8080
+    assert u.to_string() == "http://[::1]:8080/"
+}
+
+test "std.url/U1 — no authority" {
+    let u = parsed("mailto:someone@example.com")
+    assert u.host == ""
+    assert u.path == "someone@example.com"
+    assert u.to_string() == "mailto:someone@example.com"
+    let f = parsed("file:///etc/hosts")
+    assert f.host == ""
+    assert f.path == "/etc/hosts"
+    assert f.to_string() == "file:///etc/hosts"
+}
+
+test "std.url/U2 — the port defaults from the scheme" {
+    assert (parsed("https://x/").port() ?? 0) == 443
+    assert (parsed("http://x/").port() ?? 0) == 80
+    assert (parsed("ssh://x/").port() ?? 0) == 22
+    assert (parsed("wss://x/").port() ?? 0) == 443
+    assert parsed("https://x/").explicit_port == none
+    assert parsed("myapp://x/").port() == none
+    assert (parsed("myapp://x:9/").port() ?? 0) == 9
+    assert (parsed("http://x:/").port() ?? 0) == 80
+}
+
+test "std.url/U2 — an explicit default port is dropped on display" {
+    let u = parsed("https://x:443/a")
+    assert (u.port() ?? 0) == 443
+    assert u.to_string() == "https://x/a"
+    assert parsed("https://x:8443/a").to_string() == "https://x:8443/a"
+}
+
+test "std.url — to_string reassembles every part" {
+    let s = "https://bob@example.com:8080/a/b?x=1&y=2#frag"
+    assert parsed(s).to_string() == s
+}
+
+test "std.url/U4 — param decodes, misses are none" {
+    let u = parsed("http://x/?page=1&name=J%C3%B6rg+M&debug&tag=a&tag=b")
+    assert (u.param("page") ?? "-") == "1"
+    assert (u.param("name") ?? "-") == "Jörg M"
+    assert (u.param("debug") ?? "-") == ""
+    assert (u.param("tag") ?? "-") == "a"
+    assert u.param("missing") == none
+    assert parsed("http://x/").param("page") == none
+}
+
+test "std.url — params lists every pair in order" {
+    let u = parsed("http://x/?b=2&a=1&b=3")
+    assert pairs_text(u.params()) == "b=2|a=1|b=3"
+    assert parsed("http://x/").params().len() == 0
+}
+
+test "std.url — with_query replaces the query" {
+    let u = parsed("http://x/p?old=1#f")
+    let next = u.with_query([("q", "a b"), ("n", "1")])
+    assert next.to_string() == "http://x/p?q=a%20b&n=1#f"
+    assert (next.param("q") ?? "-") == "a b"
+    let none_left = u.with_query(Vec.new())
+    assert none_left.query == none
+    assert none_left.to_string() == "http://x/p#f"
+}
+
+test "std.url — / appends an encoded segment" {
+    let api = parsed("https://api.example.com/v1")
+    let endpoint = api / "users" / "12 a"
+    assert endpoint.to_string() == "https://api.example.com/v1/users/12%20a"
+    assert (parsed("http://x") / "a").path == "/a"
+    assert (parsed("http://x/dir/") / "a/b").path == "/dir/a%2Fb"
+    assert (parsed("http://x/v1?k=1") / "u").to_string() == "http://x/v1/u?k=1"
+}
+
+test "std.url/U3 — encode escapes everything outside the unreserved set" {
+    assert url.encode("hello world") == "hello%20world"
+    assert url.encode("a-b.c_d~e") == "a-b.c_d~e"
+    assert url.encode("a/b?c&d=e+f") == "a%2Fb%3Fc%26d%3De%2Bf"
+    assert url.encode("ä") == "%C3%A4"
+    assert url.encode("") == ""
+}
+
+test "std.url/U3 — decode undoes it, and leaves + alone" {
+    assert decoded("hello%20world") == "hello world"
+    assert decoded("%c3%a4") == "ä"
+    assert decoded("a+b") == "a+b"
+    assert decoded(url.encode("x/y z?ä")) == "x/y z?ä"
+}
+
+test "std.url/U3 — bad escapes" {
+    assert decoded("%zz") == "BadEscape(%zz)"
+    assert decoded("ab%") == "BadEscape(%)"
+    assert decoded("ab%4") == "BadEscape(%4)"
+    assert decoded("%FF") == "BadEscape(%FF)"
+}
+
+test "std.url — encode_query and parse_query" {
+    assert url.encode_query([("a", "1"), ("b", "x y")]) == "a=1&b=x%20y"
+    assert url.encode_query(Vec.new()) == ""
+    let pairs = url.parse_query("a=1&b=x+y&&c&d=%26") catch _ => Vec.new()
+    assert pairs_text(pairs) == "a=1|b=x y|c=|d=&"
+    let empty = url.parse_query("") catch _ => {
+        panic("empty query rejected")
+    }
+    assert empty.len() == 0
+    let bad = url.parse_query("a=%zz") catch e => {
+        assert e.message().contains("%zz")
+        return
+    }
+    assert bad.len() == 99
+}
+
+test "std.url/U4 — NoScheme" {
+    assert parse_error("example.com/path") == "NoScheme"
+    assert parse_error("/a:b") == "NoScheme"
+    assert parse_error(":x") == "NoScheme"
+}
+
+test "std.url/U4 — BadScheme" {
+    assert parse_error("1http://x/") == "BadScheme(1http)"
+    assert parse_error("ht_tp://x/") == "BadScheme(ht_tp)"
+    assert parse_error("svn+ssh://x/") == "ok svn+ssh://x/"
+}
+
+test "std.url/U4 — BadPort" {
+    assert parse_error("http://x:99999/") == "BadPort(99999)"
+    assert parse_error("http://x:http/") == "BadPort(http)"
+    assert parse_error("http://x:65535/") == "ok http://x:65535/"
+}
+
+test "std.url/U4 — BadEscape anywhere in the URL" {
+    assert parse_error("http://x/%zz") == "BadEscape(%zz)"
+    assert parse_error("http://x/?a=%4") == "BadEscape(%4)"
+    assert parse_error("http://x/#%") == "BadEscape(%)"
+}
+
+test "std.url/U4 — BadHost" {
+    assert parse_error("http://ex ample.com/") == "BadHost(ex ample.com)"
+    assert parse_error("http://[::1/") == "BadHost([::1)"
+    assert parse_error("http://:80/") == "BadHost()"
+}
+
+test "std.url — every error has a message" {
+    assert url.UrlError.NoScheme.message().contains("no scheme")
+    assert url.UrlError.BadScheme("1x").message().contains("1x")
+    assert url.UrlError.BadPort("99999").message().contains("99999")
+    assert url.UrlError.BadEscape("%zz").message().contains("%zz")
+    assert url.UrlError.BadHost("a b").message().contains("a b")
+}

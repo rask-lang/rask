@@ -142,6 +142,8 @@ pub struct OwnershipChecker<'a> {
     /// binding states at every `break` that leaves it. What a `break` path
     /// consumed is consumed after the loop too.
     loop_exits: Vec<(Option<String>, Option<HashMap<String, BindingState>>)>,
+    /// Same shape for `continue`: the join of the states that go round again.
+    loop_continues: Vec<(Option<String>, Option<HashMap<String, BindingState>>)>,
     /// How many times each linear name has been assigned a new value. The
     /// commit window reads it: `rest = *next` means the old `rest` was
     /// consumed, which is the commitment, and the new one starts its own.
@@ -384,6 +386,7 @@ impl<'a> OwnershipChecker<'a> {
             borrowed_with: HashMap::new(),
             copy_params: HashSet::new(),
             loop_exits: Vec::new(),
+            loop_continues: Vec::new(),
             refills: HashMap::new(),
             borrowed_captures: HashMap::new(),
             closure_params: HashSet::new(),
@@ -1109,6 +1112,7 @@ impl<'a> OwnershipChecker<'a> {
         self.borrowed_loop_items.clear();
         self.borrowed_with.clear();
         self.loop_exits.clear();
+        self.loop_continues.clear();
         self.refills.clear();
         self.mutate_params.clear();
         self.exit_reported.clear();
@@ -1420,14 +1424,33 @@ impl<'a> OwnershipChecker<'a> {
         let saved_errors = self.errors.len();
         self.loop_entry_resources.push(self.resource_bindings.clone());
         self.loop_exits.push((label.cloned(), None));
+        self.loop_continues.push((label.cloned(), None));
 
         // Pass 1: discover which pre-loop bindings the body consumes.
         self.check_block(body);
 
+        // What reaches the next iteration: every `continue`, plus the end of
+        // the body when it can fall off its end. A move just before a
+        // `return` never comes round again, so it isn't carried.
+        let continues = self.loop_continues.last_mut().and_then(|top| top.1.take());
+        let back_edge = if Self::is_terminal_block(body) {
+            continues.unwrap_or_default()
+        } else {
+            let mut end = self.bindings.clone();
+            if let Some(c) = continues {
+                for (name, state) in &c {
+                    if let Some(prev) = end.get(name) {
+                        let merged = Self::join_binding_states(prev, state);
+                        end.insert(name.clone(), merged);
+                    }
+                }
+            }
+            end
+        };
         let carried: Vec<(String, Span)> = pre_loop
             .iter()
             .filter(|(name, pre)| Self::is_available(pre) && !exclude.contains(name))
-            .filter_map(|(name, _)| match self.bindings.get(name) {
+            .filter_map(|(name, _)| match back_edge.get(name) {
                 Some(state) if !Self::is_available(state) => {
                     Self::unavailable_span(state).map(|at| (name.clone(), at))
                 }
@@ -1451,6 +1474,7 @@ impl<'a> OwnershipChecker<'a> {
         }
 
         let breaks = self.loop_exits.pop().and_then(|(_, b)| b);
+        self.loop_continues.pop();
         self.loop_entry_resources.pop();
         if only_break_leaves {
             // No `break` at all: nothing after the loop runs.
@@ -1473,13 +1497,23 @@ impl<'a> OwnershipChecker<'a> {
 
     /// A `break` leaves its loop with the state it has here.
     fn record_loop_exit(&mut self, label: Option<&String>) {
+        Self::record_loop_edge(&mut self.loop_exits, label, &self.bindings);
+    }
+
+    /// Join `bindings` into the entry for the loop `label` names (the
+    /// innermost when it names none).
+    fn record_loop_edge(
+        edges: &mut [(Option<String>, Option<HashMap<String, BindingState>>)],
+        label: Option<&String>,
+        bindings: &HashMap<String, BindingState>,
+    ) {
         let target = match label {
-            Some(l) => self.loop_exits.iter().rposition(|(name, _)| name.as_ref() == Some(l)),
-            None => self.loop_exits.len().checked_sub(1),
+            Some(l) => edges.iter().rposition(|(name, _)| name.as_ref() == Some(l)),
+            None => edges.len().checked_sub(1),
         };
         let Some(i) = target else { return };
-        let here = self.bindings.clone();
-        let joined = match self.loop_exits[i].1.take() {
+        let here = bindings.clone();
+        let joined = match edges[i].1.take() {
             None => here,
             Some(mut acc) => {
                 for (name, state) in &here {
@@ -1491,7 +1525,7 @@ impl<'a> OwnershipChecker<'a> {
                 acc
             }
         };
-        self.loop_exits[i].1 = Some(joined);
+        edges[i].1 = Some(joined);
     }
 
     /// E4: `let x = collection[key]` copies when the element is Copy and is a
@@ -2144,8 +2178,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_exit_obligations(stmt.span);
                 self.record_loop_exit(label.as_ref());
             }
-            StmtKind::Continue(_) => {
+            StmtKind::Continue(label) => {
                 self.check_loop_exit_obligations(stmt.span);
+                Self::record_loop_edge(&mut self.loop_continues, label.as_ref(), &self.bindings);
             }
             StmtKind::Ensure { body, else_handler } => {
                 // What the body consumes is committed, found by the same walk
@@ -6702,6 +6737,9 @@ impl<'a> OwnershipChecker<'a> {
     /// { out.push(Change.Rename { at: s }) }`). LP4 has value mode lend
     /// whatever the source; `take_all()` is the consuming walk (LP7).
     fn loop_lender(&self, iter: &Expr) -> Option<String> {
+        if self.is_take_all(iter) {
+            return None;
+        }
         let place = Self::place_text(iter).or_else(|| Self::call_text(iter))?;
         let ty = self.node_ty(&iter.id)?;
         let lends = match ty {
@@ -6713,6 +6751,22 @@ impl<'a> OwnershipChecker<'a> {
             _ => false,
         };
         lends.then_some(place)
+    }
+
+    /// A call the checker dispatched to `Vec.take_all` or `Map.take_all`: it
+    /// hands back a `Vec` like any other call, but the loop over it owns each
+    /// element (std.iteration/T2, ctrl.loops/LP7) — MIR moves them out one by
+    /// one instead of freeing them with the temporary.
+    fn is_take_all(&self, expr: &Expr) -> bool {
+        match self.program.call_targets.get(&expr.id) {
+            Some(rask_types::Callee::Method { recv, method, .. }) if method == "take_all" => {
+                matches!(
+                    rask_types::receiver_name(recv, &self.program.types).as_deref(),
+                    Some("Vec" | "Map")
+                )
+            }
+            _ => false,
+        }
     }
 
     /// `sites()` or `items.clone()`, for a message.

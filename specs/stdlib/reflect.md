@@ -34,6 +34,17 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `is_copy<T>()` | `-> bool` | Whether T is implicitly copyable (≤16 bytes, all fields Copy) |
 | `is_resource<T>()` | `-> bool` | Whether T is a linear resource type |
 
+<!-- surface -->
+```rask
+extend reflect {
+    func size_of<T>() -> usize
+    func align_of<T>() -> usize
+    func name_of<T>() -> string
+    func is_copy<T>() -> bool
+    func is_resource<T>() -> bool
+}
+```
+
 ### Type Category
 
 | Function | Signature | Description |
@@ -47,9 +58,23 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
 | `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Interface`, closures, resources) |
 
+<!-- surface -->
+```rask
+extend reflect {
+    func is_struct<T>() -> bool
+    func is_enum<T>() -> bool
+    func is_optional<T>() -> bool
+    func is_vec<T>() -> bool
+    func is_map<T>() -> bool
+    func is_integer<T>() -> bool
+    func is_float<T>() -> bool
+    func is_flat<T>() -> bool
+}
+```
+
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
-`name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer`, `is_float`, `is_resource` and `is_flat` fold to constants on both backends.
+`name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer`, `is_float`, `is_resource` and `is_flat` fold to constants on both backends, and so does everything in the sections below.
 
 `size_of`, `align_of` and `is_copy` don't. They need a size, and the compiler has two of them: the language model behind the 16-byte Copy threshold (`i32` is 4 bytes, which is what the example below counts with) and the 8-byte-slot model codegen lays out with, where every scalar takes a word. They disagree about every struct with a narrow field, so answering with either would bake the choice in before it's made. Both backends report it rather than guessing (#791).
 
@@ -72,10 +97,15 @@ comptime {
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `fields<T>()` | `-> Vec<FieldInfo>` | All fields of a struct (compile error if not a struct) |
-| `has_field<T>(name: string)` | `-> bool` | Whether struct has a field with this name |
+| `has_field<T>(name: string)` | `-> bool` | Whether struct has a field with this name. False for anything that isn't a struct |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
+extend reflect {
+    func fields<T>() -> Vec<FieldInfo>
+    func has_field<T>(name: string) -> bool
+}
+
 struct FieldInfo {
     name: string
     type_name: string
@@ -88,6 +118,8 @@ struct FieldInfo {
     has_default: bool         // @default or a declared default present
 }
 ```
+
+`has_field` is a predicate, so it answers rather than refuses: an enum's payload isn't a field and a primitive has none, and both say false. `fields<T>()` on a non-struct stays a compile error, because there's no list to hand back.
 
 `serial_name` equals `name` unless the field has `@rename("...")`. See `std.encoding` for field annotation semantics.
 
@@ -110,11 +142,16 @@ So there are two different questions and they have different answers:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `methods<T>()` | `-> Vec<MethodInfo>` | All methods of a type |
-| `has_method<T>(name: string)` | `-> bool` | Whether type has a method with this name |
+| `methods<T>()` | `-> Vec<MethodInfo>` | Every method a call can reach on T |
+| `has_method<T>(name: string)` | `-> bool` | Whether `methods<T>()` has one with this name |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
+extend reflect {
+    func methods<T>() -> Vec<MethodInfo>
+    func has_method<T>(name: string) -> bool
+}
+
 struct MethodInfo {
     name: string
     is_public: bool
@@ -123,14 +160,39 @@ struct MethodInfo {
 }
 ```
 
+"All methods" means everything `t.name(…)` or `T.name(…)` can call, because that's what a caller asking `has_method` wants to know:
+
+| Included | Notes |
+|---|---|
+| Methods in `extend T` blocks | Static ones too. `param_count` never counts `self` |
+| Methods in conformance blocks | Under the name a call writes. `Duration` conforms to `Div<i64>` and `Div<Duration>`, so it has two `div`s, told apart by `return_type_name` |
+| What the compiler derives | `eq`, `hash`, `clone`, `compare`, `lt`/`le`/`gt`/`ge`, `debug`, and an enum's `message` (`type.errors/ER6`) — they're as callable as any other |
+| Methods that aren't `public` | Listed with `is_public == false` (R4). A conformance method is as visible as the conformance, so it's public |
+
+Order is the declaration order, then what was derived.
+
+R5 decides generic receivers: a method whose `extend` header or `where` clause this instantiation doesn't meet isn't one of its methods. `Vec<i64>` has `sort` and a `Vec` of a struct that isn't `Comparable` doesn't; `read_u8` lives in `extend Vec<u8>` and only `Vec<u8>` has it. `return_type_name` has the receiver's arguments substituted. A method's own type parameters stay as written: `map` on `Vec<i64>` returns `Sequence<U>`.
+
+The `name` argument of `has_method` and `has_field` is normally a literal, or `field.name` inside a `comptime for`, and the call folds to a constant. Any other string works too; it's compared at run time against the folded list.
+
 ## Interface Checking
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `implements<T, Interface>()` | `-> bool` | Whether T satisfies Interface (structural or explicit) |
-| `interface_names<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
+| `implements<T, Interface>()` | `-> bool` | Whether `T: Interface` would hold as a generic bound |
+| `interfaces<T>()` | `-> Vec<string>` | The conformances written for T. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
-`implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
+<!-- surface -->
+```rask
+extend reflect {
+    func implements<T, Interface>() -> bool
+    func interfaces<T>() -> Vec<string>
+}
+```
+
+`implements` asks the question a bound asks, and gets the same answer: a written conformance, a derived one (`Equal`, `Hashable`, `Cloneable`, `Comparable`, `Debug`), or one the compiler answers itself (`i64: Comparable`, `Vec<i64>: Equal`, `Copy`, `Encode`). `Interface` has to name an interface, and naming anything else is a compile error. It does NOT scan the codebase for all implementors (R2).
+
+`interfaces` is narrower on purpose: it lists what the source *wrote*, `T implements I` blocks and a nominal type's `with` list, in the order written. I left the derived conformances out. They depend on the fields rather than on anything the author said, and `Debug` would sit on every list as noise; `implements` answers for them. Each entry is the applied interface, defaults and `Self` filled in: `Duration` lists `Add<Duration>, Sub<Duration>, Mul<i64>, Div<i64>, Div<Duration>`. A bare `Div` twice would lose which two. A sub-interface is listed and its parents aren't, though `implements` is true for them. A conditional conformance (`where T: …`) is listed when this instantiation meets the condition (R5).
 
 ## Enum Variants
 
@@ -138,8 +200,12 @@ struct MethodInfo {
 |----------|-----------|-------------|
 | `variants<T>()` | `-> Vec<VariantInfo>` | All variants of an enum (compile error if not an enum) |
 
-<!-- test: parse -->
+<!-- surface -->
 ```rask
+extend reflect {
+    func variants<T>() -> Vec<VariantInfo>
+}
+
 struct VariantInfo {
     name: string
     has_fields: bool
@@ -148,6 +214,8 @@ struct VariantInfo {
     serial_name: string       // @rename value, or same as name
 }
 ```
+
+A payload field is a `FieldInfo` like a struct field's, read from the same layout. A positional payload is named by its index (`_0`, `_1`). `offset` counts from the start of the enum value, the same origin a struct field's does, so it lands after the tag. A payload has no visibility or wire annotations of its own: `is_public` is true and `serial_name` is the field's name. A generic enum reports the instantiation: `Answer<string>`'s `Yes` holds a 16-byte `string` where `Answer<i64>`'s holds 8.
 
 ## Error Messages
 
@@ -182,7 +250,11 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 | Private fields in `fields<T>()` | R4 | Visible in metadata, access respects visibility; `serialized == false` |
 | `fields<T>()` from an external format library | R4 | Sees the full `serialized` set — auto-derive acts as-if in the defining module |
 | Generic type `T` in comptime func | R5 | Reflects concrete monomorphized type |
-| `implements<T, Interface>()` | R2 | Checks T's methods, not codebase-wide |
+| `implements<T, Interface>()` | R2 | Checks T against the interface, not codebase-wide |
+| `implements<T, NotAnInterface>()` | — | Compile error |
+| `has_field<T>()` on a non-struct | — | `false` |
+| `methods<T>()` on a generic instantiation | R5 | Only the methods whose `extend` header and `where` clause T meets |
+| `interfaces<T>()` with derived conformances | — | Not listed; `implements` answers |
 
 ---
 

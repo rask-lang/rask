@@ -95,4 +95,11 @@ test "accumulating floats in a loop" {
     assert sum == 1.0
 }
 
+test "pow takes a float exponent" {
+    let x: f64 = 2.0
+    assert x.pow(10.0) == 1024.0
+    assert x.pow(0.5) * x.pow(0.5) > 1.9999
+    assert 9.0.pow(0.5) == 3.0
+}
+
 func main() {}

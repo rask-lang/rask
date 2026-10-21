@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.hex: bytes to hex text and back. Lowercase out unless asked, either case
+// in (H1), two digits per byte with odd length an error (H2), no prefixes or
+// separators (H3).
+
+import hex
+
+func decoded(s: string) -> string {
+    let bytes = hex.decode(s) catch e => {
+        match e {
+            hex.HexError.BadCharacter(byte, at) => return "bad {byte} at {at}"
+            hex.HexError.OddLength(len) => return "odd {len}"
+        }
+    }
+    mut parts: Vec<string> = Vec.new()
+    for b in bytes {
+        parts.push("{b}")
+    }
+    return "[{parts.join(",")}]"
+}
+
+test "std.hex/H1 — lowercase by default, uppercase on request" {
+    let bytes: Vec<u8> = [222, 173, 190, 239, 0, 15, 16, 255]
+    assert hex.encode(bytes) == "deadbeef000f10ff"
+    assert hex.encode(bytes, upper: true) == "DEADBEEF000F10FF"
+    assert hex.encode(bytes, upper: false) == "deadbeef000f10ff"
+}
+
+test "std.hex — empty in, empty out" {
+    let empty: Vec<u8> = []
+    assert hex.encode(empty) == ""
+    assert decoded("") == "[]"
+}
+
+test "std.hex/H1 — decode takes any case" {
+    assert decoded("deadbeef") == "[222,173,190,239]"
+    assert decoded("DEADBEEF") == "[222,173,190,239]"
+    assert decoded("DeAdBeEf") == "[222,173,190,239]"
+    assert decoded("00ff7f80") == "[0,255,127,128]"
+}
+
+test "std.hex — encode then decode gives the bytes back" {
+    mut all: Vec<u8> = Vec.new()
+    for i in 0..256 {
+        all.push(i.wrap<u8>())
+    }
+    let text = hex.encode(all)
+    assert text.len() == 512
+    let back = hex.decode(text) catch _ => {
+        assert false
+        return
+    }
+    assert back.len() == 256
+    for i in 0..256 {
+        assert back[i] == i.wrap<u8>()
+    }
+}
+
+test "std.hex/H2 — odd length is an error, not a leading zero" {
+    assert decoded("abc") == "odd 3"
+    assert decoded("a") == "odd 1"
+}
+
+test "std.hex/H3 — prefixes, separators and non-ASCII are bad characters" {
+    // "x" is the first byte that isn't a digit.
+    assert decoded("0xdead") == "bad 120 at 1"
+    assert decoded("de:ad") == "bad 58 at 2"
+    assert decoded("de ad") == "bad 32 at 2"
+    assert decoded("zz") == "bad 122 at 0"
+    // "é" is two bytes in UTF-8; the first is reported.
+    assert decoded("aé") == "bad 195 at 1"
+}
+
+test "std.hex — a bad character wins over odd length" {
+    assert decoded("de:ad:be:ef") == "bad 58 at 2"
+}
+
+test "std.hex — errors say what went wrong" {
+    let e = hex.HexError.OddLength(3)
+    assert e.message().contains("odd length 3")
+    let c = hex.HexError.BadCharacter(byte: 120, at: 1)
+    assert c.message().contains("offset 1")
+}
+
+func main() {
+    let bytes: Vec<u8> = [1, 35, 69, 103, 137, 171, 205, 239]
+    println(hex.encode(bytes))
+    println(hex.encode(bytes, upper: true))
+    println(decoded("0123456789ABCDEF"))
+    println(decoded("abc"))
+    println(decoded("0x00"))
+}

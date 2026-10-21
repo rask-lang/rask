@@ -104,6 +104,17 @@ impl Interpreter {
                 )))
             }),
             "rask_net_resolves" => self.expect_string(args, 0).map(|a| Value::Bool(udp_resolve(&a).is_some())),
+            // net.resolve: every address the name has, in getaddrinfo's
+            // order, or `none`. Port 0 because the lookup wants one.
+            "rask_net_resolve" => self.expect_string(args, 0).map(|host| {
+                use std::net::ToSocketAddrs;
+                match (host.as_str(), 0).to_socket_addrs() {
+                    Ok(addrs) => Value::some(Value::vec(
+                        addrs.map(|a| Value::String(Arc::new(Mutex::new(a.ip().to_string())))).collect(),
+                    )),
+                    Err(_) => Value::none(),
+                }
+            }),
             "rask_net_udp_bind"
             | "rask_net_udp_send_to"
             | "rask_net_udp_receive"

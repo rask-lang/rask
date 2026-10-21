@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // CLI entry point — command dispatch and benchmark harness.
 
-import cli
+import os
 import std
 
 struct CliArgs {
@@ -238,7 +238,7 @@ func run(args: CliArgs) -> void or DbError {
 }
 
 func main() {
-    let args = cli.args()
+    let args = os.args()
     let cli_args = match parse_cli_args(args) {
         CliArgs as a => a
         DbError as e => {

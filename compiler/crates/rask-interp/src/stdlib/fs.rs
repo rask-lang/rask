@@ -36,6 +36,38 @@ pub(crate) fn io_error_result(e: &std::io::Error) -> Value {
     Value::err(Value::stdlib_enum("IoError", variant, fields))
 }
 
+thread_local! {
+    /// The last stat either load took: size, mtime, atime — the runtime's
+    /// `rask_stat_buf`, as the interpreter keeps it.
+    static LOADED_STAT: std::cell::Cell<(u64, i64, i64)> = const { std::cell::Cell::new((0, 0, 0)) };
+}
+
+/// Keep a stat for the `loaded_*` readers: 0, or -1 with the error kept.
+fn load_stat(meta: std::io::Result<std::fs::Metadata>) -> i64 {
+    use std::os::unix::fs::MetadataExt;
+    match meta {
+        Ok(m) => {
+            LOADED_STAT.with(|s| s.set((m.size(), m.mtime(), m.atime())));
+            0
+        }
+        Err(e) => {
+            super::net::set_last_os_error(&e);
+            -1
+        }
+    }
+}
+
+/// 0, or -1 with the error kept for `IoError.last_os_error`.
+fn status_of(r: std::io::Result<()>) -> i64 {
+    match r {
+        Ok(()) => 0,
+        Err(e) => {
+            super::net::set_last_os_error(&e);
+            -1
+        }
+    }
+}
+
 impl Interpreter {
     /// Handle fs module methods.
     pub(crate) fn call_fs_method(
@@ -159,29 +191,79 @@ impl Interpreter {
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
-            "metadata" => {
+            // `rask_fs_stat_load` and the three readers: one stat kept for
+            // `fs.loaded_metadata` to read field by field, as the runtime does.
+            "stat_load" => {
                 let path = self.expect_string(&args, 0)?;
-                match std::fs::metadata(&path) {
-                    Ok(meta) => {
-                        let mut fields = IndexMap::new();
-                        fields.insert("size".to_string(), Value::int(meta.len() as i64));
-                        if let Ok(accessed) = meta.accessed() {
-                            if let Ok(dur) = accessed.duration_since(std::time::UNIX_EPOCH) {
-                                fields.insert("accessed".to_string(), Value::int(dur.as_secs() as i64));
-                            }
-                        }
-                        if let Ok(modified) = meta.modified() {
-                            if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                                fields.insert("modified".to_string(), Value::int(dur.as_secs() as i64));
-                            }
-                        }
-                        Ok(Value::ok(Value::new_struct(
-                                "Metadata".to_string(),
-                                fields,
-                                None,
-                            )))
+                Ok(Value::int(load_stat(std::fs::metadata(&path))))
+            }
+            "loaded_size" => Ok(Value::Int(LOADED_STAT.with(|s| s.get()).0 as i64, crate::value::IntKind::U64)),
+            "loaded_mtime" => Ok(Value::int(LOADED_STAT.with(|s| s.get()).1)),
+            "loaded_atime" => Ok(Value::int(LOADED_STAT.with(|s| s.get()).2)),
+            // `rask_fs_read_dir_names`: the names, or `none` with the error kept.
+            "read_dir_names" => {
+                let path = self.expect_string(&args, 0)?;
+                let listed = std::fs::read_dir(&path).and_then(|entries| {
+                    entries
+                        .map(|e| e.map(|e| e.file_name().to_string_lossy().to_string()))
+                        .collect::<std::io::Result<Vec<String>>>()
+                });
+                match listed {
+                    Ok(names) => Ok(Value::some(Value::vec(
+                        names.into_iter().map(|n| Value::String(Arc::new(Mutex::new(n)))).collect(),
+                    ))),
+                    Err(e) => {
+                        super::net::set_last_os_error(&e);
+                        Ok(Value::none())
                     }
-                    Err(e) => Ok(io_error_result(&e)),
+                }
+            }
+            // `rask_fs_remove_dir`: 0, or -1.
+            "remove_dir_raw" => {
+                let path = self.expect_string(&args, 0)?;
+                Ok(Value::int(status_of(std::fs::remove_dir(&path))))
+            }
+            // `rask_fs_kind`: 1 file, 2 directory, 3 symlink, 4 other, -1.
+            "kind_raw" => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::symlink_metadata(&path) {
+                    Ok(m) => {
+                        let t = m.file_type();
+                        let kind = if t.is_symlink() { 3 } else if t.is_dir() { 2 } else if t.is_file() { 1 } else { 4 };
+                        Ok(Value::int(kind))
+                    }
+                    Err(e) => {
+                        super::net::set_last_os_error(&e);
+                        Ok(Value::int(-1))
+                    }
+                }
+            }
+            // `rask_fs_open_with`: `flags` packed by fs.rk — 1 read, 2 write,
+            // 4 append, 8 create, 16 truncate.
+            "open_with_handle" => {
+                let path = self.expect_string(&args, 0)?;
+                let flags = match args.get(1) {
+                    Some(Value::Int(n, _)) => *n,
+                    _ => 0,
+                };
+                let opened = std::fs::OpenOptions::new()
+                    .read(flags & 1 != 0)
+                    .write(flags & 2 != 0)
+                    .append(flags & 4 != 0)
+                    .create(flags & 8 != 0)
+                    .truncate(flags & 16 != 0)
+                    .open(&path);
+                match opened {
+                    Ok(file) => {
+                        let arc = Arc::new(Mutex::new(Some(file)));
+                        let ptr = Arc::as_ptr(&arc) as usize;
+                        self.resource_tracker.register_file(ptr, self.env.scope_depth());
+                        Ok(Value::some(Value::File(arc)))
+                    }
+                    Err(e) => {
+                        super::net::set_last_os_error(&e);
+                        Ok(Value::none())
+                    }
                 }
             }
             "remove_file" => {
@@ -191,13 +273,7 @@ impl Interpreter {
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
-            "remove_dir" => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::remove_dir(&path) {
-                    Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
-                }
-            }
+
             "create_dir" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::create_dir(&path) {
@@ -240,23 +316,7 @@ impl Interpreter {
                     Err(_) => Ok(Value::none()),
                 }
             }
-            "list_dir" => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::read_dir(&path) {
-                    Ok(entries) => {
-                        let mut names = Vec::new();
-                        for entry in entries {
-                            if let Ok(e) = entry {
-                                names.push(Value::String(Arc::new(Mutex::new(
-                                    e.file_name().to_string_lossy().to_string(),
-                                ))));
-                            }
-                        }
-                        Ok(Value::ok(Value::vec(names)))
-                    }
-                    Err(e) => Ok(io_error_result(&e)),
-                }
-            }
+
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "fs".to_string(),
                 method: method.to_string(),
@@ -366,6 +426,45 @@ impl Interpreter {
                 match f.stream_position() {
                     Ok(at) => Ok(Value::int(at as i64)),
                     Err(_) => Ok(Value::int(-1)),
+                }
+            }
+            // `std::fs::File` buffers nothing, so there's nothing to push.
+            "flush_raw" => {
+                if file.lock().unwrap().is_none() {
+                    return Err(closed("flush"));
+                }
+                Ok(Value::int(0))
+            }
+            // `rask_file_stat_load`: the open file's metadata into the slot
+            // `fs.loaded_metadata` reads.
+            "stat_raw" => {
+                let file_opt = file.lock().unwrap();
+                let f = file_opt.as_ref().ok_or_else(|| closed("stat"))?;
+                Ok(Value::int(load_stat(f.metadata())))
+            }
+            // `rask_file_read_some`: one read of up to `max` bytes, empty at
+            // the end, `none` when it failed.
+            "read_some_raw" => {
+                use std::io::Read;
+                let max = match args.first() {
+                    Some(Value::Int(n, _)) => (*n).max(1) as usize,
+                    _ => 1,
+                };
+                let mut file_opt = file.lock().unwrap();
+                let f = file_opt.as_mut().ok_or_else(|| closed("read from"))?;
+                let mut buf = vec![0u8; max];
+                loop {
+                    match f.read(&mut buf) {
+                        Ok(n) => {
+                            let bytes: Vec<Value> = buf[..n].iter().map(|b| Value::int(*b as i64)).collect();
+                            return Ok(Value::some(Value::vec(bytes)));
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => {
+                            super::net::set_last_os_error(&e);
+                            return Ok(Value::none());
+                        }
+                    }
                 }
             }
             "read_bytes_raw" => {

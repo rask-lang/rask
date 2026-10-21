@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `take_all()` moves every element out and hands back a Vec — `(key, value)`
+// pairs for a map — leaving the collection empty and still usable
+// (std.iteration/T1, T2). A loop over it owns each element, so it can give
+// one away.
+
+test "Vec.take_all hands back a Vec and leaves the source empty" {
+    mut v: Vec<string> = ["a", "b {1 + 1}"]
+    let all: Vec<string> = v.take_all()
+    assert all == ["a", "b 2"]
+    assert v.len() == 0
+    v.push("again")
+    assert v == ["again"]
+}
+
+test "a loop over Vec.take_all owns each element" {
+    mut groups: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut kept: Vec<Vec<i64>> = Vec.new()
+    for g in groups.take_all() {
+        kept.push(g)
+    }
+    assert kept.len() == 2
+    assert kept[0] == [1, 2]
+    assert groups.len() == 0
+}
+
+test "a fixed Vec keeps its bound after take_all" {
+    mut f: Vec<i64> = Vec.fixed(2)
+    f.push(1)
+    f.push(2)
+    let out = f.take_all()
+    assert out.len() == 2
+    assert (f.capacity() ?? 0) == 2
+}
+
+test "Map.take_all hands back the pairs and leaves the map empty" {
+    mut m: Map<string, string> = Map.new()
+    m.insert("a", "x {m.len()}")
+    m.insert("b", "y")
+    mut pairs: Vec<string> = Vec.new()
+    for (k, v) in m.take_all() {
+        pairs.push("{k}={v}")
+    }
+    pairs.sort()
+    assert pairs == ["a=x 0", "b=y"]
+    assert m.len() == 0
+    m.insert("c", "z")
+    assert m["c"] == "z"
+}
+
+test "Map.take_all moves values that own things" {
+    mut m: Map<i64, Vec<string>> = Map.new()
+    m.insert(1, ["one"])
+    m.insert(2, ["two", "deux"])
+    mut lists: Vec<Vec<string>> = Vec.new()
+    mut total: usize = 0
+    for (_, list) in m.take_all() {
+        total += list.len()
+        lists.push(list)
+    }
+    assert total == 3
+    assert lists.len() == 2
+    assert m.is_empty()
+}
+
+test "Map.take_all with a non-string key and string values" {
+    mut m: Map<i64, string> = Map.new()
+    m.insert(7, "seven {m.len()}")
+    let pairs = m.take_all()
+    assert pairs.len() == 1
+    assert pairs[0].0 == 7
+    assert pairs[0].1 == "seven 0"
+}

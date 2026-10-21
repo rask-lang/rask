@@ -154,6 +154,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Map_keys", 0, 0, "Vec_free"),
     ("Map_values", 0, 0, "Vec_free"),
     ("Map_entries", 0, 0, "Vec_free"),
+    // The entries move out into a fresh Vec: (map, value offset, pair size),
+    // then what a pair owns.
+    ("Map_take_all", 3, 1, "Vec_free"),
     // Racks and pools carry no element description: a rack is told about its fields
     // separately, through `Link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
@@ -193,6 +196,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // fresh string. Neither points into the source — unlike the splitters
     // below, which look identical from here and are not.
     ("string_chars", 0, 0, "Vec_free"),
+    ("StringView_chars", 0, 0, "Vec_free"),
     ("string_graphemes", 0, 0, "Vec_free"),
     // The third of that family and the one left out: `char_indices` pushes a
     // (byte offset, scalar) pair per character into a fresh vector. Two
@@ -209,9 +213,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // the caller still holds.
     ("os_env_vars", 0, 0, "Vec_free"),
     ("os_args", 0, 0, "Vec_free"),
-    // `cli.args()` is the same argv as `os.args()`, built the same way, and
-    // was left off: every program that read its arguments leaked them.
-    ("cli_args", 0, 0, "Vec_free"),
     // A `Shared` box carries no element description — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing

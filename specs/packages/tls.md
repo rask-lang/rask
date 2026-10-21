@@ -1,9 +1,17 @@
-<!-- id: std.tls -->
-<!-- status: decided -->
-<!-- summary: TLS client and server over TCP — dial or upgrade, verification on by default, provider behind a C shim -->
+<!-- id: pkg.tls -->
+<!-- status: proposed -->
+<!-- summary: TLS client and server over TCP, as a package — dial or upgrade, verification on by default -->
 <!-- depends: stdlib/net.md, stdlib/io.md, memory/resource-types.md -->
 
-# TLS
+# TLS (a package, not the stdlib)
+
+TLS isn't in the stdlib. Rask can't yet write it soundly itself: crypto must
+not branch on secrets, and nothing in the language can promise a function
+stays constant-time, nor reach the CPU's AES instructions. Linking a provider
+into every toolchain is the other road, and it ships someone else's CVEs with
+the compiler. So this is the API a `tls` package should offer, built on rustls
+through `compile_rust()` (`struct.build`). The stdlib's `HttpClient` refuses
+`https://` until it can take a TLS transport from such a package.
 
 Encrypted connections. Two ways in: dial one, or upgrade a TCP connection you
 already have.
@@ -62,17 +70,18 @@ loop {
 
 ## Config
 
-<!-- test: skip -->
-```rask
-tls.Config.new() -> Config
-config.with_cert(cert: string, key: string) -> Config     // PEM paths, server side
-config.with_ca(path: string) -> Config                    // pin a CA instead of the system store
-config.with_alpn(protocols: Vec<string>) -> Config        // ["h2", "http/1.1"]
-config.with_verification(v: Verification) -> Config
-```
-
 <!-- test: parse -->
 ```rask
+struct Config { }
+
+extend Config {
+    func new() -> Config
+    func with_cert(take self, cert: string, key: string) -> Config     // PEM paths, server side
+    func with_ca(take self, path: string) -> Config                    // pin a CA instead of the system store
+    func with_alpn(take self, protocols: Vec<string>) -> Config        // ["h2", "http/1.1"]
+    func with_verification(take self, v: Verification) -> Config
+}
+
 enum Verification {
     Full            // default: chain and hostname
     ChainOnly       // hostname mismatch allowed — a pinned CA with a bare IP
@@ -86,11 +95,29 @@ enum Verification {
 `read_text`, `write_text`, `close` — so code written against one works against the
 other. Plus:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
-conn.peer_certificate() -> Certificate?
-conn.protocol() -> string?       // the ALPN protocol agreed, if any
-conn.tls_version() -> string     // "TLSv1.3"
+@resource
+struct TlsConnection { }
+
+TlsConnection implements Reader {
+    func read(self, buf: Vec<u8>) -> usize or IoError
+    func read_text(self) -> string or IoError
+}
+
+TlsConnection implements Writer {
+    func write(self, data: Vec<u8>) -> usize or IoError
+    func write_text(self, data: string) -> void or IoError
+}
+
+extend TlsConnection {
+    func close(take self) -> void or IoError
+    func peer_certificate(self) -> Certificate?
+    func protocol(self) -> string?       // the ALPN protocol agreed, if any
+    func tls_version(self) -> string     // "TLSv1.3"
+}
+
+struct Certificate { }
 ```
 
 ## Core Rules
@@ -103,6 +130,23 @@ conn.tls_version() -> string     // "TLSv1.3"
 | **L4: Same shape as `net`** | `TlsConnection` mirrors `net.TcpConnection`, `tls.listen` mirrors `net.tcp_listen`. TLS is a layer, not a parallel networking API to learn |
 | **L5: Modern protocol versions only** | TLS 1.2 and 1.3. SSLv3, TLS 1.0 and 1.1 are not configurable back on — a knob for them is a knob for downgrade attacks |
 | **L6: Provider is an implementation detail** | The library underneath is not in the API. No provider handles, no library-specific config, nothing that would change if it were swapped |
+
+<!-- test: parse -->
+```rask
+extend tls {
+    func connect(addr: string) -> TlsConnection or TlsError
+    func wrap(take conn: TcpConnection, host: string) -> TlsConnection or TlsError
+    func listen(addr: string, config: Config) -> TlsListener or TlsError
+}
+
+@resource
+struct TlsListener { }
+
+extend TlsListener {
+    func accept(self) -> TlsConnection or TlsError
+    func close(take self) -> void or IoError
+}
+```
 
 ## Errors
 

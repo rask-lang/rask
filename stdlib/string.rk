@@ -127,6 +127,28 @@ extend string {
     @native("rask_string_char_at")
     public func char_at(self, idx: usize) -> char? {}
 
+    /// The text a `Span` covers, copied out — or `none` when the span runs
+    /// past the end, runs backwards, or cuts a character in half. The
+    /// checked form of `self[span.start..span.end]`.
+    public func get(self, span: Span) -> string? {
+        if span.start > span.end || span.end > self.len() {
+            return none
+        }
+        if !self.starts_char(span.start) || !self.starts_char(span.end) {
+            return none
+        }
+        return self[span.start..span.end]
+    }
+
+    /// Is byte offset `at` where a character starts, or the end? A UTF-8
+    /// continuation byte is `10xxxxxx`; anything else starts one.
+    func starts_char(self, at: usize) -> bool {
+        if self.byte_at(at)? as b {
+            return (b & 0xC0) != 0x80
+        }
+        return at == self.len()
+    }
+
     // ── Searching ───────────────────────────────────────────
 
     /// Byte index of first occurrence. none if not found.
@@ -207,7 +229,7 @@ extend string {
     public func bytes(self) -> Iterator<u8> {}
 
     /// Iterate over (byte_index, char) pairs.
-    @native
+    @native("rask_string_char_indices")
     public func char_indices(self) -> Iterator<(usize, char)> {}
 
     /// Split by separator.
@@ -224,11 +246,20 @@ extend string {
 
     // ── Manipulation ────────────────────────────────────────
 
-    /// Replace all occurrences. Allocates.
-    /// The spec's `limit:` parameter (replace at most n) needs default
-    /// arguments on methods — blocked on rask-lang/rask#1028.
+    /// Replace occurrences of `from` with `to`, left to right: every one, or
+    /// at most `limit`. `limit: 0` replaces nothing. Allocates.
+    public func replace(self, from: string, to: string, limit: usize? = none) -> string {
+        if limit? as n {
+            return self.replace_at_most(from, to, n)
+        }
+        return self.replace_every(from, to)
+    }
+
     @native("rask_string_replace")
-    public func replace(self, from: string, to: string) -> string {}
+    func replace_every(self, from: string, to: string) -> string {}
+
+    @native("rask_string_replace_limit")
+    func replace_at_most(self, from: string, to: string, limit: usize) -> string {}
 
     /// Reverse by graphemes (std.strings/U2). Allocates.
     /// Scalar reversal has no correct use — it splits combining marks from
@@ -358,11 +389,22 @@ extend StringView {
     @native("rask_string_len")
     public func len(self) -> usize {}
 
+    /// Byte index of the first occurrence of `pat`, from the view's start.
+    /// none if not found. A view is laid out as a string, so this is the same
+    /// search.
+    @native("rask_string_find")
+    public func index_of(self, pat: string) -> usize? {}
+
+    /// The view's Unicode scalars, in order (U3).
+    @native("rask_string_chars")
+    public func chars(self) -> Iterator<char> {}
+
     /// True if the view is empty. O(1).
     @native("rask_string_is_empty")
     public func is_empty(self) -> bool {}
 
-    /// Copy bytes into an independent string — releases the source buffer.
+    /// The view's text as an independent string — releases the source
+    /// buffer. Rendering a view is copying it out.
     @native("rask_string_unshare")
     public func to_string(self) -> string {}
 
@@ -387,23 +429,19 @@ extend cstring {
     @native("rask_cstring_as_ptr")
     public unsafe func as_ptr(self) -> *u8 {}
 
-    /// Take ownership from a C pointer. Unsafe — caller must ensure validity:
-    /// the pointer has to be NUL-terminated and to outlive nothing else, since
-    /// the cstring frees it.
-    @native("rask_cstring_as_ptr")
-    public unsafe func from_ptr(ptr: *u8) -> cstring {}
-
     /// Back to a Rask string, reading up to the terminator.
     ///
     /// Fallible because C promises nothing about encoding — the bytes may be
-    /// anything at all. `from_utf8` is the validator both backends already
-    /// share, so the trip back stops being native here rather than growing a
-    /// second copy of it in the runtime.
-    public func to_string(self) -> string or Utf8Error {
+    /// anything at all. That's why this is `decode` and not `to_string`: a
+    /// cstring has no rendering that can't fail, so it isn't Displayable.
+    /// `from_utf8` is the validator both backends already share, so the trip
+    /// back stops being native here rather than growing a second copy of it
+    /// in the runtime.
+    public func decode(self) -> string or Utf8Error {
         return string.from_utf8(self.bytes())
     }
 
-    /// The bytes up to the terminator, unvalidated. `to_string` is the public
+    /// The bytes up to the terminator, unvalidated. `decode` is the public
     /// way back; this is the half of it that reads.
     @native("rask_cstring_bytes")
     func bytes(self) -> Vec<u8> {}

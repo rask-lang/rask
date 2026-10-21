@@ -22,16 +22,21 @@ TCP and UDP networking with DNS resolution. String addresses, linear resource ha
 | **N4: Listen** | `net.tcp_listen(addr)` binds and listens on a TCP address |
 | **N5: Connect** | `net.tcp_connect(addr)` connects to a remote TCP address |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-net.tcp_listen(addr: string) -> TcpListener or IoError
-net.tcp_connect(addr: string) -> TcpConnection or IoError
+extend net {
+    func tcp_listen(addr: string) -> TcpListener or IoError
+    func tcp_connect(addr: string) -> TcpConnection or IoError
+}
 ```
 
 ## TcpListener
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
+@resource
+struct TcpListener { }
+
 extend TcpListener {
     func accept(self) -> TcpConnection or IoError
     func local_addr(self) -> string
@@ -61,12 +66,16 @@ loop {
 |------|-------------|
 | **N6: Reader/Writer** | `TcpConnection` implements `Reader` and `Writer` (see `std.io`) — TCP is a byte transport. `read_text`/`write_text` (from the interfaces) cover text protocols |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
+@resource
+struct TcpConnection { }
+
 TcpConnection implements Reader {
-    func read(self, buf: Vec<u8>) -> usize or IoError
+    func read(self, mutate buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
+    func read_exact(self, mutate buf: Vec<u8>) -> void or IoError
 }
 
 TcpConnection implements Writer {
@@ -101,7 +110,7 @@ let response = try conn.read_text()
 | **U3: Whole datagrams** | `send_to` sends one datagram, or fails with `IoError` when it doesn't fit in one (65507 bytes). `receive_from` returns one whole datagram and its sender |
 | **U4: No promises** | A datagram may be lost, arrive twice, or overtake one sent before it. The API says nothing more, and sim exercises all three (`sim/N1`) |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 @resource
 struct UdpSocket { }
@@ -111,10 +120,12 @@ struct Datagram {
     public from: string
 }
 
-net.udp_bind(addr: string) -> UdpSocket or IoError
+extend net {
+    func udp_bind(addr: string) -> UdpSocket or IoError
+}
 ```
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
 extend UdpSocket {
     func send_to(self, data: Vec<u8>, addr: string) -> void or IoError
@@ -141,10 +152,13 @@ try socket.send_to(d.data, d.from)
 |------|-------------|
 | **D1: Resolve** | `net.resolve(host)` returns IP address strings for a hostname |
 | **D2: No caching** | The stdlib does not cache DNS results. OS resolver caching applies |
+| **D3: Unknown names fail** | A name that resolves to nothing is `IoError.Other("could not resolve <host>")`, the error `tcp_connect` gives for it. An empty `Vec` would be a failure nobody checks |
 
-<!-- test: skip -->
+<!-- surface -->
 ```rask
-net.resolve(host: string) -> Vec<string> or IoError
+extend net {
+    func resolve(host: string) -> Vec<string> or IoError
+}
 ```
 
 <!-- test: skip -->
@@ -204,7 +218,7 @@ WHY: Another process is already listening on this address.
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
 | UDP datagram over 65507 bytes | `IoError` from `send_to`, nothing sent | U3 |
 | UDP datagram to a port nobody bound | Sent; it's gone, and the sender isn't told | U4 |
-| DNS resolution with no results | Empty `Vec` | D1 |
+| DNS resolution for an unknown name | `IoError.Other` | D3 |
 | DNS resolution for IP literal | Returns the IP itself | D1 |
 
 ---
@@ -228,7 +242,7 @@ WHY: Another process is already listening on this address.
 - Multicast
 - Raw sockets
 - `SocketAddr` / `IpAddr` types
-- TLS / HTTPS
+- TLS: a package, not the stdlib ([tls.md](../packages/tls.md))
 - Unix domain sockets
 
 ### See Also
