@@ -433,12 +433,6 @@ extend cstring {
     @native("rask_cstring_as_ptr")
     public unsafe func as_ptr(self) -> *u8 {}
 
-    /// Take ownership from a C pointer. Unsafe — caller must ensure validity:
-    /// the pointer has to be NUL-terminated and to outlive nothing else, since
-    /// the cstring frees it.
-    @native("rask_cstring_as_ptr")
-    public unsafe func from_ptr(ptr: *u8) -> cstring {}
-
     /// Back to a Rask string, reading up to the terminator.
     ///
     /// Fallible because C promises nothing about encoding — the bytes may be

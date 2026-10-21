@@ -16,12 +16,10 @@
 
 std.cli Parser.parse UNTESTED   # same
 std.cli cli.parse UNTESTED      # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
-std.collections Vec.from_raw_parts MISSING  # adopts memory it didn't allocate; nothing in Rask hands a buffer out, so the only pointer is a C one, and the interpreter has no C ABI — no suite program can run it on both backends
 std.reflect reflect.align_of UNTESTED
 std.reflect reflect.is_copy UNTESTED
 std.reflect reflect.size_of UNTESTED
 std.strings string.span MISSING  # on a slice it has to answer the slice's range in its source, and slices are copies until #492
-std.strings cstring.from_ptr UNTESTED  # the same: it adopts a C pointer, and the interpreter has no C ABI to get one from
 std.tls Certificate MISSING
 std.tls Config MISSING
 std.tls Config.new MISSING

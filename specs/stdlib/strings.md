@@ -583,7 +583,6 @@ extend string {
 | `s.to_cstring()` | `cstring or NullByteError` (fails if `\0` present) |
 | `s.first_nul()` | Byte offset of the first interior `\0`, or -1 |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
-| `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
 | `cstring.to_string()` | `string or Utf8Error` |
 
 <!-- surface -->
@@ -596,7 +595,6 @@ extend string {
 }
 extend cstring {
     unsafe func as_ptr(self) -> *u8
-    unsafe func from_ptr(ptr: *u8) -> cstring
     func to_string(self) -> string or Utf8Error
 }
 ```
@@ -605,6 +603,8 @@ extend cstring {
 on both backends — the round trip and the refusal are in
 `tests/suite/t_cstring_ffi.rk`, and `examples/19_unsafe.rk` hands the pointer to
 a real `strlen`.
+
+A `cstring` can't adopt a pointer C allocated. Rask would free it with its own allocator, which is only right when C used the same `malloc`. If C interop needs it, the shape is a constructor inside `unsafe` that copies the bytes out.
 
 <!-- test: skip -->
 ```rask

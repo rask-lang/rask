@@ -528,11 +528,12 @@ const PRIMES: Vec<u32> = comptime {
 extend Vec<T> {
     unsafe func as_ptr(self) -> *T                  // immutable access
     unsafe func as_mut_ptr(mutate self) -> *T       // mutable access
-    unsafe func from_raw_parts(ptr: *T, len: usize, cap: usize) -> Vec<T>
 }
 ```
 
 A `Vec<T>`'s elements sit side by side, each `T`'s own size apart, so `as_ptr()` is a C array of `T`: a `Vec<u8>` is a byte buffer and `p.offset(1)` is the next element. I chose that over giving every scalar a word-wide slot, which wasted seven bytes of every byte and made the pointer step disagree with the layout (#985).
+
+There's no way to adopt a buffer C allocated as a `Vec`. Rask would free it with its own allocator, which is only right when C used the same `malloc`. If C interop needs it, the shape is a constructor inside `unsafe` that copies the elements out.
 
 ## Error Messages
 
