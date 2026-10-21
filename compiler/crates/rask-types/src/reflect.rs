@@ -13,7 +13,12 @@
 //! answer 0 on the interpreter, which reads as "this type is empty" instead of
 //! "nobody implemented this" — a wrong number is worse than a message.
 
+use std::collections::HashMap;
+
 use rask_ast::ty::TypeExpr;
+
+use crate::checker::{is_type_param_name, resolve_type_expr, TypeDef, TypeTable};
+use crate::types::{GenericArg, Type, TypeId};
 
 /// The value a reflect method folds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +233,211 @@ fn is_flat_primitive(name: &str) -> bool {
 /// storage is the runtime's; a struct holding one is found through its fields.
 fn is_heap_backed(name: &str) -> bool {
     matches!(name, "string" | "StringView") || rask_stdlib::is_runtime_handle(name)
+}
+
+// ─── Questions the checker's type table answers ─────────────────────
+//
+// `fields` and `variants` describe storage, so they read layouts. The rest —
+// which methods a type has, which interfaces it conforms to — are what the
+// checker decided while checking the program, and both backends hold the same
+// `TypeTable`. Each answer is computed here once, from that table, so neither
+// backend has a version of its own to drift.
+
+/// One method of a concrete type, as `reflect.methods<T>()` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodFact {
+    /// The name a call writes: `mul`, not the `mul$f64` it's filed under.
+    pub name: String,
+    pub is_public: bool,
+    /// Parameters a call passes in parentheses — `self` isn't one.
+    pub param_count: usize,
+    pub return_type_name: String,
+}
+
+/// `ty` as the table knows it: its declaration and the arguments this
+/// instantiation gives the declaration's parameters.
+struct Concrete<'t> {
+    id: TypeId,
+    def: &'t TypeDef,
+    ty: Type,
+    /// Declaration parameter → this instantiation's argument (R5).
+    subst: HashMap<String, Type>,
+}
+
+fn concrete<'t>(types: &'t TypeTable, ty: &TypeExpr, method: &str) -> Result<Concrete<'t>, String> {
+    let resolved = resolve_type_expr(ty, types)
+        .map_err(|_| format!("reflect.{method}<{}>(): no type by that name", ty.source()))?;
+    let resolved = named(types, resolved);
+    let args: Vec<Type> = match &resolved {
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
+            .iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                GenericArg::ConstUsize(_) => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let not_declared = || {
+        format!(
+            "reflect.{method}<{}>(): `{}` has no declaration to read — this asks about a \
+             struct, an enum or a nominal type",
+            ty.source(),
+            ty.source()
+        )
+    };
+    let id = types.conformance_target(&resolved).ok_or_else(not_declared)?;
+    let def = types.get(id).ok_or_else(not_declared)?;
+    if matches!(def, TypeDef::Interface { .. }) {
+        return Err(format!(
+            "reflect.{method}<{}>(): `{}` is an interface, not a type",
+            ty.source(),
+            ty.source()
+        ));
+    }
+    let params = def.type_params();
+    if params.len() != args.len() {
+        return Err(format!(
+            "reflect.{method}<{}>(): `{}` takes {} type argument(s) — reflection describes \
+             one instantiation, so write them (std.reflect/R5)",
+            ty.source(),
+            types.type_name(id),
+            params.len()
+        ));
+    }
+    let subst = params.iter().cloned().zip(args.iter().cloned()).collect();
+    Ok(Concrete { id, def, ty: resolved, subst })
+}
+
+/// A declared type's name, as the id it resolves to — so two spellings of one
+/// type compare equal.
+fn named(types: &TypeTable, ty: Type) -> Type {
+    match &ty {
+        Type::UnresolvedNamed(n) => types.get_type_id(n).map(Type::Named).unwrap_or(ty),
+        _ => ty,
+    }
+}
+
+/// Does `ty` satisfy `iface`, by any route the checker accepts: a written
+/// conformance, a derived one, or one the compiler answers by shape?
+fn satisfies(types: &TypeTable, ty: &Type, iface: &TypeExpr) -> bool {
+    crate::InterfaceChecker::new(types)
+        .check_satisfies(ty, iface, rask_ast::Span::new(0, 0))
+        .is_ok()
+}
+
+/// `reflect.methods<T>()`: every method a `T` has — what `T.name(…)` or
+/// `t.name(…)` can call. Declared, conformance and derived methods alike, in
+/// the order the checker recorded them. A method from an `extend` block whose
+/// header or `where` clause this instantiation doesn't meet isn't one of its
+/// methods: `Vec<f64>` has no `sort`.
+pub fn methods(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<MethodFact>, String> {
+    let c = concrete(types, ty, "methods")?;
+    let sigs: &[crate::MethodSig] = match c.def {
+        TypeDef::Struct { methods, .. }
+        | TypeDef::Enum { methods, .. }
+        | TypeDef::NominalAlias { methods, .. }
+        | TypeDef::Primitive { methods, .. } => methods,
+        TypeDef::Union { .. } | TypeDef::Interface { .. } => &[],
+    };
+    let args: Vec<GenericArg> = c
+        .def
+        .type_params()
+        .iter()
+        .map(|p| GenericArg::Type(Box::new(c.subst[p].clone())))
+        .collect();
+    let mut out: Vec<MethodFact> = Vec::new();
+    for sig in sigs {
+        let mut subst = c.subst.clone();
+        subst.insert("Self".to_string(), c.ty.clone());
+        if !sig.owner_patterns.is_empty() {
+            let Some(bound) = crate::bind_header_patterns(types, &sig.owner_patterns, &args) else {
+                continue;
+            };
+            // The matcher binds every leaf, a concrete one too: `extend
+            // Vec<u8>` "binds" `u8` to whatever a `Vec<f64>` holds. A concrete
+            // leaf has to *be* the argument.
+            let fits = bound.iter().all(|(leaf, actual)| {
+                is_type_param_name(leaf)
+                    || c.def.type_params().iter().any(|p| p == leaf)
+                    || resolve_type_expr(&TypeExpr::named(leaf), types)
+                        .is_ok_and(|t| named(types, t) == named(types, actual.clone()))
+            });
+            if !fits {
+                continue;
+            }
+            subst.extend(bound);
+        }
+        let meets_where = sig.owner_bounds.iter().all(|(param, bounds)| {
+            subst.get(param).is_none_or(|t| bounds.iter().all(|b| satisfies(types, t, b)))
+        });
+        if !meets_where {
+            continue;
+        }
+        let name = rask_ast::operators::method_display(&sig.name).to_string();
+        let ret = crate::substitute_type(&sig.ret, &subst);
+        let fact = MethodFact {
+            is_public: types.method_is_public(c.id, &name),
+            param_count: sig.params.len(),
+            return_type_name: types.resolve_type_names(&ret).to_type_expr().to_string(),
+            name,
+        };
+        // The stdlib's declarations are read once as stubs and once with
+        // bodies; the second sighting is the same method.
+        if !out.contains(&fact) {
+            out.push(fact);
+        }
+    }
+    Ok(out)
+}
+
+/// `reflect.interfaces<T>()`: the conformances written for `T`, each as its
+/// applied interface (`Mul<i64>`), in the order they were written. A derived
+/// conformance isn't written anywhere and isn't listed — `implements` answers
+/// for those. A conditional one is listed when this instantiation meets its
+/// condition (R5).
+pub fn interfaces(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<String>, String> {
+    let c = concrete(types, ty, "interfaces")?;
+    let mut written = types.written_conformances(c.id);
+    if let TypeDef::NominalAlias { with_interfaces, .. } = c.def {
+        written.extend(with_interfaces.iter().cloned());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for iface in written {
+        let name = iface.to_string();
+        if satisfies(types, &c.ty, &iface) && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
+}
+
+/// `reflect.implements<T, I>()`: whether `T` satisfies `I` the way a generic
+/// bound `T: I` would be checked.
+pub fn implements(types: &TypeTable, ty: &TypeExpr, iface: &TypeExpr) -> Result<bool, String> {
+    if !crate::InterfaceChecker::new(types).names_an_interface(iface) {
+        return Err(format!(
+            "reflect.implements<{}, {}>(): `{}` isn't an interface",
+            ty.source(),
+            iface.source(),
+            iface.source()
+        ));
+    }
+    let resolved = resolve_type_expr(ty, types)
+        .map_err(|_| format!("reflect.implements<{}, …>(): no type by that name", ty.source()))?;
+    Ok(satisfies(types, &resolved, iface))
+}
+
+/// `reflect.has_field<T>(name)`: the struct's field names, in declaration
+/// order. Anything that isn't a struct has none, so the answer is false rather
+/// than an error — a predicate is how a caller finds out what it's holding.
+pub fn field_names(types: &TypeTable, ty: &TypeExpr) -> Vec<String> {
+    match concrete(types, ty, "has_field") {
+        Ok(Concrete { def: TypeDef::Struct { fields, .. }, .. }) => {
+            fields.iter().map(|(n, _)| n.clone()).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

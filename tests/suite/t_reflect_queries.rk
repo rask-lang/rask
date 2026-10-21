@@ -1,0 +1,279 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.reflect's type-table queries: `has_field`, `methods`, `has_method`,
+// `implements`, `interfaces` and `variants`.
+//
+// They were declared `@unimplemented` — a call was a compile error on both
+// backends. Both now fold each call to constants worked out once, from the
+// checker's type table (methods, conformances, field names) or from the enum's
+// layout (variants), so the two backends read one answer rather than deriving
+// two.
+import std.reflect
+import time.Duration
+
+struct Point {
+    public x: i64
+    public y: i64
+}
+
+extend Point {
+    public func sum(self) -> i64 {
+        return self.x + self.y
+    }
+
+    func scaled(self, k: i64) -> Point {
+        return Point(x: self.x * k, y: self.y * k)
+    }
+
+    public func origin() -> Point {
+        return Point(x: 0, y: 0)
+    }
+}
+
+Point implements Displayable {
+    public func display(self) -> string {
+        return "({self.x}, {self.y})"
+    }
+}
+
+enum Shape {
+    Circle(f64)
+    Rect(w: f64, h: f64)
+    Empty
+}
+
+extend Shape {
+    public func is_empty(self) -> bool {
+        return match self {
+            Shape.Empty => true
+            _ => false
+        }
+    }
+}
+
+struct Holder<T> {
+    public item: T
+    public count: i64
+}
+
+extend Holder<T> {
+    public func get(self) -> T {
+        return self.item
+    }
+}
+
+extend Holder<T> where T: Comparable {
+    public func larger(self, other: T) -> T {
+        if self.item > other {
+            return self.item
+        }
+        return other
+    }
+}
+
+struct Bag {
+    public items: Vec<i64>
+}
+
+enum Answer<T> {
+    Yes(T)
+    No
+}
+
+// ── has_field ────────────────────────────────────────────────────────
+
+test "std.reflect/has_field names the struct's fields" {
+    assert reflect.has_field<Point>("x")
+    assert reflect.has_field<Point>("y")
+    assert !reflect.has_field<Point>("z")
+}
+
+test "std.reflect/has_field on a generic struct reads its declaration" {
+    assert reflect.has_field<Holder<string>>("item")
+    assert reflect.has_field<Holder<i64>>("count")
+    assert !reflect.has_field<Holder<i64>>("get")
+}
+
+test "std.reflect/has_field is false for what has no fields" {
+    // A predicate answers no rather than refusing: an enum's payload isn't a
+    // field, and a primitive has none.
+    assert !reflect.has_field<Shape>("w")
+    assert !reflect.has_field<i64>("x")
+}
+
+test "std.reflect/has_field takes a name only known at run time" {
+    let wanted = ["x", "nope"]
+    assert reflect.has_field<Point>(wanted[0])
+    assert !reflect.has_field<Point>(wanted[1])
+}
+
+// ── methods / has_method ─────────────────────────────────────────────
+
+func method_line<T>() -> string {
+    mut out = ""
+    for m in reflect.methods<T>() {
+        out = "{out}{m.name}/{m.param_count}->{m.return_type_name} "
+    }
+    return out
+}
+
+func method_names<T>() -> string {
+    mut out = Vec.new()
+    for m in reflect.methods<T>() {
+        out.push(m.name)
+    }
+    return out.join(",")
+}
+
+test "std.reflect/methods lists declared, conformance and derived methods" {
+    let ms = reflect.methods<Point>()
+    // Declared first, in source order: inherent, then the conformance block,
+    // then what the compiler derived.
+    assert ms[0].name == "sum"
+    assert ms[1].name == "scaled"
+    assert ms[2].name == "origin"
+    assert ms[3].name == "display"
+    assert method_names<Point>().contains("eq")
+    assert method_names<Point>().contains("clone")
+}
+
+test "std.reflect/MethodInfo carries visibility, arity and return type" {
+    let ms = reflect.methods<Point>()
+    assert ms[0].is_public
+    assert ms[0].param_count == 0
+    assert ms[0].return_type_name == "i64"
+    // Not `public`: package-visible, which is not callable from everywhere.
+    assert !ms[1].is_public
+    assert ms[1].param_count == 1
+    assert ms[1].return_type_name == "Point"
+    // A static method has no `self`, and `self` isn't counted for anyone.
+    assert ms[2].param_count == 0
+    // A conformance method is as visible as the conformance.
+    assert ms[3].is_public
+}
+
+test "std.reflect/methods on an enum" {
+    mut found = ""
+    for m in reflect.methods<Shape>() {
+        if m.name == "is_empty" {
+            found = m.return_type_name
+        }
+    }
+    assert found == "bool"
+    // Every enum gets a `message()` (type.errors/ER6), so it's one of its
+    // methods.
+    assert reflect.has_method<Shape>("message")
+}
+
+test "std.reflect/methods on a generic type substitutes the argument" {
+    assert method_line<Holder<string>>().starts_with("get/0->string ")
+    assert method_line<Holder<i64>>().starts_with("get/0->i64 larger/1->i64 ")
+}
+
+test "std.reflect/methods drops a where-block the argument doesn't meet" {
+    // `larger` lives in `extend Holder<T> where T: Comparable`.
+    assert reflect.has_method<Holder<i64>>("larger")
+    assert !reflect.has_method<Holder<Point?>>("larger")
+}
+
+test "std.reflect/methods on a stdlib type" {
+    // Duration conforms to `Div<i64>` and `Div<Duration>`: two `div`s, told
+    // apart by what they return.
+    mut divs = ""
+    for m in reflect.methods<Duration>() {
+        if m.name == "div" {
+            divs = "{divs}{m.return_type_name};"
+        }
+    }
+    assert divs == "Duration;u64;"
+    assert reflect.has_method<Duration>("as_millis")
+    // `sort` needs `T: Comparable`, and a struct holding a `Vec` isn't.
+    assert reflect.has_method<Vec<i64>>("sort")
+    assert !reflect.has_method<Vec<Bag>>("sort")
+    // `extend Vec<u8>` is for byte vectors only.
+    assert reflect.has_method<Vec<u8>>("read_u8")
+    assert !reflect.has_method<Vec<i64>>("read_u8")
+}
+
+test "std.reflect/has_method" {
+    assert reflect.has_method<Point>("sum")
+    assert reflect.has_method<Point>("origin")
+    assert reflect.has_method<Point>("display")
+    assert !reflect.has_method<Point>("x")
+    let name = "is_empty"
+    assert reflect.has_method<Shape>(name)
+}
+
+// ── implements / interfaces ──────────────────────────────────────────
+
+test "std.reflect/implements answers by every route a bound accepts" {
+    // Written.
+    assert reflect.implements<Point, Displayable>()
+    assert !reflect.implements<Shape, Displayable>()
+    // Derived.
+    assert reflect.implements<Point, Equal>()
+    assert reflect.implements<Point, Hashable>()
+    assert !reflect.implements<Shape, Hashable>()
+    // The compiler's own answer for primitives and collections.
+    assert reflect.implements<i64, Comparable>()
+    assert reflect.implements<Vec<i64>, Equal>()
+}
+
+test "std.reflect/implements on a generic and a stdlib type" {
+    assert reflect.implements<Holder<i64>, Cloneable>()
+    assert reflect.implements<Answer<string>, Cloneable>()
+    assert !reflect.implements<Bag, Comparable>()
+    assert reflect.implements<Duration, Comparable>()
+    assert !reflect.implements<Duration, Displayable>()
+}
+
+test "std.reflect/interfaces lists what was written, as applied" {
+    assert reflect.interfaces<Point>().join(",") == "Displayable"
+    // Derived conformances aren't written anywhere.
+    assert reflect.interfaces<Shape>().len() == 0
+    assert reflect.interfaces<Holder<i64>>().len() == 0
+    assert reflect.interfaces<Duration>().join(",") == "Add<Duration>,Sub<Duration>,Mul<i64>,Div<i64>,Div<Duration>"
+}
+
+// ── variants ─────────────────────────────────────────────────────────
+
+func variant_line<T>() -> string {
+    mut out = ""
+    for v in reflect.variants<T>() {
+        out = "{out}{v.name}[{v.field_count}]("
+        for f in v.fields {
+            out = "{out}{f.name}:{f.type_name}@{f.offset}+{f.size},"
+        }
+        out = "{out}) "
+    }
+    return out
+}
+
+test "std.reflect/variants in declaration order, with their payloads" {
+    let vs = reflect.variants<Shape>()
+    assert vs.len() == 3
+    assert vs[0].name == "Circle"
+    assert vs[0].has_fields
+    assert vs[0].field_count == 1
+    assert vs[1].fields[1].name == "h"
+    assert vs[1].fields[1].type_name == "f64"
+    assert !vs[2].has_fields
+    assert vs[2].serial_name == "Empty"
+}
+
+test "std.reflect/variants reports payload offsets from the value's start" {
+    assert variant_line<Shape>() == "Circle[1](_0:f64@8+8,) Rect[2](w:f64@8+8,h:f64@16+8,) Empty[0]() "
+}
+
+test "std.reflect/variants on a generic enum reads the instantiation" {
+    assert variant_line<Answer<string>>() == "Yes[1](_0:string@8+16,) No[0]() "
+    assert variant_line<Answer<i64>>() == "Yes[1](_0:i64@8+8,) No[0]() "
+}
+
+test "std.reflect/variants on a stdlib enum" {
+    let vs = reflect.variants<Ordering>()
+    assert vs[0].name == "Less"
+    assert vs[1].name == "Equal"
+    assert vs[2].name == "Greater"
+}
+
+func main() {}

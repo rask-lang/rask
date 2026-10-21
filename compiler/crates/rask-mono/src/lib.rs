@@ -13,6 +13,7 @@ pub mod runtime_abi;
 mod instantiate;
 mod layout;
 mod reachability;
+pub mod reflect;
 
 pub use instantiate::instantiate_function;
 pub use layout::{

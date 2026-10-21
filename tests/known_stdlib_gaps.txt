@@ -17,12 +17,6 @@
 std.cli Parser.parse UNTESTED   # same
 std.cli cli.parse UNTESTED      # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
 std.collections Vec.from_raw_parts MISSING  # adopts memory it didn't allocate; nothing in Rask hands a buffer out, so the only pointer is a C one, and the interpreter has no C ABI — no suite program can run it on both backends
-std.reflect reflect.has_field UNBUILT
-std.reflect reflect.has_method UNBUILT
-std.reflect reflect.implements UNBUILT
-std.reflect reflect.interfaces UNBUILT
-std.reflect reflect.methods UNBUILT
-std.reflect reflect.variants UNBUILT
 std.reflect reflect.align_of UNTESTED
 std.reflect reflect.is_copy UNTESTED
 std.reflect reflect.size_of UNTESTED
