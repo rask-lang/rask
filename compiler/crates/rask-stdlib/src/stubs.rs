@@ -567,9 +567,47 @@ impl StubRegistry {
                     registry.process_decl(decl, filename, source);
                 }
             }
+            registry.inherit_interface_defaults();
 
             registry
         })
+    }
+
+    /// TD2: a conformance has every default method of its interface it
+    /// doesn't write itself — `File.read_text` is `Reader`'s. The compiler
+    /// copies the bodies in at desugaring; the registry is read before that,
+    /// so it files the same methods here. Across files: `Reader` is in io.rk
+    /// and `TcpConnection`'s conformance in net.rk.
+    fn inherit_interface_defaults(&mut self) {
+        let mut defaults: Vec<(String, FnDecl, &'static str, &'static str, Span)> = Vec::new();
+        let mut conformances: Vec<(String, TypeExpr, String)> = Vec::new();
+        for (stub_index, (filename, source)) in all_sources().iter().enumerate() {
+            let Some(decls) = &parsed_stdlib()[stub_index] else { continue };
+            for decl in decls {
+                match &decl.kind {
+                    DeclKind::Interface(i) => {
+                        for m in i.methods.iter().filter(|m| !m.body.is_empty()) {
+                            defaults.push((i.name.clone(), m.clone(), filename, source, decl.span));
+                        }
+                    }
+                    DeclKind::Impl(i) => {
+                        if let (Some(iface), Some(target)) = (i.interface.as_ref().and_then(|t| t.name()), i.target_ty.name()) {
+                            conformances.push((target, i.target_ty.clone(), iface));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for (target, target_ty, iface) in conformances {
+            let Some(entry) = self.types.get_mut(&target) else { continue };
+            for (_, m, filename, source, span) in defaults.iter().filter(|d| d.0 == iface) {
+                if entry.methods.iter().any(|have| have.name == m.name) {
+                    continue;
+                }
+                entry.methods.push(fn_to_method_stub(m, filename, source, *span, true, &target_ty));
+            }
+        }
     }
 
     /// Return declarations from stdlib .rk files that have compilable function

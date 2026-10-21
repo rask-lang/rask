@@ -859,7 +859,7 @@ func line_ok(line: string) -> string or IoError {
     return line
 }
 
-func line_error(e: IoError) -> string or IoError {
+func line_error(take e: IoError) -> string or IoError {
     return e
 }
 

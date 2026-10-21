@@ -727,7 +727,7 @@ int32_t rask_libc_unlink(const char *path) {
 #ifdef RASK_SIM
     if (rask_sim_active()) {
         struct stat st;
-        if (path_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (rask_sim_fs_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
             errno = EISDIR;
             return -1;
         }
