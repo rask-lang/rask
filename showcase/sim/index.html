@@ -1,0 +1,156 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Finding a race with sim mode · Rask</title>
+<meta name="description" content="Two tasks withdraw from one account at the same time and sometimes overdraw it. rask test --sim finds the bug, gives you a seed that reproduces it, and shows what each task did.">
+<meta property="og:title" content="Finding a race with sim mode">
+<meta property="og:description" content="rask test --sim finds a concurrency bug, gives you a seed that reproduces it, and shows what each task did.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://rask-lang.dev/showcase/sim/">
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/tokens.css?v=123a4a1cbaeb">
+<script src="/rask-vocabulary.js?v=123a4a1cbaeb"></script>
+<link rel="stylesheet" href="/landing.css?v=123a4a1cbaeb">
+<link rel="stylesheet" href="sim.css?v=123a4a1cbaeb">
+</head>
+<body>
+
+<header class="page masthead">
+    <a class="brand" href="/">
+        <img src="/book/assets/rask48.png" alt="">
+        rask
+    </a>
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="/app/">Playground</a>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
+    </nav>
+</header>
+
+<main>
+
+<div class="page intro">
+    <span class="pill">showcase · sim mode</span>
+    <h1>Finding a race with sim mode</h1>
+    <p class="lede prose">This program has a bug. Two tasks take money out of the same account at the same time, and sometimes the account ends up negative. A normal test run catches it about once in eight runs. <code>rask test --sim</code> catches it within a few seeds and gives you one that reproduces it every time.</p>
+</div>
+
+<section class="page">
+    <h2>The program</h2>
+    <div class="prose">
+        <p>Alice has 100. One task sends 80 to Bob and another sends 80 to Carol. One of them should fail.</p>
+        <p><code>transfer</code> reads the balance in one <code>with</code> block and subtracts in another. Each block holds the lock, so the two tasks never touch the balance at the same moment. But between the two blocks the other task can run, read the same 100, and subtract too.</p>
+    </div>
+    <figure class="window code-window" id="bank-source">
+        <figcaption><span>bank.rk</span></figcaption>
+        <pre><code>loading…</code></pre>
+    </figure>
+</section>
+
+<section class="page">
+    <h2>A normal test run</h2>
+    <div class="prose">
+        <p>It passes most of the time. I ran it 400 times on a four-core machine and it failed 47 times. When it fails, all you get is the assertion, and running it again usually passes.</p>
+    </div>
+    <figure class="window terminal">
+        <figcaption><span>terminal</span></figcaption>
+<pre><span class="prompt">$</span> rask test bank.rk
+
+  <span class="ok">✓</span> an account never goes below zero
+      output:
+      │ sees 100, sending 80
+      │ sees 20, sending 80
+
+1 tests, 1 passed, 0 failed</pre>
+    </figure>
+</section>
+
+<section class="page">
+    <h2>A sim test run</h2>
+    <div class="prose">
+        <p><code>--sim</code> runs all the tasks on one thread, and a seed decides which task runs at each switch point. It's the same scheduler as a normal run. Only the choices come from the seed.</p>
+        <p>The same seed always gives the same order, so a failure always comes with a command that reproduces it. Seeds 1, 2 and 3 fail here, and 43 of the first 100 seeds do.</p>
+    </div>
+    <figure class="window terminal">
+        <figcaption><span>terminal</span></figcaption>
+        <pre id="sim-output">loading…</pre>
+    </figure>
+</section>
+
+<section class="page" id="watch">
+    <h2>What happened</h2>
+    <div class="prose">
+        <p>Add <code>--trace bank.json</code> to the replay command and sim records what each task did at each step: the locks it took, what it printed, and when it started and finished. Here's that file, one column per task.</p>
+    </div>
+
+    <div class="viewer">
+        <div class="viewer-tabs" role="tablist">
+            <button type="button" role="tab" data-trace="fail" aria-selected="true">seed 1 <span class="tag bad">fails</span></button>
+            <button type="button" role="tab" data-trace="pass" aria-selected="false">seed 4 <span class="tag good">passes</span></button>
+            <button type="button" role="tab" data-trace="fixed" aria-selected="false">the fix <span class="tag good">passes</span></button>
+        </div>
+        <p class="viewer-note" id="viewer-note"></p>
+        <div class="viewer-controls">
+            <button type="button" class="btn outline" id="step-back" aria-label="Step back">◀</button>
+            <button type="button" class="btn solid" id="play">Play</button>
+            <button type="button" class="btn outline" id="step-next" aria-label="Step forward">▶</button>
+            <span class="viewer-pos" id="viewer-pos"></span>
+        </div>
+        <div class="lanes" id="lanes"></div>
+        <p class="viewer-legend" id="viewer-legend" hidden><span class="chip stale">read bank</span> a read that was out of date by the time its task wrote, and that write</p>
+        <p class="viewer-result" id="viewer-result"></p>
+    </div>
+</section>
+
+<section class="page">
+    <h2>The fix</h2>
+    <div class="prose">
+        <p>Do the check and the subtraction in the same <code>with</code> block. Then no other task can run in between, and 2000 seeds pass.</p>
+    </div>
+    <figure class="window code-window" id="fixed-source">
+        <figcaption><span>bank_fixed.rk, the changed function</span></figcaption>
+        <pre><code>loading…</code></pre>
+    </figure>
+    <figure class="window terminal">
+        <figcaption><span>terminal</span></figcaption>
+<pre><span class="prompt">$</span> rask test --sim --seeds 2000 bank.rk
+
+  <span class="ok">✓</span> an account never goes below zero
+
+1 tests, 1 passed, 0 failed (2000 runs)</pre>
+    </figure>
+</section>
+
+<section class="page">
+    <h2>About sim mode</h2>
+    <div class="prose">
+        <p>FoundationDB and TigerBeetle test their concurrent code this way, with simulators they built themselves. In Rask it's a flag on <code>rask test</code>.</p>
+        <p>Sim also runs a virtual clock, so a 30-day <code>sleep</code> returns right away. It keeps file writes in memory, and it can inject I/O errors, dropped connections and clock jumps when a test asks for them. Details are in the <a href="https://github.com/rask-lang/rask/blob/main/specs/sim.md">sim spec</a>.</p>
+        <p>The programs and traces on this page are checked in next to it. The compiler's test suite regenerates the traces and fails if they change.</p>
+    </div>
+</section>
+
+</main>
+
+<script type="module" src="sim.js?v=123a4a1cbaeb"></script>
+
+<footer class="page">
+    <nav>
+        <a href="/book/">Docs</a>
+        <a href="/app/">Playground</a>
+        <a href="/blog/">Blog</a>
+        <a href="https://github.com/rask-lang/rask">GitHub</a>
+        <a href="https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md">Language card</a>
+    </nav>
+    <span>MIT or Apache-2.0, your choice.</span>
+</footer>
+
+</body>
+</html>
