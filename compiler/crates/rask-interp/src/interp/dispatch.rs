@@ -992,7 +992,7 @@ impl Interpreter {
             Io => matches!(method, "read_line"),
             Net => matches!(method, "listen_handle" | "connect_handle"),
             Time => matches!(method, "sleep"),
-            Random => matches!(method, "f32" | "f64" | "i64" | "bool" | "range"),
+            Random => matches!(method, "u64" | "f32" | "f64" | "i64" | "bool" | "range" | "shuffle" | "choice"),
             Math => matches!(method,
                 "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2"
                 | "exp" | "ln" | "log2" | "log10"
