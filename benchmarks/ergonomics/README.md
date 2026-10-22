@@ -1,90 +1,71 @@
-# Ergonomics: Rask vs C
+# Ergonomics: Rask vs C, Go and Rust
 
-`benchmarks/micro/` measures speed. This measures ceremony — METRICS.md's **ED**
+`benchmarks/micro/` measures speed. This measures ceremony: METRICS.md's **ED**
 (Ergonomic Delta, target ≤ 1.2) and the counts behind **SN** (Syntactic Noise).
 
-Right now that's one pair: `grep.c` against `examples/grep_clone.rk`.
+One program, four languages: `examples/grep_clone.rk` against `grep.c`, `grep.go`
+and `grep.rs`. Each is written the way that language's own users would write it,
+formatted with its own formatter, standard library only.
 
-## The pair is verified equivalent
+## They do the same thing
 
-Before any counting, both implementations were diffed on stdout and exit code across
-8 invocations (bare, `-i`, `-n`, `-c`, `-v`, `-c -i`, no-match, `-h`). All 8 match
-exactly. The error path matches in shape and exit code; only the message wording
-differs (Rask's `IoError` is chattier than `strerror`).
-
-A comparison of two programs that don't do the same thing isn't worth anything, so
-that check comes first.
+All four were diffed on stdout and exit code across 12 invocations (bare, `-i`,
+`-n`, `-c`, `-v`, `-c -i`, `-n -v` over two files, no match, `-h`, no args,
+pattern only, missing file). Everything matches except the wording of the
+missing-file error, which is each language's own I/O error text.
 
 ## Counting rules
 
-Stated so the numbers can be argued with:
+- **LOC**: non-blank, non-comment. Brace-only lines count.
+- **Nesting**: maximum brace depth anywhere in the file, string literals ignored.
+- **C only**: `free`/`fclose` calls and NULL/sentinel checks. Counts calls, not
+  sites, because each exit path needs its own.
 
-- **LOC** — non-blank, non-comment. Brace-only lines count; so do `#include` and
-  `#define`. Same rule both sides.
-- **Nesting depth** — maximum brace depth reached anywhere in the file.
-- **Cleanup calls** — `free` / `fclose`. Counts calls, not sites, because each exit
-  path needs its own.
-- **NULL / sentinel checks** — `== NULL`, `!= NULL`, `< 0)`, `ferror(`. C's way of
-  asking "did that fail".
-- **`catch` / `try` sites** — Rask's way of asking the same thing.
-- **Type-name tokens** — declared type names written out by hand.
-
-`grep.c` was written to be idiomatic and correctly error-handled, not golfed: every
-`fopen` and `malloc` is checked, `ferror` is checked after the read loop, and every
-allocation is freed on every exit path. It compiles clean under `-Wall -Wextra`.
-Sloppy C would score better here and be worse code.
+`grep.c` checks every `fopen` and `malloc`, checks `ferror` after the read loop and
+frees on every exit path. Sloppy C would score better here and be worse code.
 
 ## Results
 
-| metric | C | Rask |
-|---|---:|---:|
-| LOC (non-blank, non-comment) | 133 | 128 |
-| max block nesting depth | 5 | **6** |
-| free()/fclose() calls | **8** | 0 |
-| NULL / sentinel checks | 6 | 0 |
-| catch / try sites | 0 | 2 |
-| type-name tokens written | 36 | 22 |
+| | Rask | Go | Rust | C |
+|---|---:|---:|---:|---:|
+| LOC | **99** | 113 | 123 | 133 |
+| max nesting | 4 | **3** | 4 | 5 |
+| cleanup calls | 0 | 0 | 0 | 8 |
+| NULL / sentinel checks | 0 | 0 | 0 | 6 |
 
-**ED = 128/133 = 0.96.** Under the 1.2 target, but the honest reading is that it's a
-tie. For a program this size, in the domain C is best at, Rask is not shorter.
+**ED against Go = 99/113 = 0.88.** Against C, 0.74.
 
-## What the numbers actually say
+## What the numbers say
 
-**The LOC tie is the finding.** I expected Rask to win on line count and it doesn't.
-What differs isn't volume, it's what the lines are made of: C spends 8 calls and 6
-checks on memory and failure bookkeeping, Rask spends 2 `catch` sites. Same length,
-different content.
+**Some of the line lead is formatting.** `rask fmt` keeps `if x { return y }` on one
+line and gofmt and rustfmt don't. Seven such lines in the Rask file, so on equal
+formatting Rask and Go are close to even. That's the honest reading: Rask is as
+short as Go here, not shorter.
 
-**Rask nests deeper (6 vs 5), and that's a real loss.** It comes from `grep_file`'s
-`for` → `if show` → `if !count_only` → `if line_numbers` ladder, where C flattens the
-same logic with an early `continue`. Worth revisiting; it's the one metric here that
-went the wrong way.
+**The error type is where the three differ.** Go uses `errors.New` and declares
+nothing. Rask declares a 9-line enum whose `@message` templates are the messages,
+and `{e}` interpolates them. Rust declares the same enum and then writes the
+messages again in a 9-line `Display` impl. In exchange, Rask and Rust callers can
+match on which error it was and Go callers can't.
 
-**8 cleanup calls for 3 resources.** `positional` is freed on 4 different exit paths,
-`line` and `f` on 2 each. None of those are hard individually; the failure mode is
-that adding a fifth early return means remembering a fifth `free`. That's the class
-`ensure` exists to delete, and the count is the size of the thing being deleted.
+**Go nests one level shallower** because `switch` cases don't open a brace. The
+`-h` arm is the only depth-4 block in the Rask file.
 
-## Why only grep
+**What C spends its lines on** is the thing the other three don't have: 8 cleanup
+calls for 3 resources, and adding a fifth early return means remembering a fifth
+`free`.
 
-The other examples don't give a clean comparison, and padding the table with bad
-pairs would make the numbers worse, not better:
-
-- `file_copy.rk` leans on `fs.copy` and `fs.metadata`. C has no equivalent, so the C
-  version is a manual read/write loop — that measures stdlib breadth, not language
-  ceremony.
-- `http_api_server.rk` would need a hand-rolled socket stack in C.
-- `game_loop.rk` uses `Pool`/`Handle`, which has no C counterpart at all — the
-  interesting comparison there is concept count, not lines.
-
-grep is the one program in the example set where both languages use only primitives
-both have. A second honest pair needs a program picked for that property, not
-whichever example is next in the directory.
+The first version of this page measured an older `grep_clone.rk` that walked
+arguments with an index `while` loop, built options with a seven-line literal and
+nested four `if`s where `continue` does the job. It came out at 128 lines and
+depth 6, a tie with C. The language could already do better; the example didn't.
 
 ## Reproducing
 
 ```
 gcc -O2 -Wall -Wextra -o grep_c grep.c
-./grep_c alpha ../../tests/fixtures/grep_input.txt
-rask run ../../examples/grep_clone.rk -- alpha tests/fixtures/grep_input.txt
+go build -o grep_go grep.go
+rustc -O -o grep_rs grep.rs
+rask compile ../../examples/grep_clone.rk -o grep_rk
+./grep_rk -n -i alpha ../../tests/fixtures/grep_input.txt
 ```

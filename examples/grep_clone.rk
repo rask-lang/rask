@@ -3,6 +3,7 @@
 // Demonstrates: CLI args, file I/O, string operations, iteration, error handling
 
 import fs
+import io.IoError
 import os
 import std
 
@@ -15,42 +16,29 @@ struct GrepOptions {
     invert_match: bool
 }
 
+@message
 enum GrepError {
+    @message("missing pattern argument")
     NoPattern
+    @message("no files specified")
     NoFiles
-    FileError(string)
-}
-
-extend GrepError {
-    func message(self) -> string {
-        match self {
-            NoPattern => return "missing pattern argument"
-            NoFiles => return "no files specified"
-            FileError(msg) => return "{msg}"
-        }
-    }
+    @message("{path}: {cause}")
+    FileError(path: string, cause: IoError)
 }
 
 func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
-    mut opts = GrepOptions(
-        pattern: ""
-        files: Vec.new()
-        ignore_case: false
-        line_numbers: false
-        count_only: false
-        invert_match: false
-    )
-
+    mut ignore_case = false
+    mut line_numbers = false
+    mut count_only = false
+    mut invert_match = false
     mut positional = Vec.new()
 
-    mut i: usize = 1
-    while i < args.len() {
-        let arg = args[i]
+    for arg in args.skip(1) {
         match arg {
-            "-i" => opts.ignore_case = true
-            "-n" => opts.line_numbers = true
-            "-c" => opts.count_only = true
-            "-v" => opts.invert_match = true
+            "-i" => ignore_case = true
+            "-n" => line_numbers = true
+            "-c" => count_only = true
+            "-v" => invert_match = true
             "-h" | "--help" => {
                 print_usage()
                 std.exit(0)
@@ -58,16 +46,13 @@ func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
             "--" => {}
             _ => positional.push(arg)
         }
-        i = i + 1
     }
 
     if positional.is_empty() { return GrepError.NoPattern }
     if positional.len() < 2 { return GrepError.NoFiles }
 
-    opts.pattern = positional.remove(0)
-    opts.files = positional
-
-    return opts
+    let pattern = positional.remove(0)
+    return GrepOptions(pattern, files: positional, ignore_case, line_numbers, count_only, invert_match)
 }
 
 func print_usage() {
@@ -83,70 +68,48 @@ func print_usage() {
 
 func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
     if ignore_case {
-        let lower_line = line.to_lowercase()
-        let lower_pattern = pattern.to_lowercase()
-        return lower_line.contains(lower_pattern)
-    } else {
-        return line.contains(pattern)
+        return line.to_lowercase().contains(pattern.to_lowercase())
     }
+    return line.contains(pattern)
 }
 
 func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
     let content = fs.read_text(path) catch e => {
-        return GrepError.FileError("{path}: {e.message()}")
+        return GrepError.FileError(path, cause: e)
     }
 
     mut match_count: i64 = 0
-    mut line_num = 0
-
-    for line in content.lines() {
-        line_num = line_num + 1
-        let matches = line_matches(line, opts.pattern, opts.ignore_case)
-        let show = if opts.invert_match { !matches } else { matches }
-
-        if show {
-            match_count = match_count + 1
-
-            if !opts.count_only {
-                if opts.line_numbers {
-                    println("{line_num}:{line}")
-                } else {
-                    println("{line}")
-                }
-            }
+    for (i, line) in content.lines().enumerate() {
+        if line_matches(line, opts.pattern, opts.ignore_case) == opts.invert_match { continue }
+        match_count += 1
+        if opts.count_only { continue }
+        if opts.line_numbers {
+            println("{i + 1}:{line}")
+        } else {
+            println(line)
         }
     }
 
-    if opts.count_only {
-        println("{match_count}")
-    }
-
+    if opts.count_only { println("{match_count}") }
     return match_count
 }
 
 func main() {
-    let args = os.args()
-    mut opts = parse_args(args) catch e => {
-        let msg = e.message()
-        println("rgrep: {msg}")
+    let opts = parse_args(os.args()) catch e => {
+        println("rgrep: {e}")
         print_usage()
         std.exit(1)
     }
 
     mut total_matches = 0
     mut had_errors = false
-
-    mut fi: usize = 0
-    while fi < opts.files.len() {
-        let file_path = opts.files[fi]
-        if grep_file(file_path, opts) is i64 as found {
-            total_matches = total_matches + found
+    for path in opts.files {
+        if grep_file(path, opts) is i64 as found {
+            total_matches += found
         } else as e {
-            let msg = e.message()
-            println("rgrep: {msg}")
+            println("rgrep: {e}")
             had_errors = true
         }
-        fi = fi + 1
     }
 
     if had_errors { std.exit(2) }
