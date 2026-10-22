@@ -5,7 +5,7 @@
 package main
 
 import (
-	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -13,64 +13,17 @@ import (
 
 type grepOptions struct {
 	pattern     string
-	files       []string
 	ignoreCase  bool
 	lineNumbers bool
 	countOnly   bool
 	invertMatch bool
 }
 
-func parseArgs(args []string) (grepOptions, error) {
-	var opts grepOptions
-	var positional []string
-
-	for _, arg := range args[1:] {
-		switch arg {
-		case "-i":
-			opts.ignoreCase = true
-		case "-n":
-			opts.lineNumbers = true
-		case "-c":
-			opts.countOnly = true
-		case "-v":
-			opts.invertMatch = true
-		case "-h", "--help":
-			printUsage()
-			os.Exit(0)
-		case "--":
-		default:
-			positional = append(positional, arg)
-		}
+func lineMatches(line string, opts grepOptions) bool {
+	if opts.ignoreCase {
+		return strings.Contains(strings.ToLower(line), strings.ToLower(opts.pattern))
 	}
-
-	if len(positional) == 0 {
-		return opts, errors.New("missing pattern argument")
-	}
-	if len(positional) < 2 {
-		return opts, errors.New("no files specified")
-	}
-
-	opts.pattern = positional[0]
-	opts.files = positional[1:]
-	return opts, nil
-}
-
-func printUsage() {
-	fmt.Println("Usage: rgrep [OPTIONS] PATTERN FILE...")
-	fmt.Println("")
-	fmt.Println("Options:")
-	fmt.Println("  -i    Ignore case")
-	fmt.Println("  -n    Show line numbers")
-	fmt.Println("  -c    Count matching lines only")
-	fmt.Println("  -v    Invert match (show non-matching lines)")
-	fmt.Println("  -h    Show this help")
-}
-
-func lineMatches(line, pattern string, ignoreCase bool) bool {
-	if ignoreCase {
-		return strings.Contains(strings.ToLower(line), strings.ToLower(pattern))
-	}
-	return strings.Contains(line, pattern)
+	return strings.Contains(line, opts.pattern)
 }
 
 func grepFile(path string, opts grepOptions) (int, error) {
@@ -81,8 +34,7 @@ func grepFile(path string, opts grepOptions) (int, error) {
 
 	matchCount := 0
 	for i, line := range strings.Split(strings.TrimSuffix(string(content), "\n"), "\n") {
-		matches := lineMatches(line, opts.pattern, opts.ignoreCase)
-		if matches == opts.invertMatch {
+		if lineMatches(line, opts) == opts.invertMatch {
 			continue
 		}
 		matchCount++
@@ -103,16 +55,22 @@ func grepFile(path string, opts grepOptions) (int, error) {
 }
 
 func main() {
-	opts, err := parseArgs(os.Args)
-	if err != nil {
-		fmt.Printf("rgrep: %v\n", err)
-		printUsage()
-		os.Exit(1)
+	var opts grepOptions
+	flag.BoolVar(&opts.ignoreCase, "i", false, "Ignore case")
+	flag.BoolVar(&opts.lineNumbers, "n", false, "Show line numbers")
+	flag.BoolVar(&opts.countOnly, "c", false, "Count matching lines only")
+	flag.BoolVar(&opts.invertMatch, "v", false, "Show non-matching lines")
+	flag.Parse()
+
+	if flag.NArg() < 2 {
+		fmt.Println("rgrep: need a pattern and at least one file")
+		os.Exit(2)
 	}
+	opts.pattern = flag.Arg(0)
 
 	totalMatches := 0
 	hadErrors := false
-	for _, path := range opts.files {
+	for _, path := range flag.Args()[1:] {
 		found, err := grepFile(path, opts)
 		if err != nil {
 			fmt.Printf("rgrep: %v\n", err)

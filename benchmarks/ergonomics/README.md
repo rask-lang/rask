@@ -5,14 +5,17 @@
 
 One program, four languages: `examples/grep_clone.rk` against `grep.c`, `grep.go`
 and `grep.rs`. Each is written the way that language's own users would write it,
-formatted with its own formatter, standard library only.
+formatted with its own formatter, standard library only. That last rule decides
+argument parsing: Rask has `cli` and Go has `flag`, while Rust's standard library
+has nothing (the usual answer is the `clap` crate), and neither does C's. So the
+Rust and C versions parse arguments and print usage by hand.
 
 ## They do the same thing
 
-All four were diffed on stdout and exit code across 12 invocations (bare, `-i`,
-`-n`, `-c`, `-v`, `-c -i`, `-n -v` over two files, no match, `-h`, no args,
-pattern only, missing file). Everything matches except the wording of the
-missing-file error, which is each language's own I/O error text.
+All four were run on 11 invocations (bare, `-i`, `-n`, `-c`, `-v`, `-c -i`, `-n -v`
+over two files, no match, missing file, no args, pattern only) and agree on every
+matching line and every exit code: 0 on a match, 1 on none, 2 on an error. The
+wording of error and help text differs, since two of them come from a library.
 
 ## Counting rules
 
@@ -28,37 +31,35 @@ frees on every exit path. Sloppy C would score better here and be worse code.
 
 | | Rask | Go | Rust | C |
 |---|---:|---:|---:|---:|
-| LOC | **99** | 113 | 123 | 133 |
-| max nesting | 4 | **3** | 4 | 5 |
+| LOC | **67** | 75 | 123 | 133 |
+| max nesting | **3** | **3** | 4 | 5 |
 | cleanup calls | 0 | 0 | 0 | 8 |
 | NULL / sentinel checks | 0 | 0 | 0 | 6 |
 
-**ED against Go = 99/113 = 0.88.** Against C, 0.74.
+**ED against Go = 67/75 = 0.89.**
 
 ## What the numbers say
 
-**Some of the line lead is formatting.** `rask fmt` keeps `if x { return y }` on one
-line and gofmt and rustfmt don't. Seven such lines in the Rask file, so on equal
-formatting Rask and Go are close to even. That's the honest reading: Rask is as
-short as Go here, not shorter.
+**Rask and Go are even.** `rask fmt` keeps `if x { return y }` on one line, gofmt
+doesn't, and five such lines account for the gap. Written the same way they'd be
+within two lines of each other.
 
-**The error type is where the three differ.** Go uses `errors.New` and declares
-nothing. Rask declares a 9-line enum whose `@message` templates are the messages,
-and `{e}` interpolates them. Rust declares the same enum and then writes the
-messages again in a 9-line `Display` impl. In exchange, Rask and Rust callers can
-match on which error it was and Go callers can't.
+**Rust and C pay for the missing argument parser.** Rust's error enum, its
+`Display` impl, the flag loop and the usage text come to 60 lines. With `clap`
+it would land near the other two.
 
-**Go nests one level shallower** because `switch` cases don't open a brace. The
-`-h` arm is the only depth-4 block in the Rask file.
+**Rask's help is the more complete one.** `cli` prints every flag with its long
+name and describes the positionals. Go's `flag` lists single-letter flags only and
+leaves positionals to a hand-written usage function.
 
 **What C spends its lines on** is the thing the other three don't have: 8 cleanup
 calls for 3 resources, and adding a fifth early return means remembering a fifth
 `free`.
 
-The first version of this page measured an older `grep_clone.rk` that walked
-arguments with an index `while` loop, built options with a seven-line literal and
-nested four `if`s where `continue` does the job. It came out at 128 lines and
-depth 6, a tie with C. The language could already do better; the example didn't.
+An earlier `grep_clone.rk` walked argv with an index `while` loop, built options
+with a field-by-field literal, wrote out a `message()` match and nested four `if`s
+where `continue` does the job. It measured 128 lines and depth 6, a tie with C.
+Nothing in the language forced that. The example just predated `cli`.
 
 ## Reproducing
 

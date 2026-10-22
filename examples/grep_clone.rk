@@ -2,85 +2,32 @@
 // grep clone - Pattern Search CLI Tool
 // Demonstrates: CLI args, file I/O, string operations, iteration, error handling
 
+import cli
 import fs
 import io.IoError
-import os
 import std
 
 struct GrepOptions {
     pattern: string
-    files: Vec<string>
     ignore_case: bool
     line_numbers: bool
     count_only: bool
     invert_match: bool
 }
 
-@message
-enum GrepError {
-    @message("missing pattern argument")
-    NoPattern
-    @message("no files specified")
-    NoFiles
-    @message("{path}: {cause}")
-    FileError(path: string, cause: IoError)
-}
-
-func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
-    mut ignore_case = false
-    mut line_numbers = false
-    mut count_only = false
-    mut invert_match = false
-    mut positional = Vec.new()
-
-    for arg in args.skip(1) {
-        match arg {
-            "-i" => ignore_case = true
-            "-n" => line_numbers = true
-            "-c" => count_only = true
-            "-v" => invert_match = true
-            "-h" | "--help" => {
-                print_usage()
-                std.exit(0)
-            }
-            "--" => {}
-            _ => positional.push(arg)
-        }
+func line_matches(line: string, opts: GrepOptions) -> bool {
+    if opts.ignore_case {
+        return line.to_lowercase().contains(opts.pattern.to_lowercase())
     }
-
-    if positional.is_empty() { return GrepError.NoPattern }
-    if positional.len() < 2 { return GrepError.NoFiles }
-
-    let pattern = positional.remove(0)
-    return GrepOptions(pattern, files: positional, ignore_case, line_numbers, count_only, invert_match)
+    return line.contains(opts.pattern)
 }
 
-func print_usage() {
-    println("Usage: rgrep [OPTIONS] PATTERN FILE...")
-    println("")
-    println("Options:")
-    println("  -i    Ignore case")
-    println("  -n    Show line numbers")
-    println("  -c    Count matching lines only")
-    println("  -v    Invert match (show non-matching lines)")
-    println("  -h    Show this help")
-}
-
-func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
-    if ignore_case {
-        return line.to_lowercase().contains(pattern.to_lowercase())
-    }
-    return line.contains(pattern)
-}
-
-func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
-    let content = fs.read_text(path) catch e => {
-        return GrepError.FileError(path, cause: e)
-    }
+func grep_file(path: string, opts: GrepOptions) -> i64 or IoError {
+    let content = try fs.read_text(path)
 
     mut match_count: i64 = 0
     for (i, line) in content.lines().enumerate() {
-        if line_matches(line, opts.pattern, opts.ignore_case) == opts.invert_match { continue }
+        if line_matches(line, opts) == opts.invert_match { continue }
         match_count += 1
         if opts.count_only { continue }
         if opts.line_numbers {
@@ -95,19 +42,35 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 }
 
 func main() {
-    let opts = parse_args(os.args()) catch e => {
-        println("rgrep: {e}")
-        print_usage()
-        std.exit(1)
-    }
+    let args = cli.Parser.new("rgrep")
+        .description("Print lines that contain PATTERN")
+        .flag("ignore-case", "i", "Ignore case")
+        .flag("line-number", "n", "Show line numbers")
+        .flag("count", "c", "Count matching lines only")
+        .flag("invert-match", "v", "Show non-matching lines")
+        .positional("pattern", "Text to search for")
+        .positional("files", "Files to search")
+        .parse() catch e => {
+            println("rgrep: {e}")
+            std.exit(2)
+        }
+
+    let words = args.positional()
+    let opts = GrepOptions(
+        pattern: words[0]
+        ignore_case: args.flag("ignore-case")
+        line_numbers: args.flag("line-number")
+        count_only: args.flag("count")
+        invert_match: args.flag("invert-match")
+    )
 
     mut total_matches = 0
     mut had_errors = false
-    for path in opts.files {
+    for path in words.skip(1) {
         if grep_file(path, opts) is i64 as found {
             total_matches += found
         } else as e {
-            println("rgrep: {e}")
+            println("rgrep: {path}: {e}")
             had_errors = true
         }
     }

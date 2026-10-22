@@ -118,7 +118,7 @@ fn main() {
     let opts = parse_args(env::args().collect()).unwrap_or_else(|e| {
         println!("rgrep: {e}");
         print_usage();
-        process::exit(1);
+        process::exit(2);
     });
 
     let mut total_matches = 0;

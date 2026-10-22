@@ -123,13 +123,13 @@ int main(int argc, char **argv) {
         puts("rgrep: missing pattern argument");
         print_usage();
         free(positional);
-        return 1;
+        return 2;
     }
     if (pos_count < 2) {
         puts("rgrep: no files specified");
         print_usage();
         free(positional);
-        return 1;
+        return 2;
     }
 
     opts.pattern = positional[0];
