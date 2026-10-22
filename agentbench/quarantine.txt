@@ -13,4 +13,3 @@
 # `--include-quarantined` runs them anyway, which is how you check whether a
 # model can find its way around a known compiler bug.
 
-month_error_union  #1002 — a method on a union-narrowed error dispatches against the whole union (native)
