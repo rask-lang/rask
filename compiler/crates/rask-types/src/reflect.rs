@@ -60,15 +60,8 @@ pub trait ReflectDecls {
     fn type_params(&self, name: &str) -> Vec<String>;
 }
 
-/// The methods that need a size. Two size models live in the compiler — the
-/// language one behind the 16-byte Copy threshold (`i32` is 4 bytes) and the
-/// codegen one where every scalar occupies a word — and they disagree about
-/// every struct with a narrow field. Answering with either before that's settled
-/// would bake the choice in. Tracked in #791.
-const NEEDS_LAYOUT: &str =
-    "needs a size, and the compiler has two size models that disagree — the \
-     language one behind the 16-byte Copy threshold, and the 8-byte-slot one \
-     codegen lays out with";
+/// A name the type table doesn't know.
+const NO_SUCH_TYPE: &str = "names no type the program declares";
 
 /// A generic instantiation whose fields depend on its type arguments. R5 says
 /// reflection sees the monomorphized type, and the declaration alone isn't it.
@@ -81,7 +74,7 @@ const NEEDS_INSTANTIATION: &str =
 /// `ty` is `T` as written at the call site, already substituted by
 /// monomorphization on the native path (std.reflect/R5) — so it's a concrete
 /// type like `Point` or `Vec<i32>`, never a bare type parameter.
-pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectAnswer {
+pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls, types: &TypeTable) -> ReflectAnswer {
     use ReflectAnswer::*;
     let head = ty.name().unwrap_or_default();
     match method {
@@ -103,7 +96,27 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
             Flatness::Unknown => Unsupported(NEEDS_INSTANTIATION),
         },
 
-        "size_of" | "align_of" | "is_copy" => Unsupported(NEEDS_LAYOUT),
+        // The size the Copy rule measures is the size codegen lays the value
+        // out in (`TypeTable::value_layout`), so these can't disagree with
+        // whether the value copies.
+        "size_of" | "align_of" | "is_copy" => {
+            let Ok(resolved) = resolve_type_expr(ty, types) else {
+                return Unsupported(NO_SUCH_TYPE);
+            };
+            let resolved = named(types, resolved);
+            if resolved.contains(&|t| matches!(t, Type::UnresolvedNamed(_))) {
+                return Unsupported(NO_SUCH_TYPE);
+            }
+            match method {
+                "size_of" => Int(types.value_layout(&resolved).0 as u64),
+                "align_of" => Int(types.value_layout(&resolved).1 as u64),
+                _ => match types.copy_verdict_with(&resolved, &|_| false) {
+                    crate::CopyVerdict::Copy => Bool(true),
+                    crate::CopyVerdict::Move => Bool(false),
+                    crate::CopyVerdict::Unknown => Unsupported(NEEDS_INSTANTIATION),
+                },
+            }
+        }
 
         _ => NoSuchMethod,
     }
@@ -489,7 +502,7 @@ mod tests {
     }
 
     fn ask(method: &str, ty: TypeExpr) -> ReflectAnswer {
-        answer(method, &ty, &Decls)
+        answer(method, &ty, &Decls, &TypeTable::new())
     }
 
     #[test]
@@ -534,13 +547,16 @@ mod tests {
     }
 
     #[test]
-    fn size_dependent_methods_say_so_rather_than_guessing_zero() {
-        for m in ["size_of", "align_of", "is_copy"] {
-            assert!(
-                matches!(ask(m, n("Point")), ReflectAnswer::Unsupported(_)),
-                "{m} must not answer with a placeholder",
-            );
-        }
+    fn sizes_come_from_the_layout_rules() {
+        assert_eq!(ask("size_of", n("i32")), ReflectAnswer::Int(4));
+        assert_eq!(ask("align_of", n("i64")), ReflectAnswer::Int(8));
+        assert_eq!(ask("size_of", opt(n("i32"))), ReflectAnswer::Int(8));
+        assert_eq!(ask("is_copy", n("string")), ReflectAnswer::Bool(true));
+    }
+
+    #[test]
+    fn a_size_of_an_undeclared_name_says_so_rather_than_guessing() {
+        assert!(matches!(ask("size_of", n("Nowhere")), ReflectAnswer::Unsupported(_)));
     }
 
     #[test]

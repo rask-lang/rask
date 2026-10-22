@@ -31,8 +31,8 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
-/// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
-pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
+/// `none` for `Link<T>?` — the null address. See `rask_types::abi`.
+pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 
 /// The `none` word for a lowered type that is a niche *option*.
 ///
@@ -2968,9 +2968,9 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn store_wrapper_tag(&mut self, slot: LocalId, wrapper_ty: &MirType, tag: i64) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: rask_mono::abi::TAG_BYTES,
+            store_size: rask_types::abi::TAG_BYTES,
             field: None,
         }));
         if matches!(wrapper_ty, MirType::Result { .. }) {
@@ -3086,8 +3086,8 @@ impl<'a> MirLowerer<'a> {
     /// Clear a `T or E`'s origin: no source line, no file.
     pub(crate) fn zero_result_origin(&mut self, slot: LocalId) {
         for (offset, size) in [
-            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, rask_mono::abi::RESULT_ORIGIN_LINE_BYTES),
-            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
+            (rask_types::abi::RESULT_ORIGIN_LINE_OFFSET, rask_types::abi::RESULT_ORIGIN_LINE_BYTES),
+            (rask_types::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
         ] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: slot,

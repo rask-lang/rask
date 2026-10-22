@@ -230,78 +230,112 @@ impl TypeTable {
         }
     }
 
-    /// Estimate type size in bytes (simplified).
+    /// A value's size in bytes: what the 16-byte Copy threshold (VS1) is
+    /// measured against. The same number codegen lays the value out in.
     pub fn value_size(&self, ty: &Type) -> usize {
+        self.value_layout(ty).0 as usize
+    }
+
+    /// A value's size and alignment, by `crate::abi`'s rules: fields at
+    /// their own widths with the padding they need, a tag where the type has
+    /// one. Mono's layouts follow the same rules from the declarations, and
+    /// `copy_rule_sizes_match_layouts` in rask-cli holds the two together.
+    pub fn value_layout(&self, ty: &Type) -> (u32, u32) {
+        use crate::abi;
+        let widest = |types: &mut dyn Iterator<Item = &Type>| {
+            types.fold((0u32, 1u32), |(s, a), t| {
+                let (ts, ta) = self.value_layout(t);
+                (s.max(ts), a.max(ta))
+            })
+        };
         match ty {
-            Type::Unit | Type::None => 0,
-            Type::Bool | Type::I8 | Type::U8 => 1,
-            Type::I16 | Type::U16 => 2,
-            Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
-            Type::I64 | Type::U64 | Type::F64 => 8,
-            // Two words, and the only scalar that is. Falling through to the
-            // 8-byte default made `struct Wide { a: i128, b: i64 }` measure 16
-            // instead of 24, so it sat on the Copy threshold instead of over it
-            // and two bindings aliased one value with nothing said (#936).
-            Type::I128 | Type::U128 => 16,
-            Type::Tuple(elems) => elems.iter().map(|t| self.value_size(t)).sum(),
-            Type::Array { elem, len } => self.value_size(elem) * len,
-            ty if ty.is_option() => self.value_size(ty.as_option().unwrap()) + 1, // tag byte
-            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => 8,
-            Type::Named(type_id) => {
-                if let Some(def) = self.get(*type_id) {
-                    match def {
-                        crate::TypeDef::Struct { fields, .. } => {
-                            fields.iter().map(|(_, t)| self.value_size(t)).sum()
-                        }
-                        crate::TypeDef::Enum { variants, .. } => {
-                            let max_variant = variants
-                                .iter()
-                                .map(|(_, data)| data.iter().map(|t| self.value_size(t)).sum::<usize>())
-                                .max()
-                                .unwrap_or(0);
-                            max_variant + 1
-                        }
-                        _ => 8,
-                    }
-                } else {
-                    8
-                }
+            Type::Unit | Type::None | Type::Never => (0, 1),
+            ty if ty.scalar_bytes().is_some() => {
+                let n = ty.scalar_bytes().unwrap();
+                (n, n)
             }
-            // A user-defined generic struct/enum is sized the same way as a
-            // non-generic one, once its own type parameter is substituted
-            // with the type argument at this instantiation (`Wrapping<u8>` is
-            // one byte, not whatever the unsubstituted `T` would default to).
-            // A runtime handle (Vec, Map, ...) declares no fields — its storage
-            // is the runtime's — so summing fields would say 0. It's a word.
-            Type::Generic { base, args } if !rask_stdlib::is_runtime_handle(&self.type_name(*base)) => {
-                if let Some(def) = self.get(*base) {
-                    match def {
-                        crate::TypeDef::Struct { type_params, fields, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            fields.iter().map(|(_, t)| self.value_size(&Self::substitute_generic_field(t, &subst))).sum()
-                        }
-                        crate::TypeDef::NominalAlias { type_params, underlying, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            self.value_size(&Self::substitute_generic_field(underlying, &subst))
-                        }
-                        crate::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            let max_variant = variants
-                                .iter()
-                                .map(|(_, data)| data.iter().map(|t| self.value_size(&Self::substitute_generic_field(t, &subst))).sum::<usize>())
-                                .max()
-                                .unwrap_or(0);
-                            max_variant + 1
-                        }
-                        _ => 8,
-                    }
-                } else {
-                    8
-                }
+            Type::String => (16, 8),
+            // Niche: `Link<T>?` is the node's address, null for `none`.
+            ty if ty.as_option().is_some_and(|inner| self.is_link(inner)) => (8, 8),
+            ty if ty.is_option() => {
+                let (s, a) = self.value_layout(ty.as_option().unwrap());
+                let l = abi::option_layout(s, a);
+                (l.size, l.align)
             }
-            // Strings, closures and interface objects: fat pointer
-            Type::String | Type::Fn { .. } | Type::InterfaceObject { .. } => 16,
-            _ => 8,
+            Type::Result { ok, err } => {
+                let (s, a) = widest(&mut [ok.as_ref(), err.as_ref()].into_iter());
+                let l = abi::result_layout(s, a);
+                (l.size, l.align)
+            }
+            Type::Union(members) => {
+                let (s, a) = widest(&mut members.iter());
+                let l = abi::union_layout(s, a);
+                (l.size, l.align)
+            }
+            Type::Tuple(elems) => {
+                let sizes: Vec<(u32, u32)> = elems.iter().map(|t| self.value_layout(t)).collect();
+                let (_, s, a) = abi::place_fields(&sizes, true);
+                (s, a)
+            }
+            Type::Array { elem, len } => {
+                let (s, a) = self.value_layout(elem);
+                (s * *len as u32, a)
+            }
+            Type::SimdVector { elem, lanes } => {
+                let total = self.value_layout(elem).0 * *lanes as u32;
+                (total, total.min(32))
+            }
+            Type::InterfaceObject { .. } => (16, 8),
+            Type::Named(id) => self.declared_layout(*id, &[]),
+            Type::Generic { base, args } => self.declared_layout(*base, args),
+            // A function value, a raw pointer, a `Link`, and anything still
+            // unsettled: one word.
+            _ => (8, 8),
+        }
+    }
+
+    fn is_link(&self, ty: &Type) -> bool {
+        match ty {
+            Type::UnresolvedGeneric { name, .. } => name == "Link",
+            Type::Generic { base, .. } => self.type_name(*base) == "Link",
+            _ => false,
+        }
+    }
+
+    /// A declared type's layout at these type arguments.
+    fn declared_layout(&self, id: crate::TypeId, args: &[crate::GenericArg]) -> (u32, u32) {
+        use crate::abi;
+        if let Some(found) = abi::opaque_layout(&self.type_name(id)) {
+            return found;
+        }
+        let Some(def) = self.get(id) else { return (8, 8) };
+        let subst = Self::generic_field_subst(def.type_params(), args);
+        let at = |t: &Type| self.value_layout(&Self::substitute_generic_field(t, &subst));
+        match def {
+            crate::TypeDef::Struct { fields, c_layout, .. } => {
+                let sizes: Vec<(u32, u32)> = fields.iter().map(|(_, t)| at(t)).collect();
+                let (_, s, a) = abi::place_fields(&sizes, *c_layout);
+                (s, a)
+            }
+            crate::TypeDef::Enum { variants, tag, .. } => {
+                let payloads: Vec<(u32, u32)> = variants
+                    .iter()
+                    .map(|(_, data)| {
+                        let sizes: Vec<(u32, u32)> = data.iter().map(&at).collect();
+                        let (_, s, a) = abi::place_fields(&sizes, true);
+                        (s, a)
+                    })
+                    .collect();
+                let (_, s, a) = abi::enum_layout(self.value_layout(tag), &payloads);
+                (s, a)
+            }
+            crate::TypeDef::Union { fields, .. } => {
+                let sizes: Vec<(u32, u32)> = fields.iter().map(|(_, t)| at(t)).collect();
+                abi::overlay(&sizes)
+            }
+            crate::TypeDef::NominalAlias { underlying, .. } => at(underlying),
+            crate::TypeDef::Interface { .. } => (16, 8),
+            crate::TypeDef::Primitive { .. } => (8, 8),
         }
     }
 

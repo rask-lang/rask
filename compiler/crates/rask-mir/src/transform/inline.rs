@@ -985,7 +985,8 @@ fn fixup_return_values(
 /// produces one, `none` is the only reading of it that isn't a fabricated
 /// payload.
 fn empty_return_stores(ret_ty: &MirType) -> Vec<(u32, i64, u32)> {
-    use rask_mono::{abi, runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT}};
+    use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
+    use rask_types::abi;
     match ret_ty {
         // Ok, no origin. The payload is `void`: nothing to write.
         MirType::Result { .. } => vec![
@@ -1226,7 +1227,7 @@ mod tests {
 
         fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| match &s.kind {
             MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
-                if *offset == rask_mono::abi::TAG_OFFSET => Some((*addr, *v)),
+                if *offset == rask_types::abi::TAG_OFFSET => Some((*addr, *v)),
             _ => None,
         })
     }

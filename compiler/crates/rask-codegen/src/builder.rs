@@ -5265,7 +5265,7 @@ impl<'a> FunctionBuilder<'a> {
                         let none_word = ctx.locals.iter()
                             .find(|l| l.id == *dst_id)
                             .and_then(|l| l.ty.niche_none())
-                            .unwrap_or(rask_mono::abi::LINK_NONE_SENTINEL);
+                            .unwrap_or(rask_types::abi::LINK_NONE_SENTINEL);
                         let miss_block = builder.create_block();
                         let hit_block = builder.create_block();
                         let merge_block = builder.create_block();
@@ -6628,7 +6628,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     // ─── Option/Result slot constructors ────────────────────────
-    // `rask_mono::abi` lays the slots out; these write them, and every wrapping
+    // `rask_types::abi` lays the slots out; these write them, and every wrapping
     // site goes through here instead of emitting the stores inline. A tag is
     // one byte at offset 0. A payload sits at the wrapper's own offset, as the
     // side it fills: a scalar at that side's width, an aggregate copied whole.

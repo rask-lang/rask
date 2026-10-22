@@ -93,11 +93,8 @@ test "std.reflect — a field's visibility survives to both backends" {
 
 // ── #791: the two that need only the declaration ─────────────────────
 //
-// Five reflect methods answered with an honest error because "neither backend
-// has what they need". That was right for `size_of`/`align_of`/`is_copy`, which
-// need a size — and the compiler still has two size models that disagree. It was
-// wrong for these two: both are questions about the *declaration*, and the
-// declaration is exactly what a layout has thrown away by the time it exists.
+// Both are questions about the *declaration*, which is exactly what a layout
+// has thrown away by the time it exists.
 // Native reads the checker's type table now, the interpreter reads its AST maps,
 // and one classifier turns either into the same answer.
 
@@ -122,9 +119,15 @@ struct Peered {
     public peer: Link<Point>?
 }
 
-enum Shape { Circle(f64), Square(Point) }
+enum Shape {
+    Circle(f64)
+    Square(Point)
+}
 
-enum Payload { Text(string), Empty }
+enum Payload {
+    Text(string)
+    Empty
+}
 
 type NodeId = u64
 
@@ -178,4 +181,73 @@ test "type.aliases/T11 — a nominal newtype is as flat as what it wraps" {
 test "mem.relocatable/FL1 — an optional follows its payload" {
     assert reflect.is_flat<Point?>()
     assert !reflect.is_flat<Named?>()
+}
+
+// ── #791: size_of, align_of, is_copy ─────────────────────────────────
+//
+// One size: what the value is laid out in, padding included. The Copy rule's
+// 16-byte threshold measures the same number, so is_copy can't contradict it.
+
+struct Small {
+    x: i32
+    y: i32
+}
+
+struct Padded {
+    a: u8
+    b: i64
+    c: u8
+}
+
+@layout(C)
+struct InOrder {
+    a: u8
+    b: i64
+    c: u8
+}
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+enum Tagged {
+    Dot
+    Circle(f64)
+    Rect(i32, i32)
+}
+
+test "std.reflect — a struct's size is its fields, reordered and padded" {
+    assert reflect.size_of<Small>() == 8
+    assert reflect.align_of<Small>() == 4
+    assert reflect.size_of<Padded>() == 16
+    assert reflect.align_of<Padded>() == 8
+    assert reflect.size_of<InOrder>() == 24
+}
+
+test "std.reflect — scalars, strings, wrappers and handles" {
+    assert reflect.size_of<u8>() == 1
+    assert reflect.size_of<i32>() == 4
+    assert reflect.size_of<string>() == 16
+    assert reflect.size_of<i32?>() == 8
+    assert reflect.size_of<(u8, i64)>() == 16
+    assert reflect.size_of<[u16; 3]>() == 6
+    assert reflect.align_of<[u16; 3]>() == 2
+    assert reflect.size_of<Vec<i64>>() == 8
+}
+
+test "std.reflect — an enum is its tag and its widest payload" {
+    assert reflect.size_of<Tagged>() == 16
+    assert reflect.align_of<Tagged>() == 8
+}
+
+test "mem.value/VS1 — is_copy is all-Copy fields within 16 bytes" {
+    assert reflect.is_copy<Small>()
+    assert reflect.is_copy<Padded>()
+    assert !reflect.is_copy<InOrder>()
+    assert !reflect.is_copy<Big>()
+    assert reflect.is_copy<string>()
+    assert !reflect.is_copy<Vec<i64>>()
+    assert !reflect.is_copy<Conn>()
 }

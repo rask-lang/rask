@@ -3860,7 +3860,7 @@ impl<'a> MirLowerer<'a> {
         let none = self.builder.alloc_temp(rest_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: none,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: 8,
             field: None,
@@ -7219,7 +7219,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
+        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx), self.ctx.type_defs);
         Ok(Some(match answer {
             ReflectAnswer::Bool(b) => (
                 MirOperand::Constant(crate::operand::MirConst::Bool(b)),

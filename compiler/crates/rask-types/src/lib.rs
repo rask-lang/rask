@@ -7,6 +7,7 @@ mod types;
 mod checker;
 mod interfaces;
 mod copy_rule;
+pub mod abi;
 pub mod reflect;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};

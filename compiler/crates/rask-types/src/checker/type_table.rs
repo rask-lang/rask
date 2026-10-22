@@ -319,6 +319,7 @@ impl TypeTable {
                 ("None".to_string(), vec![]),
             ],
             methods: vec![],
+            tag: Type::U8,
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
@@ -333,6 +334,7 @@ impl TypeTable {
                 ("Err".to_string(), vec![Type::Var(TypeVarId(1))]),
             ],
             methods: vec![],
+            tag: Type::U8,
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
@@ -351,6 +353,7 @@ impl TypeTable {
                 .map(|v| (v.to_string(), vec![]))
                 .collect(),
             methods: vec![],
+            tag: Type::U8,
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,

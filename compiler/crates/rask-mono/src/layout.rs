@@ -142,13 +142,13 @@ fn is_link(ty: &Type) -> bool {
 }
 
 /// Where a `T?`, `T or E` or error union keeps its payload, and its size, by
-/// `crate::abi`'s rules. `None` for anything else and for a niche `Link<T>?`,
+/// `rask_types::abi`'s rules. `None` for anything else and for a niche `Link<T>?`,
 /// which is its payload.
 ///
 /// An error union is `[member:1][payload]`: the members are nominally distinct
 /// types with nothing in their bytes to tell them apart, so the index is
 /// stored (#776).
-pub fn wrapper_layout(ty: &Type, cache: &LayoutCache) -> Option<crate::abi::WrapperLayout> {
+pub fn wrapper_layout(ty: &Type, cache: &LayoutCache) -> Option<rask_types::abi::WrapperLayout> {
     let widest = |types: &mut dyn Iterator<Item = &Type>| {
         types.fold((0u32, 1u32), |(size, align), t| {
             let (s, a) = type_size_align(t, cache);
@@ -158,16 +158,16 @@ pub fn wrapper_layout(ty: &Type, cache: &LayoutCache) -> Option<crate::abi::Wrap
     match ty {
         Type::Result { ok, err } if !ty.is_option() => {
             let (size, align) = widest(&mut [ok.as_ref(), err.as_ref()].into_iter());
-            Some(crate::abi::result_layout(size, align))
+            Some(rask_types::abi::result_layout(size, align))
         }
         Type::Union(members) => {
             let (size, align) = widest(&mut members.iter());
-            Some(crate::abi::union_layout(size, align))
+            Some(rask_types::abi::union_layout(size, align))
         }
         _ => {
             let inner = ty.as_option().filter(|inner| !is_link(inner))?;
             let (size, align) = type_size_align(inner, cache);
-            Some(crate::abi::option_layout(size, align))
+            Some(rask_types::abi::option_layout(size, align))
         }
     }
 }
@@ -198,16 +198,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (l.size, l.align)
         }
         Type::Tuple(types) => {
-            let mut offset = 0u32;
-            let mut max_align = 1u32;
-            for ty in types {
-                let (size, align) = type_size_align(ty, cache);
-                max_align = max_align.max(align);
-                offset = align_up(offset, align);
-                offset += size;
-            }
-            let total_size = align_up(offset, max_align);
-            (total_size, max_align)
+            // Declaration order, like a `@layout(C)` struct.
+            let sizes: Vec<(u32, u32)> = types.iter().map(|t| type_size_align(t, cache)).collect();
+            let (_, size, align) = rask_types::abi::place_fields(&sizes, true);
+            (size, align)
         }
         Type::Array { elem, len } => {
             let (elem_size, elem_align) = type_size_align(elem, cache);
@@ -275,16 +269,11 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                 "u64" => scalar_by_name(&Type::U64),
                 "f64" => scalar_by_name(&Type::F64),
                 "char" => scalar_by_name(&Type::Char),
-                // One word: the address of storage the runtime made. Its
-                // declaration has no fields, so the layout cache says zero.
-                name if rask_stdlib::is_runtime_handle(name) => (8, 8),
-                // A word, but not for the reason the line above is: these two
-                // are an `int64_t` of nanoseconds in the runtime, not a pointer
-                // to anything. Their Rask declarations are empty structs, so
-                // without an entry here the layout cache answered with the
-                // declaration's size — zero — and a struct holding one gave the
-                // field no room at all (#924).
-                "Duration" | "Instant" => (8, 8),
+                // One word the runtime owns; its declaration has no fields,
+                // so the layout cache says zero.
+                name if rask_types::abi::opaque_layout(name).is_some() => {
+                    rask_types::abi::opaque_layout(name).unwrap()
+                }
                 _ => {
                     // A declared type's layout. A handle never gets here: its
                     // declaration is empty, so the cache would say zero for
@@ -326,11 +315,6 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (8, 8)
         }
     }
-}
-
-/// Align a value up to the given alignment
-fn align_up(val: u32, align: u32) -> u32 {
-    (val + align - 1) & !(align - 1)
 }
 
 /// Heuristic: single uppercase letter (or letter + digit) is a type parameter
@@ -531,10 +515,6 @@ pub fn arg_owns_storage(name: &str) -> bool {
 }
 
 /// Check whether a struct has `@layout(C)` attribute.
-fn has_c_layout(attrs: &[rask_ast::attr::Attr]) -> bool {
-    attrs.iter().any(|a| a.is("layout") && a.positional().and_then(|v| v.ident()) == Some("C"))
-}
-
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
 /// Was this declaration parsed out of a stdlib stub?
 ///
@@ -590,7 +570,7 @@ fn struct_layout(
 
     let param_names = rask_types::struct_type_param_names(struct_decl);
     let subst = build_subst(&param_names, type_args);
-    let c_layout = has_c_layout(&struct_decl.attrs);
+    let c_layout = rask_types::abi::has_c_layout(&struct_decl.attrs);
     // A `@binary` struct's declared field types are wire specifiers
     // (type.binary/F2), not type names — `u16be` says "16 bits, big-endian".
     // The in-memory layout is the runtime type each one stands for; reading the
@@ -599,7 +579,7 @@ fn struct_layout(
     let is_binary = struct_decl.attrs.iter().any(|a| a.is("binary"));
 
     // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, bool, bool, u32)> = struct_decl.fields.iter()
+    let resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, bool, bool, u32)> = struct_decl.fields.iter()
         .enumerate()
         .map(|(decl_index, field)| {
             let (field_ty, from_param) = if is_binary {
@@ -627,40 +607,29 @@ fn struct_layout(
         })
         .collect();
 
-    // S1/L4: Default @layout(Rask) reorders by alignment (largest first).
-    // Stable sort preserves source order for fields with equal alignment.
-    // S2: @layout(C) preserves source order for FFI.
-    if !c_layout {
-        resolved.sort_by(|a, b| b.3.cmp(&a.3));
-    }
-
-    let mut field_layouts = Vec::new();
-    let mut offset = 0u32;
-    let mut max_align = 1u32;
-
-    for (name, ty, size, align, attrs, has_declared_default, is_public, is_type_param, decl_index) in resolved {
-        max_align = max_align.max(align);
-        // S3: Align offset for this field
-        offset = align_up(offset, align);
-
-        field_layouts.push(FieldLayout {
-            name,
-            ty,
-            offset,
-            size,
-            align,
-            attrs,
-            has_declared_default,
-            is_public,
-            decl_index,
-            is_type_param,
-        });
-
-        offset += size;
-    }
-
-    // S4: Total size with tail padding to struct alignment
-    let total_size = align_up(offset, max_align);
+    // S1–S4: placement, reordering and padding are `abi::place_fields`.
+    let sizes: Vec<(u32, u32)> = resolved.iter().map(|r| (r.2, r.3)).collect();
+    let (placed, total_size, max_align) = rask_types::abi::place_fields(&sizes, c_layout);
+    let mut slots: Vec<Option<_>> = resolved.into_iter().map(Some).collect();
+    let field_layouts: Vec<FieldLayout> = placed
+        .into_iter()
+        .map(|(i, offset)| {
+            let (name, ty, size, align, attrs, has_declared_default, is_public, is_type_param, decl_index) =
+                slots[i].take().expect("each field is placed once");
+            FieldLayout {
+                name,
+                ty,
+                offset,
+                size,
+                align,
+                attrs,
+                has_declared_default,
+                is_public,
+                decl_index,
+                is_type_param,
+            }
+        })
+        .collect();
 
     StructLayout {
         name: struct_decl.name.clone(),
@@ -682,14 +651,11 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
     };
 
     let mut field_layouts = Vec::new();
-    let mut max_size = 0u32;
-    let mut max_align = 1u32;
-
+    let mut sizes = Vec::new();
     for (decl_index, field) in union_decl.fields.iter().enumerate() {
         let field_ty = field_type(&field.ty);
         let (field_size, field_align) = type_size_align(&field_ty, cache);
-        max_size = max_size.max(field_size);
-        max_align = max_align.max(field_align);
+        sizes.push((field_size, field_align));
 
         // All union fields at offset 0
         field_layouts.push(FieldLayout {
@@ -705,8 +671,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             is_type_param: false,
         });
     }
-
-    let total_size = align_up(max_size, max_align);
+    let (total_size, max_align) = rask_types::abi::overlay(&sizes);
 
     StructLayout {
         name: union_decl.name.clone(),
@@ -779,29 +744,16 @@ fn enum_layout(
     let variant_count = enum_decl.variants.len();
 
     // E2/E14: Determine discriminant type
-    let tag_ty = if let Some(ref bt) = enum_decl.backing_type {
-        match bt.bare_name().unwrap_or_default() {
-            "u8" => Type::U8,
-            "u16" => Type::U16,
-            "u32" => Type::U32,
-            "i8" => Type::I8,
-            "i16" => Type::I16,
-            "i32" => Type::I32,
-            "i64" => Type::I64,
-            _ => if variant_count <= 256 { Type::U8 } else { Type::U16 },
-        }
-    } else if variant_count <= 256 {
-        Type::U8
-    } else {
-        Type::U16
-    };
+    let tag_ty = rask_types::abi::enum_tag(
+        enum_decl.backing_type.as_ref().and_then(|bt| bt.bare_name()),
+        variant_count,
+    );
     // The tag and every payload field hold their real widths, the same as a
     // struct's fields (#1083).
     let (tag_size, tag_align) = type_size_align(&tag_ty, cache);
 
     // Compute size and alignment of each variant payload
-    let mut max_payload_size = 0u32;
-    let mut max_payload_align = 1u32;
+    let mut payload_sizes: Vec<(u32, u32)> = Vec::new();
     let mut variant_layouts = Vec::new();
 
     for (tag, variant) in enum_decl.variants.iter().enumerate() {
@@ -812,20 +764,24 @@ fn enum_layout(
         let mut variant_fields = Vec::new();
 
         if !variant.fields.is_empty() {
-            let mut field_offset = 0u32;
+            let mut sized_fields = Vec::new();
             for (decl_index, field) in variant.fields.iter().enumerate() {
                 let (field_ty, from_param) = resolve_field_type(&field.ty, &subst);
                 let sized = substitute_inside(&field_ty, &subst);
                 let (size, align) = type_size_align(&sized, cache);
                 let field_ty = if record_arguments { sized } else { field_ty };
-
-                payload_align = payload_align.max(align);
-                field_offset = align_up(field_offset, align);
-
+                sized_fields.push((decl_index, field, field_ty, from_param, size, align));
+            }
+            // A payload is laid out like a `@layout(C)` struct: declaration order.
+            let sizes: Vec<(u32, u32)> = sized_fields.iter().map(|f| (f.4, f.5)).collect();
+            let (placed, size, align) = rask_types::abi::place_fields(&sizes, true);
+            for ((decl_index, field, field_ty, from_param, size, align), (_, offset)) in
+                sized_fields.into_iter().zip(placed)
+            {
                 variant_fields.push(FieldLayout {
                     name: field.name.clone(),
                     ty: field_ty,
-                    offset: field_offset,
+                    offset,
                     size,
                     align,
                     attrs: Vec::new(),
@@ -835,14 +791,12 @@ fn enum_layout(
                     decl_index: decl_index as u32,
                     is_type_param: from_param,
                 });
-
-                field_offset += size;
             }
-            payload_size = align_up(field_offset, payload_align);
+            payload_size = size;
+            payload_align = align;
         }
 
-        max_payload_size = max_payload_size.max(payload_size);
-        max_payload_align = max_payload_align.max(payload_align);
+        payload_sizes.push((payload_size, payload_align));
 
         variant_layouts.push(VariantLayout {
             name: variant.name.clone(),
@@ -854,19 +808,15 @@ fn enum_layout(
         });
     }
 
-    // E5: Enum alignment = max(tag_align, max_payload_align)
-    let enum_align = tag_align.max(max_payload_align);
-
-    // E6: Padding after tag to align payload
-    let payload_offset = align_up(tag_size, max_payload_align);
+    // E4–E6: `abi::enum_layout`.
+    let (payload_offset, total_size, enum_align) =
+        rask_types::abi::enum_layout((tag_size, tag_align), &payload_sizes);
 
     // Update variant payload offsets
     for variant in &mut variant_layouts {
         variant.payload_offset = payload_offset;
     }
 
-    // E4: Total size = tag + padding + max(all variant payloads)
-    let total_size = align_up(payload_offset + max_payload_size, enum_align);
 
     EnumLayout {
         name: enum_decl.name.clone(),
@@ -954,20 +904,6 @@ mod tests {
             }),
             span: dummy_span(),
         }
-    }
-
-    // ── align_up ────────────────────────────────────────────────
-
-    #[test]
-    fn align_up_works() {
-        // Already aligned
-        assert_eq!(align_up(8, 4), 8);
-        assert_eq!(align_up(0, 4), 0);
-        // Needs padding
-        assert_eq!(align_up(1, 4), 4);
-        assert_eq!(align_up(5, 4), 8);
-        assert_eq!(align_up(6, 8), 8);
-        assert_eq!(align_up(9, 8), 16);
     }
 
     // ── type_size_align ─────────────────────────────────────────

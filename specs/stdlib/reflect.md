@@ -76,12 +76,16 @@ These enable comptime type dispatch without string-comparing type names. Primary
 
 `name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer`, `is_float`, `is_resource` and `is_flat` fold to constants on both backends, and so does everything in the sections below.
 
-`size_of`, `align_of` and `is_copy` don't. They need a size, and the compiler has two of them: the language model behind the 16-byte Copy threshold (`i32` is 4 bytes, which is what the example below counts with) and the 8-byte-slot model codegen lays out with, where every scalar takes a word. They disagree about every struct with a narrow field, so answering with either would bake the choice in before it's made. Both backends report it rather than guessing (#791).
+`size_of` and `align_of` are the size and alignment the value is laid out with: each field at its own width, reordered most-aligned first (`@layout(C)` keeps declaration order), padded to its alignment. That's the same size the 16-byte Copy threshold measures, so `is_copy<T>()` and `size_of<T>() <= 16` never contradict each other. `struct { a: u8, b: i64, c: u8 }` is 16 bytes, not 10 and not 24.
 
 `is_resource` and `is_flat` needed no layout at all — they ask about the *declaration*, and a layout has dropped `@resource` and substituted its field types by the time it exists. Native reads the checker's type table and the interpreter reads its AST maps; one shared classifier turns either into the same answer. One case still reports: `is_flat<Boxed<i32>>()` on a generic type, because R5 wants the monomorphized type and the declaration's fields are written in its type parameters.
 
-<!-- test: skip -->
 ```rask
+struct Point {
+    x: i32
+    y: i32
+}
+
 comptime {
     let size = reflect.size_of<Point>()       // 8
     let align = reflect.align_of<Point>()     // 4

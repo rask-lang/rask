@@ -216,6 +216,15 @@ impl TypeChecker {
             let params = owner_type_params(&decl.kind, &self.types);
             self.with_type_params(params, |this| this.collect_type_declaration(decl));
         }
+        // A field may name a type declared further down. While the
+        // declarations were being registered that name had no entry yet and
+        // resolved to a bare name, which the Copy rule can neither size nor
+        // classify: `struct Rect { origin: Point }` above `struct Point` was
+        // move-only, below it Copy. Every name has an entry now.
+        for decl in decls {
+            let params = owner_type_params(&decl.kind, &self.types);
+            self.with_type_params(params, |this| this.resolve_forward_field_types(decl));
+        }
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
                 let params = owner_type_params(&decl.kind, &self.types);
@@ -247,6 +256,70 @@ impl TypeChecker {
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
         self.pre_register_inferred_fns(decls);
+    }
+
+    /// Re-resolve a struct's fields or an enum's payloads now that every
+    /// type is registered. Only a type that resolves now replaces what was
+    /// recorded.
+    fn resolve_forward_field_types(&mut self, decl: &Decl) {
+        let resolve = |types: &crate::TypeTable, fields: &[rask_ast::decl::Field]| -> Vec<Option<Type>> {
+            fields.iter().map(|f| resolve_type_expr(&f.ty, types).ok()).collect()
+        };
+        // Only a field recorded as a name that is now declared gets replaced;
+        // anything else was resolved right the first time.
+        let types = &self.types;
+        let was_forward = |old: &Type| {
+            old.contains(&|t| match t {
+                Type::UnresolvedNamed(n) | Type::UnresolvedGeneric { name: n, .. } => {
+                    !types.is_type_param_in_scope(n) && types.get_type_id(n).is_some()
+                }
+                _ => false,
+            })
+        };
+        match &decl.kind {
+            DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
+                let Some(id) = self.types.get_type_id(&s.name) else { return };
+                let Some(TypeDef::Struct { fields, .. }) = self.types.get(id) else { return };
+                let fresh: Vec<Option<Type>> = resolve(&self.types, &s.fields)
+                    .into_iter()
+                    .zip(fields)
+                    .map(|(new, (_, old))| new.filter(|_| was_forward(old)))
+                    .collect();
+                if let Some(TypeDef::Struct { fields, .. }) = self.types.get_mut(id) {
+                    for ((_, ty), new) in fields.iter_mut().zip(fresh) {
+                        if let Some(new) = new {
+                            *ty = new;
+                        }
+                    }
+                }
+            }
+            DeclKind::Enum(e) => {
+                let Some(id) = self.types.get_type_id(&e.name) else { return };
+                let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else { return };
+                let fresh: Vec<Vec<Option<Type>>> = e
+                    .variants
+                    .iter()
+                    .zip(variants)
+                    .map(|(v, (_, old))| {
+                        resolve(&self.types, &v.fields)
+                            .into_iter()
+                            .zip(old)
+                            .map(|(new, old)| new.filter(|_| was_forward(old)))
+                            .collect()
+                    })
+                    .collect();
+                if let Some(TypeDef::Enum { variants, .. }) = self.types.get_mut(id) {
+                    for ((_, payload), new) in variants.iter_mut().zip(fresh) {
+                        for (ty, new) in payload.iter_mut().zip(new) {
+                            if let Some(new) = new {
+                                *ty = new;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Register one type declaration, with its own type parameters in scope.
@@ -1466,6 +1539,7 @@ impl TypeChecker {
             is_resource,
             is_unique,
             is_binary,
+            c_layout: crate::abi::has_c_layout(&s.attrs),
             private_fields,
             skipped_fields,
             undecodable_fields,
@@ -1624,6 +1698,10 @@ impl TypeChecker {
         let enum_id = self.types.register_type(TypeDef::Enum {
             name: e.name.clone(),
             type_params,
+            tag: crate::abi::enum_tag(
+                e.backing_type.as_ref().and_then(|bt| bt.bare_name()),
+                e.variants.len(),
+            ),
             variants,
             methods,
             // ER42/L1: refined by `propagate_resource_linearity` once all
