@@ -80,7 +80,27 @@ impl TypeChecker {
                 Type::UnresolvedNamed(n) => n == "StringSlice",
                 _ => false,
             };
-            let holds = |t: &Type| !is_slice(t) && t.contains(&|inner| is_slice(inner));
+            // A sequence of slices makes them one yield at a time, and a
+            // function type names them without storing one, so neither holds
+            // any: `let words = line.split(" ")` is a lazy loop, not storage.
+            let sequence = self.types.get_type_id("Sequence");
+            fn stores(t: &Type, is_slice: &dyn Fn(&Type) -> bool, sequence: Option<crate::TypeId>) -> bool {
+                match t {
+                    _ if is_slice(t) => true,
+                    Type::Generic { base, .. } if Some(*base) == sequence => false,
+                    Type::UnresolvedGeneric { name, .. } if name == "Sequence" => false,
+                    Type::Fn { .. } => false,
+                    Type::Result { ok, err } => stores(ok, is_slice, sequence) || stores(err, is_slice, sequence),
+                    Type::RawPtr(inner) => stores(inner, is_slice, sequence),
+                    Type::Array { elem, .. } | Type::SimdVector { elem, .. } => stores(elem, is_slice, sequence),
+                    Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(|e| stores(e, is_slice, sequence)),
+                    Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
+                        .iter()
+                        .any(|a| matches!(a, crate::GenericArg::Type(t) if stores(t, is_slice, sequence))),
+                    _ => false,
+                }
+            }
+            let holds = |t: &Type| !is_slice(t) && stores(t, &is_slice, sequence);
             for decl in decls {
                 held_slices(decl, node_types, &holds, &|t| self.types.display_type_names(t).to_string(), &mut found);
             }

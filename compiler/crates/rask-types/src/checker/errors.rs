@@ -410,6 +410,11 @@ pub enum TypeError {
     StringNewRemoved {
         span: Span,
     },
+    /// `.to_vec()` on a sequence of slices: a `Vec<StringSlice>` can't exist.
+    #[error("a sequence of string slices can't become a `Vec`")]
+    SlicesToVec {
+        span: Span,
+    },
     /// A binding whose type holds a `StringSlice` inside it: `Vec<StringSlice>`
     /// built by pushing slices into an unannotated vector (std.strings/S2).
     #[error("`{name}` would hold string slices")]
@@ -432,11 +437,6 @@ pub enum TypeError {
         /// rendering `lines[0]` as `lines[..]` produced a fix that doesn't
         /// compile, and `s[0..=4]` as `s[0..4]` named a shorter substring.
         slice_expr: Option<String>,
-        /// True for the methods that hand back a sequence of views
-        /// (`split`, `lines`, `chars`) rather than one. `.to_string()` is the
-        /// fix for a single view and nonsense for a sequence, so the message
-        /// can't offer the same one for both.
-        yields_sequence: bool,
         view_var: String,
         slice_span: Span,
         store_span: Span,
@@ -1729,6 +1729,7 @@ impl TypeError {
             | StringNewRemoved { .. }
             | StringSliceStored { .. }
             | SliceHeld { .. }
+            | SlicesToVec { .. }
             | VolatileViewStored { .. }
             | WithGuardEscapes { .. }
             | BareSharedWith { .. }

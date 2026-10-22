@@ -256,9 +256,9 @@ Iterators borrow for expression scope only. Cannot be stored.
 | `s.chars()` | `char` (u32 Unicode scalar) | Expression-scoped iterator. For lexers and protocol parsers (U3) |
 | `s.bytes()` | `u8` | Raw byte iterator |
 | `s.char_indices()` | `(usize, char)` | Byte offset + scalar pairs. The offset is a byte index (U1) |
-| `s.lines()` | Expression-scoped slices | Split on newlines |
-| `s.split(pat)` | Expression-scoped slices | Split on pattern |
-| `s.split_whitespace()` | Expression-scoped slices | Split on Unicode whitespace, skip empty |
+| `s.lines()` | Slices, lazily | Split on newlines |
+| `s.split(pat)` | Slices, lazily | Split on pattern |
+| `s.split_whitespace()` | Slices, lazily | Split on Unicode whitespace, skip empty |
 
 <!-- surface -->
 ```rask
@@ -267,13 +267,17 @@ extend string {
     func chars(self) -> Iterator<char>
     func bytes(self) -> Iterator<u8>
     func char_indices(self) -> Iterator<(usize, char)>
-    func lines(self) -> Iterator<string>
-    func split(self, pat: string) -> Iterator<string>
-    func split_whitespace(self) -> Iterator<string>
+    func lines(self) -> Sequence<StringSlice>
+    func split(self, pat: string) -> Sequence<StringSlice>
+    func split_whitespace(self) -> Sequence<StringSlice>
+}
+extend Sequence<StringSlice> {
+    func to_strings(self) -> Vec<string>
+    func join(self, sep: string) -> string
 }
 ```
 
-To keep items, convert each: `.view()` (pins the source, V2) or `.to_string()` (copies). Items are copies today, so neither is zero-cost yet (#1633).
+`split`, `lines` and `split_whitespace` are lazy: each item is a slice of the source, found when the loop asks for it, with nothing copied. Each knows its place: `part.span()` is its range in the string that was split. To keep one, `.view()` (pins the source, V2) or `.to_string()` (copies); to keep them all, `.to_strings()` (`type.sequence/SEQ30a`).
 
 ## Length and Properties
 

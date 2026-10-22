@@ -682,6 +682,22 @@ int64_t rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end) {
     return end > start ? end : start;
 }
 
+// Where the word starting at `start` ends within `[start, end)`: the first
+// whitespace at or after it, or `end`. What `split_whitespace` steps over.
+int64_t rask_string_word_end_at(const RaskStr *s, int64_t start, int64_t end) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (end > len) end = len;
+    if (start < 0) start = 0;
+    while (start < end) {
+        int64_t w;
+        uint32_t c = str_decode_at(d, len, start, &w);
+        if (str_is_white_space(c)) break;
+        start += w;
+    }
+    return start < end ? start : end;
+}
+
 /// Encode `cp` at `out`, returning the bytes written.
 static int64_t str_encode_scalar(char *out, uint32_t cp) {
     if (cp < 0x80) {
@@ -915,93 +931,6 @@ void rask_string_from_char(RaskStr *out, int64_t cp) {
 }
 
 // ─── Split / lines / chars → Vec ────────────────────────────
-
-RaskVec *rask_string_lines(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1); // elem_size = sizeof(RaskStr) = 16
-    int64_t slen = str_len(s);
-    if (slen == 0) return v;
-    const char *p = str_data(s);
-    const char *end = p + slen;
-    while (p < end) {
-        const char *nl = (const char *)memchr(p, '\n', (size_t)(end - p));
-        int64_t len = nl ? (int64_t)(nl - p) : (int64_t)(end - p);
-        RaskStr line;
-        str_make(&line, p, len);
-        rask_vec_push(v, &line);
-        p = nl ? nl + 1 : end;
-    }
-    return v;
-}
-
-RaskVec *rask_string_split(const RaskStr *s, const RaskStr *sep) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
-    int64_t slen = str_len(s);
-    int64_t sep_len = str_len(sep);
-    const char *p = str_data(s);
-    const char *end = p + slen;
-    const char *sepd = str_data(sep);
-
-    // An empty separator matches at every boundary — before the first
-    // character, between each pair, and after the last — so "ab" gives
-    // ["", "a", "b", ""] and "" gives ["", ""]. This branch pushed one *byte*
-    // per character and no empties, so it answered 2 pieces for "ab" where the
-    // interpreter answered 4, and cut a multi-byte character in half (#888).
-    if (sep_len == 0) {
-        RaskStr edge;
-        str_make_sso(&edge, p, 0);
-        rask_vec_push(v, &edge);
-        int64_t i = 0;
-        while (i < slen) {
-            int64_t w;
-            str_decode_at(p, slen, i, &w);
-            RaskStr c;
-            str_make(&c, p + i, w);
-            rask_vec_push(v, &c);
-            i += w;
-        }
-        str_make_sso(&edge, p, 0);
-        rask_vec_push(v, &edge);
-        return v;
-    }
-
-    while (p <= end) {
-        const char *found = NULL;
-        if (p < end) {
-            for (const char *q = p; q + sep_len <= end; q++) {
-                if (memcmp(q, sepd, (size_t)sep_len) == 0) {
-                    found = q;
-                    break;
-                }
-            }
-        }
-        int64_t chunk = found ? (int64_t)(found - p) : (int64_t)(end - p);
-        RaskStr part;
-        str_make(&part, p, chunk);
-        rask_vec_push(v, &part);
-        if (!found) break;
-        p = found + sep_len;
-    }
-    return v;
-}
-
-RaskVec *rask_string_split_whitespace(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
-    int64_t slen = str_len(s);
-    if (slen == 0) return v;
-    const char *d = str_data(s);
-    int64_t i = 0;
-    while (i < slen) {
-        int64_t w;
-        while (i < slen && str_is_white_space(str_decode_at(d, slen, i, &w))) i += w;
-        if (i >= slen) break;
-        int64_t start = i;
-        while (i < slen && !str_is_white_space(str_decode_at(d, slen, i, &w))) i += w;
-        RaskStr tok;
-        str_make(&tok, d + start, i - start);
-        rask_vec_push(v, &tok);
-    }
-    return v;
-}
 
 // Unicode scalars, not bytes. `char_at` and `len` already agree that a `char`
 // is a scalar and `len()` counts bytes; this walked bytes, so `"aöb".chars()`

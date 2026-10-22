@@ -12,6 +12,7 @@
 //!   laid out as a string on both backends, so it is the receiver as it is; a
 //!   slice is its `.view()` first.
 //! - A slice passed where a `string` parameter is copies: `.to_string()`.
+//!   One compared against is read through `.view()`, like a receiver.
 //!
 //! Everything is recorded by node and written into the declarations after the
 //! check, so every pass after this one sees ordinary method calls.
@@ -56,6 +57,9 @@ pub struct StringSlices {
     pub receivers: HashMap<NodeId, NodeId>,
     /// A slice passed for a `string` → the `.to_string()` call around it.
     pub copies: HashMap<NodeId, NodeId>,
+    /// A comparison call with slices among its arguments → each such
+    /// argument's position and the `.view()` call it goes through.
+    pub compared: HashMap<NodeId, Vec<(usize, NodeId)>>,
 }
 
 /// Which of the three string types a value is.
@@ -138,18 +142,31 @@ impl TypeChecker {
         span: Span,
         call_node: Option<NodeId>,
     ) -> Option<Result<bool, TypeError>> {
+        if method == "to_vec" && self.yields_slices(ty) {
+            return Some(Err(TypeError::SlicesToVec { span }));
+        }
         let kind = self.string_kind(ty)?;
         // Equality, order and hashing are the text's, whatever was derived
         // from the fields: two slices of different strings can be equal. A
-        // view compared against is read as the string it's laid out as.
+        // view compared against is read as the string it's laid out as, and a
+        // slice as its view.
         let compares = matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash");
         let views_read: Vec<Type> = if compares {
-            args.iter()
-                .map(|a| match self.string_kind(a) {
-                    Some(StringKind::View) => Type::String,
-                    _ => a.clone(),
-                })
-                .collect()
+            let mut read = Vec::with_capacity(args.len());
+            for (i, a) in args.iter().enumerate() {
+                match self.string_kind(a) {
+                    Some(StringKind::View) => read.push(Type::String),
+                    Some(StringKind::Slice) => {
+                        let call = call_node?;
+                        if let Err(e) = self.view_of_compared(call, i, a, span) {
+                            return Some(Err(e));
+                        }
+                        read.push(Type::String);
+                    }
+                    _ => read.push(a.clone()),
+                }
+            }
+            read
         } else {
             args.to_vec()
         };
@@ -184,6 +201,23 @@ impl TypeChecker {
         Some(self.resolve_method(Type::String, method.to_string(), args.to_vec(), ret.clone(), span, call_node))
     }
 
+    /// The `.view()` a slice compared against goes through, at argument `i`
+    /// of `call`.
+    fn view_of_compared(&mut self, call: NodeId, i: usize, slice: &Type, span: Span) -> Result<bool, TypeError> {
+        let existing = self.string_slices.compared.get(&call).and_then(|v| v.iter().find(|(at, _)| *at == i)).map(|(_, v)| *v);
+        let view_call = match existing {
+            Some(v) => v,
+            None => {
+                let v = self.derived_id();
+                self.string_slices.compared.entry(call).or_default().push((i, v));
+                v
+            }
+        };
+        let view = self.types.get_type_id("StringView").map(Type::Named).unwrap_or(Type::Error);
+        self.node_types.insert(view_call, view.clone());
+        self.resolve_method(slice.clone(), "view".to_string(), Vec::new(), view, span, Some(view_call))
+    }
+
     /// A slice matched against patterns is matched as a string: string
     /// literal patterns are what it meets. The type to match against.
     pub(super) fn match_slice_as_string(&mut self, node: NodeId, ty: Type, span: Span) -> Type {
@@ -194,6 +228,17 @@ impl TypeChecker {
             self.errors.push(e);
         }
         Type::String
+    }
+
+    /// Is this a `Sequence<StringSlice>`?
+    fn yields_slices(&self, ty: &Type) -> bool {
+        match self.resolve_named(&self.ctx.apply(ty)) {
+            Type::Generic { base, args } if self.types.type_name(base) == "Sequence" => matches!(
+                args.first(),
+                Some(crate::GenericArg::Type(t)) if self.string_kind(t) == Some(StringKind::Slice)
+            ),
+            _ => false,
+        }
     }
 
     /// A slice passed for a `string` parameter is copied into one. `None`
@@ -231,10 +276,13 @@ impl StringSlices {
     /// each slice receiver a string reads goes through `.view()`, and each
     /// slice passed for a `string` is wrapped in `.to_string()`.
     pub fn rewrite(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
-        if self.indexes.is_empty() && self.receivers.is_empty() && self.copies.is_empty() {
+        if self.indexes.is_empty() && self.receivers.is_empty() && self.copies.is_empty() && self.compared.is_empty() {
             return;
         }
-        rask_ast::rewrite::rewrite_decls(decls, &mut Rewriter { slices: self, done: Default::default() });
+        rask_ast::rewrite::rewrite_decls(
+            decls,
+            &mut Rewriter { slices: self, done: Default::default(), compared_done: Default::default() },
+        );
     }
 }
 
@@ -242,6 +290,8 @@ struct Rewriter<'a> {
     slices: &'a StringSlices,
     /// Nodes already wrapped, which the walk reaches again inside the wrapper.
     done: std::collections::HashSet<NodeId>,
+    /// Comparison calls whose slice arguments are already wrapped.
+    compared_done: std::collections::HashSet<NodeId>,
 }
 
 impl rask_ast::rewrite::Rewrite for Rewriter<'_> {
@@ -273,6 +323,19 @@ impl rask_ast::rewrite::Rewrite for Rewriter<'_> {
                 if let ExprKind::MethodCall { object, .. } = &mut e.kind {
                     let receiver = std::mem::replace(object.as_mut(), Expr { id: view, kind: ExprKind::Bool(false), span });
                     **object = call(view, receiver, "view", Vec::new(), span);
+                }
+            }
+        }
+
+        if let Some(views) = self.slices.compared.get(&e.id) {
+            if self.compared_done.insert(e.id) {
+                if let ExprKind::MethodCall { args, .. } = &mut e.kind {
+                    for &(i, view) in views {
+                        let Some(arg) = args.get_mut(i) else { continue };
+                        let arg_span = arg.expr.span;
+                        let value = std::mem::replace(&mut arg.expr, Expr { id: view, kind: ExprKind::Bool(false), span: arg_span });
+                        arg.expr = call(view, value, "view", Vec::new(), arg_span);
+                    }
                 }
             }
         }

@@ -1439,7 +1439,42 @@ impl TypeChecker {
                     }
                 };
 
-                let found = methods.iter().find(|m| m.name == method);
+                // The block whose header this receiver fits, where two blocks
+                // declare the method (`TypeTable::filed_methods`).
+                let filed = self.types.filed_methods.get(&(*base, method.clone())).cloned().unwrap_or_default();
+                let candidates: Vec<&MethodSig> =
+                    methods.iter().filter(|m| m.name == method || filed.contains(&m.name)).collect();
+                let found = if candidates.len() > 1 {
+                    let settled = generic_args.iter().all(|a| match a {
+                        GenericArg::Type(t) => !self.ctx.apply(t).has_unsolved_var(),
+                        _ => true,
+                    });
+                    // Which block a `Sequence<?U>` fits waits on what `?U`
+                    // turns out to be, often a closure's return type, which is
+                    // settled after the main solve. The retry queue runs then.
+                    if !settled {
+                        self.deferred_methods.push(TypeConstraint::HasMethod {
+                            ty: ty.clone(),
+                            method,
+                            args,
+                            ret,
+                            span,
+                            call_node,
+                        });
+                        return Ok(false);
+                    }
+                    candidates.iter().copied().find(|m| self.header_fits(m, *base, generic_args))
+                } else {
+                    candidates.first().copied()
+                };
+                if let (Some(sig), Some(node)) = (found, call_node) {
+                    if sig.name != method {
+                        self.filed_methods.calls.insert(node, sig.name.clone());
+                        if let Some(Callee::Method { method: called, .. }) = self.call_targets.get_mut(&node) {
+                            *called = sig.name.clone();
+                        }
+                    }
+                }
 
                 // What the block's header binds, on top of what the type
                 // declares. `extend Sequence<(K, V)>` on a `Sequence<(i64, i64)>`
@@ -3813,5 +3848,31 @@ impl TypeChecker {
                 self.unify(ret, &Type::RawPtr(Box::new(target)), span)
             }
         }
+    }
+
+    /// Does this receiver's type arguments fit the header of the block that
+    /// declared `sig`? A concrete leaf has to be the argument; a parameter
+    /// binds anything.
+    fn header_fits(&self, sig: &MethodSig, base: crate::TypeId, args: &[GenericArg]) -> bool {
+        if sig.owner_patterns.is_empty() {
+            return true;
+        }
+        let applied: Vec<GenericArg> = args
+            .iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(&self.ctx.apply(t)))),
+                other => other.clone(),
+            })
+            .collect();
+        let Some(bound) = crate::bind_header_patterns(&self.types, &sig.owner_patterns, &applied) else {
+            return false;
+        };
+        let params = self.types.get(base).map(|d| d.type_params().to_vec()).unwrap_or_default();
+        bound.iter().all(|(leaf, actual)| {
+            super::declarations::is_type_param_name(leaf)
+                || params.iter().any(|p| p == leaf)
+                || super::parse_type::resolve_type_expr(&rask_ast::ty::TypeExpr::named(leaf), &self.types)
+                    .is_ok_and(|t| self.resolve_named(&t) == self.resolve_named(actual))
+        })
     }
 }

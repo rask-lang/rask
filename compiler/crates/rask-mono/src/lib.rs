@@ -1343,6 +1343,7 @@ mod tests {
             copied_clones: std::collections::HashSet::new(),
             sequence_coercions: std::collections::HashMap::new(),
             string_slices: Default::default(),
+            filed_methods: Default::default(),
             wrapper_fns: Vec::new(),
             derived_generic_methods: std::collections::HashSet::new(),
         }

@@ -426,6 +426,7 @@ void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b)
 void        rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end);
+int64_t     rask_string_word_end_at(const RaskStr *s, int64_t start, int64_t end);
 void        rask_string_to_lowercase(RaskStr *out, const RaskStr *s);
 void        rask_string_to_uppercase(RaskStr *out, const RaskStr *s);
 void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
@@ -462,9 +463,6 @@ int64_t     rask_string_builder_len(int64_t handle);
 int64_t     rask_string_builder_is_empty(int64_t handle);
 
 // Vec-returning operations (elements are RaskStr, elem_size=16)
-RaskVec    *rask_string_lines(const RaskStr *s);
-RaskVec    *rask_string_split(const RaskStr *s, const RaskStr *sep);
-RaskVec    *rask_string_split_whitespace(const RaskStr *s);
 RaskVec    *rask_string_bytes(const RaskStr *s);
 RaskVec    *rask_string_chars(const RaskStr *s);
 RaskVec    *rask_string_char_indices(const RaskStr *s);

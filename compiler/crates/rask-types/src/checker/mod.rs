@@ -265,6 +265,7 @@ pub struct TypeChecker {
     pub(super) sequence_coercions: HashMap<NodeId, NodeId>,
     /// String slices as values (`slices.rs`).
     pub(super) string_slices: StringSlices,
+    pub(super) filed_methods: type_defs::FiledMethods,
     /// Each range index's start, end and `..=`, for the slice call it becomes.
     pub(super) range_indexes: HashMap<NodeId, slices::RangeShape>,
     /// Scope stack for local variable types (innermost scope last).
@@ -656,6 +657,7 @@ impl TypeChecker {
             method_call_args: HashMap::new(),
             sequence_coercions: HashMap::new(),
             string_slices: StringSlices::default(),
+            filed_methods: Default::default(),
             range_indexes: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
@@ -1194,6 +1196,7 @@ impl TypeChecker {
             copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,
             string_slices: self.string_slices,
+            filed_methods: self.filed_methods,
             wrapper_fns: self.wrapper_fns,
             derived_generic_methods: self.derived_generic_methods,
         };

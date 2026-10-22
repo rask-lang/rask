@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: a string slice kept past the expression that cut it (E0305, E0308)
+// Compile Error: a string slice kept past the expression that cut it (E0305, E0307, E0308)
 //
 // `s[i..j]` and `s.trim()` are slices (std.strings/S2): the bytes they cover
 // and where they sit in `s`, with no copy. A slice lives for its expression.
@@ -21,10 +21,16 @@ func held(s: string) -> Holder {
     return Holder(text: s[0..3])
 }
 
+func pieces(line: string) -> usize {
+    // ERROR: a sequence of string slices can't become a `Vec` [E0307]
+    let parts = line.split(",").to_vec()
+    return parts.len()
+}
+
 func main() {
     let s = "  hello world  "
     // ERROR: `parts` would hold string slices [E0305]
     mut parts = Vec.new()
     parts.push(s.trim())
-    println("{parts.len()} {head(s)} {held(s).text}")
+    println("{parts.len()} {head(s)} {held(s).text} {pieces(s)}")
 }

@@ -237,9 +237,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("channel_tx", 0, 0, "Sender_drop"),
     ("channel_rx", 0, 0, "Receiver_drop"),
     ("Sender_clone", 0, 0, "Sender_drop"),
-    ("string_split", 0, 0, "Vec_free"),
-    ("string_lines", 0, 0, "Vec_free"),
-    ("string_split_whitespace", 0, 0, "Vec_free"),
     // A string builder is the frame's until `build()` takes it away. Nothing
     // released one on a path that gives up before building, and
     // `string.from_utf8` returns a `Utf8Error` from eight places — so every
@@ -272,9 +269,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Vec_clone", 0, 0, "Vec_free"),
     ("Map_clone", 0, 0, "Map_free"),
     // `bytes()` builds a fresh Vec of the string's bytes and hands it over —
-    // no view into the source, so nothing reads it after the frame ends. The
-    // splitters below are the family it belongs to and stay out for the reason
-    // written there; this one was measured on its own.
+    // no view into the source, so nothing reads it after the frame ends.
     ("string_bytes", 0, 0, "Vec_free"),
     // Same shape on the C side: the bytes up to the terminator, copied into a
     // fresh Vec that `string.from_utf8` reads and nobody else holds (#949).
@@ -285,14 +280,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
     ("io_read_std_bytes", 0, 0, "Vec_free"),
-    //
-    // The string splitters — `string_split`, `string_lines` and friends — are
-    // absent for a nearer reason: each does hand back a fresh Vec, and
-    // registering them clears the leak, but `simple_grep` then finds nothing
-    // and `markdown_renderer` aborts on `malloc(): unaligned tcache chunk`.
-    // Their result is a Vec of *views into the source string*, so the elements
-    // outlive the free. `bytes()` copies instead, which is why it is listed
-    // above and they are not. Measured both ways on #1050.
 ];
 
 /// Calls that take element descriptions and hand back no container. A JSON

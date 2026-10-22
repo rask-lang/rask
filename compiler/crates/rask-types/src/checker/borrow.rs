@@ -46,8 +46,6 @@ pub(crate) struct ViewCreation {
     /// `None` when it won't reprint exactly — then the message describes the
     /// slice instead of quoting it.
     pub(crate) slice_expr: Option<String>,
-    /// Set for `split`/`lines`/`chars` — a sequence of views, not one.
-    pub(crate) yields_sequence: bool,
     pub(crate) mode: BorrowMode,
     pub(crate) viewed_id: NodeId,
     /// Set when the view is `source[a..b]`. Only a string slices — on anything
@@ -63,7 +61,6 @@ pub(crate) struct PendingViewBinding {
     pub(crate) binding: String,
     pub(crate) display: String,
     pub(crate) slice_expr: Option<String>,
-    pub(crate) yields_sequence: bool,
     pub(crate) source_ty: Type,
     pub(crate) slice_span: Span,
     pub(crate) store_span: Span,
@@ -505,17 +502,13 @@ impl TypeChecker {
                 }
                 None
             }
-            // String view methods (trim, split, etc.)
+            // String view methods. `split` and `lines` aren't here: they
+            // make a sequence, which yields its slices one at a time and
+            // can be bound like any other.
             ExprKind::MethodCall { object, method, .. } => {
                 let single_view = ["trim", "trim_start", "trim_end"];
-                let sequence_view = ["split", "split_whitespace", "lines", "chars"];
                 if single_view.contains(&method.as_str()) {
                     return Self::viewed(object, expr, BorrowMode::Shared);
-                }
-                if sequence_view.contains(&method.as_str()) {
-                    let mut view = Self::viewed(object, expr, BorrowMode::Shared)?;
-                    view.yields_sequence = true;
-                    return Some(view);
                 }
                 None
             }
@@ -530,7 +523,6 @@ impl TypeChecker {
         let display = Self::view_source_path(object).unwrap_or_else(|| root.clone());
         Some(ViewCreation {
             slice_expr: Self::render_slice_expr(whole),
-            yields_sequence: false,
             display,
             root,
             mode,
@@ -753,7 +745,6 @@ impl TypeChecker {
                         binding: binding_name.to_string(),
                         display: view.display,
                         slice_expr: view.slice_expr,
-                        yields_sequence: view.yields_sequence,
                         source_ty: resolved,
                         slice_span: init.span,
                         store_span: stmt_span,
@@ -766,7 +757,6 @@ impl TypeChecker {
                     self.errors.push(TypeError::StringSliceStored {
                         source_var: view.display,
                         slice_expr: view.slice_expr,
-                        yields_sequence: view.yields_sequence,
                         view_var: binding_name.to_string(),
                         slice_span: init.span,
                         store_span: stmt_span,
@@ -814,7 +804,6 @@ impl TypeChecker {
                 self.errors.push(TypeError::StringSliceStored {
                     source_var: pending.display,
                     slice_expr: pending.slice_expr,
-                    yields_sequence: pending.yields_sequence,
                     view_var: pending.binding,
                     slice_span: pending.slice_span,
                     store_span: pending.store_span,

@@ -1332,6 +1332,46 @@ impl TypeChecker {
                 sig
             })
             .collect();
+        // Two `extend` blocks with different headers can declare one method
+        // name: `join` on a `Sequence<string>` and on a `Sequence<StringSlice>`.
+        // The later block's method is filed under a name of its own, so each
+        // body has one symbol on every backend; a call picks the block whose
+        // header its receiver fits (`resolve_method`).
+        let mut new_methods = new_methods;
+        if interface.is_none() && !header_args.is_empty() {
+            let suffix: String = owner_patterns
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join("_")
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            let existing: Vec<(String, Vec<TypeExpr>)> = match self.types.get(type_id) {
+                Some(TypeDef::Struct { methods, .. })
+                | Some(TypeDef::Enum { methods, .. })
+                | Some(TypeDef::NominalAlias { methods, .. }) => {
+                    methods.iter().map(|m| (m.name.clone(), m.owner_patterns.clone())).collect()
+                }
+                _ => Vec::new(),
+            };
+            for sig in &mut new_methods {
+                let clashes = existing
+                    .iter()
+                    .any(|(name, patterns)| *name == sig.name && *patterns != sig.owner_patterns);
+                if !clashes {
+                    continue;
+                }
+                let plain = sig.name.clone();
+                let filed = format!("{plain}__{suffix}");
+                let list = self.types.filed_methods.entry((type_id, plain.clone())).or_default();
+                if !list.contains(&filed) {
+                    list.push(filed.clone());
+                }
+                self.filed_methods.decls.insert((decl_id, plain), filed.clone());
+                sig.name = filed;
+            }
+        }
         // OR12: `@builtin` says the pair's types are written here and the
         // arithmetic is the compiler's — `instant - instant` is a machine
         // subtraction on two nanosecond counts. The backends have to know

@@ -172,6 +172,9 @@ extend string {
     @native("rask_string_trim_end_at")
     func trim_end_at(self, start: usize, end: usize) -> usize {}
 
+    @native("rask_string_word_end_at")
+    func word_end_at(self, start: usize, end: usize) -> usize {}
+
     /// Is byte offset `at` where a character starts, or the end? A UTF-8
     /// continuation byte is `10xxxxxx`; anything else starts one.
     func starts_char(self, at: usize) -> bool {
@@ -263,17 +266,79 @@ extend string {
     @native("rask_string_char_indices")
     public func char_indices(self) -> Iterator<(usize, char)> {}
 
-    /// Split by separator.
-    @native("rask_string_split")
-    public func split(self, sep: string) -> Iterator<string> {}
+    /// The pieces between each `sep`, as slices of this string, one at a time
+    /// (std.strings/S2). An empty `sep` splits between characters, with an
+    /// empty piece at each end. `.to_strings()` keeps copies.
+    public func split(self, sep: string) -> Sequence<StringSlice> {
+        let text = self.view()
+        return |yield| {
+            let n = text.len()
+            if sep.is_empty() {
+                if !yield(slice_of(text, 0, 0, 0)) {
+                    return
+                }
+                mut i = 0
+                while i < n {
+                    let w = text.char_at(i)!.len_utf8()
+                    if !yield(slice_of(text, 0, i, i + w)) {
+                        return
+                    }
+                    i += w
+                }
+                let _ = yield(slice_of(text, 0, n, n))
+                return
+            }
+            mut at = 0
+            loop {
+                if text.view_range(at, n).index_of(sep)? as found {
+                    if !yield(slice_of(text, 0, at, at + found)) {
+                        return
+                    }
+                    at = at + found + sep.len()
+                } else {
+                    let _ = yield(slice_of(text, 0, at, n))
+                    return
+                }
+            }
+        }
+    }
 
-    /// Split on Unicode whitespace, skip empty.
-    @native("rask_string_split_whitespace")
-    public func split_whitespace(self) -> Iterator<string> {}
+    /// The runs of non-whitespace, as slices of this string.
+    public func split_whitespace(self) -> Sequence<StringSlice> {
+        let text = self.view()
+        return |yield| {
+            let n = text.len()
+            mut at = text.trim_start_at(0, n)
+            while at < n {
+                let end = text.word_end_at(at, n)
+                if !yield(slice_of(text, 0, at, end)) {
+                    return
+                }
+                at = text.trim_start_at(end, n)
+            }
+        }
+    }
 
-    /// Split into lines.
-    @native("rask_string_lines")
-    public func lines(self) -> Iterator<string> {}
+    /// The lines, without their `\n`, as slices of this string. A final
+    /// newline doesn't start an empty line.
+    public func lines(self) -> Sequence<StringSlice> {
+        let text = self.view()
+        return |yield| {
+            let n = text.len()
+            mut at = 0
+            while at < n {
+                if text.view_range(at, n).index_of("\n")? as found {
+                    if !yield(slice_of(text, 0, at, at + found)) {
+                        return
+                    }
+                    at = at + found + 1
+                } else {
+                    let _ = yield(slice_of(text, 0, at, n))
+                    return
+                }
+            }
+        }
+    }
 
     // ── Manipulation ────────────────────────────────────────
 

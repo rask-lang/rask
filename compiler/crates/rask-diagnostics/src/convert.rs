@@ -1882,6 +1882,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("let s = \"\"".to_string())
                     .with_why("one spelling per operation [std.api/SD5] — `\"\"` is already the empty string, and `string.new()` only ever existed to open a sequence of pushes that `string` doesn't support [std.strings/S7]")
             }
+            SlicesToVec { span } => Diagnostic::error(
+                "a sequence of string slices can't become a `Vec`",
+            )
+            .with_code("E0307")
+            .with_primary(*span, "these are slices of the string that was split")
+            .with_fix("`.to_strings()` copies each one into a `Vec<string>`; a loop reads them where they are, with no copy")
+            .with_why("a slice lives for the expression that cut it, so a `Vec<StringSlice>` would hold pieces of strings that may be gone [type.sequence/SEQ30a]"),
+
             SliceHeld { name, held, span } => Diagnostic::error(format!(
                 "`{}` would hold string slices: it's a `{}`",
                 name, held
@@ -1891,58 +1899,33 @@ impl ToDiagnostic for rask_types::TypeError {
             .with_fix("put in `x.to_string()` to keep a copy, or `x.view()` to share the source's buffer — and annotate the type, `Vec<string>` or `Vec<StringView>`")
             .with_why("a slice lives for the expression that cut it; by the time this is read, the string it was cut from may be gone [std.strings/S2]"),
 
-            StringSliceStored { source_var, slice_expr, yields_sequence, view_var, slice_span, store_span } => {
+            StringSliceStored { source_var, slice_expr, view_var, slice_span, store_span } => {
                 // Only an exact reprint of the user's expression gets quoted;
                 // otherwise say "this slice" and point at it with the span.
                 // A near-miss quote reads as their own code and sends them
                 // looking for a line they never wrote (#694).
                 let subject = match slice_expr {
                     Some(expr) => format!("`{}`", expr),
-                    None if *yields_sequence => "this split".to_string(),
                     None => "this slice".to_string(),
                 };
-                let d = Diagnostic::error(format!(
-                    "{} gives {} into `{}`, not {}",
-                    subject,
-                    if *yields_sequence { "views" } else { "a view" },
-                    source_var,
-                    if *yields_sequence { "new strings" } else { "a new string" }
-                ))
+                let d = Diagnostic::error(format!("{} gives a view into `{}`, not a new string", subject, source_var))
                     .with_code("E0303")
-                    .with_primary(*slice_span, format!(
-                        "{} can't outlive the statement",
-                        if *yields_sequence { "these views" } else { "this view" }
-                    ))
-                    .with_secondary(*store_span, format!("`{}` would hold {} past the end of this line", view_var, if *yields_sequence { "them" } else { "it" }))
-                    .with_why("a view borrows the source's buffer instead of copying it — keeping one past the statement would leave it pointing at freed bytes");
+                    .with_primary(*slice_span, "this view can't outlive the statement")
+                    .with_secondary(*store_span, format!("`{}` would hold it past the end of this line", view_var))
+                    .with_why("a view borrows the source's buffer instead of copying it — keeping one past the statement would leave it pointing at freed bytes")
+                    .with_help("add .view() to store it zero-copy, or .to_string() to copy the bytes out");
                 // Two fixes, and they differ in cost, so both get named:
                 // `.view()` is zero-copy and keeps the source buffer alive,
-                // `.to_string()` copies out and releases it (std.strings/V2,
-                // the spec's FIX 1 and FIX 2).
-                if *yields_sequence {
-                    let d = d.with_help("collect views with .view(), or copy each piece out with .to_string() as you go");
-                    match slice_expr {
-                        Some(expr) => d.with_fix(format!(
-                            "for piece in {} {{ {}.push(piece.view()) }}  — .to_string() instead of .view() to copy the bytes out",
-                            expr, view_var
-                        )),
-                        None => d.with_fix(format!(
-                            "loop over the pieces and push `piece.view()` into `{}` — or `piece.to_string()` to copy the bytes out",
-                            view_var
-                        )),
-                    }
-                } else {
-                    let d = d.with_help("add .view() to store it zero-copy, or .to_string() to copy the bytes out");
-                    match slice_expr {
-                        Some(expr) => d.with_fix(format!(
-                            "let {}: StringView = {}.view()  — or {}.to_string() for an independent copy",
-                            view_var, expr, expr
-                        )),
-                        None => d.with_fix(format!(
-                            "add `.view()` to the slice to store it zero-copy, or `.to_string()` to copy the bytes out of `{}`",
-                            source_var
-                        )),
-                    }
+                // `.to_string()` copies out and releases it (std.strings/V2).
+                match slice_expr {
+                    Some(expr) => d.with_fix(format!(
+                        "let {}: StringView = {}.view()  — or {}.to_string() for an independent copy",
+                        view_var, expr, expr
+                    )),
+                    None => d.with_fix(format!(
+                        "add `.view()` to the slice to store it zero-copy, or `.to_string()` to copy the bytes out of `{}`",
+                        source_var
+                    )),
                 }
             }
 

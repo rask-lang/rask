@@ -139,3 +139,26 @@ test "a slice passed for a string is copied into one" {
     words.push(s[6..].trim())
     assert words[0] == "please"
 }
+
+test "a split can be named and looped over later" {
+    let line = "a, bb , a"
+    let words = line.split(",")
+    mut n = 0
+    for w in words {
+        if w.trim() == "a" {
+            n += 1
+        }
+    }
+    assert n == 2
+}
+
+test "slices compare inside an enumerate" {
+    let line = "x,a,y"
+    mut at = 99
+    for (i, w) in line.split(",").enumerate() {
+        if "a" == w && w == line[2..3] {
+            at = i
+        }
+    }
+    assert at == 1
+}

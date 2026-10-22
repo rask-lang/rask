@@ -587,6 +587,7 @@ impl TypedProgram {
 
         self.place_args(decls);
         self.string_slices.rewrite(decls);
+        self.filed_methods.rewrite(decls);
     }
 
     pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
@@ -676,6 +677,45 @@ impl TypedProgram {
             }
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut AnySymbols(&self.types));
+    }
+}
+
+/// Where an `extend` block's method is filed under a name of its own, and the
+/// calls that reach it: written into the declarations so every backend sees
+/// one name per body.
+#[derive(Debug, Clone, Default)]
+pub struct FiledMethods {
+    /// `(impl block, method as written)` → the name it's filed under.
+    pub decls: HashMap<(NodeId, String), String>,
+    /// A call → the filed name of the method it reaches.
+    pub calls: HashMap<NodeId, String>,
+}
+
+impl FiledMethods {
+    fn rewrite(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        if self.decls.is_empty() && self.calls.is_empty() {
+            return;
+        }
+        for decl in decls.iter_mut() {
+            if let rask_ast::decl::DeclKind::Impl(i) = &mut decl.kind {
+                for m in &mut i.methods {
+                    if let Some(filed) = self.decls.get(&(decl.id, m.name.clone())) {
+                        m.name = filed.clone();
+                    }
+                }
+            }
+        }
+        struct Calls<'a>(&'a HashMap<NodeId, String>);
+        impl rask_ast::rewrite::Rewrite for Calls<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                if let Some(filed) = self.0.get(&e.id) {
+                    if let rask_ast::expr::ExprKind::MethodCall { method, .. } = &mut e.kind {
+                        *method = filed.clone();
+                    }
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.calls));
     }
 }
 
@@ -882,6 +922,10 @@ pub struct TypedProgram {
     pub sequence_coercions: HashMap<NodeId, NodeId>,
     /// String slices as values: the calls the checker wrote (`slices.rs`).
     pub string_slices: super::StringSlices,
+    /// Methods filed under a name of their own because another `extend` block
+    /// with a different header declares the same one, and the calls that
+    /// reach them.
+    pub filed_methods: FiledMethods,
     /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
     pub wrapper_fns: Vec<super::derive::WrapperFns>,
     /// The methods the checker wrote for generic types, as `Type_method`

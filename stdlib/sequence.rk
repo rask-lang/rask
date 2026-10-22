@@ -398,6 +398,33 @@ extend Sequence<string> {
     }
 }
 
+// A splitter's pieces (std.strings/S2): slices, which are text too.
+extend Sequence<StringSlice> {
+    /// Each piece copied into a string of its own: what `s.split(",")`
+    /// becomes when it has to be kept.
+    public func to_strings(self) -> Vec<string> {
+        mut out: Vec<string> = Vec.new()
+        for piece in self {
+            out.push(piece.to_string())
+        }
+        return out
+    }
+
+    /// The pieces with `sep` between them, in a string of its own.
+    public func join(self, sep: string) -> string {
+        mut out = StringBuilder.new()
+        mut first = true
+        for piece in self {
+            if !first {
+                out.push(sep)
+            }
+            out.push(piece.to_string())
+            first = false
+        }
+        return out.build()
+    }
+}
+
 // The receiver has to say its element is itself a sequence, which the block
 // header is the only place to write. `extend Sequence<T>` would give `flatten`
 // a `T` element and nothing to flatten.

@@ -206,6 +206,9 @@ means buffering it — `to_vec()` then `sort()`), and it's `take`, not `limit`.
 **Terminals** — `to_vec` `to_map` `join` `fold` `reduce` `sum` `product`
 `count` `min` `max` `min_by` `max_by` `min_by_key` `max_by_key` `any` `all`
 `find` `for_each`. A chain ends in one of these or in a `for` loop.
+A string splitter yields slices of the string, which can't be kept as they are:
+`s.split(",").to_strings()` copies them into a `Vec<string>`, and `to_vec()`
+there is an error.
 
 There is no `.iter()`: a collection is its own chain head, so `v.map(f)`
 starts a lazy sequence over `v` and `v.map(f).to_vec()` builds the Vec

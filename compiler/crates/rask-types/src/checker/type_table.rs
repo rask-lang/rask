@@ -80,6 +80,11 @@ pub(super) enum TypeOwner {
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
     /// User-defined types indexed by TypeId.
+    /// A method name that two `extend` blocks with different headers both
+    /// declare on one type → the names the later blocks' methods are filed
+    /// under (`extend Sequence<string>` and `extend Sequence<StringSlice>`
+    /// each have a `join`).
+    pub(super) filed_methods: HashMap<(TypeId, String), Vec<String>>,
     pub(super) types: Vec<TypeDef>,
     /// Name to TypeId mapping, as seen from program code.
     pub(super) type_names: HashMap<String, TypeId>,
@@ -251,6 +256,7 @@ impl TypeTable {
             ambiguous_conformances: std::collections::HashSet::new(),
             impl_method_packages: HashMap::new(),
             primitive_ids: HashMap::new(),
+            filed_methods: HashMap::new(),
             builtin_methods: std::collections::HashSet::new(),
             conformers_by_pair: HashMap::new(),
         };
