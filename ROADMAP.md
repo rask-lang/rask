@@ -34,17 +34,17 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 795 green, 9 registered red | `tests/differential.sh` |
+| Suite programs agreeing on both backends | 798 green, 9 registered red | `tests/differential.sh` |
 | Programs that leak | 1, holding 55 allocations (#1609), 0 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 7 of 798, each filed (the gate used to watch `timeout`, not the test) | `tests/memcheck_gate.sh` |
+| Programs memcheck finds an error in | 7 of 801, each filed (the gate used to watch `timeout`, not the test) | `tests/memcheck_gate.sh` |
 | Concurrency files TSan reports a race in | 0 of 93 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
 | Concurrency files clean under sim, 100 seeds in CI | 93 of 93, 44 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Stdlib items a spec promises that exist and run on both backends | 831 of 831 | `tests/stdlib_coverage_gate.sh` |
-| Open bugs | 54 of 98 open issues | issue search |
+| Open bugs | 54 of 99 open issues | issue search |
 | Open design questions | 19 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
