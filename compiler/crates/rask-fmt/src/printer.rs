@@ -25,6 +25,8 @@ pub struct Printer<'a> {
     /// one level down: a comment written in the *next* `if` was drained into the
     /// previous one's body, because both are indented the same.
     block_end: usize,
+    /// Above zero while a layout is being measured: chains stay on one line.
+    flat_chains: usize,
 }
 
 impl<'a> Printer<'a> {
@@ -37,6 +39,7 @@ impl<'a> Printer<'a> {
             config,
             decl_end: source.len(),
             block_end: source.len(),
+            flat_chains: 0,
         }
     }
 
@@ -1752,8 +1755,59 @@ impl<'a> Printer<'a> {
             self.block_end = outer;
             return;
         }
+        // A chain broken across lines raises the indent for the rest of the
+        // expression, so a `catch` body after it nests under the last link.
+        let indent = self.indent;
         self.format_expr_inner(expr, None);
+        self.indent = indent;
         self.block_end = outer;
+    }
+
+    /// The method calls of a chain, innermost first, and the receiver they
+    /// start from. `a.b().c()` is `(a, [b(), c()])`.
+    fn method_chain(expr: &Expr) -> (&Expr, Vec<&Expr>) {
+        let mut links = vec![expr];
+        let mut root = expr;
+        while let ExprKind::MethodCall { object, .. } = &root.kind {
+            root = object;
+            if matches!(root.kind, ExprKind::MethodCall { .. }) {
+                links.push(root);
+            }
+        }
+        links.reverse();
+        (root, links)
+    }
+
+    /// Whether `expr`, printed on the current line, runs past the width limit.
+    /// Lays it out, measures the first line, then throws the layout away.
+    fn overflows_line(&mut self, expr: &Expr, parent_prec: Option<u8>) -> bool {
+        let out_mark = self.output.len();
+        let comment_mark = self.comments.mark();
+        let (indent, block_end) = (self.indent, self.block_end);
+        let line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
+        self.flat_chains += 1;
+        self.format_expr_inner(expr, parent_prec);
+        self.flat_chains -= 1;
+        let first_line_end = self.output[out_mark..].find('\n').map_or(self.output.len(), |i| out_mark + i);
+        let width = self.output[line_start..first_line_end].chars().count();
+        self.output.truncate(out_mark);
+        self.comments.rewind(comment_mark);
+        (self.indent, self.block_end) = (indent, block_end);
+        width > self.config.max_line_width
+    }
+
+    /// `.method<T>(args)`, the part of a call after its receiver.
+    fn format_method_link(&mut self, link: &Expr) {
+        let ExprKind::MethodCall { method, type_args, args, .. } = &link.kind else { return };
+        self.emit(".");
+        self.emit(method);
+        if let Some(ref targs) = type_args {
+            let spelled: Vec<String> = targs.iter().map(|t| self.format_type(t)).collect();
+            self.emit("<");
+            self.emit(&spelled.join(", "));
+            self.emit(">");
+        }
+        self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
     }
 
     /// Emit the source for this node unchanged, dropping the comments inside it
@@ -1857,17 +1911,24 @@ impl<'a> Printer<'a> {
                 }
                 self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
             }
-            ExprKind::MethodCall { object, method, type_args, args } => {
-                self.format_postfix_receiver(object);
-                self.emit(".");
-                self.emit(method);
-                if let Some(ref targs) = type_args {
-                    let spelled: Vec<String> = targs.iter().map(|t| self.format_type(t)).collect();
-                    self.emit("<");
-                    self.emit(&spelled.join(", "));
-                    self.emit(">");
+            ExprKind::MethodCall { object, .. } => {
+                // A chain of two or more calls that doesn't fit puts each call
+                // after the first on its own line, one indent in. The first
+                // stays with its receiver: `cli.Parser.new("x")` is one thing.
+                let (root, links) = Self::method_chain(expr);
+                if links.len() >= 2 && self.flat_chains == 0 && self.overflows_line(expr, parent_prec) {
+                    self.format_postfix_receiver(root);
+                    self.format_method_link(links[0]);
+                    self.indent += 1;
+                    for link in &links[1..] {
+                        self.emit_newline();
+                        self.emit_indent();
+                        self.format_method_link(link);
+                    }
+                    return;
                 }
-                self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
+                self.format_postfix_receiver(object);
+                self.format_method_link(expr);
             }
             ExprKind::Field { object, field } => {
                 self.format_postfix_receiver(object);

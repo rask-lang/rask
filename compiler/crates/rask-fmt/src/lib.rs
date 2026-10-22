@@ -471,6 +471,35 @@ func main() {
     }
 
     #[test]
+    fn a_chain_too_long_for_the_line_puts_each_call_on_its_own() {
+        // It came out as one 300-column line: the width limit was in the config
+        // and nothing read it. The first call stays with its receiver, and a
+        // `catch` body nests under the last link.
+        let input = "\
+func main() {
+    let args = cli.Parser.new(\"rgrep\").flag(\"ignore-case\", \"i\", \"Ignore case\").flag(\"count\", \"c\", \"Count only\").parse() catch e => {
+        std.exit(2)
+    }
+    let short = items.iter().map(|x| x + 1).to_vec()
+}
+";
+        let expected = "\
+func main() {
+    let args = cli.Parser.new(\"rgrep\")
+        .flag(\"ignore-case\", \"i\", \"Ignore case\")
+        .flag(\"count\", \"c\", \"Count only\")
+        .parse() catch e => {
+            std.exit(2)
+        }
+    let short = items.iter().map(|x| x + 1).to_vec()
+}
+";
+        let output = format_source(input);
+        assert_eq!(output, expected);
+        assert_eq!(output, format_source(&output), "and idempotently");
+    }
+
+    #[test]
     fn trailing_comments_stay_on_their_line() {
         let input = "func main() {\n    let a = 4  // one\n    let b = 5  // another\n}\n";
         let output = format_source(input);
