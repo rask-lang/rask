@@ -2355,12 +2355,38 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(tag))
     }
 
+    /// The type a `return` from here hands back: the function's, which in the
+    /// body of a `for` over a sequence isn't the builder's. That body is the
+    /// yield closure, and its own return type is `bool`.
+    pub(crate) fn return_ty(&self) -> MirType {
+        self.inline_return_target
+            .as_ref()
+            .and_then(|t| t.3.clone())
+            .unwrap_or_else(|| self.builder.ret_ty().clone())
+    }
+
     /// Terminate the current block as a function return.
     ///
     /// One place, because there are four of them — `return`, `try`'s error path
     /// (twice), and the implicit tail — and each one has to run the same exits:
     /// pending `for mutate` writebacks, then the ensure chain.
+    ///
+    /// In a `for` over a sequence the value goes where the body's `return`
+    /// statements put theirs, and the yield stops with the flag raised. A plain
+    /// `Return` there answered the yield instead: `try` in the loop body ended
+    /// the loop and the function carried on as if it had succeeded.
     pub(crate) fn terminate_return(&mut self, value: Option<MirOperand>) {
+        if let Some((dst, cont, writeback_depth, Some(_))) = self.inline_return_target.clone() {
+            if let Some(val) = value {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(val),
+                }));
+            }
+            self.emit_write_backs_above(writeback_depth);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont }));
+            return;
+        }
         let value = self.ordering_return_as_tag(value);
         self.emit_all_write_backs();
         if self.ensure_stack.is_empty() {

@@ -5,7 +5,9 @@
 // The loop body is the sequence's yield closure, and its `return` stores the
 // answer for the enclosing frame to hand back. Natively the error side was
 // stored bare, so `return Big.Found(x)` from a `void or Big` function reached
-// the caller as a success (#1490).
+// the caller as a success (#1490). `try` and `try … else` take the same exit:
+// natively a `try` in the body used to end the loop and the function went on
+// as if nothing had failed.
 
 import sequence.Sequence
 
@@ -70,6 +72,46 @@ func first_even(items: Sequence<i64>) -> i64? {
     return none
 }
 
+func checked(x: i64) -> i64 or Small {
+    if x < 0 {
+        return Small(at: x)
+    }
+    return x
+}
+
+func sum_checked(items: Sequence<i64>) -> i64 or Small {
+    mut sum = 0
+    for x in items {
+        sum += try checked(x)
+    }
+    return sum
+}
+
+func either_checked(items: Sequence<i64>) -> i64 or (Big | Small) {
+    mut sum = 0
+    for x in items {
+        sum += try checked(x)
+    }
+    return sum
+}
+
+func checked_opt(x: i64) -> i64? {
+    if x < 0 {
+        return none
+    }
+    return x
+}
+
+func first_checked(items: Sequence<i64>) -> i64? {
+    for x in items {
+        let n = try checked_opt(x)
+        if n > 2 {
+            return n
+        }
+    }
+    return 0
+}
+
 func found(r: void or Big) -> i64 {
     match r {
         Big as b => {
@@ -127,4 +169,30 @@ test "an optional answer" {
     assert (first_even(v.as_sequence()) ?? -1) == 4
     let w: Vec<i64> = [1, 3]
     assert (first_even(w.as_sequence()) ?? -1) == -1
+}
+
+test "try in the body propagates out of the function" {
+    let v: Vec<i64> = [1, -3, 5]
+    match sum_checked(v.as_sequence()) {
+        i64 as n => assert false
+        Small as s => assert s.at == -3
+    }
+    let w: Vec<i64> = [1, 2, 3]
+    assert (sum_checked(w.as_sequence()) catch _ => -1) == 6
+}
+
+test "try in the body widens into a union error" {
+    let v: Vec<i64> = [4, -2]
+    match either_checked(v.as_sequence()) {
+        i64 as n => assert false
+        Small as s => assert s.at == -2
+        Big as b => assert false
+    }
+}
+
+test "try in the body of an optional function" {
+    let v: Vec<i64> = [1, -1, 9]
+    assert (first_checked(v.as_sequence()) ?? 99) == 99
+    let w: Vec<i64> = [1, 4]
+    assert (first_checked(w.as_sequence()) ?? 99) == 4
 }

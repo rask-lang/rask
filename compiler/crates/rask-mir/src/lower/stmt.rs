@@ -464,7 +464,7 @@ impl<'a> MirLowerer<'a> {
                     // came back as `Some(Some(v))` and the caller read the
                     // inner option's address as the vector (#1498).
                     let inlined_closure = self.inline_return_target.is_some() && seq_ret.is_none();
-                    let ret_ty = seq_ret.clone().unwrap_or_else(|| self.builder.ret_ty().clone());
+                    let ret_ty = self.return_ty();
                     // ER9: the checker picked the side when it accepted the
                     // return. Comparing types here again got it wrong for a
                     // `type Code = i64` error in a `string or Code` function:
