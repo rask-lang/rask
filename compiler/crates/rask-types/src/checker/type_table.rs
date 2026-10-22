@@ -7,7 +7,7 @@ use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
 use super::builtins::BuiltinModules;
-use super::type_defs::TypeDef;
+use super::type_defs::{MethodSig, TypeDef};
 use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
@@ -2133,6 +2133,18 @@ impl TypeTable {
     }
 
     /// OR6: the registered stand-in for a primitive, by its source spelling.
+    /// Does the declaration behind `id` declare a method by this name?
+    pub fn declares_method(&self, id: TypeId, method: &str) -> bool {
+        let methods: &[MethodSig] = match self.get(id) {
+            Some(TypeDef::Struct { methods, .. })
+            | Some(TypeDef::Enum { methods, .. })
+            | Some(TypeDef::NominalAlias { methods, .. })
+            | Some(TypeDef::Primitive { methods, .. }) => methods,
+            _ => return false,
+        };
+        methods.iter().any(|m| m.name == method)
+    }
+
     pub fn primitive_id(&self, name: &str) -> Option<TypeId> {
         self.primitive_ids.get(name).copied()
     }

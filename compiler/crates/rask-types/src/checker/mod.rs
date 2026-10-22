@@ -32,6 +32,8 @@ mod derive;
 mod clone_rule;
 mod arg_labels;
 mod method_visibility;
+mod slices;
+pub use slices::StringSlices;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
@@ -261,6 +263,10 @@ pub struct TypeChecker {
     /// A collection filling a `Sequence<E>` slot (SEQ48): value node → the
     /// node of the `as_sequence()` call that wraps it.
     pub(super) sequence_coercions: HashMap<NodeId, NodeId>,
+    /// String slices as values (`slices.rs`).
+    pub(super) string_slices: StringSlices,
+    /// Each range index's start, end and `..=`, for the slice call it becomes.
+    pub(super) range_indexes: HashMap<NodeId, slices::RangeShape>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -649,6 +655,8 @@ impl TypeChecker {
             wrapper_calls: HashMap::new(),
             method_call_args: HashMap::new(),
             sequence_coercions: HashMap::new(),
+            string_slices: StringSlices::default(),
+            range_indexes: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
@@ -1185,6 +1193,7 @@ impl TypeChecker {
             wrapper_calls: self.wrapper_calls,
             copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,
+            string_slices: self.string_slices,
             wrapper_fns: self.wrapper_fns,
             derived_generic_methods: self.derived_generic_methods,
         };

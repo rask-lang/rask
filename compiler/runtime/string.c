@@ -649,8 +649,8 @@ static int64_t str_prev_scalar(const char *d, int64_t i) {
 
 // The byte range left after trimming whitespace off both ends.
 // Where `trim_start` would begin within `[start, end)`: past the leading
-// whitespace. The one definition of what trimming skips — every trim, and
-// every trim of a span, goes through these two.
+// whitespace. The one definition of what trimming skips: every trim of a
+// slice goes through these two.
 int64_t rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end) {
     int64_t len = str_len(s);
     const char *d = str_data(s);
@@ -680,12 +680,6 @@ int64_t rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end) {
         end = prev;
     }
     return end > start ? end : start;
-}
-
-static void str_trim_range(const RaskStr *s, int64_t *out_start, int64_t *out_end) {
-    int64_t len = str_len(s);
-    *out_start = rask_string_trim_start_at(s, 0, len);
-    *out_end = rask_string_trim_end_at(s, *out_start, len);
 }
 
 /// Encode `cp` at `out`, returning the bytes written.
@@ -759,25 +753,6 @@ void rask_string_unshare(RaskStr *out, const RaskStr *s) {
     str_make(out, str_data(s), str_len(s));
 }
 
-void rask_string_trim(RaskStr *out, const RaskStr *s) {
-    int64_t len = str_len(s);
-    if (len == 0) { rask_string_new(out); return; }
-    int64_t start, end;
-    str_trim_range(s, &start, &end);
-    str_make(out, str_data(s) + start, end - start);
-}
-
-void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
-    int64_t len = str_len(s);
-    int64_t start = rask_string_trim_start_at(s, 0, len);
-    str_make(out, str_data(s) + start, len - start);
-}
-
-void rask_string_trim_end(RaskStr *out, const RaskStr *s) {
-    int64_t end = rask_string_trim_end_at(s, 0, str_len(s));
-    str_make(out, str_data(s), end);
-}
-
 void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
     int64_t slen = str_len(s);
     if (slen == 0 || count <= 0) { rask_string_new(out); return; }
@@ -808,8 +783,6 @@ void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from,
     rask_string_replace_limit(out, s, from, to, -1);
 }
 
-// Byte range of a string — this is what `s[i..j]` lowers to (std.strings/U1).
-// Not exposed as a `substring` method: that was the slice under a second name.
 /// The range `s[start..end]` covers: out of range clamps, and a cut inside a
 /// character panics. False when the range is empty.
 static int str_slice_range(const RaskStr *s, int64_t *start, int64_t *end) {
@@ -831,11 +804,6 @@ static int str_slice_range(const RaskStr *s, int64_t *start, int64_t *end) {
             (long long)*start, (long long)*end);
     }
     return 1;
-}
-
-void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
-    if (!str_slice_range(s, &start, &end)) { rask_string_new(out); return; }
-    str_make(out, str_data(s) + start, end - start);
 }
 
 // `s[start..end].view()` without the copy (std.strings/V1): the view shares

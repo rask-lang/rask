@@ -586,6 +586,7 @@ impl TypedProgram {
         }
 
         self.place_args(decls);
+        self.string_slices.rewrite(decls);
     }
 
     pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
@@ -879,6 +880,8 @@ pub struct TypedProgram {
     /// A collection filling a `Sequence<E>` slot: value node → the node of
     /// the `as_sequence()` call `attach_derived` wraps it in (SEQ48).
     pub sequence_coercions: HashMap<NodeId, NodeId>,
+    /// String slices as values: the calls the checker wrote (`slices.rs`).
+    pub string_slices: super::StringSlices,
     /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
     pub wrapper_fns: Vec<super::derive::WrapperFns>,
     /// The methods the checker wrote for generic types, as `Type_method`

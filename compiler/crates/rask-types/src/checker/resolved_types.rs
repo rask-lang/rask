@@ -71,6 +71,20 @@ impl TypeChecker {
         for decl in decls {
             walk_decl(decl, node_types, &names, &mut found);
         }
+        // A binding can't hold a slice inside something that outlives the
+        // expression (std.strings/S2). A slice bound directly is E0303's
+        // `StringSliceStored`, reported where it's made.
+        if let Some(slice) = self.types.get_type_id("StringSlice") {
+            let is_slice = |t: &Type| match t {
+                Type::Named(id) => *id == slice,
+                Type::UnresolvedNamed(n) => n == "StringSlice",
+                _ => false,
+            };
+            let holds = |t: &Type| !is_slice(t) && t.contains(&|inner| is_slice(inner));
+            for decl in decls {
+                held_slices(decl, node_types, &holds, &|t| self.types.display_type_names(t).to_string(), &mut found);
+            }
+        }
         for err in found {
             self.errors.push(err);
         }
@@ -167,4 +181,40 @@ fn walk_expr(
         }
         _ => {}
     }
+}
+
+/// `let`/`mut` bindings whose type holds a slice somewhere inside it.
+fn held_slices(
+    decl: &Decl,
+    node_types: &HashMap<NodeId, Type>,
+    holds: &dyn Fn(&Type) -> bool,
+    show: &dyn Fn(&Type) -> String,
+    out: &mut Vec<TypeError>,
+) {
+    struct Lets<'a> {
+        node_types: &'a HashMap<NodeId, Type>,
+        holds: &'a dyn Fn(&Type) -> bool,
+        show: &'a dyn Fn(&Type) -> String,
+        out: &'a mut Vec<TypeError>,
+    }
+    impl<'d> rask_ast::visit::Visit<'d> for Lets<'_> {
+        fn expr(&mut self, _: &'d Expr) -> bool {
+            true
+        }
+        fn stmt(&mut self, s: &'d Stmt) -> bool {
+            if let StmtKind::Let { name, name_span, init, .. } | StmtKind::Mut { name, name_span, init, .. } = &s.kind {
+                if let Some(t) = self.node_types.get(&init.id) {
+                    if (self.holds)(t) {
+                        self.out.push(TypeError::SliceHeld {
+                            name: name.clone(),
+                            held: (self.show)(t),
+                            span: *name_span,
+                        });
+                    }
+                }
+            }
+            true
+        }
+    }
+    rask_ast::visit::visit_decl(decl, &mut Lets { node_types, holds, show, out });
 }

@@ -114,16 +114,19 @@ impl TypeChecker {
                     if annotations.contains(name) {
                         continue;
                     }
+                    // A slice compares and hashes as its text (`slices.rs`),
+                    // not as the view and offsets it's made of.
+                    let reads_as_text = self.string_kind(&Type::Named(id)).is_some();
                     let has_body = program_type || !fields.is_empty();
-                    if has_body && derived(methods, "eq") {
+                    if has_body && !reads_as_text && derived(methods, "eq") {
                         let body = self.struct_eq(fields);
                         written.push(self.method("eq", true, "bool", body));
                     }
-                    if has_body && derived(methods, "hash") {
+                    if has_body && !reads_as_text && derived(methods, "hash") {
                         let body = self.struct_hash(fields);
                         written.push(self.method("hash", false, "u64", body));
                     }
-                    if !fields.is_empty() && derived(methods, "compare") {
+                    if !fields.is_empty() && !reads_as_text && derived(methods, "compare") {
                         let body = self.struct_compare(fields);
                         written.push(self.method("compare", true, "Ordering", body));
                     }

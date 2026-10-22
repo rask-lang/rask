@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a string slice kept past the expression that cut it (E0305, E0308)
+//
+// `s[i..j]` and `s.trim()` are slices (std.strings/S2): the bytes they cover
+// and where they sit in `s`, with no copy. A slice lives for its expression.
+// Passing one for a `string` parameter copies it; every way to keep one as it
+// is gets refused, with the two ways to keep it named: `.to_string()` copies,
+// `.view()` shares the source's buffer.
+
+func head(s: string) -> string {
+    // ERROR: mismatched types [E0308]
+    return s[0..2]
+}
+
+struct Holder {
+    text: string
+}
+
+func held(s: string) -> Holder {
+    // ERROR: mismatched types [E0308]
+    return Holder(text: s[0..3])
+}
+
+func main() {
+    let s = "  hello world  "
+    // ERROR: `parts` would hold string slices [E0305]
+    mut parts = Vec.new()
+    parts.push(s.trim())
+    println("{parts.len()} {head(s)} {held(s).text}")
+}

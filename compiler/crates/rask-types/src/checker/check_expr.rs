@@ -868,6 +868,13 @@ impl TypeChecker {
 
                 // Check if indexing with a range (slicing)
                 let is_range = matches!(index.kind, rask_ast::expr::ExprKind::Range { .. });
+                if let rask_ast::expr::ExprKind::Range { start, end, inclusive } = &index.kind {
+                    self.range_indexes.insert(expr.id, super::slices::RangeShape {
+                        start: start.as_ref().map(|e| e.id),
+                        end: end.as_ref().map(|e| e.id),
+                        inclusive: *inclusive,
+                    });
+                }
 
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
@@ -876,6 +883,15 @@ impl TypeChecker {
                 // deferred check runs.
                 if self.check_index_types(&obj_ty, &idx_ty, is_range, index.span) {
                     return Type::Error;
+                }
+                if is_range {
+                    let result = self.ctx.fresh_var();
+                    if let Some(sliced) = self.slice_index(expr.id, &obj_ty, &result, expr.span) {
+                        if let Err(e) = sliced {
+                            self.errors.push(e);
+                        }
+                        return result;
+                    }
                 }
                 match self.index_result_type(&obj_ty, is_range) {
                     Some(elem) => elem,
@@ -888,6 +904,7 @@ impl TypeChecker {
                         // an open type however the field later resolved (#632).
                         let elem = self.ctx.fresh_var();
                         self.ctx.add_constraint(TypeConstraint::Index {
+                            node: expr.id,
                             object: raw_obj_ty,
                             // Carried so #310's index-type check can run again
                             // once the container is known. The call above had an
@@ -1106,6 +1123,10 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
+                // A slice is matched as a string, which needs to know it's a
+                // slice before the patterns are checked against it.
+                self.solve_constraints();
+                let scrutinee_ty = self.match_slice_as_string(scrutinee.id, scrutinee_ty, scrutinee.span);
                 let result_ty = self.ctx.fresh_var();
                 let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
@@ -2708,7 +2729,8 @@ impl TypeChecker {
             // a range slices, a scalar index reads one byte. It used to yield
             // a `char` at a *character* index, so the same bracket counted two
             // different units and `s[i]` in a loop scanned from byte zero.
-            Type::String => Some(if is_range { Type::String } else { Type::U8 }),
+            // A range makes a slice, which `slice_index` answers.
+            Type::String if !is_range => Some(Type::U8),
             // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
             // Map<K,V> indexed by K → value type from second arg.
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {

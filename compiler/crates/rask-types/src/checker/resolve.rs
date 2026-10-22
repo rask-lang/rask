@@ -716,6 +716,11 @@ impl TypeChecker {
             return Ok(self.poison(&ret));
         }
 
+        // A view or a slice reads as a string (std.strings/V3).
+        if let Some(read) = self.redirect_string_reader(&ty, &method, &args, &ret, span, call_node) {
+            return read;
+        }
+
         // mem.linear/L8: a value consumed exactly once has no copy. `clone`
         // answers on every type, so a `@resource` struct cloned into two
         // obligations for one file, and a `Shared` holding one handed out a

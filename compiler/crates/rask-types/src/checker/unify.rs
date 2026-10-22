@@ -540,8 +540,8 @@ impl TypeChecker {
                 self.resolve_error_branch(value, result, span)
             }
 
-            TypeConstraint::Index { object, index, result, is_range, span } => {
-                self.resolve_index(object, index, result, is_range, span)
+            TypeConstraint::Index { node, object, index, result, is_range, span } => {
+                self.resolve_index(node, object, index, result, is_range, span)
             }
 
             TypeConstraint::OptionalChain { field, result, span } => {
@@ -976,6 +976,7 @@ impl TypeChecker {
 
     fn resolve_index(
         &mut self,
+        node: rask_ast::NodeId,
         object: Type,
         index: Type,
         result: Type,
@@ -985,6 +986,7 @@ impl TypeChecker {
         let obj = self.ctx.apply(&object);
         if matches!(obj, Type::Var(_)) {
             self.ctx.add_constraint(TypeConstraint::Index {
+                node,
                 object,
                 index,
                 result,
@@ -992,6 +994,11 @@ impl TypeChecker {
                 span,
             });
             return Ok(false);
+        }
+        if is_range {
+            if let Some(sliced) = self.slice_index(node, &obj, &result, span) {
+                return sliced;
+            }
         }
         let progressed = match self.index_result_type(&obj, is_range) {
             Some(elem) => {
@@ -1333,6 +1340,10 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+
+        if let Some(copied) = self.copy_slice_argument(&ret_ty, &resolved_expected, site, value_node, span) {
+            return copied;
+        }
 
         if let Some(node) = value_node {
             if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {

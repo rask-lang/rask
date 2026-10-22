@@ -544,6 +544,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     ));
                 }
 
+                // A slice where a string is kept: a return, a field, a binding
+                // with a type (std.strings/S2). Only a `string` parameter copies
+                // one on its own.
+                if found.to_string() == "StringSlice"
+                    && matches!(expected.to_string().as_str(), "string" | "StringView")
+                {
+                    return diag
+                        .with_fix("`.to_string()` keeps a copy of the slice's text; `.view()` keeps it without copying, sharing the source's buffer")
+                        .with_help("a slice lives for the expression that cut it, so it can't be kept as it is [std.strings/S2]");
+                }
+
                 // An optional is `Result { ok: T, err: None }` underneath, so the
                 // Result branch below catches it too unless it's split off
                 // first. It used to say "wrap with `try` to propagate the
@@ -1871,6 +1882,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("let s = \"\"".to_string())
                     .with_why("one spelling per operation [std.api/SD5] — `\"\"` is already the empty string, and `string.new()` only ever existed to open a sequence of pushes that `string` doesn't support [std.strings/S7]")
             }
+            SliceHeld { name, held, span } => Diagnostic::error(format!(
+                "`{}` would hold string slices: it's a `{}`",
+                name, held
+            ))
+            .with_code("E0305")
+            .with_primary(*span, "a slice can't be kept here")
+            .with_fix("put in `x.to_string()` to keep a copy, or `x.view()` to share the source's buffer — and annotate the type, `Vec<string>` or `Vec<StringView>`")
+            .with_why("a slice lives for the expression that cut it; by the time this is read, the string it was cut from may be gone [std.strings/S2]"),
+
             StringSliceStored { source_var, slice_expr, yields_sequence, view_var, slice_span, store_span } => {
                 // Only an exact reprint of the user's expression gets quoted;
                 // otherwise say "this slice" and point at it with the span.

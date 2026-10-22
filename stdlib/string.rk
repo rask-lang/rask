@@ -137,65 +137,30 @@ extend string {
         if !self.starts_char(span.start) || !self.starts_char(span.end) {
             return none
         }
-        return self[span.start..span.end]
+        return self[span.start..span.end].to_string()
     }
 
-    // ── Spans ───────────────────────────────────────────────
-    // `s[i..j].span()`, `s.trim().view()`, `line[0..c].trim().view()`: a
-    // `.span()` or `.view()` at the end of a slice chain is compiled into
-    // these, so the chain never copies the text it picks out (std.strings/V1).
+    // ── Slicing ─────────────────────────────────────────────
+    // `s[i..j]` is a call to one of these, written by the checker: a slice
+    // is a value that knows where it was cut (std.strings/S2).
 
-    /// The whole string as a span. At the end of a slice chain, the slice's
-    /// range in the string it was cut from.
+    /// The whole string as a span.
     public func span(self) -> Span {
         return Span(0, self.len())
     }
 
-    /// The span `self[start..end]` covers: out of range clamps and a cut
-    /// character panics, as slicing does. `end: none` runs to the end.
-    public func span_of(self, start: usize, end: usize?) -> Span {
-        let n = self.len()
-        mut hi = end ?? n
-        if hi > n {
-            hi = n
+    /// `self[start..end]`, or `self[start..=end]` when `through` is set.
+    func slice_at(self, start: usize, end: usize, through: bool) -> StringSlice {
+        mut hi = end
+        if through {
+            hi += 1
         }
-        if start >= hi {
-            return Span(hi, hi)
-        }
-        if !self.starts_char(start) || !self.starts_char(hi) {
-            panic("s[{start}..{hi}] cuts a character in half - these are byte offsets, and one of them lands inside a multi-byte character. `char_indices()` gives offsets that don't.")
-        }
-        return Span(start, hi)
+        return slice_of(self.view(), 0, start, hi)
     }
 
-    /// The part of `span` that `trim` keeps.
-    public func trim_span(self, span: Span) -> Span {
-        let start = self.trim_start_at(span.start, span.end)
-        return Span(start, self.trim_end_at(start, span.end))
-    }
-
-    /// The part of `span` that `trim_start` keeps.
-    public func trim_start_span(self, span: Span) -> Span {
-        let start = self.trim_start_at(span.start, span.end)
-        mut end = span.end
-        if end > self.len() {
-            end = self.len()
-        }
-        if end < start {
-            end = start
-        }
-        return Span(start, end)
-    }
-
-    /// The part of `span` that `trim_end` keeps.
-    public func trim_end_span(self, span: Span) -> Span {
-        return Span(span.start, self.trim_end_at(span.start, span.end))
-    }
-
-    /// The text a span covers, as a view that shares this string's buffer
-    /// instead of copying it (std.strings/V1). Panics where slicing would.
-    public func view_of(self, span: Span) -> StringView {
-        return self.view_range(span.start, span.end)
+    /// `self[start..]`.
+    func slice_from(self, start: usize) -> StringSlice {
+        return slice_of(self.view(), 0, start, self.len())
     }
 
     @native("rask_string_view_range")
@@ -239,20 +204,22 @@ extend string {
     public func ends_with(self, pat: string) -> bool {}
 
     // ── Trimming ────────────────────────────────────────────
-    // Spec: these return expression-scoped slices (zero-copy).
-    // Current interpreter returns owned strings (see implementation notes).
+    // Each one is a slice of this string, not a copy (std.strings/S2).
 
-    /// Remove leading and trailing whitespace.
-    @native("rask_string_trim")
-    public func trim(self) -> string {}
+    /// Without leading and trailing whitespace.
+    public func trim(self) -> StringSlice {
+        return self.slice_from(0).trim()
+    }
 
-    /// Remove leading whitespace.
-    @native("rask_string_trim_start")
-    public func trim_start(self) -> string {}
+    /// Without leading whitespace.
+    public func trim_start(self) -> StringSlice {
+        return self.slice_from(0).trim_start()
+    }
 
-    /// Remove trailing whitespace.
-    @native("rask_string_trim_end")
-    public func trim_end(self) -> string {}
+    /// Without trailing whitespace.
+    public func trim_end(self) -> StringSlice {
+        return self.slice_from(0).trim_end()
+    }
 
     // ── Case and normalization ──────────────────────────────
 
@@ -430,6 +397,107 @@ extend StringBuilder {
     public func is_empty(self) -> bool {}
 }
 
+// ─── StringSlice ────────────────────────────────────────────────
+//
+// What `s[i..j]`, `s.trim()` and `s.split(…)` items are (std.strings/S2): a
+// piece of a string that knows where it was cut. It lives for the expression
+// that makes it; to keep the text, `.view()` shares the source's buffer and
+// `.to_string()` copies it. Every read-only string method works on a slice,
+// reading its range.
+
+public struct StringSlice {
+    /// The slice's bytes, sharing the source's buffer.
+    text: StringView
+    /// Where they sit in the source.
+    start: usize
+    end: usize
+}
+
+extend StringSlice {
+    /// The slice as a view that shares its source's buffer (V1). No copy.
+    public func view(self) -> StringView {
+        return self.text
+    }
+
+    /// Where the slice sits in the string it was cut from.
+    public func span(self) -> Span {
+        return Span(self.start, self.end)
+    }
+
+    /// The slice's text in a string of its own. Copies.
+    public func to_string(self) -> string {
+        return self.text.to_string()
+    }
+
+    /// Without leading and trailing whitespace.
+    public func trim(self) -> StringSlice {
+        let n = self.text.len()
+        let a = self.text.trim_start_at(0, n)
+        return self.cut(a, self.text.trim_end_at(a, n))
+    }
+
+    /// Without leading whitespace.
+    public func trim_start(self) -> StringSlice {
+        let n = self.text.len()
+        return self.cut(self.text.trim_start_at(0, n), n)
+    }
+
+    /// Without trailing whitespace.
+    public func trim_end(self) -> StringSlice {
+        return self.cut(0, self.text.trim_end_at(0, self.text.len()))
+    }
+
+    /// `self[start..end]`: a slice of the slice, still placed in the source.
+    func slice_at(self, start: usize, end: usize, through: bool) -> StringSlice {
+        mut hi = end
+        if through {
+            hi += 1
+        }
+        return slice_of(self.text, self.start, start, hi)
+    }
+
+    /// `self[start..]`.
+    func slice_from(self, start: usize) -> StringSlice {
+        return slice_of(self.text, self.start, start, self.text.len())
+    }
+
+    /// Offsets `a..b` of this slice, which the trims have already checked.
+    func cut(self, a: usize, b: usize) -> StringSlice {
+        return StringSlice(text: self.text.view_range(a, b), start: self.start + a, end: self.start + b)
+    }
+}
+
+extend StringView {
+    /// `self[start..end]`, placed in the view (V6).
+    func slice_at(self, start: usize, end: usize, through: bool) -> StringSlice {
+        mut hi = end
+        if through {
+            hi += 1
+        }
+        return slice_of(self, 0, start, hi)
+    }
+
+    /// `self[start..]`.
+    func slice_from(self, start: usize) -> StringSlice {
+        return slice_of(self, 0, start, self.len())
+    }
+}
+
+/// `text[start..end]` as a slice placed `base` bytes into its source. Clamps
+/// and refuses a cut character as slicing always has.
+func slice_of(text: StringView, base: usize, start: usize, end: usize) -> StringSlice {
+    let n = text.len()
+    mut hi = end
+    if hi > n {
+        hi = n
+    }
+    mut lo = start
+    if lo > hi {
+        lo = hi
+    }
+    return StringSlice(text: text.view_range(lo, hi), start: base + lo, end: base + hi)
+}
+
 // ─── StringView ─────────────────────────────────────────────────
 //
 // Storable zero-copy substring (std.strings/V1). Shares the source
@@ -475,6 +543,10 @@ extend StringView {
     /// Sub-view. Same as slicing then .view() — references the original buffer.
     @native("rask_string_clone")
     public func view(self) -> StringView {}
+
+    /// Another view of the same range: one more count on the buffer.
+    @native("rask_string_clone")
+    public func clone(self) -> StringView {}
 
     /// Hash the view contents.
     @native("rask_string_hash")

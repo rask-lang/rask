@@ -410,6 +410,15 @@ pub enum TypeError {
     StringNewRemoved {
         span: Span,
     },
+    /// A binding whose type holds a `StringSlice` inside it: `Vec<StringSlice>`
+    /// built by pushing slices into an unannotated vector (std.strings/S2).
+    #[error("`{name}` would hold string slices")]
+    SliceHeld {
+        name: String,
+        /// The binding's type, as written for the reader.
+        held: String,
+        span: Span,
+    },
     #[error("string slices are temporary — cannot store `{view_var}`")]
     StringSliceStored {
         source_var: String,
@@ -1719,6 +1728,7 @@ impl TypeError {
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
             | StringSliceStored { .. }
+            | SliceHeld { .. }
             | VolatileViewStored { .. }
             | WithGuardEscapes { .. }
             | BareSharedWith { .. }

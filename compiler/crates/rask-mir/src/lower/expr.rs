@@ -3121,40 +3121,12 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Result<TypedOperand, LoweringError> {
-            // A range index slices a string, and only a string
-            // (type.operators/IX4) — the checker rejects it on a Vec or an
-            // array, where there is no slice type for the result to have.
-            if let ExprKind::Range { start, end, inclusive } = &index.kind {
-                let (obj_op, _obj_ty) = self.lower_expr(object)?;
-                let start_op = if let Some(s) = start {
-                    let (op, _) = self.lower_expr(s)?;
-                    op
-                } else {
-                    MirOperand::Constant(MirConst::Int(0))
-                };
-                let end_op = if let Some(e) = end {
-                    let (op, _) = self.lower_expr(e)?;
-                    // `..=` includes its last index, and the runtime takes
-                    // a half-open pair. Dropping the flag here made
-                    // `s[0..=4]` four bytes on native and five on the
-                    // interpreter (#694).
-                    self.bump_inclusive_end(op, *inclusive)
-                } else {
-                    let len_local = self.builder.alloc_temp(MirType::I64);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(len_local),
-                        func: FunctionRef::internal("string_len".to_string()),
-                        args: vec![obj_op.clone()],
-                    }));
-                    MirOperand::Local(len_local)
-                };
-                let result_local = self.builder.alloc_temp(MirType::String);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef::internal("string_substr".to_string()),
-                    args: vec![obj_op, start_op, end_op],
-                }));
-                return Ok((MirOperand::Local(result_local), MirType::String));
+            // A range index on a string is a call by now: the checker wrote
+            // it as the receiver's `slice_at`/`slice_from` (std.strings/S2).
+            if matches!(index.kind, ExprKind::Range { .. }) {
+                return Err(LoweringError::InvalidConstruct(
+                    "a range index reached lowering; the checker writes it as a slice call".to_string(),
+                ));
             }
 
             let (obj_op, obj_ty) = self.lower_expr(object)?;
@@ -8045,26 +8017,6 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::UnaryOp { op, operand: input },
         }));
         Ok(Some((MirOperand::Local(out), obj_ty.clone())))
-    }
-
-    /// The half-open end index for a range's written end.
-    ///
-    /// `a..=b` includes `b`, while `string_substr` takes a
-    /// half-open pair — so an inclusive range ends one past its last index.
-    fn bump_inclusive_end(&mut self, end: MirOperand, inclusive: bool) -> MirOperand {
-        if !inclusive {
-            return end;
-        }
-        let bumped = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: bumped,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: end,
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
-        MirOperand::Local(bumped)
     }
 
     /// True when this MIR type is the `Ordering` enum.

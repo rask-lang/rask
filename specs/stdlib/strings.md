@@ -12,7 +12,7 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 | Rule | Description |
 |------|-------------|
 | **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes (tagged union — see S8). Under VS1 threshold → implicit Copy |
-| **S2: Inline slicing** | `s[i..j]` creates a temporary view valid only within the expression |
+| **S2: Inline slicing** | `s[i..j]` is a `StringSlice`: the bytes it covers and where they sit in `s`. It lives for the expression that makes it |
 | **S3: Public APIs use string** | Prefer `string` parameters in public APIs — callers shouldn't need to know your storage strategy. `StringView` is a storage and return type for parsing layers; `Span` is fine anywhere — it's a general-purpose range type |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
@@ -101,13 +101,20 @@ a.normalized() == b.normalized() // "café" == "café" regardless of source
 
 ## Inline Slicing
 
-`s[i..j]` creates a temporary view valid only within the expression (S2). Cannot be assigned, stored, or returned. `.to_string()` copies the slice bytes into a new independent refcounted string — no shared backing with the source.
+`s[i..j]` makes a `StringSlice` (S2), and so do `s.trim()`, `trim_start()` and `trim_end()`. A slice is a value: a view of the bytes it covers plus its start and end in the string it was cut from. It lives for the expression that makes it. It can't be assigned, stored or returned, so it never outlives what it was cut from.
+
+| Rule | Description |
+|------|-------------|
+| **SL1: Knows its place** | `.span()` is the slice's byte range in the string it was cut from. A slice of a slice is placed in the original: `s[4..14][2..5].span()` is `6..9` |
+| **SL2: Reads as a string** | Every read-only string method works on a slice and reads its range without copying: `s.trim().len()`, `s[0..5] == "hello"`, `s.trim().starts_with("#")`. Equality and order compare the text |
+| **SL3: Copies where a string goes** | A slice passed for a `string` parameter, or matched against patterns, is copied into a string. That's the cost slicing always had; the other uses have none |
+| **SL4: Keeping it** | `.view()` keeps it without copying (V1), `.to_string()` keeps it as a string of its own |
 
 Slicing follows the same inline access rules as Vec and other growable sources under `mem.borrowing/B2`.
 
 | Context | Example | Valid? |
 |---------|---------|--------|
-| Function argument | `process(s[0..5])` | Yes |
+| Function argument | `process(s[0..5])` | Yes, copied (SL3) |
 | Method receiver | `s[0..5].len()` | Yes |
 | Chained expression | `s[0..5].to_uppercase()` | Yes |
 | Storable conversion | `s[0..5].view()`, `s[0..5].to_string()` | Yes |
@@ -198,16 +205,11 @@ Plain indices for lightweight stored references — offsets for diagnostics, ser
 |-----------|--------|-------|
 | `Span.new(i, j)` | `Span` | Create span (just start, end indices); `Span(start: i, end: j)` is the same |
 | `s.span()` | `Span` | The whole string, `0..s.len()` |
-| `s[i..j].span()` | `Span` | The slice's byte range in `s`. Works on a chain of slices written in the expression: `s.trim().span()`, `s[i..j].trim_end().span()` |
-| `s.span_of(i, j)` | `Span` | What `s[i..j]` covers: clamps and panics as slicing does. `end: none` runs to the end |
-| `s.trim_span(span)` | `Span` | The part of `span` that `trim` keeps. `trim_start_span`, `trim_end_span` likewise |
-| `s.view_of(span)` | `StringView` | The text `span` covers, sharing `s`'s buffer (V1) |
+| `s[i..j].span()` | `Span` | The slice's byte range in `s` (SL1): `s.trim().span()`, `s[i..j].trim_end().span()` |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
 | `span.start`, `span.end` | `usize` | Read indices |
 | `span.len()` | `usize` | `end - start` |
-
-**SP1: Slice chains compile to spans.** A `.view()` or `.span()` at the end of a slice chain is compiled into the span methods above, so the chain never copies what it picks out: `line[0..c].trim().view()` is `line.view_of(line.trim_span(line.span_of(0, c)))`. The chain has to be written in one expression. A `split`/`lines` item reaches its loop body as a string of its own, so its `.span()` is its whole length, not its place in the source (#1633).
 
 <!-- surface -->
 ```rask
@@ -221,12 +223,17 @@ extend Span {
 }
 extend string {
     func span(self) -> Span
-    func span_of(self, start: usize, end: usize?) -> Span
-    func trim_span(self, span: Span) -> Span
-    func trim_start_span(self, span: Span) -> Span
-    func trim_end_span(self, span: Span) -> Span
-    func view_of(self, span: Span) -> StringView
     func get(self, span: Span) -> string?
+}
+struct StringSlice { }
+
+extend StringSlice {
+    func span(self) -> Span
+    func view(self) -> StringView
+    func to_string(self) -> string
+    func trim(self) -> StringSlice
+    func trim_start(self) -> StringSlice
+    func trim_end(self) -> StringSlice
 }
 ```
 
@@ -404,9 +411,9 @@ extend string {
 <!-- surface -->
 ```rask
 extend string {
-    func trim(self) -> string
-    func trim_start(self) -> string
-    func trim_end(self) -> string
+    func trim(self) -> StringSlice
+    func trim_start(self) -> StringSlice
+    func trim_end(self) -> StringSlice
 }
 ```
 

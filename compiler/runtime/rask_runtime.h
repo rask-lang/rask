@@ -423,15 +423,11 @@ int64_t     rask_string_parse_int_into(const RaskStr *s, int64_t *out);
 
 // String-producing operations (out-param: RaskStr *out as first param)
 void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
-void        rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
 void        rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end);
 void        rask_string_to_lowercase(RaskStr *out, const RaskStr *s);
 void        rask_string_to_uppercase(RaskStr *out, const RaskStr *s);
-void        rask_string_trim(RaskStr *out, const RaskStr *s);
-void        rask_string_trim_start(RaskStr *out, const RaskStr *s);
-void        rask_string_trim_end(RaskStr *out, const RaskStr *s);
 void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_reverse(RaskStr *out, const RaskStr *s);
 void        rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to);
