@@ -25,8 +25,6 @@ pub struct Printer<'a> {
     /// one level down: a comment written in the *next* `if` was drained into the
     /// previous one's body, because both are indented the same.
     block_end: usize,
-    /// Above zero while a layout is being measured: chains stay on one line.
-    flat_chains: usize,
 }
 
 impl<'a> Printer<'a> {
@@ -39,7 +37,6 @@ impl<'a> Printer<'a> {
             config,
             decl_end: source.len(),
             block_end: source.len(),
-            flat_chains: 0,
         }
     }
 
@@ -1778,22 +1775,13 @@ impl<'a> Printer<'a> {
         (root, links)
     }
 
-    /// Whether `expr`, printed on the current line, runs past the width limit.
-    /// Lays it out, measures the first line, then throws the layout away.
-    fn overflows_line(&mut self, expr: &Expr, parent_prec: Option<u8>) -> bool {
-        let out_mark = self.output.len();
-        let comment_mark = self.comments.mark();
-        let (indent, block_end) = (self.indent, self.block_end);
-        let line_start = self.output.rfind('\n').map_or(0, |i| i + 1);
-        self.flat_chains += 1;
-        self.format_expr_inner(expr, parent_prec);
-        self.flat_chains -= 1;
-        let first_line_end = self.output[out_mark..].find('\n').map_or(self.output.len(), |i| out_mark + i);
-        let width = self.output[line_start..first_line_end].chars().count();
-        self.output.truncate(out_mark);
-        self.comments.rewind(comment_mark);
-        (self.indent, self.block_end) = (indent, block_end);
-        width > self.config.max_line_width
+    /// Whether the source breaks the line before this call's `.`. The layout
+    /// of a chain is the author's, as gofmt keeps it: a break written before a
+    /// call stays, and none is added.
+    fn breaks_before_dot(&self, link: &Expr) -> bool {
+        let ExprKind::MethodCall { object, .. } = &link.kind else { return false };
+        let gap = &self.source[object.span.end..link.span.end];
+        gap.find('.').is_some_and(|dot| gap[..dot].contains('\n'))
     }
 
     /// `.method<T>(args)`, the part of a call after its receiver.
@@ -1912,17 +1900,21 @@ impl<'a> Printer<'a> {
                 self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
             }
             ExprKind::MethodCall { object, .. } => {
-                // A chain of two or more calls that doesn't fit puts each call
-                // after the first on its own line, one indent in. The first
-                // stays with its receiver: `cli.Parser.new("x")` is one thing.
+                // A chain keeps the line breaks it was written with, each
+                // continued line one indent in.
                 let (root, links) = Self::method_chain(expr);
-                if links.len() >= 2 && self.flat_chains == 0 && self.overflows_line(expr, parent_prec) {
+                if links.iter().any(|l| self.breaks_before_dot(l)) {
                     self.format_postfix_receiver(root);
-                    self.format_method_link(links[0]);
-                    self.indent += 1;
-                    for link in &links[1..] {
-                        self.emit_newline();
-                        self.emit_indent();
+                    let mut raised = false;
+                    for link in links {
+                        if self.breaks_before_dot(link) {
+                            if !raised {
+                                self.indent += 1;
+                                raised = true;
+                            }
+                            self.emit_newline();
+                            self.emit_indent();
+                        }
                         self.format_method_link(link);
                     }
                     return;

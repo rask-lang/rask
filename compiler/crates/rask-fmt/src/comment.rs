@@ -47,16 +47,6 @@ impl CommentList {
         }
     }
 
-    /// Where the cursor is, for a trial layout that may be thrown away.
-    pub fn mark(&self) -> usize {
-        self.cursor
-    }
-
-    /// Put the cursor back where `mark` found it.
-    pub fn rewind(&mut self, mark: usize) {
-        self.cursor = mark;
-    }
-
     /// Drain any remaining comments.
     pub fn take_rest(&mut self) -> Vec<Comment> {
         let mut result = Vec::new();

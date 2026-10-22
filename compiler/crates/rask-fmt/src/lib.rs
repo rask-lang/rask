@@ -471,27 +471,29 @@ func main() {
     }
 
     #[test]
-    fn a_chain_too_long_for_the_line_puts_each_call_on_its_own() {
-        // It came out as one 300-column line: the width limit was in the config
-        // and nothing read it. The first call stays with its receiver, and a
-        // `catch` body nests under the last link.
+    fn a_chain_keeps_the_line_breaks_it_was_written_with() {
+        // gofmt's rule: the author decides where a line breaks, the formatter
+        // only fixes the indentation. The builder chain from the cli spec came
+        // out as one 300-column line, and a width limit that split it again
+        // would also split chains nobody wanted split.
         let input = "\
 func main() {
-    let args = cli.Parser.new(\"rgrep\").flag(\"ignore-case\", \"i\", \"Ignore case\").flag(\"count\", \"c\", \"Count only\").parse() catch e => {
+    let args = cli.Parser.new(\"rgrep\")
+              .flag(\"ignore-case\", \"i\", \"Ignore case\").flag(\"count\", \"c\", \"Count only\")
+      .parse() catch e => {
         std.exit(2)
     }
-    let short = items.iter().map(|x| x + 1).to_vec()
+    let long = items.iter().filter(|x| x > 0).map(|x| x + 1).filter(|x| x % 2 == 0).map(|x| x * 2).to_vec()
 }
 ";
         let expected = "\
 func main() {
     let args = cli.Parser.new(\"rgrep\")
-        .flag(\"ignore-case\", \"i\", \"Ignore case\")
-        .flag(\"count\", \"c\", \"Count only\")
+        .flag(\"ignore-case\", \"i\", \"Ignore case\").flag(\"count\", \"c\", \"Count only\")
         .parse() catch e => {
             std.exit(2)
         }
-    let short = items.iter().map(|x| x + 1).to_vec()
+    let long = items.iter().filter(|x| x > 0).map(|x| x + 1).filter(|x| x % 2 == 0).map(|x| x * 2).to_vec()
 }
 ";
         let output = format_source(input);
