@@ -58,12 +58,16 @@ spanning two lines</p>
 <pre><code>no language here</code></pre>
 <hr>
 <p>A reference <a href="http://ref.example.com">link</a> and an escaped *not italic* sequence.</p>
-markdown_renderer: convert Markdown to HTML
+markdown_renderer
+Convert Markdown to HTML
 
-Usage: markdown_renderer [OPTIONS] <input.md>
+Usage: markdown_renderer [options] <input>
+
+Arguments:
+  <input>               Markdown file to render
 
 Options:
-  --stdout       Print to stdout instead of writing a file
-  --fragment     Output HTML fragment (no <html> wrapper)
-  -o PATH        Output file path (default: input with .html extension)
-  -h, --help     Show this help
+      --stdout          Print to stdout instead of writing a file
+      --fragment        Output HTML fragment (no <html> wrapper)
+  -o, --output <value>  Output file path (default: input with .html extension)
+  -h, --help            Show this help
