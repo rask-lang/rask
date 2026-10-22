@@ -131,6 +131,8 @@ impl TypeChecker {
                         name: fname.clone(),
                         name_span: f.span,
                         ty: f.ty.clone()?,
+                        // A C header field: the declaration is the only place there is.
+                        ty_span: f.span,
                         visibility: FieldVisibility::Public,
                         attrs: Vec::new(),
                         default: None,

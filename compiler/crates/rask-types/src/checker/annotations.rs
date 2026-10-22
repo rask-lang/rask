@@ -208,7 +208,7 @@ impl TypeChecker {
                     self.check_attachment_site(&s.attrs, "struct", decl.span, &declared);
                     for field in &s.fields {
                         self.check_attachment_site(&field.attrs, "field", field.name_span, &declared);
-                        self.reject_annotation_type(&field.ty, "field type", field.name_span, &declared);
+                        self.reject_annotation_type(&field.ty, "field type", field.ty_span, &declared);
                     }
                     for m in &s.methods {
                         self.check_attachment_site(&m.attrs, "method", m.span, &declared);
@@ -220,7 +220,7 @@ impl TypeChecker {
                     for variant in &e.variants {
                         self.check_attachment_site(&variant.attrs, "variant", variant.name_span, &declared);
                         for field in &variant.fields {
-                            self.reject_annotation_type(&field.ty, "variant field type", variant.name_span, &declared);
+                            self.reject_annotation_type(&field.ty, "variant field type", field.ty_span, &declared);
                         }
                     }
                     for m in &e.methods {

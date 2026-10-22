@@ -1146,6 +1146,14 @@ impl Parser {
         self.at_end().then_some(ty)
     }
 
+    /// A type and the source it was written in.
+    fn parse_type_spanned(&mut self) -> Result<(TypeExpr, Span), ParseError> {
+        let start = self.current().span.start;
+        let ty = self.parse_type_name()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok((ty, Span::new(start, end)))
+    }
+
     fn parse_type_name(&mut self) -> Result<TypeExpr, ParseError> {
         let base = self.parse_base_type()?;
 
@@ -1661,7 +1669,7 @@ impl Parser {
                 let name_span = self.current().span;
                 let field_name = self.expect_ident_or_keyword()?;
                 self.expect(&TokenKind::Colon)?;
-                let ty = self.parse_type_name()?;
+                let (ty, ty_span) = self.parse_type_spanned()?;
                 // FD1: declared default — `port: i32 = 8080`.
                 // Comptime-const validation happens in desugar (same as param defaults).
                 let default = if self.match_token(&TokenKind::Eq) {
@@ -1669,7 +1677,7 @@ impl Parser {
                 } else {
                     None
                 };
-                fields.push(Field { name: field_name, name_span, ty, visibility, attrs: field_attrs, default, doc: method_doc });
+                fields.push(Field { name: field_name, name_span, ty, ty_span, visibility, attrs: field_attrs, default, doc: method_doc });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1723,7 +1731,7 @@ impl Parser {
             let field_name_span = self.current().span;
             let field_name = self.expect_ident_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
-            let ty = self.parse_type_name()?;
+            let (ty, ty_span) = self.parse_type_spanned()?;
             let default = if self.match_token(&TokenKind::Eq) {
                 Some(self.parse_expr()?)
             } else {
@@ -1733,6 +1741,7 @@ impl Parser {
                 name: field_name,
                 name_span: field_name_span,
                 ty,
+                ty_span,
                 visibility: FieldVisibility::Package,
                 attrs: vec![],
                 default,
@@ -1780,8 +1789,8 @@ impl Parser {
             let name_span = self.current().span;
             let field_name = self.expect_ident_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
-            let ty = self.parse_type_name()?;
-            fields.push(Field { name: field_name, name_span, ty, visibility, attrs: vec![], default: None, doc: field_doc });
+            let (ty, ty_span) = self.parse_type_spanned()?;
+            fields.push(Field { name: field_name, name_span, ty, ty_span, visibility, attrs: vec![], default: None, doc: field_doc });
 
             self.match_token(&TokenKind::Comma);
             self.skip_newlines();
@@ -1860,19 +1869,19 @@ impl Parser {
                                 why: Some("a variant is filled by name or by position, and one variant can't be both [type.enums/E14]".to_string()),
                             });
                         }
-                        let (field_name, name_span, ty) = if this_named {
+                        let (field_name, name_span, ty, ty_span) = if this_named {
                             let span = self.current().span;
                             let name = self.expect_ident()?;
                             self.advance();
-                            let ty = self.parse_type_name()?;
-                            (name, span, ty)
+                            let (ty, ty_span) = self.parse_type_spanned()?;
+                            (name, span, ty, ty_span)
                         } else {
                             let type_span = self.current().span;
-                            let ty = self.parse_type_name()?;
-                            (rask_ast::decl::positional_field_name(idx), type_span, ty)
+                            let (ty, ty_span) = self.parse_type_spanned()?;
+                            (rask_ast::decl::positional_field_name(idx), type_span, ty, ty_span)
                         };
 
-                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });
+                        fields.push(Field { name: field_name, name_span, ty, ty_span, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });
                         idx += 1;
 
                         if !self.list_continues(&TokenKind::RParen)? { break; }

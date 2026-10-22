@@ -377,6 +377,8 @@ pub struct Field {
     pub name: String,
     pub name_span: Span,
     pub ty: crate::ty::TypeExpr,
+    /// Where the type is written. Errors about the type point here.
+    pub ty_span: Span,
     pub visibility: FieldVisibility,
     /// Field annotations: `@rename("...")`, `@no_serialize`, `@default(expr)`.
     /// Stored verbatim (e.g. `rename("user_name")`), same shape as decl attrs.
