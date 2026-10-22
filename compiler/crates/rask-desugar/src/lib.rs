@@ -19,6 +19,7 @@ mod defaults;
 mod generalize;
 mod interface_defaults;
 mod ordering_operators;
+mod slice_chain;
 pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
@@ -783,6 +784,10 @@ impl Desugarer {
         if self.desugar_format_call(expr) {
             return;
         }
+
+        // `s[i..j].view()` and kin: rewritten before the children are walked,
+        // so what it builds is desugared like anything written by hand.
+        self.rewrite_slice_chain(expr);
 
         // G4: `T.SIZE` and `T.SIZE_BITS` on a `@binary` struct are numbers the
         // layout already decided.

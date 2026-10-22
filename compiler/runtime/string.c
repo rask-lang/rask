@@ -8,9 +8,15 @@
 //
 // Heap mode (MSB of byte 15 = 1):
 //   [header_ptr: *u8 (8B)][tagged_len: u64 (8B)]
-//   tagged_len = len | RASK_HEAP_FLAG
+//   tagged_len = len | start << 32 | RASK_HEAP_FLAG
 //   Header: { atomic_u32 refcount, u32 capacity, u8 data[] }
-//   Single contiguous allocation. Data null-terminated.
+//   Single contiguous allocation.
+//
+//   `start` (bits 32..62) is where the value's bytes begin in the buffer. A
+//   string owns its whole buffer: start is 0 and the data is NUL-terminated,
+//   which the C surface (`rask_string_ptr`) relies on. A StringView shares its
+//   source's buffer and holds a count on it (std.strings/V1); its start and
+//   length pick out its range, and nothing terminates it.
 //
 // Refcounting only applies to heap mode. SSO strings have no refcount.
 // Sentinel refcount (UINT32_MAX) marks static literals — never freed.
@@ -36,6 +42,9 @@ static _Atomic int64_t rask_string_live_buffers = 0;
 int rask_leak_check_enabled = 0;
 
 #define RASK_HEAP_FLAG   ((uint64_t)1 << RASK_STRING_HEAP_BIT)
+#define STR_LEN_MASK     ((uint64_t)0xFFFFFFFF)
+#define STR_START_SHIFT  32
+#define STR_START_MAX    (((uint64_t)1 << 31) - 1)
 #define RASK_RC_SENTINEL UINT32_MAX
 
 // The count, read on its own. A string shared between tasks has its count
@@ -54,13 +63,19 @@ static inline int str_is_heap(const RaskStr *s) {
 
 static inline int64_t str_len(const RaskStr *s) {
     if (str_is_heap(s))
-        return (int64_t)(s->heap.tagged_len & ~RASK_HEAP_FLAG);
+        return (int64_t)(s->heap.tagged_len & STR_LEN_MASK);
     return 15 - (int64_t)s->sso.remaining;
+}
+
+/// Where a heap value's bytes begin in its buffer: 0 for a string, the
+/// range's start for a view.
+static inline uint64_t str_start(const RaskStr *s) {
+    return (s->heap.tagged_len & ~RASK_HEAP_FLAG) >> STR_START_SHIFT;
 }
 
 static inline const char *str_data(const RaskStr *s) {
     if (str_is_heap(s))
-        return (const char *)(s->heap.header + 8);
+        return (const char *)(s->heap.header + 8 + str_start(s));
     return (const char *)s->sso.data;
 }
 
@@ -83,6 +98,8 @@ static void str_make_sso(RaskStr *out, const char *data, int64_t len) {
 
 /// One place to allocate a string header, so one place counts them.
 static uint8_t *str_alloc_header(int64_t cap) {
+    // The header keeps the capacity, and the value its length, in 32 bits.
+    if (cap > (int64_t)STR_LEN_MASK) rask_panic("string longer than 4 GiB");
     uint8_t *header = (uint8_t *)rask_alloc(8 + cap + 1);
     atomic_fetch_add_explicit(&rask_string_live_buffers, 1, memory_order_relaxed);
     return header;
@@ -631,17 +648,30 @@ static int64_t str_prev_scalar(const char *d, int64_t i) {
 }
 
 // The byte range left after trimming whitespace off both ends.
-static void str_trim_range(const RaskStr *s, int64_t *out_start, int64_t *out_end) {
+// Where `trim_start` would begin within `[start, end)`: past the leading
+// whitespace. The one definition of what trimming skips — every trim, and
+// every trim of a span, goes through these two.
+int64_t rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end) {
     int64_t len = str_len(s);
     const char *d = str_data(s);
-    int64_t start = 0;
-    while (start < len) {
+    if (end > len) end = len;
+    if (start < 0) start = 0;
+    while (start < end) {
         int64_t w;
         uint32_t c = str_decode_at(d, len, start, &w);
         if (!str_is_white_space(c)) break;
         start += w;
     }
-    int64_t end = len;
+    return start < end ? start : end;
+}
+
+// Where `trim_end` would stop within `[start, end)`: before the trailing
+// whitespace, never before `start`.
+int64_t rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end) {
+    int64_t len = str_len(s);
+    const char *d = str_data(s);
+    if (end > len) end = len;
+    if (start < 0) start = 0;
     while (end > start) {
         int64_t prev = str_prev_scalar(d, end);
         int64_t w;
@@ -649,8 +679,13 @@ static void str_trim_range(const RaskStr *s, int64_t *out_start, int64_t *out_en
         if (!str_is_white_space(c)) break;
         end = prev;
     }
-    *out_start = start;
-    *out_end = end;
+    return end > start ? end : start;
+}
+
+static void str_trim_range(const RaskStr *s, int64_t *out_start, int64_t *out_end) {
+    int64_t len = str_len(s);
+    *out_start = rask_string_trim_start_at(s, 0, len);
+    *out_end = rask_string_trim_end_at(s, *out_start, len);
 }
 
 /// Encode `cp` at `out`, returning the bytes written.
@@ -732,37 +767,15 @@ void rask_string_trim(RaskStr *out, const RaskStr *s) {
     str_make(out, str_data(s) + start, end - start);
 }
 
-// std.strings: the byte range `trim` would keep, without building the copy.
-// The pair lands in the destination tuple's own slot, so `out` is that slot:
-// start at +0, end at +8.
-
 void rask_string_trim_start(RaskStr *out, const RaskStr *s) {
     int64_t len = str_len(s);
-    if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    int64_t start = 0;
-    while (start < len) {
-        int64_t w;
-        uint32_t c = str_decode_at(d, len, start, &w);
-        if (!str_is_white_space(c)) break;
-        start += w;
-    }
-    str_make(out, d + start, len - start);
+    int64_t start = rask_string_trim_start_at(s, 0, len);
+    str_make(out, str_data(s) + start, len - start);
 }
 
 void rask_string_trim_end(RaskStr *out, const RaskStr *s) {
-    int64_t len = str_len(s);
-    if (len == 0) { rask_string_new(out); return; }
-    const char *d = str_data(s);
-    int64_t end = len;
-    while (end > 0) {
-        int64_t prev = str_prev_scalar(d, end);
-        int64_t w;
-        uint32_t c = str_decode_at(d, len, prev, &w);
-        if (!str_is_white_space(c)) break;
-        end = prev;
-    }
-    str_make(out, d, end);
+    int64_t end = rask_string_trim_end_at(s, 0, str_len(s));
+    str_make(out, str_data(s), end);
 }
 
 void rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count) {
@@ -797,25 +810,50 @@ void rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from,
 
 // Byte range of a string — this is what `s[i..j]` lowers to (std.strings/U1).
 // Not exposed as a `substring` method: that was the slice under a second name.
-void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
+/// The range `s[start..end]` covers: out of range clamps, and a cut inside a
+/// character panics. False when the range is empty.
+static int str_slice_range(const RaskStr *s, int64_t *start, int64_t *end) {
     int64_t slen = str_len(s);
     /* Out of range clamps — there's no ambiguity about what was meant. */
-    if (start < 0) start = 0;
-    if (end > slen) end = slen;
-    if (start >= end) { rask_string_new(out); return; }
+    if (*start < 0) *start = 0;
+    if (*end > slen) *end = slen;
+    if (*start >= *end) return 0;
     /* A cut inside a character is a different matter: it would hand back a
        `string` that isn't valid UTF-8, which the type says can't exist. The
        caller asked for something that doesn't exist, so say so rather than
        returning a nearby slice they didn't ask for. */
     const char *d = str_data(s);
-    if (!str_is_char_boundary(d, slen, start) || !str_is_char_boundary(d, slen, end)) {
+    if (!str_is_char_boundary(d, slen, *start) || !str_is_char_boundary(d, slen, *end)) {
         rask_panic_fmt(
             "s[%lld..%lld] cuts a character in half - "
             "these are byte offsets, and one of them lands inside a multi-byte "
             "character. `char_indices()` gives offsets that don't.",
-            (long long)start, (long long)end);
+            (long long)*start, (long long)*end);
     }
-    str_make(out, d + start, end - start);
+    return 1;
+}
+
+void rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
+    if (!str_slice_range(s, &start, &end)) { rask_string_new(out); return; }
+    str_make(out, str_data(s) + start, end - start);
+}
+
+// `s[start..end].view()` without the copy (std.strings/V1): the view shares
+// `s`'s buffer and counts as one more reference to it. Clamps and panics as
+// slicing does. A range of 15 bytes or less is copied inline instead (V4) —
+// no count, nothing pinned — and so is one whose offset doesn't fit the
+// 31 bits a heap value keeps it in.
+void rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
+    if (!str_slice_range(s, &start, &end)) { rask_string_new(out); return; }
+    int64_t len = end - start;
+    uint64_t at = str_is_heap(s) ? str_start(s) + (uint64_t)start : 0;
+    if (len <= RASK_SSO_MAX || !str_is_heap(s) || at > STR_START_MAX) {
+        str_make(out, str_data(s) + start, len);
+        return;
+    }
+    rask_string_clone(s);
+    out->heap.header = s->heap.header;
+    out->heap.tagged_len = (uint64_t)len | (at << STR_START_SHIFT) | RASK_HEAP_FLAG;
 }
 
 void rask_string_replace_limit(RaskStr *out, const RaskStr *s, const RaskStr *from,
@@ -1066,8 +1104,9 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
     }
     uint32_t *rc = heap_rc(s);
     uint32_t count = __atomic_load_n(rc, __ATOMIC_ACQUIRE);
-    if (count != 1 && count != RASK_RC_SENTINEL) {
-        // Shared — detach (COW)
+    // Shared, or a view into a buffer it doesn't start: detach (COW). A view
+    // can't grow in place — its bytes end where the source's next ones begin.
+    if ((count != 1 && count != RASK_RC_SENTINEL) || (count == 1 && str_start(s) != 0)) {
         const char *d = str_data(s);
         int64_t cap = len;
         uint8_t *header = str_alloc_header(cap);
@@ -1075,7 +1114,7 @@ static uint8_t *builder_ensure_heap(RaskStr *out, const RaskStr *s) {
         *(uint32_t *)(header + 4) = (uint32_t)cap;
         if (len > 0) memcpy(header + 8, d, (size_t)len);
         header[8 + len] = '\0';
-        __atomic_sub_fetch(rc, 1, __ATOMIC_ACQ_REL);
+        rask_string_free(s);
         out->heap.header = header;
         out->heap.tagged_len = (uint64_t)len | RASK_HEAP_FLAG;
         return header;

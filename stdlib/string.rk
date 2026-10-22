@@ -140,6 +140,73 @@ extend string {
         return self[span.start..span.end]
     }
 
+    // ── Spans ───────────────────────────────────────────────
+    // `s[i..j].span()`, `s.trim().view()`, `line[0..c].trim().view()`: a
+    // `.span()` or `.view()` at the end of a slice chain is compiled into
+    // these, so the chain never copies the text it picks out (std.strings/V1).
+
+    /// The whole string as a span. At the end of a slice chain, the slice's
+    /// range in the string it was cut from.
+    public func span(self) -> Span {
+        return Span(0, self.len())
+    }
+
+    /// The span `self[start..end]` covers: out of range clamps and a cut
+    /// character panics, as slicing does. `end: none` runs to the end.
+    public func span_of(self, start: usize, end: usize?) -> Span {
+        let n = self.len()
+        mut hi = end ?? n
+        if hi > n {
+            hi = n
+        }
+        if start >= hi {
+            return Span(hi, hi)
+        }
+        if !self.starts_char(start) || !self.starts_char(hi) {
+            panic("s[{start}..{hi}] cuts a character in half - these are byte offsets, and one of them lands inside a multi-byte character. `char_indices()` gives offsets that don't.")
+        }
+        return Span(start, hi)
+    }
+
+    /// The part of `span` that `trim` keeps.
+    public func trim_span(self, span: Span) -> Span {
+        let start = self.trim_start_at(span.start, span.end)
+        return Span(start, self.trim_end_at(start, span.end))
+    }
+
+    /// The part of `span` that `trim_start` keeps.
+    public func trim_start_span(self, span: Span) -> Span {
+        let start = self.trim_start_at(span.start, span.end)
+        mut end = span.end
+        if end > self.len() {
+            end = self.len()
+        }
+        if end < start {
+            end = start
+        }
+        return Span(start, end)
+    }
+
+    /// The part of `span` that `trim_end` keeps.
+    public func trim_end_span(self, span: Span) -> Span {
+        return Span(span.start, self.trim_end_at(span.start, span.end))
+    }
+
+    /// The text a span covers, as a view that shares this string's buffer
+    /// instead of copying it (std.strings/V1). Panics where slicing would.
+    public func view_of(self, span: Span) -> StringView {
+        return self.view_range(span.start, span.end)
+    }
+
+    @native("rask_string_view_range")
+    func view_range(self, start: usize, end: usize) -> StringView {}
+
+    @native("rask_string_trim_start_at")
+    func trim_start_at(self, start: usize, end: usize) -> usize {}
+
+    @native("rask_string_trim_end_at")
+    func trim_end_at(self, start: usize, end: usize) -> usize {}
+
     /// Is byte offset `at` where a character starts, or the end? A UTF-8
     /// continuation byte is `10xxxxxx`; anything else starts one.
     func starts_char(self, at: usize) -> bool {
@@ -186,9 +253,6 @@ extend string {
     /// Remove trailing whitespace.
     @native("rask_string_trim_end")
     public func trim_end(self) -> string {}
-
-    // Positions rather than text? `s.trim().span()` — Span is the type for
-    // byte ranges, so trimming doesn't need a tuple-returning sibling.
 
     // ── Case and normalization ──────────────────────────────
 

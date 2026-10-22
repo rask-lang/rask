@@ -234,6 +234,54 @@ impl Interpreter {
                     None => Value::none(),
                 })
             }
+            // std.strings/V1: what `.view()` at the end of a slice chain
+            // compiles to. Native shares the source's buffer; here the view is
+            // its own copy of the range, which no program can tell apart.
+            "view_range" => {
+                let text = s.lock().unwrap();
+                let end = (self.expect_int(&args, 1)?.max(0) as usize).min(text.len());
+                let start = self.expect_int(&args, 0)?.max(0) as usize;
+                if start >= end {
+                    return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
+                }
+                match text.get(start..end) {
+                    Some(range) => Ok(Value::String(Arc::new(Mutex::new(range.to_string())))),
+                    None => Err(RuntimeError::Panic(format!(
+                        "s[{start}..{end}] cuts a character in half - these are byte offsets, and \
+                         one of them lands inside a multi-byte character. `char_indices()` gives \
+                         offsets that don't."
+                    ))),
+                }
+            }
+            // Where `trim_start` would begin within `[start, end)`.
+            "trim_start_at" => {
+                let text = s.lock().unwrap();
+                let bytes = text.as_bytes();
+                let end = (self.expect_int(&args, 1)?.max(0) as usize).min(bytes.len());
+                let mut at = self.expect_int(&args, 0)?.max(0) as usize;
+                while at < end && text.is_char_boundary(at) {
+                    let c = text[at..].chars().next().unwrap();
+                    if !c.is_whitespace() {
+                        break;
+                    }
+                    at += c.len_utf8();
+                }
+                Ok(Value::int(at.min(end) as i64))
+            }
+            // Where `trim_end` would stop within `[start, end)`.
+            "trim_end_at" => {
+                let text = s.lock().unwrap();
+                let start = self.expect_int(&args, 0)?.max(0) as usize;
+                let mut end = (self.expect_int(&args, 1)?.max(0) as usize).min(text.len());
+                while end > start && text.is_char_boundary(end) {
+                    let Some(c) = text[..end].chars().next_back() else { break };
+                    if !c.is_whitespace() || end - c.len_utf8() < start {
+                        break;
+                    }
+                    end -= c.len_utf8();
+                }
+                Ok(Value::int(end.max(start) as i64))
+            }
             "byte_at" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 match s.lock().unwrap().as_bytes().get(idx) {

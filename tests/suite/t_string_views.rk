@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spans and views of a string (std.strings/V1, SP1).
+//
+// A `.view()` or `.span()` at the end of a slice chain is compiled into span
+// arithmetic on the source, so the chain never copies what it picks out, and
+// `.span()` knows where the slice was cut from. Natively the view shares the
+// source's buffer (#492).
+import builtins.Span
+import string.StringView
+
+struct Header {
+    name: StringView
+    value: StringView
+}
+
+func parse_header(line: string) -> Header? {
+    let colon = try line.index_of(":")
+    return Header(name: line[0..colon].trim().view(), value: line[colon + 1..].trim().view())
+}
+
+func long_text() -> string {
+    return "   the quick brown fox jumps over the lazy dog   "
+}
+
+test "a slice's span is its range in the source" {
+    let s = "hello world, long enough for the heap"
+    let sp = s[6..11].span()
+    assert sp.start == 6
+    assert sp.end == 11
+    assert s[..5].span().end == 5
+    assert s[30..].span().start == 30
+    assert s[30..].span().end == s.len()
+    assert s[0..=4].span().end == 5
+}
+
+test "a whole string's span is all of it" {
+    let s = "abc"
+    assert s.span().start == 0
+    assert s.span().end == 3
+}
+
+test "out of range clamps, as slicing does" {
+    let s = "short"
+    let sp = s[2..99].span()
+    assert sp.start == 2
+    assert sp.end == 5
+    assert s[9..12].span().len() == 0
+}
+
+test "a trim's span is what it keeps" {
+    let s = "   padded   "
+    let sp = s.trim().span()
+    assert sp.start == 3
+    assert sp.end == 9
+    assert s.trim_start().span().start == 3
+    assert s.trim_start().span().end == 12
+    assert s.trim_end().span().end == 9
+    assert "     ".trim().span().len() == 0
+}
+
+test "a trim after a slice stays inside the slice" {
+    let s = "key :  value  ; rest"
+    let sp = s[5..14].trim().span()
+    assert sp.start == 7
+    assert sp.end == 12
+}
+
+test "a view is the text its chain picks out" {
+    let s = long_text()
+    let v = s.trim().view()
+    assert v.to_string() == "the quick brown fox jumps over the lazy dog"
+    assert s[7..12].view().to_string() == "quick"
+    assert s[3..].view().len() == s.len() - 3
+}
+
+test "views outlive the string they were cut from" {
+    mut keep: Vec<StringView> = Vec.new()
+    if true {
+        let s = long_text()
+        keep.push(s[13..28].view())
+        keep.push(s.trim().view())
+    }
+    assert keep[0].to_string() == "brown fox jumps"
+    assert keep[1].len() == 43
+}
+
+test "the spec's header parser keeps both halves as views" {
+    let h = parse_header("   Content-Type   :    application/json; charset=utf-8   ")!
+    assert h.name.to_string() == "Content-Type"
+    assert h.value.to_string() == "application/json; charset=utf-8"
+}
+
+func counted(mutate calls: i64) -> string {
+    calls += 1
+    return "  counted source string, long enough  "
+}
+
+test "the source of a chain is evaluated once" {
+    mut calls = 0
+    let v = counted(mutate calls)[2..9].trim().view()
+    assert v.to_string() == "counted"
+    assert calls == 1
+}
+
+test "the span methods are callable directly" {
+    let s = "  a line of text  "
+    let all = s.span_of(0, none)
+    assert all.end == s.len()
+    let kept = s.trim_span(all)
+    assert s.view_of(kept).to_string() == "a line of text"
+    assert s.trim_end_span(s.span_of(2, 9)).end == 8
+    assert s.trim_start_span(Span.new(0, 4)).start == 2
+}

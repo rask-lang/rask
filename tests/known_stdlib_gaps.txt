@@ -14,4 +14,3 @@
 #   VARIANTS    an enum whose variants differ from the spec's
 #   UNTESTED    built, and no suite program green on both backends calls it
 
-std.strings string.span MISSING  # on a slice it has to answer the slice's range in its source, and slices are copies until #492

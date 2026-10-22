@@ -175,18 +175,18 @@ No allocation per header — both fields share `line`'s buffer. The pre-view ver
 
 ### Internal Layout (V1 + V4)
 
-16 bytes, tagged union — same discriminant trick as `string` (S8):
+A view is laid out as a `string` is (S8), so every read-only string operation reads a view as it is:
 
 ```
-Heap-view mode (last byte MSB = 0):
-  [header_ptr: *u8 (8B)][start: u32 (4B)][len: u32 (4B)]
+Heap mode (last byte MSB = 1):
+  [header_ptr: *u8 (8B)][len: u32 | start: u31 | 1]
   header_ptr → the source string's heap header (shared refcount)
 
-SSO mode (last byte MSB = 1):
-  [inline_data: [u8; 15]][len_tag: u8]     — identical to string's SSO mode
+SSO mode (last byte MSB = 0):
+  [inline_data: [u8; 15]][remaining: u8]   — identical to string's SSO mode
 ```
 
-The `start`/`len` fields cap views at 4 GiB source offset and 2 GiB view length (the tag bit lives in `len`'s top byte). `.view()` panics beyond those — sources that size are `mmap` territory; use `.to_string()` for the range instead. Views of string literals reference sentinel-refcount storage (S6): no atomic ops, nothing pinned.
+A `string` owns its buffer from the start, so its `start` is 0. A view's `start` is where its range begins in the shared buffer, which caps a view's offset at 2 GiB; one further in copies its bytes instead. A view of 15 bytes or less is copied inline (V4). Views of string literals reference sentinel-refcount storage (S6): no atomic ops, nothing pinned.
 
 `StringView` is a language primitive like `string` — user types can't opt into refcounted sharing (see "Why Only String?" and `mem.shared-rack-heap/BX2`).
 
@@ -197,11 +197,17 @@ Plain indices for lightweight stored references — offsets for diagnostics, ser
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `Span.new(i, j)` | `Span` | Create span (just start, end indices); `Span(start: i, end: j)` is the same |
-| `s[i..j].span()` | `Span` | The slice's byte range. Works on any expression-scoped slice — `s.trim().span()`, split items |
+| `s.span()` | `Span` | The whole string, `0..s.len()` |
+| `s[i..j].span()` | `Span` | The slice's byte range in `s`. Works on a chain of slices written in the expression: `s.trim().span()`, `s[i..j].trim_end().span()` |
+| `s.span_of(i, j)` | `Span` | What `s[i..j]` covers: clamps and panics as slicing does. `end: none` runs to the end |
+| `s.trim_span(span)` | `Span` | The part of `span` that `trim` keeps. `trim_start_span`, `trim_end_span` likewise |
+| `s.view_of(span)` | `StringView` | The text `span` covers, sharing `s`'s buffer (V1) |
 | `source[span]` | expression-scoped slice | Panics if out of bounds |
 | `source.get(span)` | `(expression-scoped slice)?` | Safe bounds check |
 | `span.start`, `span.end` | `usize` | Read indices |
 | `span.len()` | `usize` | `end - start` |
+
+**SP1: Slice chains compile to spans.** A `.view()` or `.span()` at the end of a slice chain is compiled into the span methods above, so the chain never copies what it picks out: `line[0..c].trim().view()` is `line.view_of(line.trim_span(line.span_of(0, c)))`. The chain has to be written in one expression. A `split`/`lines` item reaches its loop body as a string of its own, so its `.span()` is its whole length, not its place in the source (#1633).
 
 <!-- surface -->
 ```rask
@@ -215,6 +221,11 @@ extend Span {
 }
 extend string {
     func span(self) -> Span
+    func span_of(self, start: usize, end: usize?) -> Span
+    func trim_span(self, span: Span) -> Span
+    func trim_start_span(self, span: Span) -> Span
+    func trim_end_span(self, span: Span) -> Span
+    func view_of(self, span: Span) -> StringView
     func get(self, span: Span) -> string?
 }
 ```
@@ -255,7 +266,7 @@ extend string {
 }
 ```
 
-Slice-yielding iterators are zero-cost per item. To keep items, convert each: `.view()` (zero-copy, pins source — V2) or `.to_string()` (copies).
+To keep items, convert each: `.view()` (pins the source, V2) or `.to_string()` (copies). Items are copies today, so neither is zero-cost yet (#1633).
 
 ## Length and Properties
 
