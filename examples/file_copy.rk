@@ -1,42 +1,25 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // File Copy Utility
 // Demonstrates: CLI arg parsing, structs, enums, match, error propagation,
-//               try...else error wrapping, string interpolation, file I/O
+//               @message error text, string interpolation, file I/O
 
+import cli
 import fs
-import os
+import io.IoError
 import std
 
+@message
 enum CopyError {
-    SourceNotFound(string)
-    DestinationExists(string)
-    ReadError(string)
-    WriteError(string)
+    @message("source file not found: {path}")
+    SourceNotFound(path: string)
+    @message("destination already exists: {path} (use -f to overwrite)")
+    DestinationExists(path: string)
+    @message("read error: {cause}")
+    ReadError(cause: IoError)
+    @message("write error: {cause}")
+    WriteError(cause: IoError)
+    @message("source and destination are the same file")
     SameFile
-}
-
-extend CopyError {
-    func message(self) -> string {
-        match self {
-            SourceNotFound(path) => return "source file not found: {path}"
-            DestinationExists(path) => return "destination already exists: {path} (use -f to overwrite)"
-            ReadError(msg) => return "read error: {msg}"
-            WriteError(msg) => return "write error: {msg}"
-            SameFile => return "source and destination are the same file"
-        }
-    }
-}
-
-enum ArgError {
-    Msg(string)
-}
-
-extend ArgError {
-    func message(self) -> string {
-        match self {
-            ArgError.Msg(m) => return m
-        }
-    }
 }
 
 struct CopyOptions {
@@ -46,119 +29,69 @@ struct CopyOptions {
     verbose: bool
 }
 
-func parse_args(take args: Vec<string>) -> CopyOptions or ArgError {
-    mut opts = CopyOptions(
-        source: ""
-        dest: ""
-        force: false
-        verbose: false
-    )
-
-    mut positional = Vec.new()
-
-    mut i: usize = 1
-    while i < args.len() {
-        let arg = args[i]
-        match arg {
-            "-f" | "--force" => opts.force = true
-            "-v" | "--verbose" => opts.verbose = true
-            "-h" | "--help" => {
-                print_usage()
-                std.exit(0)
-            }
-            _ => positional.push(arg)
-        }
-        i = i + 1
-    }
-
-    if positional.len() < 2 {
-        return ArgError.Msg("usage: rcopy [-fv] SOURCE DEST")
-    }
-
-    opts.source = positional.remove(0)
-    opts.dest = positional.remove(0)
-
-    return opts
-}
-
-func print_usage() {
-    println("Usage: rcopy [OPTIONS] SOURCE DEST")
-    println("")
-    println("Copy SOURCE to DEST")
-    println("")
-    println("Options:")
-    println("  -f, --force     Overwrite destination if it exists")
-    println("  -v, --verbose   Show progress information")
-    println("  -h, --help      Show this help")
-}
-
 func copy_file(opts: CopyOptions) -> u64 or CopyError {
-    // O3 borrows opts — fs calls borrow the fields, only error enums need owned strings
     if !fs.exists(opts.source) {
-        return CopyError.SourceNotFound(opts.source)
+        return CopyError.SourceNotFound(path: opts.source)
+    }
+    if fs.exists(opts.dest) && !opts.force {
+        return CopyError.DestinationExists(path: opts.dest)
     }
 
-    if fs.exists(opts.dest) {
-        if !opts.force {
-            return CopyError.DestinationExists(opts.dest)
-        }
-    }
-
-    // Check not same file (using canonical paths)
+    // Same file under two spellings: compare canonical paths
     let src_canonical = fs.absolute_path(opts.source) catch e => {
-        return CopyError.ReadError(e.message())
+        return CopyError.ReadError(cause: e)
     }
     let dst_canonical = fs.absolute_path(opts.dest) catch _ => none
-
     if dst_canonical? as dst {
-        if src_canonical == dst {
-            return CopyError.SameFile
-        }
+        if src_canonical == dst { return CopyError.SameFile }
     }
 
-    // Copy the file
     fs.copy(opts.source, opts.dest) catch e => {
-        return CopyError.WriteError(e.message())
+        return CopyError.WriteError(cause: e)
     }
 
     // fs.copy returns void — read the copied size back off disk for the report
     let meta = fs.metadata(opts.dest) catch e => {
-        return CopyError.WriteError(e.message())
+        return CopyError.WriteError(cause: e)
     }
     return meta.size
 }
 
 func format_size(bytes: u64) -> string {
-    if bytes < 1024 {
-        return "{bytes} B"
-    } else if bytes < 1048576 {
-        let kb = bytes / 1024
-        return "{kb} KB"
-    } else {
-        let mb = bytes / 1048576
-        return "{mb} MB"
-    }
+    if bytes < 1024 { return "{bytes} B" }
+    if bytes < 1048576 { return "{bytes / 1024} KB" }
+    return "{bytes / 1048576} MB"
 }
 
 func main() {
-    let args = os.args()
+    let args = cli.Parser.new("rcopy")
+        .description("Copy SOURCE to DEST")
+        .flag("force", "f", "Overwrite destination if it exists")
+        .flag("verbose", "v", "Show progress information")
+        .positional("source", "File to copy")
+        .positional("dest", "Where to copy it")
+        .parse() catch e => {
+            println("rcopy: {e}")
+            std.exit(2)
+        }
 
-    let opts = parse_args(args) catch e => {
-        println("rcopy: {e.message()}")
-        std.exit(1)
-    }
+    let words = args.positional()
+    let opts = CopyOptions(
+        source: words[0]
+        dest: words[1]
+        force: args.flag("force")
+        verbose: args.flag("verbose")
+    )
 
     if opts.verbose {
         println("Copying '{opts.source}' to '{opts.dest}'...")
     }
 
     let copied = copy_file(opts) catch e => {
-        let msg = e.message()
-        println("rcopy: {msg}")
+        println("rcopy: {e}")
         std.exit(1)
     }
     if opts.verbose {
-        let size = format_size(copied)
-        println("Copied {size}")
+        println("Copied {format_size(copied)}")
     }
 }
