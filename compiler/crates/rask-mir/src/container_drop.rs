@@ -207,12 +207,14 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
             _ => None,
         })
         .collect();
+    let mut shared = Vec::new();
     for func in fns.iter_mut() {
-        insert_for_function(
+        shared.extend(insert_for_function(
             func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &own,
             &closure_bodies,
-        );
+        ));
     }
+    empty_cells_in_bodies(fns, &shared, &keeps);
     let glue = env_drop_glue(fns, &handing_over, &targets, &kept, &reach);
     fns.extend(glue);
 }
@@ -974,6 +976,11 @@ fn param_is_kept_by(
     // the caller stopped owning the argument and nobody freed it: an inlined
     // `s.as_sequence()` on a borrowed `s` leaked the caller's vector, and
     // `for v in s` over a `Set` parameter goes through exactly that.
+    //
+    // A stack environment is the same case without a drop to point at: it
+    // dies with the frame. The body of a `for` over a sequence is one, and
+    // read as a keep, `for x in items { if opts.flag { … } }` left the
+    // caller's `opts` to nobody.
     let frees_last = crate::closures::closures_the_frame_frees_last(func);
 
     for block in &func.blocks {
@@ -1007,13 +1014,13 @@ fn param_is_kept_by(
                         return true;
                     }
                 }
-                MirStmtKind::ClosureCreate { dst, func_name, captures, .. } => {
+                MirStmtKind::ClosureCreate { dst, func_name, captures, heap, .. } => {
                     let body_consumes = |offset: u32| {
                         consumed.get(func_name.as_str()).is_none_or(|offs| offs.contains(&offset))
                     };
+                    let dies_with_frame = !*heap || frees_last.contains(dst);
                     if captures.iter().any(|c| {
-                        names.contains(&c.local_id)
-                            && (!frees_last.contains(dst) || body_consumes(c.offset))
+                        names.contains(&c.local_id) && (!dies_with_frame || body_consumes(c.offset))
                     }) {
                         return true;
                     }
@@ -1589,7 +1596,7 @@ fn insert_for_function(
     targets: &ClosureTargets,
     own: &HashSet<String>,
     closure_bodies: &HashSet<String>,
-) {
+) -> Vec<(String, u32, &'static str)> {
     let kept = keeps.by_name;
     // Every name that may hold a container this frame made, and where each
     // is made. Whether a given name holds one of this frame's on a given path
@@ -1600,7 +1607,14 @@ fn insert_for_function(
         containers_and_makers(func, all, handing_over, interface_handing, targets);
     let owned = params_this_frame_owns(func, kept, closure_bodies);
     if made_here.is_empty() && owned.is_empty() {
-        return;
+        // A string cell needs no container of the frame's own. Returning
+        // before asking left every function that made none — `mut prefix`
+        // captured by a loop body and nothing else — holding its last string.
+        let (cells, _) = cells_this_frame_frees(func, all, &HashMap::new(), keeps, &HashMap::new());
+        if !cells.is_empty() {
+            insert_cell_drops(func, &cells);
+        }
+        return Vec::new();
     }
     let passed = pass_edges(func, handing_over, targets);
     if !owned.is_empty() {
@@ -1627,7 +1641,7 @@ fn insert_for_function(
     // A container in a capture cell is reached through a store, which reads
     // as handing it over — so its free goes in separately, keyed on the cell
     // rather than on a name.
-    let cells = cells_this_frame_frees(func, all, &fresh, keeps, &lent.slots);
+    let (cells, shared) = cells_this_frame_frees(func, all, &fresh, keeps, &lent.slots);
 
     // A capture the frame frees itself, because it frees the closure too. The
     // capture is a hand-over as far as the analysis is concerned, so the two
@@ -1692,12 +1706,17 @@ fn insert_for_function(
         func,
         crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
     );
+    empty_shared_cells(func, &shared, keeps);
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
     }
     if !with_closure.is_empty() {
         insert_capture_drops(func, &with_closure);
     }
+    shared
+        .into_iter()
+        .flat_map(|sc| sc.bodies.into_iter().map(move |(name, offset)| (name, offset, sc.free)))
+        .collect()
 }
 
 /// Stack closures that copied one of the frame's containers into their
@@ -2588,6 +2607,20 @@ fn fresh_through_cells(
         return Vec::new();
     }
 
+    // Or put into a wrapper that is: `return out` from a `-> Vec<T> or E`
+    // stores the load into the result's payload first. `parse_query` builds
+    // its vector in a cell its `split` loop borrows, and its callers never
+    // freed what it handed them.
+    let wrapped: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } if returned.contains(addr) => Some(*v),
+            _ => None,
+        })
+        .collect();
+
     let mut out = Vec::new();
     for (cell, values) in &stores {
         let [MirOperand::Local(src)] = values.as_slice() else { continue };
@@ -2602,7 +2635,7 @@ fn fresh_through_cells(
                     rvalue: MirRValue::Deref(MirOperand::Local(addr)),
                 } = &stmt.kind
                 {
-                    if addr == cell && returned.contains(dst) {
+                    if addr == cell && (returned.contains(dst) || wrapped.contains(dst)) {
                         out.push((*dst, free));
                     }
                 }
@@ -2645,7 +2678,7 @@ fn cells_this_frame_frees(
     fresh: &HashMap<LocalId, &'static str>,
     keeps: &Keeps,
     lent: &HashMap<LocalId, &'static str>,
-) -> Vec<(LocalId, Holds, BlockId)> {
+) -> (Vec<(LocalId, Holds, BlockId)>, Vec<SharedCell>) {
     let kept = keeps.by_name;
     let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
@@ -2682,7 +2715,7 @@ fn cells_this_frame_frees(
     // plan, which knows where each value in it dies (`lent_slots`).
     by_ref_cells.extend(slots_whose_address_is_taken(func).into_iter().filter(|s| !lent.contains_key(s)));
     if by_ref_cells.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut stores: HashMap<LocalId, Vec<(MirOperand, BlockId)>> = HashMap::new();
@@ -2780,6 +2813,7 @@ fn cells_this_frame_frees(
     }
 
     let mut out = Vec::new();
+    let mut shared = Vec::new();
     for cell in &by_ref_cells {
         let Some(values) = stores.get(cell) else { continue };
         // A string in the same shape of cell. `mut joined = ""` captured by a
@@ -2792,20 +2826,46 @@ fn cells_this_frame_frees(
         // the old one back, a load out of it takes a reference of its own, and
         // being wrong about a second owner costs a leak rather than a double
         // free. What is left to ask is whether something took it away.
-        if let [(value, store_block)] = values.as_slice() {
-            let is_string = match value {
-                MirOperand::Constant(crate::MirConst::String(_)) => true,
-                MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::String),
-                _ => false,
-            };
-            if is_string {
-                if !kept_by_a_call.contains(cell) {
-                    out.push((*cell, Holds::Str, *store_block));
-                }
-                continue;
+        //
+        // Any number of stores: the frame writing the variable again replaces
+        // what it held, the same as the closure does. `insert_cell_drops`
+        // starts the cell out empty so every store can give back the old one.
+        let is_string = |value: &MirOperand| match value {
+            MirOperand::Constant(crate::MirConst::String(_)) => true,
+            MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::String),
+            _ => false,
+        };
+        if !values.is_empty() && values.iter().all(|(v, _)| is_string(v)) {
+            if !kept_by_a_call.contains(cell) {
+                out.push((*cell, Holds::Str, func.blocks[0].id));
             }
+            continue;
         }
         if handed_on.contains(cell) {
+            continue;
+        }
+        // A container variable a closure borrows: a `for` body over a
+        // sequence, a callback. The body may replace it or hand it away, and
+        // the frame may do either on some paths and not others, so none of the
+        // guards below can hold — `block_lines = Vec.new()` in a `lines()` loop
+        // left every block's vector to nobody. `empty_shared_cells` keeps the
+        // cell the one owner instead: it starts empty, a store frees what it
+        // replaces, and a value read out and handed away empties it, here and
+        // in the bodies (`empty_cells_in_bodies`).
+        let bodies = closure_borrowers(func, *cell);
+        if !bodies.is_empty() && !ensure_captured(func, *cell) {
+            let mut free: Option<&'static str> = None;
+            let mut owned = true;
+            for (value, _) in values {
+                match crate::analysis::uses::operand_local(value).and_then(|v| fresh_by_copy.get(&v)) {
+                    Some(f) if free.is_none_or(|g| g == *f) => free = Some(*f),
+                    _ => owned = false,
+                }
+            }
+            if let (true, Some(free)) = (owned, free) {
+                out.push((*cell, Holds::Handle(free), func.blocks[0].id));
+                shared.push(SharedCell { cell: *cell, free, bodies });
+            }
             continue;
         }
         let [(MirOperand::Local(src), store_block)] = values.as_slice() else { continue };
@@ -2836,7 +2896,182 @@ fn cells_this_frame_frees(
         }
         out.push((*cell, Holds::Handle(free), *store_block));
     }
-    out
+    (out, shared)
+}
+
+/// A container cell closures borrow, and the closure bodies that reach it, as
+/// `(function, capture offset)`.
+struct SharedCell {
+    cell: LocalId,
+    free: &'static str,
+    bodies: Vec<(String, u32)>,
+}
+
+fn closure_borrowers(func: &MirFunction, cell: LocalId) -> Vec<(String, u32)> {
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureCreate { func_name, captures, .. } => Some((func_name, captures)),
+            _ => None,
+        })
+        .flat_map(|(name, captures)| {
+            captures.iter().filter(|c| c.by_ref && c.local_id == cell).map(move |c| (name.clone(), c.offset))
+        })
+        .collect()
+}
+
+/// An `ensure` body runs after the exits release the cell, so a cell it reads
+/// is left to the rules that know about that.
+fn ensure_captured(func: &MirFunction, cell: LocalId) -> bool {
+    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|st| {
+        matches!(&st.kind, MirStmtKind::EnsureHookRegister { captures, .. } if captures.iter().any(|c| c.local_id == cell))
+    })
+}
+
+/// Keep a shared container cell its value's only owner, through `addrs` — the
+/// cell itself in the frame, the capture's address in a body.
+///
+/// - A store frees what the cell held.
+/// - A read whose value is handed away (returned, stored, kept by a call)
+///   leaves the cell empty, so the frees that follow have nothing to free.
+/// - `start_empty` (the frame) writes the empty handle first, so the first
+///   store's free has nothing to free either, and the exits free whatever is
+///   left (`insert_cell_drops`).
+///
+/// A free of the empty handle is a no-op, which is what makes every one of
+/// these unconditional.
+fn empty_cell(
+    func: &mut MirFunction,
+    addrs: &HashSet<LocalId>,
+    free: &'static str,
+    keeps: &Keeps,
+    start_empty: Option<LocalId>,
+) {
+    let escaping: HashSet<LocalId> = {
+        let reads: Vec<LocalId> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(a)) } if addrs.contains(a) => {
+                    Some(*dst)
+                }
+                _ => None,
+            })
+            .collect();
+        reads
+            .into_iter()
+            .filter(|dst| {
+                let mut carried = HashMap::from([(*dst, free)]);
+                follow_copies(func, &mut carried);
+                let (escapes, taken) = find_escaping(func, &carried, keeps);
+                !escapes.is_empty() || !taken.is_empty()
+            })
+            .collect()
+    };
+
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0 + 1).max().unwrap_or(0);
+    let mut fresh_local = |func: &mut MirFunction| {
+        let id = LocalId(next);
+        next += 1;
+        func.locals.push(crate::MirLocal { id, name: None, ty: MirType::Ptr, is_param: false, unerased: None });
+        id
+    };
+    let empty = |addr: LocalId| {
+        MirStmt::dummy(MirStmtKind::Store {
+            addr,
+            offset: 0,
+            value: MirOperand::Constant(crate::MirConst::Int(0)),
+            store_size: 8,
+            field: None,
+        })
+    };
+
+    for bi in 0..func.blocks.len() {
+        let mut at = 0;
+        while at < func.blocks[bi].statements.len() {
+            match func.blocks[bi].statements[at].kind.clone() {
+                MirStmtKind::Store { addr, offset: 0, value, .. }
+                    if addrs.contains(&addr) && crate::analysis::uses::operand_local(&value) != Some(addr) =>
+                {
+                    let old = fresh_local(func);
+                    let release = [
+                        MirStmt::dummy(MirStmtKind::Assign {
+                            dst: old,
+                            rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                        }),
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal(free.to_string()),
+                            args: vec![MirOperand::Local(old)],
+                        }),
+                    ];
+                    func.blocks[bi].statements.splice(at..at, release);
+                    at += 3;
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(addr)) }
+                    if addrs.contains(&addr) && escaping.contains(&dst) =>
+                {
+                    func.blocks[bi].statements.insert(at + 1, empty(addr));
+                    at += 2;
+                }
+                _ => at += 1,
+            }
+        }
+    }
+    if let Some(cell) = start_empty {
+        func.blocks[0].statements.insert(0, empty(cell));
+    }
+}
+
+/// The frame's side of each shared cell (`empty_cell`).
+fn empty_shared_cells(func: &mut MirFunction, shared: &[SharedCell], keeps: &Keeps) {
+    for sc in shared {
+        empty_cell(func, &HashSet::from([sc.cell]), sc.free, keeps, Some(sc.cell));
+    }
+}
+
+/// The bodies' side: each body that borrows a shared cell reaches it through
+/// the address its capture holds.
+fn empty_cells_in_bodies(fns: &mut [MirFunction], shared: &[(String, u32, &'static str)], keeps: &Keeps) {
+    // One body can be built in more than one place; it is rewritten once.
+    let mut seen = HashSet::new();
+    let shared: Vec<&(String, u32, &'static str)> =
+        shared.iter().filter(|(n, o, _)| seen.insert((n.clone(), *o))).collect();
+    for func in fns.iter_mut() {
+        let name = func.name.clone();
+        for (_, offset, free) in shared.iter().copied().filter(|(n, _, _)| *n == name) {
+            let mut addrs: HashSet<LocalId> = func
+                .blocks
+                .iter()
+                .flat_map(|b| b.statements.iter())
+                .filter_map(|st| match &st.kind {
+                    MirStmtKind::LoadCapture { dst, offset: o, access, .. } if o == offset && access.is_addressed() => {
+                        Some(*dst)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if addrs.is_empty() {
+                continue;
+            }
+            loop {
+                let before = addrs.len();
+                for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                    if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &st.kind {
+                        if addrs.contains(src) {
+                            addrs.insert(*dst);
+                        }
+                    }
+                }
+                if addrs.len() == before {
+                    break;
+                }
+            }
+            empty_cell(func, &addrs, free, keeps, None);
+        }
+    }
 }
 
 /// Container variables the frame lends by address and nothing else:
@@ -3035,6 +3270,7 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// had there — reliably zero on a fresh frame, and 0xAAAA… under
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
+    start_string_cells_empty(func, cells);
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let return_blocks = exit_blocks(func);
     let slots = arm_cells(func, cells);
@@ -3058,6 +3294,16 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             // string gets, and the statement that already says it.
             let free = match holds {
                 Holds::Str => {
+                    // Returning the variable hands its reference to the caller.
+                    let returns_cell = matches!(
+                        &func.blocks[block_idx].terminator.kind,
+                        MirTerminatorKind::Return { value: Some(MirOperand::Local(v)) }
+                            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(v)), .. }
+                            if v == cell
+                    );
+                    if returns_cell {
+                        continue;
+                    }
                     func.blocks[block_idx].statements.push(MirStmt::dummy(
                         MirStmtKind::ReleaseSlot {
                             addr: *cell,
@@ -3089,6 +3335,64 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             }));
         }
     }
+}
+
+/// A string cell holds the empty string from the frame's first statement, and
+/// each store into it gives back what it replaces. The empty string owns
+/// nothing, so the first store's release is a no-op and the cell always holds
+/// exactly one reference: the one the exits and the unwind release.
+fn start_string_cells_empty(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
+    let strings: Vec<LocalId> =
+        cells.iter().filter(|(_, holds, _)| matches!(holds, Holds::Str)).map(|(cell, _, _)| *cell).collect();
+    if strings.is_empty() {
+        return;
+    }
+    for block in &mut func.blocks {
+        let mut at = 0;
+        while at < block.statements.len() {
+            let replaces = match &block.statements[at].kind {
+                MirStmtKind::Store { addr, value, offset: 0, .. } if strings.contains(addr) => {
+                    (crate::analysis::uses::operand_local(value) != Some(*addr)).then_some(*addr)
+                }
+                _ => None,
+            };
+            if let Some(cell) = replaces {
+                let span = block.statements[at].span;
+                block.statements.insert(
+                    at,
+                    MirStmt::new(
+                        MirStmtKind::Call {
+                            dst: None,
+                            func: FunctionRef::internal("string_free_replaced".to_string()),
+                            args: vec![MirOperand::Local(cell)],
+                        },
+                        span,
+                    ),
+                );
+                at += 1;
+            }
+            at += 1;
+        }
+    }
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0 + 1).max().unwrap_or(0);
+    let mut start = Vec::with_capacity(strings.len() * 2);
+    for cell in strings {
+        let empty = LocalId(next);
+        next += 1;
+        func.locals.push(crate::MirLocal { id: empty, name: None, ty: MirType::String, is_param: false, unerased: None });
+        start.push(MirStmt::dummy(MirStmtKind::Assign {
+            dst: empty,
+            rvalue: MirRValue::Use(MirOperand::Constant(crate::MirConst::String(String::new()))),
+        }));
+        start.push(MirStmt::dummy(MirStmtKind::Store {
+            addr: cell,
+            offset: 0,
+            value: MirOperand::Local(empty),
+            store_size: 16,
+            field: None,
+        }));
+    }
+    func.blocks[0].statements.splice(0..0, start);
 }
 
 /// Arm each cell's unwind slot right after the store that fills it: from there

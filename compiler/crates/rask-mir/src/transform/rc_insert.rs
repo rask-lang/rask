@@ -1567,10 +1567,22 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
     // its own and freed the vector's string with the pair.
     let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
     let views = string_views(func, &strings, own);
+    // A variable a closure borrows lives in a cell, and the cell rule gives
+    // back what it holds on the way out (`container_drop`'s `release_slot`).
+    // Releasing it at its last read as well released it twice.
+    let cells: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ReleaseSlot { addr, offset: 0, ty: MirType::String } => Some(*addr),
+            _ => None,
+        })
+        .collect();
     let locals: Vec<LocalId> = string_locals
         .iter()
         .copied()
-        .filter(|l| !params.contains(l) && !views.contains(l))
+        .filter(|l| !params.contains(l) && !views.contains(l) && !cells.contains(l))
         .collect();
 
     let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();
