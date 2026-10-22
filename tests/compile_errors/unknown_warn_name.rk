@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `@warn` has to name an opt-in warning that exists
+// Rejects: names nothing
+//
+// `@warn` turns an opt-in warning on. A misspelled name would turn nothing on,
+// and a warning that never fires looks exactly like code that never trips it.
+// `implicit_copy` is in the spec but not built, so it's refused too rather than
+// promising a check nobody runs.
+
+// ERROR: `@warn(blocking_prnt)` names nothing
+@warn(blocking_prnt)
+func report(lines: Vec<string>) {
+    for line in lines {
+        println(line)
+    }
+}
+
+// ERROR: `@warn(implicit_copy)` names nothing
+@warn(implicit_copy)
+func copy_all() {}
+
+func main() {
+    report(Vec.new())
+    copy_all()
+}

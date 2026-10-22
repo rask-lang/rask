@@ -257,7 +257,7 @@ impl TypeChecker {
         }
     }
 
-    /// `@allow(name)` where nothing answers to `name`.
+    /// `@allow(name)` or `@warn(name)` where nothing answers to `name`.
     ///
     /// The names come from two registries that can't see each other — compiler
     /// warnings here, lint rule ids in `rask-lint` — so a misspelled one used to
@@ -299,16 +299,27 @@ impl TypeChecker {
     }
 
     fn check_allow_attrs(&mut self, attrs: &[rask_ast::attr::Attr], span: Span) {
+        use rask_ast::allow_names as names;
         for attr in attrs {
-            let Some(name) = rask_ast::allow_names::allowed_name(attr) else { continue };
-            if rask_ast::allow_names::is_known(name) {
-                continue;
+            if let Some(name) = names::allowed_name(attr) {
+                if !names::is_known(name) {
+                    self.errors.push(TypeError::UnknownAllowName {
+                        attr: "allow",
+                        name: name.to_string(),
+                        suggestion: names::nearest(name).map(str::to_string),
+                        span,
+                    });
+                }
+            } else if let Some(name) = names::warned_name(attr) {
+                if !names::is_known_opt_in(name) {
+                    self.errors.push(TypeError::UnknownAllowName {
+                        attr: "warn",
+                        name: name.to_string(),
+                        suggestion: names::nearest_opt_in(name).map(str::to_string),
+                        span,
+                    });
+                }
             }
-            self.errors.push(TypeError::UnknownAllowName {
-                name: name.to_string(),
-                suggestion: rask_ast::allow_names::nearest(name).map(str::to_string),
-                span,
-            });
         }
     }
 

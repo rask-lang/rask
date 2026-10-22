@@ -41,6 +41,8 @@ use rask_ast::ty::TypeExpr;
 pub struct Effects {
     /// Can park the thread until something outside it happens.
     pub blocks: bool,
+    /// Writes to stdout or stderr. Blocks only when the reader stops reading.
+    pub prints: bool,
     /// Reads or changes state nobody passed in: the clock, the environment,
     /// the process. Doesn't wait.
     pub ambient: bool,
@@ -59,7 +61,12 @@ pub struct Effects {
 impl Effects {
     /// PU1: A function is pure if it has no effects.
     pub fn is_pure(&self) -> bool {
-        !self.blocks && !self.ambient && !self.async_ && !self.grow && !self.shrink
+        !self.can_block() && !self.ambient && !self.async_ && !self.grow && !self.shrink
+    }
+
+    /// Can park the thread, terminal output included.
+    pub fn can_block(&self) -> bool {
+        self.blocks || self.prints
     }
 
     /// Whether this function performs structural pool mutations.
@@ -70,6 +77,7 @@ impl Effects {
     /// Merge another effect set into this one.
     pub fn union(&mut self, other: Effects) {
         self.blocks |= other.blocks;
+        self.prints |= other.prints;
         self.ambient |= other.ambient;
         self.async_ |= other.async_;
         self.grow |= other.grow;
@@ -80,7 +88,7 @@ impl Effects {
     /// present, in a fixed order.
     pub fn label(&self) -> String {
         let parts: Vec<&str> = [
-            (self.blocks, "blocks"),
+            (self.can_block(), "blocks"),
             (self.ambient, "ambient"),
             (self.async_, "async"),
             (self.mutation(), "mutation"),

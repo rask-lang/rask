@@ -170,10 +170,11 @@ impl<'t> InferPass<'t> {
     fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
         // A stdlib native has no body to read, so its declaration says what
-        // it does (`@blocks`, `@ambient`, `@grows`, `@shrinks`).
+        // it does (`@blocks`, `@prints`, `@ambient`, `@grows`, `@shrinks`).
         let declared = f.declared_effects();
         if let Some(e) = self.effects.get_mut(qname) {
             e.blocks |= declared.blocks;
+            e.prints |= declared.prints;
             e.ambient |= declared.ambient;
             e.grow |= declared.grows;
             e.shrink |= declared.shrinks;
@@ -1006,7 +1007,7 @@ mod tests {
                 type_params: vec![],
                 params: vec![],
                 ret_ty: None,
-                body: vec![expr_stmt(call("println", vec![]))],
+                body: vec![expr_stmt(call("fs.exists", vec![]))],
                 is_pub: false,
                 is_private: false,
                 is_comptime: true,
@@ -1047,7 +1048,7 @@ mod tests {
     #[test]
     fn direct_io_call() {
         let decls = vec![make_fn("load", vec![
-            expr_stmt(call("println", vec![])),
+            expr_stmt(call("fs.exists", vec![])),
         ])];
         let effects = infer_std(&decls, &Default::default());
         assert!(effects["load"].blocks);
@@ -1099,10 +1100,10 @@ mod tests {
 
     #[test]
     fn transitive_propagation() {
-        // load calls println (IO)
+        // load calls fs.exists (IO)
         // process calls load → should inherit IO
         let decls = vec![
-            make_fn("load", vec![expr_stmt(call("println", vec![]))]),
+            make_fn("load", vec![expr_stmt(call("fs.exists", vec![]))]),
             make_fn("process", vec![expr_stmt(call("load", vec![]))]),
         ];
         let effects = infer_std(&decls, &Default::default());
@@ -1112,9 +1113,9 @@ mod tests {
 
     #[test]
     fn deep_transitive() {
-        // c calls println, b calls c, a calls b
+        // c calls fs.exists, b calls c, a calls b
         let decls = vec![
-            make_fn("c", vec![expr_stmt(call("println", vec![]))]),
+            make_fn("c", vec![expr_stmt(call("fs.exists", vec![]))]),
             make_fn("b", vec![expr_stmt(call("c", vec![]))]),
             make_fn("a", vec![expr_stmt(call("b", vec![]))]),
         ];
@@ -1126,10 +1127,10 @@ mod tests {
 
     #[test]
     fn mutual_recursion_terminates() {
-        // a calls b, b calls a, a also calls println
+        // a calls b, b calls a, a also calls fs.exists
         let decls = vec![
             make_fn("a", vec![
-                expr_stmt(call("println", vec![])),
+                expr_stmt(call("fs.exists", vec![])),
                 expr_stmt(call("b", vec![])),
             ]),
             make_fn("b", vec![expr_stmt(call("a", vec![]))]),
@@ -1161,7 +1162,7 @@ mod tests {
     }
 
     /// PU2 says a `comptime func` is pure and that "effect inference confirms
-    /// this". Confirming means looking: this fixture's body is a `println`, so
+    /// this". Confirming means looking: this fixture's body is an `fs.exists`, so
     /// what inference reports is I/O, and `comptime_purity::check` is what turns
     /// that disagreement into the CT60 error. Stamping it pure — which is what
     /// this test used to assert — made the marking its own evidence.
@@ -1212,7 +1213,9 @@ mod tests {
         assert!(effects["fs.exists"].blocks);
         assert!(effects["Instant.now"].ambient);
         assert!(!effects["Instant.now"].blocks);
-        assert!(effects["println"].blocks);
+        assert!(effects["println"].prints);
+        assert!(!effects["println"].blocks, "printing is its own effect, so CW2 can leave it out");
+        assert!(effects["println"].can_block());
         assert!(effects["Vec.push"].grow);
         assert!(!effects["Vec.push"].blocks, "allocation isn't blocking");
         assert!(!effects["string.split"].blocks);
@@ -1268,7 +1271,7 @@ mod tests {
     #[test]
     fn mixed_effects() {
         let decls = vec![make_fn("complex", vec![
-            expr_stmt(call("println", vec![])),
+            expr_stmt(call("fs.exists", vec![])),
             expr_stmt(spawn_block()),
             expr_stmt(method_call("pool", "insert")),
         ])];

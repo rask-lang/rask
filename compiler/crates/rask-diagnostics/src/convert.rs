@@ -3151,21 +3151,29 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("two tasks writing an unsynchronized collection is a data race, and it doesn't announce itself — a `Vec` hammered from two threads loses updates and corrupts the heap. Data races being impossible by construction is the safety property this rule holds up [structure.modules/PS2]")
             }
 
-            UnknownAllowName { name, suggestion, span } => {
-                let diag = Diagnostic::error(format!("`@allow({})` names nothing", name))
+            UnknownAllowName { attr, name, suggestion, span } => {
+                let (why, known): (&str, Vec<&str>) = if *attr == "warn" {
+                    (
+                        "an `@warn` that matches nothing turns nothing on, and a warning that never fires looks exactly like code that never trips it — so a typo here would hide itself forever",
+                        rask_ast::allow_names::OPT_IN_WARNINGS.to_vec(),
+                    )
+                } else {
+                    (
+                        "an `@allow` that matches nothing is silent, and silence is exactly what a correctly-suppressed warning looks like — so a typo here would hide itself forever",
+                        rask_ast::allow_names::all().collect(),
+                    )
+                };
+                let diag = Diagnostic::error(format!("`@{}({})` names nothing", attr, name))
                     .with_code("E0855")
-                    .with_primary(*span, format!("`@allow({})` on this declaration", name))
-                    .with_why("an `@allow` that matches nothing is silent, and silence is exactly what a correctly-suppressed warning looks like — so a typo here would hide itself forever");
+                    .with_primary(*span, format!("`@{}({})` on this declaration", attr, name))
+                    .with_why(why);
                 match suggestion {
                     Some(s) => diag
-                        .with_fix(format!("did you mean `@allow({})`?", s))
-                        .with_help(format!("did you mean `@allow({})`?", s)),
+                        .with_fix(format!("did you mean `@{}({})`?", attr, s))
+                        .with_help(format!("did you mean `@{}({})`?", attr, s)),
                     None => diag
-                        .with_fix("use a compiler warning name or a lint rule id".to_string())
-                        .with_help(format!(
-                            "`@allow` takes one warning name or one lint rule id. Known names: {}",
-                            rask_ast::allow_names::all().collect::<Vec<_>>().join(", ")
-                        )),
+                        .with_fix("use a warning name this attribute knows".to_string())
+                        .with_help(format!("Known names for `@{}`: {}", attr, known.join(", "))),
                 }
             }
 

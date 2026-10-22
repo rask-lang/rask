@@ -1228,11 +1228,13 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// `@allow(name)` where nothing answers to `name` — a typo, or a rule id
-    /// that doesn't exist. Silence here is indistinguishable from a warning
-    /// correctly suppressed, so it's an error.
-    #[error("`@allow({name})` names nothing")]
+    /// `@allow(name)` or `@warn(name)` where nothing answers to `name` — a
+    /// typo, or a rule id that doesn't exist. Silence here is indistinguishable
+    /// from a warning correctly suppressed or correctly absent, so it's an error.
+    #[error("`@{attr}({name})` names nothing")]
     UnknownAllowName {
+        /// `allow` or `warn`.
+        attr: &'static str,
         name: String,
         suggestion: Option<String>,
         span: Span,

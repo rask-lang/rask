@@ -183,17 +183,17 @@ extend io {
     /// The stream number comes off the handle: 0 = stdin, 1 = stdout,
     /// 2 = stderr. Bytes written, or -1.
     @native("rask_io_std_write_text")
-    @blocks
+    @prints
     func write_std_text(stream: i32, data: string) -> i64 {}
 
     /// The same, for bytes that needn't be UTF-8.
     @native("rask_io_std_write_bytes")
-    @blocks
+    @prints
     func write_std_bytes(stream: i32, data: Vec<u8>) -> i64 {}
 
     /// Push what stdio is holding. 0, or -1.
     @native("rask_io_std_flush")
-    @blocks
+    @prints
     func flush_std(stream: i32) -> i64 {}
 
     /// Read up to `max` bytes from standard input, stopping at end of input.

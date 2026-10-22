@@ -56,13 +56,14 @@ block can't carry it, because `TestDecl` has no attributes ([#1010](https://gith
 
 ## Opt-In Warnings
 
-Off by default. Enable with `@warn(warning_name)` on items or project-wide in `rask.toml`.
+Off by default. Enable with `@warn(warning_name)` on items or project-wide in `rask.toml`. Only W12 is built so far, on a function, method or test and on the struct or enum holding a method. A name `@warn` doesn't know is an error (E0855), the same as for `@allow`, so W6–W8 are refused until they exist.
 
 | Rule | Code | ID | Check |
 |------|------|----|-------|
 | **W6: implicit_copy** | W0904 | `implicit_copy` | Implicit copy of types at the 16-byte threshold |
 | **W7: shadowing** | W0905 | `shadowing` | Variable shadows an outer binding in the same function |
 | **W8: type_narrowing** | W0906 | `type_narrowing` | Pattern match could use a more specific type |
+| **W12: blocking_print** | W0910 | `blocking_print` | Printing counts as blocking for `comp.effects/CW2`, so a `println` in a loop of a program that spawns gets the warning `fs.read_text` would. Off by default: a terminal that stops reading is rare, and the warning on every print buried the ones that matter |
 
 <!-- test: skip -->
 ```rask

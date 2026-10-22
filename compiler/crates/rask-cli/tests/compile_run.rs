@@ -3216,11 +3216,12 @@ fn check_output(source: &str) -> String {
 // classed as blocking, so every spawn loop got CW2's "blocks thread on each
 // iteration" and an advice to wrap it in `using Multitasking`, which doesn't
 // change what `Thread.spawn` does (#1362). Real I/O in a loop of the same
-// concurrent program still warns.
+// concurrent program still warns. Printing doesn't, unless `@warn(blocking_print)`
+// asks for it.
 #[test]
 fn spawn_in_a_loop_is_not_blocking_io() {
     let output = check_output(
-        "import thread.Thread\nimport async.Handles\n\
+        "import fs\nimport thread.Thread\nimport async.Handles\n\
          func main() {\n\
          \x20   mut hs = Handles<i64>.new()\n\
          \x20   ensure hs.detach()\n\
@@ -3232,12 +3233,14 @@ fn spawn_in_a_loop_is_not_blocking_io() {
          \x20   }\n\
          \x20   for j in 0..2 {\n\
          \x20       println(\"{j}\")\n\
+         \x20       let _ = fs.exists(\"x\")\n\
          \x20   }\n\
          }\n",
     );
     assert!(output.contains("Typecheck OK"), "{}", output);
     assert!(!output.contains("`spawn` can block"), "a spawn doesn't block: {}", output);
-    assert!(output.contains("`println` can block, in a loop"), "a print still warns: {}", output);
+    assert!(output.contains("`fs.exists` can block, in a loop"), "real I/O still warns: {}", output);
+    assert!(!output.contains("`println` can block"), "printing is opt-in: {}", output);
 }
 
 // A method call is classed by the receiver's type, not by how the variable is
