@@ -410,9 +410,39 @@ The per-module percentages [TODO.md](TODO.md) used to carry were typed by hand
 and checked by nobody. Two of the gaps they listed, `SystemTime` and
 `UdpSocket`, had already shipped.
 
+**Today: 821 of 826 promised items, 5 registered gaps.** All five wait on
+something outside this theme: `string.span` on #492 (slices as views),
+`size_of`/`align_of`/`is_copy` on #791 (which size model answers), and
+`Parser.parse`, which reads real argv and is covered by a `rask-cli` fixture
+test the gate can't count. TLS left the stdlib for a package
+([specs/packages/tls.md](specs/packages/tls.md)).
+
 [#726](https://github.com/rask-lang/rask/issues/726) ·
-[#980](https://github.com/rask-lang/rask/issues/980) · the module gaps in
-[TODO.md](TODO.md)
+[#980](https://github.com/rask-lang/rask/issues/980)
+
+## Next: v0.7 — Each fact has one owner
+
+**Done when every issue [#1570](https://github.com/rask-lang/rask/issues/1570)
+lists is closed. Today: 9 of 15 open** (#1555, #1556, #1561, #1564–#1569).
+
+Most bugs here are one thing: a fact an earlier pass already knew, worked out
+again later from a name, a spelling or a hand-kept list, and drifting. The rule
+is that each fact has one owner, the earliest stage that knows it, and flows
+down as data. v0.6 ran into it at every turn: the stdlib declared its methods
+once and codegen kept a second table of them, the checker's call rewrites
+reached the program's copy of the stdlib but not the copy it compiles
+(#1621), and layout sizes opaque handles from a hand list (#1592).
+
+The order is #1570's own. #1568 first (one driver instead of a pipeline
+assembled by hand in five places), then #1566 + #1567 (the checker and mono
+hand down types and layouts), then #1564 + #1565 (a call names its callee,
+stdlib facts live only on the `.rk` declarations), then #1555 and #1556. #1569
+any time. Each root-cause fix lands a guard test in the style of
+`no_type_text_reparsing`, so the count only goes down.
+
+Bugs found inside the theme join it. Already filed and the same shape: #1553
+(the stdlib collected twice), #1592, #1610 (a hand list of typed modules) and
+#1621.
 
 ## Cadence
 
