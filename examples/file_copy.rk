@@ -10,14 +10,14 @@ import std
 
 @message
 enum CopyError {
-    @message("source file not found: {path}")
-    SourceNotFound(path: string)
-    @message("destination already exists: {path} (use -f to overwrite)")
-    DestinationExists(path: string)
-    @message("read error: {cause}")
-    ReadError(cause: IoError)
-    @message("write error: {cause}")
-    WriteError(cause: IoError)
+    @message("source file not found: {0}")
+    SourceNotFound(string)
+    @message("destination already exists: {0} (use -f to overwrite)")
+    DestinationExists(string)
+    @message("read error: {0}")
+    ReadError(IoError)
+    @message("write error: {0}")
+    WriteError(IoError)
     @message("source and destination are the same file")
     SameFile
 }
@@ -31,15 +31,15 @@ struct CopyOptions {
 
 func copy_file(opts: CopyOptions) -> u64 or CopyError {
     if !fs.exists(opts.source) {
-        return CopyError.SourceNotFound(path: opts.source)
+        return CopyError.SourceNotFound(opts.source)
     }
     if fs.exists(opts.dest) && !opts.force {
-        return CopyError.DestinationExists(path: opts.dest)
+        return CopyError.DestinationExists(opts.dest)
     }
 
     // Same file under two spellings: compare canonical paths
     let src_canonical = fs.absolute_path(opts.source) catch e => {
-        return CopyError.ReadError(cause: e)
+        return CopyError.ReadError(e)
     }
     let dst_canonical = fs.absolute_path(opts.dest) catch _ => none
     if dst_canonical? as dst {
@@ -47,12 +47,12 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     }
 
     fs.copy(opts.source, opts.dest) catch e => {
-        return CopyError.WriteError(cause: e)
+        return CopyError.WriteError(e)
     }
 
     // fs.copy returns void — read the copied size back off disk for the report
     let meta = fs.metadata(opts.dest) catch e => {
-        return CopyError.WriteError(cause: e)
+        return CopyError.WriteError(e)
     }
     return meta.size
 }

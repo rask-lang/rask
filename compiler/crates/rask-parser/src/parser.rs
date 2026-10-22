@@ -41,6 +41,9 @@ pub struct Parser {
     /// Loop labels enclosing the statement being parsed. `break ident` is
     /// ambiguous on its own — a label or a value — and this is what decides it.
     loop_labels: Vec<String>,
+    /// Inside `@message("…")`, where `{0}` is the variant's first payload, as
+    /// it is `format`'s first argument (type.errors/ER36, std.fmt/F2).
+    in_message_template: bool,
 }
 
 impl Parser {
@@ -56,7 +59,7 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new() }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new(), in_message_template: false }
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -773,7 +776,11 @@ impl Parser {
                 let value = if rule_names {
                     rask_ast::attr::AttrValue::RuleName(self.rule_name_text())
                 } else {
-                    rask_ast::attr::AttrValue::Expr(self.parse_expr()?)
+                    let outer = self.in_message_template;
+                    self.in_message_template = path.len() == 1 && path[0] == "message";
+                    let expr = self.parse_expr();
+                    self.in_message_template = outer;
+                    rask_ast::attr::AttrValue::Expr(expr?)
                 };
                 if label.is_none() && self.check(&TokenKind::Eq) {
                     if let Some(name) = value.ident() {
@@ -1144,6 +1151,48 @@ impl Parser {
         let ty = self.parse_type_name().ok()?;
         self.skip_newlines();
         self.at_end().then_some(ty)
+    }
+
+    /// `{N}` in a variant's `@message` names payload N, so it needs a payload
+    /// there: the variant is positional, and has more than N of them. A named
+    /// variant's message names its payloads instead (type.errors/ER36).
+    fn check_positional_holes(&mut self, attrs: &[rask_ast::attr::Attr], variant: &str, fields: &[Field]) {
+        let Some(template) = rask_ast::attr::find(attrs, "message").and_then(|a| a.positional()).and_then(|v| v.expr())
+        else {
+            return;
+        };
+        let ExprKind::StringInterp(segments) = &template.kind else { return };
+        let named = fields.first().is_some_and(|f| !rask_ast::decl::is_positional_field_name(&f.name));
+        for seg in segments {
+            let StringSegment::Expr(hole, _) = seg else { continue };
+            let ExprKind::Ident(name) = &hole.kind else { continue };
+            if !rask_ast::decl::is_positional_field_name(name) {
+                continue;
+            }
+            let index: usize = name[1..].parse().unwrap_or(usize::MAX);
+            let written = format!("{{{}}}", index);
+            if named {
+                let names: Vec<String> = fields.iter().map(|f| format!("{{{}}}", f.name)).collect();
+                self.errors.push(ParseError {
+                    span: hole.span,
+                    message: format!("`{}` in the message of `{}`, which names its payloads", written, variant),
+                    hint: Some(format!("name the payload: {}", names.join(", "))),
+                    why: Some("`{0}` is a positional variant's first payload; a named variant's are reached by name [type.errors/ER36]".to_string()),
+                });
+            } else if index >= fields.len() {
+                let what = match fields.len() {
+                    0 => "no payload".to_string(),
+                    1 => "one payload, `{0}`".to_string(),
+                    n => format!("{} payloads, `{{0}}` to `{{{}}}`", n, n - 1),
+                };
+                self.errors.push(ParseError {
+                    span: hole.span,
+                    message: format!("`{}` in the message of `{}`, which has {}", written, variant, what),
+                    hint: None,
+                    why: Some("`{N}` is payload N, counted from 0, as it is `format`'s argument N [type.errors/ER36]".to_string()),
+                });
+            }
+        }
     }
 
     /// A type and the source it was written in.
@@ -1915,6 +1964,7 @@ impl Parser {
                     None
                 };
 
+                self.check_positional_holes(&variant_attrs, &variant_name, &fields);
                 variants.push(Variant {
                     name: variant_name,
                     name_span: variant_name_span,
@@ -5266,9 +5316,26 @@ impl Parser {
                     bad_expr(self, "a string literal on its own isn't something to interpolate");
                     return None;
                 }
+                // In a variant's message, `{0}` is its first payload, the way
+                // it's `format`'s first argument. The match arm `message()` is
+                // built from binds that payload as `_0`; the variant checks the
+                // index once its fields are parsed (`check_positional_holes`).
+                if self.in_message_template {
+                    if let ExprKind::Int(n, _) = parsed.kind {
+                        if n >= 0 {
+                            let hole = Expr {
+                                id: parsed.id,
+                                kind: ExprKind::Ident(rask_ast::decl::positional_field_name(n as usize)),
+                                span: parsed.span,
+                            };
+                            segments.push(StringSegment::Expr(Box::new(hole), parsed_spec));
+                            continue;
+                        }
+                    }
+                }
                 // `{0}` puts the number 0 in the string, which writing `0`
                 // already does. It's never meant: it's a `format` placeholder
-                // outside `format` (std.fmt/I4).
+                // outside `format` and `@message` (std.fmt/I4).
                 if let Some(lit) = parsed.as_literal() {
                     let shown = match lit {
                         rask_ast::expr::Literal::Int(n) => n.to_string(),

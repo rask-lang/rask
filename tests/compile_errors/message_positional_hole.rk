@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `{N}` in an `@message` needs payload N of a positional variant
+// Rejects: in the message of
+//
+// `{N}` is the variant's payload N, counted from 0, as it is `format`'s
+// argument N (type.errors/ER36). A named variant's payloads are reached by name,
+// and an index past the last payload names nothing.
+
+@message
+enum LoadError {
+    // ERROR: `{0}` in the message of `Missing`, which names its payloads
+    @message("missing: {0}")
+    Missing(path: string)
+
+    // ERROR: `{1}` in the message of `Bad`, which has one payload
+    @message("bad: {1}")
+    Bad(string)
+
+    // ERROR: `{0}` in the message of `Empty`, which has no payload
+    @message("empty: {0}")
+    Empty
+}
+
+func main() {
+    println(LoadError.Empty.message())
+}
