@@ -7235,8 +7235,7 @@ impl<'a> MirLowerer<'a> {
             ),
             ReflectAnswer::Unsupported(why) => {
                 return Err(LoweringError::InvalidConstruct(format!(
-                    "reflect.{method}<{type_name}>() isn't implemented on either \
-                     backend — {why} (#791)"
+                    "reflect.{method}<{type_name}>() can't be answered: `{type_name}` {why}"
                 )));
             }
             ReflectAnswer::NoSuchMethod => {
