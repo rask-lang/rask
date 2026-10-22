@@ -88,7 +88,7 @@ fn located(d: &rask_diagnostics::Diagnostic, files: &[(PathBuf, String)]) -> Str
 
 fn check_loader() -> Result<Loader, String> {
     let result = check_packages(&[], &[])?;
-    Ok(Loader { decls: rask_compiler::program_decls(&result.decls), typed: result })
+    Ok(Loader { decls: rask_compiler::program_decls(&result.decls, Some(&result.typed)), typed: result })
 }
 
 fn interpreter_for(result: &rask_compiler::CheckResult) -> rask_interp::Interpreter {

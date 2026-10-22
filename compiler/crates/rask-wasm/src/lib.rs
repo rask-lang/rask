@@ -70,7 +70,7 @@ impl Playground {
         let checked = frontend(source)?;
         self.prepare(&checked, source);
 
-        let all = rask_compiler::program_decls(&checked.decls);
+        let all = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
         let outcome = self.interpreter.run(&all);
 
         let output = self.output_buffer.lock().unwrap().clone();
@@ -98,7 +98,7 @@ impl Playground {
         let checked = frontend(source)?;
         self.prepare(&checked, source);
 
-        let all = rask_compiler::program_decls(&checked.decls);
+        let all = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
         let results = self.interpreter.run_tests(&all, None);
         let benchmarks = self.interpreter.run_benchmarks(&all, None);
 

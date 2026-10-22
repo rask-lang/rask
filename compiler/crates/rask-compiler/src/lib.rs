@@ -287,8 +287,16 @@ pub use rask_mono::is_stdlib_span;
 ///
 /// The order doesn't matter: a program type or function that shares a stdlib
 /// name has its own symbol by now (#1333, #1307), so nothing here collides.
-pub fn program_decls(decls: &[Decl]) -> Vec<Decl> {
+///
+/// The stdlib's bodies are a fresh copy, so they get what the checker decided
+/// about their nodes here (`rewrite_checked_nodes`), the way the program's
+/// declarations did when they were checked. `typed` is `None` only for a build
+/// script, which nothing type-checks.
+pub fn program_decls(decls: &[Decl], typed: Option<&TypedProgram>) -> Vec<Decl> {
     let mut all = rask_stdlib::StubRegistry::compilable_decls();
+    if let Some(typed) = typed {
+        typed.rewrite_checked_nodes(&mut all);
+    }
     all.extend(decls.to_vec());
     all
 }
@@ -1029,7 +1037,7 @@ fn finalize_compile_inner(
 
     // --- Inject compiled stdlib functions and the types they use ---
     let mut stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
-    check.typed.place_args(&mut stdlib_fn_decls);
+    check.typed.rewrite_checked_nodes(&mut stdlib_fn_decls);
     check.decls.extend(stdlib_fn_decls);
 
     // A second copy of every dependency declaration used to be merged here,

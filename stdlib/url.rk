@@ -82,8 +82,8 @@ extend Url {
             explicit_port: self.explicit_port
             path: self.path
             query: query
-            fragment: url_copy(self.fragment)
-            user: url_copy(self.user)
+            fragment: self.fragment.clone()
+            user: self.user.clone()
         )
     }
 }
@@ -149,9 +149,9 @@ Url implements Div<string> {
             host: self.host
             explicit_port: self.explicit_port
             path: path
-            query: url_copy(self.query)
-            fragment: url_copy(self.fragment)
-            user: url_copy(self.user)
+            query: self.query.clone()
+            fragment: self.fragment.clone()
+            user: self.user.clone()
         )
     }
 }
@@ -359,16 +359,6 @@ extend url {
 }
 
 // ─── Internals ──────────────────────────────────────────────────
-
-/// A copy of an optional field. Workaround: `self.field.clone()` is what this
-/// should be, and inside a stdlib body that call is never rewritten to the
-/// wrapper's clone, so native can't compile it (#1621).
-func url_copy(s: string?) -> string? {
-    if s? as x {
-        return x.clone()
-    }
-    return none
-}
 
 func url_default_port(scheme: string) -> u16? {
     match scheme {
