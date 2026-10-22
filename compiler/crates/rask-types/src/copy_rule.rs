@@ -241,10 +241,20 @@ impl TypeTable {
     /// one. Mono's layouts follow the same rules from the declarations, and
     /// `copy_rule_sizes_match_layouts` in rask-cli holds the two together.
     pub fn value_layout(&self, ty: &Type) -> (u32, u32) {
+        self.layout_within(ty, &mut Vec::new())
+    }
+
+    /// `value_layout`, with the declared types already being laid out. A type
+    /// that contains itself has no size. The table never holds one directly
+    /// (`resolve_forward_field_types`), but one through a generic carrier
+    /// (`struct Wrap<T> { v: T }`, `Wrap<Node>` inside `Node`) gets past the
+    /// checker, so a cycle answers a word instead of recursing until the stack
+    /// runs out.
+    fn layout_within(&self, ty: &Type, open: &mut Vec<crate::TypeId>) -> (u32, u32) {
         use crate::abi;
-        let widest = |types: &mut dyn Iterator<Item = &Type>| {
+        let mut widest = |types: &mut dyn Iterator<Item = &Type>, open: &mut Vec<crate::TypeId>| {
             types.fold((0u32, 1u32), |(s, a), t| {
-                let (ts, ta) = self.value_layout(t);
+                let (ts, ta) = self.layout_within(t, open);
                 (s.max(ts), a.max(ta))
             })
         };
@@ -258,36 +268,36 @@ impl TypeTable {
             // Niche: `Link<T>?` is the node's address, null for `none`.
             ty if ty.as_option().is_some_and(|inner| self.is_link(inner)) => (8, 8),
             ty if ty.is_option() => {
-                let (s, a) = self.value_layout(ty.as_option().unwrap());
+                let (s, a) = self.layout_within(ty.as_option().unwrap(), open);
                 let l = abi::option_layout(s, a);
                 (l.size, l.align)
             }
             Type::Result { ok, err } => {
-                let (s, a) = widest(&mut [ok.as_ref(), err.as_ref()].into_iter());
+                let (s, a) = widest(&mut [ok.as_ref(), err.as_ref()].into_iter(), open);
                 let l = abi::result_layout(s, a);
                 (l.size, l.align)
             }
             Type::Union(members) => {
-                let (s, a) = widest(&mut members.iter());
+                let (s, a) = widest(&mut members.iter(), open);
                 let l = abi::union_layout(s, a);
                 (l.size, l.align)
             }
             Type::Tuple(elems) => {
-                let sizes: Vec<(u32, u32)> = elems.iter().map(|t| self.value_layout(t)).collect();
+                let sizes: Vec<(u32, u32)> = elems.iter().map(|t| self.layout_within(t, open)).collect();
                 let (_, s, a) = abi::place_fields(&sizes, true);
                 (s, a)
             }
             Type::Array { elem, len } => {
-                let (s, a) = self.value_layout(elem);
+                let (s, a) = self.layout_within(elem, open);
                 (s * *len as u32, a)
             }
             Type::SimdVector { elem, lanes } => {
-                let total = self.value_layout(elem).0 * *lanes as u32;
+                let total = self.layout_within(elem, open).0 * *lanes as u32;
                 (total, total.min(32))
             }
             Type::InterfaceObject { .. } => (16, 8),
-            Type::Named(id) => self.declared_layout(*id, &[]),
-            Type::Generic { base, args } => self.declared_layout(*base, args),
+            Type::Named(id) => self.declared_layout(*id, &[], open),
+            Type::Generic { base, args } => self.declared_layout(*base, args, open),
             // A function value, a raw pointer, a `Link`, and anything still
             // unsettled: one word.
             _ => (8, 8),
@@ -303,14 +313,24 @@ impl TypeTable {
     }
 
     /// A declared type's layout at these type arguments.
-    fn declared_layout(&self, id: crate::TypeId, args: &[crate::GenericArg]) -> (u32, u32) {
+    fn declared_layout(&self, id: crate::TypeId, args: &[crate::GenericArg], open: &mut Vec<crate::TypeId>) -> (u32, u32) {
+        if open.contains(&id) {
+            return (8, 8);
+        }
+        open.push(id);
+        let found = self.declared_layout_open(id, args, open);
+        open.pop();
+        found
+    }
+
+    fn declared_layout_open(&self, id: crate::TypeId, args: &[crate::GenericArg], open: &mut Vec<crate::TypeId>) -> (u32, u32) {
         use crate::abi;
         if let Some(found) = abi::opaque_layout(&self.type_name(id)) {
             return found;
         }
         let Some(def) = self.get(id) else { return (8, 8) };
         let subst = Self::generic_field_subst(def.type_params(), args);
-        let at = |t: &Type| self.value_layout(&Self::substitute_generic_field(t, &subst));
+        let mut at = |t: &Type| self.layout_within(&Self::substitute_generic_field(t, &subst), open);
         match def {
             crate::TypeDef::Struct { fields, c_layout, .. } => {
                 let sizes: Vec<(u32, u32)> = fields.iter().map(|(_, t)| at(t)).collect();
@@ -321,12 +341,12 @@ impl TypeTable {
                 let payloads: Vec<(u32, u32)> = variants
                     .iter()
                     .map(|(_, data)| {
-                        let sizes: Vec<(u32, u32)> = data.iter().map(&at).collect();
+                        let sizes: Vec<(u32, u32)> = data.iter().map(&mut at).collect();
                         let (_, s, a) = abi::place_fields(&sizes, true);
                         (s, a)
                     })
                     .collect();
-                let (_, s, a) = abi::enum_layout(self.value_layout(tag), &payloads);
+                let (_, s, a) = abi::enum_layout(tag.scalar_bytes().map_or((1, 1), |n| (n, n)), &payloads);
                 (s, a)
             }
             crate::TypeDef::Union { fields, .. } => {

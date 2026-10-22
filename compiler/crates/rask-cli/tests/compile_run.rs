@@ -4943,15 +4943,17 @@ fn a_real_allow_name_still_compiles() {
 #[test]
 fn a_wide_scalar_field_counts_its_real_width() {
     let (failed, output) = compile_error_output("wide_scalar_copy_threshold.rk");
-    assert!(failed, "24 bytes is over the threshold and has to move:\n{output}");
+    assert!(failed, "32 bytes is over the threshold and has to move:\n{output}");
     assert_eq!(
         output.matches("E0800").count(),
         1,
         "one move, one error:\n{output}"
     );
+    // 16 for the i128, 8 for the i64, and 8 of padding: the i128 aligns to
+    // 16, so the struct does too. The size it's laid out in.
     assert!(
-        output.contains("24 bytes"),
-        "the note has to name the real size:\n{output}"
+        output.contains("`Wide` is 32 bytes"),
+        "the note has to name the real size, and the type as written:\n{output}"
     );
 }
 

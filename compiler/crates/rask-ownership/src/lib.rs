@@ -4717,7 +4717,7 @@ impl<'a> OwnershipChecker<'a> {
         if self.is_link_type(ty) {
             return MoveReason::LinkDeleted;
         }
-        let type_name = format!("{}", self.program.types.resolve_type_names(ty));
+        let type_name = format!("{}", self.program.types.display_type_names(ty));
         // Before size: a resource moves because it's linear, and blaming the
         // copy threshold suggested `.clone()` on a value that has none.
         if self.type_is_resource(ty) {

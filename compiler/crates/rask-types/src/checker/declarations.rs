@@ -276,6 +276,16 @@ impl TypeChecker {
                 _ => false,
             })
         };
+        // A field that would store its own type inline stays a name: the type
+        // has no size, `reject_recursive_type` says so when the declaration is
+        // checked, and until then every walk over the table has to end.
+        let mut seen = Vec::new();
+        let mut chain = Vec::new();
+        let mut cycles = |types: &Self, new: &Type, owner| {
+            seen.clear();
+            chain.clear();
+            types.reaches_inline(new, owner, &mut seen, &mut chain)
+        };
         match &decl.kind {
             DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
                 let Some(id) = self.types.get_type_id(&s.name) else { return };
@@ -283,7 +293,7 @@ impl TypeChecker {
                 let fresh: Vec<Option<Type>> = resolve(&self.types, &s.fields)
                     .into_iter()
                     .zip(fields)
-                    .map(|(new, (_, old))| new.filter(|_| was_forward(old)))
+                    .map(|(new, (_, old))| new.filter(|n| was_forward(old) && !cycles(self, n, id)))
                     .collect();
                 if let Some(TypeDef::Struct { fields, .. }) = self.types.get_mut(id) {
                     for ((_, ty), new) in fields.iter_mut().zip(fresh) {
@@ -304,7 +314,7 @@ impl TypeChecker {
                         resolve(&self.types, &v.fields)
                             .into_iter()
                             .zip(old)
-                            .map(|(new, old)| new.filter(|_| was_forward(old)))
+                            .map(|(new, old)| new.filter(|n| was_forward(old) && !cycles(self, n, id)))
                             .collect()
                     })
                     .collect();
