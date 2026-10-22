@@ -14,7 +14,6 @@
 #   VARIANTS    an enum whose variants differ from the spec's
 #   UNTESTED    built, and no suite program green on both backends calls it
 
-std.cli Parser.parse UNTESTED  # reads the real argv; covered by rask-cli tests/fixtures/cli_parse.rk, which a suite file cannot be
 std.reflect reflect.align_of UNTESTED
 std.reflect reflect.is_copy UNTESTED
 std.reflect reflect.size_of UNTESTED

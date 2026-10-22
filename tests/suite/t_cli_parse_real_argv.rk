@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Parser.parse()` against the process's real arguments. Under `rask test`
+// the only argument is the program's own path, on both backends, so this is
+// the empty command line: defaults hold, and a required positional is missing.
+// A command line with words in it is rask-cli's tests/fixtures/cli_parse.rk.
+import cli
+
+test "an empty command line leaves flags off and options unset" {
+    let args = cli.Parser.new("demo")
+        .flag("verbose", "v", "Talk more")
+        .option("name", "n", "Who to greet")
+        .parse()!
+    assert !args.flag("verbose")
+    assert args.option("name") == none
+    assert args.positional().len() == 0
+}
+
+test "an empty command line is missing a required positional" {
+    let r = cli.Parser.new("demo")
+        .positional("file", "Input")
+        .parse()
+    match r {
+        cli.CliError.MissingRequired(what) => assert what == "<file>"
+        _ => assert false
+    }
+}
