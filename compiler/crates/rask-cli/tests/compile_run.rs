@@ -3194,6 +3194,11 @@ fn ok_conditional_move_then_reassign() {
 
 /// Run `rask check` and return combined stdout+stderr.
 fn check_output(source: &str) -> String {
+    check_output_with(source, &[])
+}
+
+/// `check_output` with extra command-line flags after the file.
+fn check_output_with(source: &str, flags: &[&str]) -> String {
     let rask = rask_binary();
     let id = next_tmp_id();
     let tmp = std::env::temp_dir().join(format!("rask_errtest_{}_{}.rk", std::process::id(), id));
@@ -3202,6 +3207,7 @@ fn check_output(source: &str) -> String {
     let out = Command::new(&rask)
         .arg("check")
         .arg(&tmp)
+        .args(flags)
         .output()
         .expect("failed to run rask check");
 
@@ -3241,6 +3247,26 @@ fn spawn_in_a_loop_is_not_blocking_io() {
     assert!(!output.contains("`spawn` can block"), "a spawn doesn't block: {}", output);
     assert!(output.contains("`fs.exists` can block, in a loop"), "real I/O still warns: {}", output);
     assert!(!output.contains("`println` can block"), "printing is opt-in: {}", output);
+}
+
+// Printing counts for CW2 when the build asks: `--warn blocking_print` is a
+// flag because whether stdout is a terminal is a fact about how the whole
+// program runs. A misspelled name is refused, not ignored.
+#[test]
+fn warn_blocking_print_is_a_flag() {
+    let src = "func main() {\n\
+               \x20   using Multitasking {\n\
+               \x20       spawn { println(\"x\") }.detach()\n\
+               \x20   }\n\
+               \x20   for j in 0..2 {\n\
+               \x20       println(\"{j}\")\n\
+               \x20   }\n\
+               }\n";
+    assert!(!check_output(src).contains("`println` can block"));
+    let on = check_output_with(src, &["--warn", "blocking_print"]);
+    assert!(on.contains("`println` can block, in a loop"), "{}", on);
+    let typo = check_output_with(src, &["--warn", "blocking_prnt"]);
+    assert!(typo.contains("did you mean `--warn blocking_print`"), "{}", typo);
 }
 
 // A method call is classed by the receiver's type, not by how the variable is

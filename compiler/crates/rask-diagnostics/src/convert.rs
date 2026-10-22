@@ -3152,28 +3152,40 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             UnknownAllowName { attr, name, suggestion, span } => {
-                let (why, known): (&str, Vec<&str>) = if *attr == "warn" {
-                    (
-                        "an `@warn` that matches nothing turns nothing on, and a warning that never fires looks exactly like code that never trips it — so a typo here would hide itself forever",
-                        rask_ast::allow_names::OPT_IN_WARNINGS.to_vec(),
-                    )
+                if *attr == "warn" {
+                    // No warning is turned on from an attribute yet. The one
+                    // opt-in that exists is about the whole build, so it's a flag.
+                    let diag = Diagnostic::error(format!("`@warn({})` turns nothing on", name))
+                        .with_code("E0855")
+                        .with_primary(*span, format!("`@warn({})` on this declaration", name))
+                        .with_why("no warning is switched on by `@warn` yet, so this would look like it worked and change nothing");
+                    match suggestion {
+                        Some(flag) => diag
+                            .with_fix(format!("rask check <file> --warn {}", flag))
+                            .with_help(format!("`{}` is about the whole build, so it's turned on from the command line", flag)),
+                        None => diag
+                            .with_fix("remove it".to_string())
+                            .with_help(format!(
+                                "the opt-in warnings that exist are turned on with `--warn`: {}",
+                                rask_ast::allow_names::OPT_IN_WARNINGS.join(", ")
+                            )),
+                    }
                 } else {
-                    (
-                        "an `@allow` that matches nothing is silent, and silence is exactly what a correctly-suppressed warning looks like — so a typo here would hide itself forever",
-                        rask_ast::allow_names::all().collect(),
-                    )
-                };
-                let diag = Diagnostic::error(format!("`@{}({})` names nothing", attr, name))
-                    .with_code("E0855")
-                    .with_primary(*span, format!("`@{}({})` on this declaration", attr, name))
-                    .with_why(why);
-                match suggestion {
-                    Some(s) => diag
-                        .with_fix(format!("did you mean `@{}({})`?", attr, s))
-                        .with_help(format!("did you mean `@{}({})`?", attr, s)),
-                    None => diag
-                        .with_fix("use a warning name this attribute knows".to_string())
-                        .with_help(format!("Known names for `@{}`: {}", attr, known.join(", "))),
+                    let diag = Diagnostic::error(format!("`@allow({})` names nothing", name))
+                        .with_code("E0855")
+                        .with_primary(*span, format!("`@allow({})` on this declaration", name))
+                        .with_why("an `@allow` that matches nothing is silent, and silence is exactly what a correctly-suppressed warning looks like — so a typo here would hide itself forever");
+                    match suggestion {
+                        Some(s) => diag
+                            .with_fix(format!("did you mean `@allow({})`?", s))
+                            .with_help(format!("did you mean `@allow({})`?", s)),
+                        None => diag
+                            .with_fix("use a compiler warning name or a lint rule id".to_string())
+                            .with_help(format!(
+                                "`@allow` takes one warning name or one lint rule id. Known names: {}",
+                                rask_ast::allow_names::all().collect::<Vec<_>>().join(", ")
+                            )),
+                    }
                 }
             }
 

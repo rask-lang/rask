@@ -175,7 +175,7 @@ Ghost text appears after the return type (or after `{` if no return type). Same 
 | Rule | Description |
 |------|-------------|
 | **CW1: Blocking in ThreadPool** | Warn when a function that blocks is called inside `ThreadPool.spawn` (holds the pool thread). References `conc.io-context` appendix |
-| **CW2: Blocking in a loop** | Warn when a function that blocks is called in a loop without `using Multitasking`, in a program that spawns (repeated blocking). A call that only prints doesn't count unless the function or test says `@warn(blocking_print)` (`tool.warnings/W12`) |
+| **CW2: Blocking in a loop** | Warn when a function that blocks is called in a loop without `using Multitasking`, in a program that spawns (repeated blocking). A call that only prints doesn't count unless the build passes `--warn blocking_print` (`tool.warnings/W12`) |
 
 These use the existing `tool.warnings` infrastructure (`@allow` to suppress).
 

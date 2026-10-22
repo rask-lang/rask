@@ -56,7 +56,9 @@ block can't carry it, because `TestDecl` has no attributes ([#1010](https://gith
 
 ## Opt-In Warnings
 
-Off by default. Enable with `@warn(warning_name)` on items or project-wide in `rask.toml`. Only W12 is built so far, on a function, method or test and on the struct or enum holding a method. A name `@warn` doesn't know is an error (E0855), the same as for `@allow`, so W6–W8 are refused until they exist.
+Off by default. W6–W8 are about one piece of code (auditing the copies in a hot loop), so they're enabled with `@warn(warning_name)` on items or project-wide in `rask.toml`. W12 is about the build: whether stdout is a terminal or a pipe is a fact about how the program runs, the same for every function in it, so it's enabled with `--warn blocking_print` on any command that compiles and has no attribute form.
+
+Only W12 is built. A name nothing answers to is an error rather than a silent no-op: `--warn` with an unknown name is refused with a did-you-mean, and `@warn(...)` is E0855 for every name until W6–W8 exist (for `blocking_print` the fix points at the flag).
 
 | Rule | Code | ID | Check |
 |------|------|----|-------|
@@ -84,7 +86,7 @@ Three levels. More specific wins.
 |------|-------------|
 | **CF1: Attribute-level** | `@allow`, `@warn`, `@deny` on any item or block; cascades into nested items |
 | **CF2: Package-level** | A `[warnings]` table in `rask.toml` sets project-wide defaults. Not in the `rask-package` schema yet, so writing one is an unknown-key error today |
-| **CF3: CLI-level** | `--deny-warnings` promotes all warnings to errors |
+| **CF3: CLI-level** | `--warn <name>` turns on a build-wide opt-in warning (W12). `--deny-warnings` promotes all warnings to errors (not built yet) |
 
 <!-- test: skip -->
 ```rask

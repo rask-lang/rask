@@ -80,6 +80,7 @@ pub fn print_usage() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}   Output diagnostics as structured JSON", output::arg("--json"));
+    println!("  {} {}  Turn on an opt-in warning: {}", output::arg("--warn"), output::arg("<name>"), rask_ast::allow_names::OPT_IN_WARNINGS.join(", "));
 }
 
 pub fn print_help_help() {

@@ -137,14 +137,17 @@ pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
 /// The stdlib's bodies are inferred too, so a call into it carries what the
 /// body does; warnings (CW1/CW2) are only about the program's own code.
 /// Returns the per-function effect map and those warnings. Call after type
-/// checking, with what it resolved — no AST modifications.
+/// checking, with what it resolved — no AST modifications. `warn` is the opt-in
+/// warnings the command line turned on.
 pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
     let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets);
-    let warnings = warnings::detect(program, &effects, &runtime_only, targets);
+    let warn_prints = warn.iter().any(|w| w == "blocking_print");
+    let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
     (effects, warnings)
 }
 

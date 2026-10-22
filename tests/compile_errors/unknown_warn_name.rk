@@ -1,25 +1,30 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: `@warn` has to name an opt-in warning that exists
-// Rejects: names nothing
+// Compile Error: `@warn` turns nothing on yet
+// Rejects: turns nothing on
 //
-// `@warn` turns an opt-in warning on. A misspelled name would turn nothing on,
-// and a warning that never fires looks exactly like code that never trips it.
-// `implicit_copy` is in the spec but not built, so it's refused too rather than
-// promising a check nobody runs.
+// No warning is switched on from an attribute yet. `blocking_print` is about
+// the whole build, so it's a flag (`rask check main.rk --warn blocking_print`),
+// and the per-item ones the spec lists (`implicit_copy`) aren't built. An
+// `@warn` that turned nothing on would look exactly like one that worked.
 
-// ERROR: `@warn(blocking_prnt)` names nothing
-@warn(blocking_prnt)
+// ERROR: `@warn(blocking_print)` turns nothing on
+@warn(blocking_print)
 func report(lines: Vec<string>) {
     for line in lines {
         println(line)
     }
 }
 
-// ERROR: `@warn(implicit_copy)` names nothing
+// ERROR: `@warn(blocking_prnt)` turns nothing on
+@warn(blocking_prnt)
+func typo() {}
+
+// ERROR: `@warn(implicit_copy)` turns nothing on
 @warn(implicit_copy)
 func copy_all() {}
 
 func main() {
     report(Vec.new())
+    typo()
     copy_all()
 }

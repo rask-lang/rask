@@ -311,14 +311,14 @@ impl TypeChecker {
                     });
                 }
             } else if let Some(name) = names::warned_name(attr) {
-                if !names::is_known_opt_in(name) {
-                    self.errors.push(TypeError::UnknownAllowName {
-                        attr: "warn",
-                        name: name.to_string(),
-                        suggestion: names::nearest_opt_in(name).map(str::to_string),
-                        span,
-                    });
-                }
+                // No opt-in warning is turned on from an attribute yet, so
+                // every name here would turn nothing on.
+                self.errors.push(TypeError::UnknownAllowName {
+                    attr: "warn",
+                    name: name.to_string(),
+                    suggestion: names::nearest_opt_in(name).map(str::to_string),
+                    span,
+                });
             }
         }
     }

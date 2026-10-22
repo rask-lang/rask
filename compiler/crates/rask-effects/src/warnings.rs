@@ -26,6 +26,7 @@ pub fn detect(
     effects: &EffectMap,
     runtime_only: &HashSet<String>,
     targets: &MethodTargets,
+    warn_prints: bool,
 ) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
     let program_is_concurrent = crate::decl_keys(decls)
@@ -43,23 +44,23 @@ pub fn detect(
         in_multitasking: false,
         in_root: false,
         under_runtime: false,
-        warn_prints: false,
+        warn_prints,
     };
 
     for decl in decls {
         match &decl.kind {
-            DeclKind::Fn(f) => ctx.check_fn(&f.name, f, is_root_fn(f), &[], &mut warnings),
+            DeclKind::Fn(f) => ctx.check_fn(&f.name, f, is_root_fn(f), &mut warnings),
             DeclKind::Struct(s) => {
-                for m in &s.methods { ctx.check_fn(&format!("{}.{}", s.name, m.name), m, false, &s.attrs, &mut warnings); }
+                for m in &s.methods { ctx.check_fn(&format!("{}.{}", s.name, m.name), m, false, &mut warnings); }
             }
             DeclKind::Enum(e) => {
-                for m in &e.methods { ctx.check_fn(&format!("{}.{}", e.name, m.name), m, false, &e.attrs, &mut warnings); }
+                for m in &e.methods { ctx.check_fn(&format!("{}.{}", e.name, m.name), m, false, &mut warnings); }
             }
             DeclKind::Impl(i) => {
-                for m in &i.methods { ctx.check_fn(&crate::method_key(&i.target_ty, &m.name), m, false, &[], &mut warnings); }
+                for m in &i.methods { ctx.check_fn(&crate::method_key(&i.target_ty, &m.name), m, false, &mut warnings); }
             }
             DeclKind::Interface(t) => {
-                for m in &t.methods { ctx.check_fn(&format!("{}.{}", t.name, m.name), m, false, &t.attrs, &mut warnings); }
+                for m in &t.methods { ctx.check_fn(&format!("{}.{}", t.name, m.name), m, false, &mut warnings); }
             }
             // A `test` block is a root like `main` is: nothing calls it, so
             // there is no caller for CC2 to blame, and the block it needs has to
@@ -71,7 +72,6 @@ pub fn detect(
                 ctx.in_multitasking = false;
                 ctx.in_root = true;
                 ctx.under_runtime = false;
-                ctx.warn_prints = warns_blocking_print(&t.attrs);
                 ctx.check_stmts(&t.body, &mut warnings);
             }
             DeclKind::Benchmark(b) => {
@@ -80,7 +80,6 @@ pub fn detect(
                 ctx.in_multitasking = false;
                 ctx.in_root = true;
                 ctx.under_runtime = false;
-                ctx.warn_prints = warns_blocking_print(&b.attrs);
                 ctx.check_stmts(&b.body, &mut warnings);
             }
             _ => {}
@@ -95,11 +94,6 @@ pub fn detect(
 /// is reported at its callers instead — that is what lets a library function
 /// like `http.serve` spawn per connection and leave the block to whoever calls
 /// it.
-/// `@warn(blocking_print)`: count terminal output as blocking for CW2.
-fn warns_blocking_print(attrs: &[rask_ast::attr::Attr]) -> bool {
-    attrs.iter().any(|a| rask_ast::allow_names::warned_name(a) == Some("blocking_print"))
-}
-
 fn is_root_fn(f: &FnDecl) -> bool {
     f.name == "main" || f.attrs.iter().any(|a| a.is("test"))
 }
@@ -123,27 +117,18 @@ struct WarnContext<'a> {
     in_root: bool,
     /// True while walking a function that can only run under a runtime.
     under_runtime: bool,
-    /// `@warn(blocking_print)` is on the function or the block holding it, so
-    /// CW2 counts terminal output too.
+    /// `--warn blocking_print`: CW2 counts terminal output too.
     warn_prints: bool,
 }
 
 impl<'a> WarnContext<'a> {
-    fn check_fn(
-        &mut self,
-        qname: &str,
-        f: &FnDecl,
-        is_root: bool,
-        enclosing_attrs: &[rask_ast::attr::Attr],
-        warnings: &mut Vec<EffectWarning>,
-    ) {
+    fn check_fn(&mut self, qname: &str, f: &FnDecl, is_root: bool, warnings: &mut Vec<EffectWarning>) {
         // Reset context per function
         self.in_thread_pool = false;
         self.in_loop = false;
         self.in_multitasking = false;
         self.in_root = is_root;
         self.under_runtime = self.runtime_only.contains(qname);
-        self.warn_prints = warns_blocking_print(&f.attrs) || warns_blocking_print(enclosing_attrs);
         self.check_stmts(&f.body, warnings);
     }
 
@@ -478,7 +463,7 @@ impl<'a> WarnContext<'a> {
         }
 
         // CW2: blocking in a loop without Multitasking (only in concurrent
-        // programs). A call that only prints counts under `@warn(blocking_print)`:
+        // programs). A call that only prints counts under `--warn blocking_print`:
         // a terminal that stops reading is rare, and the warning on every
         // `println` in a loop buried the ones that matter.
         let counts = effects.blocks || self.warn_prints;
@@ -650,7 +635,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
         assert!(warnings[0].message.contains("println"));
@@ -671,7 +656,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert!(warnings.is_empty(), "CW1 should not fire for IO outside a spawn closure");
     }
 
@@ -691,7 +676,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -723,20 +708,15 @@ mod tests {
         // print, and package_manager carried eight of them on every run.
         let decls = vec![make_fn("process", loop_calling("println"))];
         let effects = effects_printing_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert!(warnings.is_empty(), "{:?}", warnings);
     }
 
     #[test]
     fn warn_blocking_print_counts_printing_for_cw2() {
-        use rask_ast::attr::{Attr, AttrArg, AttrValue};
-        let mut decl = make_fn("process", loop_calling("println"));
-        if let DeclKind::Fn(f) = &mut decl.kind {
-            let arg = AttrArg { label: None, value: AttrValue::RuleName("blocking_print".into()) };
-            f.attrs.push(Attr::synthetic("warn", Some(vec![arg])));
-        }
+        let decls = vec![make_fn("process", loop_calling("println"))];
         let effects = effects_printing_concurrent("println", "process");
-        let warnings = detect(&[decl], &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), true);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -754,7 +734,7 @@ mod tests {
         })];
         let mut effects = HashMap::new();
         effects.insert("println".into(), crate::Effects { prints: true, ..Default::default() });
-        let warnings = detect(&[make_fn("worker", body)], &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&[make_fn("worker", body)], &effects, &HashSet::new(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
     }
@@ -775,7 +755,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io("println"); // no async_ effect anywhere
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert!(warnings.is_empty(), "CW2 should not fire in single-threaded programs");
     }
 
@@ -804,7 +784,7 @@ mod tests {
         })];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
 
@@ -823,7 +803,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = HashMap::new(); // add has no effects
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert!(warnings.is_empty());
     }
 
@@ -840,7 +820,7 @@ mod tests {
         })];
         let decls = vec![make_fn("bad", body)];
         let effects = effects_with_io("fs.read_text");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
     }
@@ -868,7 +848,7 @@ mod tests {
             span: sp(),
         })]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
         assert!(
             warnings.iter().all(|w| w.code != "comp.effects/CW2"),
             "CW2 fired inside a spawn-only function: {:?}",
@@ -890,7 +870,7 @@ mod tests {
             expr_stmt(task_spawn(vec![])),
         ]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
         assert!(
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
@@ -912,7 +892,7 @@ mod tests {
             },
             span: sp(),
         })]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
         assert!(
             warnings.iter().all(|w| w.code != "E0353"),
             "E0353 fired inside a spawned closure: {:?}",
@@ -926,7 +906,7 @@ mod tests {
     fn cc2_still_fires_for_the_call_that_starts_the_tree() {
         let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
         let main = make_fn("main", vec![expr_stmt(call("tree"))]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default());
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
         assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }

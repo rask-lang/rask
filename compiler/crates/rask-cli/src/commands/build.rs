@@ -798,7 +798,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                 process::exit(1);
             }
         };
-        let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+        let config = crate::compiler_config(cfg.clone());
         let mut pkg_ctx = rask_compiler::PackageContext {
             registry,
             root_id,
