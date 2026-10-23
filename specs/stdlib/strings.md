@@ -132,7 +132,7 @@ A `StringView` is the storable form of a string slice: it references a byte rang
 |------|-------------|
 | **V1: Refcounted view** | A view shares the source string's heap buffer and holds a refcount on it. The buffer stays alive as long as any view does. 16 bytes, Copy — same copy semantics as `string` (memcpy + atomic increment, elidable per `comp.string-refcount-elision`) |
 | **V2: Pin is type-visible** | A view keeps the *whole* source buffer alive, not just its range. That cost lives in the type: a `StringView` field says "shares a buffer", a `string` field says "independent". `.to_string()` copies out and releases the pin |
-| **V3: Read-only string API** | `StringView` is a struct holding the shared `string`, declared `@reads_as(text)` (`type.reads-as`): the full read-only string API works on a view as a receiver, with no copy. Slicing a view is its own `Slice` conformance. `v == "abc"` compares bytes. A view passed where a `string` goes is converted with `.to_string()`, which copies (SL3's reason) |
+| **V3: Read-only string API** | `StringView` is a struct holding the shared `string`, declared `@reads_as(text)` (`type.reads-as`): the full read-only string API works on a view as a receiver, with no copy. Slicing a view is its own `Slice` conformance. `v == "abc"`, `"abc" == v` and `v == w` compare bytes (`type.reads-as/RA6`). A view passed where a `string` goes is converted with `.to_string()`, which copies (SL3's reason) |
 | **V4: Small views inline** | Views ≤ 15 bytes store their bytes inline (same SSO layout as S8) — no refcount, no pin. Invisible to user code |
 | **V5: Creation via `.view()`** | `.view()` on a string views the whole string; on an expression-scoped slice (`s[i..j]`, `.trim()`, split/lines items) it captures that slice's range. No copy either way |
 | **V6: Views never chain** | Slicing a view and calling `.view()` re-references the original buffer directly. There is one header pointer, no matter how many times you re-slice |
@@ -703,7 +703,7 @@ FIX:
 | View of literal (> 15 bytes) | V1/S6 | References sentinel storage — no atomic ops, nothing pinned |
 | `.view()` mid-codepoint or OOB slice | S5 | Panic (the slice panics before `.view()` runs) |
 | View from source offset > 4 GiB or length ≥ 2 GiB | V1 | Panic — use `.to_string()` for the range |
-| `view == string` | V3 | Byte comparison. `"abc" == view` puts the view in an argument: `"abc" == view.to_string()` (SL3) |
+| `view == string` | V3 | Byte comparison, either way round (`type.reads-as/RA6`) |
 | View sent cross-task | V1 | Allowed — refcount is atomic |
 | Last view outlives all copies of source string | V1 | Fine — buffer freed when last holder (string or view) drops |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |

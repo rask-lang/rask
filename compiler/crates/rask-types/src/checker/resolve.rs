@@ -716,7 +716,9 @@ impl TypeChecker {
             return Ok(self.poison(&ret));
         }
 
-        // type.reads-as: a method the type doesn't declare is its field's.
+        // type.reads-as: a compared operand is its field (RA6), and a method
+        // the type doesn't declare is its field's.
+        let args = self.read_compared_operands(&method, &args, call_node);
         if let Some(read) = self.read_through_field(&ty, &method, &args, &ret, span, call_node) {
             return read;
         }

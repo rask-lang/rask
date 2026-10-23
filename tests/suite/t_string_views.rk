@@ -158,9 +158,18 @@ test "slices compare inside an enumerate" {
     let line = "x,a,y"
     mut at = 99
     for (i, w) in line.split(",").enumerate() {
-        if w == "a" && w == line[2..3].to_string() {
+        if "a" == w && w == line[2..3] {
             at = i
         }
     }
     assert at == 1
+}
+
+test "a comparison reads a slice on either side" {
+    let s = "  key: value  "
+    assert "key: value" == s.trim()
+    assert s.trim() == "key: value"
+    assert s[2..5] == s[2..5]
+    assert "kez" > s[2..5]
+    assert s[2..5] != "val"
 }

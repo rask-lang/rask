@@ -6,9 +6,10 @@
 //! and called on it: `slice.len()` is `slice.text.len()`. Four limits keep it
 //! honest (RA1–RA4): it is declared on the type, it names a field so the
 //! conversion is a field read and never a call, it is one step, and it lends
-//! only methods that read. It applies to receivers only — a value passed where
-//! the field's type is expected is a type error, because the callee could keep
-//! what it was given.
+//! only methods that read. It applies to receivers, and to both operands of a
+//! comparison operator (RA6) — a value passed where the field's type is
+//! expected is a type error, because the callee could keep what it was given.
+//! A comparison reads both sides and answers a `bool`, so it can't.
 //!
 //! The projection is recorded by node and written into the declarations after
 //! the check, so every pass after this one sees `x.text.m()`.
@@ -27,6 +28,9 @@ use crate::types::Type;
 pub struct ReadsAs {
     /// A method call → the field access its receiver became, and the field.
     pub projections: HashMap<NodeId, (NodeId, String)>,
+    /// A comparison → each operand read through a field: its position among
+    /// the arguments, the field access it became, and the field.
+    pub operands: HashMap<NodeId, Vec<(usize, NodeId, String)>>,
 }
 
 impl TypeChecker {
@@ -102,6 +106,36 @@ impl TypeChecker {
         }))
     }
 
+    /// RA6: the operands of a comparison operator read through their field,
+    /// the same as a receiver does, so `"abc" == slice` and `a == b` on two
+    /// slices compare the text. The argument types the comparison resolves
+    /// against, with each projected operand's replaced by its field's.
+    pub(super) fn read_compared_operands(&mut self, method: &str, args: &[Type], call_node: Option<NodeId>) -> Vec<Type> {
+        let comparison = rask_ast::expr::BinOp::ALL
+            .iter()
+            .any(|op| op.is_comparison() && rask_ast::expr::binary_op_method(*op) == Some(method));
+        let Some(call) = call_node.filter(|_| comparison) else { return args.to_vec() };
+        let mut read = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let Some((field, field_ty)) = self.reads_as_field(arg) else {
+                read.push(arg.clone());
+                continue;
+            };
+            let known = self.reads_as.operands.get(&call).and_then(|v| v.iter().find(|(at, _, _)| *at == i)).map(|(_, a, _)| *a);
+            let access = match known {
+                Some(a) => a,
+                None => {
+                    let a = self.derived_id();
+                    self.reads_as.operands.entry(call).or_default().push((i, a, field));
+                    a
+                }
+            };
+            self.node_types.insert(access, field_ty.clone());
+            read.push(field_ty);
+        }
+        read
+    }
+
     /// How a type's own declaration takes `self` for `method`, when it
     /// declares one: a struct's, an enum's or a primitive's conformance block.
     fn declared_self_mode(&self, ty: &Type, method: &str) -> Option<SelfParam> {
@@ -121,7 +155,7 @@ impl ReadsAs {
     /// Write the projections into `decls`: each recorded call's receiver
     /// becomes a read of the field.
     pub fn rewrite(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
-        if self.projections.is_empty() {
+        if self.projections.is_empty() && self.operands.is_empty() {
             return;
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut Rewriter { reads: self, done: Default::default() });
@@ -137,18 +171,25 @@ struct Rewriter<'a> {
 impl rask_ast::rewrite::Rewrite for Rewriter<'_> {
     fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
         use rask_ast::expr::{Expr, ExprKind};
-        let Some((access, field)) = self.reads.projections.get(&e.id) else { return };
-        if !self.done.insert(e.id) {
+        let project = |value: &mut Expr, access: NodeId, field: &str| {
+            let span = value.span;
+            let inner = std::mem::replace(value, Expr { id: access, kind: ExprKind::Bool(false), span });
+            *value = Expr { id: access, kind: ExprKind::Field { object: Box::new(inner), field: field.to_string() }, span };
+        };
+        let receiver = self.reads.projections.get(&e.id);
+        let operands = self.reads.operands.get(&e.id);
+        if (receiver.is_none() && operands.is_none()) || !self.done.insert(e.id) {
             return;
         }
-        if let ExprKind::MethodCall { object, .. } = &mut e.kind {
-            let span = object.span;
-            let receiver = std::mem::replace(object.as_mut(), Expr { id: *access, kind: ExprKind::Bool(false), span });
-            **object = Expr {
-                id: *access,
-                kind: ExprKind::Field { object: Box::new(receiver), field: field.clone() },
-                span,
-            };
+        if let ExprKind::MethodCall { object, args, .. } = &mut e.kind {
+            if let Some((access, field)) = receiver {
+                project(object.as_mut(), *access, field);
+            }
+            for (i, access, field) in operands.into_iter().flatten() {
+                if let Some(arg) = args.get_mut(*i) {
+                    project(&mut arg.expr, *access, field);
+                }
+            }
         }
     }
 }
