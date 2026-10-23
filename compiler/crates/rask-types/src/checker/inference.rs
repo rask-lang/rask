@@ -107,14 +107,11 @@ pub enum TypeConstraint {
     /// variable left the result disconnected from the container forever, so it
     /// stayed open however the field later settled.
     Index {
-        /// The index expression, for a range index that becomes a slice call.
-        node: rask_ast::NodeId,
         object: Type,
         /// Carried so #310's index-type check can run again once the container
         /// is known — at the index site it had nothing to classify against.
         index: Type,
         result: Type,
-        is_range: bool,
         span: Span,
     },
     /// `a?.b` — the chain's result, once `b`'s own type is known.

@@ -141,26 +141,12 @@ extend string {
     }
 
     // ── Slicing ─────────────────────────────────────────────
-    // `s[i..j]` is a call to one of these, written by the checker: a slice
-    // is a value that knows where it was cut (std.strings/S2).
+    // `s[i..j]` is the `Slice` conformance below: a slice is a value that
+    // knows where it was cut (std.strings/S2).
 
     /// The whole string as a span.
     public func span(self) -> Span {
         return Span(0, self.len())
-    }
-
-    /// `self[start..end]`, or `self[start..=end]` when `through` is set.
-    func slice_at(self, start: usize, end: usize, through: bool) -> StringSlice {
-        mut hi = end
-        if through {
-            hi += 1
-        }
-        return slice_of(self.view(), 0, start, hi)
-    }
-
-    /// `self[start..]`.
-    func slice_from(self, start: usize) -> StringSlice {
-        return slice_of(self.view(), 0, start, self.len())
     }
 
     @native("rask_string_view_range")
@@ -211,17 +197,17 @@ extend string {
 
     /// Without leading and trailing whitespace.
     public func trim(self) -> StringSlice {
-        return self.slice_from(0).trim()
+        return self[0..].trim()
     }
 
     /// Without leading whitespace.
     public func trim_start(self) -> StringSlice {
-        return self.slice_from(0).trim_start()
+        return self[0..].trim_start()
     }
 
     /// Without trailing whitespace.
     public func trim_end(self) -> StringSlice {
-        return self.slice_from(0).trim_end()
+        return self[0..].trim_end()
     }
 
     // ── Case and normalization ──────────────────────────────
@@ -512,40 +498,50 @@ extend StringSlice {
         return self.cut(0, self.text.trim_end_at(0, self.text.len()))
     }
 
-    /// `self[start..end]`: a slice of the slice, still placed in the source.
-    func slice_at(self, start: usize, end: usize, through: bool) -> StringSlice {
-        mut hi = end
-        if through {
-            hi += 1
-        }
-        return slice_of(self.text, self.start, start, hi)
-    }
-
-    /// `self[start..]`.
-    func slice_from(self, start: usize) -> StringSlice {
-        return slice_of(self.text, self.start, start, self.text.len())
-    }
-
     /// Offsets `a..b` of this slice, which the trims have already checked.
     func cut(self, a: usize, b: usize) -> StringSlice {
         return StringSlice(text: self.text.view_range(a, b), start: self.start + a, end: self.start + b)
     }
 }
 
-extend StringView {
-    /// `self[start..end]`, placed in the view (V6).
-    func slice_at(self, start: usize, end: usize, through: bool) -> StringSlice {
-        mut hi = end
-        if through {
-            hi += 1
-        }
-        return slice_of(self, 0, start, hi)
-    }
+// `s[i..j]` on each of the three (type.operators/IX4). A slice of a slice is
+// still placed in the original string (SL1), and a view's slices in the view
+// (V6).
 
-    /// `self[start..]`.
-    func slice_from(self, start: usize) -> StringSlice {
-        return slice_of(self, 0, start, self.len())
+string implements Slice {
+    type Out = StringSlice
+
+    func slice(self, start: usize, end: usize?, through: bool) -> StringSlice {
+        return slice_of(self.view(), 0, start, range_end(end, through, self.len()))
     }
+}
+
+StringView implements Slice {
+    type Out = StringSlice
+
+    func slice(self, start: usize, end: usize?, through: bool) -> StringSlice {
+        return slice_of(self, 0, start, range_end(end, through, self.len()))
+    }
+}
+
+StringSlice implements Slice {
+    type Out = StringSlice
+
+    func slice(self, start: usize, end: usize?, through: bool) -> StringSlice {
+        return slice_of(self.text, self.start, start, range_end(end, through, self.text.len()))
+    }
+}
+
+/// Where a range stops: its end, one past it for `..=`, or `len` when it has
+/// none.
+func range_end(end: usize?, through: bool, len: usize) -> usize {
+    if end? as e {
+        if through {
+            return e + 1
+        }
+        return e
+    }
+    return len
 }
 
 /// `text[start..end]` as a slice placed `base` bytes into its source. Clamps

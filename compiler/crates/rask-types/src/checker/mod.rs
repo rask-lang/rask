@@ -267,7 +267,6 @@ pub struct TypeChecker {
     pub(super) string_slices: StringSlices,
     pub(super) filed_methods: type_defs::FiledMethods,
     /// Each range index's start, end and `..=`, for the slice call it becomes.
-    pub(super) range_indexes: HashMap<NodeId, slices::RangeShape>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -658,7 +657,6 @@ impl TypeChecker {
             sequence_coercions: HashMap::new(),
             string_slices: StringSlices::default(),
             filed_methods: Default::default(),
-            range_indexes: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),

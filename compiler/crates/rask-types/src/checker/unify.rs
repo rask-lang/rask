@@ -540,8 +540,8 @@ impl TypeChecker {
                 self.resolve_error_branch(value, result, span)
             }
 
-            TypeConstraint::Index { node, object, index, result, is_range, span } => {
-                self.resolve_index(node, object, index, result, is_range, span)
+            TypeConstraint::Index { object, index, result, span } => {
+                self.resolve_index(object, index, result, span)
             }
 
             TypeConstraint::OptionalChain { field, result, span } => {
@@ -976,31 +976,17 @@ impl TypeChecker {
 
     fn resolve_index(
         &mut self,
-        node: rask_ast::NodeId,
         object: Type,
         index: Type,
         result: Type,
-        is_range: bool,
         span: Span,
     ) -> Result<bool, TypeError> {
         let obj = self.ctx.apply(&object);
         if matches!(obj, Type::Var(_)) {
-            self.ctx.add_constraint(TypeConstraint::Index {
-                node,
-                object,
-                index,
-                result,
-                is_range,
-                span,
-            });
+            self.ctx.add_constraint(TypeConstraint::Index { object, index, result, span });
             return Ok(false);
         }
-        if is_range {
-            if let Some(sliced) = self.slice_index(node, &obj, &result, span) {
-                return sliced;
-            }
-        }
-        let progressed = match self.index_result_type(&obj, is_range) {
+        let progressed = match self.index_result_type(&obj) {
             Some(elem) => {
                 self.unify(&result, &elem, span)?;
                 true
@@ -1014,7 +1000,7 @@ impl TypeChecker {
         // index went unchecked — `self.rows["nope"]` on a `Vec<Row>` field passed.
         // The container is known now, and `validate_pending_index` runs after the
         // solver, so registering here still lands in time.
-        self.check_index_types(&obj, &index, is_range, span);
+        self.check_index_types(&obj, &index, span);
         Ok(progressed)
     }
 

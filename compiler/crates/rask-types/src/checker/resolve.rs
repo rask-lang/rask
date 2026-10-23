@@ -3531,6 +3531,9 @@ impl TypeChecker {
     /// The operator a desugared method name came from, so the message quotes
     /// what was written rather than `add`.
     pub(super) fn operator_spelling(method: &str) -> &'static str {
+        if method == rask_ast::operators::SLICE_METHOD {
+            return "[a..b]";
+        }
         rask_ast::expr::binary_op_of_method(method).map_or("this operator", rask_ast::expr::BinOp::symbol)
     }
 

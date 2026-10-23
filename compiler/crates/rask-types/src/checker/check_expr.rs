@@ -866,34 +866,17 @@ impl TypeChecker {
                 let raw_obj_ty = self.infer_expr(object);
                 let idx_ty = self.infer_expr(index);
 
-                // Check if indexing with a range (slicing)
-                let is_range = matches!(index.kind, rask_ast::expr::ExprKind::Range { .. });
-                if let rask_ast::expr::ExprKind::Range { start, end, inclusive } = &index.kind {
-                    self.range_indexes.insert(expr.id, super::slices::RangeShape {
-                        start: start.as_ref().map(|e| e.id),
-                        end: end.as_ref().map(|e| e.id),
-                        inclusive: *inclusive,
-                    });
-                }
-
+                // A range index never gets here: desugaring made it the `Slice`
+                // operator.
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
                 // A rejected index has no result to constrain, and registering
                 // one would report the same error a second time when the
                 // deferred check runs.
-                if self.check_index_types(&obj_ty, &idx_ty, is_range, index.span) {
+                if self.check_index_types(&obj_ty, &idx_ty, index.span) {
                     return Type::Error;
                 }
-                if is_range {
-                    let result = self.ctx.fresh_var();
-                    if let Some(sliced) = self.slice_index(expr.id, &obj_ty, &result, expr.span) {
-                        if let Err(e) = sliced {
-                            self.errors.push(e);
-                        }
-                        return result;
-                    }
-                }
-                match self.index_result_type(&obj_ty, is_range) {
+                match self.index_result_type(&obj_ty) {
                     Some(elem) => elem,
                     None => {
                         // Shape unknown here — `state.entities[h]` waits on the
@@ -904,7 +887,6 @@ impl TypeChecker {
                         // an open type however the field later resolved (#632).
                         let elem = self.ctx.fresh_var();
                         self.ctx.add_constraint(TypeConstraint::Index {
-                            node: expr.id,
                             object: raw_obj_ty,
                             // Carried so #310's index-type check can run again
                             // once the container is known. The call above had an
@@ -912,7 +894,6 @@ impl TypeChecker {
                             // a field-reached index went unchecked.
                             index: idx_ty.clone(),
                             result: elem.clone(),
-                            is_range,
                             span: expr.span,
                         });
                         elem
@@ -2720,17 +2701,13 @@ impl TypeChecker {
         })
     }
 
-    pub(super) fn index_result_type(&self, obj_ty: &Type, is_range: bool) -> Option<Type> {
+    pub(super) fn index_result_type(&self, obj_ty: &Type) -> Option<Type> {
         match obj_ty {
-            // A range index on an array is rejected in `check_index_types` —
-            // there is no slice type — so only the scalar read has a result.
-            Type::Array { elem, .. } if !is_range => Some(*elem.clone()),
-            // `[]` on a string means bytes in both forms (std.strings/U1b):
-            // a range slices, a scalar index reads one byte. It used to yield
-            // a `char` at a *character* index, so the same bracket counted two
+            Type::Array { elem, .. } => Some(*elem.clone()),
+            // `s[i]` reads one byte (std.strings/U1b). It used to yield a
+            // `char` at a *character* index, so the same bracket counted two
             // different units and `s[i]` in a loop scanned from byte zero.
-            // A range makes a slice, which `slice_index` answers.
-            Type::String if !is_range => Some(Type::U8),
+            Type::String => Some(Type::U8),
             // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
             // Map<K,V> indexed by K → value type from second arg.
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
@@ -2744,9 +2721,7 @@ impl TypeChecker {
                 };
                 let elem_arg = if is_map { args.get(1) } else { args.first() };
                 match elem_arg {
-                    // As above: a range index has no type to be, and the error
-                    // is already reported.
-                    Some(GenericArg::Type(elem)) if !is_range => Some(*elem.clone()),
+                    Some(GenericArg::Type(elem)) => Some(*elem.clone()),
                     _ => None,
                 }
             }
@@ -6627,70 +6602,32 @@ impl TypeChecker {
         });
     }
 
-    /// #310: classify a container at an index site. A range on a non-sequence
-    /// is rejected immediately; every other index is deferred to
-    /// `validate_pending_index` so a literal index can adapt to the key/element
-    /// type after constraint solving.
+    /// #310: classify a container at an index site. Every index is deferred
+    /// to `validate_pending_index` so a literal index can adapt to the
+    /// key/element type after constraint solving.
     /// Returns true when the index itself is rejected, so the caller stops
     /// asking what its result type would be.
-    pub(super) fn check_index_types(&mut self, container: &Type, index: &Type, is_range: bool, span: Span) -> bool {
+    pub(super) fn check_index_types(&mut self, container: &Type, index: &Type, span: Span) -> bool {
         match self.classify_index_container(container) {
             Some(IndexContainer::Sequence) => {
-                // A range slices a string into another string (std.strings/U1b).
-                // On a Vec or an array it has nothing to produce: there is no
-                // slice type, so the result would need to be a `Vec<T>` copy
-                // and that hides an allocation. `v.skip(a).take(n)` is the
-                // spelling, and it fuses.
-                if is_range && !matches!(container, Type::String) {
-                    self.errors.push(TypeError::IndexTypeMismatch {
-                        container: container.clone(),
-                        found: index.clone(),
-                        kind: IndexErrorKind::NoSliceType,
-                        span,
-                    });
-                    return true;
-                }
-                if !is_range {
-                    self.pending_index.push(PendingIndex {
-                        container: container.clone(),
-                        index: index.clone(),
-                        kind: PendingIndexKind::Integer,
-                        span,
-                    });
-                }
+                self.pending_index.push(PendingIndex {
+                    container: container.clone(),
+                    index: index.clone(),
+                    kind: PendingIndexKind::Integer,
+                    span,
+                });
             }
             Some(IndexContainer::Map(key)) => {
-                if is_range {
-                    self.errors.push(TypeError::IndexTypeMismatch {
-                        container: container.clone(),
-                        found: index.clone(),
-                        kind: IndexErrorKind::NotSliceable,
-                        span,
-                    });
-                } else {
-                    self.pending_index.push(PendingIndex {
-                        container: container.clone(),
-                        index: index.clone(),
-                        kind: PendingIndexKind::MapKey(key),
-                        span,
-                    });
-                }
+                self.pending_index.push(PendingIndex {
+                    container: container.clone(),
+                    index: index.clone(),
+                    kind: PendingIndexKind::MapKey(key),
+                    span,
+                });
             }
             // Unknown / unresolved container — leave it.
             None => {
-                // A `Sequence<T>` is the one unindexable thing worth naming.
-                // SEQ41 made a collection's adapters lazy, so `v.filter(p)[0]`
-                // is now an ordinary mistake to make — and it used to reach
-                // codegen as "Function not found: Sequence_index", which tells
-                // the reader nothing about what to do.
-                if matches!(
-                    &self.ctx.apply(container),
-                    Type::UnresolvedGeneric { name, .. } if name == "Sequence" || name == "SequenceMut"
-                ) || matches!(
-                    &self.ctx.apply(container),
-                    Type::Generic { base, .. }
-                        if self.types.type_name(*base).starts_with("Sequence")
-                ) {
+                if self.is_sequence_type(container) {
                     self.errors.push(TypeError::IndexTypeMismatch {
                         container: self.nameable(&self.ctx.apply(container)),
                         found: index.clone(),
@@ -6701,6 +6638,31 @@ impl TypeChecker {
             }
         }
         false
+    }
+
+    /// A `Sequence<T>` is the one unindexable thing worth naming. SEQ41 made
+    /// a collection's adapters lazy, so `v.filter(p)[0]` is an ordinary
+    /// mistake to make — and it used to reach codegen as "Function not found:
+    /// Sequence_index", which tells the reader nothing about what to do.
+    fn is_sequence_type(&self, ty: &Type) -> bool {
+        match &self.ctx.apply(ty) {
+            Type::UnresolvedGeneric { name, .. } => name == "Sequence" || name == "SequenceMut",
+            Type::Generic { base, .. } => self.types.type_name(*base).starts_with("Sequence"),
+            _ => false,
+        }
+    }
+
+    /// Why a container with no `Slice` conformance has no range index, when
+    /// there's more to say than the operator's own error (type.operators/IX4):
+    /// a run of elements has no slice type to be, a map has no positions, and a
+    /// sequence holds no elements. `None` for anything else.
+    pub(super) fn range_index_rejection(&self, container: &Type) -> Option<IndexErrorKind> {
+        match self.classify_index_container(&self.ctx.apply(container)) {
+            Some(IndexContainer::Sequence) => Some(IndexErrorKind::NoSliceType),
+            Some(IndexContainer::Map(_)) => Some(IndexErrorKind::NotSliceable),
+            None if self.is_sequence_type(container) => Some(IndexErrorKind::NotPositioned),
+            None => None,
+        }
     }
 
     /// Recognize the indexable stdlib containers. Returns `None` for anything

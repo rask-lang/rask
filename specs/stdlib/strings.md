@@ -12,7 +12,7 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 | Rule | Description |
 |------|-------------|
 | **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes (tagged union — see S8). Under VS1 threshold → implicit Copy |
-| **S2: Inline slicing** | `s[i..j]` is a `StringSlice`: the bytes it covers and where they sit in `s`. It lives for the expression that makes it |
+| **S2: Inline slicing** | `s[i..j]` is a `StringSlice`: the bytes it covers and where they sit in `s`. It lives for the expression that makes it. The bracket is the `Slice` operator (`type.operators/IX4`), which `string`, `StringView` and `StringSlice` each conform to |
 | **S3: Public APIs use string** | Prefer `string` parameters in public APIs — callers shouldn't need to know your storage strategy. `StringView` is a storage and return type for parsing layers; `Span` is fine anywhere — it's a general-purpose range type |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |

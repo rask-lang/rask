@@ -931,7 +931,10 @@ impl<'a> InterfaceChecker<'a> {
         if assoc_types.is_empty() {
             return map;
         }
-        let type_id = self.named_type_id(self_ty);
+        // `conformance_target`, not `named_type_id`: a primitive's conformance
+        // is filed under its stand-in, and asking by name missed `i64
+        // implements Shout { type Out = string }`'s binding entirely.
+        let type_id = self.types.conformance_target(self_ty);
         for a in assoc_types {
             let bound = type_id
                 .and_then(|id| self.types.assoc_binding(id, interface_ref, &a.name))
@@ -1351,7 +1354,9 @@ impl<'a> InterfaceChecker<'a> {
             // rather than reporting it methodless.
             Type::UnresolvedNamed(name) => self.types.get_type_id(name),
             Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
-            _ => None,
+            // A primitive's conformance blocks file their methods under its
+            // stand-in (OR6): `string implements Slice` is checked against them.
+            _ => self.types.conformance_target(ty),
         };
         // On an instance the receiver's parameters are its arguments, so the
         // signatures compare against required ones read off the same instance
@@ -1386,7 +1391,10 @@ impl<'a> InterfaceChecker<'a> {
             // block that had them all — so the newtype, which is the way out of
             // both XC1 and XC3, couldn't carry a conformance at all.
             Some(TypeDef::NominalAlias { methods, .. }) => methods.clone(),
-            // Primitives and unions have builtin methods checked separately.
+            // A primitive's builtin methods are checked separately
+            // (`has_builtin_method`); these are the ones a conformance wrote.
+            Some(TypeDef::Primitive { methods, .. }) => methods.clone(),
+            // Unions have builtin methods checked separately.
             _ => Vec::new(),
         }
     }

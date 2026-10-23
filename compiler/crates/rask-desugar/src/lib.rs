@@ -1077,6 +1077,38 @@ impl Desugarer {
         }
         // Not and Ref remain as unary
 
+        // `x[a..b]` is the range-index operator: `x.slice(a, b, false)`, `x[a..]`
+        // passes `none` for the end and `x[..b]` a `0` start, `..=` sets the
+        // last argument. Like the others it answers to a conformance, `Slice`
+        // (type.operator-resolution/OR2), so any type can be sliced and none is
+        // the compiler's.
+        if matches!(&expr.kind, ExprKind::Index { index, .. } if matches!(index.kind, ExprKind::Range { .. })) {
+            let old = std::mem::replace(&mut expr.kind, ExprKind::Bool(false));
+            if let ExprKind::Index { object, index } = old {
+                if let ExprKind::Range { start, end, inclusive } = index.kind {
+                    let index_span = index.span;
+                    let mut synth = |kind: ExprKind| Expr { id: self.fresh_id(), kind, span: index_span };
+                    let start = match start {
+                        Some(e) => *e,
+                        None => synth(ExprKind::Int(0, Some(rask_ast::token::IntSuffix::Usize))),
+                    };
+                    let end = match end {
+                        Some(e) => *e,
+                        None => synth(ExprKind::None),
+                    };
+                    let through = synth(ExprKind::Bool(inclusive));
+                    let arg = |expr| CallArg { name: None, mode: ArgMode::Default, expr };
+                    self.operator_calls.insert(expr.id);
+                    expr.kind = ExprKind::MethodCall {
+                        object,
+                        method: rask_ast::operators::SLICE_METHOD.to_string(),
+                        type_args: None,
+                        args: vec![arg(start), arg(end), arg(through)],
+                    };
+                }
+            }
+        }
+
         // Desugar StringInterp: segments → "lit".concat(expr.to_string()).concat("lit")...
         if let ExprKind::StringInterp(segments) = &expr.kind {
             let segments = segments.clone();

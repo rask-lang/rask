@@ -3137,14 +3137,6 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Result<TypedOperand, LoweringError> {
-            // A range index on a string is a call by now: the checker wrote
-            // it as the receiver's `slice_at`/`slice_from` (std.strings/S2).
-            if matches!(index.kind, ExprKind::Range { .. }) {
-                return Err(LoweringError::InvalidConstruct(
-                    "a range index reached lowering; the checker writes it as a slice call".to_string(),
-                ));
-            }
-
             let (obj_op, obj_ty) = self.lower_expr(object)?;
             let (idx_op, _) = self.lower_expr(index)?;
 
