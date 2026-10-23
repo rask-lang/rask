@@ -87,14 +87,12 @@ share the result freezes it.
 Every `Vec<u8>` allocation carries 8 bytes for a refcount it uses only once frozen. For a
 read buffer that's nothing. For a million tiny `Vec<u8>`s it's noticeable, and the honest
 answer is that a million tiny byte buffers want to be `bytes` from the start, which
-inline anything 15 bytes or under (BY3). Only `Vec<u8>` needs the header; other element
-types don't freeze.
+inline anything 15 bytes or under (BY3). Only `Vec<u8>` needs the header, because only
+bytes freeze. Bytes are what crosses a wire and gets cut into pieces. A read-only list of
+anything else that several tasks share is a `Shared<Vec<T>, Readers>`, or a copy.
 
 ## Open questions
 
-- **Freezing other element types.** `Vec<u32>` to a shared `[u32]` buffer works the same
-  way. Is that a second type, or does `bytes` stay special because bytes are what
-  crosses wires?
 - **`@binary` input.** `@binary` parsing reads from a byte buffer. Reading from `bytes`
   or a `BytesView` gives it zero-copy input. Whether it keeps a `Vec<u8>` form is
   `std.bits`' call.
