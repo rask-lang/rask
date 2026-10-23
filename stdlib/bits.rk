@@ -21,134 +21,169 @@ extend BinaryParseError {
     }
 }
 
-extend Vec<u8> {
-    public func read_u8(self, at: usize) -> (u8, usize) or BinaryParseError {
-        let b = try first1(self, at)
-        return (b[0], at + 1)
+/// A byte buffer read front to back. Each `read_*` takes the next value and
+/// moves past it, so nothing is copied but what a read hands back.
+public struct BinaryReader {
+    data: Vec<u8>
+    at: usize
+}
+
+extend BinaryReader {
+    public func new(take data: Vec<u8>) -> BinaryReader {
+        return BinaryReader(data: data, at: 0)
     }
 
-    public func read_i8(self, at: usize) -> (i8, usize) or BinaryParseError {
-        let b = try first1(self, at)
-        return (i8.from_le_bytes(b), at + 1)
+    /// Bytes read so far.
+    public func pos(self) -> usize {
+        return self.at
     }
 
-    public func read_u16be(self, at: usize) -> (u16, usize) or BinaryParseError {
-        let b = try first2(self, at)
-        return (u16.from_be_bytes(b), at + 2)
+    /// Bytes not read yet.
+    public func remaining(self) -> usize {
+        return self.data.len() - self.at
     }
 
-    public func read_u16le(self, at: usize) -> (u16, usize) or BinaryParseError {
-        let b = try first2(self, at)
-        return (u16.from_le_bytes(b), at + 2)
+    /// The whole buffer back, read part included.
+    public func into_inner(take self) -> Vec<u8> {
+        return self.data
     }
 
-    public func read_i16be(self, at: usize) -> (i16, usize) or BinaryParseError {
-        let b = try first2(self, at)
-        return (i16.from_be_bytes(b), at + 2)
+    public func read_u8(mutate self) -> u8 or BinaryParseError {
+        let b = try self.next1()
+        return b[0]
     }
 
-    public func read_i16le(self, at: usize) -> (i16, usize) or BinaryParseError {
-        let b = try first2(self, at)
-        return (i16.from_le_bytes(b), at + 2)
+    public func read_i8(mutate self) -> i8 or BinaryParseError {
+        let b = try self.next1()
+        return i8.from_le_bytes(b)
     }
 
-    public func read_u32be(self, at: usize) -> (u32, usize) or BinaryParseError {
-        let b = try first4(self, at)
-        return (u32.from_be_bytes(b), at + 4)
+    public func read_u16be(mutate self) -> u16 or BinaryParseError {
+        let b = try self.next2()
+        return u16.from_be_bytes(b)
     }
 
-    public func read_u32le(self, at: usize) -> (u32, usize) or BinaryParseError {
-        let b = try first4(self, at)
-        return (u32.from_le_bytes(b), at + 4)
+    public func read_u16le(mutate self) -> u16 or BinaryParseError {
+        let b = try self.next2()
+        return u16.from_le_bytes(b)
     }
 
-    public func read_i32be(self, at: usize) -> (i32, usize) or BinaryParseError {
-        let b = try first4(self, at)
-        return (i32.from_be_bytes(b), at + 4)
+    public func read_i16be(mutate self) -> i16 or BinaryParseError {
+        let b = try self.next2()
+        return i16.from_be_bytes(b)
     }
 
-    public func read_i32le(self, at: usize) -> (i32, usize) or BinaryParseError {
-        let b = try first4(self, at)
-        return (i32.from_le_bytes(b), at + 4)
+    public func read_i16le(mutate self) -> i16 or BinaryParseError {
+        let b = try self.next2()
+        return i16.from_le_bytes(b)
     }
 
-    public func read_u64be(self, at: usize) -> (u64, usize) or BinaryParseError {
-        let b = try first8(self, at)
-        return (u64.from_be_bytes(b), at + 8)
+    public func read_u32be(mutate self) -> u32 or BinaryParseError {
+        let b = try self.next4()
+        return u32.from_be_bytes(b)
     }
 
-    public func read_u64le(self, at: usize) -> (u64, usize) or BinaryParseError {
-        let b = try first8(self, at)
-        return (u64.from_le_bytes(b), at + 8)
+    public func read_u32le(mutate self) -> u32 or BinaryParseError {
+        let b = try self.next4()
+        return u32.from_le_bytes(b)
     }
 
-    public func read_i64be(self, at: usize) -> (i64, usize) or BinaryParseError {
-        let b = try first8(self, at)
-        return (i64.from_be_bytes(b), at + 8)
+    public func read_i32be(mutate self) -> i32 or BinaryParseError {
+        let b = try self.next4()
+        return i32.from_be_bytes(b)
     }
 
-    public func read_i64le(self, at: usize) -> (i64, usize) or BinaryParseError {
-        let b = try first8(self, at)
-        return (i64.from_le_bytes(b), at + 8)
+    public func read_i32le(mutate self) -> i32 or BinaryParseError {
+        let b = try self.next4()
+        return i32.from_le_bytes(b)
     }
 
-    public func read_f32be(self, at: usize) -> (f32, usize) or BinaryParseError {
-        let b = try first4(self, at)
-        return (f32.from_bits(u32.from_be_bytes(b)), at + 4)
+    public func read_u64be(mutate self) -> u64 or BinaryParseError {
+        let b = try self.next8()
+        return u64.from_be_bytes(b)
     }
 
-    public func read_f32le(self, at: usize) -> (f32, usize) or BinaryParseError {
-        let b = try first4(self, at)
-        return (f32.from_bits(u32.from_le_bytes(b)), at + 4)
+    public func read_u64le(mutate self) -> u64 or BinaryParseError {
+        let b = try self.next8()
+        return u64.from_le_bytes(b)
     }
 
-    public func read_f64be(self, at: usize) -> (f64, usize) or BinaryParseError {
-        let b = try first8(self, at)
-        return (f64.from_bits(u64.from_be_bytes(b)), at + 8)
+    public func read_i64be(mutate self) -> i64 or BinaryParseError {
+        let b = try self.next8()
+        return i64.from_be_bytes(b)
     }
 
-    public func read_f64le(self, at: usize) -> (f64, usize) or BinaryParseError {
-        let b = try first8(self, at)
-        return (f64.from_bits(u64.from_le_bytes(b)), at + 8)
+    public func read_i64le(mutate self) -> i64 or BinaryParseError {
+        let b = try self.next8()
+        return i64.from_le_bytes(b)
     }
 
-    /// The `n` bytes from `at` on, and the offset past them.
-    public func read_bytes(self, at: usize, n: usize) -> (Vec<u8>, usize) or BinaryParseError {
-        try need(self, at, n)
+    public func read_f32be(mutate self) -> f32 or BinaryParseError {
+        let b = try self.next4()
+        return f32.from_bits(u32.from_be_bytes(b))
+    }
+
+    public func read_f32le(mutate self) -> f32 or BinaryParseError {
+        let b = try self.next4()
+        return f32.from_bits(u32.from_le_bytes(b))
+    }
+
+    public func read_f64be(mutate self) -> f64 or BinaryParseError {
+        let b = try self.next8()
+        return f64.from_bits(u64.from_be_bytes(b))
+    }
+
+    public func read_f64le(mutate self) -> f64 or BinaryParseError {
+        let b = try self.next8()
+        return f64.from_bits(u64.from_le_bytes(b))
+    }
+
+    /// The next `n` bytes, copied out.
+    public func read_bytes(mutate self, n: usize) -> Vec<u8> or BinaryParseError {
+        try self.need(n)
         mut head: Vec<u8> = Vec.with_capacity(n)
-        for i in at..at + n {
-            head.push(self[i])
+        for i in self.at..self.at + n {
+            head.push(self.data[i])
         }
-        return (head, at + n)
+        self.at += n
+        return head
     }
-}
 
-/// Fails unless `data` holds at least `n` bytes from `at` on.
-func need(data: Vec<u8>, at: usize, n: usize) -> void or BinaryParseError {
-    let left = if at < data.len() { data.len() - at } else { 0 }
-    if left < n {
-        return BinaryParseError.UnexpectedEnd(expected: n, actual: left)
+    /// Fails unless at least `n` bytes are left.
+    func need(self, n: usize) -> void or BinaryParseError {
+        let left = self.remaining()
+        if left < n {
+            return BinaryParseError.UnexpectedEnd(expected: n, actual: left)
+        }
     }
-}
 
-func first1(data: Vec<u8>, at: usize) -> [u8; 1] or BinaryParseError {
-    try need(data, at, 1)
-    return [data[at]]
-}
+    func next1(mutate self) -> [u8; 1] or BinaryParseError {
+        try self.need(1)
+        let at = self.at
+        self.at += 1
+        return [self.data[at]]
+    }
 
-func first2(data: Vec<u8>, at: usize) -> [u8; 2] or BinaryParseError {
-    try need(data, at, 2)
-    return [data[at], data[at + 1]]
-}
+    func next2(mutate self) -> [u8; 2] or BinaryParseError {
+        try self.need(2)
+        let at = self.at
+        self.at += 2
+        return [self.data[at], self.data[at + 1]]
+    }
 
-func first4(data: Vec<u8>, at: usize) -> [u8; 4] or BinaryParseError {
-    try need(data, at, 4)
-    return [data[at], data[at + 1], data[at + 2], data[at + 3]]
-}
+    func next4(mutate self) -> [u8; 4] or BinaryParseError {
+        try self.need(4)
+        let at = self.at
+        self.at += 4
+        return [self.data[at], self.data[at + 1], self.data[at + 2], self.data[at + 3]]
+    }
 
-func first8(data: Vec<u8>, at: usize) -> [u8; 8] or BinaryParseError {
-    try need(data, at, 8)
-    return [data[at], data[at + 1], data[at + 2], data[at + 3], data[at + 4], data[at + 5], data[at + 6], data[at + 7]]
+    func next8(mutate self) -> [u8; 8] or BinaryParseError {
+        try self.need(8)
+        let at = self.at
+        self.at += 8
+        return [self.data[at], self.data[at + 1], self.data[at + 2], self.data[at + 3], self.data[at + 4], self.data[at + 5], self.data[at + 6], self.data[at + 7]]
+    }
 }
 
 // ── Binary building (K2) ────────────────────────────────────────────

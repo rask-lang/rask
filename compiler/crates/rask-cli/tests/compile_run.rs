@@ -6796,6 +6796,16 @@ nan -> nan
     }
 }
 
+// std.bits P3: a reader walks its buffer in linear time. A million reads
+// finish in milliseconds; the old copy-the-rest reads would take hours.
+#[test]
+fn a_million_bits_reads_are_linear() {
+    let (stdout, stderr, code) = run_capture("--native", "bits_reader_million.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    // 142857 runs of 0..7 sum to 21 each; the millionth byte is 0.
+    assert_eq!(stdout, "total=2999997 fast=true\n");
+}
+
 // type.sequence SEQ28–SEQ31: a materializing terminal names what it builds.
 // `collect()` is gone; `to_vec()`, `to_map()` and `join(sep)` are the three
 // targets, and `to_map`/`join` were missing from the Iterator surface entirely —

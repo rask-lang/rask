@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! type.binary/G1–G2: a `@binary` struct's `build` and `parse`, written as
-//! ordinary Rask methods.
+//! type.binary/G1–G2: a `@binary` struct's `build`, `parse` and
+//! `from_bytes`, written as ordinary Rask methods.
 //!
 //! The interpreter used to answer both in Rust and native had neither, so a
 //! program that built a packet only ran on the interpreter. Generated as
@@ -19,7 +19,7 @@ use std::fmt::Write;
 
 use crate::interface_defaults::Injected;
 
-/// What the generated `parse` calls `std.bits`'s error type through. Nothing a
+/// What the generated methods call `std.bits` through. Nothing a
 /// program writes can be called this, so the import can't collide with one of
 /// its own.
 pub(crate) const BITS_ALIAS: &str = "__bits";
@@ -63,8 +63,8 @@ fn is_binary(s: &StructDecl) -> bool {
     s.attrs.iter().any(|a| a.is("binary"))
 }
 
-/// Give every `@binary` struct its `build` and `parse`, and the program the
-/// import `parse` names its error through. The new methods' positions go in
+/// Give every `@binary` struct its `build`, `parse` and `from_bytes`, and
+/// the program the import they reach `std.bits` through. The new methods' positions go in
 /// `injected`: their NodeIds come from a parse of their own, so the walk has
 /// to hand out fresh ones.
 pub(crate) fn inject(decls: &mut Vec<Decl>, injected: &mut Injected) {
@@ -99,7 +99,7 @@ pub(crate) fn inject(decls: &mut Vec<Decl>, injected: &mut Injected) {
     }
 }
 
-/// `build` and `parse` for `s`, parsed, or `None` when its fields don't say.
+/// `build`, `parse` and `from_bytes` for `s`, parsed, or `None` when its fields don't say.
 fn methods(s: &StructDecl) -> Option<Vec<FnDecl>> {
     let fields = wire(s)?;
     let bits: u32 = fields.iter().map(|f| f.spec.bits).sum();
@@ -181,38 +181,58 @@ fn build(fields: &[Wire], size: u32) -> String {
     body
 }
 
+/// `parse(mutate r)` takes the struct's bytes off a `BinaryReader`;
+/// `from_bytes(data)` reads a buffer that holds exactly one. Both check the
+/// length first, so a short read fails before anything moves.
 fn parse(name: &str, fields: &[Wire], size: u32) -> String {
     let mut body = String::new();
+    let err = format!("{BITS_ALIAS}.BinaryParseError");
+    let _ = writeln!(body, "    public func parse(mutate r: {BITS_ALIAS}.BinaryReader) -> {name} or {err} {{");
+    let _ = writeln!(body, "        if r.remaining() < {size} {{");
+    let _ = writeln!(body, "            return {err}.UnexpectedEnd(expected: {size}, actual: r.remaining())");
+    let _ = writeln!(body, "        }}");
+    for byte in 0..size {
+        let _ = writeln!(body, "        let __b{byte} = try r.read_u8()");
+    }
+    assemble(&mut body, name, fields, |byte| format!("__b{byte}"));
+    let _ = writeln!(body, "    }}");
+    let _ = writeln!(body);
+    let _ = writeln!(body, "    public func from_bytes(data: Vec<u8>) -> {name} or {err} {{");
+    let _ = writeln!(body, "        if data.len() < {size} {{");
+    let _ = writeln!(body, "            return {err}.UnexpectedEnd(expected: {size}, actual: data.len())");
+    let _ = writeln!(body, "        }}");
+    let _ = writeln!(body, "        if data.len() > {size} {{");
     let _ = writeln!(
         body,
-        "    public func parse(data: Vec<u8>, at: usize) -> ({name}, usize) or {BITS_ALIAS}.BinaryParseError {{"
-    );
-    let _ = writeln!(body, "        let __left = if at < data.len() {{ data.len() - at }} else {{ 0 }}");
-    let _ = writeln!(body, "        if __left < {size} {{");
-    let _ = writeln!(
-        body,
-        "            return {BITS_ALIAS}.BinaryParseError.UnexpectedEnd(expected: {size}, actual: __left)"
+        "            return {err}.InvalidData(message: \"{{data.len() - {size}}} bytes after a {name}\")"
     );
     let _ = writeln!(body, "        }}");
+    assemble(&mut body, name, fields, |byte| format!("data[{byte}]"));
+    let _ = writeln!(body, "    }}");
+    body
+}
+
+/// The struct built from its bytes, `byte(k)` naming byte `k`, returned.
+fn assemble(body: &mut String, name: &str, fields: &[Wire], byte: impl Fn(u32) -> String) {
     let mut inits = Vec::new();
     for (k, f) in fields.iter().enumerate() {
         let first = f.at / 8;
         let last = (f.at + f.spec.bits).div_ceil(8);
         let value = match (f.spec.held, f.spec.endian) {
             (Held::Bytes(n), _) => {
-                let bytes: Vec<String> = (0..n).map(|i| format!("data[at + {}]", first as usize + i)).collect();
+                let bytes: Vec<String> = (0..n as u32).map(|i| byte(first + i)).collect();
                 format!("[{}]", bytes.join(", "))
             }
             (Held::Int(held) | Held::Float(held), endian) => {
                 let parts: Vec<String> = (first..last)
-                    .map(|byte| {
-                        let (from, to) = overlap(f, byte).expect("the field covers this byte");
+                    .map(|b| {
+                        let (from, to) = overlap(f, b).expect("the field covers this byte");
                         if endian == Some(Endian::Little) {
-                            format!("(data[at + {byte}].wrap<u64>() << {})", 8 * (byte - first))
+                            format!("({}.wrap<u64>() << {})", byte(b), 8 * (b - first))
                         } else {
-                            let down = byte * 8 + 8 - (f.at + to);
+                            let down = b * 8 + 8 - (f.at + to);
                             let up = f.spec.bits - to;
-                            format!("(((data[at + {byte}].wrap<u64>() >> {down}) & {}) << {up})", mask(to - from))
+                            format!("((({}.wrap<u64>() >> {down}) & {}) << {up})", byte(b), mask(to - from))
                         }
                     })
                     .collect();
@@ -227,7 +247,5 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
         };
         inits.push(format!("{}: {value}", f.name));
     }
-    let _ = writeln!(body, "        return ({name}({}), at + {size})", inits.join(", "));
-    let _ = writeln!(body, "    }}");
-    body
+    let _ = writeln!(body, "        return {name}({})", inits.join(", "));
 }

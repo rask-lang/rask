@@ -5,7 +5,7 @@
 
 # Binary Structs
 
-`@binary` attribute on structs defines bit-level wire format. Compiler generates `.parse()` and `.build()` methods.
+`@binary` attribute on structs defines bit-level wire format. Compiler generates `.parse()`, `.from_bytes()` and `.build()` methods.
 
 ## Attribute and Layout
 
@@ -73,17 +73,18 @@ struct IpHeader {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Parse** | `.parse(data, at)` reads the struct from byte offset `at` and returns `(T, usize) or bits.BinaryParseError` — the struct and the offset just past it, so records in one buffer parse one after another. Fewer than `T.SIZE` bytes left is `UnexpectedEnd` |
+| **G1: Parse** | `T.parse(mutate r)` reads the struct off a `bits.BinaryReader` and moves the reader past it, returning `T or bits.BinaryParseError`, so records in one buffer parse one after another. `T.from_bytes(data)` reads a `Vec<u8>` that holds exactly one `T`. Fewer than `T.SIZE` bytes left is `UnexpectedEnd` and leaves the reader where it was; bytes after the one `T` in `from_bytes` are `InvalidData` |
 | **G2: Build** | `.build()` returns `Vec<u8>` |
 | **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` (not built yet, #1539) |
 | **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
 
-`parse` and `build` are ordinary methods the compiler writes from the field specifiers, so they behave the same on every backend. A float field goes on the wire as its bit pattern (`std.bits/B4`), so a NaN is always the same bytes.
+`parse`, `from_bytes` and `build` are ordinary methods the compiler writes from the field specifiers, so they behave the same on every backend. A float field goes on the wire as its bit pattern (`std.bits/B4`), so a NaN is always the same bytes.
 
 <!-- test: skip -->
 ```rask
 extend T {
-    func parse(data: Vec<u8>, at: usize) -> (T, usize) or bits.BinaryParseError
+    func parse(mutate r: bits.BinaryReader) -> T or bits.BinaryParseError
+    func from_bytes(data: Vec<u8>) -> T or bits.BinaryParseError
     func build(self) -> Vec<u8>
     func build_into(self, buffer: Vec<u8>) -> usize or BuildError
     let SIZE: usize
@@ -102,16 +103,19 @@ extend T {
 
 ## Inline Parsing
 
-For one-off parsing without a struct, read the fields one at a time, each from where the last ended:
+For one-off parsing without a struct, read the fields off a reader one at a time. A `@binary` struct reads off the same reader, so a header and a body mix:
 
 <!-- test: skip -->
 ```rask
-let (magic, at) = try data.read_u32be(0)
-let (version, at) = try data.read_u8(at)
-let (length, at) = try data.read_u16be(at)
+mut r = bits.BinaryReader.new(data)
+let magic = try r.read_u32be()
+let header = try IpHeader.parse(mutate r)
+let payload = try r.read_bytes(r.remaining())
 ```
 
-See [stdlib/bits.md](../stdlib/bits.md) for the `read_*` methods and `BinaryBuilder`.
+One record in a buffer of its own is one line: `let header = try IpHeader.from_bytes(data)`.
+
+See [stdlib/bits.md](../stdlib/bits.md) for `BinaryReader` and `BinaryBuilder`.
 
 ## Error Messages
 
