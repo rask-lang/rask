@@ -23,6 +23,11 @@
 
 // ─── Default allocator (malloc) ────────────────────────────
 
+// What `malloc` promises on every platform the runtime builds for. A request at
+// or under it takes the ordinary path, so only an `@align(N)` type past 16
+// pays for the aligned one.
+#define MALLOC_ALIGN 16
+
 static void *default_alloc(int64_t size, void *ctx) {
     (void)ctx;
     return malloc((size_t)size);
@@ -39,12 +44,22 @@ static void default_free(void *ptr, void *ctx) {
     free(ptr);
 }
 
+// `free` takes a `posix_memalign` block on glibc, musl and macOS, so an
+// over-aligned block needs no free of its own.
+static void *default_alloc_aligned(int64_t size, int64_t align, void *ctx) {
+    (void)ctx;
+    void *ptr = NULL;
+    if (posix_memalign(&ptr, (size_t)align, (size_t)size) != 0) return NULL;
+    return ptr;
+}
+
 // ─── Active allocator ──────────────────────────────────────
 
 static RaskAllocator active_allocator = {
     .alloc   = default_alloc,
     .realloc = default_realloc,
     .free    = default_free,
+    .alloc_aligned = default_alloc_aligned,
     .ctx     = NULL,
 };
 
@@ -229,28 +244,55 @@ void rask_leak_trace_report(void) {
     fflush(stderr);
 }
 
-void *rask_alloc(int64_t size) {
+// The four entries share these, so each records its *own* caller as the
+// allocation site. One calling another would name the inner entry instead,
+// and every Vec's buffer would trace to `rask_alloc_aligned`.
+static void *alloc_at(int64_t size, int64_t align, void *site) {
     if (size <= 0) {
         return NULL;
     }
-    void *ptr = active_allocator.alloc(size, active_allocator.ctx);
+    void *ptr;
+    if (align <= MALLOC_ALIGN) {
+        ptr = active_allocator.alloc(size, active_allocator.ctx);
+    } else {
+        if (!active_allocator.alloc_aligned) {
+            rask_panic_fmt("rask: the installed allocator can't align to %lld bytes "
+                           "(it has no `alloc_aligned`)", (long long)align);
+        }
+        ptr = active_allocator.alloc_aligned(size, align, active_allocator.ctx);
+    }
     if (!ptr) {
         fprintf(stderr, "rask: allocation failed (%lld bytes)\n", (long long)size);
         abort();
     }
     stats_track_alloc(size);
-    leak_trace_record(ptr, size, __builtin_return_address(0));
+    leak_trace_record(ptr, size, site);
     return ptr;
 }
 
-void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
+static void free_sized(void *ptr, int64_t size) {
+    if (!ptr) return;
+    active_allocator.free(ptr, active_allocator.ctx);
+    if (size > 0) stats_track_free(size);
+    leak_trace_forget(ptr);
+}
+
+static void *realloc_at(void *ptr, int64_t old_size, int64_t new_size, int64_t align,
+                        void *site) {
     if (new_size <= 0) {
-        if (ptr) {
-            active_allocator.free(ptr, active_allocator.ctx);
-            if (old_size > 0) stats_track_free(old_size);
-            leak_trace_forget(ptr);
-        }
+        free_sized(ptr, old_size);
         return NULL;
+    }
+    // There is no aligned `realloc`, so a block past 16 moves by hand: a
+    // fresh aligned block, the bytes both sizes share, and the old one freed.
+    if (align > MALLOC_ALIGN) {
+        void *fresh = alloc_at(new_size, align, site);
+        if (ptr) {
+            int64_t keep = old_size < new_size ? old_size : new_size;
+            if (keep > 0) memcpy(fresh, ptr, (size_t)keep);
+            free_sized(ptr, old_size);
+        }
+        return fresh;
     }
     void *new_ptr = active_allocator.realloc(ptr, old_size, new_size,
                                               active_allocator.ctx);
@@ -262,13 +304,29 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
     if (old_size > 0) stats_track_free(old_size);
     stats_track_alloc(new_size);
     leak_trace_forget(ptr);
-    leak_trace_record(new_ptr, new_size, __builtin_return_address(0));
+    leak_trace_record(new_ptr, new_size, site);
     return new_ptr;
+}
+
+void *rask_alloc(int64_t size) {
+    return alloc_at(size, 0, __builtin_return_address(0));
+}
+
+void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
+    return realloc_at(ptr, old_size, new_size, 0, __builtin_return_address(0));
+}
+
+void *rask_alloc_aligned(int64_t size, int64_t align) {
+    return alloc_at(size, align, __builtin_return_address(0));
+}
+
+void *rask_realloc_aligned(void *ptr, int64_t old_size, int64_t new_size, int64_t align) {
+    return realloc_at(ptr, old_size, new_size, align, __builtin_return_address(0));
 }
 
 // ─── Closure blocks ────────────────────────────────────────
 //
-// A closure block is `[block_size | env_drop | refs | flags | func_ptr |
+// A closure block is `[block_size | env_drop | refs | flags | lead | func_ptr |
 // captures...]`
 // and the closure value points at `func_ptr`, so the environment is still
 // `closure + 8`. Every header word is there for the same reason: whoever frees
@@ -304,15 +362,32 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
 // `[func_ptr | captures]` in a frame — so neither of these may be called on
 // one. Nothing does: a closure that can't escape can't reach a container.
 
-#define CLOSURE_HEADER_WORDS 4
+// The fifth word is `lead`: how many bytes of padding sit ahead of the header.
+// The environment starts at `closure + 8`, and an `@align(64)` capture needs
+// the environment on a multiple of 64, so the header moves up the block until
+// it does. Five words put the environment at 48, on malloc's 16 with no lead.
 
-void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags) {
-    int64_t total = block_size + CLOSURE_HEADER_WORDS * 8;
-    int64_t *base = (int64_t *)rask_alloc(total);
+#define CLOSURE_HEADER_WORDS 5
+
+static int64_t *closure_block_start(int64_t *base) {
+    return (int64_t *)((char *)base - base[4]);
+}
+
+void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags,
+                         int64_t env_align) {
+    int64_t env_at = (CLOSURE_HEADER_WORDS + 1) * 8;
+    int64_t lead = 0;
+    if (env_align > MALLOC_ALIGN) {
+        lead = ((env_at + env_align - 1) & ~(env_align - 1)) - env_at;
+    }
+    int64_t total = lead + block_size + CLOSURE_HEADER_WORDS * 8;
+    char *start = (char *)rask_alloc_aligned(total, env_align);
+    int64_t *base = (int64_t *)(start + lead);
     base[0] = total;
     base[1] = (int64_t)(intptr_t)env_drop;
     base[2] = 1;
     base[3] = flags;
+    base[4] = lead;
     return (void *)(base + CLOSURE_HEADER_WORDS);
 }
 
@@ -338,7 +413,7 @@ void rask_closure_free(void *ptr) {
     // The environment starts one word past the closure value, which is where
     // the captures the glue names live.
     if (env_drop) env_drop((char *)ptr + 8);
-    rask_realloc((void *)base, base[0], 0);
+    rask_realloc((void *)closure_block_start(base), base[0], 0);
 }
 
 // ─── Trait object blocks ───────────────────────────────────
@@ -357,17 +432,24 @@ void rask_closure_free(void *ptr) {
 // Sharing rather than cloning is also what a closure block does, and for the
 // same reason — the environment's layout is known only to its generated glue,
 // as a boxed value's contents are known only to its `owned_release`.
-void *rask_box_alloc(int64_t value_size) {
-    int64_t total = (value_size < 8 ? 8 : value_size) + 8;
-    int64_t *base = (int64_t *)rask_alloc(total);
-    base[0] = 1;
-    return (void *)(base + 1);
+//
+// The word before the count is `lead`, the value's distance from the block's
+// start. Two words keep the value on malloc's 16; an `@align(64)` value sits
+// 64 in, with the two words just ahead of it.
+void *rask_box_alloc(int64_t value_size, int64_t value_align) {
+    int64_t lead = value_align > MALLOC_ALIGN ? value_align : MALLOC_ALIGN;
+    int64_t total = (value_size < 8 ? 8 : value_size) + lead;
+    char *start = (char *)rask_alloc_aligned(total, value_align);
+    int64_t *value = (int64_t *)(start + lead);
+    value[-2] = lead;
+    value[-1] = 1;
+    return (void *)value;
 }
 
 void rask_box_retain(void *value) {
     if (!value) return;
-    int64_t *base = ((int64_t *)value) - 1;
-    base[0] += 1;
+    int64_t *refs = ((int64_t *)value) - 1;
+    refs[0] += 1;
 }
 
 // `owned_release` is the vtable's, for a box that owns its value — null for a
@@ -375,10 +457,10 @@ void rask_box_retain(void *value) {
 // runs only when the last reference goes.
 void rask_box_release(void *value, void (*owned_release)(void *)) {
     if (!value) return;
-    int64_t *base = ((int64_t *)value) - 1;
-    if ((base[0] -= 1) > 0) return;
+    int64_t *refs = ((int64_t *)value) - 1;
+    if ((refs[0] -= 1) > 0) return;
     if (owned_release) owned_release(value);
-    rask_free((void *)base);
+    rask_free((char *)value - refs[-1]);
 }
 
 void rask_free(void *ptr) {

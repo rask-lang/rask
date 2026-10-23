@@ -55,6 +55,26 @@ pub(crate) fn option_of(inner: MirType) -> MirType {
     MirType::Option(Box::new(inner))
 }
 
+/// `dst = ` a fresh heap block for a value of type `ty`, `size` bytes long.
+///
+/// `malloc` only promises 16-byte alignment, so an `@align(64)` value goes
+/// through `rask_alloc_aligned`. Both blocks go back through `rask_free`.
+pub(crate) fn alloc_block_for(dst: LocalId, size: u32, ty: &MirType) -> MirStmt {
+    let size = MirOperand::Constant(MirConst::Int(size.max(1) as i64));
+    let (name, args) = match ty.align() {
+        a if a > crate::MALLOC_ALIGN => (
+            "rask_alloc_aligned",
+            vec![size, MirOperand::Constant(MirConst::Int(a as i64))],
+        ),
+        _ => ("rask_alloc", vec![size]),
+    };
+    MirStmt::dummy(MirStmtKind::Call {
+        dst: Some(dst),
+        func: FunctionRef::internal(name.to_string()),
+        args,
+    })
+}
+
 
 /// Check if a raw Type is a niche-optimized option — `Link<T>?`.
 ///
@@ -2053,11 +2073,7 @@ impl<'a> MirLowerer<'a> {
             // anything reads the slot. Copy it to the heap and share that.
             let size = self.aggregate_size(ty);
             let heap = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(heap),
-                func: FunctionRef::internal("rask_alloc".to_string()),
-                args: vec![MirOperand::Constant(MirConst::Int(size as i64))],
-            }));
+            self.builder.push_stmt(alloc_block_for(heap, size, ty));
             // One store of the whole value. Copied a word at a time through
             // `Field { field_index: 0, byte_offset }`, every word read field 0:
             // codegen picks a struct's field by index and the offset never
@@ -2504,11 +2520,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
         let width = val_ty.size();
         let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(heap),
-            func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(MirConst::Int(width.max(1) as i64))],
-        }));
+        self.builder.push_stmt(alloc_block_for(heap, width, val_ty));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,

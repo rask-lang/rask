@@ -5,9 +5,9 @@
 //
 // Both used to be accepted and ignored, so none of these said anything.
 
-// ERROR[E0923]: past the 16 bytes the stack and the allocator guarantee
-@align(64)
-struct CacheLine {
+// ERROR[E0923]: past a page
+@align(8192)
+struct TwoPages {
     data: [u8; 64]
 }
 

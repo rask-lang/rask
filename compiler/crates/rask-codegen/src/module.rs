@@ -838,10 +838,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64) -> i64
-        // (pointer past the header words)
+        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64,
+        // env_align: i64) -> i64 (pointer past the header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -886,10 +887,12 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_retain".to_string(), id);
         }
 
-        // rask_box_alloc(value_size: i64) -> ptr — an interface object's block, with
-        // a reference count in the word before the value it returns.
+        // rask_box_alloc(value_size: i64, value_align: i64) -> ptr — an
+        // interface object's block, with a reference count in the word before
+        // the value it returns.
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
             let id = self.module
@@ -1505,8 +1508,16 @@ impl CodeGenerator {
             let mut desc = DataDescription::new();
             desc.define(meta.bytes.clone().into_boxed_slice());
             // Elements are read as words and as `RaskStr` values, both of which
-            // want the blob eight-byte aligned.
-            desc.set_align(8);
+            // want the blob eight-byte aligned. An `@align(64)` element wants
+            // its own alignment.
+            let elem_align = meta
+                .elem
+                .iter()
+                .chain(meta.map_types.iter().flat_map(|(k, v)| [k, v]))
+                .map(|t| u64::from(t.align()))
+                .max()
+                .unwrap_or(8);
+            desc.set_align(elem_align.max(8));
 
             for (offset, text) in &meta.string_relocs {
                 let Some(&header_id) = self.string_header_data.get(text) else {
