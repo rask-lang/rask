@@ -2,7 +2,7 @@
 //
 // type.binary: a `@binary` struct's field order is its wire layout (B1),
 // packed with no padding (B2), most significant bit first (B3). `build()`
-// writes it (G2), `T.parse(bytes)` reads it back with whatever follows (G1),
+// writes it (G2), `T.parse(bytes, at)` reads it back from offset `at` and says where it ended (G1),
 // and `T.SIZE`/`T.SIZE_BITS` say how big it is (G4).
 //
 // These used to be Rust inside the interpreter, and native had neither, so a
@@ -37,13 +37,13 @@ test "type.binary/G1 — build then parse gives every field back" {
     let p = Packet(magic: 0x1234, id: 0xDEADBEEF)
     let bytes = p.build()
     assert bytes.len() == 6
-    let got = Packet.parse(bytes) catch e => {
+    let got = Packet.parse(bytes, 0) catch e => {
         assert false
         return
     }
     assert got.0.magic == 0x1234
     assert got.0.id == 0xDEADBEEF
-    assert got.1.len() == 0
+    assert got.1 == 6
 }
 
 test "type.binary/B3 — a big-endian field goes most significant byte first" {
@@ -66,7 +66,7 @@ test "type.binary/B2 — bit fields pack with no padding, little-endian is low b
     assert bytes[6] == 0xfd
     assert bytes[7] == 7
     assert bytes[8] == 9
-    let back = Header.parse(bytes) catch e => {
+    let back = Header.parse(bytes, 0) catch e => {
         assert false
         return
     }
@@ -81,21 +81,31 @@ test "type.binary/B2 — bit fields pack with no padding, little-endian is low b
     assert g.tag[1] == 9
 }
 
-test "type.binary/G1 — what follows the struct comes back as the rest" {
+test "type.binary/G1 — records parse one after another from the offset each returns" {
     mut bytes = Packet(magic: 1, id: 2).build()
+    for b in Packet(magic: 3, id: 4).build() {
+        bytes.push(b)
+    }
     bytes.push(0xaa)
-    bytes.push(0xbb)
-    let got = Packet.parse(bytes) catch e => {
+    let first = Packet.parse(bytes, 0) catch e => {
         assert false
         return
     }
-    assert got.1.len() == 2
-    assert got.1[0] == 0xaa
+    let second = Packet.parse(bytes, first.1) catch e => {
+        assert false
+        return
+    }
+    assert second.0.magic == 3
+    assert second.0.id == 4
+    assert second.1 == 12
+    assert bytes[second.1] == 0xaa
+    // One byte left is short of a whole packet.
+    assert Packet.parse(bytes, second.1) is bits.BinaryParseError
 }
 
 test "type.binary/G1 — too few bytes is an error, not a short read" {
     let short: Vec<u8> = [1u8, 2u8, 3u8]
-    let r = Packet.parse(short)
+    let r = Packet.parse(short, 0)
     assert r is bits.BinaryParseError
 }
 
@@ -118,7 +128,7 @@ test "type.binary — floats go on the wire as their bits, NaN as one pattern" {
     assert bytes[4] == 0
     assert bytes[10] == 0x02
     assert bytes[11] == 0xc0
-    let back = Reading.parse(bytes) catch e => {
+    let back = Reading.parse(bytes, 0) catch e => {
         assert false
         return
     }

@@ -17,6 +17,8 @@ pub struct MirFunction {
     pub is_extern_c: bool,
     /// Source file path for runtime error messages (None in tests)
     pub source_file: Option<String>,
+    /// Written `@inline`: the inliner takes it whatever its size.
+    pub inline_hint: bool,
 }
 
 impl MirFunction {

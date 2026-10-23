@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use rask_mir::FieldAccess;
 use rask_mir::{BinOp, BlockId, ContainerKind, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
-use rask_mono::{StructLayout, EnumLayout};
+use rask_types::layout::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::dispatch::{ArgAdapt, RetAdapt};
 use crate::types::mir_to_cranelift_type;
@@ -55,6 +55,10 @@ pub(crate) fn copy_bytes(
 // expression's widths ran out. The operand values can't be in a static message,
 // but the type and its range can, and those are what the reader needs.
 pub(crate) const OV_DIV_ZERO: &str = "division by zero";
+/// mem.unsafe, debug-mode safety: a raw-pointer access through null. Worded
+/// as the interpreter words it.
+pub(crate) const PTR_NULL_READ: &str = "null pointer read";
+pub(crate) const PTR_NULL_WRITE: &str = "null pointer write";
 
 /// Which check fired, for picking the message.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,6 +85,8 @@ macro_rules! overflow_messages {
         /// `tail` (below) and lets the runtime splice the operands in front.
         pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
             OV_DIV_ZERO,
+            PTR_NULL_READ,
+            PTR_NULL_WRITE,
             $(
                 concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
                 concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
@@ -216,6 +222,8 @@ struct CodegenCtx<'a> {
     /// An `extern "C"` export: its body is bracketed with the FFI panic
     /// boundary, so a panic inside aborts rather than unwinding into C frames.
     is_extern_c: bool,
+    /// A debug build: raw-pointer null checks are on (mem.unsafe).
+    debug_checks: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
@@ -399,6 +407,8 @@ pub struct FunctionBuilder<'a> {
     /// `rask_preempt_requested`, when the runtime provides it. Every function
     /// entry and loop back-edge checks it (conc.runtime/P3).
     preempt_flag: Option<GlobalValue>,
+    /// A debug build: `ptr_check` is emitted (mem.unsafe).
+    debug_checks: bool,
 }
 
 /// No C function in this program takes a struct by value.
@@ -465,6 +475,7 @@ impl<'a> FunctionBuilder<'a> {
             c_abi_args: &NO_C_ABI_ARGS,
             field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
+            debug_checks: false,
         })
     }
 
@@ -474,6 +485,10 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Check for preemption at function entry and on loop back-edges.
+    pub fn set_debug_checks(&mut self, on: bool) {
+        self.debug_checks = on;
+    }
+
     pub fn set_preempt_flag(&mut self, flag: GlobalValue) {
         self.preempt_flag = Some(flag);
     }
@@ -752,6 +767,7 @@ impl<'a> FunctionBuilder<'a> {
             dst_param,
             is_main: self.mir_fn.name == "main",
             is_extern_c: self.mir_fn.is_extern_c,
+            debug_checks: self.debug_checks,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
             field_types: self.field_types,
@@ -2260,6 +2276,22 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_convert(builder, value, source_ty, target_ty, *kind, ctx)
             }
 
+            MirRValue::Bitcast { value, source_ty, target_ty } => {
+                let from = mir_to_cranelift_type(source_ty)?;
+                let to = mir_to_cranelift_type(target_ty)?;
+                let val = Self::lower_operand_typed(builder, value, Some(from), ctx)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                if val_ty == to {
+                    return Ok(val);
+                }
+                if val_ty.bits() != to.bits() {
+                    return Err(CodegenError::UnsupportedFeature(format!(
+                        "bitcast from {val_ty} to {to}: the widths differ"
+                    )));
+                }
+                Ok(builder.ins().bitcast(to, MemFlags::new(), val))
+            }
+
             // Struct/enum field access: load from base pointer + field offset
             MirRValue::Field { base, field_index, byte_offset, access } => Self::field_address_and_load(builder, base, field_index, byte_offset, access, expected_ty, ctx),
 
@@ -2273,7 +2305,7 @@ impl<'a> FunctionBuilder<'a> {
                         if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                             let offset = layout.tag_offset as i32;
                             // Derive Cranelift type from tag type's size
-                            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+                            let (tag_size, _) = rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
                                 _ => types::I8,
@@ -3841,7 +3873,7 @@ impl<'a> FunctionBuilder<'a> {
         let (offset, ty) = match ctx.enum_layouts.get(idx) {
             Some(layout) => {
                 let (tag_size, _) =
-                    rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+                    rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
                 let ty = match tag_size {
                     8 => types::I64,
                     4 => types::I32,
@@ -4591,6 +4623,17 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, zero);
                 }
             }
+        } else if func.name == "ptr_check" {
+            // mem.unsafe: a debug build checks every raw-pointer access for
+            // null; `@checked_unsafe` asks for it in release too.
+            let flag = |i: usize| matches!(args.get(i), Some(MirOperand::Constant(MirConst::Bool(true))));
+            if ctx.debug_checks || flag(1) {
+                let ptr = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
+                let msg = if flag(2) { PTR_NULL_WRITE } else { PTR_NULL_READ };
+                Self::guard_overflow(builder, ctx, is_null, msg);
+            }
+            return Ok(true);
         } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
             // User-level diverging builtin: emit rask_panic_at with the
             // message string and trap. todo/unreachable map to fixed
@@ -5068,6 +5111,16 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Ordinary Rask call — lowers args, applies stdlib arg/return adaptation.
+    /// The address of element `index` of the vector `vec`.
+    fn vec_elem_addr(builder: &mut ClifFunctionBuilder, vec: Value, index: Value) -> Value {
+        use rask_mono::runtime_abi::{RASK_VEC_DATA_OFFSET, RASK_VEC_ELEM_SIZE_OFFSET};
+        let flags = MemFlags::trusted();
+        let data = builder.ins().load(types::I64, flags, vec, RASK_VEC_DATA_OFFSET as i32);
+        let elem_size = builder.ins().load(types::I64, flags, vec, RASK_VEC_ELEM_SIZE_OFFSET as i32);
+        let offset = builder.ins().imul(index, elem_size);
+        builder.ins().iadd(data, offset)
+    }
+
     fn lower_ordinary_call(
         builder: &mut ClifFunctionBuilder,
         dst: Option<&LocalId>,
@@ -5155,7 +5208,15 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
-        let call_inst = builder.ins().call(*func_ref, &arg_vals);
+        // An index the bounds pass already proved in range needs no call:
+        // the element is `data + index * elem_size`, read straight off the
+        // vector's header.
+        let call_results: Vec<Value> = if func.name == "Vec_get_unchecked" {
+            vec![Self::vec_elem_addr(builder, arg_vals[0], arg_vals[1])]
+        } else {
+            let call_inst = builder.ins().call(*func_ref, &arg_vals);
+            builder.inst_results(call_inst).to_vec()
+        };
 
         if let Some(dst_id) = dst {
             // Skip void-typed destinations — nothing to store
@@ -5182,7 +5243,7 @@ impl<'a> FunctionBuilder<'a> {
             // needs one load. The struct test mirrors the one Mutex_new uses, so
             // the two sides agree on which payloads are indirect.
             if matches!(adapt, CallAdapt::BoxPayloadPtr) {
-                let results = builder.inst_results(call_inst);
+                let results = &call_results[..];
                 let ptr = if !results.is_empty() {
                     results[0]
                 } else {
@@ -5212,7 +5273,7 @@ impl<'a> FunctionBuilder<'a> {
                     let load_ty = dst_local
                         .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
                         .unwrap_or(types::I64);
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     if !results.is_empty() {
                         let ptr = results[0];
                         Self::load_scalar_slot(builder, ptr, load_ty)
@@ -5223,7 +5284,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefOption => {
                     // Result is void*: NULL → None, non-NULL → Some(deref).
                     // Write tag+payload into the destination stack slot.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let ptr = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5265,7 +5326,7 @@ impl<'a> FunctionBuilder<'a> {
                         let none_word = ctx.locals.iter()
                             .find(|l| l.id == *dst_id)
                             .and_then(|l| l.ty.niche_none())
-                            .unwrap_or(rask_mono::abi::LINK_NONE_SENTINEL);
+                            .unwrap_or(rask_types::abi::LINK_NONE_SENTINEL);
                         let miss_block = builder.create_block();
                         let hit_block = builder.create_block();
                         let merge_block = builder.create_block();
@@ -5304,7 +5365,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::OptionOutParam(ss) => {
                     // 1 means the element is there (present), 0 that there
                     // was nothing (absent).
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let wrote = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5332,7 +5393,7 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().stack_addr(types::I64, ss, 0)
                 }
                 CallAdapt::CasResult(ok_ss) => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let observed = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5357,7 +5418,7 @@ impl<'a> FunctionBuilder<'a> {
                     observed
                 }
                 CallAdapt::AtomicBits => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let bits = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5375,7 +5436,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefStringElement => {
                     // void* pointing to aggregate data in collection.
                     // Copy `slot_size` bytes into the dst's own slot.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let ptr = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5388,7 +5449,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::TryRecvResult(payload_ss) => {
                     // Channel status → `T or E` Result. status==OK(0) →
                     // Ok(payload); anything else → Err.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, RASK_CHAN_OK)
                     };
@@ -5423,7 +5484,7 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().iconst(types::I64, 0)
                 }
                 CallAdapt::Status => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5458,7 +5519,7 @@ impl<'a> FunctionBuilder<'a> {
                     // the out-param slot), 1 → Err. The old entry points
                     // returned the value itself with no way to fail, so garbage
                     // input came back as Ok(0) (#472).
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5508,7 +5569,7 @@ impl<'a> FunctionBuilder<'a> {
                     // the string alone and nothing wrote the tag, so the caller
                     // read whatever was in that slot — `io.read_line()` failed
                     // on its first call with a bogus error.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5561,7 +5622,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Err payload was that same `-1` — matching on it read -1 as
                     // a JoinError address and segfaulted, and every successful
                     // join reported 0 because the value was never captured.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let outcome = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5582,7 +5643,7 @@ impl<'a> FunctionBuilder<'a> {
                     if let Some(addr) = dst_ptr {
                         addr
                     } else {
-                        let results = builder.inst_results(call_inst);
+                        let results = &call_results[..];
                         if !results.is_empty() {
                             results[0]
                         } else {
@@ -7319,7 +7380,7 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         let Some(layout) = ctx.enum_layouts.get(id.id as usize) else { return Ok(()) };
         let tag_offset = layout.tag_offset as i32;
-        let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+        let (tag_size, _) = rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
         let tag_ty = match tag_size {
             2 => types::I16,
             4 => types::I32,

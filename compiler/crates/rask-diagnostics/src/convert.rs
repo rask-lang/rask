@@ -2214,6 +2214,33 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "unsafe operation outside unsafe block")
             }
 
+            LayoutAttribute { problem, span } => {
+                Diagnostic::error(problem.clone())
+                    .with_code("E0923")
+                    .with_primary(*span, "layout attribute")
+                    .with_help("`@packed` removes a struct's padding; `@align(N)` raises its alignment to N, a power of two up to 16")
+            }
+
+            TransmuteSizeMismatch { from, to, from_size, to_size, span } => {
+                let bytes = |n: u32| if n == 1 { "1 byte".to_string() } else { format!("{n} bytes") };
+                Diagnostic::error(format!(
+                    "`transmute` from `{from}` ({}) to `{to}` ({}): the sizes differ",
+                    bytes(*from_size),
+                    bytes(*to_size),
+                ))
+                .with_code("E0921")
+                .with_primary(*span, format!("{} in, {} out", bytes(*from_size), bytes(*to_size)))
+                .with_help("transmute reinterprets the same bytes, so both types must be the same size; to change a number's width, convert it instead (`x as u64` widens, `x.wrap<u32>()` narrows)")
+            }
+
+            TransmuteNeedsTarget { from, span } => {
+                Diagnostic::error(format!("`transmute` of a `{}` has no type to reinterpret it as", from))
+                    .with_code("E0922")
+                    .with_primary(*span, "target type unknown")
+                    .with_help("say the target where the value lands: `let bits: u64 = unsafe { transmute(x) }`")
+                    .with_why("transmute keeps the bits and changes the type, so the type has to be one you wrote — inference falling back to a default would pick it for you")
+            }
+
             InterfaceObjectSelfReturn { interface_name, method, span } => {
                 Diagnostic::error(format!("method `{}` returns Self — cannot be called through `any {}`", method, interface_name))
                     .with_code("E0332")

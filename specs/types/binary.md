@@ -73,7 +73,7 @@ struct IpHeader {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Parse** | `.parse(data)` returns `(T, Vec<u8>) or bits.BinaryParseError` — the struct and the bytes after it. Fewer than `T.SIZE` bytes is `UnexpectedEnd` |
+| **G1: Parse** | `.parse(data, at)` reads the struct from byte offset `at` and returns `(T, usize) or bits.BinaryParseError` — the struct and the offset just past it, so records in one buffer parse one after another. Fewer than `T.SIZE` bytes left is `UnexpectedEnd` |
 | **G2: Build** | `.build()` returns `Vec<u8>` |
 | **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` (not built yet, #1539) |
 | **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
@@ -83,7 +83,7 @@ struct IpHeader {
 <!-- test: skip -->
 ```rask
 extend T {
-    func parse(data: Vec<u8>) -> (T, Vec<u8>) or bits.BinaryParseError
+    func parse(data: Vec<u8>, at: usize) -> (T, usize) or bits.BinaryParseError
     func build(self) -> Vec<u8>
     func build_into(self, buffer: Vec<u8>) -> usize or BuildError
     let SIZE: usize
@@ -102,13 +102,13 @@ extend T {
 
 ## Inline Parsing
 
-For one-off parsing without a struct, read the fields off the front one at a time:
+For one-off parsing without a struct, read the fields one at a time, each from where the last ended:
 
 <!-- test: skip -->
 ```rask
-let (magic, rest) = try data.read_u32be()
-let (version, rest) = try rest.read_u8()
-let (length, rest) = try rest.read_u16be()
+let (magic, at) = try data.read_u32be(0)
+let (version, at) = try data.read_u8(at)
+let (length, at) = try data.read_u16be(at)
 ```
 
 See [stdlib/bits.md](../stdlib/bits.md) for the `read_*` methods and `BinaryBuilder`.

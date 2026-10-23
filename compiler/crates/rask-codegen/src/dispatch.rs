@@ -1499,13 +1499,9 @@ mod tests {
     ("math.tan",                  Ok_("t_native_reach_map_math_json")),
     ("math.to_degrees",           Ok_("t_native_reach_map_math_json")),
     ("math.to_radians",           Ok_("t_native_reach_map_math_json")),
-    // `size_of`, `align_of` and `is_copy` refuse on BOTH backends with the
-    // same message — the compiler has two size models that disagree (#791) —
-    // so there is no probe. Agreeing to refuse is not a divergence, and the
-    // one thing that would be wrong here is calling them reachable.
-    ("reflect.align_of",          Gap("#791")),
-    ("reflect.is_copy",           Gap("#791")),
-    ("reflect.size_of",           Gap("#791")),
+    ("reflect.align_of",          Ok_("t_reflect_size_of")),
+    ("reflect.is_copy",           Ok_("t_reflect_size_of")),
+    ("reflect.size_of",           Ok_("t_reflect_size_of")),
     ("reflect.fields",            Ok_("t_native_reach_reflect")),
     ("reflect.has_field",         Ok_("t_native_reach_reflect")),
     ("reflect.has_method",        Ok_("t_native_reach_reflect")),

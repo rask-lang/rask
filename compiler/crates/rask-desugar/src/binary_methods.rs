@@ -185,12 +185,13 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
     let mut body = String::new();
     let _ = writeln!(
         body,
-        "    public func parse(data: Vec<u8>) -> ({name}, Vec<u8>) or {BITS_ALIAS}.BinaryParseError {{"
+        "    public func parse(data: Vec<u8>, at: usize) -> ({name}, usize) or {BITS_ALIAS}.BinaryParseError {{"
     );
-    let _ = writeln!(body, "        if data.len() < {size} {{");
+    let _ = writeln!(body, "        let __left = if at < data.len() {{ data.len() - at }} else {{ 0 }}");
+    let _ = writeln!(body, "        if __left < {size} {{");
     let _ = writeln!(
         body,
-        "            return {BITS_ALIAS}.BinaryParseError.UnexpectedEnd(expected: {size}, actual: data.len())"
+        "            return {BITS_ALIAS}.BinaryParseError.UnexpectedEnd(expected: {size}, actual: __left)"
     );
     let _ = writeln!(body, "        }}");
     let mut inits = Vec::new();
@@ -199,7 +200,7 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
         let last = (f.at + f.spec.bits).div_ceil(8);
         let value = match (f.spec.held, f.spec.endian) {
             (Held::Bytes(n), _) => {
-                let bytes: Vec<String> = (0..n).map(|i| format!("data[{}]", first as usize + i)).collect();
+                let bytes: Vec<String> = (0..n).map(|i| format!("data[at + {}]", first as usize + i)).collect();
                 format!("[{}]", bytes.join(", "))
             }
             (Held::Int(held) | Held::Float(held), endian) => {
@@ -207,11 +208,11 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
                     .map(|byte| {
                         let (from, to) = overlap(f, byte).expect("the field covers this byte");
                         if endian == Some(Endian::Little) {
-                            format!("(data[{byte}].wrap<u64>() << {})", 8 * (byte - first))
+                            format!("(data[at + {byte}].wrap<u64>() << {})", 8 * (byte - first))
                         } else {
                             let down = byte * 8 + 8 - (f.at + to);
                             let up = f.spec.bits - to;
-                            format!("(((data[{byte}].wrap<u64>() >> {down}) & {}) << {up})", mask(to - from))
+                            format!("(((data[at + {byte}].wrap<u64>() >> {down}) & {}) << {up})", mask(to - from))
                         }
                     })
                     .collect();
@@ -226,11 +227,7 @@ fn parse(name: &str, fields: &[Wire], size: u32) -> String {
         };
         inits.push(format!("{}: {value}", f.name));
     }
-    let _ = writeln!(body, "        mut rest: Vec<u8> = Vec.new()");
-    let _ = writeln!(body, "        for __i in {size}..data.len() {{");
-    let _ = writeln!(body, "            rest.push(data[__i])");
-    let _ = writeln!(body, "        }}");
-    let _ = writeln!(body, "        return ({name}({}), rest)", inits.join(", "));
+    let _ = writeln!(body, "        return ({name}({}), at + {size})", inits.join(", "));
     let _ = writeln!(body, "    }}");
     body
 }

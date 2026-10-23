@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
-use rask_mono::{EnumLayout, MonoProgram, StructLayout};
+use rask_types::layout::{EnumLayout, StructLayout};
+use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
@@ -1863,6 +1864,7 @@ impl CodeGenerator {
             builder.set_line_map(lm);
         }
         builder.set_c_abi_args(&self.c_abi_args);
+        builder.set_debug_checks(self.build_mode == BuildMode::Debug);
         builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);

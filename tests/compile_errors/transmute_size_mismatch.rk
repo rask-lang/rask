@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `transmute` between types of different sizes
+//
+// Spec: mem.unsafe (Transmute)
+//
+// The sizes are the layout's, padding included: `Tagged` is 8 bytes, not 5.
+// Natively the call used to hand the source back unchanged whatever the two
+// types were (#1634).
+
+struct Tagged {
+    tag: u8
+    value: i32
+}
+
+func main() {
+    let x: u32 = 7
+    // ERROR[E0921]: 4 bytes into 8
+    let wide: u64 = unsafe { transmute(x) }
+
+    let t = Tagged(tag: 1, value: 2)
+    // ERROR[E0921]: the padding byte counts, so this is 8 into 5
+    let bytes: [u8; 5] = unsafe { transmute(t) }
+
+    // Same size: fine.
+    let same: u64 = unsafe { transmute(t) }
+    println("{wide} {bytes[0]} {same}")
+}

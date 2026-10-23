@@ -2378,6 +2378,9 @@ impl<'a> MirLowerer<'a> {
                 // here read whatever address the value's first word happened
                 // to look like (segfault on `(*owned_point).x`), #737.
                 UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
+                    if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
+                        self.emit_pointer_check(&operand_op, false);
+                    }
                     let pointee_mir_ty = self.ctx.lookup_raw_type(operand.id)
                         .map(|t| self.ctx.type_to_mir(t));
                     match pointee_mir_ty {
@@ -2408,6 +2411,45 @@ impl<'a> MirLowerer<'a> {
 
             Ok((MirOperand::Local(result_local), result_ty))
         }
+
+    /// mem.unsafe: `transmute` keeps the bytes and changes the type.
+    ///
+    /// Two scalars are a register bitcast — float↔int moves between register
+    /// files, int↔int of one width is nothing. Anything held in memory goes
+    /// through memory: the bytes are copied into a slot of the target type, or
+    /// the scalar is loaded straight out of the source's.
+    ///
+    /// The checker's size test runs on the generic body's types; this is where
+    /// an instantiation gets judged, so the sizes are checked again here.
+    fn lower_transmute(&mut self, value: MirOperand, from: MirType, to: MirType) -> Result<TypedOperand, LoweringError> {
+        if from.size() != to.size() {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "`transmute` from {from} ({} bytes) to {to} ({} bytes): the sizes differ",
+                from.size(),
+                to.size(),
+            )));
+        }
+        if from == to {
+            return Ok((value, to));
+        }
+        let result = self.builder.alloc_temp(to.clone());
+        let stmt = match (from.passed_by_address(), to.passed_by_address()) {
+            (false, false) => MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::Bitcast { value, source_ty: from, target_ty: to.clone() },
+            },
+            (_, true) => MirStmtKind::Store {
+                addr: result,
+                offset: 0,
+                value,
+                store_size: to.size(),
+                field: None,
+            },
+            (true, false) => MirStmtKind::Assign { dst: result, rvalue: MirRValue::Deref(value) },
+        };
+        self.builder.push_stmt(MirStmt::dummy(stmt));
+        Ok((MirOperand::Local(result), to))
+    }
 
     fn lower_call(&mut self, expr: &Expr, func: &Expr, args: &[CallArg]) -> Result<TypedOperand, LoweringError> {
             // `Id(5)` on a nominal newtype is the value, not a call — there
@@ -2512,11 +2554,14 @@ impl<'a> MirLowerer<'a> {
                 return Ok((MirOperand::Local(result_local), ret_ty));
             }
 
-            // transmute(val) — identity at MIR level (all values are i64)
             if func_name == "transmute" {
-                let val = arg_operands.into_iter().next()
-                    .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
-                return Ok((val, MirType::I64));
+                let (Some(value), Some(from)) = (arg_operands.into_iter().next(), arg_mir_types.into_iter().next()) else {
+                    return Err(LoweringError::InvalidConstruct("`transmute` takes one value".to_string()));
+                };
+                let Some(to) = self.lookup_expr_type(expr) else {
+                    return Err(LoweringError::UnknownType(vec![("lower/expr: transmute target", expr.id.0)]));
+                };
+                return self.lower_transmute(value, from, to);
             }
 
             // mem.owned/OW3: `drop(p)` frees the box `own` allocated. Exactly
@@ -3642,7 +3687,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         result_local: crate::LocalId,
         payload_offset: u32,
-        fields: &[rask_mono::FieldLayout],
+        fields: &[rask_types::layout::FieldLayout],
         i: usize,
         value: &Expr,
     ) -> Result<(), LoweringError> {
@@ -3860,7 +3905,7 @@ impl<'a> MirLowerer<'a> {
         let none = self.builder.alloc_temp(rest_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: none,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: 8,
             field: None,
@@ -7217,6 +7262,9 @@ impl<'a> MirLowerer<'a> {
                     _ => Vec::new(),
                 }
             }
+            fn type_table(&self) -> &rask_types::TypeTable {
+                self.0.type_defs
+            }
         }
 
         let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
@@ -7235,8 +7283,7 @@ impl<'a> MirLowerer<'a> {
             ),
             ReflectAnswer::Unsupported(why) => {
                 return Err(LoweringError::InvalidConstruct(format!(
-                    "reflect.{method}<{type_name}>() isn't implemented on either \
-                     backend — {why} (#791)"
+                    "reflect.{method}<{type_name}>() can't be answered: {why}"
                 )));
             }
             ReflectAnswer::NoSuchMethod => {
@@ -7432,12 +7479,33 @@ impl<'a> MirLowerer<'a> {
     /// signed narrow read came back zero-extended: `*p` on an `*i16` holding -2
     /// was 65534, and so was anything computed from it.
     fn emit_pointee_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+        self.emit_pointer_check(&ptr, false);
         let value = self.builder.alloc_temp(want.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: value,
             rvalue: MirRValue::Deref(ptr),
         }));
         (MirOperand::Local(value), want)
+    }
+
+    /// A null check before going through a raw pointer, unless the function
+    /// is `@unchecked_unsafe`. `ptr_check(p, always, write)`: codegen emits it
+    /// in a debug build, and in every build when `always` (`@checked_unsafe`).
+    pub(crate) fn emit_pointer_check(&mut self, ptr: &MirOperand, write: bool) {
+        let always = match self.pointer_checks {
+            super::PointerChecks::Never => return,
+            super::PointerChecks::Always => true,
+            super::PointerChecks::DebugOnly => false,
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("ptr_check".to_string()),
+            args: vec![
+                ptr.clone(),
+                MirOperand::Constant(MirConst::Bool(always)),
+                MirOperand::Constant(MirConst::Bool(write)),
+            ],
+        }));
     }
 
     /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
@@ -7530,8 +7598,7 @@ impl<'a> MirLowerer<'a> {
                             tmp
                         }
                     };
-                    // At the pointee's width: an f32 is four bytes in memory.
-                    let store_size = (want == MirType::F32).then_some(4);
+                    self.emit_pointer_check(&MirOperand::Local(addr), true);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr,
                         offset: 0,
@@ -10240,9 +10307,9 @@ impl<'a> MirLowerer<'a> {
     /// arguments substituted back into the payload types (#968).
     fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_mono::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_types::layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_mono::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_types::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let layout = instance
             .as_deref()
@@ -10943,7 +11010,7 @@ impl<'a> MirLowerer<'a> {
 /// The field a struct literal's store writes, named by its layout and position.
 fn field_slot(
     result_ty: &MirType,
-    layout: Option<&rask_mono::StructLayout>,
+    layout: Option<&rask_types::layout::StructLayout>,
     name: &str,
 ) -> Option<crate::FieldSlot> {
     let MirType::Struct(sid) = result_ty else { return None };

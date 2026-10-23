@@ -951,6 +951,74 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in
+/// a debug build and not in release, `@checked_unsafe` panics in both, and
+/// `@unchecked_unsafe` in neither. Both attributes used to be read by nothing,
+/// and nothing checked at all.
+#[test]
+fn raw_pointer_null_checks_follow_build_mode_and_attributes() {
+    let rask = rask_binary();
+    let run = |release: bool, args: &[&str]| {
+        let bin = std::env::temp_dir().join(format!(
+            "rask_ptrcheck_{}_{}_{}",
+            release,
+            std::process::id(),
+            next_tmp_id()
+        ));
+        let mut cmd = Command::new(&rask);
+        cmd.arg("compile");
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(fixture("pointer_checks.rk"))
+            .arg("-o")
+            .arg(&bin)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("rask compile");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let ran = Command::new(&bin).args(args).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        (String::from_utf8_lossy(&ran.stderr).to_string(), ran.status.code())
+    };
+    let panicked = |r: &(String, Option<i32>), msg: &str| r.1 == Some(101) && r.0.contains(msg);
+
+    let debug_plain = run(false, &[]);
+    assert!(panicked(&debug_plain, "null pointer read"), "{debug_plain:?}");
+    let debug_write = run(false, &["a", "b"]);
+    assert!(panicked(&debug_write, "null pointer write"), "{debug_write:?}");
+    let release_checked = run(true, &["a"]);
+    assert!(panicked(&release_checked, "null pointer read"), "{release_checked:?}");
+    // No check: the read faults rather than panicking.
+    let release_plain = run(true, &[]);
+    assert!(!panicked(&release_plain, "null pointer"), "{release_plain:?}");
+    let debug_unchecked = run(false, &["a", "b", "c"]);
+    assert!(!panicked(&debug_unchecked, "null pointer"), "{debug_unchecked:?}");
+}
+
+/// `@packed` and `@align` were read by nothing; a malformed one is now an
+/// error where it's written.
+#[test]
+fn malformed_layout_attributes_are_rejected() {
+    let (failed, out) = compile_error_output("layout_attributes.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0923]").count(), 6, "{out}");
+}
+
+/// #1634: `transmute` needs both sides the same size, by the layout, and a
+/// written target.
+#[test]
+fn transmute_sizes_and_targets_are_checked() {
+    let (failed, out) = compile_error_output("transmute_size_mismatch.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0921]").count(), 2, "{out}");
+    assert!(out.contains("`Tagged` (8 bytes)"), "padding must count: {out}");
+    let (failed, out) = compile_error_output("transmute_no_target.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0922]").count(), 1, "{out}");
+}
+
 /// #1537: a field default is a compile-time constant (type.structs/FD1). One
 /// that reaches I/O, declared or `@default`, is rejected where it's written,
 /// named by its field rather than by the method desugar wrote for it.
@@ -4972,14 +5040,15 @@ fn a_real_allow_name_still_compiles() {
 #[test]
 fn a_wide_scalar_field_counts_its_real_width() {
     let (failed, output) = compile_error_output("wide_scalar_copy_threshold.rk");
-    assert!(failed, "24 bytes is over the threshold and has to move:\n{output}");
+    assert!(failed, "32 bytes is over the threshold and has to move:\n{output}");
     assert_eq!(
         output.matches("E0800").count(),
         1,
         "one move, one error:\n{output}"
     );
+    // 16 for the i128, 8 for the i64, padded to the i128's 16-byte alignment.
     assert!(
-        output.contains("24 bytes"),
+        output.contains("32 bytes"),
         "the note has to name the real size:\n{output}"
     );
 }

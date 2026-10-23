@@ -23,7 +23,7 @@
 
 use rask_mono::runtime_abi;
 use rask_mir::{ContainerKind, MirType};
-use rask_mono::{EnumLayout, FieldLayout, StructLayout};
+use rask_types::layout::{EnumLayout, FieldLayout, StructLayout};
 
 use rask_types::Type as RaskType;
 
@@ -193,8 +193,8 @@ fn wrapper_arms(
         if arm.is_empty() {
             continue;
         }
-        let tag_offset = base + rask_mono::abi::TAG_OFFSET as i32;
-        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_mono::abi::TAG_BYTES)?);
+        let tag_offset = base + rask_types::abi::TAG_OFFSET as i32;
+        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_types::abi::TAG_BYTES)?);
         out.extend(arm);
     }
     Some(())

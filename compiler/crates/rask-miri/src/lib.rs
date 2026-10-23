@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use rask_mir::{LocalId, MirFunction, StructLayoutId};
-use rask_mono::{StructLayout, EnumLayout};
+use rask_types::layout::{StructLayout, EnumLayout};
 
 pub use stdlib::{PureStdlib, StdlibProvider};
 
@@ -404,6 +404,7 @@ mod tests {
             blocks,
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         }
     }

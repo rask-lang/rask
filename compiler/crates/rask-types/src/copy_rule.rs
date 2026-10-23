@@ -98,7 +98,7 @@ impl TypeTable {
             return Move;
         }
         let verdict = |t: &Type| self.copy_verdict_with(t, param_is_copy);
-        let size = || self.value_size(ty);
+        let size = || self.copy_size(ty);
         match ty {
             Type::Unit | Type::None | Type::Bool | Type::Char => Copy,
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Copy,
@@ -229,80 +229,4 @@ impl TypeTable {
             Type::Error => Copy,
         }
     }
-
-    /// Estimate type size in bytes (simplified).
-    pub fn value_size(&self, ty: &Type) -> usize {
-        match ty {
-            Type::Unit | Type::None => 0,
-            Type::Bool | Type::I8 | Type::U8 => 1,
-            Type::I16 | Type::U16 => 2,
-            Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
-            Type::I64 | Type::U64 | Type::F64 => 8,
-            // Two words, and the only scalar that is. Falling through to the
-            // 8-byte default made `struct Wide { a: i128, b: i64 }` measure 16
-            // instead of 24, so it sat on the Copy threshold instead of over it
-            // and two bindings aliased one value with nothing said (#936).
-            Type::I128 | Type::U128 => 16,
-            Type::Tuple(elems) => elems.iter().map(|t| self.value_size(t)).sum(),
-            Type::Array { elem, len } => self.value_size(elem) * len,
-            ty if ty.is_option() => self.value_size(ty.as_option().unwrap()) + 1, // tag byte
-            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => 8,
-            Type::Named(type_id) => {
-                if let Some(def) = self.get(*type_id) {
-                    match def {
-                        crate::TypeDef::Struct { fields, .. } => {
-                            fields.iter().map(|(_, t)| self.value_size(t)).sum()
-                        }
-                        crate::TypeDef::Enum { variants, .. } => {
-                            let max_variant = variants
-                                .iter()
-                                .map(|(_, data)| data.iter().map(|t| self.value_size(t)).sum::<usize>())
-                                .max()
-                                .unwrap_or(0);
-                            max_variant + 1
-                        }
-                        _ => 8,
-                    }
-                } else {
-                    8
-                }
-            }
-            // A user-defined generic struct/enum is sized the same way as a
-            // non-generic one, once its own type parameter is substituted
-            // with the type argument at this instantiation (`Wrapping<u8>` is
-            // one byte, not whatever the unsubstituted `T` would default to).
-            // A runtime handle (Vec, Map, ...) declares no fields — its storage
-            // is the runtime's — so summing fields would say 0. It's a word.
-            Type::Generic { base, args } if !rask_stdlib::is_runtime_handle(&self.type_name(*base)) => {
-                if let Some(def) = self.get(*base) {
-                    match def {
-                        crate::TypeDef::Struct { type_params, fields, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            fields.iter().map(|(_, t)| self.value_size(&Self::substitute_generic_field(t, &subst))).sum()
-                        }
-                        crate::TypeDef::NominalAlias { type_params, underlying, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            self.value_size(&Self::substitute_generic_field(underlying, &subst))
-                        }
-                        crate::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            let max_variant = variants
-                                .iter()
-                                .map(|(_, data)| data.iter().map(|t| self.value_size(&Self::substitute_generic_field(t, &subst))).sum::<usize>())
-                                .max()
-                                .unwrap_or(0);
-                            max_variant + 1
-                        }
-                        _ => 8,
-                    }
-                } else {
-                    8
-                }
-            }
-            // Strings, closures and interface objects: fat pointer
-            Type::String | Type::Fn { .. } | Type::InterfaceObject { .. } => 16,
-            _ => 8,
-        }
-    }
-
 }

@@ -751,6 +751,7 @@ fn build_env_drop(
         }],
         entry_block: entry,
         is_extern_c: false,
+        inline_hint: false,
         source_file,
     }
 }

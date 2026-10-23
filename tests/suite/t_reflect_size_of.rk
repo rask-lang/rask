@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `reflect.size_of`, `align_of` and `is_copy` answer from the layout (#791).
+//
+// They were refused on both backends because the compiler had two size
+// models: the copy rule summed field widths and ignored padding, and the
+// layout codegen used padded them. Now the copy rule reads the layout too, so
+// all three agree with each other and with what's in memory.
+
+import std.reflect
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+struct Mixed {
+    a: u8
+    b: i64
+}
+
+struct Nested {
+    inner: Mixed
+    flag: u8
+}
+
+struct Pair<T> {
+    first: T
+    second: T
+}
+
+enum Token {
+    Num(i64, u8)
+    End
+}
+
+@packed
+struct Wire {
+    tag: u8
+    len: u32
+}
+
+test "scalars and plain structs" {
+    assert reflect.size_of<i32>() == 4
+    assert reflect.align_of<i32>() == 4
+    assert reflect.size_of<Point>() == 8
+    assert reflect.align_of<Point>() == 4
+    assert reflect.is_copy<Point>()
+}
+
+test "padding counts" {
+    assert reflect.size_of<Mixed>() == 16
+    assert reflect.align_of<Mixed>() == 8
+    assert reflect.is_copy<Mixed>()
+    // 16 bytes of Mixed, then a byte, padded to 8: over the threshold.
+    assert reflect.size_of<Nested>() == 24
+    assert !reflect.is_copy<Nested>()
+}
+
+test "a generic instance has its own size" {
+    assert reflect.size_of<Pair<u8>>() == 2
+    assert reflect.size_of<Pair<i64>>() == 16
+    assert reflect.size_of<Pair<string>>() == 32
+    assert reflect.is_copy<Pair<i64>>()
+    assert !reflect.is_copy<Pair<string>>()
+}
+
+test "an enum is its tag and its widest payload" {
+    assert reflect.size_of<Token>() == 24
+    assert !reflect.is_copy<Token>()
+}
+
+test "packed has no padding" {
+    assert reflect.size_of<Wire>() == 5
+    assert reflect.align_of<Wire>() == 1
+}
+
+test "the size is the memory" {
+    let p = Pair(first: 200u8, second: 7u8)
+    let raw: [u8; 2] = unsafe { transmute(p) }
+    assert raw[0] == 200
+    assert raw[1] == 7
+}
+
+test "a value over the threshold moves" {
+    let n = Nested(inner: Mixed(a: 1, b: 2), flag: 3)
+    let m = n
+    assert m.flag == 3
+}

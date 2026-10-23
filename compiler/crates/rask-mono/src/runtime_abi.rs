@@ -30,7 +30,7 @@ runtime_constants! {
     RASK_TAG_ABSENT = rask_stdlib::wrappers::ABSENT_TAG as i64;
     /// Where a `T or E` keeps the source line its error came from: a
     /// `uint32_t`, zero for none (`crate::abi`).
-    RASK_RESULT_ORIGIN_LINE_OFFSET = crate::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
+    RASK_RESULT_ORIGIN_LINE_OFFSET = rask_types::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
 
     /// How the runtime reads one element of a vector it formats or sorts. The
     /// vector only records a width, and a four-byte element could be an i32,
@@ -58,6 +58,12 @@ runtime_constants! {
     /// A `RaskStr` holds up to this many bytes inline. Its last byte is the
     /// inline capacity left, so an empty string's is this.
     RASK_SSO_MAX = 15;
+
+    /// Where a `RaskVec` keeps its element buffer and its element width.
+    /// Codegen reads both to index a vector whose bounds check is already
+    /// proven, without calling into the runtime.
+    RASK_VEC_DATA_OFFSET = 0;
+    RASK_VEC_ELEM_SIZE_OFFSET = 24;
     /// The bit of a `RaskStr`'s second word that marks the heap form.
     RASK_STRING_HEAP_BIT = 63;
 

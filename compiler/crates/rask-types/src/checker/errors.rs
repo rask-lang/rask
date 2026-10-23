@@ -578,6 +578,24 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
+    #[error("{problem}")]
+    LayoutAttribute {
+        problem: String,
+        span: Span,
+    },
+    #[error("`transmute` from `{from}` ({from_size} bytes) to `{to}` ({to_size} bytes)")]
+    TransmuteSizeMismatch {
+        from: Type,
+        to: Type,
+        from_size: u32,
+        to_size: u32,
+        span: Span,
+    },
+    #[error("`transmute` of a `{from}` has no target type")]
+    TransmuteNeedsTarget {
+        from: Type,
+        span: Span,
+    },
     #[error("`{func}` returns the struct `{ty}` by value, which isn't supported yet")]
     CStructReturn {
         func: String,
@@ -1610,6 +1628,11 @@ impl TypeError {
 
             LinearInContainer { elem, .. } => *elem = f(elem),
             RackNodeNotStruct { node, .. } => *node = f(node),
+            TransmuteNeedsTarget { from, .. } => *from = f(from),
+            TransmuteSizeMismatch { from, to, .. } => {
+                *from = f(from);
+                *to = f(to);
+            }
             UnhashableMapKey { key, .. } => *key = f(key),
             ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
@@ -1735,6 +1758,7 @@ impl TypeError {
             | OverlappingArgumentBorrow { .. }
             | WithNeedsElementOrBox { .. }
             | UnsafeRequired { .. }
+            | LayoutAttribute { .. }
             | CStructReturn { .. }
             | InterfaceObjectSelfReturn { .. }
             | InterfaceObjectGenericMethod { .. }
