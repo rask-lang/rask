@@ -74,7 +74,7 @@ wrong thing. Weigh whether the result is better.
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
-- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one.
+- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one. The compiler may add types to the set (refcounting is fine when the compiler provides it, like `string` and the proposed `bytes`); users still can't.
 
 # Working relationship
 

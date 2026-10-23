@@ -205,7 +205,7 @@ primitive built the same way, immutable and refcounted with storable views, woul
 data what strings have. That's the model of Go's slices and of Rust's `bytes` crate, which
 networking code in Rust uses for exactly this. The cost is an atomic refcount operation per
 view, the same one strings pay, and the same elision applies when the compiler can see one
-owner.
+owner. Accepted as a direction and written up as [std.bytes](../stdlib/bytes.md).
 
 Rask's own compiler does a third thing: an AST node keeps a `Span`, offsets into the
 source, and looks text up when it needs it. That works today and is often the right answer.
