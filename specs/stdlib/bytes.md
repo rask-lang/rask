@@ -61,7 +61,7 @@ struct Frame {
 
 func parse_frame(packet: bytes) -> Frame or FrameError {
     if packet.len() < 3 { return FrameError.Short }
-    let len = packet.read_u16_be(1) as usize
+    let len = packet.read_u16be(1) as usize
     if packet.len() < 3 + len { return FrameError.Short }
     return Frame(kind: packet[0], payload: packet[3..3 + len].view())
 }

@@ -171,7 +171,7 @@ struct MethodInfo {
 
 Order is the declaration order, then what was derived.
 
-R5 decides generic receivers: a method whose `extend` header or `where` clause this instantiation doesn't meet isn't one of its methods. `Vec<i64>` has `sort` and a `Vec` of a struct that isn't `Comparable` doesn't; `read_u8` lives in `extend Vec<u8>` and only `Vec<u8>` has it. `return_type_name` has the receiver's arguments substituted. A method's own type parameters stay as written: `map` on `Vec<i64>` returns `Sequence<U>`.
+R5 decides generic receivers: a method whose `extend` header or `where` clause this instantiation doesn't meet isn't one of its methods. `Vec<i64>` has `sort` and a `Vec` of a struct that isn't `Comparable` doesn't; `flatten` lives in `extend Vec<Vec<T>>` and only a vector of vectors has it. `return_type_name` has the receiver's arguments substituted. A method's own type parameters stay as written: `map` on `Vec<i64>` returns `Sequence<U>`.
 
 The `name` argument of `has_method` and `has_field` is normally a literal, or `field.name` inside a `comptime for`, and the call folds to a constant. Any other string works too; it's compared at run time against the folded list.
 
