@@ -1,7 +1,7 @@
 <!-- id: std.bytes -->
 <!-- status: proposed -->
-<!-- summary: Immutable refcounted byte buffer (Copy), the same design as string without the UTF-8 rule. Inline slicing, BytesView for storable zero-copy pieces, BytesBuilder for construction -->
-<!-- depends: stdlib/strings.md, memory/value-semantics.md, memory/borrowing.md -->
+<!-- summary: Immutable refcounted byte buffer (Copy), the string design without the UTF-8 rule. Vec<u8> is how you build one: freezing is free, thawing is free when nobody else holds it. Inline slicing, BytesView for storable zero-copy pieces -->
+<!-- depends: stdlib/strings.md, stdlib/collections.md, memory/value-semantics.md, memory/borrowing.md -->
 
 # Bytes
 
@@ -11,18 +11,37 @@ without copying it and without a reference that could dangle. Rust gets this fro
 `bytes` crate and Go from slices; here it's a language primitive, because refcounting
 is something the compiler provides and user types don't (`mem.value-semantics/VS3`).
 
-It doesn't replace `Vec<u8>`. A `Vec<u8>` is a buffer you change. `bytes` is one you've
-finished changing and want to pass around and cut up for free.
+## One buffer, two types
 
-## The type
+`Vec<u8>` and `bytes` are the same allocation in two states. A `Vec<u8>` has one owner
+and can change. `bytes` has many owners and can't. You fill a `Vec<u8>`, then freeze it:
+
+<!-- test: skip -->
+```rask
+mut buf = Vec<u8>.with_capacity(4096)
+try socket.read_into(mutate buf)
+let packet = buf.freeze()          // no copy: same allocation, now shared and immutable
+```
+
+I looked at making them one type and didn't find a version I'd want. One type that is
+both changeable and shared needs copy-on-write: a write checks whether anyone else holds
+the buffer and silently copies it if so. Swift's arrays do this. It makes a single
+`push` cost O(n) depending on who else holds the buffer, which is invisible at the call
+site, and Rask makes big costs visible. Two types with a free conversion keep both costs
+in plain sight: changing needs one owner, sharing gives up changing.
 
 | Rule | Description |
 |------|-------------|
-| **BY1: Immutable, refcounted, Copy** | 16 bytes. Copying bumps an atomic refcount in the heap header, or nothing in small mode (BY3). Same semantics as `std.strings/S1` and S6, including refcount elision for a provable sole owner |
+| **BY1: Immutable, refcounted, Copy** | 16 bytes. Copying bumps an atomic refcount in the buffer's header, or nothing in small mode (BY3). Same semantics as `std.strings/S1` and S6, including refcount elision for a provable sole owner |
 | **BY2: Any byte values** | No encoding rule. That's the whole difference from `string` |
-| **BY3: Small inline** | 15 bytes or fewer are stored in the value itself, no heap and no refcount. Same layout as `std.strings/S8`, so one runtime representation serves both types |
+| **BY3: Small inline** | 15 bytes or fewer are stored in the value itself, no heap and no refcount. Same layout as `std.strings/S8`, so one representation serves both types |
 | **BY4: Inline slicing** | `b[i..j]` is a temporary view, valid for the expression, like `std.strings/S2`. It can be an argument, a receiver or the input to `.view()` or `.to_bytes()`. It can't be stored or returned |
-| **BY5: Builder for construction** | `BytesBuilder` collects pushes and `.build()`s a `bytes` without copying. Like `std.strings/S7` |
+| **BY5: Freezing is free** | `v.freeze()` takes a `Vec<u8>` and returns `bytes` over the same allocation. O(1). A `Vec<u8>`'s buffer reserves room for the refcount header, so nothing moves |
+| **BY6: Thawing asks** | `b.thaw()` returns `Vec<u8>?`: the same allocation back if `b` is its only holder, `none` if anyone else shares it. `b.to_vec()` always copies. Getting the buffer back for free when it's yours, and a visible copy when it isn't |
+
+`thaw` returning `none` is the copy-on-write check, moved to where you can see it.
+The caller decides what a shared buffer costs: `b.thaw() ?? b.to_vec()` reads as
+"reuse it if I can, copy if I must".
 
 ## Keeping a piece: `BytesView`
 
@@ -54,30 +73,30 @@ One allocation for the packet and none per frame.
 
 | Operation | Returns | Cost |
 |-----------|---------|------|
-| `s.as_bytes()` | `BytesView` | None. A string's buffer is already a byte buffer (BY3) |
+| `v.freeze()` | `bytes` | None (BY5) |
+| `b.thaw()` | `Vec<u8>?` | None, or `none` if shared (BY6) |
+| `b.to_vec()` | `Vec<u8>` | Copies |
+| `s.as_bytes()` | `BytesView` | None. A string's buffer is a byte buffer (BY3) |
 | `b.to_string()` | `string or Utf8Error` | O(n) validation, no copy: the string shares the buffer |
-| `bytes.from(v)` | `bytes` | Copies. A `Vec`'s buffer has no refcount header to share |
-| `b.to_vec()` | `Vec<u8>` | Copies, so you can change it |
-| `BytesBuilder.new()` … `.build()` | `bytes` | No copy at `build` |
 
-The two copies are the ones where ownership really changes shape: a `Vec` you can
-change becomes a buffer many can share, and back.
+I/O needs nothing new: reads fill a `Vec<u8>` as they do now, and a caller who wants to
+share the result freezes it.
 
-## Why one design for two types
+## What it costs `Vec`
 
-I could have made `bytes` its own thing with its own rules. But someone who has learned
-how strings slice and view already knows this type, and that's worth more than anything a
-different design would buy. It also means one runtime representation, so `as_bytes` and
-`to_string` share the buffer and don't copy.
+Every `Vec<u8>` allocation carries 8 bytes for a refcount it uses only once frozen. For a
+read buffer that's nothing. For a million tiny `Vec<u8>`s it's noticeable, and the honest
+answer is that a million tiny byte buffers want to be `bytes` from the start, which
+inline anything 15 bytes or under (BY3). Only `Vec<u8>` needs the header; other element
+types don't freeze.
 
 ## Open questions
 
-- **What I/O returns.** `File.read_bytes()` and socket reads return `Vec<u8>` today.
-  Returning `bytes` is where this pays off for network code. But a read buffer you then
-  modify wants to be a `Vec`. Probably both, with the read that fills a `BytesBuilder` as
-  the default.
+- **Freezing other element types.** `Vec<u32>` to a shared `[u32]` buffer works the same
+  way. Is that a second type, or does `bytes` stay special because bytes are what
+  crosses wires?
 - **`@binary` input.** `@binary` parsing reads from a byte buffer. Reading from `bytes`
-  or a `BytesView` gives it zero-copy input. Whether it keeps a `Vec<u8>` form too is
+  or a `BytesView` gives it zero-copy input. Whether it keeps a `Vec<u8>` form is
   `std.bits`' call.
-- **Literals.** `b"\x01\x02"` or `bytes.from([1, 2])`? The first is new syntax for a
-  common case. The second needs nothing new.
+- **Literal syntax** (`b"\x01\x02"`) is deferred. `Vec.from([1, 2]).freeze()` works
+  without it.

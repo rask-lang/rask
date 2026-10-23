@@ -27,25 +27,24 @@ into one. A *volatile* access forbids that: every read and write happens, in ord
 
 C and Zig put volatile on the pointer (`volatile uint32_t *`, `*volatile u32`), so
 every access through it is right and every access through a plain pointer is a bug
-nobody sees. I'd put it on the type instead. `Reg<T, A>` is an address plus a value
-type and an access mode, and its only methods are volatile:
+nobody sees. I'd put it on the type instead. `Reg<T>` is an address plus a value type,
+and its only methods are volatile. `ReadReg<T>` and `WriteReg<T>` are the one-way kinds:
 
 <!-- test: skip -->
 ```rask
 @device
 @unique
 struct Uart0 {
-    @offset(0x00) data: Reg<u32, WriteOnly>
-    @offset(0x18) status: Reg<UartStatus, ReadOnly>
+    @offset(0x00) data: WriteReg<u32>
+    @offset(0x18) status: ReadReg<UartStatus>
     @offset(0x30) ctrl: Reg<UartCtrl>
 }
 
-@binary
+@register(u32)
 struct UartStatus {
-    busy: u1
-    rx_full: u1
-    tx_full: u1
-    _: u29
+    @at(bit: 3) busy: u1
+    @at(bit: 4) rx_full: u1
+    @at(bit: 5) tx_full: u1
 }
 
 func put(uart: Uart0, byte: u8) {
@@ -54,11 +53,11 @@ func put(uart: Uart0, byte: u8) {
 }
 ```
 
-`Reg` is a value. It's an address, it copies, it never dangles. Reading one isn't
-`unsafe` either. The one unsafe fact is that this address really is a UART laid out
+`Reg` is a value: an address that never dangles, because nothing frees a device.
+Reading one isn't `unsafe` either. The one unsafe fact is that this address really is a UART laid out
 like this, and that's stated where the device is made (section 2), not at every access.
 
-`@binary` already describes bit layouts, so a register's fields can be one.
+A register's bits get a layout of their own (`@register`, see the second pass).
 `ctrl.modify(|c| c.with(enable: 1))` is a read, a change and a write, as in Rust's
 svd2rust. Vendors ship register maps as SVD files, and a `build.rk` step can turn one into
 a module of `@device` structs. That's a generator writing source, not a macro.
@@ -216,16 +215,103 @@ Inline assembly has a design already (`mem.unsafe/ASM1–ASM5`). It needs buildi
 designing. The same goes for the bugs and inert attributes the audit found (`transmute`,
 `@packed`, `size_of`).
 
-## Open questions
+## Second pass
 
-- **Bit order.** `@binary` is MSB-first, for wire formats. Registers number bits from the
-  least significant end. Either `@binary` takes an order or registers need their own layout.
-- **Multi-core.** Masking interrupts protects one core. Two cores need a spinlock, so
-  `Critical` would mean different things per target. Is that one strategy or two?
-- **Is `Reg` a stdlib type?** It can be written in Rask over unsafe volatile reads and
-  writes on raw pointers, which would be the only new primitive. That keeps it out of the
-  closed set.
-- **Fixed-capacity collections.** Without a heap, what replaces `Vec` and `string`, and do
-  they share their interfaces with the heap versions?
+The first draft ended on open questions. These are my answers to the ones that have one.
+
+### Registers get their own layout
+
+`@binary` describes a byte stream: fields in order, most significant bit first, which is
+how wire formats are written. A register is a word with named bit positions, and the
+datasheet numbers them from the least significant end ("bits 3:1, MODE"). Reusing
+`@binary` with a bit-order flag would make the reader count widths to find a field, and
+one wrong width shifts every field after it without an error.
+
+So registers get `@register`, where each field says where it starts and its type says
+how wide it is. That's the datasheet's own shape:
+
+<!-- test: skip -->
+```rask
+@register(u32)
+struct UartCtrl {
+    @at(bit: 0) enable: u1
+    @at(bit: 1) mode: u3
+    @at(bit: 8) baud_div: u12
+}
+```
+
+The compiler checks that fields don't overlap and fit the word. Gaps are reserved bits.
+`modify` reads the register first, so reserved bits keep their value. `write` sends zero
+for them, which is what most datasheets ask for. A register that needs something else
+writes it explicitly.
+
+### `Reg` is stdlib code, and move-only
+
+The only new primitive is volatile access on a raw pointer, in `unsafe`:
+`p.read_volatile()` and `p.write_volatile(v)`. `Reg` is a Rask struct holding the
+address, with its unsafe calls inside its methods. Building one is `unsafe`, since that's
+where the "this address is this register" claim is made. Using one is safe.
+
+`Reg` has to be `@unique`. It's 8 bytes, so without that it would copy implicitly, and
+`let r = uart.data` would leave two handles on one register and undo section 2.
+Read-only and write-only registers are separate types (`ReadReg<T>`, `WriteReg<T>`),
+not a mode parameter. A method that doesn't exist reads better than one that fails a
+bound.
+
+### `Critical` means one thing on every target
+
+The strategy's promise is that nothing else that can touch the value runs during the
+block. On one core that's masking interrupts. On several it's masking plus a spinlock.
+The program says what it needs and the target decides how, the same way `Shared` already
+picks a lock implementation per platform.
+
+The spinlock is less alarming than it sounds. Blocking is already a compile error inside
+a critical section and inside a handler (section 4), so the only thing a core can wait on
+is another core's critical section, and those are short and never wait themselves.
+
+### Fixed-capacity collections
+
+Without a heap, `Vec` needs a version with its storage inline. I'd make it the same type
+with a capacity in it, `Vec<T, 64>`, not a new name: the same methods, so code written
+against `Vec<T>` reads the same against the fixed one. `push` on a full vector panics,
+the same as indexing out of range, and `try_push` returns `void or Full` for code where a
+full buffer is normal, like an interrupt handler filling a ring.
+
+Strings mostly survive without a heap: literals are static, and anything up to 15 bytes
+is inline (`std.strings/S8`). Interpolation is what allocates, so `println` with a
+no-heap build formats straight into the sink instead of building a string first.
+
+### A slice parameter
+
+Section 6's "borrow a range for a call" needs a type to write. `[T]` is a run of `T`
+somewhere else, and it's only allowed as a parameter type:
+
+<!-- test: skip -->
+```rask
+func crc32(data: [u8]) -> u32 { ... }
+
+crc32(buf[10..20])          // part of a Vec
+crc32(header)               // a whole [u8; 16] array
+crc32(packet[3..])          // part of a bytes
+```
+
+It's the borrow every parameter already is (`mem.borrowing/B3`), with the range carried
+along. `mutate data: [u8]` lets the callee change elements but not the length. It can't
+be a field, a `let` or a return type, for the same reason nothing borrowed can be. One
+function then serves a `Vec`, an array and `bytes`. Today that takes three functions or a
+copy.
+
+## Still open
+
+- **Who builds `Devices`.** The board module is generated from an SVD file and holds the
+  only `unsafe` lines. Is generation a `build.rk` step every project repeats, or a
+  package per chip, like Rust's peripheral access crates?
+- **Panics on bare metal.** A panic handler that resets the chip is the usual answer. But
+  section 4's effect checks could go further: an interrupt handler that can panic is
+  worth a warning, because a reset mid-interrupt is the hardest bug to find.
+- **`[T]` versus `bytes` views.** A `BytesView` is a storable range of `bytes`; a `[u8]`
+  parameter is a borrowed range of anything. That's two range types. I think both are
+  needed, since one can be stored and one can point into a `Vec`, but it's worth a
+  harder look.
 - **Where the core design moves.** If these hold up, the "consider alternatives" line in
   `CORE_DESIGN.md` changes. That's for after a prototype, not now.

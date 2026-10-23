@@ -166,7 +166,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [api-design.md](stdlib/api-design.md) | **API rules**: one screen per module, guess test, no Rust legacy (SD1–SD5) |
 | [collections.md](stdlib/collections.md) | Vec, Map (indexed and keyed collections) |
 | [strings.md](stdlib/strings.md) | String types; bytes to index, graphemes to display (U1–U5) |
-| [bytes.md](stdlib/bytes.md) | Immutable refcounted byte buffer, the string design without UTF-8. Proposed |
+| [bytes.md](stdlib/bytes.md) | Immutable refcounted byte buffer, the string design without UTF-8. A frozen `Vec<u8>`. Proposed |
 | [iteration.md](stdlib/iteration.md) | Collection iteration patterns |
 | [bits.md](stdlib/bits.md) | Bit manipulation, binary parsing |
 | [url.md](stdlib/url.md) | URL parsing, percent-encoding |
