@@ -951,6 +951,52 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in
+/// a debug build and not in release, `@checked_unsafe` panics in both, and
+/// `@unchecked_unsafe` in neither. Both attributes used to be read by nothing,
+/// and nothing checked at all.
+#[test]
+fn raw_pointer_null_checks_follow_build_mode_and_attributes() {
+    let rask = rask_binary();
+    let run = |release: bool, args: &[&str]| {
+        let bin = std::env::temp_dir().join(format!(
+            "rask_ptrcheck_{}_{}_{}",
+            release,
+            std::process::id(),
+            next_tmp_id()
+        ));
+        let mut cmd = Command::new(&rask);
+        cmd.arg("compile");
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(fixture("pointer_checks.rk"))
+            .arg("-o")
+            .arg(&bin)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("rask compile");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let ran = Command::new(&bin).args(args).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        (String::from_utf8_lossy(&ran.stderr).to_string(), ran.status.code())
+    };
+    let panicked = |r: &(String, Option<i32>), msg: &str| r.1 == Some(101) && r.0.contains(msg);
+
+    let debug_plain = run(false, &[]);
+    assert!(panicked(&debug_plain, "null pointer read"), "{debug_plain:?}");
+    let debug_write = run(false, &["a", "b"]);
+    assert!(panicked(&debug_write, "null pointer write"), "{debug_write:?}");
+    let release_checked = run(true, &["a"]);
+    assert!(panicked(&release_checked, "null pointer read"), "{release_checked:?}");
+    // No check: the read faults rather than panicking.
+    let release_plain = run(true, &[]);
+    assert!(!panicked(&release_plain, "null pointer"), "{release_plain:?}");
+    let debug_unchecked = run(false, &["a", "b", "c"]);
+    assert!(!panicked(&debug_unchecked, "null pointer"), "{debug_unchecked:?}");
+}
+
 /// `@packed` and `@align` were read by nothing; a malformed one is now an
 /// error where it's written.
 #[test]

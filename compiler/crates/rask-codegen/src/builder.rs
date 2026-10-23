@@ -55,6 +55,10 @@ pub(crate) fn copy_bytes(
 // expression's widths ran out. The operand values can't be in a static message,
 // but the type and its range can, and those are what the reader needs.
 pub(crate) const OV_DIV_ZERO: &str = "division by zero";
+/// mem.unsafe, debug-mode safety: a raw-pointer access through null. Worded
+/// as the interpreter words it.
+pub(crate) const PTR_NULL_READ: &str = "null pointer read";
+pub(crate) const PTR_NULL_WRITE: &str = "null pointer write";
 
 /// Which check fired, for picking the message.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,6 +85,8 @@ macro_rules! overflow_messages {
         /// `tail` (below) and lets the runtime splice the operands in front.
         pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
             OV_DIV_ZERO,
+            PTR_NULL_READ,
+            PTR_NULL_WRITE,
             $(
                 concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
                 concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
@@ -216,6 +222,8 @@ struct CodegenCtx<'a> {
     /// An `extern "C"` export: its body is bracketed with the FFI panic
     /// boundary, so a panic inside aborts rather than unwinding into C frames.
     is_extern_c: bool,
+    /// A debug build: raw-pointer null checks are on (mem.unsafe).
+    debug_checks: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
@@ -399,6 +407,8 @@ pub struct FunctionBuilder<'a> {
     /// `rask_preempt_requested`, when the runtime provides it. Every function
     /// entry and loop back-edge checks it (conc.runtime/P3).
     preempt_flag: Option<GlobalValue>,
+    /// A debug build: `ptr_check` is emitted (mem.unsafe).
+    debug_checks: bool,
 }
 
 /// No C function in this program takes a struct by value.
@@ -465,6 +475,7 @@ impl<'a> FunctionBuilder<'a> {
             c_abi_args: &NO_C_ABI_ARGS,
             field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
+            debug_checks: false,
         })
     }
 
@@ -474,6 +485,10 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Check for preemption at function entry and on loop back-edges.
+    pub fn set_debug_checks(&mut self, on: bool) {
+        self.debug_checks = on;
+    }
+
     pub fn set_preempt_flag(&mut self, flag: GlobalValue) {
         self.preempt_flag = Some(flag);
     }
@@ -752,6 +767,7 @@ impl<'a> FunctionBuilder<'a> {
             dst_param,
             is_main: self.mir_fn.name == "main",
             is_extern_c: self.mir_fn.is_extern_c,
+            debug_checks: self.debug_checks,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
             field_types: self.field_types,
@@ -4607,6 +4623,17 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, zero);
                 }
             }
+        } else if func.name == "ptr_check" {
+            // mem.unsafe: a debug build checks every raw-pointer access for
+            // null; `@checked_unsafe` asks for it in release too.
+            let flag = |i: usize| matches!(args.get(i), Some(MirOperand::Constant(MirConst::Bool(true))));
+            if ctx.debug_checks || flag(1) {
+                let ptr = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
+                let msg = if flag(2) { PTR_NULL_WRITE } else { PTR_NULL_READ };
+                Self::guard_overflow(builder, ctx, is_null, msg);
+            }
+            return Ok(true);
         } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
             // User-level diverging builtin: emit rask_panic_at with the
             // message string and trap. todo/unreachable map to fixed

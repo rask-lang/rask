@@ -81,6 +81,10 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // Functions
     ("entry", ArgForm::Exprs, Writer::Anyone),
     ("no_alloc", ArgForm::Exprs, Writer::Anyone),
+    ("inline", ArgForm::Exprs, Writer::Anyone),
+    // Raw-pointer checks (mem.unsafe, debug-mode safety)
+    ("checked_unsafe", ArgForm::Exprs, Writer::Anyone),
+    ("unchecked_unsafe", ArgForm::Exprs, Writer::Anyone),
     ("test", ArgForm::Exprs, Writer::Anyone),
     // Stdlib declarations: where the body lives
     ("native", ArgForm::Exprs, Writer::Stdlib),
@@ -103,14 +107,11 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("warn", ArgForm::RuleNames, Writer::Anyone),
     ("deny", ArgForm::RuleNames, Writer::Anyone),
     // Decided, not built yet
-    ("inline", ArgForm::Exprs, Writer::Anyone),             // SYNTAX.md
     ("deprecated", ArgForm::Exprs, Writer::Anyone),         // tool.warnings/W5
     ("bitfield", ArgForm::Exprs, Writer::Anyone),           // struct.c-interop
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
     ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
-    ("checked_unsafe", ArgForm::Exprs, Writer::Anyone),     // mem.unsafe
-    ("unchecked_unsafe", ArgForm::Exprs, Writer::Anyone),   // mem.unsafe
     ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)
     ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];

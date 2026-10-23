@@ -293,13 +293,15 @@ Instead of "all pointer errors are UB" regardless of build mode, Rask provides d
 
 | Operation | Debug Behavior | Release Behavior |
 |-----------|----------------|------------------|
-| Null pointer deref | Panic with location | UB |
+| Null pointer deref | Panic with location (built) | UB |
 | Out-of-bounds pointer | Panic with location | UB |
 | Use-after-free | Panic (if detectable) | UB |
 | Double-free | Panic (if detectable) | UB |
 | Unaligned access | Panic | Platform-dependent |
 
-**Checked/unchecked attributes:**
+Of the debug checks, the null check on `*p`, `*p = v` and `p.read()` is built; the rest aren't yet.
+
+**Checked/unchecked attributes** (on a function, for every raw-pointer access in it):
 
 | Attribute | Debug | Release |
 |-----------|-------|---------|

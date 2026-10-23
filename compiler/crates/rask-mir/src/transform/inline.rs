@@ -9,6 +9,7 @@
 //! Heuristics (from comp.architecture):
 //! - IN2: Leaf functions ≤ MAX_INLINE_STMTS → inline
 //! - IN3: Functions called once → always inline (no code size cost)
+//! - `@inline` → inline whatever the size
 //! - Recursive functions → never inline
 //! - Extern functions → never inline
 
@@ -61,7 +62,7 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
     let writers = params_written_through(fns);
     let callee_bodies: HashMap<String, MirFunction> = fns
         .iter()
-        .filter(|f| should_inline(&cg, &f.name))
+        .filter(|f| should_inline(&cg, &f.name) || (f.inline_hint && !cg.is_recursive(&f.name)))
         .filter(|f| !writers.get(&f.name).is_some_and(|s| !s.is_empty()))
         .filter(|f| !builds_borrowing_closure(f))
         .map(|f| (f.name.clone(), f.clone()))
@@ -1141,6 +1142,7 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
 
         }
@@ -1168,9 +1170,38 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
 
         }
+    }
+
+    /// `big` is past the size limit and called twice, so only `@inline` gets
+    /// it inlined. Whether the caller still calls it afterwards.
+    fn big_callee_still_called(hint: bool) -> bool {
+        let mut callee = make_simple_callee();
+        callee.name = "big".to_string();
+        callee.inline_hint = hint;
+        let stmt = callee.blocks[0].statements[0].clone();
+        callee.blocks[0].statements = vec![stmt; MAX_INLINE_STMTS + 10];
+        let call = MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(LocalId(0)),
+            func: FunctionRef::internal("big".to_string()),
+            args: vec![MirOperand::Constant(MirConst::Int(5))],
+        });
+        let mut caller = make_caller();
+        caller.blocks[0].statements = vec![call.clone(), call];
+        let mut fns = vec![caller, callee];
+        let _ = inline_functions(&mut fns);
+        fns[0].blocks.iter().flat_map(|b| &b.statements).any(|s| {
+            matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "big")
+        })
+    }
+
+    #[test]
+    fn inline_attribute_lifts_the_size_limit() {
+        assert!(big_callee_still_called(false), "without @inline a big function called twice stays a call");
+        assert!(!big_callee_still_called(true), "@inline inlines it whatever its size");
     }
 
     #[test]
@@ -1206,6 +1237,7 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
         let caller = MirFunction {
@@ -1224,6 +1256,7 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1292,6 +1325,7 @@ mod tests {
                 }],
                 entry_block: BlockId(0),
                 is_extern_c: false,
+                inline_hint: false,
                 source_file: None,
     
             },
@@ -1320,6 +1354,7 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
 
         }];

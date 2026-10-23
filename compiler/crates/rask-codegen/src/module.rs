@@ -1864,6 +1864,7 @@ impl CodeGenerator {
             builder.set_line_map(lm);
         }
         builder.set_c_abi_args(&self.c_abi_args);
+        builder.set_debug_checks(self.build_mode == BuildMode::Debug);
         builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);

@@ -2378,6 +2378,9 @@ impl<'a> MirLowerer<'a> {
                 // here read whatever address the value's first word happened
                 // to look like (segfault on `(*owned_point).x`), #737.
                 UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
+                    if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
+                        self.emit_pointer_check(&operand_op, false);
+                    }
                     let pointee_mir_ty = self.ctx.lookup_raw_type(operand.id)
                         .map(|t| self.ctx.type_to_mir(t));
                     match pointee_mir_ty {
@@ -7476,12 +7479,33 @@ impl<'a> MirLowerer<'a> {
     /// signed narrow read came back zero-extended: `*p` on an `*i16` holding -2
     /// was 65534, and so was anything computed from it.
     fn emit_pointee_load(&mut self, ptr: MirOperand, want: MirType) -> TypedOperand {
+        self.emit_pointer_check(&ptr, false);
         let value = self.builder.alloc_temp(want.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: value,
             rvalue: MirRValue::Deref(ptr),
         }));
         (MirOperand::Local(value), want)
+    }
+
+    /// A null check before going through a raw pointer, unless the function
+    /// is `@unchecked_unsafe`. `ptr_check(p, always, write)`: codegen emits it
+    /// in a debug build, and in every build when `always` (`@checked_unsafe`).
+    pub(crate) fn emit_pointer_check(&mut self, ptr: &MirOperand, write: bool) {
+        let always = match self.pointer_checks {
+            super::PointerChecks::Never => return,
+            super::PointerChecks::Always => true,
+            super::PointerChecks::DebugOnly => false,
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("ptr_check".to_string()),
+            args: vec![
+                ptr.clone(),
+                MirOperand::Constant(MirConst::Bool(always)),
+                MirOperand::Constant(MirConst::Bool(write)),
+            ],
+        }));
     }
 
     /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
@@ -7574,8 +7598,7 @@ impl<'a> MirLowerer<'a> {
                             tmp
                         }
                     };
-                    // At the pointee's width: an f32 is four bytes in memory.
-                    let store_size = (want == MirType::F32).then_some(4);
+                    self.emit_pointer_check(&MirOperand::Local(addr), true);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr,
                         offset: 0,

@@ -975,6 +975,9 @@ impl<'a> MirLowerer<'a> {
                             .unwrap_or_else(|| val_ty.clone());
                         let val_op = self.as_slot_value(val_op, &pointee);
                         let store_size = pointee.size();
+                        if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
+                            self.emit_pointer_check(&MirOperand::Local(addr_local), true);
+                        }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: addr_local,
                             offset: 0,

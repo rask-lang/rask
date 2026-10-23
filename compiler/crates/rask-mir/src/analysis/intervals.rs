@@ -886,6 +886,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -968,6 +969,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1053,6 +1055,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         }
     }
@@ -1097,6 +1100,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
         assert!(analyze(&func).is_none(), "IV1: no analysis without indexing");
@@ -1122,6 +1126,7 @@ mod tests {
                 }],
                 entry_block: block(0),
                 is_extern_c: false,
+                inline_hint: false,
                 source_file: None,
             };
             func

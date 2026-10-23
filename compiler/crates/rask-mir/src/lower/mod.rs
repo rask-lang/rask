@@ -1728,6 +1728,9 @@ pub struct MirLowerer<'a> {
     pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
+    /// What the function's attributes say about raw-pointer checks
+    /// (mem.unsafe, debug-mode safety).
+    pointer_checks: PointerChecks,
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
     /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
     local_meta: HashMap<String, LocalMeta>,
@@ -4298,6 +4301,7 @@ impl<'a> MirLowerer<'a> {
             spawn_result_boxed: false,
             addressed_captures: std::collections::HashSet::new(),
             parent_name: func_name,
+            pointer_checks: PointerChecks::of(&fn_decl.attrs),
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
             ensure_read_names: std::collections::HashSet::new(),
@@ -4546,6 +4550,7 @@ impl<'a> MirLowerer<'a> {
 
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
+        main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
         for f in &mut lowerer.synthesized_functions {
@@ -6363,6 +6368,29 @@ pub(crate) enum ElemWriteback {
         /// The spill slot the callee wrote through.
         addr: LocalId,
     },
+}
+
+/// When a raw-pointer access checks for null (mem.unsafe, debug-mode safety).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerChecks {
+    /// Checked in a debug build, not in release.
+    DebugOnly,
+    /// `@checked_unsafe`: checked in every build.
+    Always,
+    /// `@unchecked_unsafe`: never checked.
+    Never,
+}
+
+impl PointerChecks {
+    fn of(attrs: &[rask_ast::attr::Attr]) -> PointerChecks {
+        if attrs.iter().any(|a| a.is("unchecked_unsafe")) {
+            PointerChecks::Never
+        } else if attrs.iter().any(|a| a.is("checked_unsafe")) {
+            PointerChecks::Always
+        } else {
+            PointerChecks::DebugOnly
+        }
+    }
 }
 
 #[derive(Debug)]
