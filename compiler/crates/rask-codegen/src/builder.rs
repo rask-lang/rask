@@ -1182,6 +1182,8 @@ impl<'a> FunctionBuilder<'a> {
             }
             // Only the unwind glue reads these zeroes: none without a record,
             // and nothing to read in an aggregate that holds nothing.
+            // Only the ownership passes read it.
+            MirStmtKind::MovedOut { .. } => {}
             MirStmtKind::ZeroAggregate { local } => {
                 if ctx.unwind_rec.is_none() {
                     return Ok(());
@@ -2303,14 +2305,9 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
                 let val = builder.use_var(*var);
 
-                // For aggregate types the variable already IS a pointer
+                // A value held by address: the variable already IS the pointer.
                 let local_ty = ctx.locals.iter().find(|l| l.id == *local_id).map(|l| &l.ty);
-                let is_aggregate = matches!(
-                    local_ty,
-                    Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. }
-                         | MirType::Tuple(_) | MirType::Option(_)
-                         | MirType::Result { .. } | MirType::Union(_))
-                );
+                let is_aggregate = local_ty.is_some_and(|t| t.passed_by_address());
 
                 // A scalar that lives in a slot is addressed the same way. The
                 // spill below is a *copy*, so handing back its address is only

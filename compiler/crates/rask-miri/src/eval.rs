@@ -273,7 +273,8 @@ impl MiriEngine {
             | MirStmtKind::EnsureHookPop
             | MirStmtKind::UnwindArm { .. }
             | MirStmtKind::UnwindDisarm { .. }
-            | MirStmtKind::ZeroAggregate { .. } => {}
+            | MirStmtKind::ZeroAggregate { .. }
+            | MirStmtKind::MovedOut { .. } => {}
 
             // Forbidden at comptime
             MirStmtKind::ResourceRegister { .. }

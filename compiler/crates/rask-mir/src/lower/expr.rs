@@ -1332,6 +1332,22 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                     }
+                    // A string variable is lent by address, the way a scalar
+                    // or a container handle is: an explicit `Ref`, so the
+                    // passes after this see that the callee may write a new
+                    // string into it. Passed as itself, it read as a plain use
+                    // — a `mut s = ""` lent to `grow(mutate s)` still looked
+                    // like the literal, and its last string was never freed.
+                    if let ExprKind::Ident(name) = &arg.kind {
+                        if let Some((id, MirType::String)) = self.locals.get(name).cloned() {
+                            let addr = self.builder.alloc_temp(MirType::Ptr);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: addr,
+                                rvalue: MirRValue::Ref(id),
+                            }));
+                            return Ok((MirOperand::Local(addr), MirType::String));
+                        }
+                    }
                 }
                 return self.lower_expr(arg);
             }

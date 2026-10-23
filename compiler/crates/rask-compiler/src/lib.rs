@@ -484,6 +484,7 @@ pub fn check_loaded(
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.return_moves = ownership_result.return_moves.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -838,6 +839,7 @@ fn check_package_scoped(
         diags.push(e.to_diagnostic());
     }
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.return_moves = ownership_result.return_moves.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(

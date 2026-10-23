@@ -284,15 +284,6 @@ enum Internal {
     /// Not a method at all — a static constructor, a raw pointer. No receiver
     /// to borrow, nothing kept, nothing pointed into.
     NoReceiver,
-    /// A free of what an aggregate's slot held, emitted on the way to writing
-    /// something else into that slot (`h.list = h.list.filter(…)`).
-    ///
-    /// Argument zero is the handle read out of the slot, not the aggregate —
-    /// so the aggregate is neither borrowed nor consumed here and stays the
-    /// frame's. Spelled apart from a plain free for exactly that: a
-    /// `Vec_free` of a field's handle reads as the whole struct being handed
-    /// away, and the struct then never got a release of its own.
-    ReplacesSlot,
     /// An element read out of its slot to be written back later by the
     /// matching `WritesBack` — `with v[i] as e`, `for mutate e in v`,
     /// `v[i].field = x`.
@@ -409,9 +400,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // rendering is `{}` and `{:debug}`, which every type gets without asking.
     ("char_to_string", Internal::FreshFromReceiver),
     ("char_debug", Internal::FreshFromReceiver),
-    // Giving back what a field held, right before the field holds something
-    // else. See `Internal::ReplacesSlot`.
-    ("string_free_replaced", Internal::ReplacesSlot),
     // `{v:debug}` reads the container and builds a string out of it; the
     // container is still the caller's afterwards. Unaccounted for, the read of
     // the handle off a struct field looked like handing the whole struct away,
@@ -561,7 +549,6 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
         | Some(Internal::NoReceiver)
-        | Some(Internal::ReplacesSlot)
         | Some(Internal::LendsElement)
         | Some(Internal::WritesBack) => return None,
         None => {}
@@ -968,10 +955,8 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
             Some(ArgMode::Lent)
         }
         Internal::WritesBack => Some(mode(Some(arg_index) == written_back_at(base))),
-        // A free gives argument zero away. So does freeing what a slot held
-        // (`ReplacesSlot`): argument zero is that handle, and the aggregate it
-        // came out of is untouched.
-        Internal::ConsumesReceiver | Internal::ReplacesSlot => Some(mode(arg_index == 0)),
+        // A free gives argument zero away.
+        Internal::ConsumesReceiver => Some(mode(arg_index == 0)),
     }
 }
 
@@ -1018,16 +1003,6 @@ pub fn consumes_receiver(qualified_name: &str) -> bool {
     matches!(internal_spelling(base), Some(Internal::ConsumesReceiver))
 }
 
-/// Is this the free of a container a slot is about to stop holding?
-///
-/// The aggregate is untouched by it — argument zero is the handle that was in
-/// the slot — so a pass asking "was this value handed away here" should answer
-/// no for the aggregate the handle was read out of.
-pub fn frees_a_replaced_slot(qualified_name: &str) -> bool {
-    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
-    let base = head.split('$').next().unwrap_or(head);
-    matches!(internal_spelling(base), Some(Internal::ReplacesSlot))
-}
 
 /// Does this call borrow its receiver rather than consume it? True for
 /// anything declared `self` or `mutate self`, false for `take self` and for a

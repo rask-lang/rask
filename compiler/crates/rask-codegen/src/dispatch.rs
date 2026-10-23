@@ -201,11 +201,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // value offset, pair size).
         StdlibEntry::simple("rask_map_insert_pairs", "rask_map_insert_pairs", &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        // Giving back the reference a captured variable's slot held, on the way
-        // to the slot holding another one. Spelled apart from the refcount
-        // ops because it is not this name's reference being released — see
-        // `release_replaced_captures`.
-        StdlibEntry::simple("string_free_replaced", "rask_string_free", &[types::I64], None, false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         // try_push shares push's C entry: the runtime has no reachable failure
         // yet (Vec carries no capacity bound, and OOM panics in the allocator),

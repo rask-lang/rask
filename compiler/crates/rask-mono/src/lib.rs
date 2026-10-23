@@ -71,6 +71,7 @@ pub struct MonoProgram {
     pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     pub instantiated_field_reuses: HashSet<NodeId>,
+    pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
     /// Closures in instantiated bodies that may not reach another task, each
     /// decided from its copy's concrete capture types (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
@@ -105,6 +106,8 @@ pub struct NodeRecords {
     pub escaping_closures: HashSet<NodeId>,
     /// Assignments whose new value takes the old one (ownership).
     pub field_reuses: HashSet<NodeId>,
+    /// The bindings each `return` moves (ownership).
+    pub return_moves: HashMap<NodeId, Vec<String>>,
     /// Closure literals that may not reach another task (#1356).
     pub task_bound_closures: HashSet<NodeId>,
 }
@@ -121,6 +124,7 @@ impl NodeRecords {
             err_returns: typed.err_returns.clone(),
             escaping_closures: typed.escaping_closures.clone(),
             field_reuses: typed.field_reuses.clone(),
+            return_moves: typed.return_moves.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
         }
     }
@@ -140,6 +144,7 @@ impl MonoProgram {
         r.err_returns.extend(self.instantiated_err_returns.iter().copied());
         r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
         r.field_reuses.extend(self.instantiated_field_reuses.iter().copied());
+        r.return_moves.extend(self.instantiated_return_moves.iter().map(|(k, v)| (*k, v.clone())));
         r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
         r
     }
@@ -1132,6 +1137,7 @@ fn monomorphize_inner(
         instantiated_err_returns: mono.instantiated_err_returns,
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
         instantiated_field_reuses: mono.instantiated_field_reuses,
+        instantiated_return_moves: mono.instantiated_return_moves,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
         vtable_symbols: mono.vtable_symbols,
     })
@@ -1326,6 +1332,7 @@ mod tests {
             err_returns: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
+            return_moves: std::collections::HashMap::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: std::collections::HashMap::new(),
             try_chain_placement: std::collections::HashMap::new(),

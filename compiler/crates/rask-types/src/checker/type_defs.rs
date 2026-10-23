@@ -838,6 +838,9 @@ pub struct TypedProgram {
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.
     pub field_reuses: std::collections::HashSet<NodeId>,
+    /// The bindings each `return` moves, keyed by the returned expression
+    /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
+    pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,
     /// Closure literals that capture a link or a `Local` box, so they may not
     /// reach another task (mem.ownership/T2, conc.sync/SH7). A task block that
     /// names one of these by itself is rejected at compile time; one that

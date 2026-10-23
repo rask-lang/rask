@@ -110,9 +110,6 @@ pub fn insert_rc_ops(
         // So is one handed to a call that keeps it.
         retain_params_handed_over(func, &string_locals, own);
 
-        // And a write through a captured variable's address gives back what
-        // that variable held.
-        release_replaced_captures(func, &string_locals);
     }
 
     // A copy of an aggregate read out of somebody else's storage, given to a
@@ -412,75 +409,6 @@ fn retain_written_back_while_live(func: &mut MirFunction) {
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements[idx].span;
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
-        }
-    }
-}
-
-/// Release what a captured string variable held, where a closure writes a new
-/// one over it.
-///
-/// ```text
-/// mut seen = ""
-/// upto(2).for_each(|x| { seen = "{seen}{prefix}:{x};" })
-/// ```
-///
-/// The closure captures `seen` by reference, so the body holds the address of
-/// the frame's variable and the write is a store through it
-/// (mem.closures/MC1). The new string is retained for the slot and the one it
-/// replaced was released by nobody — one buffer per turn but the last (#1162).
-///
-/// No aliasing guard, unlike the container case: a string is refcounted, so
-/// every name holds a count of its own and giving back the slot's is right
-/// whoever else is reading. And a capture points at a variable the frame
-/// established before building the closure, so a store through one is always a
-/// replacement — there is no "is this the first write" to get wrong.
-fn release_replaced_captures(func: &mut MirFunction, string_locals: &[LocalId]) {
-    let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
-    // Addresses of a captured variable, as the body sees them.
-    let capture_refs: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => Some(*dst),
-            _ => None,
-        })
-        .collect();
-
-    for block_idx in 0..func.blocks.len() {
-        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
-        for (si, stmt) in func.blocks[block_idx].statements.iter().enumerate() {
-            let MirStmtKind::Store { addr, value, offset: 0, .. } = &stmt.kind else {
-                continue;
-            };
-            if !capture_refs.contains(addr) || !strings.contains(addr) {
-                continue;
-            }
-            // Writing the slot back to itself replaces nothing.
-            if uses::operand_local(value) == Some(*addr) {
-                continue;
-            }
-            // A `Call`, not an `RcDec`. A dec on this name reads as "give back
-            // the reference this name took", and a capture read takes none —
-            // so `rc_elide` strips it, correctly, along with the one this
-            // wants. What is being released is the reference the *slot* holds,
-            // which is a different thing wearing the same local.
-            insertions.push((
-                si,
-                MirStmt::new(
-                    MirStmtKind::Call {
-                        dst: None,
-                        func: crate::FunctionRef::internal(
-                            "string_free_replaced".to_string(),
-                        ),
-                        args: vec![MirOperand::Local(*addr)],
-                    },
-                    stmt.span,
-                ),
-            ));
-        }
-        for (idx, stmt) in insertions.into_iter().rev() {
-            func.blocks[block_idx].statements.insert(idx, stmt);
         }
     }
 }
@@ -868,13 +796,6 @@ fn insert_aggregate_release(
                             }
                             continue;
                         }
-                        // Freeing what a field held, right before the field
-                        // holds something else: argument zero is the handle
-                        // that was in the slot, and the aggregate is untouched
-                        // (#1198).
-                        if i == 0 && rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name) {
-                            continue;
-                        }
                         ev.push(ownership::Event::HandOver(id));
                     }
                     if let Some(dst) = dst.filter(|d| is_tracked(d)) {
@@ -1006,6 +927,8 @@ fn insert_aggregate_release(
                 // `Heap<T>` releases the payload's contents before giving the
                 // block back.
                 MirStmtKind::RcDecContents { local } => hand_over(&mut ev, *local),
+                // A loop body's `return` took it.
+                MirStmtKind::MovedOut { local } => hand_over(&mut ev, *local),
                 // A literal starts here, empty, and its field stores fill it.
                 MirStmtKind::ZeroAggregate { local } if aggregates.contains(local) => {
                     ev.push(ownership::Event::Make(*local))
@@ -1549,11 +1472,16 @@ fn retain_locals_handed_over_while_live(
 /// them fired for the same death in a loop that overwrote a string, and freed
 /// it twice.
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSet<String>) {
-    let live = liveness::analyze_phis_on_edges(func);
+    // Where each string dies is asked of a view in which filling a variable a
+    // closure captures by reference *defines* it (`places_as_definitions`).
+    // The view has the same statements at the same positions, so the answers
+    // place releases in `func` itself.
+    let (view, places) = places_as_definitions(func);
+    let live = liveness::analyze_phis_on_edges(&view);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
     // use released the buffer one statement before the call read it (#1036).
-    let aliases = AddrAliases::build(func);
+    let aliases = AddrAliases::build(&view);
     // A string parameter is borrowed from the caller, which keeps its own
     // reference and releases it at its own last use. Releasing here as well is
     // two releases for one reference; a callee that needs to outlive the call
@@ -1567,26 +1495,39 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
     // its own and freed the vector's string with the pair.
     let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
     let views = string_views(func, &strings, own);
-    // A variable a closure borrows lives in a cell, and the cell rule gives
-    // back what it holds on the way out (`container_drop`'s `release_slot`).
-    // Releasing it at its last read as well released it twice.
-    let cells: HashSet<LocalId> = func
+    // A variable an `ensure` body reads is still needed when the cleanup
+    // chain runs, after every exit; `container_drop`'s cell rule releases it
+    // there instead.
+    let ensured: HashSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::ReleaseSlot { addr, offset: 0, ty: MirType::String } => Some(*addr),
+            MirStmtKind::EnsureHookRegister { captures, .. } => Some(captures),
             _ => None,
         })
+        .flatten()
+        .map(|c| c.local_id)
         .collect();
+    // Nor a captured variable the frame never fills. The slot a `for` body's
+    // `return` leaves its answer in is filled by the body, if at all, and
+    // handed straight to the caller; on every other path it holds whatever
+    // the stack did.
+    let defined: HashSet<LocalId> = view
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(uses::stmt_def)
+        .collect();
+    let unfilled = |l: &LocalId| places.contains(l) && !defined.contains(l);
     let locals: Vec<LocalId> = string_locals
         .iter()
         .copied()
-        .filter(|l| !params.contains(l) && !views.contains(l) && !cells.contains(l))
+        .filter(|l| !params.contains(l) && !views.contains(l) && !ensured.contains(l) && !unfilled(l))
         .collect();
 
     let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();
-    for (bi, block) in func.blocks.iter().enumerate() {
+    for (bi, block) in view.blocks.iter().enumerate() {
         for &local in &locals {
             if let Some(at) =
                 dies_in_block(block, local, live.live_at_exit(block.id, local), &aliases, own)
@@ -1596,7 +1537,10 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
         }
     }
 
-    let edges = edge_deaths(func, &live, &locals);
+    let overwritten: Vec<LocalId> = locals.iter().copied().filter(|l| places.contains(l)).collect();
+    in_block.extend(overwritten_places(&view, &overwritten, &aliases, own));
+
+    let edges = edge_deaths(&view, &live, &locals);
 
     // Positions descending within a block, so an insertion doesn't move the
     // next one's index.
@@ -1624,6 +1568,102 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
         })
         .collect();
     ownership::insert_on_edges(func, edges);
+}
+
+/// `func` with each whole-width store into a string a closure captures by
+/// reference written as the assignment it is.
+///
+/// A borrowing closure needs the variable at a fixed address, so
+/// `addr_taken` turns every write to it into a store through that address.
+/// To liveness a store is a use, never a definition, so such a variable
+/// looked never defined: `mut seen = ""` captured by a loop body was
+/// released by nobody once the loop was done with it. The variable is the
+/// same variable either way; filling it defines it, and its last use (by name
+/// or through the closure, `AddrAliases`) is where the value it holds dies,
+/// whichever value the closure left there.
+fn places_as_definitions(func: &MirFunction) -> (MirFunction, HashSet<LocalId>) {
+    let places: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureCreate { captures, .. } => Some(captures),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| c.by_ref && func.local_ty(c.local_id) == Some(&MirType::String))
+        .map(|c| c.local_id)
+        .collect();
+    let mut view = func.clone();
+    if places.is_empty() {
+        return (view, places);
+    }
+    for stmt in view.blocks.iter_mut().flat_map(|b| b.statements.iter_mut()) {
+        if let MirStmtKind::Store { addr, offset: 0, value, .. } = &stmt.kind {
+            if places.contains(addr) && uses::operand_local(value) != Some(*addr) {
+                stmt.kind = MirStmtKind::Assign { dst: *addr, rvalue: MirRValue::Use(value.clone()) };
+            }
+        }
+    }
+    (view, places)
+}
+
+/// Deaths of values a captured variable held before it was filled again in
+/// the same block. Only such a variable is filled more than once under one
+/// name (`places_as_definitions`); every other local is renamed per
+/// definition by SSA, so `dies_in_block`, which finds the death of the value
+/// a block ends with, is all it needs.
+///
+/// Each value dies at its last read before the next filling — by name or
+/// through the closure — or, if nothing reads it, right after it was made.
+/// A value the block starts with is only there if something reads it first.
+fn overwritten_places(
+    view: &MirFunction,
+    locals: &[LocalId],
+    aliases: &AddrAliases,
+    own: &HashSet<String>,
+) -> Vec<(usize, usize, LocalId)> {
+    let mut out = Vec::new();
+    for (bi, block) in view.blocks.iter().enumerate() {
+        for &local in locals {
+            let defs: Vec<usize> = block
+                .statements
+                .iter()
+                .enumerate()
+                .filter(|(_, st)| uses::stmt_def(st) == Some(local))
+                .map(|(i, _)| i)
+                .collect();
+            if defs.is_empty() {
+                continue;
+            }
+            // Segments ending at each filling: from the previous filling (or
+            // the block start) up to it.
+            let mut start: Option<usize> = None;
+            for &d in &defs {
+                let from = start.map_or(0, |s| s + 1);
+                let last_read = (from..d)
+                    .rev()
+                    .find(|&i| !matches!(block.statements[i].kind, MirStmtKind::Phi { .. })
+                        && aliases.stmt_reads(&block.statements[i], local));
+                match (last_read, start) {
+                    (Some(i), _) => {
+                        let stmt = &block.statements[i];
+                        if handed_to_a_keeper(stmt, local, own) {
+                            // Its last use gave the reference away.
+                        } else if hands_out_the_buffer(stmt, local) {
+                            out.push((bi, d, local));
+                        } else {
+                            out.push((bi, after_increments(block, i + 1), local));
+                        }
+                    }
+                    (None, Some(s)) => out.push((bi, after_increments(block, s + 1), local)),
+                    (None, None) => {}
+                }
+                start = Some(d);
+            }
+        }
+    }
+    out
 }
 
 /// Where in `block` the value of `local` dies, as the index to insert its

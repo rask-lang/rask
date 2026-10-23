@@ -377,6 +377,7 @@ impl<'a> MirContext<'a> {
             err_returns: &records.err_returns,
             escaping_closures: &records.escaping_closures,
             field_reuses: &records.field_reuses,
+            return_moves: &records.return_moves,
             task_bound_closures: &records.task_bound_closures,
             type_names,
             // Straight off the checker — never optional.
@@ -524,6 +525,10 @@ pub struct MirContext<'a> {
     /// Assignments whose new value takes the old one: the slot's old value is
     /// the new one's now, so nothing is released before the write (ownership).
     pub field_reuses: &'a std::collections::HashSet<NodeId>,
+    /// The bindings each `return` moves, keyed by the returned expression
+    /// (ownership). A `for` body over a sequence returns from inside a
+    /// closure, and the frame learns from this what left on that exit.
+    pub return_moves: &'a std::collections::HashMap<NodeId, Vec<String>>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub task_bound_closures: &'a std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
@@ -613,6 +618,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_RETURN_MOVES: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
+            std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
@@ -651,6 +658,7 @@ impl<'a> MirContext<'a> {
             err_returns: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
             field_reuses: &EMPTY_ESCAPING,
+            return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
@@ -1726,6 +1734,9 @@ pub struct MirLowerer<'a> {
     /// rather than a copy of it. A whole-value write to one replaces what
     /// the creating frame (or the environment) holds.
     pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
+    /// While a `for` body over a sequence is lowered: the names of the loop's
+    /// variables a `return` in it moved (`MirContext::return_moves`).
+    pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
@@ -4323,6 +4334,7 @@ impl<'a> MirLowerer<'a> {
             closure_counter: 0,
             spawn_result_boxed: false,
             addressed_captures: std::collections::HashSet::new(),
+            seq_moved_names: None,
             parent_name: func_name,
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
@@ -7378,6 +7390,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7408,6 +7421,7 @@ mod tests {
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
+            return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
@@ -7461,6 +7475,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7491,6 +7506,7 @@ mod tests {
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
+            return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
@@ -7551,6 +7567,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7581,6 +7598,7 @@ mod tests {
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
+            return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,

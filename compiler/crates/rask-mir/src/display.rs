@@ -303,6 +303,7 @@ impl fmt::Display for MirStmt {
                 write!(f, "release_slot(_{}+{}: {})", addr.0, offset, ty)
             }
             MirStmtKind::ZeroAggregate { local } => write!(f, "zero_aggregate(_{})", local.0),
+            MirStmtKind::MovedOut { local } => write!(f, "moved_out(_{})", local.0),
         }
     }
 }

@@ -468,7 +468,9 @@ fn rename_stmt(
         | MirStmtKind::RcIncContents { local } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
-        MirStmtKind::ZeroAggregate { local: addr } | MirStmtKind::ReleaseSlot { addr, .. } => {
+        MirStmtKind::ZeroAggregate { local: addr }
+        | MirStmtKind::ReleaseSlot { addr, .. }
+        | MirStmtKind::MovedOut { local: addr } => {
             *addr = current_version(*addr, version_stack, num_orig_locals);
         }
         MirStmtKind::EnsureHookRegister { captures, .. } => {

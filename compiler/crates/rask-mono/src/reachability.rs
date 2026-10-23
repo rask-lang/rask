@@ -136,6 +136,7 @@ pub struct Monomorphizer<'a> {
     pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Assignments in the copies whose new value takes the old one.
     pub instantiated_field_reuses: HashSet<NodeId>,
+    pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
     /// Closures in the copies that may not reach another task (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
     /// Per-call-site type arguments for the copies. A generic calling another
@@ -524,6 +525,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_err_returns: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
             instantiated_field_reuses: HashSet::new(),
+            instantiated_return_moves: HashMap::new(),
             instantiated_task_bound_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
             interface_methods,
@@ -702,6 +704,10 @@ impl<'a> Monomorphizer<'a> {
             // the source, and substitution doesn't change it.
             if typed.field_reuses.contains(&old_id) {
                 self.instantiated_field_reuses.insert(new_id);
+            }
+            // So is which bindings a `return` moves.
+            if let Some(moved) = typed.return_moves.get(&old_id) {
+                self.instantiated_return_moves.insert(new_id, moved.clone());
             }
             // A closure that captured a link or a `Local` box of a concrete
             // type is task-bound in every copy. One whose capture has a type

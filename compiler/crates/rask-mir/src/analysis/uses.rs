@@ -86,6 +86,8 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         MirStmtKind::Call { args, .. } => {
             args.iter().for_each(|a| f(Named::Operand(a)))
         }
+        // A hand-over: the value is read on its way out.
+        MirStmtKind::MovedOut { local } => f(Named::Local(*local)),
         MirStmtKind::ClosureCall { closure, args, .. } => {
             f(Named::Local(*closure));
             args.iter().for_each(|a| f(Named::Operand(a)));
@@ -256,12 +258,16 @@ pub fn visit_stmt_use_locals_mut(
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
         | MirStmtKind::RcIncContents { local } => f(local, UseKind::Value),
-        // The same shape as a `Store`'s destination: the local holds an address
-        // and the release reads through it.
-        MirStmtKind::ReleaseSlot { addr, .. } => f(addr, UseKind::Value),
+        // The variable's storage: a `mutate` parameter's pointer, or a local a
+        // closure reaches by address, which `addr_taken` keeps in memory. The
+        // release reads what that storage holds, so loading the local first
+        // released through the value instead — through a vector's handle,
+        // for a loop body that wrote a new vector over a captured one.
+        MirStmtKind::ReleaseSlot { addr, .. } => f(addr, UseKind::AddressOf),
         // Not a read (see `visit_stmt_uses`), but it names the storage, so a
         // pass that moves the aggregate to another local moves this too.
         MirStmtKind::ZeroAggregate { local } => f(local, UseKind::Value),
+        MirStmtKind::MovedOut { local } => f(local, UseKind::Value),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
