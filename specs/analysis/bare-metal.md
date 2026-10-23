@@ -301,17 +301,22 @@ be a field, a `let` or a return type, for the same reason nothing borrowed can b
 function then serves a `Vec`, an array and `bytes`. Today that takes three functions or a
 copy.
 
+### Settled in review
+
+- **One package per chip.** The register map comes from the vendor's SVD file, and
+  everyone who generates from the same file gets the same code. So it's a package
+  (`stm32f4`, `rp2040`), generated once and published, and the only `unsafe` lines live
+  there. A vendor mistake is fixed once for every user. Rust's peripheral access crates
+  work the same way.
+- **Both range types stay.** `[T]` borrows part of anything for a call and can't be kept.
+  `BytesView` keeps a piece of shared bytes and holds a refcount so it stays alive. One
+  type for both would need every `Vec` to carry a refcount, which is the hidden-copy
+  problem `std.bytes` avoids.
+
 ## Still open
 
-- **Who builds `Devices`.** The board module is generated from an SVD file and holds the
-  only `unsafe` lines. Is generation a `build.rk` step every project repeats, or a
-  package per chip, like Rust's peripheral access crates?
 - **Panics on bare metal.** A panic handler that resets the chip is the usual answer. But
   section 4's effect checks could go further: an interrupt handler that can panic is
   worth a warning, because a reset mid-interrupt is the hardest bug to find.
-- **`[T]` versus `bytes` views.** A `BytesView` is a storable range of `bytes`; a `[u8]`
-  parameter is a borrowed range of anything. That's two range types. I think both are
-  needed, since one can be stored and one can point into a `Vec`, but it's worth a
-  harder look.
 - **Where the core design moves.** If these hold up, the "consider alternatives" line in
   `CORE_DESIGN.md` changes. That's for after a prototype, not now.
