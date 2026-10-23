@@ -15,7 +15,7 @@ ConfigError implements Error {
 
 func parse(text: string) -> Map<string, string> {
     mut out: Map<string, string> = Map.new()
-    for raw in text.lines().to_vec() {
+    for raw in text.lines().to_strings() {
         let line = raw.trim().to_string()
         if line.is_empty() { continue }
         if line.starts_with("#") { continue }

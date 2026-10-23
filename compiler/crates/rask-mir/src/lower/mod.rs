@@ -31,8 +31,8 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
-/// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
-pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
+/// `none` for `Link<T>?` — the null address. See `rask_types::abi`.
+pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 
 /// The `none` word for a lowered type that is a niche *option*.
 ///
@@ -377,6 +377,7 @@ impl<'a> MirContext<'a> {
             err_returns: &records.err_returns,
             escaping_closures: &records.escaping_closures,
             field_reuses: &records.field_reuses,
+            return_moves: &records.return_moves,
             task_bound_closures: &records.task_bound_closures,
             type_names,
             // Straight off the checker — never optional.
@@ -524,6 +525,10 @@ pub struct MirContext<'a> {
     /// Assignments whose new value takes the old one: the slot's old value is
     /// the new one's now, so nothing is released before the write (ownership).
     pub field_reuses: &'a std::collections::HashSet<NodeId>,
+    /// The bindings each `return` moves, keyed by the returned expression
+    /// (ownership). A `for` body over a sequence returns from inside a
+    /// closure, and the frame learns from this what left on that exit.
+    pub return_moves: &'a std::collections::HashMap<NodeId, Vec<String>>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub task_bound_closures: &'a std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
@@ -613,6 +618,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_RETURN_MOVES: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
+            std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
@@ -651,6 +658,7 @@ impl<'a> MirContext<'a> {
             err_returns: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
             field_reuses: &EMPTY_ESCAPING,
+            return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
@@ -1065,9 +1073,6 @@ impl<'a> MirContext<'a> {
             "bool" => MirType::Bool,
             "char" => MirType::Char,
             "string" => MirType::String,
-            // std.strings/V1: a view is a `RaskStr` that shares the source's
-            // heap buffer — same 16 bytes, same copy semantics, read-only API.
-            "StringView" => MirType::String,
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
@@ -1726,6 +1731,9 @@ pub struct MirLowerer<'a> {
     /// rather than a copy of it. A whole-value write to one replaces what
     /// the creating frame (or the environment) holds.
     pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
+    /// While a `for` body over a sequence is lowered: the names of the loop's
+    /// variables a `return` in it moved (`MirContext::return_moves`).
+    pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
@@ -2355,12 +2363,38 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(tag))
     }
 
+    /// The type a `return` from here hands back: the function's, which in the
+    /// body of a `for` over a sequence isn't the builder's. That body is the
+    /// yield closure, and its own return type is `bool`.
+    pub(crate) fn return_ty(&self) -> MirType {
+        self.inline_return_target
+            .as_ref()
+            .and_then(|t| t.3.clone())
+            .unwrap_or_else(|| self.builder.ret_ty().clone())
+    }
+
     /// Terminate the current block as a function return.
     ///
     /// One place, because there are four of them — `return`, `try`'s error path
     /// (twice), and the implicit tail — and each one has to run the same exits:
     /// pending `for mutate` writebacks, then the ensure chain.
+    ///
+    /// In a `for` over a sequence the value goes where the body's `return`
+    /// statements put theirs, and the yield stops with the flag raised. A plain
+    /// `Return` there answered the yield instead: `try` in the loop body ended
+    /// the loop and the function carried on as if it had succeeded.
     pub(crate) fn terminate_return(&mut self, value: Option<MirOperand>) {
+        if let Some((dst, cont, writeback_depth, Some(_))) = self.inline_return_target.clone() {
+            if let Some(val) = value {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(val),
+                }));
+            }
+            self.emit_write_backs_above(writeback_depth);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont }));
+            return;
+        }
         let value = self.ordering_return_as_tag(value);
         self.emit_all_write_backs();
         if self.ensure_stack.is_empty() {
@@ -2968,9 +3002,9 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn store_wrapper_tag(&mut self, slot: LocalId, wrapper_ty: &MirType, tag: i64) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: rask_mono::abi::TAG_BYTES,
+            store_size: rask_types::abi::TAG_BYTES,
             field: None,
         }));
         if matches!(wrapper_ty, MirType::Result { .. }) {
@@ -3086,8 +3120,8 @@ impl<'a> MirLowerer<'a> {
     /// Clear a `T or E`'s origin: no source line, no file.
     pub(crate) fn zero_result_origin(&mut self, slot: LocalId) {
         for (offset, size) in [
-            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, rask_mono::abi::RESULT_ORIGIN_LINE_BYTES),
-            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
+            (rask_types::abi::RESULT_ORIGIN_LINE_OFFSET, rask_types::abi::RESULT_ORIGIN_LINE_BYTES),
+            (rask_types::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
         ] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: slot,
@@ -4297,6 +4331,7 @@ impl<'a> MirLowerer<'a> {
             closure_counter: 0,
             spawn_result_boxed: false,
             addressed_captures: std::collections::HashSet::new(),
+            seq_moved_names: None,
             parent_name: func_name,
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
@@ -7352,6 +7387,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7382,6 +7418,7 @@ mod tests {
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
+            return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
@@ -7435,6 +7472,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7465,6 +7503,7 @@ mod tests {
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
+            return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
@@ -7525,6 +7564,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7555,6 +7595,7 @@ mod tests {
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
+            return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,

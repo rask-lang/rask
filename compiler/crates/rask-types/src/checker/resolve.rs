@@ -716,6 +716,13 @@ impl TypeChecker {
             return Ok(self.poison(&ret));
         }
 
+        // type.reads-as: a compared operand is its field (RA6), and a method
+        // the type doesn't declare is its field's.
+        let args = self.read_compared_operands(&method, &args, call_node);
+        if let Some(read) = self.read_through_field(&ty, &method, &args, &ret, span, call_node) {
+            return read;
+        }
+
         // mem.linear/L8: a value consumed exactly once has no copy. `clone`
         // answers on every type, so a `@resource` struct cloned into two
         // obligations for one file, and a `Shared` holding one handed out a
@@ -1434,7 +1441,42 @@ impl TypeChecker {
                     }
                 };
 
-                let found = methods.iter().find(|m| m.name == method);
+                // The block whose header this receiver fits, where two blocks
+                // declare the method (`TypeTable::filed_methods`).
+                let filed = self.types.filed_methods.get(&(*base, method.clone())).cloned().unwrap_or_default();
+                let candidates: Vec<&MethodSig> =
+                    methods.iter().filter(|m| m.name == method || filed.contains(&m.name)).collect();
+                let found = if candidates.len() > 1 {
+                    let settled = generic_args.iter().all(|a| match a {
+                        GenericArg::Type(t) => !self.ctx.apply(t).has_unsolved_var(),
+                        _ => true,
+                    });
+                    // Which block a `Sequence<?U>` fits waits on what `?U`
+                    // turns out to be, often a closure's return type, which is
+                    // settled after the main solve. The retry queue runs then.
+                    if !settled {
+                        self.deferred_methods.push(TypeConstraint::HasMethod {
+                            ty: ty.clone(),
+                            method,
+                            args,
+                            ret,
+                            span,
+                            call_node,
+                        });
+                        return Ok(false);
+                    }
+                    candidates.iter().copied().find(|m| self.header_fits(m, *base, generic_args))
+                } else {
+                    candidates.first().copied()
+                };
+                if let (Some(sig), Some(node)) = (found, call_node) {
+                    if sig.name != method {
+                        self.filed_methods.calls.insert(node, sig.name.clone());
+                        if let Some(Callee::Method { method: called, .. }) = self.call_targets.get_mut(&node) {
+                            *called = sig.name.clone();
+                        }
+                    }
+                }
 
                 // What the block's header binds, on top of what the type
                 // declares. `extend Sequence<(K, V)>` on a `Sequence<(i64, i64)>`
@@ -2099,13 +2141,13 @@ impl TypeChecker {
             // it and the binding was reported as un-inferrable (#620). Ordering
             // is lexicographic and both backends already do it.
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "contains" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             // std.strings/S7: `string` has no mutation methods. These two were
@@ -2127,7 +2169,7 @@ impl TypeChecker {
             // it only worked because the fallthrough below used to accept any
             // name at all.
             "compare" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &self.ordering_type(), span)
             }
             // A method `string` doesn't have is an error here, the way it
@@ -3491,6 +3533,9 @@ impl TypeChecker {
     /// The operator a desugared method name came from, so the message quotes
     /// what was written rather than `add`.
     pub(super) fn operator_spelling(method: &str) -> &'static str {
+        if method == rask_ast::operators::SLICE_METHOD {
+            return "[a..b]";
+        }
         rask_ast::expr::binary_op_of_method(method).map_or("this operator", rask_ast::expr::BinOp::symbol)
     }
 
@@ -3808,5 +3853,31 @@ impl TypeChecker {
                 self.unify(ret, &Type::RawPtr(Box::new(target)), span)
             }
         }
+    }
+
+    /// Does this receiver's type arguments fit the header of the block that
+    /// declared `sig`? A concrete leaf has to be the argument; a parameter
+    /// binds anything.
+    fn header_fits(&self, sig: &MethodSig, base: crate::TypeId, args: &[GenericArg]) -> bool {
+        if sig.owner_patterns.is_empty() {
+            return true;
+        }
+        let applied: Vec<GenericArg> = args
+            .iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(&self.ctx.apply(t)))),
+                other => other.clone(),
+            })
+            .collect();
+        let Some(bound) = crate::bind_header_patterns(&self.types, &sig.owner_patterns, &applied) else {
+            return false;
+        };
+        let params = self.types.get(base).map(|d| d.type_params().to_vec()).unwrap_or_default();
+        bound.iter().all(|(leaf, actual)| {
+            super::declarations::is_type_param_name(leaf)
+                || params.iter().any(|p| p == leaf)
+                || super::parse_type::resolve_type_expr(&rask_ast::ty::TypeExpr::named(leaf), &self.types)
+                    .is_ok_and(|t| self.resolve_named(&t) == self.resolve_named(actual))
+        })
     }
 }

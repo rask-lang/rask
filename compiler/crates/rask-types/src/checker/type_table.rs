@@ -7,7 +7,7 @@ use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
 use super::builtins::BuiltinModules;
-use super::type_defs::TypeDef;
+use super::type_defs::{MethodSig, SelfParam, TypeDef};
 use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
@@ -80,6 +80,11 @@ pub(super) enum TypeOwner {
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
     /// User-defined types indexed by TypeId.
+    /// A method name that two `extend` blocks with different headers both
+    /// declare on one type → the names the later blocks' methods are filed
+    /// under (`extend Sequence<string>` and `extend Sequence<StringSlice>`
+    /// each have a `join`).
+    pub(super) filed_methods: HashMap<(TypeId, String), Vec<String>>,
     pub(super) types: Vec<TypeDef>,
     /// Name to TypeId mapping, as seen from program code.
     pub(super) type_names: HashMap<String, TypeId>,
@@ -251,6 +256,7 @@ impl TypeTable {
             ambiguous_conformances: std::collections::HashSet::new(),
             impl_method_packages: HashMap::new(),
             primitive_ids: HashMap::new(),
+            filed_methods: HashMap::new(),
             builtin_methods: std::collections::HashSet::new(),
             conformers_by_pair: HashMap::new(),
         };
@@ -319,6 +325,7 @@ impl TypeTable {
                 ("None".to_string(), vec![]),
             ],
             methods: vec![],
+            tag: Type::U8,
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
@@ -333,6 +340,7 @@ impl TypeTable {
                 ("Err".to_string(), vec![Type::Var(TypeVarId(1))]),
             ],
             methods: vec![],
+            tag: Type::U8,
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
@@ -351,6 +359,7 @@ impl TypeTable {
                 .map(|v| (v.to_string(), vec![]))
                 .collect(),
             methods: vec![],
+            tag: Type::U8,
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
@@ -2130,6 +2139,18 @@ impl TypeTable {
     }
 
     /// OR6: the registered stand-in for a primitive, by its source spelling.
+    /// Does the declaration behind `id` declare a method by this name?
+    pub fn declares_method(&self, id: TypeId, method: &str) -> bool {
+        let methods: &[MethodSig] = match self.get(id) {
+            Some(TypeDef::Struct { methods, .. })
+            | Some(TypeDef::Enum { methods, .. })
+            | Some(TypeDef::NominalAlias { methods, .. })
+            | Some(TypeDef::Primitive { methods, .. }) => methods,
+            _ => return false,
+        };
+        methods.iter().any(|m| m.name == method)
+    }
+
     pub fn primitive_id(&self, name: &str) -> Option<TypeId> {
         self.primitive_ids.get(name).copied()
     }
@@ -2263,6 +2284,38 @@ impl TypeTable {
     /// of a `T or E` printed as an internal id in `WrapperMethodCut`,
     /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
     /// (#646).
+    /// A mismatch whose found type is a struct with a way to become the
+    /// expected one: the type's own public methods that take nothing and
+    /// return exactly that. `found StringSlice, expected string` offers
+    /// `.to_string()`, because `StringSlice` declares it (type.temporary,
+    /// type.reads-as). Read off the declarations, so a program's types get the
+    /// same help.
+    pub fn with_conversions(&self, mut error: TypeError) -> TypeError {
+        if let TypeError::Mismatch { expected, found, convert, .. } = &mut error {
+            let resolved = |t: &Type| match t {
+                Type::UnresolvedNamed(n) => self.get_type_id(n).map(Type::Named).unwrap_or_else(|| t.clone()),
+                _ => t.clone(),
+            };
+            if let Type::Named(id) = resolved(found) {
+                if let Some(TypeDef::Struct { methods, .. }) = self.get(id) {
+                    let want = resolved(expected);
+                    *convert = methods
+                        .iter()
+                        .filter(|m| {
+                            m.is_public
+                                && m.origin == crate::MethodOrigin::Declared
+                                && m.params.is_empty()
+                                && matches!(m.self_param, SelfParam::Value)
+                                && resolved(&m.ret) == want
+                        })
+                        .map(|m| m.name.clone())
+                        .collect();
+                }
+            }
+        }
+        error
+    }
+
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
         error.map_types(&|ty| self.display_type_names(ty));
         error

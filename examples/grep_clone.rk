@@ -101,7 +101,7 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 
     for line in content.lines() {
         line_num = line_num + 1
-        let matches = line_matches(line, opts.pattern, opts.ignore_case)
+        let matches = line_matches(line.to_string(), opts.pattern, opts.ignore_case)
         let show = if opts.invert_match { !matches } else { matches }
 
         if show {

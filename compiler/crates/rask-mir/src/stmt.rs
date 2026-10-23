@@ -248,6 +248,14 @@ pub enum MirStmtKind {
     ZeroAggregate {
         local: LocalId,
     },
+    /// The value in `local` left the frame here, moved by something the frame
+    /// doesn't see do it: the body of a `for` over a sequence is a closure,
+    /// and its `return out` moves the frame's `out` from inside that closure.
+    /// The frame takes the early exit right after, and from the passes' side
+    /// this is where `out` was handed over. Emits nothing.
+    MovedOut {
+        local: LocalId,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

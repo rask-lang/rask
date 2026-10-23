@@ -111,7 +111,7 @@ JavaScript's automatic semicolon insertion, which guesses from the previous line
 | **IX1: Sequence index** | Vec, arrays, and strings take **any integer type** as index — no `as usize` ceremony. The value is range-checked at access (a negative or too-large index panics, `std.collections/V1`); there is no wraparound and no negative-from-end indexing |
 | **IX2: Map index** | `Map<K, V>` is indexed by `K`. An unsuffixed integer literal adapts to an integer key type |
 | **IX3: A rack is not indexed** | There is no `rack[n]`. A `Link<T>` is the node's address, so `n.field` reads it directly — there is nothing to look up and nothing to key on (`mem.racks/RK2`, RK4) |
-| **IX4: Only a string slices** | `s[a..b]` on a string is another string (`std.strings/U1b`). There is no slice type, so on a Vec or a fixed array the expression has nothing to be — part of a run of elements is a sequence over it, `v.skip(a).take(n)`, with `.to_vec()` where a value with positions is wanted. A Map is keyed and has no positions to read at all |
+| **IX4: A range index is the `Slice` operator** | `x[a..b]`, `x[a..]`, `x[..b]` and `x[a..=b]` call the `Slice` conformance of `x`'s type (`stdlib/ops.rk`), the way `a + b` calls `Add`'s: `x.slice(a, b, false)`, with `none` for a missing end and `true` for `..=`. Any type can conform. The three string types do, and a slice is a `StringSlice` (`std.strings/S2`). Vec, fixed arrays and maps don't: there is no slice type for a run of elements to be, so part of one is a sequence over it, `v.skip(a).take(n)`, with `.to_vec()` where a value with positions is wanted. A Map is keyed and has no positions to read at all. Those three keep this advice in the error instead of the operator's own |
 
 ## Bitwise Operators
 
@@ -190,7 +190,7 @@ enum Ordering { Less, Equal, Greater }
 
 ## Arithmetic Interfaces
 
-Operator interfaces: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`. They are declared in [`stdlib/ops.rk`](../../stdlib/ops.rk), each one `<Rhs = Self>` with a `type Out = Self`:
+Operator interfaces: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`, and `Slice` for a range index (IX4). They are declared in [`stdlib/ops.rk`](../../stdlib/ops.rk), the binary ones `<Rhs = Self>` with a `type Out = Self`:
 
 <!-- test: skip -->
 ```rask

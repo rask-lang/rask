@@ -387,7 +387,7 @@ if line.contains("error"): handle_error(line)
 if path.starts_with("/"): treat_as_absolute(path)
 
 // Splitting — returns sequences, to_vec() for random access
-let parts = line.split(",").to_vec()
+let parts = line.split(",").to_strings()
 for word in text.split_whitespace() {
     process(word)
 }

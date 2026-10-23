@@ -525,6 +525,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 expected,
                 found,
                 span,
+                convert,
             } => {
                 let diag = Diagnostic::error("mismatched types")
                     .with_code("E0308")
@@ -542,6 +543,19 @@ impl ToDiagnostic for rask_types::TypeError {
                          library's; rename the program's so they stop sharing a name",
                         found
                     ));
+                }
+
+                // The found type has its own way to become the expected one:
+                // a slice where a `string` goes offers `.to_string()`. Which
+                // methods those are is read off the type's declaration.
+                if !convert.is_empty() {
+                    let calls: Vec<String> = convert.iter().map(|m| format!("`x.{}()`", m)).collect();
+                    return diag
+                        .with_fix(format!("convert it: {}", calls.join(" or ")))
+                        .with_help(format!(
+                            "`{}` doesn't become a `{}` on its own: a conversion is a call you can see",
+                            found, expected
+                        ));
                 }
 
                 // An optional is `Result { ok: T, err: None }` underneath, so the
@@ -1871,69 +1885,62 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("let s = \"\"".to_string())
                     .with_why("one spelling per operation [std.api/SD5] — `\"\"` is already the empty string, and `string.new()` only ever existed to open a sequence of pushes that `string` doesn't support [std.strings/S7]")
             }
-            StringSliceStored { source_var, slice_expr, yields_sequence, view_var, slice_span, store_span } => {
-                // Only an exact reprint of the user's expression gets quoted;
-                // otherwise say "this slice" and point at it with the span.
-                // A near-miss quote reads as their own code and sends them
-                // looking for a line they never wrote (#694).
-                let subject = match slice_expr {
-                    Some(expr) => format!("`{}`", expr),
-                    None if *yields_sequence => "this split".to_string(),
-                    None => "this slice".to_string(),
+            TemporaryKept { ty, holder, keep, span } => {
+                use rask_types::KeptBy;
+                let (title, label) = match holder {
+                    KeptBy::Binding(name) => (
+                        format!("`{}` would keep a `{}`", name, ty),
+                        format!("`{}` would hold it past this line", name),
+                    ),
+                    KeptBy::Field { owner, field } => (
+                        format!("`{}.{}` would keep a `{}`", owner, field, ty),
+                        format!("a `{}` field outlives every expression that fills it", owner),
+                    ),
+                    KeptBy::Element(container) => (
+                        format!("a `{}` would keep `{}` values", container, ty),
+                        format!("`{}` holds its elements past this line", container),
+                    ),
                 };
-                let d = Diagnostic::error(format!(
-                    "{} gives {} into `{}`, not {}",
-                    subject,
-                    if *yields_sequence { "views" } else { "a view" },
-                    source_var,
-                    if *yields_sequence { "new strings" } else { "a new string" }
-                ))
+                let mut d = Diagnostic::error(title)
                     .with_code("E0303")
-                    .with_primary(*slice_span, format!(
-                        "{} can't outlive the statement",
-                        if *yields_sequence { "these views" } else { "this view" }
-                    ))
-                    .with_secondary(*store_span, format!("`{}` would hold {} past the end of this line", view_var, if *yields_sequence { "them" } else { "it" }))
-                    .with_why("a view borrows the source's buffer instead of copying it — keeping one past the statement would leave it pointing at freed bytes");
-                // Two fixes, and they differ in cost, so both get named:
-                // `.view()` is zero-copy and keeps the source buffer alive,
-                // `.to_string()` copies out and releases it (std.strings/V2,
-                // the spec's FIX 1 and FIX 2).
-                if *yields_sequence {
-                    let d = d.with_help("collect views with .view(), or copy each piece out with .to_string() as you go");
-                    match slice_expr {
-                        Some(expr) => d.with_fix(format!(
-                            "for piece in {} {{ {}.push(piece.view()) }}  — .to_string() instead of .view() to copy the bytes out",
-                            expr, view_var
-                        )),
-                        None => d.with_fix(format!(
-                            "loop over the pieces and push `piece.view()` into `{}` — or `piece.to_string()` to copy the bytes out",
-                            view_var
-                        )),
-                    }
-                } else {
-                    let d = d.with_help("add .view() to store it zero-copy, or .to_string() to copy the bytes out");
-                    match slice_expr {
-                        Some(expr) => d.with_fix(format!(
-                            "let {}: StringView = {}.view()  — or {}.to_string() for an independent copy",
-                            view_var, expr, expr
-                        )),
-                        None => d.with_fix(format!(
-                            "add `.view()` to the slice to store it zero-copy, or `.to_string()` to copy the bytes out of `{}`",
-                            source_var
-                        )),
-                    }
+                    .with_primary(*span, label)
+                    .with_why(&format!(
+                        "`{}` is declared `@temporary`: a value lives for the expression that \
+                         makes it, so nothing may keep one — a binding, a field, or a container's \
+                         element [type.temporary/TM2]",
+                        ty
+                    ));
+                if !keep.is_empty() {
+                    let ways: Vec<String> = keep
+                        .iter()
+                        .map(|(m, out)| format!("`.{}()` keeps it as a `{}`", m, out))
+                        .collect();
+                    d = d.with_fix(ways.join("; "));
                 }
+                d
             }
 
-            VolatileViewStored { source_var, view_var, source_span, store_span } => {
-                Diagnostic::error(format!("cannot hold view from growable source `{}`", source_var))
-                    .with_code("E0322")
-                    .with_primary(*source_span, format!("`{}` can grow or shrink — view is instant", source_var))
-                    .with_secondary(*store_span, format!("`{}` tries to hold this view across a statement boundary", view_var))
-                    .with_help("copy the value out, or use a closure for multi-statement access")
-                    .with_fix(format!("use {}.clone() or {}.modify(key, |e| {{ ... }})", source_var, source_var))
-                    .with_why("Vec, Pool, and Map can grow or shrink, which would invalidate any persistent view — views are released at the semicolon")
+            ReadsAsWrite { ty, field, method, span } => {
+                Diagnostic::error(format!("`{}` doesn't lend `{}`: it doesn't only read", ty, method))
+                    .with_code("E0307")
+                    .with_primary(*span, format!("`{}` reads as its `{}`, for reading", ty, field))
+                    .with_why("`@reads_as` lends the field's methods that take `self` as a plain borrow. One that changes or consumes the field would change the struct through a name that only promised to read it [type.reads-as/RA4]")
+                    .with_fix(format!("declare `{}` on `{}` itself if it should have it", method, ty))
+            }
+
+            ReadsAsNoField { ty, written, fields, span } => {
+                let title = match written {
+                    Some(w) => format!("`{}` has no field `{}` to read as", ty, w),
+                    None => format!("`@reads_as` on `{}` doesn't name a field", ty),
+                };
+                let mut d = Diagnostic::error(title)
+                    .with_code("E0305")
+                    .with_primary(*span, "a type reads as one of its own fields")
+                    .with_why("`@reads_as(field)` lends a type the read-only methods of one of its fields, called on that field. Naming the field is what makes the lending free: it's a field read, not a conversion [type.reads-as/RA1]");
+                if let Some(first) = fields.first() {
+                    d = d.with_fix(format!("@reads_as({})", first));
+                }
+                d
             }
 
             WithGuardEscapes { name, type_name, span } => {
@@ -1986,16 +1993,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("name the lock: `.read()` for concurrent readers, `.write()` for exclusive access")
                     .with_fix(format!("with {}.read() as {} {{ … }}", name, binding))
                     .with_why("the two locks behave differently — a read binding permits other readers and never writes back, a write binding blocks them and does — so which one you get is written rather than inferred [conc.sync/R4]")
-            }
-
-            MutateBorrowedSource { source_var, view_var, borrow_span, mutate_span } => {
-                Diagnostic::error(format!("cannot mutate `{}` while viewed by `{}`", source_var, view_var))
-                    .with_code("E0323")
-                    .with_primary(*mutate_span, format!("cannot mutate `{}` here", source_var))
-                    .with_secondary(*borrow_span, format!("view `{}` created here — active until block ends", view_var))
-                    .with_help("finish using the view before mutating, or work with a copy")
-                    .with_fix(format!("use {}.clone() to create an independent copy", view_var))
-                    .with_why("mutating a source can invalidate views into it")
             }
 
             NoAllocViolation { reason, function_name, span } => {

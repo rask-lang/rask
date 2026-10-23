@@ -32,6 +32,9 @@ mod derive;
 mod clone_rule;
 mod arg_labels;
 mod method_visibility;
+mod reads_as;
+mod temporary;
+pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
@@ -39,13 +42,13 @@ pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, MethodOrigin, SelfPar
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
+pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
 pub(crate) use declarations::is_type_param_name;
 pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
-use borrow::{ActiveBorrow, PersistentBorrow};
+use borrow::ActiveBorrow;
 
 /// Binding mutability and origin — used to pick the right error message
 /// when a read-only binding is mutated.
@@ -261,13 +264,16 @@ pub struct TypeChecker {
     /// A collection filling a `Sequence<E>` slot (SEQ48): value node → the
     /// node of the `as_sequence()` call that wraps it.
     pub(super) sequence_coercions: HashMap<NodeId, NodeId>,
+    /// String slices as values (`slices.rs`).
+    pub(super) reads_as: ReadsAs,
+    pub(super) filed_methods: type_defs::FiledMethods,
+    /// Each range index's start, end and `..=`, for the slice call it becomes.
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
     /// Active borrows for aliasing detection (ESAD Phase 1).
     pub(super) borrow_stack: Vec<ActiveBorrow>,
-    /// Persistent borrows across statements within a scope (ESAD Phase 2).
-    pub(super) persistent_borrows: Vec<PersistentBorrow>,
+
     /// Pending generic call sites: (call NodeId, one fresh type var per type
     /// parameter, named by that parameter). Resolved after constraint solving to
     /// populate TypedProgram.call_type_args.
@@ -546,10 +552,7 @@ pub struct TypeChecker {
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
     pub(super) pending_result_validations: Vec<(Type, rask_ast::Span)>,
-    /// S2: view bindings (`s[i..]`, `s.trim()`) whose source type was still a
-    /// variable during the walk — a field, a loop variable, an inferred local.
-    /// Validated after solving, so `const q = self.url[i..]` is caught too.
-    pub(super) pending_view_bindings: Vec<borrow::PendingViewBinding>,
+
     /// ER14a: `catch` bodies that yield nothing while the scrutinee's success
     /// type is still open. Unifying the guess eagerly let whichever such catch
     /// ran first decide the type, so a later, better-typed use of the same
@@ -649,9 +652,11 @@ impl TypeChecker {
             wrapper_calls: HashMap::new(),
             method_call_args: HashMap::new(),
             sequence_coercions: HashMap::new(),
+            reads_as: ReadsAs::default(),
+            filed_methods: Default::default(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
-            persistent_borrows: Vec::new(),
+
             pending_call_type_args: Vec::new(),
             callee_ident: None,
             written_method_type_args: HashMap::new(),
@@ -719,7 +724,7 @@ impl TypeChecker {
             method_calls: Vec::new(),
             closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
-            pending_view_bindings: Vec::new(),
+
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
             arg_places: HashMap::new(),
@@ -923,10 +928,6 @@ impl TypeChecker {
         // when the push was walked (#955).
         self.validate_pending_interface_elem_coercions();
 
-        // S2: view bindings whose source was a field or loop variable — the type
-        // is concrete now, so "is this a string slice / a growable view" has an
-        // answer it didn't have during the walk.
-        self.validate_pending_view_bindings();
 
         // Wrapper `==` and wrapper map keys, which need the settled types.
         self.settle_derived_wrappers(decls);
@@ -1119,6 +1120,7 @@ impl TypeChecker {
             let types = &self.types;
             self.errors.into_iter()
                 .map(|e| Self::apply_error_substitutions_with_ctx(e, ctx))
+                .map(|e| types.with_conversions(e))
                 .map(|e| types.resolve_error_types(e))
                 // Filter out cascading errors where either side resolved to <error>.
                 // These are always consequences of an earlier failure, not root causes.
@@ -1148,6 +1150,7 @@ impl TypeChecker {
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
+            return_moves: std::collections::HashMap::new(),
             task_bound_closures: std::mem::take(&mut self.task_bound_closures),
             generic_closure_captures: std::mem::take(&mut self.generic_closure_captures),
             try_chain_placement,
@@ -1185,6 +1188,8 @@ impl TypeChecker {
             wrapper_calls: self.wrapper_calls,
             copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,
+            reads_as: self.reads_as,
+            filed_methods: self.filed_methods,
             wrapper_fns: self.wrapper_fns,
             derived_generic_methods: self.derived_generic_methods,
         };
@@ -1249,10 +1254,11 @@ impl TypeChecker {
 
     fn apply_error_substitutions_with_ctx(error: TypeError, ctx: &InferenceContext) -> TypeError {
         match error {
-            TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
+            TypeError::Mismatch { expected, found, span, convert } => TypeError::Mismatch {
                 expected: ctx.apply(&expected),
                 found: ctx.apply(&found),
                 span,
+                convert,
             },
             TypeError::FnParamModeMismatch { expected, found, index, span } => TypeError::FnParamModeMismatch {
                 expected: ctx.apply(&expected),

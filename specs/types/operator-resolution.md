@@ -46,7 +46,7 @@ public interface Mul<Rhs = Self> {
 | Rule | Description |
 |------|-------------|
 | **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-interface conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
-| **OR2: Declared operator interfaces** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared interfaces taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
+| **OR2: Declared operator interfaces** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared interfaces taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. `Slice` is the range index `x[a..b]` (`type.operators/IX4`): no `Rhs` either, since the range's ends are arguments rather than a second operand whose type picks a conformance. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
 | **OR3: Both default to `Self`** | The operator interfaces are declared `interface Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `Point implements Add` is `Add<Point>` answering in `Point`; `Meters implements Mul<f64>` answers in `Meters` |
 | **OR4: One conformance per pair** | At most one conformance of a given operator interface for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
 | **OR5: `Out` is read, not inferred** | OR4 makes the conformance unique, so `Out` is read off it — `type.associated-types/AT6`, which holds for every associated type for the same reason. No inference search and no ambiguity |
@@ -113,7 +113,7 @@ Anything still ambiguous waits for literal defaulting rather than picking.
 
 - Source for the common case. `Point implements Add` reads the same as `extend Point { func add(…) }` did and means the same thing, because of OR3.
 - Precedence, associativity, newline continuation, `try`/`??`/`catch` placement — all of `type.operators` P1–P4 is untouched.
-- Indexing, `Equal`, `Comparable`, division and remainder semantics, overflow.
+- Element indexing, `Equal`, `Comparable`, division and remainder semantics, overflow. A *range* index did change: it is the `Slice` operator (OR2), where it used to be a rewrite the checker did for strings only.
 - Method-call syntax. `a.mul(b)` still works and resolves the same conformance.
 - Generic bounds. `func scale<T: Mul>(…)` means `Mul<T>` by OR3.
 

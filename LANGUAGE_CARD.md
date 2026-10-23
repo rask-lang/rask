@@ -78,7 +78,7 @@ with units[i] as e: e.health -= 10 // one-liner form
 
 - Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). A rack needs no `with` at all: a link is already a stable name for a node, so you hold it directly.
 - Aliasing: many readers XOR one mutator, per field — disjoint fields of the same struct can be borrowed simultaneously (F2).
-- String slices `s[i..j]` are expression-scoped views; store `s[i..j].to_string()` or `Span` indices instead.
+- String slices `s[i..j]` are expression-scoped views (`@temporary`); store `s[i..j].to_string()` or `Span` indices instead. A slice reads as a string as a method receiver only: pass `s[i..j].to_string()` where a `string` goes.
 - All checks are function-local. Errors point at the function you're editing.
 
 ## Racks and links
@@ -206,6 +206,9 @@ means buffering it — `to_vec()` then `sort()`), and it's `take`, not `limit`.
 **Terminals** — `to_vec` `to_map` `join` `fold` `reduce` `sum` `product`
 `count` `min` `max` `min_by` `max_by` `min_by_key` `max_by_key` `any` `all`
 `find` `for_each`. A chain ends in one of these or in a `for` loop.
+A string splitter yields slices of the string, which can't be kept as they are:
+`s.split(",").to_strings()` copies them into a `Vec<string>`, and `to_vec()`
+there is an error.
 
 There is no `.iter()`: a collection is its own chain head, so `v.map(f)`
 starts a lazy sequence over `v` and `v.map(f).to_vec()` builds the Vec

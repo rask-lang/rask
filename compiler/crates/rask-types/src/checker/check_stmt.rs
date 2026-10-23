@@ -136,8 +136,6 @@ impl TypeChecker {
                 self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty.clone());
                 // RC1/RC3: a `Vec`/`Map` binding can't hold linear elements.
                 self.note_linear_container_site(*name_span, binding_ty);
-                // ESAD Phase 2: Track view creation
-                self.check_view_at_binding(name, init, stmt.span);
                 // E5: Cannot store sync access result in a variable
                 self.check_sync_access_in_binding(init);
                 self.note_closure_binding(name, init);
@@ -186,8 +184,6 @@ impl TypeChecker {
                 self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty.clone());
                 // RC1/RC3: a `Vec`/`Map` binding can't hold linear elements.
                 self.note_linear_container_site(*name_span, binding_ty);
-                // ESAD Phase 2: Track view creation
-                self.check_view_at_binding(name, init, stmt.span);
                 // E5: Cannot store sync access result in a variable
                 self.check_sync_access_in_binding(init);
                 self.note_closure_binding(name, init);
@@ -252,15 +248,7 @@ impl TypeChecker {
                             _ => {}
                         }
                     }
-                    // ESAD Phase 2: Reject mutation of persistently borrowed sources
-                    if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {
-                        self.errors.push(TypeError::MutateBorrowedSource {
-                            source_var: root,
-                            view_var: borrow.view_var.clone(),
-                            borrow_span: borrow.borrow_span,
-                            mutate_span: stmt.span,
-                        });
-                    }
+
                 }
                 self.in_assign_target = true;
                 let target_ty = self.infer_expr(target);

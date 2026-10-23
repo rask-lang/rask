@@ -24,7 +24,7 @@ use crate::types::{Type, TypeId};
 /// OR2/OR9: `Equal` and `Comparable` are absent from the operator table on
 /// purpose — comparison stays same-type on both sides, so `eq`/`lt`/… are not
 /// resolved on the pair.
-pub use rask_ast::operators::{is_unary_operator_interface, operator_interface};
+pub use rask_ast::operators::{has_rhs, is_unary_operator_interface, operator_interface};
 
 /// True for the two unary operators, which take no `Rhs`.
 pub fn is_unary_operator(method: &str) -> bool {
@@ -115,8 +115,8 @@ impl TypeChecker {
             return PairOutcome::NotAnOperator;
         }
 
-        let applied = if is_unary_operator(method) {
-            if !args.is_empty() {
+        let applied = if !has_rhs(interface_base) {
+            if is_unary_operator(method) && !args.is_empty() {
                 return PairOutcome::NotAnOperator;
             }
             TypeExpr::named(interface_base)
@@ -196,8 +196,11 @@ impl TypeChecker {
     ) -> super::TypeError {
         let interface_name = operator_interface(method).unwrap_or("Add").to_string();
         let left = self.render_type(recv);
+        // An operator with no `Rhs` has no right operand to name: `x[a..b]`'s
+        // arguments are the range's ends.
         let right = args
             .first()
+            .filter(|_| has_rhs(&interface_name))
             .map(|a| self.render_type(&self.resolve_named(&self.ctx.apply(a))));
         // `Meters implements Mul<f64>` — the argument's own type is the `Rhs`
         // the author wants, and when it's the receiver's the default covers it.
@@ -426,7 +429,26 @@ impl TypeChecker {
         call_node: Option<NodeId>,
     ) -> Option<Result<bool, super::TypeError>> {
         let written_as_operator = call_node.is_some_and(|n| self.operator_calls.contains(&n));
-        match self.operator_conformance(recv, method, args, written_as_operator) {
+        let outcome = self.operator_conformance(recv, method, args, written_as_operator);
+        // A range index on something with no `Slice`: a container's own reason
+        // beats "no conformance" (type.operators/IX4), and a primitive, which
+        // the pair rules otherwise leave to its builtin methods, has none.
+        if written_as_operator
+            && method == rask_ast::operators::SLICE_METHOD
+            && matches!(outcome, PairOutcome::NotAnOperator | PairOutcome::NoPair)
+            && !self.is_unsettled(recv)
+        {
+            if let Some(kind) = self.range_index_rejection(recv) {
+                return Some(Err(super::TypeError::IndexTypeMismatch {
+                    container: self.nameable(&self.ctx.apply(recv)),
+                    found: args.first().cloned().unwrap_or(Type::U64),
+                    kind,
+                    span,
+                }));
+            }
+            return Some(Err(self.no_operator_conformance(recv, method, args, span)));
+        }
+        match outcome {
             PairOutcome::NotAnOperator => None,
             PairOutcome::Found(found) => {
                 Some(self.apply_operator_match(found, recv, args, ret, span, call_node))

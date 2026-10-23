@@ -100,12 +100,12 @@ impl Interpreter {
         // backend deriving its own is how `is_integer<i32>()` came back `false`
         // here while native couldn't lower the call at all (#775).
         let decls = InterpDecls(self);
-        match reflect::answer(method, ty, &decls) {
+        match reflect::answer(method, ty, &decls, &self.types) {
             reflect::ReflectAnswer::Bool(b) => Ok(Value::Bool(b)),
             reflect::ReflectAnswer::Int(n) => Ok(Value::int(n as i64)),
             reflect::ReflectAnswer::Str(s) => Ok(Value::String(Arc::new(Mutex::new(s)))),
             reflect::ReflectAnswer::Unsupported(why) => Err(RuntimeError::TypeError(format!(
-                "reflect.{method}<{}>() isn't implemented on either backend — {why} (#791)", ty.source()
+                "reflect.{method}<{}>() can't be answered: `{}` {why}", ty.source(), ty.source()
             ))),
             reflect::ReflectAnswer::NoSuchMethod => Err(RuntimeError::NoSuchMethod {
                 ty: "reflect".to_string(),

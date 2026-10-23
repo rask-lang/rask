@@ -38,7 +38,7 @@ const SHOUTED = comptime { shout("rask") }
 // interpreter makes, and native's case tables are generated from Rust's, so
 // the folded answer and the runtime answer are the same by construction — the
 // tests below check that rather than trusting it.
-const TRIMMED = comptime { "  padded  ".trim() }
+const TRIMMED = comptime { "  padded  ".trim().to_string() }
 const SWAPPED = comptime { "a-b-c".replace("-", "+") }
 const BAR = comptime { "=".repeat(12) }
 const GREEK = comptime { "\u{3c3}\u{3b9}\u{3c3}".to_uppercase() }

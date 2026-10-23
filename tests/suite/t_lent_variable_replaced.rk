@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A variable lent by address — to a `mutate` parameter, or to a closure that
+// captures it — can come back holding something new. The borrower frees what
+// it replaced, and the owner frees whatever is there when it's done with it:
+// one rule for both borrowers and for strings and containers alike.
+//
+// Under the leak gate each of these leaked before: `grow(mutate s)` every
+// string but the last, a `lines()` loop body every vector it replaced, and a
+// loop body's `return out` either leaked or freed the vector it returned.
+import sequence.Sequence
+
+func grow(mutate s: string, x: i64) {
+    s = "{s}/{x}, padded so the string lives on the heap"
+}
+
+func grown(n: i64) -> string {
+    mut s = ""
+    mut i = 0
+    while i < n {
+        grow(mutate s, i)
+        i += 1
+    }
+    return s
+}
+
+test "a mutate string parameter replaced on every call" {
+    assert grown(3).starts_with("/0, padded")
+    assert grown(3).contains("/2, padded")
+    assert grown(0) == ""
+}
+
+func early_out(n: i64) -> i64 {
+    mut s = ""
+    grow(mutate s, n)
+    if n > 1 {
+        return -1
+    }
+    return s.len().wrap<i64>()
+}
+
+test "the owner frees what the borrower left, on every exit" {
+    assert early_out(5) == -1
+    assert early_out(1) > 0
+}
+
+func blocks(text: string) -> Vec<i64> {
+    mut sizes: Vec<i64> = Vec.new()
+    mut block: Vec<string> = Vec.new()
+    for line in text.lines() {
+        if line == "===" {
+            sizes.push(block.len().wrap<i64>())
+            block = Vec.new()
+            continue
+        }
+        block.push(line.to_string())
+    }
+    sizes.push(block.len().wrap<i64>())
+    return sizes
+}
+
+test "a loop body replaces a captured vector" {
+    let sizes = blocks("a\nb\n===\nc\n===\n===\nd\ne\nf")
+    assert sizes.len() == 4
+    assert sizes[0] == 2
+    assert sizes[1] == 1
+    assert sizes[2] == 0
+    assert sizes[3] == 3
+}
+
+func first_block(text: string) -> Vec<string> {
+    mut block: Vec<string> = Vec.new()
+    for line in text.lines() {
+        if line == "===" {
+            return block
+        }
+        block.push(line.to_string())
+    }
+    block.push("unterminated".to_string())
+    return block
+}
+
+test "return out of a loop body hands the vector to the caller" {
+    let a = first_block("x\ny\n===\nz")
+    assert a.len() == 2
+    assert a[1] == "y"
+    let b = first_block("x")
+    assert b.len() == 2
+    assert b[1] == "unterminated"
+}
+
+struct Short {
+    at: i64
+}
+
+extend Short {
+    func message(self) -> string {
+        return "short"
+    }
+}
+
+func checked(part: string) -> i64 or Short {
+    if part.len() < 2 {
+        return Short(at: part.len().wrap<i64>())
+    }
+    return part.len().wrap<i64>()
+}
+
+func lengths(text: string) -> Vec<i64> or Short {
+    mut out: Vec<i64> = Vec.new()
+    for part in text.split(",") {
+        out.push(try checked(part.to_string()))
+    }
+    return out
+}
+
+test "an early error return leaves the captured vector to the frame" {
+    let ok = lengths("ab,cde") catch _ => Vec.new()
+    assert ok.len() == 2
+    assert ok[1] == 3
+    match lengths("ab,c,de") {
+        Vec<i64> as v => assert false
+        Short as s => assert s.at == 1
+    }
+}
+
+func callback(items: Vec<i64>, f: func(i64)) {
+    for x in items {
+        f(x)
+    }
+}
+
+test "a callback replaces a captured vector and string" {
+    let items: Vec<i64> = [1, 2, 3]
+    mut kept: Vec<i64> = Vec.new()
+    mut label = ""
+    callback(items, |x| {
+        if x == 2 {
+            kept = Vec.new()
+        }
+        kept.push(x)
+        label = "{label}{x}, padded so the label lives on the heap;"
+    })
+    assert kept.len() == 2
+    assert kept[0] == 2
+    assert label.contains("3, padded")
+}

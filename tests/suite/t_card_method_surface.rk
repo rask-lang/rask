@@ -35,14 +35,14 @@ test "card: string index_of gives an optional, not a plain index" {
 }
 
 test "card: string splitters are sequences, terminated by to_vec" {
-    let words: Vec<string> = "a b c".split_whitespace().to_vec()
+    let words: Vec<string> = "a b c".split_whitespace().to_strings()
     assert words.len() == 3u64
     assert words[0] == "a"
 
-    let parts: Vec<string> = "a,b".split(",").to_vec()
+    let parts: Vec<string> = "a,b".split(",").to_strings()
     assert parts.len() == 2u64
 
-    let rows: Vec<string> = "x\ny".lines().to_vec()
+    let rows: Vec<string> = "x\ny".lines().to_strings()
     assert rows.len() == 2u64
 }
 

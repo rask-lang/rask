@@ -352,13 +352,15 @@ void    *rask_vec_last(const RaskVec *v);
 //
 // Heap mode (MSB of byte 15 = 1):
 //   [header_ptr: *u8 (8B)][tagged_len: u64 (8B)]
-//   tagged_len = len | (1<<63). Header: { refcount_u32, cap_u32, data[] }
+//   tagged_len = len | start << 32 | (1<<63). Header: { refcount_u32, cap_u32, data[] }
+//   start is 0 for a string; a StringView shares its source's buffer and
+//   starts where its range does (string.c says more).
 //
 // RC only applies to heap mode. Sentinel refcount (UINT32_MAX) = static literal.
 
 typedef union {
     struct { uint8_t data[15]; uint8_t remaining; } sso;  // remaining = 15 - len
-    struct { uint8_t *header; uint64_t tagged_len; } heap; // tagged_len = len | (1<<63)
+    struct { uint8_t *header; uint64_t tagged_len; } heap; // tagged_len = len | start << 32 | (1<<63)
     uint8_t raw[16];
 } RaskStr;
 
@@ -421,12 +423,12 @@ int64_t     rask_string_parse_int_into(const RaskStr *s, int64_t *out);
 
 // String-producing operations (out-param: RaskStr *out as first param)
 void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
-void        rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
+void        rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
+int64_t     rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end);
+int64_t     rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end);
+int64_t     rask_string_word_end_at(const RaskStr *s, int64_t start, int64_t end);
 void        rask_string_to_lowercase(RaskStr *out, const RaskStr *s);
 void        rask_string_to_uppercase(RaskStr *out, const RaskStr *s);
-void        rask_string_trim(RaskStr *out, const RaskStr *s);
-void        rask_string_trim_start(RaskStr *out, const RaskStr *s);
-void        rask_string_trim_end(RaskStr *out, const RaskStr *s);
 void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
 void        rask_string_reverse(RaskStr *out, const RaskStr *s);
 void        rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to);
@@ -461,9 +463,6 @@ int64_t     rask_string_builder_len(int64_t handle);
 int64_t     rask_string_builder_is_empty(int64_t handle);
 
 // Vec-returning operations (elements are RaskStr, elem_size=16)
-RaskVec    *rask_string_lines(const RaskStr *s);
-RaskVec    *rask_string_split(const RaskStr *s, const RaskStr *sep);
-RaskVec    *rask_string_split_whitespace(const RaskStr *s);
 RaskVec    *rask_string_bytes(const RaskStr *s);
 RaskVec    *rask_string_chars(const RaskStr *s);
 RaskVec    *rask_string_char_indices(const RaskStr *s);

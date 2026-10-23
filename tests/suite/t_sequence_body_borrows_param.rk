@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `for` over a sequence borrows what its body reads.
+//
+// The body is a closure the sequence calls per item, and it captures what it
+// reads. That closure lives on the stack and dies with the frame, so capturing
+// a borrowed parameter keeps nothing. It used to read as a keep: the caller
+// stopped owning `opts`, the callee never owned it, and its strings leaked.
+// `grep_clone` hit it once `lines()` became a sequence.
+import sequence.Sequence
+
+struct Opts {
+    pattern: string
+    tags: Vec<string>
+    count_only: bool
+}
+
+func count(items: Sequence<i64>, opts: Opts) -> i64 {
+    mut n: i64 = 0
+    for x in items {
+        if opts.count_only && x > 0 {
+            n += 1
+        }
+    }
+    return n
+}
+
+func matching(text: string, opts: Opts) -> i64 {
+    mut n: i64 = 0
+    for line in text.lines() {
+        if line.contains(opts.pattern) {
+            n += 1
+        }
+    }
+    return n
+}
+
+func make_opts() -> Opts {
+    return Opts(pattern: "alpha".to_lowercase(), tags: ["first".to_uppercase()], count_only: true)
+}
+
+test "the caller still owns what the loop body read" {
+    let opts = make_opts()
+    let v: Vec<i64> = [1, -2, 3]
+    assert count(v.as_sequence(), opts) == 2
+    assert opts.pattern == "alpha"
+    assert opts.tags[0] == "FIRST"
+}
+
+test "the same over a string's lines" {
+    let opts = make_opts()
+    let text = "alpha one\nbeta two\nalpha three, long enough to sit on the heap".to_lowercase()
+    assert matching(text, opts) == 2
+    assert opts.pattern == "alpha"
+}

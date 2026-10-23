@@ -34,6 +34,7 @@ pub const OPERATOR_TRAITS: &[(&str, &str)] = &[
     ("bit_not", "BitNot"),
     ("shl", "Shl"),
     ("shr", "Shr"),
+    ("slice", "Slice"),
 ];
 
 /// The operator interface a desugared method name belongs to.
@@ -52,11 +53,21 @@ pub fn operator_interface_method(interface_base: &str) -> Option<&'static str> {
         .map(|(m, _)| *m)
 }
 
-/// The two unary operator interfaces. They take no `Rhs`, so a type can carry only
-/// one of each and the name needs no suffix.
+/// The two unary operator interfaces: no `Rhs`, and no argument at all.
 pub fn is_unary_operator_interface(interface_base: &str) -> bool {
     matches!(interface_base, "Neg" | "BitNot")
 }
+
+/// Whether an operator interface takes an `Rhs`. The unary ones don't, and
+/// neither does `Slice`: `x[i..j]` passes the range's ends, but the range isn't
+/// a second operand whose type picks a conformance. A type carries one of each
+/// of these, so the name needs no suffix.
+pub fn has_rhs(interface_base: &str) -> bool {
+    !is_unary_operator_interface(interface_base) && interface_base != "Slice"
+}
+
+/// The method `x[a..b]` desugars to (`Slice`'s).
+pub const SLICE_METHOD: &str = "slice";
 
 /// The name a conformance's method is filed under, or `None` when the block
 /// isn't an operator conformance supplying that method.
@@ -96,7 +107,7 @@ pub fn filed_operator_method(
 /// wrote, or the receiver when it wrote nothing or `Self`. `None` for a unary
 /// interface, which has no `Rhs`.
 pub fn filed_rhs(self_base: &str, interface_base: &str, rhs: Option<&str>) -> Option<String> {
-    if is_unary_operator_interface(interface_base) {
+    if !has_rhs(interface_base) {
         return None;
     }
     Some(match rhs {

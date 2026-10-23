@@ -48,15 +48,6 @@ impl Interpreter {
             // second handle on the same storage. Native reaches the same
             // semantics with a 16-byte copy plus a refcount bump (V1).
             "view" => Ok(Value::String(Arc::clone(s))),
-            "trim" => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim().to_string()))))
-            }
-            "trim_start" => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_start().to_string()))))
-            }
-            "trim_end" => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
-            }
             // FNV-1a over the bytes — the same function the native runtime
             // and string-keyed maps use, so both backends agree. Typed `u64`,
             // which is what the signature says: as a plain int it rendered the
@@ -88,25 +79,6 @@ impl Interpreter {
             "to_lowercase" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().to_lowercase()))))
             }
-            "split" => {
-                let delimiter = self.expect_string(&args, 0)?;
-                let parts: Vec<Value> = s
-                    .lock().unwrap()
-                    .split(&delimiter)
-                    .map(|p| Value::String(Arc::new(Mutex::new(p.to_string()))))
-                    .collect();
-                let state = IteratorState::PreComputed { items: parts, index: 0 };
-                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
-            }
-            "split_whitespace" => {
-                let parts: Vec<Value> = s
-                    .lock().unwrap()
-                    .split_whitespace()
-                    .map(|part| Value::String(Arc::new(Mutex::new(part.to_string()))))
-                    .collect();
-                let state = IteratorState::PreComputed { items: parts, index: 0 };
-                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
-            }
             "chars" => {
                 let chars: Vec<Value> = s.lock().unwrap().chars().map(Value::Char).collect();
                 let state = IteratorState::PreComputed { items: chars, index: 0 };
@@ -123,15 +95,6 @@ impl Interpreter {
                     .map(|b| Value::int(b as i64))
                     .collect();
                 Ok(Value::vec(bytes))
-            }
-            "lines" => {
-                let lines: Vec<Value> = s
-                    .lock().unwrap()
-                    .lines()
-                    .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
-                    .collect();
-                let state = IteratorState::PreComputed { items: lines, index: 0 };
-                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
             // `replace` itself is Rask (stdlib/string.rk) and picks one of
             // these two by whether it was given a `limit:`. An empty `from`
@@ -233,6 +196,71 @@ impl Interpreter {
                     Some(c) => Value::some(Value::Char(c)),
                     None => Value::none(),
                 })
+            }
+            // std.strings/V1: what `.view()` at the end of a slice chain
+            // compiles to. Native shares the source's buffer; here the view is
+            // its own copy of the range, which no program can tell apart.
+            // A buffer of its own. The interpreter's strings never share one,
+            // so this is a copy like any other.
+            "unshare" => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
+            "view_range" => {
+                let text = s.lock().unwrap();
+                let end = (self.expect_int(&args, 1)?.max(0) as usize).min(text.len());
+                let start = self.expect_int(&args, 0)?.max(0) as usize;
+                if start >= end {
+                    return Ok(Value::String(Arc::new(Mutex::new(String::new()))));
+                }
+                match text.get(start..end) {
+                    Some(range) => Ok(Value::String(Arc::new(Mutex::new(range.to_string())))),
+                    None => Err(RuntimeError::Panic(format!(
+                        "s[{start}..{end}] cuts a character in half - these are byte offsets, and \
+                         one of them lands inside a multi-byte character. `char_indices()` gives \
+                         offsets that don't."
+                    ))),
+                }
+            }
+            // Where `trim_start` would begin within `[start, end)`.
+            "trim_start_at" => {
+                let text = s.lock().unwrap();
+                let bytes = text.as_bytes();
+                let end = (self.expect_int(&args, 1)?.max(0) as usize).min(bytes.len());
+                let mut at = self.expect_int(&args, 0)?.max(0) as usize;
+                while at < end && text.is_char_boundary(at) {
+                    let c = text[at..].chars().next().unwrap();
+                    if !c.is_whitespace() {
+                        break;
+                    }
+                    at += c.len_utf8();
+                }
+                Ok(Value::int(at.min(end) as i64))
+            }
+            // Where the word starting at `start` ends within `[start, end)`.
+            "word_end_at" => {
+                let text = s.lock().unwrap();
+                let end = (self.expect_int(&args, 1)?.max(0) as usize).min(text.len());
+                let mut at = self.expect_int(&args, 0)?.max(0) as usize;
+                while at < end && text.is_char_boundary(at) {
+                    let c = text[at..].chars().next().unwrap();
+                    if c.is_whitespace() {
+                        break;
+                    }
+                    at += c.len_utf8();
+                }
+                Ok(Value::int(at.min(end) as i64))
+            }
+            // Where `trim_end` would stop within `[start, end)`.
+            "trim_end_at" => {
+                let text = s.lock().unwrap();
+                let start = self.expect_int(&args, 0)?.max(0) as usize;
+                let mut end = (self.expect_int(&args, 1)?.max(0) as usize).min(text.len());
+                while end > start && text.is_char_boundary(end) {
+                    let Some(c) = text[..end].chars().next_back() else { break };
+                    if !c.is_whitespace() || end - c.len_utf8() < start {
+                        break;
+                    }
+                    end -= c.len_utf8();
+                }
+                Ok(Value::int(end.max(start) as i64))
             }
             "byte_at" => {
                 let idx = self.expect_int(&args, 0)? as usize;

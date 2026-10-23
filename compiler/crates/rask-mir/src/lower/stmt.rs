@@ -286,6 +286,16 @@ impl<'a> MirLowerer<'a> {
         .then(|| fty.clone())
     }
 
+    /// What writing over a variable reached through a pointer — a `mutate`
+    /// parameter, a closure's capture — gives back: the value it held, which
+    /// `mem.parameters/PM2` says is always there. A struct or enum, a string,
+    /// a container. A scalar holds nothing to give back.
+    fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
+        self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
+            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::String | MirType::Container(_))
+        })
+    }
+
     /// Byte offset, MIR type and recorded byte size of `field` within an
     /// aggregate MIR type. Tuple fields carry their size in the layout too.
     fn field_offset_ty_size(
@@ -438,6 +448,24 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Return(opt_expr) => {
                 let mut returned_ty = None;
+                // In a `for` body over a sequence, the loop's variables this
+                // return moves leave the frame on its early exit.
+                if let (Some(e), Some(_)) = (opt_expr, &self.seq_moved_names) {
+                    let moved: Vec<String> = self
+                        .ctx
+                        .return_moves
+                        .get(&e.id)
+                        .into_iter()
+                        .flatten()
+                        .filter(|name| {
+                            self.locals.get(*name).is_some_and(|(id, _)| self.addressed_captures.contains(id))
+                        })
+                        .cloned()
+                        .collect();
+                    if let Some(names) = self.seq_moved_names.as_mut() {
+                        names.extend(moved);
+                    }
+                }
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
                     // `return c` hands the value itself to the caller, so the
@@ -464,7 +492,7 @@ impl<'a> MirLowerer<'a> {
                     // came back as `Some(Some(v))` and the caller read the
                     // inner option's address as the vector (#1498).
                     let inlined_closure = self.inline_return_target.is_some() && seq_ret.is_none();
-                    let ret_ty = seq_ret.clone().unwrap_or_else(|| self.builder.ret_ty().clone());
+                    let ret_ty = self.return_ty();
                     // ER9: the checker picked the side when it accepted the
                     // return. Comparing types here again got it wrong for a
                     // `type Code = i64` error in a `string or Code` function:
@@ -644,15 +672,8 @@ impl<'a> MirLowerer<'a> {
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents
                             // are `container_drop`'s to place.
-                            let replaced = if !assigns_through {
-                                None
-                            } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
-                                && !reuses_old
-                            {
-                                Some(dst_ty.clone())
-                            } else if scalar_mutate.as_ref().is_some_and(is_runtime_handle) {
-                                self.replaced_slot_type(target, reuses_old, &dst_ty)
-                                    .filter(|t| matches!(t, MirType::Container(_)))
+                            let replaced = if assigns_through {
+                                self.released_on_overwrite(target, reuses_old, &dst_ty)
                             } else {
                                 None
                             };
@@ -669,21 +690,23 @@ impl<'a> MirLowerer<'a> {
                                 field: None,
                             }));
                         } else {
-                            // A closure writing a whole struct over a capture
-                            // it reaches by address replaces the value its
-                            // creating frame (or its environment) holds, the
-                            // way a `mutate` parameter's write does above.
-                            // The frame releases only what's there at the end,
-                            // so `|| { line = Line { … } }` leaked the line it
-                            // replaced (#1448).
-                            if self.addressed_captures.contains(&local_id)
-                                && matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
-                                && !reuses_old
-                            {
+                            // A closure writing over a capture it reaches by
+                            // address replaces the value its creating frame (or
+                            // its environment) holds: the same write a `mutate`
+                            // parameter's is above, and the same release.
+                            // `|| { line = Line { … } }` leaked the line it
+                            // replaced (#1448), and a `lines()` loop body doing
+                            // `block = Vec.new()` every block.
+                            let replaced = if self.addressed_captures.contains(&local_id) {
+                                self.released_on_overwrite(target, reuses_old, &dst_ty)
+                            } else {
+                                None
+                            };
+                            if let Some(ty) = replaced {
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ReleaseSlot {
                                     addr: local_id,
                                     offset: 0,
-                                    ty: dst_ty.clone(),
+                                    ty,
                                 }));
                             }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

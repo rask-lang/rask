@@ -158,7 +158,7 @@ extend fs {
         let content = try fs.read_text(path)
         mut lines: Vec<string> = Vec.new()
         for line in content.lines() {
-            lines.push(line)
+            lines.push(line.to_string())
         }
         return lines
     }

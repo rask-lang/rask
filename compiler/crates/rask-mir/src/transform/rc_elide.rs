@@ -83,6 +83,18 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
                 {
                     owned.insert(*dst);
                 }
+                // A variable lent by address — to a `mutate` parameter, or to
+                // a closure that captures it by reference — can come back
+                // holding a string the borrower wrote, with that string's
+                // reference. Its release is the only one there will be.
+                MirStmtKind::Assign { rvalue: MirRValue::Ref(src), .. } if string_locals.contains(src) => {
+                    owned.insert(*src);
+                }
+                MirStmtKind::ClosureCreate { captures, .. } => {
+                    for c in captures.iter().filter(|c| c.by_ref && string_locals.contains(&c.local_id)) {
+                        owned.insert(c.local_id);
+                    }
+                }
                 _ => {}
             }
         }
@@ -362,6 +374,23 @@ fn elide_literals(func: &mut MirFunction) -> usize {
     // A parameter's value comes from the caller — nothing here can vouch for it.
     for param in &func.params {
         literal.remove(&param.id);
+    }
+    // Nor for a variable lent by address — to a `mutate` parameter, or to a
+    // closure that captures it by reference. The borrower can write a new
+    // string into it, so `mut s = ""` stops being the literal the moment it's
+    // lent.
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Ref(src), .. } => {
+                literal.remove(src);
+            }
+            MirStmtKind::ClosureCreate { captures, .. } => {
+                for c in captures.iter().filter(|c| c.by_ref) {
+                    literal.remove(&c.local_id);
+                }
+            }
+            _ => {}
+        }
     }
 
     loop {

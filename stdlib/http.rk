@@ -556,7 +556,7 @@ func header_value(head: string, name: string) -> string? {
             continue
         }
         if line[0..colon].to_string().to_lowercase() == name {
-            return line[colon + 1..].to_string().trim()
+            return line[colon + 1..].trim().to_string()
         }
     }
     return none

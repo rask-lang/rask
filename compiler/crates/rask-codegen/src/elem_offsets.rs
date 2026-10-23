@@ -193,8 +193,8 @@ fn wrapper_arms(
         if arm.is_empty() {
             continue;
         }
-        let tag_offset = base + rask_mono::abi::TAG_OFFSET as i32;
-        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_mono::abi::TAG_BYTES)?);
+        let tag_offset = base + rask_types::abi::TAG_OFFSET as i32;
+        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_types::abi::TAG_BYTES)?);
         out.extend(arm);
     }
     Some(())

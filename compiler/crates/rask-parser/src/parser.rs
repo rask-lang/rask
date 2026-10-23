@@ -377,6 +377,9 @@ impl Parser {
                     bracket_depth -= 1;
                     if bracket_depth < 0 { return false; }
                 }
+                // An array type's `;` sits inside its brackets:
+                // `size_of<[u16; 3]>()`.
+                TokenKind::Semi if bracket_depth > 0 => {}
                 TokenKind::Eof | TokenKind::Newline | TokenKind::Semi => {
                     return false;
                 }

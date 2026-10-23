@@ -13,7 +13,7 @@
 #define RASK_TAG_ABSENT 1
 
 // Where a `T or E` keeps the source line its error came from: a
-// `uint32_t`, zero for none (`crate::abi`).
+// `uint32_t`, zero for none (`rask_types::abi`).
 #define RASK_RESULT_ORIGIN_LINE_OFFSET 4
 
 // How the runtime reads one element of a vector it formats or sorts. The
