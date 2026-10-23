@@ -106,42 +106,44 @@ I canonicalize NaN because a payload is whatever the hardware left in it. A prog
 
 | Rule | Description |
 |------|-------------|
-| **P3: Read methods** | `data.read_u8()`, `data.read_u16be()`, … read one value off the front of a `Vec<u8>` and return `(T, Vec<u8>) or BinaryParseError`: the value and what's left. One per type and byte order: `u8`, `i8`, then `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `f32`, `f64`, each with a `be` and an `le` form |
-| **P4: read_bytes** | `data.read_bytes(n)` splits off the first `n` bytes: `(Vec<u8>, Vec<u8>) or BinaryParseError` |
-| **P5: Short input** | Reading more bytes than there are is `BinaryParseError.UnexpectedEnd(expected, actual)`: how many the read needed, how many were there. Nothing panics |
+| **P3: Read methods** | `data.read_u8(at)`, `data.read_u16be(at)`, … read one value of a `Vec<u8>` starting at byte offset `at` and return `(T, usize) or BinaryParseError`: the value and the offset just past it. One per type and byte order: `u8`, `i8`, then `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `f32`, `f64`, each with a `be` and an `le` form |
+| **P4: read_bytes** | `data.read_bytes(at, n)` copies out the `n` bytes from `at`: `(Vec<u8>, usize) or BinaryParseError` |
+| **P5: Short input** | Reading more bytes than are left is `BinaryParseError.UnexpectedEnd(expected, actual)`: how many the read needed, how many were left from `at`. Nothing panics |
 
 <!-- surface -->
 ```rask
 extend Vec<u8> {
-    func read_u8(self) -> (u8, Vec<u8>) or BinaryParseError
-    func read_i8(self) -> (i8, Vec<u8>) or BinaryParseError
-    func read_u16be(self) -> (u16, Vec<u8>) or BinaryParseError
-    func read_u16le(self) -> (u16, Vec<u8>) or BinaryParseError
-    func read_i16be(self) -> (i16, Vec<u8>) or BinaryParseError
-    func read_i16le(self) -> (i16, Vec<u8>) or BinaryParseError
-    func read_u32be(self) -> (u32, Vec<u8>) or BinaryParseError
-    func read_u32le(self) -> (u32, Vec<u8>) or BinaryParseError
-    func read_i32be(self) -> (i32, Vec<u8>) or BinaryParseError
-    func read_i32le(self) -> (i32, Vec<u8>) or BinaryParseError
-    func read_u64be(self) -> (u64, Vec<u8>) or BinaryParseError
-    func read_u64le(self) -> (u64, Vec<u8>) or BinaryParseError
-    func read_i64be(self) -> (i64, Vec<u8>) or BinaryParseError
-    func read_i64le(self) -> (i64, Vec<u8>) or BinaryParseError
-    func read_f32be(self) -> (f32, Vec<u8>) or BinaryParseError
-    func read_f32le(self) -> (f32, Vec<u8>) or BinaryParseError
-    func read_f64be(self) -> (f64, Vec<u8>) or BinaryParseError
-    func read_f64le(self) -> (f64, Vec<u8>) or BinaryParseError
-    func read_bytes(self, n: usize) -> (Vec<u8>, Vec<u8>) or BinaryParseError
+    func read_u8(self, at: usize) -> (u8, usize) or BinaryParseError
+    func read_i8(self, at: usize) -> (i8, usize) or BinaryParseError
+    func read_u16be(self, at: usize) -> (u16, usize) or BinaryParseError
+    func read_u16le(self, at: usize) -> (u16, usize) or BinaryParseError
+    func read_i16be(self, at: usize) -> (i16, usize) or BinaryParseError
+    func read_i16le(self, at: usize) -> (i16, usize) or BinaryParseError
+    func read_u32be(self, at: usize) -> (u32, usize) or BinaryParseError
+    func read_u32le(self, at: usize) -> (u32, usize) or BinaryParseError
+    func read_i32be(self, at: usize) -> (i32, usize) or BinaryParseError
+    func read_i32le(self, at: usize) -> (i32, usize) or BinaryParseError
+    func read_u64be(self, at: usize) -> (u64, usize) or BinaryParseError
+    func read_u64le(self, at: usize) -> (u64, usize) or BinaryParseError
+    func read_i64be(self, at: usize) -> (i64, usize) or BinaryParseError
+    func read_i64le(self, at: usize) -> (i64, usize) or BinaryParseError
+    func read_f32be(self, at: usize) -> (f32, usize) or BinaryParseError
+    func read_f32le(self, at: usize) -> (f32, usize) or BinaryParseError
+    func read_f64be(self, at: usize) -> (f64, usize) or BinaryParseError
+    func read_f64le(self, at: usize) -> (f64, usize) or BinaryParseError
+    func read_bytes(self, at: usize, n: usize) -> (Vec<u8>, usize) or BinaryParseError
 }
 ```
 
 <!-- test: skip -->
 ```rask
-let (magic, rest) = try data.read_u32be()
-let (version, rest) = try rest.read_u8()
-let (length, rest) = try rest.read_u16be()
-let (payload, rest) = try rest.read_bytes(length)
+let (magic, at) = try data.read_u32be(0)
+let (version, at) = try data.read_u8(at)
+let (length, at) = try data.read_u16be(at)
+let (payload, at) = try data.read_bytes(at, length)
 ```
+
+The read takes an offset and gives one back instead of handing back the rest of the buffer. Handing back the rest meant a copy of it per value, so walking a buffer value by value was quadratic in its length. An offset is just a number; the buffer is read where it lies.
 
 P4 used to be `take(n)`, infallible. Two things were wrong with it. A short buffer has to fail somewhere, and an infallible `take` could only panic, while everything around it returns an error, so the example already wrote `try` in front of it. And `Vec.take(n)` is the sequence method that lazily yields the first `n` elements; one name meaning two different things on the same receiver is a trap. `read_bytes` is the byte-count sibling of the other `read_*` methods and fails the same way they do.
 
