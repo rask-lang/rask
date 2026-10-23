@@ -951,6 +951,15 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// `@packed` and `@align` were read by nothing; a malformed one is now an
+/// error where it's written.
+#[test]
+fn malformed_layout_attributes_are_rejected() {
+    let (failed, out) = compile_error_output("layout_attributes.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0923]").count(), 6, "{out}");
+}
+
 /// #1634: `transmute` needs both sides the same size, by the layout, and a
 /// written target.
 #[test]

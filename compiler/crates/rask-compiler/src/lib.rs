@@ -593,14 +593,17 @@ fn transmute_size_diagnostics(typed: &TypedProgram, mono: &rask_mono::MonoProgra
         if from == to {
             continue;
         }
+        let bytes = |n: u32| if n == 1 { "1 byte".to_string() } else { format!("{n} bytes") };
         let from_ty = typed.types.resolve_type_names(&site.from);
         let to_ty = typed.types.resolve_type_names(&site.to);
         diags.push(
             Diagnostic::error(format!(
-                "`transmute` from `{from_ty}` ({from} bytes) to `{to_ty}` ({to} bytes): the sizes differ"
+                "`transmute` from `{from_ty}` ({}) to `{to_ty}` ({}): the sizes differ",
+                bytes(from),
+                bytes(to),
             ))
             .with_code("E0921")
-            .with_primary(site.span, format!("{from} bytes in, {to} bytes out"))
+            .with_primary(site.span, format!("{} in, {} out", bytes(from), bytes(to)))
             .with_help("transmute reinterprets the same bytes, so both types must be the same size; to change a number's width, convert it instead (`x as u64` widens, `x.wrap<u32>()` narrows)"),
         );
     }

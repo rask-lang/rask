@@ -1367,7 +1367,21 @@ impl TypeChecker {
         }
     }
 
+    /// `@packed` and `@align` lay out a struct's fields (type.structs). On
+    /// anything else they'd be read by nothing.
+    fn refuse_struct_only_layout(&mut self, attrs: &[rask_ast::attr::Attr], what: &str) {
+        for a in attrs.iter().filter(|a| a.is("packed") || a.is("align")) {
+            self.errors.push(TypeError::LayoutAttribute {
+                problem: format!("`@{}` lays out a struct's fields, and this is {what}", a.name()),
+                span: a.span,
+            });
+        }
+    }
+
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
+        if let Err((span, problem)) = rask_ast::attr::layout_request(&s.attrs) {
+            self.errors.push(TypeError::LayoutAttribute { problem, span });
+        }
         // The declaration's own parameters are in scope (`owner_type_params`),
         // so a field written `Output` is the parameter, not `os.Output` (#915).
         let type_params = struct_type_param_names(s);
@@ -1499,6 +1513,7 @@ impl TypeChecker {
     }
 
     pub(super) fn register_enum(&mut self, e: &EnumDecl, span: Span) -> crate::types::TypeId {
+        self.refuse_struct_only_layout(&e.attrs, "an enum");
         // E16: If any variant has an explicit discriminant, all must
         let has_disc = e.variants.iter().any(|v| v.discriminant.is_some());
         let all_disc = e.variants.iter().all(|v| v.discriminant.is_some());

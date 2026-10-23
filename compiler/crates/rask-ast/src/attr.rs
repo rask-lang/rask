@@ -75,6 +75,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("unique", ArgForm::Exprs, Writer::Anyone),
     ("small", ArgForm::Exprs, Writer::Anyone),
     ("layout", ArgForm::Exprs, Writer::Anyone),
+    ("packed", ArgForm::Exprs, Writer::Anyone),
+    ("align", ArgForm::Exprs, Writer::Anyone),
     ("message", ArgForm::Exprs, Writer::Anyone),
     // Functions
     ("entry", ArgForm::Exprs, Writer::Anyone),
@@ -103,8 +105,6 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // Decided, not built yet
     ("inline", ArgForm::Exprs, Writer::Anyone),             // SYNTAX.md
     ("deprecated", ArgForm::Exprs, Writer::Anyone),         // tool.warnings/W5
-    ("packed", ArgForm::Exprs, Writer::Anyone),             // type.structs
-    ("align", ArgForm::Exprs, Writer::Anyone),              // type.structs
     ("bitfield", ArgForm::Exprs, Writer::Anyone),           // struct.c-interop
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
@@ -114,6 +114,52 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)
     ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];
+
+/// The largest `@align(N)` honoured: the stack and the allocator guarantee 16
+/// bytes, and a slot or buffer asking for more wouldn't get it.
+pub const MAX_ALIGN: u32 = 16;
+
+/// What `@packed` and `@align(N)` ask of a struct's layout (type.structs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LayoutRequest {
+    /// No padding: every field at alignment 1, in declaration order.
+    pub packed: bool,
+    /// At least this alignment, a power of two up to `MAX_ALIGN`.
+    pub align: Option<u32>,
+}
+
+/// Read `@packed` and `@align(N)` off a struct's attributes, or say what's
+/// wrong with them and where.
+pub fn layout_request(attrs: &[Attr]) -> Result<LayoutRequest, (Span, String)> {
+    let mut req = LayoutRequest::default();
+    for a in attrs {
+        if a.is("packed") {
+            if a.args.as_ref().is_some_and(|args| !args.is_empty()) {
+                return Err((a.span, "`@packed` takes no arguments".to_string()));
+            }
+            req.packed = true;
+        } else if a.is("align") {
+            let n = match (a.args.as_deref(), a.positional().and_then(AttrValue::literal)) {
+                (Some([_]), Some(Literal::Int(n))) => n,
+                _ => return Err((a.span, "`@align` takes one integer: `@align(8)`".to_string())),
+            };
+            if n < 1 || n > MAX_ALIGN as i128 || n & (n - 1) != 0 {
+                return Err((
+                    a.span,
+                    format!("`@align({n})`: the alignment has to be a power of two from 1 to {MAX_ALIGN}"),
+                ));
+            }
+            req.align = Some(n as u32);
+        }
+    }
+    if req.packed && req.align.is_some() {
+        return Err((
+            attrs.iter().find(|a| a.is("align")).map_or(Span::new(0, 0), |a| a.span),
+            "`@packed` and `@align` contradict each other: packed means alignment 1".to_string(),
+        ));
+    }
+    Ok(req)
+}
 
 /// How the compiler-known attribute `name` takes its arguments, or `None` for
 /// a name the compiler doesn't own (a user annotation).

@@ -2214,6 +2214,13 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "unsafe operation outside unsafe block")
             }
 
+            LayoutAttribute { problem, span } => {
+                Diagnostic::error(problem.clone())
+                    .with_code("E0923")
+                    .with_primary(*span, "layout attribute")
+                    .with_help("`@packed` removes a struct's padding; `@align(N)` raises its alignment to N, a power of two up to 16")
+            }
+
             TransmuteNeedsTarget { from, span } => {
                 Diagnostic::error(format!("`transmute` of a `{}` has no type to reinterpret it as", from))
                     .with_code("E0922")

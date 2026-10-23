@@ -578,6 +578,11 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
+    #[error("{problem}")]
+    LayoutAttribute {
+        problem: String,
+        span: Span,
+    },
     #[error("`transmute` of a `{from}` has no target type")]
     TransmuteNeedsTarget {
         from: Type,
@@ -1739,6 +1744,7 @@ impl TypeError {
             | OverlappingArgumentBorrow { .. }
             | WithNeedsElementOrBox { .. }
             | UnsafeRequired { .. }
+            | LayoutAttribute { .. }
             | CStructReturn { .. }
             | InterfaceObjectSelfReturn { .. }
             | InterfaceObjectGenericMethod { .. }

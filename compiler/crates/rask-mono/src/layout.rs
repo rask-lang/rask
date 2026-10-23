@@ -627,10 +627,21 @@ fn struct_layout(
         })
         .collect();
 
+    // type.structs: `@packed` puts every field at alignment 1, in the order
+    // written — with no padding to save there is nothing to reorder for.
+    // `@align(N)` raises the struct's own alignment and so its tail padding.
+    // A malformed request is the checker's error; here it reads as none.
+    let request = rask_ast::attr::layout_request(&struct_decl.attrs).unwrap_or_default();
+    if request.packed {
+        for field in &mut resolved {
+            field.3 = 1;
+        }
+    }
+
     // S1/L4: Default @layout(Rask) reorders by alignment (largest first).
     // Stable sort preserves source order for fields with equal alignment.
     // S2: @layout(C) preserves source order for FFI.
-    if !c_layout {
+    if !c_layout && !request.packed {
         resolved.sort_by(|a, b| b.3.cmp(&a.3));
     }
 
@@ -657,6 +668,10 @@ fn struct_layout(
         });
 
         offset += size;
+    }
+
+    if let Some(n) = request.align {
+        max_align = max_align.max(n);
     }
 
     // S4: Total size with tail padding to struct alignment
