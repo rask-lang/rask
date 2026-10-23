@@ -418,7 +418,8 @@ extend Sequence<StringSlice> {
             if !first {
                 out.push(sep)
             }
-            out.push(piece.to_string())
+            // The builder copies the bytes, so the slice's own text goes in.
+            out.push(piece.text)
             first = false
         }
         return out.build()

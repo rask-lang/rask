@@ -716,8 +716,8 @@ impl TypeChecker {
             return Ok(self.poison(&ret));
         }
 
-        // A view or a slice reads as a string (std.strings/V3).
-        if let Some(read) = self.redirect_string_reader(&ty, &method, &args, &ret, span, call_node) {
+        // type.reads-as: a method the type doesn't declare is its field's.
+        if let Some(read) = self.read_through_field(&ty, &method, &args, &ret, span, call_node) {
             return read;
         }
 
@@ -2139,13 +2139,13 @@ impl TypeChecker {
             // it and the binding was reported as un-inferrable (#620). Ordering
             // is lexicographic and both backends already do it.
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "contains" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             // std.strings/S7: `string` has no mutation methods. These two were
@@ -2167,7 +2167,7 @@ impl TypeChecker {
             // it only worked because the fallthrough below used to accept any
             // name at all.
             "compare" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &self.ordering_type(), span)
             }
             // A method `string` doesn't have is an error here, the way it

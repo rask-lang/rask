@@ -101,26 +101,24 @@ a.normalized() == b.normalized() // "café" == "café" regardless of source
 
 ## Inline Slicing
 
-`s[i..j]` makes a `StringSlice` (S2), and so do `s.trim()`, `trim_start()` and `trim_end()`. A slice is a value: a view of the bytes it covers plus its start and end in the string it was cut from. It lives for the expression that makes it. It can't be assigned, stored or returned, so it never outlives what it was cut from.
+`s[i..j]` makes a `StringSlice` (S2), and so do `s.trim()`, `trim_start()` and `trim_end()`. A slice is a value: the bytes it covers, shared with the source, plus its start and end in the string it was cut from. Nothing about it is the compiler's: `StringSlice` is a struct in `stdlib/string.rk`, declared `@temporary` (`type.temporary`) and `@reads_as(text)` (`type.reads-as`), and every rule below follows from those two.
 
 | Rule | Description |
 |------|-------------|
 | **SL1: Knows its place** | `.span()` is the slice's byte range in the string it was cut from. A slice of a slice is placed in the original: `s[4..14][2..5].span()` is `6..9` |
-| **SL2: Reads as a string** | Every read-only string method works on a slice and reads its range without copying: `s.trim().len()`, `s[0..5] == "hello"`, `s.trim().starts_with("#")`. Equality and order compare the text |
-| **SL3: Copies where a string goes** | A slice passed for a `string` parameter, or matched against patterns, is copied into a string. That's the cost slicing always had; the other uses have none |
-| **SL4: Keeping it** | `.view()` keeps it without copying (V1), `.to_string()` keeps it as a string of its own |
-
-Slicing follows the same inline access rules as Vec and other growable sources under `mem.borrowing/B2`.
+| **SL2: Reads as a string, as a receiver** | Every read-only string method works on a slice and reads its range without copying: `s.trim().len()`, `s[0..5] == "hello"`, `s.trim().starts_with("#")`. Comparing is reading too, so `==` and order compare the text (`type.reads-as/RA6`) |
+| **SL3: Converted where a string goes** | A slice passed for a `string` parameter is a type error whose fix is `.to_string()`; for a `StringView` parameter, `.view()`. The callee can keep what it's given, and keeping the slice's text silently would pin the whole source buffer (V2). Matching on a slice is the same: write `match s.trim().to_string() { … }` |
+| **SL4: Keeping it** | A slice lives for the expression that makes it: a binding, a field or a container's element can't hold one (`type.temporary/TM2`). `.view()` keeps it without copying (V1), `.to_string()` keeps it as a string of its own |
 
 | Context | Example | Valid? |
 |---------|---------|--------|
-| Function argument | `process(s[0..5])` | Yes, copied (SL3) |
-| Method receiver | `s[0..5].len()` | Yes |
+| Method receiver | `s[0..5].len()`, `s[0..5] == "hello"` | Yes |
 | Chained expression | `s[0..5].to_uppercase()` | Yes |
 | Storable conversion | `s[0..5].view()`, `s[0..5].to_string()` | Yes |
-| Variable assignment | `let x = s[0..5]` | Compile error |
-| Struct field | `Foo(field: s[0..5])` | Compile error |
-| Return value | `return s[0..5]` | Compile error |
+| Function argument | `process(s[0..5])` | Type error: `process(s[0..5].to_string())` (SL3) |
+| Variable assignment | `let x = s[0..5]` | Compile error (SL4) |
+| Struct field | `Foo(field: s[0..5])` | Type error: the field's type isn't `StringSlice` |
+| Return value | `return s[0..5]` | Type error, unless the function returns `StringSlice` |
 
 To keep a substring past the expression, pick the conversion whose cost you want: `.view()` is zero-copy but keeps the whole source buffer alive (V2); `.to_string()` copies the bytes and is independent of the source.
 
@@ -134,7 +132,7 @@ A `StringView` is the storable form of a string slice: it references a byte rang
 |------|-------------|
 | **V1: Refcounted view** | A view shares the source string's heap buffer and holds a refcount on it. The buffer stays alive as long as any view does. 16 bytes, Copy — same copy semantics as `string` (memcpy + atomic increment, elidable per `comp.string-refcount-elision`) |
 | **V2: Pin is type-visible** | A view keeps the *whole* source buffer alive, not just its range. That cost lives in the type: a `StringView` field says "shares a buffer", a `string` field says "independent". `.to_string()` copies out and releases the pin |
-| **V3: Read-only string API** | Views support the full read-only string API — length, search, iteration, slicing, trimming, parsing, comparison, interpolation. No mutation, same as `string`. `==` between views and between a view and a string compares bytes |
+| **V3: Read-only string API** | `StringView` is a struct holding the shared `string`, declared `@reads_as(text)` (`type.reads-as`): the full read-only string API works on a view as a receiver, with no copy. Slicing a view is its own `Slice` conformance. `v == "abc"` compares bytes. A view passed where a `string` goes is converted with `.to_string()`, which copies (SL3's reason) |
 | **V4: Small views inline** | Views ≤ 15 bytes store their bytes inline (same SSO layout as S8) — no refcount, no pin. Invisible to user code |
 | **V5: Creation via `.view()`** | `.view()` on a string views the whole string; on an expression-scoped slice (`s[i..j]`, `.trim()`, split/lines items) it captures that slice's range. No copy either way |
 | **V6: Views never chain** | Slicing a view and calling `.view()` re-references the original buffer directly. There is one header pointer, no matter how many times you re-slice |
@@ -144,7 +142,7 @@ A `StringView` is the storable form of a string slice: it references a byte rang
 | `s.view()` | `StringView` | View of the whole string. Refcount bump (heap mode) |
 | `s[i..j].view()` | `StringView` | Storable view of the slice. Works on any expression-scoped slice: `s.trim().view()`, split items |
 | `v.to_string()` | `string` | Copy bytes into an independent string — releases the pin |
-| `v.len()`, `v.chars()`, `v.index_of(pat)`, ... | — | Full read-only string API (V3) |
+| `v.len()`, `v.chars()`, `v.index_of(pat)`, ... | — | Full read-only string API, read through `text` (V3) |
 
 <!-- surface -->
 ```rask
@@ -156,9 +154,6 @@ extend string {
 extend StringView {
     func view(self) -> StringView           // V6: re-references the original buffer
     func to_string(self) -> string
-    func len(self) -> usize
-    func chars(self) -> Iterator<char>
-    func index_of(self, pat: string) -> usize?
 }
 ```
 
@@ -708,7 +703,7 @@ FIX:
 | View of literal (> 15 bytes) | V1/S6 | References sentinel storage — no atomic ops, nothing pinned |
 | `.view()` mid-codepoint or OOB slice | S5 | Panic (the slice panics before `.view()` runs) |
 | View from source offset > 4 GiB or length ≥ 2 GiB | V1 | Panic — use `.to_string()` for the range |
-| `view == string` | V3 | Byte comparison, both directions |
+| `view == string` | V3 | Byte comparison. `"abc" == view` puts the view in an argument: `"abc" == view.to_string()` (SL3) |
 | View sent cross-task | V1 | Allowed — refcount is atomic |
 | Last view outlives all copies of source string | V1 | Fine — buffer freed when last holder (string or view) drops |
 | Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
@@ -955,23 +950,13 @@ for (i, c) in text.char_indices() {
 
 Current interpreter behavior differs from spec in some areas:
 
-**Trimming returns owned strings:**
-- `s.trim()`, `s.trim_start()`, `s.trim_end()` return new `string` instead of expression-scoped slices
-- This causes allocation but matches common usage patterns
-
-**`.view()` shares, but the slice under it already allocated:**
-- `.view()` works on both backends. A view is a `RaskStr` sharing the source's buffer and holding a refcount on it, so V1, V2, V4 and V6 hold and a stored view can't dangle
-- What doesn't hold yet is V5's "no copy either way" on a *sub-range*. `s[i..j]` and `s.trim()` allocate today (above), so `s.trim().view()` shares the trimmed copy rather than referencing a range of `s` — one allocation per slice, not per view
-- The header-pointer + start/len layout under "Internal Layout" is what removes that last allocation. Until slices are ranges instead of copies, a view always covers the whole of its (already copied) source, so `start`/`len` have nothing to say
-- Read-only API on a view is `len`, `is_empty`, `index_of`, `chars`, `to_string`, `view`, `hash` and interpolation. The rest of V3 (the other searches, sub-slicing, comparison) isn't wired up
+**Slices and views are ranges of the source:** `s[i..j]`, the trims and the
+`split`/`lines` pieces share the source's buffer on both backends, and so does
+`.view()`. The interpreter's strings never share a buffer, so there every
+slice is a copy that behaves the same.
 
 **Method name aliases:**
 - The interpreter still accepts `s.find(pat)` as an alias for `index_of`
-
-**`.span()` isn't built:** on a slice it has to answer the slice's range in
-its source, and a slice is still a copy (above), so there's no range to read.
-On a whole string it would be `Span.new(0, s.len())`, which isn't worth a
-method that's wrong everywhere else. It lands with slices as ranges (#492).
 
 **Text units:**
 - `width`, `graphemes`, `truncate` and `normalized` (U2, U5) are implemented on both backends. The interpreter uses the `unicode-*` crates directly; the native runtime's tables are generated from those same crates by `scripts/gen_unicode_text`, so the two cannot drift. `tests/suite/t_text_units.rk` pins the output against Python's `unicodedata` as an independent reference

@@ -1088,12 +1088,35 @@ impl Desugarer {
                 if let ExprKind::Range { start, end, inclusive } = index.kind {
                     let index_span = index.span;
                     let mut synth = |kind: ExprKind| Expr { id: self.fresh_id(), kind, span: index_span };
+                    // An end takes any integer type (type.operators/IX1), so one
+                    // that isn't a literal goes through the checked conversion:
+                    // a negative end panics, as an index does.
+                    let mut as_usize = |e: Expr, synth: &mut dyn FnMut(ExprKind) -> Expr| {
+                        if matches!(e.kind, ExprKind::Int(..)) {
+                            return e;
+                        }
+                        let span = e.span;
+                        let to = Expr {
+                            id: synth(ExprKind::Bool(false)).id,
+                            kind: ExprKind::Convert {
+                                expr: Box::new(e),
+                                target: rask_ast::ty::TypeExpr::named("usize"),
+                                kind: ConvertKind::To,
+                            },
+                            span,
+                        };
+                        Expr {
+                            id: synth(ExprKind::Bool(false)).id,
+                            kind: ExprKind::Unwrap { expr: Box::new(to), message: None, bang: span },
+                            span,
+                        }
+                    };
                     let start = match start {
-                        Some(e) => *e,
+                        Some(e) => as_usize(*e, &mut synth),
                         None => synth(ExprKind::Int(0, Some(rask_ast::token::IntSuffix::Usize))),
                     };
                     let end = match end {
-                        Some(e) => *e,
+                        Some(e) => as_usize(*e, &mut synth),
                         None => synth(ExprKind::None),
                     };
                     let through = synth(ExprKind::Bool(inclusive));

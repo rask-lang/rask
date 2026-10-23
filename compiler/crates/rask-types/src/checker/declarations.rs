@@ -1490,6 +1490,42 @@ impl TypeChecker {
         }
     }
 
+    /// type.reads-as/RA1: the field `@reads_as(field)` names. A name the
+    /// struct has no field for is reported and nothing reads as anything.
+    fn declared_reads_as(&mut self, s: &StructDecl) -> Option<String> {
+        let attr = s.attrs.iter().find(|a| a.is("reads_as"))?;
+        let field = attr.positional().and_then(|v| v.ident()).map(str::to_string);
+        match field {
+            Some(f) if s.fields.iter().any(|x| x.name == f) => Some(f),
+            _ => {
+                self.errors.push(TypeError::ReadsAsNoField {
+                    ty: s.name.clone(),
+                    written: field,
+                    fields: s.fields.iter().map(|f| f.name.clone()).collect(),
+                    span: attr.span,
+                });
+                None
+            }
+        }
+    }
+
+    /// type.temporary/TM1: `@temporary`, with the methods `keep:` names as the
+    /// ways to keep a value. The names are checked when a value is kept.
+    fn temporary_keepers(s: &StructDecl) -> Option<Vec<String>> {
+        let attr = s.attrs.iter().find(|a| a.is("temporary"))?;
+        let keep = match attr.arg("keep").and_then(|v| v.expr()).map(|e| &e.kind) {
+            Some(rask_ast::expr::ExprKind::Array(items)) => items
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    rask_ast::expr::ExprKind::Ident(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some(keep)
+    }
+
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
         // The declaration's own parameters are in scope (`owner_type_params`),
         // so a field written `Output` is the parameter, not `os.Output` (#915).
@@ -1567,6 +1603,8 @@ impl TypeChecker {
         // `@no_serialize` narrows the wire form; this says there isn't one.
         let no_encode = s.attrs.iter().any(|a| a.is("no_encode"));
         let no_decode = s.attrs.iter().any(|a| a.is("no_decode"));
+        let reads_as = self.declared_reads_as(s);
+        let temporary = Self::temporary_keepers(s);
 
         // For @binary structs, convert binary field specifiers to runtime types
         let fields = if is_binary {
@@ -1599,6 +1637,8 @@ impl TypeChecker {
             is_transitive_resource: is_resource,
             no_encode,
             no_decode,
+            reads_as,
+            temporary,
         });
 
         for m in &s.methods {
@@ -2223,6 +2263,9 @@ impl TypeChecker {
                 if shape.methods.iter().any(|s| s.name == m) {
                     continue;
                 }
+                if m != "clone" && self.compares_through_field(id) {
+                    continue;
+                }
                 candidates.push((id, m, shape.clone()));
             }
         }
@@ -2240,6 +2283,13 @@ impl TypeChecker {
             }
             set = keep;
         }
+    }
+
+    /// type.reads-as/RA6: comparing a value is reading it, so a type that
+    /// reads as a field compares and hashes as that field rather than getting
+    /// a structural `eq`, `hash` or `compare` of its own.
+    fn compares_through_field(&self, id: crate::types::TypeId) -> bool {
+        matches!(self.types.get(id), Some(TypeDef::Struct { reads_as: Some(_), .. }))
     }
 
     /// What deriving reads off a struct or enum: its fields' (or payloads')
@@ -2296,10 +2346,11 @@ impl TypeChecker {
             // EQ1/EQ3, HA1, CL1/CL2, CO1/ORD2: each when every field or
             // payload has it (`parts_derive`). No `default`: there is no
             // Default interface (type.generics, "No Default Interface").
-            let eq_ok = self.parts_derive(&shape, "eq");
-            let hash_ok = self.parts_derive(&shape, "hash");
+            let reads = self.compares_through_field(id);
+            let eq_ok = !reads && self.parts_derive(&shape, "eq");
+            let hash_ok = !reads && self.parts_derive(&shape, "hash");
             let clone_ok = self.parts_derive(&shape, "clone");
-            let cmp_ok = self.parts_derive(&shape, "compare");
+            let cmp_ok = !reads && self.parts_derive(&shape, "compare");
 
             let mut new_methods = Vec::new();
             if eq_ok && !declared("eq") {
@@ -2828,8 +2879,7 @@ impl TypeChecker {
                 } else {
                     self.define_local_module_const(c.name.clone(), init_ty);
                 }
-                // ESAD Phase 2: reject volatile views at module level too
-                self.check_view_at_binding(&c.name, &c.init, decl.span);
+
             }
             DeclKind::Test(t) => {
                 // `@allow(name)` on the block, same as on a function. A test

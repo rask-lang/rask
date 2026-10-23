@@ -88,14 +88,11 @@ pub fn overlay(fields: &[(u32, u32)]) -> (u32, u32) {
 
 /// The size and alignment of a type the stdlib declares as an empty struct
 /// standing for a runtime value: a handle is one word, `Duration`/`Instant`
-/// are an `int64_t` of nanoseconds, and a `StringView` is a `RaskStr`
-/// (std.strings/V1). The declaration has no fields, so anything that sized it
-/// from them would say zero (#924, #1081).
+/// are an `int64_t` of nanoseconds. The declaration has no fields, so anything
+/// that sized it from them would say zero (#924, #1081).
 pub fn opaque_layout(name: &str) -> Option<(u32, u32)> {
     if rask_stdlib::is_runtime_handle(name) || matches!(name, "Duration" | "Instant") {
         Some((8, 8))
-    } else if name == "StringView" {
-        Some((16, 8))
     } else {
         None
     }

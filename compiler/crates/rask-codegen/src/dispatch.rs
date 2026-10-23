@@ -1233,8 +1233,7 @@ fn declared_entry(
         Some(NativeReturn::Negative) => (None, RetAdapt::NegErr),
         Some(NativeReturn::Status) => (None, RetAdapt::Status),
         Some(NativeReturn::Nothing) => (None, RetAdapt::None),
-        // A StringView is a `RaskStr` too (std.strings/V1), filled the same way.
-        None if ret.is_name("string") || ret.is_name("StringView") => {
+        None if ret.is_name("string") => {
             (Some(ArgAdapt::StringOutParam), RetAdapt::FromArgAdapt)
         }
         None if result_ok(ret).is_some_and(|ok| ok.is_name("string")) => {

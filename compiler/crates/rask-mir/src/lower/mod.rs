@@ -1073,9 +1073,6 @@ impl<'a> MirContext<'a> {
             "bool" => MirType::Bool,
             "char" => MirType::Char,
             "string" => MirType::String,
-            // std.strings/V1: a view is a `RaskStr` that shares the source's
-            // heap buffer — same 16 bytes, same copy semantics, read-only API.
-            "StringView" => MirType::String,
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },

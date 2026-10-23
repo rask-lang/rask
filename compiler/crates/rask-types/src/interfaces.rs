@@ -2034,6 +2034,8 @@ mod tests {
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
+            reads_as: None,
+            temporary: None,
         });
         let coin = types.register_type(TypeDef::Struct {
             name: "Coin".to_string(),
@@ -2050,6 +2052,8 @@ mod tests {
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
+            reads_as: None,
+            temporary: None,
         });
         let blob = types.register_type(TypeDef::Struct {
             name: "Blob".to_string(),
@@ -2066,6 +2070,8 @@ mod tests {
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
+            reads_as: None,
+            temporary: None,
         });
 
         // Ring<T> implements Show where T: Show

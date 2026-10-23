@@ -78,7 +78,7 @@ with units[i] as e: e.health -= 10 // one-liner form
 
 - Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). A rack needs no `with` at all: a link is already a stable name for a node, so you hold it directly.
 - Aliasing: many readers XOR one mutator, per field — disjoint fields of the same struct can be borrowed simultaneously (F2).
-- String slices `s[i..j]` are expression-scoped views; store `s[i..j].to_string()` or `Span` indices instead.
+- String slices `s[i..j]` are expression-scoped views (`@temporary`); store `s[i..j].to_string()` or `Span` indices instead. A slice reads as a string as a method receiver only: pass `s[i..j].to_string()` where a `string` goes.
 - All checks are function-local. Errors point at the function you're editing.
 
 ## Racks and links

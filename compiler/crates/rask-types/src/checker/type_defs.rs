@@ -136,6 +136,13 @@ pub enum TypeDef {
         /// type's data doesn't go on a wire, whatever its fields would allow.
         no_encode: bool,
         no_decode: bool,
+        /// `@reads_as(field)`: methods the type doesn't declare are the
+        /// field's read-only ones, called on the field (type.reads-as).
+        reads_as: Option<String>,
+        /// `@temporary(keep: [...])`: a value lives for the expression that
+        /// makes it, and these methods are the ways to keep one
+        /// (type.temporary). `None` for an ordinary type.
+        temporary: Option<Vec<String>>,
     },
     Enum {
         name: String,
@@ -586,7 +593,7 @@ impl TypedProgram {
         }
 
         self.place_args(decls);
-        self.string_slices.rewrite(decls);
+        self.reads_as.rewrite(decls);
         self.filed_methods.rewrite(decls);
     }
 
@@ -923,8 +930,8 @@ pub struct TypedProgram {
     /// A collection filling a `Sequence<E>` slot: value node → the node of
     /// the `as_sequence()` call `attach_derived` wraps it in (SEQ48).
     pub sequence_coercions: HashMap<NodeId, NodeId>,
-    /// String slices as values: the calls the checker wrote (`slices.rs`).
-    pub string_slices: super::StringSlices,
+    /// Receivers read through the field their type reads as (`reads_as.rs`).
+    pub reads_as: super::ReadsAs,
     /// Methods filed under a name of their own because another `extend` block
     /// with a different header declares the same one, and the calls that
     /// reach them.

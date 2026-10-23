@@ -245,7 +245,7 @@ fn is_flat_primitive(name: &str) -> bool {
 /// FL1: the types that own or point at heap memory. A runtime handle's
 /// storage is the runtime's; a struct holding one is found through its fields.
 fn is_heap_backed(name: &str) -> bool {
-    matches!(name, "string" | "StringView") || rask_stdlib::is_runtime_handle(name)
+    name == "string" || rask_stdlib::is_runtime_handle(name)
 }
 
 // ─── Questions the checker's type table answers ─────────────────────

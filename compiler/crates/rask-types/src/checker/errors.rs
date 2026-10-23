@@ -27,6 +27,9 @@ pub enum TypeError {
         expected: Type,
         found: Type,
         span: Span,
+        /// The found type's own ways to become the expected one: public
+        /// methods taking nothing that return it (`TypeTable::with_conversions`).
+        convert: Vec<String>,
     },
     /// Two function types that agree on every parameter's type but not on
     /// how one of them is passed (type.functions/FT1).
@@ -410,43 +413,35 @@ pub enum TypeError {
     StringNewRemoved {
         span: Span,
     },
-    /// `.to_vec()` on a sequence of slices: a `Vec<StringSlice>` can't exist.
-    #[error("a sequence of string slices can't become a `Vec`")]
-    SlicesToVec {
+    /// type.temporary/TM2: a value of a `@temporary` type somewhere that would
+    /// keep it past the expression that made it.
+    #[error("a `{ty}` can't be kept")]
+    TemporaryKept {
+        /// The temporary type, as written for the reader.
+        ty: String,
+        /// What would have kept it.
+        holder: KeptBy,
+        /// The type's ways to keep one (`@temporary(keep: [...])`): each
+        /// method and the type it returns.
+        keep: Vec<(String, String)>,
         span: Span,
     },
-    /// A binding whose type holds a `StringSlice` inside it: `Vec<StringSlice>`
-    /// built by pushing slices into an unannotated vector (std.strings/S2).
-    #[error("`{name}` would hold string slices")]
-    SliceHeld {
-        name: String,
-        /// The binding's type, as written for the reader.
-        held: String,
+    /// type.reads-as/RA4: a method the field has that doesn't only read.
+    #[error("`{ty}` reads as `{field}`, which lends only methods that read")]
+    ReadsAsWrite {
+        ty: String,
+        field: String,
+        method: String,
         span: Span,
     },
-    #[error("string slices are temporary — cannot store `{view_var}`")]
-    StringSliceStored {
-        source_var: String,
-        /// The slicing expression as the user wrote it (`line.trim()`,
-        /// `line[0..4]`). The message quotes this — describing the code in
-        /// terms of a `line[i..j]` the program never contained meant the
-        /// reader had to already know that `trim()` returns a slice (#694).
-        ///
-        /// `None` when the expression won't reprint exactly. Only an exact
-        /// quote goes in, since anything else reads as the user's own code:
-        /// rendering `lines[0]` as `lines[..]` produced a fix that doesn't
-        /// compile, and `s[0..=4]` as `s[0..4]` named a shorter substring.
-        slice_expr: Option<String>,
-        view_var: String,
-        slice_span: Span,
-        store_span: Span,
-    },
-    #[error("cannot hold view from growable source `{source_var}`")]
-    VolatileViewStored {
-        source_var: String,
-        view_var: String,
-        source_span: Span,
-        store_span: Span,
+    /// type.reads-as/RA1: `@reads_as(name)` on a struct with no such field.
+    #[error("`{ty}` reads as a field it doesn't have")]
+    ReadsAsNoField {
+        ty: String,
+        /// The name written, if it was a name at all.
+        written: Option<String>,
+        fields: Vec<String>,
+        span: Span,
     },
     /// A `with` guard's bare identifier used as the block's own produced
     /// value, where the payload is a struct/enum/union. Boxes hand out no
@@ -502,13 +497,7 @@ pub enum TypeError {
         binding: String,
         span: Span,
     },
-    #[error("cannot mutate `{source_var}` while viewed by `{view_var}`")]
-    MutateBorrowedSource {
-        source_var: String,
-        view_var: String,
-        borrow_span: Span,
-        mutate_span: Span,
-    },
+
     #[error("heap allocation in @no_alloc function: {reason}")]
     NoAllocViolation {
         reason: String,
@@ -1461,6 +1450,17 @@ pub enum TypeError {
     },
 }
 
+/// What would have kept a `@temporary` value (type.temporary/TM2).
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeptBy {
+    /// `let`/`mut name = …`.
+    Binding(String),
+    /// A field of a type that isn't itself temporary.
+    Field { owner: String, field: String },
+    /// A container that stores its elements: `Vec<StringSlice>`.
+    Element(String),
+}
+
 /// What went wrong at an index site — drives the E0819 diagnostic.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexErrorKind {
@@ -1727,16 +1727,15 @@ impl TypeError {
             | MutateBoundName { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
-            | StringSliceStored { .. }
-            | SliceHeld { .. }
-            | SlicesToVec { .. }
-            | VolatileViewStored { .. }
+            | TemporaryKept { .. }
+            | ReadsAsNoField { .. }
+            | ReadsAsWrite { .. }
             | WithGuardEscapes { .. }
             | BareSharedWith { .. }
             | StagedOnLocal { .. }
             | StagedOutsideWith { .. }
             | TornLockUpdate { .. }
-            | MutateBorrowedSource { .. }
+
             | NoAllocViolation { .. }
             | UnexpectedAnnotation { .. }
             | MissingDeletingMarker { .. }

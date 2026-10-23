@@ -200,6 +200,9 @@ impl Interpreter {
             // std.strings/V1: what `.view()` at the end of a slice chain
             // compiles to. Native shares the source's buffer; here the view is
             // its own copy of the range, which no program can tell apart.
+            // A buffer of its own. The interpreter's strings never share one,
+            // so this is a copy like any other.
+            "unshare" => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
             "view_range" => {
                 let text = s.lock().unwrap();
                 let end = (self.expect_int(&args, 1)?.max(0) as usize).min(text.len());

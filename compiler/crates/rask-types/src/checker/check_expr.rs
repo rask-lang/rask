@@ -8,7 +8,6 @@ use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
 use super::type_defs::TypeDef;
-use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint};
 use super::parse_type::resolve_type_expr;
@@ -1104,10 +1103,6 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
-                // A slice is matched as a string, which needs to know it's a
-                // slice before the patterns are checked against it.
-                self.solve_constraints();
-                let scrutinee_ty = self.match_slice_as_string(scrutinee.id, scrutinee_ty, scrutinee.span);
                 let result_ty = self.ctx.fresh_var();
                 let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
@@ -4237,17 +4232,6 @@ impl TypeChecker {
                 }
             }
 
-            // ESAD Phase 2: Check persistent borrow conflict for exclusive methods
-            if matches!(mode, BorrowMode::Exclusive) {
-                if let Some(borrow) = self.check_persistent_borrow_conflict(var_name) {
-                    self.errors.push(TypeError::MutateBorrowedSource {
-                        source_var: var_name.to_string(),
-                        view_var: borrow.view_var.clone(),
-                        borrow_span: borrow.borrow_span,
-                        mutate_span: object.span,
-                    });
-                }
-            }
 
             self.push_borrow(var_name.to_string(), mode, object.span);
         }
@@ -6366,6 +6350,7 @@ impl TypeChecker {
                         expected: other,
                         found: Type::Unit,
                         span,
+                        convert: Vec::new(),
                     });
                 }
             }

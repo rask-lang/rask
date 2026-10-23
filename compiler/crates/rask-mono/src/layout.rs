@@ -251,9 +251,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         }
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                // A `StringView` is a `RaskStr` that shares the source's buffer
-                // (std.strings/V1) — same 16 bytes as a string.
-                "string" | "Path" | "StringView" => (16, 8),
+                "string" | "Path" => (16, 8),
                 // A scalar written as a name is the same scalar. `char` used
                 // to answer 4 here and 8 through the typed arm above; one
                 // source now.

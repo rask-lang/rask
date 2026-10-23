@@ -71,43 +71,11 @@ impl TypeChecker {
         for decl in decls {
             walk_decl(decl, node_types, &names, &mut found);
         }
-        // A binding can't hold a slice inside something that outlives the
-        // expression (std.strings/S2). A slice bound directly is E0303's
-        // `StringSliceStored`, reported where it's made.
-        if let Some(slice) = self.types.get_type_id("StringSlice") {
-            let is_slice = |t: &Type| match t {
-                Type::Named(id) => *id == slice,
-                Type::UnresolvedNamed(n) => n == "StringSlice",
-                _ => false,
-            };
-            // A sequence of slices makes them one yield at a time, and a
-            // function type names them without storing one, so neither holds
-            // any: `let words = line.split(" ")` is a lazy loop, not storage.
-            let sequence = self.types.get_type_id("Sequence");
-            fn stores(t: &Type, is_slice: &dyn Fn(&Type) -> bool, sequence: Option<crate::TypeId>) -> bool {
-                match t {
-                    _ if is_slice(t) => true,
-                    Type::Generic { base, .. } if Some(*base) == sequence => false,
-                    Type::UnresolvedGeneric { name, .. } if name == "Sequence" => false,
-                    Type::Fn { .. } => false,
-                    Type::Result { ok, err } => stores(ok, is_slice, sequence) || stores(err, is_slice, sequence),
-                    Type::RawPtr(inner) => stores(inner, is_slice, sequence),
-                    Type::Array { elem, .. } | Type::SimdVector { elem, .. } => stores(elem, is_slice, sequence),
-                    Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(|e| stores(e, is_slice, sequence)),
-                    Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
-                        .iter()
-                        .any(|a| matches!(a, crate::GenericArg::Type(t) if stores(t, is_slice, sequence))),
-                    _ => false,
-                }
-            }
-            let holds = |t: &Type| !is_slice(t) && stores(t, &is_slice, sequence);
-            for decl in decls {
-                held_slices(decl, node_types, &holds, &|t| self.types.display_type_names(t).to_string(), &mut found);
-            }
-        }
         for err in found {
             self.errors.push(err);
         }
+        // type.temporary/TM2: nothing keeps a temporary value.
+        self.check_temporaries(decls, node_types);
     }
 }
 
@@ -201,40 +169,4 @@ fn walk_expr(
         }
         _ => {}
     }
-}
-
-/// `let`/`mut` bindings whose type holds a slice somewhere inside it.
-fn held_slices(
-    decl: &Decl,
-    node_types: &HashMap<NodeId, Type>,
-    holds: &dyn Fn(&Type) -> bool,
-    show: &dyn Fn(&Type) -> String,
-    out: &mut Vec<TypeError>,
-) {
-    struct Lets<'a> {
-        node_types: &'a HashMap<NodeId, Type>,
-        holds: &'a dyn Fn(&Type) -> bool,
-        show: &'a dyn Fn(&Type) -> String,
-        out: &'a mut Vec<TypeError>,
-    }
-    impl<'d> rask_ast::visit::Visit<'d> for Lets<'_> {
-        fn expr(&mut self, _: &'d Expr) -> bool {
-            true
-        }
-        fn stmt(&mut self, s: &'d Stmt) -> bool {
-            if let StmtKind::Let { name, name_span, init, .. } | StmtKind::Mut { name, name_span, init, .. } = &s.kind {
-                if let Some(t) = self.node_types.get(&init.id) {
-                    if (self.holds)(t) {
-                        self.out.push(TypeError::SliceHeld {
-                            name: name.clone(),
-                            held: (self.show)(t),
-                            span: *name_span,
-                        });
-                    }
-                }
-            }
-            true
-        }
-    }
-    rask_ast::visit::visit_decl(decl, &mut Lets { node_types, holds, show, out });
 }

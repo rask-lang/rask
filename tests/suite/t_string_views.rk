@@ -132,11 +132,13 @@ func shout(s: string) -> string {
     return s.to_uppercase()
 }
 
-test "a slice passed for a string is copied into one" {
+// A slice reads as its text only as a receiver (type.reads-as/RA4). Where a
+// `string` is passed the callee could keep it, so the copy is written out.
+test "a slice passed for a string is copied where you can see it" {
     let s = "quiet please"
-    assert shout(s[0..5]) == "QUIET"
+    assert shout(s[0..5].to_string()) == "QUIET"
     mut words: Vec<string> = Vec.new()
-    words.push(s[6..].trim())
+    words.push(s[6..].trim().to_string())
     assert words[0] == "please"
 }
 
@@ -156,7 +158,7 @@ test "slices compare inside an enumerate" {
     let line = "x,a,y"
     mut at = 99
     for (i, w) in line.split(",").enumerate() {
-        if "a" == w && w == line[2..3] {
+        if w == "a" && w == line[2..3].to_string() {
             at = i
         }
     }

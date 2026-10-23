@@ -198,6 +198,7 @@ impl TypeChecker {
                             expected: a,
                             found: b,
                             span,
+                            convert: Vec::new(),
                         });
                     }
                 }
@@ -626,6 +627,7 @@ impl TypeChecker {
             expected,
             found: Type::Array { elem: Box::new(elem), len: elems.len() },
             span,
+            convert: Vec::new(),
         }
     }
 
@@ -905,6 +907,7 @@ impl TypeChecker {
                 expected: Type::option(self.ctx.fresh_var()),
                 found: other.clone(),
                 span,
+                convert: Vec::new(),
             }),
         }
     }
@@ -1327,9 +1330,6 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
-        if let Some(copied) = self.copy_slice_argument(&ret_ty, &resolved_expected, site, value_node, span) {
-            return copied;
-        }
 
         if let Some(node) = value_node {
             if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {
@@ -1673,6 +1673,7 @@ impl TypeChecker {
                             expected: other.clone(),
                             found: self.ctx.literal_default(*id, kind),
                             span,
+                            convert: Vec::new(),
                         });
                     }
                 }
@@ -1705,6 +1706,7 @@ impl TypeChecker {
                             expected: other.clone(),
                             found: self.ctx.literal_default(*id, kind),
                             span,
+                            convert: Vec::new(),
                         });
                     }
                 }
@@ -1738,6 +1740,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 let mut progress = false;
@@ -1784,6 +1787,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 // FT1: a parameter's mode is part of the function type. A
@@ -1816,6 +1820,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 let mut progress = false;
@@ -1856,6 +1861,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 self.unify(e1, e2, span)
@@ -1891,6 +1897,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 let mut progress = false;
@@ -1918,6 +1925,7 @@ impl TypeChecker {
                         expected: t2,
                         found: t1,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -1932,6 +1940,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -1945,6 +1954,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -2011,6 +2021,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -2039,6 +2050,7 @@ impl TypeChecker {
                 expected: t1,
                 found: t2,
                 span,
+                convert: Vec::new(),
             }),
         }
     }

@@ -325,7 +325,7 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if n.starts_with("string_parse") => HandAdapt::Parse,
         "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
-        "string_clone" | "string_to_owned" | "string_view" | "StringView_view" | "StringView_clone" => {
+        "string_clone" | "string_to_owned" => {
             HandAdapt::ShareString
         }
         "Channel_unbuffered" => HandAdapt::Unbuffered,

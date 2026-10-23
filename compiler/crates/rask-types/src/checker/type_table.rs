@@ -7,7 +7,7 @@ use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
 use super::builtins::BuiltinModules;
-use super::type_defs::{MethodSig, TypeDef};
+use super::type_defs::{MethodSig, SelfParam, TypeDef};
 use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
@@ -2284,6 +2284,38 @@ impl TypeTable {
     /// of a `T or E` printed as an internal id in `WrapperMethodCut`,
     /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
     /// (#646).
+    /// A mismatch whose found type is a struct with a way to become the
+    /// expected one: the type's own public methods that take nothing and
+    /// return exactly that. `found StringSlice, expected string` offers
+    /// `.to_string()`, because `StringSlice` declares it (type.temporary,
+    /// type.reads-as). Read off the declarations, so a program's types get the
+    /// same help.
+    pub fn with_conversions(&self, mut error: TypeError) -> TypeError {
+        if let TypeError::Mismatch { expected, found, convert, .. } = &mut error {
+            let resolved = |t: &Type| match t {
+                Type::UnresolvedNamed(n) => self.get_type_id(n).map(Type::Named).unwrap_or_else(|| t.clone()),
+                _ => t.clone(),
+            };
+            if let Type::Named(id) = resolved(found) {
+                if let Some(TypeDef::Struct { methods, .. }) = self.get(id) {
+                    let want = resolved(expected);
+                    *convert = methods
+                        .iter()
+                        .filter(|m| {
+                            m.is_public
+                                && m.origin == crate::MethodOrigin::Declared
+                                && m.params.is_empty()
+                                && matches!(m.self_param, SelfParam::Value)
+                                && resolved(&m.ret) == want
+                        })
+                        .map(|m| m.name.clone())
+                        .collect();
+                }
+            }
+        }
+        error
+    }
+
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
         error.map_types(&|ty| self.display_type_names(ty));
         error
