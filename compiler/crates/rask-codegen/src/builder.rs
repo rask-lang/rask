@@ -5084,6 +5084,16 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Ordinary Rask call — lowers args, applies stdlib arg/return adaptation.
+    /// The address of element `index` of the vector `vec`.
+    fn vec_elem_addr(builder: &mut ClifFunctionBuilder, vec: Value, index: Value) -> Value {
+        use rask_mono::runtime_abi::{RASK_VEC_DATA_OFFSET, RASK_VEC_ELEM_SIZE_OFFSET};
+        let flags = MemFlags::trusted();
+        let data = builder.ins().load(types::I64, flags, vec, RASK_VEC_DATA_OFFSET as i32);
+        let elem_size = builder.ins().load(types::I64, flags, vec, RASK_VEC_ELEM_SIZE_OFFSET as i32);
+        let offset = builder.ins().imul(index, elem_size);
+        builder.ins().iadd(data, offset)
+    }
+
     fn lower_ordinary_call(
         builder: &mut ClifFunctionBuilder,
         dst: Option<&LocalId>,
@@ -5171,7 +5181,15 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
-        let call_inst = builder.ins().call(*func_ref, &arg_vals);
+        // An index the bounds pass already proved in range needs no call:
+        // the element is `data + index * elem_size`, read straight off the
+        // vector's header.
+        let call_results: Vec<Value> = if func.name == "Vec_get_unchecked" {
+            vec![Self::vec_elem_addr(builder, arg_vals[0], arg_vals[1])]
+        } else {
+            let call_inst = builder.ins().call(*func_ref, &arg_vals);
+            builder.inst_results(call_inst).to_vec()
+        };
 
         if let Some(dst_id) = dst {
             // Skip void-typed destinations — nothing to store
@@ -5198,7 +5216,7 @@ impl<'a> FunctionBuilder<'a> {
             // needs one load. The struct test mirrors the one Mutex_new uses, so
             // the two sides agree on which payloads are indirect.
             if matches!(adapt, CallAdapt::BoxPayloadPtr) {
-                let results = builder.inst_results(call_inst);
+                let results = &call_results[..];
                 let ptr = if !results.is_empty() {
                     results[0]
                 } else {
@@ -5228,7 +5246,7 @@ impl<'a> FunctionBuilder<'a> {
                     let load_ty = dst_local
                         .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
                         .unwrap_or(types::I64);
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     if !results.is_empty() {
                         let ptr = results[0];
                         Self::load_scalar_slot(builder, ptr, load_ty)
@@ -5239,7 +5257,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefOption => {
                     // Result is void*: NULL → None, non-NULL → Some(deref).
                     // Write tag+payload into the destination stack slot.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let ptr = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5320,7 +5338,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::OptionOutParam(ss) => {
                     // 1 means the element is there (present), 0 that there
                     // was nothing (absent).
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let wrote = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5348,7 +5366,7 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().stack_addr(types::I64, ss, 0)
                 }
                 CallAdapt::CasResult(ok_ss) => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let observed = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5373,7 +5391,7 @@ impl<'a> FunctionBuilder<'a> {
                     observed
                 }
                 CallAdapt::AtomicBits => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let bits = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5391,7 +5409,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefStringElement => {
                     // void* pointing to aggregate data in collection.
                     // Copy `slot_size` bytes into the dst's own slot.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let ptr = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5404,7 +5422,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::TryRecvResult(payload_ss) => {
                     // Channel status → `T or E` Result. status==OK(0) →
                     // Ok(payload); anything else → Err.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, RASK_CHAN_OK)
                     };
@@ -5439,7 +5457,7 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().iconst(types::I64, 0)
                 }
                 CallAdapt::Status => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5474,7 +5492,7 @@ impl<'a> FunctionBuilder<'a> {
                     // the out-param slot), 1 → Err. The old entry points
                     // returned the value itself with no way to fail, so garbage
                     // input came back as Ok(0) (#472).
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5524,7 +5542,7 @@ impl<'a> FunctionBuilder<'a> {
                     // the string alone and nothing wrote the tag, so the caller
                     // read whatever was in that slot — `io.read_line()` failed
                     // on its first call with a bogus error.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5577,7 +5595,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Err payload was that same `-1` — matching on it read -1 as
                     // a JoinError address and segfaulted, and every successful
                     // join reported 0 because the value was never captured.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let outcome = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5598,7 +5616,7 @@ impl<'a> FunctionBuilder<'a> {
                     if let Some(addr) = dst_ptr {
                         addr
                     } else {
-                        let results = builder.inst_results(call_inst);
+                        let results = &call_results[..];
                         if !results.is_empty() {
                             results[0]
                         } else {

@@ -5,6 +5,7 @@
 
 #include "rask_runtime.h"
 #include <errno.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -491,6 +492,10 @@ void *rask_vec_get(const RaskVec *v, int64_t index) {
 }
 
 // Unchecked variant — bounds already proven by the compiler.
+// Codegen indexes a vector inline at these offsets (rask_abi.h).
+_Static_assert(offsetof(RaskVec, data) == RASK_VEC_DATA_OFFSET, "RaskVec.data moved");
+_Static_assert(offsetof(RaskVec, elem_size) == RASK_VEC_ELEM_SIZE_OFFSET, "RaskVec.elem_size moved");
+
 void *rask_vec_get_unchecked(const RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }

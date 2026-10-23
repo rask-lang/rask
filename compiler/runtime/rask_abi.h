@@ -46,6 +46,12 @@
 // inline capacity left, so an empty string's is this.
 #define RASK_SSO_MAX 15
 
+// Where a `RaskVec` keeps its element buffer and its element width.
+// Codegen reads both to index a vector whose bounds check is already
+// proven, without calling into the runtime.
+#define RASK_VEC_DATA_OFFSET 0
+#define RASK_VEC_ELEM_SIZE_OFFSET 24
+
 // The bit of a `RaskStr`'s second word that marks the heap form.
 #define RASK_STRING_HEAP_BIT 63
 
