@@ -6,6 +6,7 @@ pub mod c_abi;
 mod c_header;
 mod types;
 mod builder;
+mod slot;
 pub mod closures;
 mod debug_info;
 pub mod dispatch;

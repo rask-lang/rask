@@ -2218,7 +2218,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(problem.clone())
                     .with_code("E0923")
                     .with_primary(*span, "layout attribute")
-                    .with_help("`@packed` removes a struct's padding; `@align(N)` raises its alignment to N, a power of two up to 16")
+                    .with_help("`@packed` removes a struct's padding; `@align(N)` raises its alignment to N, a power of two up to 4096")
             }
 
             TransmuteSizeMismatch { from, to, from_size, to_size, span } => {

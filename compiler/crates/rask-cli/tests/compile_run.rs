@@ -1006,6 +1006,25 @@ fn malformed_layout_attributes_are_rejected() {
     assert_eq!(out.matches("error[E0923]").count(), 6, "{out}");
 }
 
+/// #1637: `@align(N)` past 16 is honoured wherever the value lives, not only
+/// in the layout. `malloc` gives 16, so without the aligned allocator a rack
+/// of `@align(4096)` pages landed 16 bytes off and a Vec of them 688.
+///
+/// Native only: the interpreter's pointers are a buffer and an index, and the
+/// address it reports for one is synthetic. Both backends check the values in
+/// `tests/suite/t_align_above_16.rk`. A frame slot isn't checked here because
+/// a program can't take a local's address yet (#1597).
+#[test]
+fn over_aligned_values_sit_on_their_alignment() {
+    let (stdout, stderr, code) = run_capture("--native", "align_above_16_addresses.rk");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "vec 0\npages 0\nfield 0\nheap 0\nrack 0 0\nmap 0\n",
+        "each line is an address modulo its alignment"
+    );
+}
+
 /// #1634: `transmute` needs both sides the same size, by the layout, and a
 /// written target.
 #[test]

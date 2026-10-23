@@ -183,7 +183,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Vec operations ─────────────────────────────────────
         StdlibEntry {
             mir_name: "rask_vec_from_static", c_name: "rask_vec_from_static",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
@@ -191,7 +191,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // `mutate self` method (#1405).
         StdlibEntry {
             mir_name: "rask_vec_view", c_name: "rask_vec_view",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
@@ -596,25 +596,25 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Map_new_string_keys", c_name: "rask_map_new_string_keys",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_new_link_keys", c_name: "rask_map_new_link_keys",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_link_keys", c_name: "rask_map_new_link_keys_cap",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_string_keys", c_name: "rask_map_new_string_keys_cap",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
         },
@@ -622,13 +622,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // addresses ride with the sizes (and the capacity) ahead of the tags.
         StdlibEntry {
             mir_name: "Map_new_keyed", c_name: "rask_map_new_keyed",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 4, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_keyed", c_name: "rask_map_new_keyed_cap",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 5, tags: 2 }, ret_adapt: RetAdapt::None,
         },
@@ -741,13 +741,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // constructor would: the container the decoder builds frees it.
         StdlibEntry {
             mir_name: "json_shape_vec", c_name: "rask_json_shape_vec",
-            params: &[types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "json_shape_map", c_name: "rask_json_shape_map",
-            params: &[types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
         },
@@ -817,6 +817,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
 
         // ── Memory allocation ─────────────────────────────────────
         StdlibEntry::simple("rask_alloc", "rask_alloc", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_alloc_aligned", "rask_alloc_aligned", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Concurrency: channels ──────────────────────────────────
         StdlibEntry::simple("channel_tx", "rask_channel_get_tx", &[types::I64], Some(types::I64), false),
@@ -842,7 +843,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Shared<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Shared_new", c_name: "rask_shared_new_ptr",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         // Cell — the internal spelling of `Shared<T, Local>`, the strategy that
@@ -851,7 +852,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // hands back the slot address for codegen to load or copy from.
         StdlibEntry {
             mir_name: "Cell_new", c_name: "rask_cell_new",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
@@ -958,7 +959,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Mutex<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Mutex_new", c_name: "rask_mutex_new_ptr",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {

@@ -117,9 +117,10 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];
 
-/// The largest `@align(N)` honoured: the stack and the allocator guarantee 16
-/// bytes, and a slot or buffer asking for more wouldn't get it.
-pub const MAX_ALIGN: u32 = 16;
+/// The largest `@align(N)` honoured: a page. Past 16 every value of the type
+/// costs up to N spare bytes in its frame slot, so a request for more than a
+/// page is far more likely a typo than a layout.
+pub const MAX_ALIGN: u32 = 4096;
 
 /// What `@packed` and `@align(N)` ask of a struct's layout (type.structs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

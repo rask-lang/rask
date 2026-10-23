@@ -34,6 +34,10 @@ pub struct ClosureEnvLayout {
     pub size: u32,
     /// Captured variables: (local_id, offset, byte_size)
     pub captures: Vec<CaptureInfo>,
+    /// The largest alignment a capture held by value needs. MIR lays the
+    /// captures out from the environment's start, so the environment has to
+    /// start on a multiple of this for an `@align(64)` capture to land on one.
+    pub align: u32,
 }
 
 pub struct CaptureInfo {
@@ -54,6 +58,7 @@ impl ClosureEnvLayout {
         ClosureEnvLayout {
             size: 0,
             captures: Vec::new(),
+            align: 8,
         }
     }
 
@@ -83,7 +88,7 @@ impl ClosureEnvLayout {
 /// for the block's size, the glue that releases what it owns, a count, and
 /// flags.
 ///
-/// `rask_closure_alloc(8 + env_size, env_drop, flags)` writes them. Whoever
+/// `rask_closure_alloc(8 + env_size, env_drop, flags, env_align)` writes them. Whoever
 /// frees the block is usually not the frame that built it, so neither the byte
 /// count nor the capture layout is available there; the header carries both.
 /// `env_drop` is zero for a closure that owns nothing. `task_bound` says it
@@ -101,7 +106,8 @@ pub fn allocate_closure_heap(
 
     let size_val = builder.ins().iconst(types::I64, total_size);
     let flags = builder.ins().iconst(types::I64, task_bound as i64);
-    let call_inst = builder.ins().call(alloc_func, &[size_val, env_drop, flags]);
+    let align = builder.ins().iconst(types::I64, i64::from(layout.align));
+    let call_inst = builder.ins().call(alloc_func, &[size_val, env_drop, flags, align]);
     let closure_ptr = builder.inst_results(call_inst)[0];
 
     store_closure_data(builder, closure_ptr, func_ptr, layout, var_map)
@@ -119,12 +125,28 @@ pub fn allocate_closure_stack(
 ) -> CodegenResult<Value> {
     let total_size = 8 + layout.size;
 
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total_size,
-        0,
-    ));
-    let closure_ptr = builder.ins().stack_addr(types::I64, ss, 0);
+    // The environment is the block past the function pointer, so it's the
+    // environment that has to land aligned. Past the frame's 16 the slot is
+    // over-allocated and the block placed by hand.
+    let closure_ptr = if layout.align <= 16 {
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            total_size + 8,
+            4,
+        ));
+        builder.ins().stack_addr(types::I64, ss, 8)
+    } else {
+        let align = layout.align;
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            total_size + align,
+            4,
+        ));
+        let raw = builder.ins().stack_addr(types::I64, ss, 0);
+        let bumped = builder.ins().iadd_imm(raw, i64::from(align - 1) + CLOSURE_ENV_OFFSET);
+        let env = builder.ins().band_imm(bumped, -i64::from(align));
+        builder.ins().iadd_imm(env, -CLOSURE_ENV_OFFSET)
+    };
 
     store_closure_data(builder, closure_ptr, func_ptr, layout, var_map)
 }
