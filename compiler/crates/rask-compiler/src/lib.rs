@@ -272,7 +272,7 @@ fn collect_package_error<T>(e: &rask_resolve::PackageError, out: &mut PipelineOu
 /// Was this span parsed out of `stdlib/*.rk` rather than the user's program?
 ///
 /// Re-exported so callers that render diagnostics don't each need rask-mono.
-pub use rask_mono::is_stdlib_span;
+pub use rask_types::layout::is_stdlib_span;
 
 /// The declarations the interpreter runs: the program's, plus the stdlib modules
 /// that are written in Rask.
@@ -504,7 +504,7 @@ pub fn check_loaded(
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        diags.extend(post_check_diagnostics(&parse_result.decls, &typed, &config.cfg));
+        diags.extend(comptime_diagnostics_for(&parse_result.decls, &typed, &config.cfg));
     }
 
     drop_stdlib_cascade(&mut diags);
@@ -546,7 +546,7 @@ fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
     (d.code.as_ref().map(|c| c.0.clone()), d.message.clone())
 }
 
-fn post_check_diagnostics(
+fn comptime_diagnostics_for(
     decls: &[Decl],
     typed: &rask_types::TypedProgram,
     cfg: &CfgConfig,
@@ -555,8 +555,7 @@ fn post_check_diagnostics(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, Some(cfg));
 
-    let comptime = comptime_eval::has_comptime(decls);
-    if !comptime && typed.transmutes.is_empty() {
+    if !comptime_eval::has_comptime(decls) {
         return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
@@ -568,45 +567,7 @@ fn post_check_diagnostics(
         // stays quiet about them rather than reporting them twice.
         return diags;
     };
-    diags.extend(transmute_size_diagnostics(typed, &mono));
-    if comptime {
-        diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
-    }
-    diags
-}
-
-/// mem.unsafe: a `transmute` keeps every byte, so both sides have to have the
-/// same number of them. The sizes are the layout's — the ones codegen lays
-/// the value out with — so padding counts: a `{ a: u8, b: i32 }` is 8 bytes.
-///
-/// A transmute in a generic body is judged per instantiation where it's
-/// lowered; its types here still name the parameter.
-fn transmute_size_diagnostics(typed: &TypedProgram, mono: &rask_mono::MonoProgram) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
-    for site in &typed.transmutes {
-        let (Some((from, _)), Some((to, _))) = (
-            mono.size_align_of(&site.from, &typed.types),
-            mono.size_align_of(&site.to, &typed.types),
-        ) else {
-            continue;
-        };
-        if from == to {
-            continue;
-        }
-        let bytes = |n: u32| if n == 1 { "1 byte".to_string() } else { format!("{n} bytes") };
-        let from_ty = typed.types.resolve_type_names(&site.from);
-        let to_ty = typed.types.resolve_type_names(&site.to);
-        diags.push(
-            Diagnostic::error(format!(
-                "`transmute` from `{from_ty}` ({}) to `{to_ty}` ({}): the sizes differ",
-                bytes(from),
-                bytes(to),
-            ))
-            .with_code("E0921")
-            .with_primary(site.span, format!("{} in, {} out", bytes(from), bytes(to)))
-            .with_help("transmute reinterprets the same bytes, so both types must be the same size; to change a number's width, convert it instead (`x as u64` widens, `x.wrap<u32>()` narrows)"),
-        );
-    }
+    diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
     diags
 }
 
@@ -895,7 +856,7 @@ fn check_package_scoped(
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        diags.extend(post_check_diagnostics(&pkg_ctx.all_decls, &typed, &config.cfg));
+        diags.extend(comptime_diagnostics_for(&pkg_ctx.all_decls, &typed, &config.cfg));
     }
 
     drop_stdlib_cascade(&mut diags);
@@ -1305,14 +1266,14 @@ fn visible_packages(
 fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
     let user_error = diags.iter().any(|d| {
         matches!(d.severity, Severity::Error)
-            && d.primary_span().is_some_and(|s| !rask_mono::is_stdlib_span(s))
+            && d.primary_span().is_some_and(|s| !rask_types::layout::is_stdlib_span(s))
     });
     if !user_error {
         return;
     }
     diags.retain(|d| {
         !matches!(d.severity, Severity::Error)
-            || d.primary_span().is_none_or(|s| !rask_mono::is_stdlib_span(s))
+            || d.primary_span().is_none_or(|s| !rask_types::layout::is_stdlib_span(s))
     });
 }
 

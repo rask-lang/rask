@@ -23,7 +23,7 @@ use rask_ast::{
     expr::{BinOp, Expr, ExprKind, UnaryOp},
     LineMap, NodeId, Span,
 };
-use rask_mono::{StructLayout, EnumLayout};
+use rask_types::layout::{StructLayout, EnumLayout};
 use rask_types::Type;
 use rask_ast::ty::{ParamMode, TypeExpr};
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ use std::collections::HashMap;
 type TypedOperand = (MirOperand, MirType);
 
 /// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
-pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
+pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 
 /// The `none` word for a lowered type that is a niche *option*.
 ///
@@ -770,7 +770,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which is right until a type argument is an inline aggregate
     /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
     /// instance layout and falls through to the shared one. The name comes from
-    /// `rask_mono::generic_instance_name`, so both sides spell it the same way by
+    /// `rask_types::layout::generic_instance_name`, so both sides spell it the same way by
     /// construction (#781).
     pub fn generic_instance_mir_type(
         &self,
@@ -799,7 +799,7 @@ impl<'a> MirContext<'a> {
             let rask_types::GenericArg::Type(t) = arg else { return None };
             arg_tys.push((**t).clone());
         }
-        rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+        rask_types::layout::generic_instance_name(bare, &arg_tys, self.type_names)
     }
 
     /// The instance layout name for a checker type, in either spelling.
@@ -817,7 +817,7 @@ impl<'a> MirContext<'a> {
                     let rask_types::GenericArg::Type(t) = arg else { return None };
                     arg_tys.push((**t).clone());
                 }
-                rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+                rask_types::layout::generic_instance_name(bare, &arg_tys, self.type_names)
             }
             _ => None,
         }
@@ -952,13 +952,13 @@ impl<'a> MirContext<'a> {
                 // aggregate has a layout of its own, not found under the base
                 // name: `first$Big(o: One<Big>)` was given the shared 8-byte
                 // layout while its caller passed 24 bytes (#781).
-                let arg_tys: Vec<Type> = args.iter().map(rask_mono::field_type).collect();
+                let arg_tys: Vec<Type> = args.iter().map(rask_types::layout::field_type).collect();
                 if self.nominal_underlying.contains_key(head) {
                     let generic: Vec<rask_types::GenericArg> =
                         arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
                     return self.resolve_unresolved_generic(head, &generic);
                 }
-                if let Some(name) = rask_mono::generic_instance_name(head, &arg_tys, self.type_names) {
+                if let Some(name) = rask_types::layout::generic_instance_name(head, &arg_tys, self.type_names) {
                     if let Some((idx, sl)) = self.find_struct(&name) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
                     }
@@ -1010,7 +1010,7 @@ impl<'a> MirContext<'a> {
                     })
                     .collect();
                 if let Some(instance) = arg_tys
-                    .and_then(|tys| rask_mono::generic_instance_name(name, &tys, self.type_names))
+                    .and_then(|tys| rask_types::layout::generic_instance_name(name, &tys, self.type_names))
                 {
                     if let Some((idx, sl)) = self.find_struct(&instance) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
@@ -1269,7 +1269,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which resolves to no layout and comes out a bare word that
     /// owns nothing.
     pub fn field_types(&self) -> crate::FieldTypes {
-        let field = |f: &rask_mono::FieldLayout| self.payload_to_mir(&f.ty);
+        let field = |f: &rask_types::layout::FieldLayout| self.payload_to_mir(&f.ty);
         crate::FieldTypes {
             structs: self
                 .struct_layouts
@@ -2244,7 +2244,7 @@ impl<'a> MirLowerer<'a> {
     /// The struct layout of whatever an expression evaluates to, when it's a
     /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
     /// stays reachable.
-    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_mono::StructLayout> {
+    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_types::layout::StructLayout> {
         let from_checker = self.ctx.lookup_raw_type(expr.id).and_then(|ty| match ty {
             Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
             Type::Named(id) => self
@@ -2968,9 +2968,9 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn store_wrapper_tag(&mut self, slot: LocalId, wrapper_ty: &MirType, tag: i64) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: rask_mono::abi::TAG_BYTES,
+            store_size: rask_types::abi::TAG_BYTES,
             field: None,
         }));
         if matches!(wrapper_ty, MirType::Result { .. }) {
@@ -3086,8 +3086,8 @@ impl<'a> MirLowerer<'a> {
     /// Clear a `T or E`'s origin: no source line, no file.
     pub(crate) fn zero_result_origin(&mut self, slot: LocalId) {
         for (offset, size) in [
-            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, rask_mono::abi::RESULT_ORIGIN_LINE_BYTES),
-            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
+            (rask_types::abi::RESULT_ORIGIN_LINE_OFFSET, rask_types::abi::RESULT_ORIGIN_LINE_BYTES),
+            (rask_types::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
         ] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: slot,
@@ -7292,7 +7292,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_construct() {
         // Shape.Circle(5.0) → store tag 0, store payload f64
-        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_types::layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let shape_enum = EnumLayout {
             name: "Shape".to_string(),
@@ -7410,7 +7410,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_no_payload() {
         // Color.Red() → store tag only
-        use rask_mono::{EnumLayout, VariantLayout};
+        use rask_types::layout::{EnumLayout, VariantLayout};
 
         let color_enum = EnumLayout {
             name: "Color".to_string(),
@@ -7491,7 +7491,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_multi_field() {
         // Msg.Pair(1, 2) → store tag + 2 payload fields
-        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_types::layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let msg_enum = EnumLayout {
             name: "Msg".to_string(),

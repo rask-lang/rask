@@ -107,7 +107,7 @@ pub struct TypeTable {
     pub(super) written_names: HashMap<String, String>,
     /// Whether registrations and lookups are on behalf of stdlib code.
     /// Mirrors the resolver's flag of the same name.
-    pub(super) stdlib_mode: bool,
+    pub(crate) stdlib_mode: bool,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target, as program code reads them: the program's
@@ -198,6 +198,12 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
+    /// The declaration of each struct, enum and union, by registered name, for
+    /// laying it out (`crate::layout`). Sizes come from the layout, so the copy
+    /// rule, `reflect.size_of` and codegen read one number.
+    pub(crate) layout_decls: HashMap<String, rask_ast::decl::Decl>,
+    /// Stdlib generics declared empty because the runtime holds the value.
+    pub(crate) layout_stand_ins: std::collections::HashSet<String>,
     /// The bounds a generic struct or enum declares on its parameters, in
     /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.
     /// Every method of the type may assume them (#1364).
@@ -246,6 +252,8 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
+            layout_decls: HashMap::new(),
+            layout_stand_ins: std::collections::HashSet::new(),
             declared_param_bounds: HashMap::new(),
             declared_by: HashMap::new(),
             ambiguous_conformances: std::collections::HashSet::new(),

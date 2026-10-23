@@ -18,7 +18,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 
 | Rule | Description |
 |------|-------------|
-| **VS1: Copy eligibility** | Copy if all fields are Copy AND total size ≤16 bytes |
+| **VS1: Copy eligibility** | Copy if all fields are Copy AND total size ≤16 bytes. The size is the layout's, padding and tags included (`compiler.layout`): `{ a: u8, b: i64 }` is 16 |
 | **VS2: Primitives always Copy** | Primitives are always Copy |
 | **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (heap memory, mutable). `string` is not a collection — it's a language primitive with compiler-special refcount semantics. No user-defined type can replicate string's refcounted Copy behavior. This is a deliberate exception, not a pattern |
 | **VS3.1: Interface objects never Copy** | `any Interface` is never Copy (owns heap data; copying would create two owners) |

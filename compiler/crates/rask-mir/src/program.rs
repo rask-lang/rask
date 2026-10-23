@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use rask_mono::{EnumLayout, StructLayout};
+use rask_types::layout::{EnumLayout, StructLayout};
 
 use crate::lower::ComptimeGlobalMeta;
 use crate::MirFunction;

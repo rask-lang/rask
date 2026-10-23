@@ -8,18 +8,15 @@
 //! - Reachability analysis starting from main()
 
 pub mod drop_names;
-pub mod abi;
 pub mod runtime_abi;
 mod instantiate;
-mod layout;
 mod reachability;
 pub mod reflect;
 
 pub use instantiate::instantiate_function;
-pub use layout::{
-    arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
-    is_stdlib_span, ordering_layout, field_type, type_size_align, wrapper_layout,
-    EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
+use rask_types::layout::{
+    self, arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
+    compute_union_layout, is_stdlib_span, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
 
@@ -80,8 +77,6 @@ pub struct MonoProgram {
     /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
     /// from each other.
     pub vtable_symbols: HashMap<(String, String), String>,
-    /// (size, align) of every laid-out type and instance, by layout name.
-    pub layout_cache: LayoutCache,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -130,17 +125,6 @@ impl NodeRecords {
 }
 
 impl MonoProgram {
-    /// Size and alignment of a checked type, as this program lays it out in
-    /// memory: the numbers codegen reads, padding included.
-    ///
-    /// `None` for a type that has no layout yet — one naming a type parameter
-    /// or an inference variable nobody solved. Monomorphization gives each
-    /// instantiation its own answer, and a generic body has none.
-    pub fn size_align_of(&self, ty: &Type, types: &rask_types::TypeTable) -> Option<(u32, u32)> {
-        let spelled = layout_spelling(ty, types)?;
-        Some(type_size_align(&spelled, &self.layout_cache))
-    }
-
     /// The checker's records merged with the ones carried onto instantiated
     /// bodies.
     pub fn node_records(&self, typed: &TypedProgram) -> NodeRecords {
@@ -458,9 +442,6 @@ fn lay_out_instance(
     // under method dispatch: `Map$string$Vec$i32_index`, a function nobody
     // emitted.
     let owns = !is_stdlib_span(decl.span) && args.iter().any(|a| arg_owns_heap(a, inst.type_names));
-    if !overflows && !owns {
-        return;
-    }
     // The type arguments have to be nameable to the layout code too —
     // `type_size_align` reads the cache by name, and a `Named(id)` isn't one. A
     // nested instantiation is named by its own instance layout.
@@ -468,15 +449,43 @@ fn lay_out_instance(
         .iter()
         .map(|a| arg_as_cache_name(a, inst.type_names, layout_cache))
         .collect();
+    // ...or when the instance is laid out differently at all. The language's
+    // size is the instance's — `Pair<u8>` is two bytes to the copy rule and to
+    // `reflect.size_of` — so memory has to be that too. A word per parameter
+    // made `Pair<u8>` sixteen bytes here and two everywhere else.
+    let same_shape = |a: &[FieldLayout], b: &[FieldLayout]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.offset == y.offset && x.size == y.size)
+    };
     match &decl.kind {
         DeclKind::Struct(_) => {
             let mut layout = compute_struct_layout(decl, &named_args, layout_cache);
+            if !overflows && !owns {
+                let shared = layout::compute_shared_struct_layout(decl, layout_cache);
+                if (shared.size, shared.align) == (layout.size, layout.align)
+                    && same_shape(&shared.fields, &layout.fields)
+                {
+                    return;
+                }
+            }
             layout.name = instance_name.clone();
             layout_cache.insert(instance_name, (layout.size, layout.align));
             struct_layouts.push(layout);
         }
         DeclKind::Enum(_) => {
             let mut layout = compute_enum_layout(decl, &named_args, layout_cache);
+            if !overflows && !owns {
+                let shared = layout::compute_shared_enum_layout(decl, layout_cache);
+                if (shared.size, shared.align) == (layout.size, layout.align)
+                    && shared.variants.len() == layout.variants.len()
+                    && shared
+                        .variants
+                        .iter()
+                        .zip(&layout.variants)
+                        .all(|(x, y)| x.payload_offset == y.payload_offset && same_shape(&x.fields, &y.fields))
+                {
+                    return;
+                }
+            }
             layout.name = instance_name.clone();
             layout_cache.insert(instance_name, (layout.size, layout.align));
             enum_layouts.push(layout);
@@ -640,75 +649,6 @@ fn layout_order(
     order.into_iter().filter_map(|n| slots[n].take()).collect()
 }
 
-/// A checked type respelled the way the layout cache is keyed — by name, not
-/// by `TypeId` — or `None` when it has no layout: a type parameter (a single
-/// capital, PC3), an open variable, a projection.
-pub fn layout_spelling(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
-    let each = |tys: &[Type]| tys.iter().map(|t| layout_spelling(t, types)).collect::<Option<Vec<_>>>();
-    let args_of = |args: &[rask_types::GenericArg]| {
-        args.iter()
-            .map(|a| match a {
-                rask_types::GenericArg::Type(t) => {
-                    Some(rask_types::GenericArg::Type(Box::new(layout_spelling(t, types)?)))
-                }
-                other => Some(other.clone()),
-            })
-            .collect::<Option<Vec<_>>>()
-    };
-    Some(match ty {
-        Type::Var(_) | Type::Assoc { .. } | Type::Error => return None,
-        Type::UnresolvedNamed(name) if rask_types::is_type_param_name(name) => return None,
-        Type::Named(id) => Type::UnresolvedNamed(types.type_name(*id)),
-        Type::Generic { base, args } => Type::UnresolvedGeneric {
-            name: types.type_name(*base),
-            args: args_of(args)?,
-        },
-        Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
-            name: name.clone(),
-            args: args_of(args)?,
-        },
-        Type::Tuple(elems) => Type::Tuple(each(elems)?),
-        Type::Union(members) => Type::Union(each(members)?),
-        Type::Array { elem, len } => Type::Array { elem: Box::new(layout_spelling(elem, types)?), len: *len },
-        Type::Result { ok, err } => Type::Result {
-            ok: Box::new(layout_spelling(ok, types)?),
-            err: Box::new(layout_spelling(err, types)?),
-        },
-        Type::RawPtr(inner) => Type::RawPtr(Box::new(layout_spelling(inner, types)?)),
-        Type::SimdVector { elem, lanes } => Type::SimdVector {
-            elem: Box::new(layout_spelling(elem, types)?),
-            lanes: *lanes,
-        },
-        other => other.clone(),
-    })
-}
-
-/// The layout name of one instantiation of a generic type — `One$Big`,
-/// `Pair$i64$Big`.
-///
-/// `mangle_name` does this for functions, whose type arguments arrive already
-/// normalized to names. A type argument here hasn't been: it can be a
-/// `Named(TypeId)`, which prints as `<type#N>`. So the id gets resolved, and an
-/// argument that can't be named at all means there is no instance layout to make
-/// — the caller falls back to the shared placeholder layout.
-///
-/// MIR asks the same question of the same function, so the two agree by
-/// construction rather than by convention.
-pub fn generic_instance_name(
-    base: &str,
-    args: &[Type],
-    type_names: &HashMap<rask_types::TypeId, String>,
-) -> Option<String> {
-    if args.is_empty() {
-        return None;
-    }
-    let mut parts = Vec::with_capacity(args.len());
-    for arg in args {
-        parts.push(type_arg_key(arg, type_names)?);
-    }
-    Some(format!("{}${}", base, parts.join("$")))
-}
-
 /// The layout a written type is laid out by: `Tagged<string>` is
 /// `Tagged$string` when that instance was made, else the shared `Tagged`.
 /// Codegen describes what a value owns by reading layouts by name — so without
@@ -769,80 +709,6 @@ fn arg_owns_heap(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) ->
         Type::Fn { .. } => true,
         _ => arg_head_name(ty, type_names).is_some_and(|h| arg_owns_storage(&h)),
     }
-}
-
-/// One type argument, spelled so it can key a layout. `None` for anything whose
-/// identity isn't settled — an inference variable, an unresolved parameter name,
-/// a shape with one of those inside.
-fn type_arg_key(
-    ty: &Type,
-    type_names: &HashMap<rask_types::TypeId, String>,
-) -> Option<String> {
-    use rask_types::GenericArg;
-    Some(match ty {
-        Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-        | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
-        Type::Named(id) => type_names.get(id)?.to_string(),
-        // An argument substituted into an instantiated copy is named, not
-        // interned — the copy's types were built by rewriting strings, not by
-        // going back through the checker's table (#814).
-        Type::UnresolvedNamed(name) => name.to_string(),
-        Type::UnresolvedGeneric { name, args } => {
-            let base = name.to_string();
-            let mut parts = Vec::with_capacity(args.len());
-            for arg in args {
-                let GenericArg::Type(inner) = arg else { return None };
-                parts.push(type_arg_key(inner, type_names)?);
-            }
-            format!("{}${}", base, parts.join("$"))
-        }
-        Type::Generic { base, args } => {
-            let base = type_names.get(base)?.to_string();
-            let mut parts = Vec::with_capacity(args.len());
-            for arg in args {
-                let GenericArg::Type(inner) = arg else { return None };
-                parts.push(type_arg_key(inner, type_names)?);
-            }
-            format!("{}${}", base, parts.join("$"))
-        }
-        Type::Tuple(elems) => {
-            let mut parts = Vec::with_capacity(elems.len());
-            for elem in elems {
-                parts.push(type_arg_key(elem, type_names)?);
-            }
-            format!("tup{}", parts.join("$"))
-        }
-        // A closure argument. The arity goes in the key because the parameters
-        // and the return run together otherwise, and `func(i64, i64) -> void`
-        // would key the same as `func(i64) -> func(i64) -> void`.
-        Type::Fn { params, ret } => {
-            let mut parts = Vec::with_capacity(params.len() + 1);
-            // The mode is part of the type (FT1): `func(take T)` and
-            // `func(T)` are two instantiations, not one.
-            for p in params {
-                let key = type_arg_key(&p.ty, type_names)?;
-                parts.push(match p.mode.keyword() {
-                    Some(kw) => format!("{}_{}", kw, key),
-                    None => key,
-                });
-            }
-            parts.push(type_arg_key(ret, type_names)?);
-            format!("fn{}${}", params.len(), parts.join("$"))
-        }
-        // Spelled exactly as the source writes it, because MIR reaches the same
-        // layout from a type *string* — `Wrap<i64?>` there splits into the
-        // argument `i64?`, and the two have to agree on the key (#872).
-        Type::Result { ok, err } if **err == Type::None => {
-            format!("{}?", type_arg_key(ok, type_names)?)
-        }
-        Type::Result { ok, err } => format!(
-            "{} or {}",
-            type_arg_key(ok, type_names)?,
-            type_arg_key(err, type_names)?,
-        ),
-        _ => return None,
-    })
 }
 
 /// How wide this type argument is *inline*, when it's the kind of argument that
@@ -1158,7 +1024,7 @@ fn monomorphize_inner(
     // Declared and instance layouts in one dependency order, the declared ones
     // shared with the interpreter so both backends read one set of offsets
     // (#1104).
-    let (struct_layouts, mut enum_layouts, mut layout_cache) = compute_layouts(
+    let (struct_layouts, mut enum_layouts, _) = compute_layouts(
         decls,
         Some(&Instantiations { reached, type_names: &type_names, types: &program.types }),
     );
@@ -1169,9 +1035,7 @@ fn monomorphize_inner(
     // than a bare tag, and `{}` on one reaches whatever Displayable was
     // written for it (#729).
     if !enum_layouts.iter().any(|l| l.name == "Ordering") {
-        let ordering = layout::ordering_layout();
-        layout_cache.insert(ordering.name.clone(), (ordering.size, ordering.align));
-        enum_layouts.push(ordering);
+        enum_layouts.push(layout::ordering_layout());
     }
 
     Ok(MonoProgram {
@@ -1193,7 +1057,6 @@ fn monomorphize_inner(
         instantiated_field_reuses: mono.instantiated_field_reuses,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
         vtable_symbols: mono.vtable_symbols,
-        layout_cache,
     })
 }
 
@@ -1391,7 +1254,6 @@ mod tests {
             try_chain_placement: std::collections::HashMap::new(),
             else_binding_types: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
-            transmutes: Vec::new(),
             span_types: std::collections::HashMap::new(),
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),

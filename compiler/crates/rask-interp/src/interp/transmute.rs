@@ -2,12 +2,11 @@
 //! `transmute` (mem.unsafe): the value written out as the bytes native holds
 //! it in, read back as the target type.
 //!
-//! The bytes are laid out by rask-mono's layout, the same one native and the
-//! checker's size test read, so a field lands at the offset it has natively
-//! and padding is zero.
+//! The bytes are laid out by the checker's table (`rask_types::layout`), the
+//! layout native and the size test read, so a field lands at the offset it has
+//! natively and padding is zero.
 
 use indexmap::IndexMap;
-use rask_ast::decl::DeclKind;
 use rask_types::Type;
 
 use super::{Interpreter, RuntimeError};
@@ -16,7 +15,7 @@ use crate::value::{FloatKind, IntKind, Value};
 fn unsupported(ty: &Type) -> RuntimeError {
     RuntimeError::TypeError(format!(
         "transmute of `{ty}` isn't supported by the interpreter: it reinterprets \
-         scalars, fixed arrays, tuples and non-generic structs of those"
+         scalars, fixed arrays, tuples and structs of those"
     ))
 }
 
@@ -42,7 +41,7 @@ fn int_shape(ty: &Type) -> Option<(usize, bool)> {
 impl Interpreter {
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
-        let spell = |ty: &Type| rask_mono::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
+        let spell = |ty: &Type| rask_types::layout::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
         let (from, to) = (spell(from)?, spell(to)?);
         let (from_size, _) = self.byte_layout(&from)?;
         let (to_size, _) = self.byte_layout(&to)?;
@@ -69,19 +68,30 @@ impl Interpreter {
                     self.byte_layout(e)?;
                 }
             }
-            Type::UnresolvedNamed(name) => {
-                self.struct_layout_named(name).ok_or_else(|| unsupported(ty))?;
+            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
+                self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
             }
             _ => return Err(unsupported(ty)),
         }
-        Ok(rask_mono::type_size_align(ty, &self.layout_cache))
+        Ok(self.types.size_align_spelled(ty))
     }
 
-    fn struct_layout_named(&self, name: &str) -> Option<rask_mono::StructLayout> {
-        let decl = self.type_decls.iter().find(|d| {
-            matches!(&d.kind, DeclKind::Struct(s) if s.name == name && s.type_params.is_empty())
-        })?;
-        Some(rask_mono::compute_struct_layout(decl, &[], &self.layout_cache))
+    /// The struct a layout-spelled type names, its name, and its layout.
+    fn struct_layout(&self, ty: &Type) -> Option<(String, rask_types::layout::StructLayout)> {
+        let (name, args) = match ty {
+            Type::UnresolvedNamed(name) => (name, Vec::new()),
+            Type::UnresolvedGeneric { name, args } => (
+                name,
+                args.iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => return None,
+        };
+        Some((name.clone(), self.types.struct_layout_named(name, &args)?))
     }
 
     fn write_bytes(&self, value: &Value, ty: &Type, out: &mut [u8], at: usize) -> Result<(), RuntimeError> {
@@ -113,8 +123,8 @@ impl Interpreter {
                     offset += size;
                 }
             }
-            (Type::UnresolvedNamed(name), Value::Struct(data)) => {
-                let layout = self.struct_layout_named(name).ok_or_else(|| unsupported(ty))?;
+            (Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }, Value::Struct(data)) => {
+                let (_, layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
                 let data = data.lock().unwrap();
                 for field in &layout.fields {
                     let v = data.fields.get(&field.name).ok_or_else(mismatch)?;
@@ -172,14 +182,14 @@ impl Interpreter {
                 }
                 Value::tuple(items)
             }
-            Type::UnresolvedNamed(name) => {
-                let mut layout = self.struct_layout_named(name).ok_or_else(|| unsupported(ty))?;
+            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
+                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
                 layout.fields.sort_by_key(|f| f.decl_index);
                 let mut fields = IndexMap::new();
                 for field in &layout.fields {
                     fields.insert(field.name.clone(), self.read_bytes(&field.ty, bytes, at + field.offset as usize)?);
                 }
-                Value::new_struct(name.clone(), fields, None)
+                Value::new_struct(name, fields, None)
             }
             _ => return Err(unsupported(ty)),
         })

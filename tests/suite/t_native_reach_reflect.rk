@@ -2,11 +2,8 @@
 // reflect.* and FieldInfo.* marked `@native` with no dispatch row.
 //
 // All of these resolve at comptime, so the absent dispatch row is correct.
-// Three names on the list can't be exercised here — `reflect.size_of`,
-// `align_of` and `is_copy` refuse on BOTH backends with the same message,
-// because the compiler has two size models that disagree (#791). Agreeing to
-// refuse is not a divergence, so they stay off this file until #791 settles
-// which model answers.
+// `reflect.size_of`, `align_of` and `is_copy` are exercised in
+// t_reflect_size_of.rk.
 
 import std.reflect
 

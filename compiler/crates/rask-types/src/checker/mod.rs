@@ -35,7 +35,7 @@ mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TransmuteSite, TypeDef, MethodSig, MethodOrigin, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, MethodOrigin, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, PlacedArg, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -429,8 +429,8 @@ pub struct TypeChecker {
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
-    /// `transmute` calls, settled once inference has: (call, source, target, span).
-    pub(super) pending_transmutes: Vec<(NodeId, Type, Type, rask_ast::Span)>,
+    /// `transmute` calls, settled once inference has: (source, target, span).
+    pub(super) pending_transmutes: Vec<(Type, Type, rask_ast::Span)>,
     /// `for mutate` loops: the source's node, type and span. Judged once the
     /// source's type has settled, since a method call's often hasn't (SEQ45).
     pub(super) pending_for_mutate: Vec<(rask_ast::NodeId, Type, rask_ast::Span)>,
@@ -910,7 +910,7 @@ impl TypeChecker {
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
-        let transmutes = self.settle_transmutes();
+        self.settle_transmutes();
 
         // SEQ45: after literal defaults, so the message names `Sequence<i32>`
         // rather than an open variable.
@@ -1157,7 +1157,6 @@ impl TypeChecker {
             try_chain_placement,
             else_binding_types,
             unsafe_ops,
-            transmutes,
             span_types,
             mutate_self_fns: self.mutate_self_fns,
             type_test_patterns: self.type_test_patterns,

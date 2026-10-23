@@ -2221,6 +2221,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("`@packed` removes a struct's padding; `@align(N)` raises its alignment to N, a power of two up to 16")
             }
 
+            TransmuteSizeMismatch { from, to, from_size, to_size, span } => {
+                let bytes = |n: u32| if n == 1 { "1 byte".to_string() } else { format!("{n} bytes") };
+                Diagnostic::error(format!(
+                    "`transmute` from `{from}` ({}) to `{to}` ({}): the sizes differ",
+                    bytes(*from_size),
+                    bytes(*to_size),
+                ))
+                .with_code("E0921")
+                .with_primary(*span, format!("{} in, {} out", bytes(*from_size), bytes(*to_size)))
+                .with_help("transmute reinterprets the same bytes, so both types must be the same size; to change a number's width, convert it instead (`x as u64` widens, `x.wrap<u32>()` narrows)")
+            }
+
             TransmuteNeedsTarget { from, span } => {
                 Diagnostic::error(format!("`transmute` of a `{}` has no type to reinterpret it as", from))
                     .with_code("E0922")

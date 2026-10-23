@@ -2810,7 +2810,7 @@ impl TypeChecker {
                 let target = self.ctx.fresh_var();
                 let mut sources = args.iter().map(|arg| self.infer_expr(&arg.expr)).collect::<Vec<_>>();
                 if sources.len() == 1 {
-                    self.pending_transmutes.push((call_id, sources.remove(0), target.clone(), span));
+                    self.pending_transmutes.push((sources.remove(0), target.clone(), span));
                 }
                 return target;
             }
@@ -6447,9 +6447,12 @@ impl TypeChecker {
     /// a binding's annotation, a parameter, a return type. One with nowhere to
     /// go has no target, and reinterpreting as "whatever inference defaults
     /// to" would pick a type nobody wrote.
-    pub(super) fn settle_transmutes(&mut self) -> Vec<super::TransmuteSite> {
-        let mut out = Vec::new();
-        for (call, from, to, span) in std::mem::take(&mut self.pending_transmutes) {
+    ///
+    /// Both sides have to be the same size, by the layout codegen lays the
+    /// value out with, so padding counts. A side naming a type parameter has
+    /// no size until it's instantiated; MIR lowering judges that one.
+    pub(super) fn settle_transmutes(&mut self) {
+        for (from, to, span) in std::mem::take(&mut self.pending_transmutes) {
             let from = self.ctx.apply(&from);
             let to = self.ctx.apply(&to);
             if matches!(from, Type::Error) || matches!(to, Type::Error) {
@@ -6459,9 +6462,13 @@ impl TypeChecker {
                 self.errors.push(TypeError::TransmuteNeedsTarget { from, span });
                 continue;
             }
-            out.push(super::TransmuteSite { call, from, to, span });
+            let (Some((from_size, _)), Some((to_size, _))) = (self.types.size_align(&from), self.types.size_align(&to)) else {
+                continue;
+            };
+            if from_size != to_size {
+                self.errors.push(TypeError::TransmuteSizeMismatch { from, to, from_size, to_size, span });
+            }
         }
-        out
     }
 
     /// CV1–CV10: validate deferred cast/convert sites. Source types are now

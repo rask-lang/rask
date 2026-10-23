@@ -1494,6 +1494,7 @@ impl TypeChecker {
         for m in &s.methods {
             self.note_method_access(type_id, m);
         }
+        self.types.note_layout_decl(type_id, rask_ast::decl::DeclKind::Struct(s.clone()));
         type_id
     }
 
@@ -1656,6 +1657,7 @@ impl TypeChecker {
         for m in &e.methods {
             self.note_method_access(enum_id, m);
         }
+        self.types.note_layout_decl(enum_id, rask_ast::decl::DeclKind::Enum(e.clone()));
         enum_id
     }
 
@@ -1819,10 +1821,11 @@ impl TypeChecker {
         }
         let fields: Vec<_> = field_tys.into_iter().map(|(n, _, t)| (n, t)).collect();
 
-        self.types.register_type(TypeDef::Union {
+        let union_id = self.types.register_type(TypeDef::Union {
             name: u.name.clone(),
             fields,
         });
+        self.types.note_layout_decl(union_id, rask_ast::decl::DeclKind::Union(u.clone()));
     }
 
     /// The type parameter names in a target type spelling: `Ring<T>` → `["T"]`.

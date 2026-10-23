@@ -3684,7 +3684,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         result_local: crate::LocalId,
         payload_offset: u32,
-        fields: &[rask_mono::FieldLayout],
+        fields: &[rask_types::layout::FieldLayout],
         i: usize,
         value: &Expr,
     ) -> Result<(), LoweringError> {
@@ -3902,7 +3902,7 @@ impl<'a> MirLowerer<'a> {
         let none = self.builder.alloc_temp(rest_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: none,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(1)),
             store_size: 8,
             field: None,
@@ -7259,6 +7259,9 @@ impl<'a> MirLowerer<'a> {
                     _ => Vec::new(),
                 }
             }
+            fn type_table(&self) -> &rask_types::TypeTable {
+                self.0.type_defs
+            }
         }
 
         let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
@@ -7277,8 +7280,7 @@ impl<'a> MirLowerer<'a> {
             ),
             ReflectAnswer::Unsupported(why) => {
                 return Err(LoweringError::InvalidConstruct(format!(
-                    "reflect.{method}<{type_name}>() isn't implemented on either \
-                     backend — {why} (#791)"
+                    "reflect.{method}<{type_name}>() can't be answered: {why}"
                 )));
             }
             ReflectAnswer::NoSuchMethod => {
@@ -10282,9 +10284,9 @@ impl<'a> MirLowerer<'a> {
     /// arguments substituted back into the payload types (#968).
     fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_mono::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_types::layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_mono::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_types::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let layout = instance
             .as_deref()
@@ -10985,7 +10987,7 @@ impl<'a> MirLowerer<'a> {
 /// The field a struct literal's store writes, named by its layout and position.
 fn field_slot(
     result_ty: &MirType,
-    layout: Option<&rask_mono::StructLayout>,
+    layout: Option<&rask_types::layout::StructLayout>,
     name: &str,
 ) -> Option<crate::FieldSlot> {
     let MirType::Struct(sid) = result_ty else { return None };

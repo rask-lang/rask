@@ -30,7 +30,7 @@ runtime_constants! {
     RASK_TAG_ABSENT = rask_stdlib::wrappers::ABSENT_TAG as i64;
     /// Where a `T or E` keeps the source line its error came from: a
     /// `uint32_t`, zero for none (`crate::abi`).
-    RASK_RESULT_ORIGIN_LINE_OFFSET = crate::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
+    RASK_RESULT_ORIGIN_LINE_OFFSET = rask_types::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
 
     /// How the runtime reads one element of a vector it formats or sorts. The
     /// vector only records a width, and a four-byte element could be an i32,
