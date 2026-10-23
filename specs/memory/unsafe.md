@@ -173,7 +173,8 @@ Reinterprets the bits of one type as another. Requires unsafe.
 
 | Requirement | Description |
 |-------------|-------------|
-| Same size | Source and target must have identical size |
+| Same size | Source and target must have identical size, as laid out in memory, padding included. A mismatch is a compile error |
+| Written target | The target type comes from where the result goes (an annotated binding, a parameter, a return type). With none, it's a compile error |
 | Valid bits | Result must be valid for target type |
 | Alignment | Both types properly aligned |
 

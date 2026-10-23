@@ -23,6 +23,7 @@ mod format;
 mod operators;
 pub(crate) mod overflow;
 mod dispatch;
+mod transmute;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
 use rask_ast::span::LineMap;

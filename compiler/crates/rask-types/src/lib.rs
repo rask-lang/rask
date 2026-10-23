@@ -18,7 +18,7 @@ pub use checker::{
     OperatorTarget, operator_interface, primitive_spelling, TaskBound,
     signature_type_param_names, struct_type_param_names,
     bind_header_pattern, bind_header_patterns,
-    enum_type_param_names, UnsafeCategory, binary_field_runtime_type,
+    enum_type_param_names, UnsafeCategory, binary_field_runtime_type, TransmuteSite, is_type_param_name,
 };
 pub use interfaces::{
     InterfaceBound, InterfaceChecker, InterfaceError,

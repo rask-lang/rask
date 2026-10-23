@@ -709,6 +709,18 @@ pub enum PlacedArg {
     Default(rask_ast::expr::Expr),
 }
 
+/// One `transmute(x)` call, with both sides settled (mem.unsafe, transmute).
+///
+/// The checker gives the call its type; whether the two sides are the same
+/// size is a layout question, answered where layouts are made.
+#[derive(Debug, Clone)]
+pub struct TransmuteSite {
+    pub call: NodeId,
+    pub from: Type,
+    pub to: Type,
+    pub span: rask_ast::Span,
+}
+
 /// Result of type checking.
 #[derive(Debug)]
 pub struct TypedProgram {
@@ -804,6 +816,8 @@ pub struct TypedProgram {
     pub else_binding_types: HashMap<NodeId, Type>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
+    /// Every `transmute` call, for the size check and for the backends.
+    pub transmutes: Vec<TransmuteSite>,
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).
     /// Used by the LSP for hover on identifiers that aren't expression nodes.
     pub span_types: HashMap<(usize, usize, u16), Type>,

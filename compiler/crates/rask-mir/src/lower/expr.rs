@@ -2409,6 +2409,45 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), result_ty))
         }
 
+    /// mem.unsafe: `transmute` keeps the bytes and changes the type.
+    ///
+    /// Two scalars are a register bitcast — float↔int moves between register
+    /// files, int↔int of one width is nothing. Anything held in memory goes
+    /// through memory: the bytes are copied into a slot of the target type, or
+    /// the scalar is loaded straight out of the source's.
+    ///
+    /// The checker's size test runs on the generic body's types; this is where
+    /// an instantiation gets judged, so the sizes are checked again here.
+    fn lower_transmute(&mut self, value: MirOperand, from: MirType, to: MirType) -> Result<TypedOperand, LoweringError> {
+        if from.size() != to.size() {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "`transmute` from {from} ({} bytes) to {to} ({} bytes): the sizes differ",
+                from.size(),
+                to.size(),
+            )));
+        }
+        if from == to {
+            return Ok((value, to));
+        }
+        let result = self.builder.alloc_temp(to.clone());
+        let stmt = match (from.passed_by_address(), to.passed_by_address()) {
+            (false, false) => MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::Bitcast { value, source_ty: from, target_ty: to.clone() },
+            },
+            (_, true) => MirStmtKind::Store {
+                addr: result,
+                offset: 0,
+                value,
+                store_size: to.size(),
+                field: None,
+            },
+            (true, false) => MirStmtKind::Assign { dst: result, rvalue: MirRValue::Deref(value) },
+        };
+        self.builder.push_stmt(MirStmt::dummy(stmt));
+        Ok((MirOperand::Local(result), to))
+    }
+
     fn lower_call(&mut self, expr: &Expr, func: &Expr, args: &[CallArg]) -> Result<TypedOperand, LoweringError> {
             // `Id(5)` on a nominal newtype is the value, not a call — there
             // is no `Id` function to dispatch to (#445).
@@ -2512,11 +2551,14 @@ impl<'a> MirLowerer<'a> {
                 return Ok((MirOperand::Local(result_local), ret_ty));
             }
 
-            // transmute(val) — identity at MIR level (all values are i64)
             if func_name == "transmute" {
-                let val = arg_operands.into_iter().next()
-                    .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
-                return Ok((val, MirType::I64));
+                let (Some(value), Some(from)) = (arg_operands.into_iter().next(), arg_mir_types.into_iter().next()) else {
+                    return Err(LoweringError::InvalidConstruct("`transmute` takes one value".to_string()));
+                };
+                let Some(to) = self.lookup_expr_type(expr) else {
+                    return Err(LoweringError::UnknownType(vec![("lower/expr: transmute target", expr.id.0)]));
+                };
+                return self.lower_transmute(value, from, to);
             }
 
             // mem.owned/OW3: `drop(p)` frees the box `own` allocated. Exactly

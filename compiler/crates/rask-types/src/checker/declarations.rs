@@ -2862,7 +2862,7 @@ fn parse_binary_struct_fields(
 }
 
 /// PC1: single uppercase ASCII letter — always a type parameter in signatures.
-pub(crate) fn is_type_param_name(name: &str) -> bool {
+pub fn is_type_param_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
 }

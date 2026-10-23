@@ -80,6 +80,8 @@ pub struct MonoProgram {
     /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
     /// from each other.
     pub vtable_symbols: HashMap<(String, String), String>,
+    /// (size, align) of every laid-out type and instance, by layout name.
+    pub layout_cache: LayoutCache,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -128,6 +130,17 @@ impl NodeRecords {
 }
 
 impl MonoProgram {
+    /// Size and alignment of a checked type, as this program lays it out in
+    /// memory: the numbers codegen reads, padding included.
+    ///
+    /// `None` for a type that has no layout yet — one naming a type parameter
+    /// or an inference variable nobody solved. Monomorphization gives each
+    /// instantiation its own answer, and a generic body has none.
+    pub fn size_align_of(&self, ty: &Type, types: &rask_types::TypeTable) -> Option<(u32, u32)> {
+        let spelled = layout_spelling(ty, types)?;
+        Some(type_size_align(&spelled, &self.layout_cache))
+    }
+
     /// The checker's records merged with the ones carried onto instantiated
     /// bodies.
     pub fn node_records(&self, typed: &TypedProgram) -> NodeRecords {
@@ -627,6 +640,49 @@ fn layout_order(
     order.into_iter().filter_map(|n| slots[n].take()).collect()
 }
 
+/// A checked type respelled the way the layout cache is keyed — by name, not
+/// by `TypeId` — or `None` when it has no layout: a type parameter (a single
+/// capital, PC3), an open variable, a projection.
+pub fn layout_spelling(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
+    let each = |tys: &[Type]| tys.iter().map(|t| layout_spelling(t, types)).collect::<Option<Vec<_>>>();
+    let args_of = |args: &[rask_types::GenericArg]| {
+        args.iter()
+            .map(|a| match a {
+                rask_types::GenericArg::Type(t) => {
+                    Some(rask_types::GenericArg::Type(Box::new(layout_spelling(t, types)?)))
+                }
+                other => Some(other.clone()),
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    Some(match ty {
+        Type::Var(_) | Type::Assoc { .. } | Type::Error => return None,
+        Type::UnresolvedNamed(name) if rask_types::is_type_param_name(name) => return None,
+        Type::Named(id) => Type::UnresolvedNamed(types.type_name(*id)),
+        Type::Generic { base, args } => Type::UnresolvedGeneric {
+            name: types.type_name(*base),
+            args: args_of(args)?,
+        },
+        Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+            name: name.clone(),
+            args: args_of(args)?,
+        },
+        Type::Tuple(elems) => Type::Tuple(each(elems)?),
+        Type::Union(members) => Type::Union(each(members)?),
+        Type::Array { elem, len } => Type::Array { elem: Box::new(layout_spelling(elem, types)?), len: *len },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(layout_spelling(ok, types)?),
+            err: Box::new(layout_spelling(err, types)?),
+        },
+        Type::RawPtr(inner) => Type::RawPtr(Box::new(layout_spelling(inner, types)?)),
+        Type::SimdVector { elem, lanes } => Type::SimdVector {
+            elem: Box::new(layout_spelling(elem, types)?),
+            lanes: *lanes,
+        },
+        other => other.clone(),
+    })
+}
+
 /// The layout name of one instantiation of a generic type — `One$Big`,
 /// `Pair$i64$Big`.
 ///
@@ -1102,7 +1158,7 @@ fn monomorphize_inner(
     // Declared and instance layouts in one dependency order, the declared ones
     // shared with the interpreter so both backends read one set of offsets
     // (#1104).
-    let (struct_layouts, mut enum_layouts, _) = compute_layouts(
+    let (struct_layouts, mut enum_layouts, mut layout_cache) = compute_layouts(
         decls,
         Some(&Instantiations { reached, type_names: &type_names, types: &program.types }),
     );
@@ -1113,7 +1169,9 @@ fn monomorphize_inner(
     // than a bare tag, and `{}` on one reaches whatever Displayable was
     // written for it (#729).
     if !enum_layouts.iter().any(|l| l.name == "Ordering") {
-        enum_layouts.push(layout::ordering_layout());
+        let ordering = layout::ordering_layout();
+        layout_cache.insert(ordering.name.clone(), (ordering.size, ordering.align));
+        enum_layouts.push(ordering);
     }
 
     Ok(MonoProgram {
@@ -1135,6 +1193,7 @@ fn monomorphize_inner(
         instantiated_field_reuses: mono.instantiated_field_reuses,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
         vtable_symbols: mono.vtable_symbols,
+        layout_cache,
     })
 }
 
@@ -1332,6 +1391,7 @@ mod tests {
             try_chain_placement: std::collections::HashMap::new(),
             else_binding_types: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
+            transmutes: Vec::new(),
             span_types: std::collections::HashMap::new(),
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),

@@ -2807,10 +2807,12 @@ impl TypeChecker {
                         span,
                     });
                 }
-                for arg in args {
-                    self.infer_expr(&arg.expr);
+                let target = self.ctx.fresh_var();
+                let mut sources = args.iter().map(|arg| self.infer_expr(&arg.expr)).collect::<Vec<_>>();
+                if sources.len() == 1 {
+                    self.pending_transmutes.push((call_id, sources.remove(0), target.clone(), span));
                 }
-                return self.ctx.fresh_var();
+                return target;
             }
 
             // mem.owned/OW3: `drop(p)` consumes one `Owned` and frees its value.
@@ -6439,6 +6441,27 @@ impl TypeChecker {
                 span,
             });
         }
+    }
+
+    /// mem.unsafe: a `transmute` takes its target from where the value goes —
+    /// a binding's annotation, a parameter, a return type. One with nowhere to
+    /// go has no target, and reinterpreting as "whatever inference defaults
+    /// to" would pick a type nobody wrote.
+    pub(super) fn settle_transmutes(&mut self) -> Vec<super::TransmuteSite> {
+        let mut out = Vec::new();
+        for (call, from, to, span) in std::mem::take(&mut self.pending_transmutes) {
+            let from = self.ctx.apply(&from);
+            let to = self.ctx.apply(&to);
+            if matches!(from, Type::Error) || matches!(to, Type::Error) {
+                continue;
+            }
+            if matches!(to, Type::Var(_)) {
+                self.errors.push(TypeError::TransmuteNeedsTarget { from, span });
+                continue;
+            }
+            out.push(super::TransmuteSite { call, from, to, span });
+        }
+        out
     }
 
     /// CV1–CV10: validate deferred cast/convert sites. Source types are now

@@ -504,7 +504,7 @@ pub fn check_loaded(
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        diags.extend(comptime_diagnostics_for(&parse_result.decls, &typed, &config.cfg));
+        diags.extend(post_check_diagnostics(&parse_result.decls, &typed, &config.cfg));
     }
 
     drop_stdlib_cascade(&mut diags);
@@ -546,7 +546,7 @@ fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
     (d.code.as_ref().map(|c| c.0.clone()), d.message.clone())
 }
 
-fn comptime_diagnostics_for(
+fn post_check_diagnostics(
     decls: &[Decl],
     typed: &rask_types::TypedProgram,
     cfg: &CfgConfig,
@@ -555,7 +555,8 @@ fn comptime_diagnostics_for(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, Some(cfg));
 
-    if !comptime_eval::has_comptime(decls) {
+    let comptime = comptime_eval::has_comptime(decls);
+    if !comptime && typed.transmutes.is_empty() {
         return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
@@ -567,7 +568,42 @@ fn comptime_diagnostics_for(
         // stays quiet about them rather than reporting them twice.
         return diags;
     };
-    diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
+    diags.extend(transmute_size_diagnostics(typed, &mono));
+    if comptime {
+        diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
+    }
+    diags
+}
+
+/// mem.unsafe: a `transmute` keeps every byte, so both sides have to have the
+/// same number of them. The sizes are the layout's — the ones codegen lays
+/// the value out with — so padding counts: a `{ a: u8, b: i32 }` is 8 bytes.
+///
+/// A transmute in a generic body is judged per instantiation where it's
+/// lowered; its types here still name the parameter.
+fn transmute_size_diagnostics(typed: &TypedProgram, mono: &rask_mono::MonoProgram) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for site in &typed.transmutes {
+        let (Some((from, _)), Some((to, _))) = (
+            mono.size_align_of(&site.from, &typed.types),
+            mono.size_align_of(&site.to, &typed.types),
+        ) else {
+            continue;
+        };
+        if from == to {
+            continue;
+        }
+        let from_ty = typed.types.resolve_type_names(&site.from);
+        let to_ty = typed.types.resolve_type_names(&site.to);
+        diags.push(
+            Diagnostic::error(format!(
+                "`transmute` from `{from_ty}` ({from} bytes) to `{to_ty}` ({to} bytes): the sizes differ"
+            ))
+            .with_code("E0921")
+            .with_primary(site.span, format!("{from} bytes in, {to} bytes out"))
+            .with_help("transmute reinterprets the same bytes, so both types must be the same size; to change a number's width, convert it instead (`x as u64` widens, `x.wrap<u32>()` narrows)"),
+        );
+    }
     diags
 }
 
@@ -856,7 +892,7 @@ fn check_package_scoped(
 
     // --- Comptime folds (CT1) and comptime tests (T11) ---
     if !diags.iter().any(|d| matches!(d.severity, Severity::Error)) {
-        diags.extend(comptime_diagnostics_for(&pkg_ctx.all_decls, &typed, &config.cfg));
+        diags.extend(post_check_diagnostics(&pkg_ctx.all_decls, &typed, &config.cfg));
     }
 
     drop_stdlib_cascade(&mut diags);

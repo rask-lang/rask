@@ -542,7 +542,7 @@ fn eval_rvalue(
             }
         }
         // Explicit conversions wrap/clamp/optionalize — conservatively unknown.
-        MirRValue::Convert { .. } => Interval::TOP,
+        MirRValue::Convert { .. } | MirRValue::Bitcast { .. } => Interval::TOP,
         MirRValue::UnaryOp { op: crate::operand::UnaryOp::Neg, operand } => {
             let iv = operand_interval(operand, state);
             if iv.is_bottom() { return Interval::BOTTOM; }

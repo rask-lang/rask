@@ -2260,6 +2260,22 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_convert(builder, value, source_ty, target_ty, *kind, ctx)
             }
 
+            MirRValue::Bitcast { value, source_ty, target_ty } => {
+                let from = mir_to_cranelift_type(source_ty)?;
+                let to = mir_to_cranelift_type(target_ty)?;
+                let val = Self::lower_operand_typed(builder, value, Some(from), ctx)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                if val_ty == to {
+                    return Ok(val);
+                }
+                if val_ty.bits() != to.bits() {
+                    return Err(CodegenError::UnsupportedFeature(format!(
+                        "bitcast from {val_ty} to {to}: the widths differ"
+                    )));
+                }
+                Ok(builder.ins().bitcast(to, MemFlags::new(), val))
+            }
+
             // Struct/enum field access: load from base pointer + field offset
             MirRValue::Field { base, field_index, byte_offset, access } => Self::field_address_and_load(builder, base, field_index, byte_offset, access, expected_ty, ctx),
 

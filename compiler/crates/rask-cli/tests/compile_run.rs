@@ -951,6 +951,19 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// #1634: `transmute` needs both sides the same size, by the layout, and a
+/// written target.
+#[test]
+fn transmute_sizes_and_targets_are_checked() {
+    let (failed, out) = compile_error_output("transmute_size_mismatch.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0921]").count(), 2, "{out}");
+    assert!(out.contains("`Tagged` (8 bytes)"), "padding must count: {out}");
+    let (failed, out) = compile_error_output("transmute_no_target.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0922]").count(), 1, "{out}");
+}
+
 /// #1537: a field default is a compile-time constant (type.structs/FD1). One
 /// that reaches I/O, declared or `@default`, is rejected where it's written,
 /// named by its field rather than by the method desugar wrote for it.

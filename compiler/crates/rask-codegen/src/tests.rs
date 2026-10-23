@@ -1971,6 +1971,7 @@ mod tests {
         instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
+        layout_cache: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -1995,6 +1996,7 @@ mod tests {
         instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
+        layout_cache: Default::default(),
             functions: vec![],
             struct_layouts: vec![
                 rask_mono::StructLayout {
@@ -2053,6 +2055,7 @@ mod tests {
         instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
+        layout_cache: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
