@@ -102,6 +102,7 @@ struct RaskRack {
     int32_t   owned_count;
     int32_t   inline_count;   // LINK-kind fields: one inline edge record each
     int32_t   header_bytes;   // inline records + RackNode, i.e. payload's distance from slot start
+    int64_t   elem_align;     // the node type's alignment; past 16 the chunks are aligned to it
     RackEdge *edge_pool;      // recycled edge records
     uint32_t  rack_id;
     // Set on a snapshot: which rack it copied, and slot index -> copied payload.
@@ -140,8 +141,9 @@ static inline RackNode *node_of(void *payload) {
     return (RackNode *)((char *)payload - sizeof(RackNode));
 }
 
-static inline int64_t round_up16(int64_t n) {
-    return (n + 15) & ~(int64_t)15;
+// `align` is a power of two.
+static inline int64_t round_up(int64_t n, int64_t align) {
+    return (n + align - 1) & ~(align - 1);
 }
 
 // ─── Edge records ──────────────────────────────────────────────────────────
@@ -475,7 +477,7 @@ static int grow_chunks(RaskRack *r) {
         r->chunks = next;
         r->chunk_cap = cap;
     }
-    char *chunk = (char *)rask_alloc((size_t)r->stride * RACK_CHUNK_SLOTS);
+    char *chunk = (char *)rask_alloc_aligned(r->stride * RACK_CHUNK_SLOTS, r->elem_align);
     if (!chunk) return 0;
     memset(chunk, 0, (size_t)r->stride * RACK_CHUNK_SLOTS);
     r->chunks[r->chunk_count++] = chunk;
@@ -504,12 +506,13 @@ static void *payload_at(const RaskRack *r, int64_t index) {
 
 // The node type's shape arrives with the first insert, not here: `Rack.new()`
 // has no argument to read `T` off, exactly as `Pool.new()` doesn't.
-static void rack_describe(RaskRack *r, int64_t elem_size, int32_t field_count,
-                          const int32_t *fields, int32_t owned_count,
-                          const int32_t *owned) {
+static void rack_describe(RaskRack *r, int64_t elem_size, int64_t elem_align,
+                          int32_t field_count, const int32_t *fields,
+                          int32_t owned_count, const int32_t *owned) {
     if (r->elem_size != 0) return;
     if (elem_size <= 0) rask_panic("rack element size must be positive");
     r->elem_size = elem_size;
+    r->elem_align = elem_align;
     if (owned_count > 0 && owned) {
         int64_t bytes = (int64_t)owned_count * (int64_t)sizeof(int32_t);
         r->owned = (int32_t *)rask_alloc(bytes);
@@ -531,8 +534,13 @@ static void rack_describe(RaskRack *r, int64_t elem_size, int32_t field_count,
     }
     // One inline record per top-level link field, ahead of the header. Both are
     // multiples of 16, so the payload keeps the alignment the chunk gave it.
-    r->header_bytes = (int32_t)((size_t)r->inline_count * sizeof(RackEdge) + sizeof(RackNode));
-    r->stride = round_up16((int64_t)r->header_bytes + r->elem_size);
+    // An `@align(64)` node pads the front of each slot up to its alignment,
+    // and its chunks come aligned to match: the records still sit right
+    // before the header, which sits right before the payload.
+    int64_t align = elem_align > 16 ? elem_align : 16;
+    r->header_bytes = (int32_t)round_up(
+        (int64_t)r->inline_count * (int64_t)sizeof(RackEdge) + (int64_t)sizeof(RackNode), align);
+    r->stride = round_up((int64_t)r->header_bytes + r->elem_size, align);
 }
 
 RaskRack *rask_rack_new(void) {
@@ -587,9 +595,10 @@ int64_t rask_rack_contains(const RaskRack *r, const void *link) {
 
 void *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
                        int64_t field_count, const int32_t *fields,
-                       int64_t owned_count, const int32_t *owned) {
+                       int64_t owned_count, const int32_t *owned,
+                       int64_t elem_align) {
     if (!r) return NULL;
-    rack_describe(r, elem_size, (int32_t)field_count, fields,
+    rack_describe(r, elem_size, elem_align, (int32_t)field_count, fields,
                   (int32_t)owned_count, owned);
 
     int64_t index;
@@ -749,7 +758,7 @@ void rask_rack_clear(RaskRack *r) {
 
 // Links to every live node, in slot order.
 RaskVec *rask_rack_nodes(const RaskRack *r) {
-    RaskVec *out = rask_vec_new(8, NULL, 0);
+    RaskVec *out = rask_vec_new(8, NULL, 0, 0);
     if (!r) return out;
     for (int64_t i = 0; i < r->high_water; i++) {
         if (i < r->dir_cap && r->directory[i]) {
@@ -834,7 +843,8 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
     // A rack nothing was ever inserted into has no shape yet, and neither
     // does its copy.
     if (r->elem_size != 0) {
-        rack_describe(copy, r->elem_size, r->field_count, r->fields, r->owned_count, r->owned);
+        rack_describe(copy, r->elem_size, r->elem_align, r->field_count, r->fields,
+                      r->owned_count, r->owned);
     }
 
     // Copy every node first, so every target exists before any edge is rewritten.
@@ -851,7 +861,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
         // the original's deletes reach into the copy.
         char *src = (char *)r->directory[i];
         void *dst = rask_rack_insert(copy, NULL, r->elem_size, r->field_count, r->fields,
-                                     r->owned_count, r->owned);
+                                     r->owned_count, r->owned, r->elem_align);
         if (!dst) continue;
         memcpy(dst, src, (size_t)r->elem_size);
         // The copy holds the original's strings and containers now, so it needs

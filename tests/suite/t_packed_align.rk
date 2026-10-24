@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `@packed` and `@align(N)` lay out a struct (type.structs).
+//
+// Both were accepted and read by nothing, so a `@packed` wire struct still
+// had its padding and `@align(16)` changed no alignment.
+
+import std.reflect
+
+@packed
+struct Wire {
+    tag: u8
+    len: u32
+    crc: u16
+    val: f64
+}
+
+@align(16)
+struct Line {
+    x: u8
+}
+
+struct AfterLine {
+    a: u8
+    line: Line
+}
+
+struct Holder {
+    a: u8
+    w: Wire
+    b: u8
+}
+
+test "a packed struct has no padding and keeps its field order" {
+    let fields = reflect.fields<Wire>()
+    assert fields[0].offset == 0
+    assert fields[1].offset == 1
+    assert fields[2].offset == 5
+    assert fields[3].offset == 7
+}
+
+test "fields at odd offsets read and write" {
+    mut w = Wire(tag: 1, len: 70000, crc: 513, val: 2.5)
+    w.len = w.len + 1
+    assert w.len == 70001
+    assert w.crc == 513
+    assert w.val == 2.5
+    let bytes: [u8; 15] = unsafe { transmute(w) }
+    assert bytes[0] == 1
+    assert bytes[1] == 113
+    assert bytes[5] == 1
+    assert bytes[6] == 2
+}
+
+test "a packed struct nests and sits in a Vec" {
+    let w = Wire(tag: 1, len: 7, crc: 8, val: 0.5)
+    let h = Holder(a: 9, w: w, b: 8)
+    assert h.w.val == 0.5
+    assert h.b == 8
+    let v: Vec<Wire> = [w, Wire(tag: 2, len: 3, crc: 4, val: 5.5)]
+    assert v[1].val == 5.5
+    assert v[1].crc == 4
+}
+
+test "align raises the alignment and pads the size to it" {
+    let fields = reflect.fields<AfterLine>()
+    assert fields[1].offset == 0
+    assert fields[0].offset == 16
+    let line = Line(x: 3)
+    let raw: [u8; 16] = unsafe { transmute(line) }
+    assert raw[0] == 3
+}

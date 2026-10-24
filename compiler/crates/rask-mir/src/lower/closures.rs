@@ -949,13 +949,8 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(env)],
         }));
 
-        let size = ret.size().max(1) as i64;
         let boxed = b.alloc_local("__boxed".to_string(), MirType::Ptr);
-        b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(boxed),
-            func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(crate::operand::MirConst::Int(size))],
-        }));
+        b.push_stmt(super::alloc_block_for(boxed, ret.size(), ret));
         b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: boxed,
             offset: 0,

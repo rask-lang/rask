@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use rask_mono::{EnumLayout, StructLayout};
+use rask_types::layout::{EnumLayout, StructLayout};
 
 use crate::lower::ComptimeGlobalMeta;
 use crate::MirFunction;
@@ -100,6 +100,7 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         });
         assert_eq!(prog.functions().len(), 1);
@@ -136,6 +137,7 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         });
         prog.functions_mut()[0].name = "bar".to_string();

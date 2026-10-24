@@ -116,8 +116,6 @@ pub enum TypeDef {
         is_unique: bool,
         /// B1–G4: @binary struct for wire-format parsing/building
         is_binary: bool,
-        /// S2: `@layout(C)`, fields in declaration order.
-        c_layout: bool,
         /// V5: fields marked `private` — accessible only inside extend blocks
         private_fields: Vec<String>,
         /// E19: fields marked `@skip` — left out of every serialized form, so
@@ -149,8 +147,6 @@ pub enum TypeDef {
         type_params: Vec<String>,
         variants: Vec<(String, Vec<Type>)>,
         methods: Vec<MethodSig>,
-        /// E2/E14: the discriminant's type.
-        tag: Type,
         /// ER42/L1 transitive linearity: true if any variant payload contains
         /// a transitively-linear type. Computed by a fixed-point pass after
         /// declaration collection.

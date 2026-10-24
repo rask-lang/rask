@@ -1587,6 +1587,7 @@ version = "0.6.0"
 dependencies = [
  "rask-mir",
  "rask-mono",
+ "rask-types",
 ]
 
 [[package]]
@@ -1679,6 +1680,7 @@ name = "rask-types"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-parser",
  "rask-resolve",
  "rask-stdlib",
  "thiserror",

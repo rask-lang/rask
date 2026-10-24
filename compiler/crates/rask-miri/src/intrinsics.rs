@@ -85,6 +85,42 @@ pub fn eval_unaryop(op: UnaryOp, operand: &MiriValue) -> Result<MiriValue, MiriE
     }
 }
 
+/// The same bits read as another scalar of the same width (`transmute`).
+pub fn eval_bitcast(value: &MiriValue, target: &MirType) -> Result<MiriValue, MiriError> {
+    let bits: u64 = match value {
+        MiriValue::Bool(b) => *b as u64,
+        MiriValue::I8(v) => *v as u8 as u64,
+        MiriValue::I16(v) => *v as u16 as u64,
+        MiriValue::I32(v) => *v as u32 as u64,
+        MiriValue::I64(v) => *v as u64,
+        MiriValue::U8(v) => *v as u64,
+        MiriValue::U16(v) => *v as u64,
+        MiriValue::U32(v) => *v as u64,
+        MiriValue::U64(v) => *v,
+        MiriValue::F32(v) => v.to_bits() as u64,
+        MiriValue::F64(v) => v.to_bits(),
+        MiriValue::Char(c) => *c as u64,
+        _ => return Err(cant_cast(value, target)),
+    };
+    Ok(match target {
+        MirType::Bool => MiriValue::Bool(bits != 0),
+        MirType::I8 => MiriValue::I8(bits as u8 as i8),
+        MirType::I16 => MiriValue::I16(bits as u16 as i16),
+        MirType::I32 => MiriValue::I32(bits as u32 as i32),
+        MirType::I64 => MiriValue::I64(bits as i64),
+        MirType::U8 => MiriValue::U8(bits as u8),
+        MirType::U16 => MiriValue::U16(bits as u16),
+        MirType::U32 => MiriValue::U32(bits as u32),
+        MirType::U64 => MiriValue::U64(bits),
+        MirType::F32 => MiriValue::F32(f32::from_bits(bits as u32)),
+        MirType::F64 => MiriValue::F64(f64::from_bits(bits)),
+        MirType::Char => char::from_u32(bits as u32).map(MiriValue::Char).ok_or_else(|| {
+            MiriError::UnsupportedOperation(format!("transmute to char: {bits:#x} is not a codepoint"))
+        })?,
+        _ => return Err(cant_cast(value, target)),
+    })
+}
+
 /// Cast a value to a target MIR type.
 pub fn eval_cast(value: &MiriValue, target: &MirType) -> Result<MiriValue, MiriError> {
     let as_i64 = value.to_i64();

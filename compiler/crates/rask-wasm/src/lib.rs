@@ -210,7 +210,7 @@ fn cfg() -> CfgConfig {
 }
 
 fn config() -> CompilerConfig {
-    CompilerConfig { cfg: cfg() }
+    CompilerConfig::new(cfg())
 }
 
 /// Run the frontend, or give back the diagnostics as the browser should see

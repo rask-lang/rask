@@ -229,6 +229,8 @@ fn names_the_effect(e: &Effects) -> Option<&'static str> {
         Some("concurrency")
     } else if e.blocks {
         Some("a call that blocks")
+    } else if e.prints {
+        Some("output to the terminal")
     } else if e.ambient {
         Some("state outside the program")
     } else {

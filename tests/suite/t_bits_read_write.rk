@@ -1,28 +1,40 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// std.bits parsing and building: every `read_*` against bytes laid out by
-// hand and by `BinaryBuilder`, and what a short buffer answers.
+// std.bits parsing and building: every `read_*` on a `BinaryReader` against
+// bytes laid out by hand and by `BinaryBuilder`, and what a short buffer
+// answers.
+//
+// The reader owns the buffer and keeps its own position. Reads used to hand
+// back the rest of the buffer as a new Vec, so reading a buffer value by value
+// copied it once per value (O(n²)). The million-read timing test is
+// bits_reader_million.rk in rask-cli's fixtures: it runs natively only, the
+// interpreter takes half a minute over it.
 
 import bits
 
 func reads_off_the_front() -> bool or bits.BinaryParseError {
     let data: Vec<u8> = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x00, 0x2A, 0xFF]
-    let (magic, rest) = try data.read_u32be()
-    assert magic == 0xCAFEBABE
-    assert rest.len() == 4
-    let (one, rest2) = try rest.read_u8()
-    assert one == 1
-    let (word, rest3) = try rest2.read_u16le()
-    assert word == 0x2A00
-    let (neg, rest4) = try rest3.read_i8()
-    assert neg == -1
-    assert rest4.len() == 0
+    mut r = bits.BinaryReader.new(data)
+    assert r.remaining() == 8
+    let v1 = try r.read_u32be()
+    assert v1 == 0xCAFEBABE
+    assert r.pos() == 4
+    let v2 = try r.read_u8()
+    assert v2 == 1
+    let v3 = try r.read_u16le()
+    assert v3 == 0x2A00
+    let v4 = try r.read_i8()
+    assert v4 == -1
+    assert r.pos() == 8
+    assert r.remaining() == 0
 
-    let (le, _) = try data.read_u32le()
-    assert le == 0xBEBAFECA
-    let (be16, _) = try data.read_u16be()
-    assert be16 == 0xCAFE
-    // The receiver is only read: it still holds every byte.
-    assert data.len() == 8
+    // The buffer comes back whole, read part included.
+    let back = r.into_inner()
+    assert back.len() == 8
+    mut le = bits.BinaryReader.new(back)
+    let v5 = try le.read_u32le()
+    assert v5 == 0xBEBAFECA
+    let v6 = try le.read_u16be()
+    assert v6 == 0x0100
     return true
 }
 
@@ -57,49 +69,50 @@ func round_trip() -> bool or bits.BinaryParseError {
         .write_f64le(-0.5)
         .write_bytes([7, 8, 9])
     assert data.len() == 85
-    let r0 = data.build()
 
-    let (a, r1) = try r0.read_u8()
-    assert a == 200
-    let (b, r2) = try r1.read_i8()
-    assert b == -100
-    let (c, r3) = try r2.read_u16be()
-    assert c == 0xBEEF
-    let (d, r4) = try r3.read_u16le()
-    assert d == 0xBEEF
-    let (e, r5) = try r4.read_i16be()
-    assert e == -12345
-    let (f, r6) = try r5.read_i16le()
-    assert f == -12345
-    let (g, r7) = try r6.read_u32be()
-    assert g == 0xDEADBEEF
-    let (h, r8) = try r7.read_u32le()
-    assert h == 0xDEADBEEF
-    let (i, r9) = try r8.read_i32be()
-    assert i == -123456789
-    let (j, r10) = try r9.read_i32le()
-    assert j == -123456789
-    let (k, r11) = try r10.read_u64be()
-    assert k == 0x0123456789ABCDEF
-    let (l, r12) = try r11.read_u64le()
-    assert l == 0x0123456789ABCDEF
-    let (m, r13) = try r12.read_i64be()
-    assert m == -1234567890123
-    let (n, r14) = try r13.read_i64le()
-    assert n == -1234567890123
-    let (o, r15) = try r14.read_f32be()
-    assert o == 1.5
-    let (p, r16) = try r15.read_f32le()
-    assert p == -2.25
-    let (q, r17) = try r16.read_f64be()
-    assert q == 3.141592653589793
-    let (s, r18) = try r17.read_f64le()
-    assert s == -0.5
-    let (tail, r19) = try r18.read_bytes(3)
+    mut r = bits.BinaryReader.new(data.build())
+    let v7 = try r.read_u8()
+    assert v7 == 200
+    let v8 = try r.read_i8()
+    assert v8 == -100
+    let v9 = try r.read_u16be()
+    assert v9 == 0xBEEF
+    let v10 = try r.read_u16le()
+    assert v10 == 0xBEEF
+    let v11 = try r.read_i16be()
+    assert v11 == -12345
+    let v12 = try r.read_i16le()
+    assert v12 == -12345
+    let v13 = try r.read_u32be()
+    assert v13 == 0xDEADBEEF
+    let v14 = try r.read_u32le()
+    assert v14 == 0xDEADBEEF
+    let v15 = try r.read_i32be()
+    assert v15 == -123456789
+    let v16 = try r.read_i32le()
+    assert v16 == -123456789
+    let v17 = try r.read_u64be()
+    assert v17 == 0x0123456789ABCDEF
+    let v18 = try r.read_u64le()
+    assert v18 == 0x0123456789ABCDEF
+    let v19 = try r.read_i64be()
+    assert v19 == -1234567890123
+    let v20 = try r.read_i64le()
+    assert v20 == -1234567890123
+    let v21 = try r.read_f32be()
+    assert v21 == 1.5
+    let v22 = try r.read_f32le()
+    assert v22 == -2.25
+    let v23 = try r.read_f64be()
+    assert v23 == 3.141592653589793
+    let v24 = try r.read_f64le()
+    assert v24 == -0.5
+    let tail = try r.read_bytes(3)
     assert tail.len() == 3
     assert tail[0] == 7
     assert tail[2] == 9
-    assert r19.len() == 0
+    assert r.pos() == 85
+    assert r.remaining() == 0
     return true
 }
 
@@ -127,14 +140,17 @@ test "the builder lays bytes out in the order it says" {
 
 func empty_head() -> bool or bits.BinaryParseError {
     let data: Vec<u8> = [1, 2, 3]
-    let (head, rest) = try data.read_bytes(0)
+    mut r = bits.BinaryReader.new(data)
+    let head = try r.read_bytes(0)
     assert head.len() == 0
-    assert rest.len() == 3
-    assert rest[0] == 1
+    assert r.pos() == 0
+    let all = try r.read_bytes(3)
+    assert all[2] == 3
+    assert r.pos() == 3
     return true
 }
 
-test "read_bytes(0) is the empty head and the whole buffer" {
+test "read_bytes takes nothing or everything" {
     let ok = empty_head() catch e => {
         println(e.message())
         assert false
@@ -144,31 +160,28 @@ test "read_bytes(0) is the empty head and the whole buffer" {
 }
 
 func short(data: Vec<u8>, what: string) -> string {
-    let failed = if what == "u8" {
-        data.read_u8() is bits.BinaryParseError
-    } else {
-        false
-    }
-    if failed {
-        return "u8 failed"
-    }
+    mut r = bits.BinaryReader.new(data.clone())
     if what == "u32" {
-        let (v, _) = data.read_u32be() catch e => return e.message()
+        let v = r.read_u32be() catch e => return e.message()
         return "read {v}"
     }
     if what == "f64" {
-        let (v, _) = data.read_f64le() catch e => return e.message()
+        let v = r.read_f64le() catch e => return e.message()
         return "read {v}"
     }
     if what == "bytes" {
-        let (v, _) = data.read_bytes(3) catch e => return e.message()
+        let v = r.read_bytes(3) catch e => return e.message()
         return "read {v.len()}"
+    }
+    if r.read_u8() is bits.BinaryParseError {
+        return "u8 failed"
     }
     return "u8 read"
 }
 
 func end_counts(data: Vec<u8>) -> string {
-    let (v, _) = data.read_i16be() catch e => {
+    mut r = bits.BinaryReader.new(data.clone())
+    let v = r.read_i16be() catch e => {
         match e {
             bits.BinaryParseError.UnexpectedEnd(expected, actual) => return "{expected} {actual}"
             bits.BinaryParseError.InvalidData(message) => return message
@@ -189,4 +202,18 @@ test "reading past the end is an error, not a panic" {
     assert end_counts(empty) == "2 0"
     assert end_counts([7]) == "2 1"
     assert end_counts(two) == "read 258"
+}
+
+func after_a_failed_read() -> string {
+    let three: Vec<u8> = [1, 2, 3]
+    mut r = bits.BinaryReader.new(three)
+    let _ = r.read_u8() catch e => return e.message()
+    let missed = r.read_u32be() is bits.BinaryParseError
+    // A read that fails takes nothing, so the next one starts where it did.
+    let next = r.read_u16be() catch e => return e.message()
+    return "{missed} / {next} at {r.pos()}"
+}
+
+test "a short read leaves the position where it was" {
+    assert after_a_failed_read() == "true / 515 at 3"
 }

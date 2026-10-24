@@ -360,7 +360,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
 
     // --- Effects (CW1/CW2) ---
     let (_effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &typed.method_targets());
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &typed.method_targets(), &[]);
     for w in &effect_warnings {
         let d = rask_diagnostics::Diagnostic::warning(&w.message)
             .with_code(w.code)

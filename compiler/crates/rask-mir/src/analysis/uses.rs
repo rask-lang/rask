@@ -49,7 +49,7 @@ fn visit_rvalue_named<'a>(rv: &'a MirRValue, f: &mut impl FnMut(Named<'a>)) {
             f(Named::Operand(right));
         }
         MirRValue::UnaryOp { operand, .. } => f(Named::Operand(operand)),
-        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => {
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } | MirRValue::Bitcast { value, .. } => {
             f(Named::Operand(value))
         }
         MirRValue::Field { base, .. } => f(Named::Operand(base)),
@@ -194,7 +194,7 @@ fn visit_rvalue_locals_mut(rv: &mut MirRValue, f: &mut impl FnMut(&mut LocalId, 
             visit_operand_local_mut(right, f);
         }
         MirRValue::UnaryOp { operand, .. } => visit_operand_local_mut(operand, f),
-        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } => {
+        MirRValue::Cast { value, .. } | MirRValue::Convert { value, .. } | MirRValue::Bitcast { value, .. } => {
             visit_operand_local_mut(value, f)
         }
         MirRValue::Field { base, .. } => visit_operand_local_mut(base, f),

@@ -3,16 +3,17 @@
 //! Function builder — lowers MIR to Cranelift IR.
 
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, SourceLoc, StackSlot, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, SourceLoc, StackSlotData, StackSlotKind};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
 use std::collections::{HashMap, HashSet};
 
 use rask_mir::FieldAccess;
 use rask_mir::{BinOp, BlockId, ContainerKind, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
-use rask_mono::{StructLayout, EnumLayout};
+use rask_types::layout::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::dispatch::{ArgAdapt, RetAdapt};
+use crate::slot::LocalSlot;
 use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
 
@@ -55,6 +56,10 @@ pub(crate) fn copy_bytes(
 // expression's widths ran out. The operand values can't be in a static message,
 // but the type and its range can, and those are what the reader needs.
 pub(crate) const OV_DIV_ZERO: &str = "division by zero";
+/// mem.unsafe, debug-mode safety: a raw-pointer access through null. Worded
+/// as the interpreter words it.
+pub(crate) const PTR_NULL_READ: &str = "null pointer read";
+pub(crate) const PTR_NULL_WRITE: &str = "null pointer write";
 
 /// Which check fired, for picking the message.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -81,6 +86,8 @@ macro_rules! overflow_messages {
         /// `tail` (below) and lets the runtime splice the operands in front.
         pub(crate) const OVERFLOW_MESSAGES: &[&str] = &[
             OV_DIV_ZERO,
+            PTR_NULL_READ,
+            PTR_NULL_WRITE,
             $(
                 concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
                 concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
@@ -197,7 +204,7 @@ struct CodegenCtx<'a> {
     vtable_globals: &'a HashMap<String, GlobalValue>,
     panicking_fns: &'a HashSet<String>,
     internal_fns: &'a HashSet<String>,
-    stack_slot_map: &'a HashMap<LocalId, (StackSlot, u32)>,
+    stack_slot_map: &'a HashMap<LocalId, (LocalSlot, u32)>,
     /// Locals that hold an address rather than a value — see
     /// `rask_mir::transform::addr_taken`.
     addr_taken: &'a rask_mir::transform::addr_taken::AddrTaken,
@@ -216,6 +223,8 @@ struct CodegenCtx<'a> {
     /// An `extern "C"` export: its body is bracketed with the FFI panic
     /// boundary, so a panic inside aborts rather than unwinding into C frames.
     is_extern_c: bool,
+    /// A debug build: raw-pointer null checks are on (mem.unsafe).
+    debug_checks: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
@@ -225,7 +234,7 @@ struct CodegenCtx<'a> {
     /// The frame's unwind record (ctrl.panic/U6), when it owns anything a
     /// panic would have to release: `[next | run | slot…]`, pushed on entry
     /// and popped before every return.
-    unwind_rec: Option<StackSlot>,
+    unwind_rec: Option<LocalSlot>,
 }
 
 /// Result of adapting a stdlib call for the typed runtime API.
@@ -240,7 +249,7 @@ enum CallAdapt {
     /// didn't. `PopOutParam` was standing in here and handed back the success
     /// flag as the value, so `compare_exchange(5, 9, …)` reported that it had
     /// found 1.
-    CasResult(StackSlot),
+    CasResult(LocalSlot),
     /// An atomic handed back its payload's bits in a word: a float or a
     /// struct (mem.atomics/GA2) as its raw bytes, an integer extended. Turn
     /// them into the destination's value.
@@ -248,13 +257,13 @@ enum CallAdapt {
     /// Result is void* — wrap as Option: NULL→None(tag=1), non-NULL→Some(tag=0, deref)
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
-    PopOutParam(StackSlot),
+    PopOutParam(LocalSlot),
     /// The callee copied an element straight into the destination `T?`'s
     /// payload and returned 1 (wrote) or 0 (nothing). Only the tag is left.
-    OptionOutParam(StackSlot),
+    OptionOutParam(LocalSlot),
     /// String out-param: callee wrote 16-byte RaskStr to this slot.
     /// Result is the slot address (pointer), not a loaded value.
-    StringOutParam(StackSlot),
+    StringOutParam(LocalSlot),
     /// Result is void* pointing to 16-byte string element in Vec.
     /// Copy to dst's stack slot.
     DerefStringElement,
@@ -267,24 +276,24 @@ enum CallAdapt {
     /// Ok(payload), else Err of the variant the status
     /// names. A bare tag once reported a drained closed channel as "channel is
     /// empty" (#1067).
-    TryRecvResult(StackSlot),
+    TryRecvResult(LocalSlot),
     /// The call returned a status (RetAdapt::Status). Build a `void or E`
     /// from it: a send, a sleep.
     Status,
     /// parse: the call returned 0/1; the value was written into the given slot.
     /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
     /// Carries the slot and the type the runtime wrote there.
-    ParseResult(StackSlot, Type),
+    ParseResult(LocalSlot, Type),
     /// Same idea for a string out-param: the call returned 0/1 and wrote a
     /// 16-byte RaskStr into the given slot. Build a `string or E` — status==0
     /// → Ok(string), else Err. Used by `io.read_line`, where the error case is
     /// end of input. The second slot carries the failure message, so a real
     /// `IoError.Other(msg)` can be built instead of a guessed variant.
-    StringResult(StackSlot, StackSlot),
+    StringResult(LocalSlot, LocalSlot),
     /// join/cancel: the call returned how the task ended and wrote its value
     /// into the first slot and any panic message into the second (a 16-byte
     /// RaskStr). Build a `T or JoinError` in dst.
-    JoinOutcome(StackSlot, StackSlot),
+    JoinOutcome(LocalSlot, LocalSlot),
 }
 
 /// A runtime call whose arguments are adapted by code written for it
@@ -376,9 +385,9 @@ pub struct FunctionBuilder<'a> {
     var_map: HashMap<LocalId, Variable>,
 
     /// Stack slots allocated for aggregate locals (struct, enum, result, etc.)
-    /// Maps LocalId → (StackSlot, byte_size) so calls returning aggregates can
+    /// Maps LocalId → (LocalSlot, byte_size) so calls returning aggregates can
     /// memcpy into the caller's slot instead of storing a dangling callee pointer.
-    stack_slot_map: HashMap<LocalId, (StackSlot, u32)>,
+    stack_slot_map: HashMap<LocalId, (LocalSlot, u32)>,
 
     /// Current source location tracked from SourceLocation statements
     current_line: u32,
@@ -399,6 +408,8 @@ pub struct FunctionBuilder<'a> {
     /// `rask_preempt_requested`, when the runtime provides it. Every function
     /// entry and loop back-edge checks it (conc.runtime/P3).
     preempt_flag: Option<GlobalValue>,
+    /// A debug build: `ptr_check` is emitted (mem.unsafe).
+    debug_checks: bool,
 }
 
 /// No C function in this program takes a struct by value.
@@ -465,6 +476,7 @@ impl<'a> FunctionBuilder<'a> {
             c_abi_args: &NO_C_ABI_ARGS,
             field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
+            debug_checks: false,
         })
     }
 
@@ -474,6 +486,10 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Check for preemption at function entry and on loop back-edges.
+    pub fn set_debug_checks(&mut self, on: bool) {
+        self.debug_checks = on;
+    }
+
     pub fn set_preempt_flag(&mut self, flag: GlobalValue) {
         self.preempt_flag = Some(flag);
     }
@@ -682,15 +698,12 @@ impl<'a> FunctionBuilder<'a> {
         // and for address-taken scalars. These are represented as pointers
         // (i64) — the variable holds the address of the storage.
         // Cranelift aligns every slot to at least a word; a SIMD local asks
-        // for more.
+        // for more, and an `@align(64)` one more than the frame has
+        // (`LocalSlot`).
         for (local_id, size, align) in &stack_allocs {
-            let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                *size,
-                align.max(&1).trailing_zeros() as u8,
-            ));
-            self.stack_slot_map.insert(*local_id, (ss, *size));
-            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+            let slot = LocalSlot::new(&mut builder, *size, *align);
+            self.stack_slot_map.insert(*local_id, (slot, *size));
+            let addr = slot.addr(&mut builder, 0);
             let var = self.var_map[local_id];
             builder.def_var(var, addr);
         }
@@ -704,7 +717,7 @@ impl<'a> FunctionBuilder<'a> {
                     // The variable holds the slot address, so the argument goes
                     // *into* the slot — `func f(n: i32) { let c = || { n = 1 } }`
                     // has to start from the value the caller passed.
-                    builder.ins().stack_store(block_param, *ss, 0);
+                    ss.store(&mut builder, block_param, 0);
                     continue;
                 }
             }
@@ -752,6 +765,7 @@ impl<'a> FunctionBuilder<'a> {
             dst_param,
             is_main: self.mir_fn.name == "main",
             is_extern_c: self.mir_fn.is_extern_c,
+            debug_checks: self.debug_checks,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
             field_types: self.field_types,
@@ -1094,14 +1108,14 @@ impl<'a> FunctionBuilder<'a> {
             // `join`, a `close` after `close`).
 
             MirStmtKind::ResourceRegister { dst, .. } => {
-                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                let slot = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     8,
                     3,
-                ));
+                )));
                 let zero = builder.ins().iconst(types::I64, 0);
-                builder.ins().stack_store(zero, slot, 0);
-                let addr = builder.ins().stack_addr(types::I64, slot, 0);
+                slot.store(builder, zero, 0);
+                let addr = slot.addr(builder, 0);
                 let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Resource register destination not found".to_string()
@@ -1131,19 +1145,19 @@ impl<'a> FunctionBuilder<'a> {
             // (aggregate → address) at its offset and width.
             MirStmtKind::EnsureHookRegister { thunk, captures } => {
                 let env_size = captures.iter().map(|c| c.offset + c.size).max().unwrap_or(0).max(8);
-                let env_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                let env_ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     env_size,
                     3, // 8-byte alignment
-                ));
+                )));
                 for c in captures {
                     let var = ctx.var_map.get(&c.local_id).ok_or_else(|| {
                         CodegenError::UnsupportedFeature("EnsureHookRegister capture not found".to_string())
                     })?;
                     let val = builder.use_var(*var);
-                    builder.ins().stack_store(val, env_ss, c.offset as i32);
+                    env_ss.store(builder, val, c.offset as i32);
                 }
-                let env_addr = builder.ins().stack_addr(types::I64, env_ss, 0);
+                let env_addr = env_ss.addr(builder, 0);
                 let thunk_ref = ctx.func_refs.get(thunk)
                     .ok_or_else(|| CodegenError::FunctionNotFound(thunk.clone()))?;
                 let thunk_ptr = builder.ins().func_addr(types::I64, *thunk_ref);
@@ -1170,14 +1184,14 @@ impl<'a> FunctionBuilder<'a> {
                         )));
                     };
                     let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
-                    builder.ins().stack_store(val64, rec, off as i32);
+                    rec.store(builder, val64, off as i32);
                 }
             }
             MirStmtKind::UnwindDisarm { slot } => {
                 if let Some(rec) = ctx.unwind_rec {
                     let zero = builder.ins().iconst(types::I64, 0);
                     let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
-                    builder.ins().stack_store(zero, rec, off as i32);
+                    rec.store(builder, zero, off as i32);
                 }
             }
             // Only the unwind glue reads these zeroes: none without a record,
@@ -1260,7 +1274,7 @@ impl<'a> FunctionBuilder<'a> {
                     // set the variable to the local slot address.
                     let env_addr = builder.ins().iadd_imm(env_val, *offset as i64);
                     Self::copy_aggregate(builder, env_addr, *ss, *size);
-                    let local_addr = builder.ins().stack_addr(types::I64, *ss, 0);
+                    let local_addr = ss.addr(builder, 0);
                     builder.def_var(*var, local_addr);
                 } else {
                     // Scalar: load the value directly
@@ -1330,10 +1344,11 @@ impl<'a> FunctionBuilder<'a> {
                     Self::emit_boxed_field_release(builder, obj_val, 0, ctx)?;
                 } else {
                     let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                    let none = builder.ins().iconst(types::I64, 0);
+                    let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
+                    let borrowed = builder.ins().iconst(types::I64, 0);
                     let release_ref = ctx.func_refs.get("rask_box_release")
                         .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
-                    builder.ins().call(*release_ref, &[data_ptr, none]);
+                    builder.ins().call(*release_ref, &[data_ptr, vtable_ptr, borrowed]);
                 }
             }
 
@@ -1741,7 +1756,7 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(merge);
         builder.seal_block(merge);
-        builder.ins().stack_addr(types::I64, slot, 0)
+        slot.addr(builder, 0)
     }
 
     /// Bit-preserving integer resize. Widening extends by the source's signedness.
@@ -1974,17 +1989,12 @@ impl<'a> FunctionBuilder<'a> {
         let tag = builder.ins().select(present, some_tag, none_tag);
         Self::store_tag(builder, ss, tag);
         Self::store_payload(builder, ss, &wrapper, payload_ty, payload);
-        builder.ins().stack_addr(types::I64, ss, 0)
+        ss.addr(builder, 0)
     }
 
     /// A stack slot sized and aligned for a `T?` or `T or E`.
-    fn wrapper_slot(builder: &mut ClifFunctionBuilder, wrapper: &MirType) -> StackSlot {
-        let align = wrapper.align().max(1);
-        builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot,
-            wrapper.size(),
-            align.trailing_zeros() as u8,
-        ))
+    fn wrapper_slot(builder: &mut ClifFunctionBuilder, wrapper: &MirType) -> LocalSlot {
+        LocalSlot::new(builder, wrapper.size(), wrapper.align())
     }
 
     /// Target integer range as i64 constants. 64-bit unsigned upper bound is
@@ -2235,10 +2245,10 @@ impl<'a> FunctionBuilder<'a> {
                     let fr = ctx.func_refs.get(fn_name)
                         .ok_or_else(|| CodegenError::FunctionNotFound(fn_name.to_string()))?;
 
-                    let out_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    let out_ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, 16, 0,
-                    ));
-                    let out_ptr = builder.ins().stack_addr(types::I64, out_ss, 0);
+                    )));
+                    let out_ptr = out_ss.addr(builder, 0);
 
                     let mut val = Self::lower_operand_typed(builder, value, Some(arg_ty), ctx)?;
                     let val_ty = builder.func.dfg.value_type(val);
@@ -2262,6 +2272,22 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_convert(builder, value, source_ty, target_ty, *kind, ctx)
             }
 
+            MirRValue::Bitcast { value, source_ty, target_ty } => {
+                let from = mir_to_cranelift_type(source_ty)?;
+                let to = mir_to_cranelift_type(target_ty)?;
+                let val = Self::lower_operand_typed(builder, value, Some(from), ctx)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                if val_ty == to {
+                    return Ok(val);
+                }
+                if val_ty.bits() != to.bits() {
+                    return Err(CodegenError::UnsupportedFeature(format!(
+                        "bitcast from {val_ty} to {to}: the widths differ"
+                    )));
+                }
+                Ok(builder.ins().bitcast(to, MemFlags::new(), val))
+            }
+
             // Struct/enum field access: load from base pointer + field offset
             MirRValue::Field { base, field_index, byte_offset, access } => Self::field_address_and_load(builder, base, field_index, byte_offset, access, expected_ty, ctx),
 
@@ -2275,7 +2301,7 @@ impl<'a> FunctionBuilder<'a> {
                         if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                             let offset = layout.tag_offset as i32;
                             // Derive Cranelift type from tag type's size
-                            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+                            let (tag_size, _) = rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
                                 _ => types::I8,
@@ -2319,12 +2345,12 @@ impl<'a> FunctionBuilder<'a> {
                     // Scalar: spill to a stack slot, return the address
                     let val_ty = builder.func.dfg.value_type(val);
                     let size = val_ty.bytes();
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
                         size,
                         0, // Cranelift word-aligns every slot
-                    ));
-                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    )));
+                    let addr = ss.addr(builder, 0);
                     builder.ins().store(MemFlags::new(), val, addr, 0);
                     Ok(addr)
                 }
@@ -2805,13 +2831,13 @@ impl<'a> FunctionBuilder<'a> {
             // stored into it.
             let (size, _) = (param_ty.size(), param_ty.align());
             let have = builder.func.dfg.value_type(arg_vals[i]).bytes();
-            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 size.max(have),
                 0,
-            ));
-            builder.ins().stack_store(arg_vals[i], ss, 0);
-            arg_vals[i] = builder.ins().stack_addr(types::I64, ss, 0);
+            )));
+            ss.store(builder, arg_vals[i], 0);
+            arg_vals[i] = ss.addr(builder, 0);
         }
     }
 
@@ -2894,6 +2920,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
             env_layout.add_capture(c.local_id, c.offset, c.size, is_aggregate, c.by_ref);
+            if !c.by_ref {
+                if let Some(l) = local {
+                    env_layout.align = env_layout.align.max(l.ty.align());
+                }
+            }
         }
 
         // Get function pointer for the closure function
@@ -3000,7 +3031,7 @@ impl<'a> FunctionBuilder<'a> {
                 // site does.
                 if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
                     Self::land_aggregate_result(builder, result, *ss, *size, dst_ptr.is_some());
-                    let addr = builder.ins().stack_addr(types::I64, *ss, 0);
+                    let addr = ss.addr(builder, 0);
                     builder.def_var(*var, addr);
                 } else {
                     builder.def_var(*var, result);
@@ -3033,12 +3064,17 @@ impl<'a> FunctionBuilder<'a> {
         let alloc_ref = ctx.func_refs.get("rask_box_alloc")
             .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_alloc".to_string()))?;
 
+        let gv = ctx.vtable_globals.get(vtable_name.as_str())
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                format!("InterfaceBox: vtable '{}' not found", vtable_name)
+            ))?;
+        let vtable_ptr = builder.ins().global_value(types::I64, *gv);
+
         // The block carries a reference count in the word before the value, so
-        // a derived container can share it — see `rask_box_alloc`. The pointer
-        // that comes back is the value's, so nothing downstream changes.
-        let alloc_size = (*concrete_size).max(1) as i64;
-        let size_val = builder.ins().iconst(types::I64, alloc_size);
-        let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
+        // a derived container can share it — see `rask_box_alloc`, which sizes
+        // and aligns the block from the vtable. The pointer that comes back is
+        // the value's, so nothing downstream changes.
+        let call_inst = builder.ins().call(*alloc_ref, &[vtable_ptr]);
         let data_ptr = builder.inst_results(call_inst)[0];
 
         // Copy concrete value to heap
@@ -3069,19 +3105,13 @@ impl<'a> FunctionBuilder<'a> {
             Self::store_box_scalar(builder, src_val, data_ptr, *concrete_size);
         }
 
-        // Get vtable address
-        let gv = ctx.vtable_globals.get(vtable_name.as_str())
-            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                format!("InterfaceBox: vtable '{}' not found", vtable_name)
-            ))?;
-        let vtable_ptr = builder.ins().global_value(types::I64, *gv);
 
         // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
         let (ss, _) = ctx.stack_slot_map.get(dst)
             .ok_or_else(|| CodegenError::UnsupportedFeature(
                 "InterfaceBox destination stack slot not found".to_string()
             ))?;
-        let dst_addr = builder.ins().stack_addr(types::I64, *ss, 0);
+        let dst_addr = ss.addr(builder, 0);
         builder.ins().store(MemFlags::new(), data_ptr, dst_addr, crate::layouts::FAT_PTR_DATA_OFFSET);
         builder.ins().store(MemFlags::new(), vtable_ptr, dst_addr, crate::layouts::FAT_PTR_VTABLE_OFFSET);
 
@@ -3214,7 +3244,7 @@ impl<'a> FunctionBuilder<'a> {
             // vtable read address 1 (#474).
             if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst_id) {
                 Self::land_aggregate_result(builder, result, *dst_ss, *dst_size, dst_ptr.is_some());
-                let addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
+                let addr = dst_ss.addr(builder, 0);
                 builder.def_var(*var, addr);
             } else {
                 builder.def_var(*var, result);
@@ -3838,7 +3868,7 @@ impl<'a> FunctionBuilder<'a> {
         let (offset, ty) = match ctx.enum_layouts.get(idx) {
             Some(layout) => {
                 let (tag_size, _) =
-                    rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+                    rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
                 let ty = match tag_size {
                     8 => types::I64,
                     4 => types::I32,
@@ -4588,6 +4618,17 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, zero);
                 }
             }
+        } else if func.name == "ptr_check" {
+            // mem.unsafe: a debug build checks every raw-pointer access for
+            // null; `@checked_unsafe` asks for it in release too.
+            let flag = |i: usize| matches!(args.get(i), Some(MirOperand::Constant(MirConst::Bool(true))));
+            if ctx.debug_checks || flag(1) {
+                let ptr = Self::lower_operand_typed(builder, &args[0], Some(types::I64), ctx)?;
+                let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
+                let msg = if flag(2) { PTR_NULL_WRITE } else { PTR_NULL_READ };
+                Self::guard_overflow(builder, ctx, is_null, msg);
+            }
+            return Ok(true);
         } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
             // User-level diverging builtin: emit rask_panic_at with the
             // message string and trap. todo/unreachable map to fixed
@@ -4998,10 +5039,10 @@ impl<'a> FunctionBuilder<'a> {
             let ss = dst
                 .and_then(|id| ctx.stack_slot_map.get(id))
                 .map(|(ss, _)| *ss)
-                .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 16, 0,
-                )));
-            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                ))));
+            let addr = ss.addr(builder, 0);
             arg_vals.insert(0, addr);
             Some(ss)
         } else {
@@ -5014,7 +5055,7 @@ impl<'a> FunctionBuilder<'a> {
             // String out-param: result is in the stack slot, define dst var as pointer
             if let Some(dst_id) = dst {
                 if let Some(var) = ctx.var_map.get(dst_id) {
-                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    let addr = ss.addr(builder, 0);
                     builder.def_var(*var, addr);
                 }
             }
@@ -5065,6 +5106,16 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Ordinary Rask call — lowers args, applies stdlib arg/return adaptation.
+    /// The address of element `index` of the vector `vec`.
+    fn vec_elem_addr(builder: &mut ClifFunctionBuilder, vec: Value, index: Value) -> Value {
+        use rask_mono::runtime_abi::{RASK_VEC_DATA_OFFSET, RASK_VEC_ELEM_SIZE_OFFSET};
+        let flags = MemFlags::trusted();
+        let data = builder.ins().load(types::I64, flags, vec, RASK_VEC_DATA_OFFSET as i32);
+        let elem_size = builder.ins().load(types::I64, flags, vec, RASK_VEC_ELEM_SIZE_OFFSET as i32);
+        let offset = builder.ins().imul(index, elem_size);
+        builder.ins().iadd(data, offset)
+    }
+
     fn lower_ordinary_call(
         builder: &mut ClifFunctionBuilder,
         dst: Option<&LocalId>,
@@ -5152,7 +5203,15 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
-        let call_inst = builder.ins().call(*func_ref, &arg_vals);
+        // An index the bounds pass already proved in range needs no call:
+        // the element is `data + index * elem_size`, read straight off the
+        // vector's header.
+        let call_results: Vec<Value> = if func.name == "Vec_get_unchecked" {
+            vec![Self::vec_elem_addr(builder, arg_vals[0], arg_vals[1])]
+        } else {
+            let call_inst = builder.ins().call(*func_ref, &arg_vals);
+            builder.inst_results(call_inst).to_vec()
+        };
 
         if let Some(dst_id) = dst {
             // Skip void-typed destinations — nothing to store
@@ -5179,7 +5238,7 @@ impl<'a> FunctionBuilder<'a> {
             // needs one load. The struct test mirrors the one Mutex_new uses, so
             // the two sides agree on which payloads are indirect.
             if matches!(adapt, CallAdapt::BoxPayloadPtr) {
-                let results = builder.inst_results(call_inst);
+                let results = &call_results[..];
                 let ptr = if !results.is_empty() {
                     results[0]
                 } else {
@@ -5209,7 +5268,7 @@ impl<'a> FunctionBuilder<'a> {
                     let load_ty = dst_local
                         .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
                         .unwrap_or(types::I64);
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     if !results.is_empty() {
                         let ptr = results[0];
                         Self::load_scalar_slot(builder, ptr, load_ty)
@@ -5220,7 +5279,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefOption => {
                     // Result is void*: NULL → None, non-NULL → Some(deref).
                     // Write tag+payload into the destination stack slot.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let ptr = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5296,12 +5355,12 @@ impl<'a> FunctionBuilder<'a> {
                     let want = dst_local
                         .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
                         .unwrap_or(types::I64);
-                    builder.ins().stack_load(want, ss, 0)
+                    ss.load(builder, want, 0)
                 }
                 CallAdapt::OptionOutParam(ss) => {
                     // 1 means the element is there (present), 0 that there
                     // was nothing (absent).
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let wrote = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5326,16 +5385,16 @@ impl<'a> FunctionBuilder<'a> {
                             slot_already_written = true;
                         }
                     }
-                    builder.ins().stack_addr(types::I64, ss, 0)
+                    ss.addr(builder, 0)
                 }
                 CallAdapt::CasResult(ok_ss) => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let observed = if !results.is_empty() {
                         results[0]
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
-                    let swapped = builder.ins().stack_load(types::I64, ok_ss, 0);
+                    let swapped = ok_ss.load(builder, types::I64, 0);
                     if let (Some((dst_ss, _)), Some(wrapper)) =
                         (ctx.stack_slot_map.get(dst_id), Self::dst_wrapper(ctx, dst_id))
                     {
@@ -5354,7 +5413,7 @@ impl<'a> FunctionBuilder<'a> {
                     observed
                 }
                 CallAdapt::AtomicBits => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let bits = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5372,7 +5431,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefStringElement => {
                     // void* pointing to aggregate data in collection.
                     // Copy `slot_size` bytes into the dst's own slot.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let ptr = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5385,7 +5444,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::TryRecvResult(payload_ss) => {
                     // Channel status → `T or E` Result. status==OK(0) →
                     // Ok(payload); anything else → Err.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, RASK_CHAN_OK)
                     };
@@ -5402,7 +5461,7 @@ impl<'a> FunctionBuilder<'a> {
                         // Ok(payload), copied from where the channel wrote it.
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let payload_addr = builder.ins().stack_addr(types::I64, payload_ss, 0);
+                        let payload_addr = payload_ss.addr(builder, 0);
                         Self::build_wrapped_aggregate(
                             builder, dst_ss, &wrapper, false, payload_addr,
                         );
@@ -5420,7 +5479,7 @@ impl<'a> FunctionBuilder<'a> {
                     builder.ins().iconst(types::I64, 0)
                 }
                 CallAdapt::Status => {
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -5455,7 +5514,7 @@ impl<'a> FunctionBuilder<'a> {
                     // the out-param slot), 1 → Err. The old entry points
                     // returned the value itself with no way to fail, so garbage
                     // input came back as Ok(0) (#472).
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5475,7 +5534,7 @@ impl<'a> FunctionBuilder<'a> {
                         // it at its own type.
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let raw = builder.ins().stack_load(writer_ty, value_ss, 0);
+                        let raw = value_ss.load(builder, writer_ty, 0);
                         Self::build_ok(builder, dst_ss, &wrapper, raw);
                         builder.ins().jump(merge_block, &[]);
 
@@ -5505,7 +5564,7 @@ impl<'a> FunctionBuilder<'a> {
                     // the string alone and nothing wrote the tag, so the caller
                     // read whatever was in that slot — `io.read_line()` failed
                     // on its first call with a bogus error.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let status = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5523,7 +5582,7 @@ impl<'a> FunctionBuilder<'a> {
 
                         builder.switch_to_block(ok_block);
                         builder.seal_block(ok_block);
-                        let src = builder.ins().stack_addr(types::I64, value_ss, 0);
+                        let src = value_ss.addr(builder, 0);
                         Self::build_wrapped_aggregate(builder, dst_ss, &wrapper, false, src);
                         builder.ins().jump(merge_block, &[]);
 
@@ -5558,7 +5617,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Err payload was that same `-1` — matching on it read -1 as
                     // a JoinError address and segfaulted, and every successful
                     // join reported 0 because the value was never captured.
-                    let results = builder.inst_results(call_inst);
+                    let results = &call_results[..];
                     let outcome = if !results.is_empty() {
                         results[0]
                     } else {
@@ -5579,7 +5638,7 @@ impl<'a> FunctionBuilder<'a> {
                     if let Some(addr) = dst_ptr {
                         addr
                     } else {
-                        let results = builder.inst_results(call_inst);
+                        let results = &call_results[..];
                         if !results.is_empty() {
                             results[0]
                         } else {
@@ -5629,7 +5688,7 @@ impl<'a> FunctionBuilder<'a> {
                         _ => Self::build_ok(builder, *ss, &wrapper, final_val),
                     }
                 } else {
-                    builder.ins().stack_store(final_val, *ss, 0);
+                    ss.store(builder, final_val, 0);
                 }
             } else {
                 builder.def_var(*var, final_val);
@@ -5999,10 +6058,10 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<Value> {
         let func_ref = *ctx.func_refs.get(name)
             .ok_or_else(|| CodegenError::FunctionNotFound(name.to_string()))?;
-        let slot = builder.create_sized_stack_slot(StackSlotData::new(
+        let slot = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, 16, 4,
-        ));
-        let out_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+        )));
+        let out_ptr = slot.addr(builder, 0);
         let call = builder.ins().call(func_ref, &[lhs, rhs, out_ptr]);
         let status = builder.inst_results(call)[0];
 
@@ -6015,7 +6074,7 @@ impl<'a> FunctionBuilder<'a> {
             builder, ctx, overflowed, kind, symbol, 128, unsigned, lhs, rhs,
         );
 
-        Ok(builder.ins().stack_load(types::I128, slot, 0))
+        Ok(slot.load(builder, types::I128, 0))
     }
 
     /// SH1: panic when the shift amount is >= the operand's bit width.
@@ -6094,7 +6153,7 @@ impl<'a> FunctionBuilder<'a> {
                 Self::store_tag(builder, ss, tag);
                 Self::zero_result_origin(builder, ss);
             }
-            return Ok(builder.ins().stack_addr(types::I64, ss, 0));
+            return Ok(ss.addr(builder, 0));
         }
         let ret_cl_ty = mir_to_cranelift_type(ctx.ret_ty)?;
         Ok(if ret_cl_ty.is_float() {
@@ -6181,10 +6240,10 @@ impl<'a> FunctionBuilder<'a> {
         let Some(fr) = msg_fr else {
             return builder.ins().iconst(types::I64, 0);
         };
-        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, 16, 0,
-        ));
-        let dst = builder.ins().stack_addr(types::I64, ss, 0);
+        )));
+        let dst = ss.addr(builder, 0);
         let wants_dst = {
             let ext_func = &builder.func.dfg.ext_funcs[fr];
             let sig = &builder.func.dfg.signatures[ext_func.signature];
@@ -6200,7 +6259,7 @@ impl<'a> FunctionBuilder<'a> {
         let src = builder.inst_results(call)[0];
         for off in [0i32, 8] {
             let word = builder.ins().load(types::I64, MemFlags::new(), src, off);
-            builder.ins().stack_store(word, ss, off);
+            ss.store(builder, word, off);
         }
         dst
     }
@@ -6328,7 +6387,7 @@ impl<'a> FunctionBuilder<'a> {
                     _ if is_err => Self::build_err(builder, ss, &wrapper, val),
                     _ => Self::build_ok(builder, ss, &wrapper, val),
                 }
-                return Ok(Some(builder.ins().stack_addr(types::I64, ss, 0)));
+                return Ok(Some(ss.addr(builder, 0)));
             }
             return Self::plain_exit_value(builder, value, ctx);
         }
@@ -6346,9 +6405,9 @@ impl<'a> FunctionBuilder<'a> {
                 .and_then(|t| t.slot_size());
             if let Some(size) = held.filter(|s| *s <= 8) {
                 let addr = Self::lower_operand(builder, &MirOperand::Local(*id), ctx)?;
-                let word = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+                let word = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)));
                 Self::copy_aggregate(builder, addr, word, size);
-                return Ok(Some(builder.ins().stack_load(types::I64, word, 0)));
+                return Ok(Some(word.load(builder, types::I64, 0)));
             }
         }
         Self::plain_exit_value(builder, value, ctx)
@@ -6399,7 +6458,7 @@ impl<'a> FunctionBuilder<'a> {
         let (Some(rec), Some(pop)) = (ctx.unwind_rec, ctx.func_refs.get("rask_unwind_pop")) else {
             return;
         };
-        let addr = builder.ins().stack_addr(types::I64, rec, 0);
+        let addr = rec.addr(builder, 0);
         builder.ins().call(*pop, &[addr]);
     }
 
@@ -6414,7 +6473,7 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         mir_fn: &MirFunction,
         ctx: &CodegenCtx,
-    ) -> Option<StackSlot> {
+    ) -> Option<LocalSlot> {
         let arms = || {
             mir_fn.blocks.iter().flat_map(|b| b.statements.iter()).filter_map(|s| match &s.kind {
                 MirStmtKind::UnwindArm { release, .. } => Some(release),
@@ -6450,16 +6509,16 @@ impl<'a> FunctionBuilder<'a> {
         let push = func_refs.get("rask_unwind_push")?;
         let header = rask_mir::transform::unwind::RECORD_HEADER;
         let size = header + 8 * slots;
-        let rec = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3));
+        let rec = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)));
         // Zeroed, not assumed zero: a slot nothing armed yet reads as empty
         // only if something wrote it (RASK_POISON_STACK).
         let zero = builder.ins().iconst(types::I64, 0);
         for off in (header..size).step_by(8) {
-            builder.ins().stack_store(zero, rec, off as i32);
+            rec.store(builder, zero, off as i32);
         }
         let run_ptr = builder.ins().func_addr(types::I64, *run);
-        builder.ins().stack_store(run_ptr, rec, 8);
-        let addr = builder.ins().stack_addr(types::I64, rec, 0);
+        rec.store(builder, run_ptr, 8);
+        let addr = rec.addr(builder, 0);
         builder.ins().call(*push, &[addr]);
         Some(rec)
     }
@@ -6507,7 +6566,7 @@ impl<'a> FunctionBuilder<'a> {
     fn land_aggregate_result(
         builder: &mut ClifFunctionBuilder,
         result: Value,
-        ss: StackSlot,
+        ss: LocalSlot,
         size: u32,
         through_dst: bool,
     ) {
@@ -6516,14 +6575,12 @@ impl<'a> FunctionBuilder<'a> {
         }
         match size {
             8 => {
-                builder.ins().stack_store(result, ss, 0);
+                ss.store(builder, result, 0);
             }
             n if n < 8 => {
-                let scratch = builder.create_sized_stack_slot(
-                    StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3),
-                );
-                builder.ins().stack_store(result, scratch, 0);
-                let scratch_ptr = builder.ins().stack_addr(types::I64, scratch, 0);
+                let scratch = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3), ));
+                scratch.store(builder, result, 0);
+                let scratch_ptr = scratch.addr(builder, 0);
                 Self::copy_aggregate(builder, scratch_ptr, ss, n);
             }
             n => Self::copy_aggregate(builder, result, ss, n),
@@ -6544,13 +6601,9 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
     ) -> Value {
         if let Some((ss, _)) = dst.and_then(|d| ctx.stack_slot_map.get(d)) {
-            return builder.ins().stack_addr(types::I64, *ss, 0);
+            return ss.addr(builder, 0);
         }
-        let size = ret_ty.size();
-        let ss = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot, size, 3,
-        ));
-        builder.ins().stack_addr(types::I64, ss, 0)
+        LocalSlot::new(builder, ret_ty.size(), ret_ty.align().max(8)).addr(builder, 0)
     }
 
     /// Does a function returning `ret_ty` hand its answer back through a
@@ -6601,7 +6654,7 @@ impl<'a> FunctionBuilder<'a> {
     /// Copy aggregate data from a source pointer into a caller-owned stack slot.
     /// Used after calls that return aggregate types (struct, enum, Result, etc.)
     /// to avoid dangling pointers to callee stack frames.
-    fn copy_aggregate(builder: &mut ClifFunctionBuilder, src_ptr: Value, dst_slot: StackSlot, size: u32) {
+    fn copy_aggregate(builder: &mut ClifFunctionBuilder, src_ptr: Value, dst_slot: LocalSlot, size: u32) {
         Self::copy_aggregate_at(builder, src_ptr, dst_slot, 0, size);
     }
 
@@ -6609,11 +6662,11 @@ impl<'a> FunctionBuilder<'a> {
     fn copy_aggregate_at(
         builder: &mut ClifFunctionBuilder,
         src_ptr: Value,
-        dst_slot: StackSlot,
+        dst_slot: LocalSlot,
         dst_off: i32,
         size: u32,
     ) {
-        let dst_ptr = builder.ins().stack_addr(types::I64, dst_slot, 0);
+        let dst_ptr = dst_slot.addr(builder, 0);
         Self::copy_bytes(builder, src_ptr, 0, dst_ptr, dst_off, size);
     }
 
@@ -6631,9 +6684,9 @@ impl<'a> FunctionBuilder<'a> {
     // side it fills: a scalar at that side's width, an aggregate copied whole.
 
     /// A wrapper's tag, from a value of any integer width.
-    fn store_tag(builder: &mut ClifFunctionBuilder, slot: StackSlot, tag: Value) {
+    fn store_tag(builder: &mut ClifFunctionBuilder, slot: LocalSlot, tag: Value) {
         let tag = Self::to_tag_width(builder, tag);
-        builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
+        slot.store(builder, tag, crate::layouts::TAG_OFFSET);
     }
 
     fn tag_const(builder: &mut ClifFunctionBuilder, tag: i64) -> Value {
@@ -6649,11 +6702,11 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Zero a `T or E`'s origin. Ok and C-FFI errors have no Rask origin; a
     /// real one is filled in where the error is built.
-    fn zero_result_origin(builder: &mut ClifFunctionBuilder, slot: StackSlot) {
+    fn zero_result_origin(builder: &mut ClifFunctionBuilder, slot: LocalSlot) {
         let line = builder.ins().iconst(types::I32, 0);
-        builder.ins().stack_store(line, slot, crate::layouts::ORIGIN_LINE_OFFSET);
+        slot.store(builder, line, crate::layouts::ORIGIN_LINE_OFFSET);
         let file = builder.ins().iconst(types::I64, 0);
-        builder.ins().stack_store(file, slot, crate::layouts::ORIGIN_FILE_OFFSET);
+        slot.store(builder, file, crate::layouts::ORIGIN_FILE_OFFSET);
     }
 
     /// The side of `wrapper` a payload fills: `T?`'s `T`, or `T or E`'s `T`
@@ -6680,7 +6733,7 @@ impl<'a> FunctionBuilder<'a> {
     /// arrives as its address and is copied whole.
     fn store_payload(
         builder: &mut ClifFunctionBuilder,
-        slot: StackSlot,
+        slot: LocalSlot,
         wrapper: &MirType,
         arm: &MirType,
         payload: Value,
@@ -6697,14 +6750,14 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     Self::convert_value(builder, payload, have, want, None)
                 };
-                builder.ins().stack_store(v, slot, offset);
+                slot.store(builder, v, offset);
             }
             _ => Self::copy_aggregate_at(builder, payload, slot, offset, arm.size()),
         }
     }
 
     /// Ok(payload) into a Result slot.
-    fn build_ok(builder: &mut ClifFunctionBuilder, slot: StackSlot, wrapper: &MirType, payload: Value) {
+    fn build_ok(builder: &mut ClifFunctionBuilder, slot: LocalSlot, wrapper: &MirType, payload: Value) {
         let tag = Self::tag_const(builder, crate::layouts::TAG_PRESENT);
         Self::store_tag(builder, slot, tag);
         Self::zero_result_origin(builder, slot);
@@ -6744,7 +6797,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Err(payload) into a Result slot, with no origin.
-    fn build_err(builder: &mut ClifFunctionBuilder, slot: StackSlot, wrapper: &MirType, payload: Value) {
+    fn build_err(builder: &mut ClifFunctionBuilder, slot: LocalSlot, wrapper: &MirType, payload: Value) {
         let tag = Self::tag_const(builder, crate::layouts::TAG_ABSENT);
         Self::store_tag(builder, slot, tag);
         Self::zero_result_origin(builder, slot);
@@ -6756,7 +6809,7 @@ impl<'a> FunctionBuilder<'a> {
     fn build_err_variant(
         builder: &mut ClifFunctionBuilder,
         ctx: &CodegenCtx,
-        slot: StackSlot,
+        slot: LocalSlot,
         wrapper: &MirType,
         variant: Value,
     ) {
@@ -6780,18 +6833,18 @@ impl<'a> FunctionBuilder<'a> {
         } else {
             variant
         };
-        builder.ins().stack_store(v, slot, (wrapper.payload_offset() + tag_offset) as i32);
+        slot.store(builder, v, (wrapper.payload_offset() + tag_offset) as i32);
     }
 
     /// Some(payload) into an Option slot. An option has no origin fields.
-    fn build_some(builder: &mut ClifFunctionBuilder, slot: StackSlot, wrapper: &MirType, payload: Value) {
+    fn build_some(builder: &mut ClifFunctionBuilder, slot: LocalSlot, wrapper: &MirType, payload: Value) {
         let tag = Self::tag_const(builder, crate::layouts::TAG_PRESENT);
         Self::store_tag(builder, slot, tag);
         Self::store_payload(builder, slot, wrapper, Self::wrapper_arm(wrapper, false), payload);
     }
 
     /// none into an Option slot: the tag alone, the payload is dead.
-    fn build_none(builder: &mut ClifFunctionBuilder, slot: StackSlot) {
+    fn build_none(builder: &mut ClifFunctionBuilder, slot: LocalSlot) {
         let tag = Self::tag_const(builder, crate::layouts::TAG_ABSENT);
         Self::store_tag(builder, slot, tag);
     }
@@ -6808,10 +6861,10 @@ impl<'a> FunctionBuilder<'a> {
     /// silently change what gets built.
     fn build_io_error_payload(
         builder: &mut ClifFunctionBuilder,
-        dst_ss: StackSlot,
+        dst_ss: LocalSlot,
         wrapper: &MirType,
         status: Value,
-        err_ss: StackSlot,
+        err_ss: LocalSlot,
         ctx: &CodegenCtx,
     ) {
         let err_layout = match Self::wrapper_arm(wrapper, true) {
@@ -6846,15 +6899,15 @@ impl<'a> FunctionBuilder<'a> {
         builder.switch_to_block(eof_block);
         builder.seal_block(eof_block);
         let v = builder.ins().iconst(tag_width, eof_tag);
-        builder.ins().stack_store(v, dst_ss, tag_at);
+        dst_ss.store(builder, v, tag_at);
         builder.ins().jump(done_block, &[]);
 
         builder.switch_to_block(other_block);
         builder.seal_block(other_block);
         let v = builder.ins().iconst(tag_width, other_tag);
-        builder.ins().stack_store(v, dst_ss, tag_at);
-        let src = builder.ins().stack_addr(types::I64, err_ss, 0);
-        let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
+        dst_ss.store(builder, v, tag_at);
+        let src = err_ss.addr(builder, 0);
+        let dst_addr = dst_ss.addr(builder, 0);
         Self::copy_bytes(
             builder, src, 0, dst_addr,
             (payload + msg_offset) as i32,
@@ -7316,7 +7369,7 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         let Some(layout) = ctx.enum_layouts.get(id.id as usize) else { return Ok(()) };
         let tag_offset = layout.tag_offset as i32;
-        let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
+        let (tag_size, _) = rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
         let tag_ty = match tag_size {
             2 => types::I16,
             4 => types::I32,
@@ -7379,10 +7432,10 @@ impl<'a> FunctionBuilder<'a> {
 
     fn build_join_result(
         builder: &mut ClifFunctionBuilder,
-        dst_ss: StackSlot,
+        dst_ss: LocalSlot,
         outcome: Value,
-        value_ss: StackSlot,
-        msg_ss: StackSlot,
+        value_ss: LocalSlot,
+        msg_ss: LocalSlot,
         dst_id: &LocalId,
         ctx: &CodegenCtx,
     ) {
@@ -7428,7 +7481,7 @@ impl<'a> FunctionBuilder<'a> {
             // clearing the task's own reference. Without the free this leaked
             // one allocation per task, about 80 bytes, which no assertion can
             // see (#963).
-            let src = builder.ins().stack_load(types::I64, value_ss, 0);
+            let src = value_ss.load(builder, types::I64, 0);
             if ok_ty.passed_by_address() || ok_ty.size() == 0 {
                 Self::build_wrapped_aggregate(builder, dst_ss, &wrapper, false, src);
             } else {
@@ -7441,7 +7494,7 @@ impl<'a> FunctionBuilder<'a> {
             }
         } else {
             let load_ty = mir_to_cranelift_type(&ok_ty).unwrap_or(types::I64);
-            let value = builder.ins().stack_load(load_ty, value_ss, 0);
+            let value = value_ss.load(builder, load_ty, 0);
             Self::build_ok(builder, dst_ss, &wrapper, value);
         }
         builder.ins().jump(merge_block, &[]);
@@ -7453,9 +7506,9 @@ impl<'a> FunctionBuilder<'a> {
         Self::store_tag(builder, dst_ss, tag);
         Self::zero_result_origin(builder, dst_ss);
         let v = builder.ins().iconst(tag_width, panicked_tag);
-        builder.ins().stack_store(v, dst_ss, (payload + tag_offset) as i32);
-        let src = builder.ins().stack_addr(types::I64, msg_ss, 0);
-        let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
+        dst_ss.store(builder, v, (payload + tag_offset) as i32);
+        let src = msg_ss.addr(builder, 0);
+        let dst_addr = dst_ss.addr(builder, 0);
         Self::copy_bytes(
             builder, src, 0, dst_addr,
             (payload + msg_offset) as i32,
@@ -7471,7 +7524,7 @@ impl<'a> FunctionBuilder<'a> {
     /// `T or E` slot. `absent` picks the Err/none tag over the Ok/Some one.
     fn build_wrapped_aggregate(
         builder: &mut ClifFunctionBuilder,
-        slot: StackSlot,
+        slot: LocalSlot,
         wrapper: &MirType,
         absent: bool,
         src_ptr: Value,
@@ -7502,7 +7555,7 @@ impl<'a> FunctionBuilder<'a> {
     fn wrap_option_into_slot(
         builder: &mut ClifFunctionBuilder,
         value: Value,
-        dst_slot: StackSlot,
+        dst_slot: LocalSlot,
         wrapper: &MirType,
     ) {
         let zero = builder.ins().iconst(types::I64, 0);
@@ -7516,7 +7569,7 @@ impl<'a> FunctionBuilder<'a> {
     fn wrap_result_into_slot(
         builder: &mut ClifFunctionBuilder,
         value: Value,
-        dst_slot: StackSlot,
+        dst_slot: LocalSlot,
         wrapper: &MirType,
     ) {
         let zero = builder.ins().iconst(types::I64, 0);
@@ -7540,11 +7593,11 @@ impl<'a> FunctionBuilder<'a> {
         } else {
             Self::convert_value(builder, val, have, want, None)
         };
-        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot, want.bytes(), 4,
-        ));
-        builder.ins().stack_store(val, ss, 0);
-        builder.ins().stack_addr(types::I64, ss, 0)
+        )));
+        ss.store(builder, val, 0);
+        ss.addr(builder, 0)
     }
 
     /// Spill argument `index` with `value_to_ptr`, at the argument's own type.
@@ -7642,10 +7695,10 @@ impl<'a> FunctionBuilder<'a> {
             let ss = dst
                 .and_then(|id| ctx.stack_slot_map.get(id))
                 .map(|(ss, _)| *ss)
-                .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, fallback_size, 0,
-                )));
-            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                ))));
+            let addr = ss.addr(builder, 0);
             args.push(addr);
             CallAdapt::StringOutParam(ss)
         } else {
@@ -7654,10 +7707,10 @@ impl<'a> FunctionBuilder<'a> {
                 .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
                 .map(|l| l.ty.size().max(1))
                 .unwrap_or(8);
-            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot, size, 4,
-            ));
-            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+            )));
+            let addr = ss.addr(builder, 0);
             args.push(addr);
             CallAdapt::PopOutParam(ss)
         }
@@ -7811,14 +7864,14 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Store an atomic's bits into a slot as a `ty`, at the payload's width.
-    fn store_atomic_bits(builder: &mut ClifFunctionBuilder, slot: StackSlot, offset: i32, ty: &MirType, bits: Value) {
+    fn store_atomic_bits(builder: &mut ClifFunctionBuilder, slot: LocalSlot, offset: i32, ty: &MirType, bits: Value) {
         if ty.passed_by_address() {
             let int = Self::int_of_width(ty.size());
             let v = if int == types::I64 { bits } else { builder.ins().ireduce(int, bits) };
-            builder.ins().stack_store(v, slot, offset);
+            slot.store(builder, v, offset);
         } else {
             let v = Self::from_atomic_bits(builder, bits, ty);
-            builder.ins().stack_store(v, slot, offset);
+            slot.store(builder, v, offset);
         }
     }
 
@@ -7885,8 +7938,9 @@ impl<'a> FunctionBuilder<'a> {
                     "`{func_name}` was lowered without its {leading} size argument(s)",
                 );
                 // Then one element tag per container slot, each becoming
-                // (offsets pointer, count). A path that emitted no tag gets the
-                // null map, which says the elements own nothing.
+                // (offsets pointer, count, alignment). A path that emitted no
+                // tag gets the null map, which says the elements own nothing,
+                // and alignment 0, which is whatever `malloc` gives.
                 let mut expanded: Vec<Value> = Vec::new();
                 for i in 0..tags as usize {
                     let elem = mir_args.get(leading + i).and_then(|a| match a {
@@ -7909,6 +7963,8 @@ impl<'a> FunctionBuilder<'a> {
                             expanded.push(builder.ins().iconst(types::I64, 0));
                         }
                     }
+                    let align = elem.map_or(0, |ty| ty.align() as i64);
+                    expanded.push(builder.ins().iconst(types::I64, align));
                 }
                 args.truncate(leading);
                 args.extend(expanded);
@@ -7935,10 +7991,10 @@ impl<'a> FunctionBuilder<'a> {
                 let ss = dst
                     .and_then(|id| ctx.stack_slot_map.get(id))
                     .map(|(ss, _)| *ss)
-                    .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                    .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, 16, 0,
-                    )));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    ))));
+                let addr = ss.addr(builder, 0);
                 args.insert(0, addr);
                 CallAdapt::StringOutParam(ss)
             }
@@ -7950,28 +8006,28 @@ impl<'a> FunctionBuilder<'a> {
                 let ss = dst
                     .and_then(|id| ctx.stack_slot_map.get(id))
                     .map(|(ss, _)| *ss)
-                    .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                    .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, 16, 0,
-                    )));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    ))));
+                let addr = ss.addr(builder, 0);
                 args.insert(0, addr);
                 CallAdapt::StringOutParam(ss)
             }
 
             ArgAdapt::StringResultOutParam => {
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
-                ));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                )));
+                let addr = ss.addr(builder, 0);
                 args.insert(0, addr);
                 // A second out-param for *why* it failed. Without it the call
                 // reported only that it failed, and codegen had to invent a
                 // variant — every failure became `IoError.UnexpectedEof`,
                 // including a read on a write-only descriptor (#682).
-                let err_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                let err_ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, err_ss, 0));
+                )));
+                args.push(err_ss.addr(builder, 0));
                 CallAdapt::StringResult(ss, err_ss)
             }
 
@@ -7980,11 +8036,11 @@ impl<'a> FunctionBuilder<'a> {
                     .and_then(|op| if let MirOperand::Local(id) = op { Some(id) } else { None })
                     .and_then(|id| ctx.stack_slot_map.get(id))
                     .map(|(ss, _)| *ss)
-                    .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                    .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, 16, 0,
-                    )));
+                    ))));
                 // C signature: push_str(out, s, other) — prepend out-param address
-                let out_addr = builder.ins().stack_addr(types::I64, ss, 0);
+                let out_addr = ss.addr(builder, 0);
                 args.insert(0, out_addr);
                 CallAdapt::StringOutParam(ss)
             }
@@ -8012,7 +8068,7 @@ impl<'a> FunctionBuilder<'a> {
                 // A container holds the element in the payload's own layout,
                 // so the callee copies it straight in.
                 let offset = wrapper.payload_offset() as i32;
-                args.push(builder.ins().stack_addr(types::I64, ss, offset));
+                args.push(ss.addr(builder, offset));
                 CallAdapt::OptionOutParam(ss)
             }
 
@@ -8073,16 +8129,16 @@ impl<'a> FunctionBuilder<'a> {
                 if fields.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));
                 } else {
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, (fields.len() * 8) as u32, 0,
-                    ));
+                    )));
                     for (i, (kind, off)) in fields.iter().enumerate() {
                         let k = builder.ins().iconst(types::I32, *kind as i64);
                         let o = builder.ins().iconst(types::I32, *off as i64);
-                        builder.ins().stack_store(k, ss, (i * 8) as i32);
-                        builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
+                        ss.store(builder, k, (i * 8) as i32);
+                        ss.store(builder, o, (i * 8 + 4) as i32);
                     }
-                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                    args.push(ss.addr(builder, 0));
                 }
                 CallAdapt::None
             }
@@ -8102,16 +8158,16 @@ impl<'a> FunctionBuilder<'a> {
                 if fields.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));
                 } else {
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, (fields.len() * 8) as u32, 0,
-                    ));
+                    )));
                     for (i, (kind, off)) in fields.iter().enumerate() {
                         let k = builder.ins().iconst(types::I32, *kind as i64);
                         let o = builder.ins().iconst(types::I32, *off as i64);
-                        builder.ins().stack_store(k, ss, (i * 8) as i32);
-                        builder.ins().stack_store(o, ss, (i * 8 + 4) as i32);
+                        ss.store(builder, k, (i * 8) as i32);
+                        ss.store(builder, o, (i * 8 + 4) as i32);
                     }
-                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                    args.push(ss.addr(builder, 0));
                 }
                 // And what the payload *owns* — the same entries a container's
                 // elements carry, off the same layout. `fields` above is the
@@ -8126,15 +8182,22 @@ impl<'a> FunctionBuilder<'a> {
                 if owned.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));
                 } else {
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
-                    ));
+                    )));
                     for (i, entry) in owned.iter().enumerate() {
                         let e = builder.ins().iconst(types::I32, *entry as i64);
-                        builder.ins().stack_store(e, ss, (i * 4) as i32);
+                        ss.store(builder, e, (i * 4) as i32);
                     }
-                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                    args.push(ss.addr(builder, 0));
                 }
+                // And its alignment, which an `@align(64)` node needs from the
+                // chunk it lands in.
+                let align = mir_args
+                    .get(1)
+                    .and_then(|op| Self::operand_mir_type(op, ctx.locals))
+                    .map_or(0, |ty| ty.align() as i64);
+                args.push(builder.ins().iconst(types::I64, align));
                 CallAdapt::None
             }
 
@@ -8173,6 +8236,8 @@ impl<'a> FunctionBuilder<'a> {
             // Each strategy's constructor takes the value by pointer, so a
             // scalar spills to a slot first, and its size, which is computed
             // here.
+            // (payload, kind) in; (payload address, size, kind, alignment)
+            // out, so an `@align(64)` payload gets a block aligned for it.
             HandAdapt::BoxNew => {
                 if !args.is_empty() {
                     let (data_size, is_struct) = Self::struct_elem_size(mir_args, 0, ctx);
@@ -8180,6 +8245,11 @@ impl<'a> FunctionBuilder<'a> {
                         Self::spill_arg(builder, args, mir_args, 0, ctx.locals);
                     }
                     Self::box_new_args(builder, args, data_size);
+                    let align = mir_args
+                        .first()
+                        .and_then(|op| Self::operand_mir_type(op, ctx.locals))
+                        .map_or(0, |ty| ty.align() as i64);
+                    args.push(builder.ins().iconst(types::I64, align));
                 }
                 CallAdapt::None
             }
@@ -8208,10 +8278,10 @@ impl<'a> FunctionBuilder<'a> {
                 ) {
                     // The observed value comes back through an out-param; the
                     // call's own result is whether it succeeded.
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, 8, 0,
-                    ));
-                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                    )));
+                    args.push(ss.addr(builder, 0));
                     return CallAdapt::CasResult(ss);
                 }
                 match func_name {
@@ -8243,10 +8313,10 @@ impl<'a> FunctionBuilder<'a> {
                     Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
                     _ => 8,
                 };
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, elem_size.max(1), 4,
-                ));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                )));
+                let addr = ss.addr(builder, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
                 CallAdapt::TryRecvResult(ss)
             }
@@ -8267,10 +8337,10 @@ impl<'a> FunctionBuilder<'a> {
                 } else {
                     types::I64
                 };
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, ss, 0));
+                )));
+                args.push(ss.addr(builder, 0));
                 CallAdapt::ParseResult(ss, writer_ty)
             }
 
@@ -8278,14 +8348,14 @@ impl<'a> FunctionBuilder<'a> {
             // back through two out-params, and the call returns how the task
             // ended (ok/panicked), which becomes the `T or JoinError` tag.
             HandAdapt::JoinOutcome => {
-                let value_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                let value_ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                let msg_ss = builder.create_sized_stack_slot(StackSlotData::new(
+                )));
+                let msg_ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, crate::layouts::STRING_SIZE as u32, 3,
-                ));
-                args.push(builder.ins().stack_addr(types::I64, value_ss, 0));
-                args.push(builder.ins().stack_addr(types::I64, msg_ss, 0));
+                )));
+                args.push(value_ss.addr(builder, 0));
+                args.push(msg_ss.addr(builder, 0));
                 CallAdapt::JoinOutcome(value_ss, msg_ss)
             }
 
@@ -8298,7 +8368,7 @@ impl<'a> FunctionBuilder<'a> {
                 if !args.is_empty() {
                     Self::copy_aggregate(builder, args[0], *dst_ss, 16);
                 }
-                let dst_addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
+                let dst_addr = dst_ss.addr(builder, 0);
                 args[0] = dst_addr;
                 CallAdapt::StringOutParam(*dst_ss)
             }
@@ -8567,25 +8637,25 @@ impl<'a> FunctionBuilder<'a> {
                         // the premise is true, and the call and the allocation
                         // are both gone.
                         if let Some((lo, hi)) = sso_words(s) {
-                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            let tmp_slot = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                                 StackSlotKind::ExplicitSlot, 16, 0,
-                            ));
+                            )));
                             let lo_v = builder.ins().iconst(types::I64, lo);
-                            builder.ins().stack_store(lo_v, tmp_slot, 0);
+                            tmp_slot.store(builder, lo_v, 0);
                             let hi_v = builder.ins().iconst(types::I64, hi);
-                            builder.ins().stack_store(hi_v, tmp_slot, 8);
-                            return Ok(builder.ins().stack_addr(types::I64, tmp_slot, 0));
+                            tmp_slot.store(builder, hi_v, 8);
+                            return Ok(tmp_slot.addr(builder, 0));
                         }
                         if let Some(gv) = ctx.string_header_globals.get(s.as_str()) {
                             let header = builder.ins().global_value(types::I64, *gv);
                             let tagged = (s.len() as u64) | crate::layouts::STRING_HEAP_FLAG;
-                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                            let tmp_slot = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                                 StackSlotKind::ExplicitSlot, 16, 0,
-                            ));
-                            builder.ins().stack_store(header, tmp_slot, 0);
+                            )));
+                            tmp_slot.store(builder, header, 0);
                             let tagged_v = builder.ins().iconst(types::I64, tagged as i64);
-                            builder.ins().stack_store(tagged_v, tmp_slot, 8);
-                            return Ok(builder.ins().stack_addr(types::I64, tmp_slot, 0));
+                            tmp_slot.store(builder, tagged_v, 8);
+                            return Ok(tmp_slot.addr(builder, 0));
                         }
                         // Every literal a function names is registered before
                         // its body is built (`collect_string_constants`, over

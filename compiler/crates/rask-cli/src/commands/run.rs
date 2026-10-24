@@ -224,7 +224,7 @@ pub fn build_package_test_binary(
     // #697). Now the test runner is the one thing it contributes — a decl
     // rewrite handed to the pipeline.
     let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names);
-    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let config = crate::compiler_config(cfg.clone());
     let mut pkg_ctx = rask_compiler::PackageContext {
         registry: prepared.registry,
         root_id: prepared.root_id,
@@ -678,7 +678,7 @@ pub fn build_test_binary(
     // One frontend, shared with `rask build` — the test runner is the decl
     // rewrite handed to it, not a second copy of the pipeline (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let config = crate::compiler_config(cfg.clone());
     let mut tests = Vec::new();
     let mut comptime_records = String::new();
     let mut comptime_count = 0;
@@ -1591,7 +1591,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
     // Same one frontend as the test runner — the benchmark runner is the decl
     // rewrite handed to it (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let config = crate::compiler_config(cfg.clone());
     let path_owned = path.to_string();
     let filter_owned = filter.map(|f| f.to_string());
     let compiled = std::panic::catch_unwind(move || {

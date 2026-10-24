@@ -353,6 +353,11 @@ impl MiriEngine {
                 intrinsics::eval_cast(&v, target_ty)
             }
 
+            MirRValue::Bitcast { value, target_ty, .. } => {
+                let v = self.resolve_operand(value)?;
+                intrinsics::eval_bitcast(&v, target_ty)
+            }
+
             MirRValue::Convert { value, target_ty, kind, .. } => {
                 let v = self.resolve_operand(value)?;
                 intrinsics::eval_convert(&v, target_ty, *kind)

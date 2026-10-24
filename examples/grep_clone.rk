@@ -2,151 +2,78 @@
 // grep clone - Pattern Search CLI Tool
 // Demonstrates: CLI args, file I/O, string operations, iteration, error handling
 
+import cli
 import fs
-import os
+import io.IoError
 import std
+import string.StringView
 
 struct GrepOptions {
     pattern: string
-    files: Vec<string>
     ignore_case: bool
     line_numbers: bool
     count_only: bool
     invert_match: bool
 }
 
-enum GrepError {
-    NoPattern
-    NoFiles
-    FileError(string)
-}
-
-extend GrepError {
-    func message(self) -> string {
-        match self {
-            NoPattern => return "missing pattern argument"
-            NoFiles => return "no files specified"
-            FileError(msg) => return "{msg}"
-        }
+func line_matches(line: StringView, opts: GrepOptions) -> bool {
+    if opts.ignore_case {
+        return line.to_lowercase().contains(opts.pattern.to_lowercase())
     }
+    return line.contains(opts.pattern)
 }
 
-func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
-    mut opts = GrepOptions(
-        pattern: ""
-        files: Vec.new()
-        ignore_case: false
-        line_numbers: false
-        count_only: false
-        invert_match: false
-    )
-
-    mut positional = Vec.new()
-
-    mut i: usize = 1
-    while i < args.len() {
-        let arg = args[i]
-        match arg {
-            "-i" => opts.ignore_case = true
-            "-n" => opts.line_numbers = true
-            "-c" => opts.count_only = true
-            "-v" => opts.invert_match = true
-            "-h" | "--help" => {
-                print_usage()
-                std.exit(0)
-            }
-            "--" => {}
-            _ => positional.push(arg)
-        }
-        i = i + 1
-    }
-
-    if positional.is_empty() { return GrepError.NoPattern }
-    if positional.len() < 2 { return GrepError.NoFiles }
-
-    opts.pattern = positional.remove(0)
-    opts.files = positional
-
-    return opts
-}
-
-func print_usage() {
-    println("Usage: rgrep [OPTIONS] PATTERN FILE...")
-    println("")
-    println("Options:")
-    println("  -i    Ignore case")
-    println("  -n    Show line numbers")
-    println("  -c    Count matching lines only")
-    println("  -v    Invert match (show non-matching lines)")
-    println("  -h    Show this help")
-}
-
-func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
-    if ignore_case {
-        let lower_line = line.to_lowercase()
-        let lower_pattern = pattern.to_lowercase()
-        return lower_line.contains(lower_pattern)
-    } else {
-        return line.contains(pattern)
-    }
-}
-
-func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
-    let content = fs.read_text(path) catch e => {
-        return GrepError.FileError("{path}: {e.message()}")
-    }
+func grep_file(path: string, opts: GrepOptions) -> i64 or IoError {
+    let content = try fs.read_text(path)
 
     mut match_count: i64 = 0
-    mut line_num = 0
-
-    for line in content.lines() {
-        line_num = line_num + 1
-        let matches = line_matches(line.to_string(), opts.pattern, opts.ignore_case)
-        let show = if opts.invert_match { !matches } else { matches }
-
-        if show {
-            match_count = match_count + 1
-
-            if !opts.count_only {
-                if opts.line_numbers {
-                    println("{line_num}:{line}")
-                } else {
-                    println("{line}")
-                }
-            }
+    for (i, line) in content.lines().enumerate() {
+        if line_matches(line.view(), opts) == opts.invert_match { continue }
+        match_count += 1
+        if opts.count_only { continue }
+        if opts.line_numbers {
+            println("{i + 1}:{line}")
+        } else {
+            println("{line}")
         }
     }
 
-    if opts.count_only {
-        println("{match_count}")
-    }
-
+    if opts.count_only { println("{match_count}") }
     return match_count
 }
 
 func main() {
-    let args = os.args()
-    mut opts = parse_args(args) catch e => {
-        let msg = e.message()
-        println("rgrep: {msg}")
-        print_usage()
-        std.exit(1)
-    }
+    let args = cli.Parser.new("rgrep")
+        .description("Print lines that contain PATTERN")
+        .flag("ignore-case", "i", "Ignore case")
+        .flag("line-number", "n", "Show line numbers")
+        .flag("count", "c", "Count matching lines only")
+        .flag("invert-match", "v", "Show non-matching lines")
+        .positional("pattern", "Text to search for")
+        .positional("files", "Files to search")
+        .parse() catch e => {
+            println("rgrep: {e}")
+            std.exit(2)
+        }
+
+    let words = args.positional()
+    let opts = GrepOptions(
+        pattern: words[0]
+        ignore_case: args.flag("ignore-case")
+        line_numbers: args.flag("line-number")
+        count_only: args.flag("count")
+        invert_match: args.flag("invert-match")
+    )
 
     mut total_matches = 0
     mut had_errors = false
-
-    mut fi: usize = 0
-    while fi < opts.files.len() {
-        let file_path = opts.files[fi]
-        if grep_file(file_path, opts) is i64 as found {
-            total_matches = total_matches + found
+    for path in words.skip(1) {
+        if grep_file(path, opts) is i64 as found {
+            total_matches += found
         } else as e {
-            let msg = e.message()
-            println("rgrep: {msg}")
+            println("rgrep: {path}: {e}")
             had_errors = true
         }
-        fi = fi + 1
     }
 
     if had_errors { std.exit(2) }

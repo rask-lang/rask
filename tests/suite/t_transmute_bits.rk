@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `transmute` keeps the bytes and changes the type (mem.unsafe, #1634).
+//
+// Natively it used to hand the source back unchanged, so a float came out as
+// its numeric value instead of its bits, and the interpreter had no
+// `transmute` at all.
+
+struct Pair {
+    lo: u32
+    hi: u32
+}
+
+struct Padded {
+    tag: u8
+    value: i32
+}
+
+test "a float's bits come back as an integer and go back again" {
+    let f: f64 = 1.0
+    let bits: u64 = unsafe { transmute(f) }
+    assert bits == 4607182418800017408
+    let back: f64 = unsafe { transmute(bits) }
+    assert back == 1.0
+}
+
+test "an f32 reinterprets as a u32" {
+    let f: f32 = -2.5
+    let bits: u32 = unsafe { transmute(f) }
+    assert bits == 0xC0200000
+    let back: f32 = unsafe { transmute(bits) }
+    assert back == -2.5
+}
+
+test "same-width integers keep the bits" {
+    let x: i32 = -1
+    let y: u32 = unsafe { transmute(x) }
+    assert y == 4294967295
+    let b: u8 = 200
+    let s: i8 = unsafe { transmute(b) }
+    assert s == -56
+}
+
+test "an integer becomes its bytes, lowest first" {
+    let x: u32 = 0x41424344
+    let bytes: [u8; 4] = unsafe { transmute(x) }
+    assert bytes[0] == 0x44
+    assert bytes[3] == 0x41
+    let again: u32 = unsafe { transmute(bytes) }
+    assert again == 0x41424344
+}
+
+test "a struct reinterprets through memory" {
+    let p = Pair(lo: 1, hi: 2)
+    let whole: u64 = unsafe { transmute(p) }
+    assert whole == 0x0000000200000001
+    let q: Pair = unsafe { transmute(whole) }
+    assert q.lo == 1
+    assert q.hi == 2
+}
+
+test "padding counts toward the size" {
+    let p = Padded(tag: 7, value: -1)
+    let raw: [u8; 8] = unsafe { transmute(p) }
+    let back: Padded = unsafe { transmute(raw) }
+    assert back.tag == 7
+    assert back.value == -1
+}

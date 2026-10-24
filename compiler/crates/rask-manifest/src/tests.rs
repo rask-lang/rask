@@ -179,7 +179,7 @@ fn the_schema_librarys_rask_tests_pass() {
         .unwrap();
     let all_decls: Vec<Decl> = registry.get(root).unwrap().all_decls().cloned().collect();
     let mut ctx = rask_compiler::PackageContext { registry, root_id: root, all_decls };
-    let config = rask_compiler::CompilerConfig { cfg: rask_comptime::CfgConfig::from_host("debug", vec![]) };
+    let config = rask_compiler::CompilerConfig::new(rask_comptime::CfgConfig::from_host("debug", vec![]));
     let out = rask_compiler::check_package(&mut ctx, &config);
     assert!(!out.has_errors(), "{:?}", out.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     let failed = run_rask_tests(&out.result.unwrap());

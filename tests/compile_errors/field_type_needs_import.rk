@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a field or payload names a stdlib type with no import for it
+// Rejects: is not in scope
+//
+// The error used to point at the first line of the struct or enum, so a
+// payload four lines down read as if the declaration itself were wrong. It
+// points at the type now. Each type is reported once per program, so each
+// marker uses a different one.
+
+struct Clock {
+    started: i64
+    // ERROR: `Duration` is not in scope
+    limit: Duration
+}
+
+enum ReadError {
+    Empty
+    Truncated(at: i64)
+    // ERROR: `IoError` is not in scope
+    Failed(path: string, cause: IoError)
+}
+
+union Stamp {
+    raw: u64
+    // ERROR: `Instant` is not in scope
+    at: Instant
+}
+
+func main() {}

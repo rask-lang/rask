@@ -48,6 +48,11 @@ pub use lower::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt, 
 pub use program::MirProgram;
 pub use types::{spawn_payload_is_boxed, tuple_offsets, ContainerKind, FieldTypes, MirType, StructLayoutId, EnumLayoutId};
 
+/// What `malloc` and a Cranelift stack slot guarantee without help. A type
+/// aligned past this (`@align(64)`) needs an aligned allocation on the heap
+/// and a realigned slot on the stack.
+pub const MALLOC_ALIGN: u32 = 16;
+
 /// The runtime entries a task block's closure is handed to (`lower_spawn`):
 /// a green task, an OS thread, a pool job. Each keeps the closure and frees it
 /// when the task ends.

@@ -2799,10 +2799,12 @@ impl TypeChecker {
                         span,
                     });
                 }
-                for arg in args {
-                    self.infer_expr(&arg.expr);
+                let target = self.ctx.fresh_var();
+                let mut sources = args.iter().map(|arg| self.infer_expr(&arg.expr)).collect::<Vec<_>>();
+                if sources.len() == 1 {
+                    self.pending_transmutes.push((sources.remove(0), target.clone(), span));
                 }
-                return self.ctx.fresh_var();
+                return target;
             }
 
             // mem.owned/OW3: `drop(p)` consumes one `Owned` and frees its value.
@@ -6420,6 +6422,34 @@ impl TypeChecker {
                 max: max.to_string(),
                 span,
             });
+        }
+    }
+
+    /// mem.unsafe: a `transmute` takes its target from where the value goes —
+    /// a binding's annotation, a parameter, a return type. One with nowhere to
+    /// go has no target, and reinterpreting as "whatever inference defaults
+    /// to" would pick a type nobody wrote.
+    ///
+    /// Both sides have to be the same size, by the layout codegen lays the
+    /// value out with, so padding counts. A side naming a type parameter has
+    /// no size until it's instantiated; MIR lowering judges that one.
+    pub(super) fn settle_transmutes(&mut self) {
+        for (from, to, span) in std::mem::take(&mut self.pending_transmutes) {
+            let from = self.ctx.apply(&from);
+            let to = self.ctx.apply(&to);
+            if matches!(from, Type::Error) || matches!(to, Type::Error) {
+                continue;
+            }
+            if matches!(to, Type::Var(_)) {
+                self.errors.push(TypeError::TransmuteNeedsTarget { from, span });
+                continue;
+            }
+            let (Some((from_size, _)), Some((to_size, _))) = (self.types.size_align(&from), self.types.size_align(&to)) else {
+                continue;
+            };
+            if from_size != to_size {
+                self.errors.push(TypeError::TransmuteSizeMismatch { from, to, from_size, to_size, span });
+            }
         }
     }
 

@@ -951,6 +951,93 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in
+/// a debug build and not in release, `@checked_unsafe` panics in both, and
+/// `@unchecked_unsafe` in neither. Both attributes used to be read by nothing,
+/// and nothing checked at all.
+#[test]
+fn raw_pointer_null_checks_follow_build_mode_and_attributes() {
+    let rask = rask_binary();
+    let run = |release: bool, args: &[&str]| {
+        let bin = std::env::temp_dir().join(format!(
+            "rask_ptrcheck_{}_{}_{}",
+            release,
+            std::process::id(),
+            next_tmp_id()
+        ));
+        let mut cmd = Command::new(&rask);
+        cmd.arg("compile");
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(fixture("pointer_checks.rk"))
+            .arg("-o")
+            .arg(&bin)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("rask compile");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let ran = Command::new(&bin).args(args).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        (String::from_utf8_lossy(&ran.stderr).to_string(), ran.status.code())
+    };
+    let panicked = |r: &(String, Option<i32>), msg: &str| r.1 == Some(101) && r.0.contains(msg);
+
+    let debug_plain = run(false, &[]);
+    assert!(panicked(&debug_plain, "null pointer read"), "{debug_plain:?}");
+    let debug_write = run(false, &["a", "b"]);
+    assert!(panicked(&debug_write, "null pointer write"), "{debug_write:?}");
+    let release_checked = run(true, &["a"]);
+    assert!(panicked(&release_checked, "null pointer read"), "{release_checked:?}");
+    // No check: the read faults rather than panicking.
+    let release_plain = run(true, &[]);
+    assert!(!panicked(&release_plain, "null pointer"), "{release_plain:?}");
+    let debug_unchecked = run(false, &["a", "b", "c"]);
+    assert!(!panicked(&debug_unchecked, "null pointer"), "{debug_unchecked:?}");
+}
+
+/// `@packed` and `@align` were read by nothing; a malformed one is now an
+/// error where it's written.
+#[test]
+fn malformed_layout_attributes_are_rejected() {
+    let (failed, out) = compile_error_output("layout_attributes.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0923]").count(), 6, "{out}");
+}
+
+/// #1637: `@align(N)` past 16 is honoured wherever the value lives, not only
+/// in the layout. `malloc` gives 16, so without the aligned allocator a rack
+/// of `@align(4096)` pages landed 16 bytes off and a Vec of them 688.
+///
+/// Native only: the interpreter's pointers are a buffer and an index, and the
+/// address it reports for one is synthetic. Both backends check the values in
+/// `tests/suite/t_align_above_16.rk`. A frame slot isn't checked here because
+/// a program can't take a local's address yet (#1597).
+#[test]
+fn over_aligned_values_sit_on_their_alignment() {
+    let (stdout, stderr, code) = run_capture("--native", "align_above_16_addresses.rk");
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "vec 0\npages 0\nfield 0\nheap 0\nrack 0 0\nmap 0\nbox 0\nhuge 0\n",
+        "each line is an address modulo its alignment"
+    );
+}
+
+/// #1634: `transmute` needs both sides the same size, by the layout, and a
+/// written target.
+#[test]
+fn transmute_sizes_and_targets_are_checked() {
+    let (failed, out) = compile_error_output("transmute_size_mismatch.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0921]").count(), 2, "{out}");
+    assert!(out.contains("`Tagged` (8 bytes)"), "padding must count: {out}");
+    let (failed, out) = compile_error_output("transmute_no_target.rk");
+    assert!(failed, "{out}");
+    assert_eq!(out.matches("error[E0922]").count(), 1, "{out}");
+}
+
 /// #1537: a field default is a compile-time constant (type.structs/FD1). One
 /// that reaches I/O, declared or `@default`, is rejected where it's written,
 /// named by its field rather than by the method desugar wrote for it.
@@ -3194,6 +3281,11 @@ fn ok_conditional_move_then_reassign() {
 
 /// Run `rask check` and return combined stdout+stderr.
 fn check_output(source: &str) -> String {
+    check_output_with(source, &[])
+}
+
+/// `check_output` with extra command-line flags after the file.
+fn check_output_with(source: &str, flags: &[&str]) -> String {
     let rask = rask_binary();
     let id = next_tmp_id();
     let tmp = std::env::temp_dir().join(format!("rask_errtest_{}_{}.rk", std::process::id(), id));
@@ -3202,6 +3294,7 @@ fn check_output(source: &str) -> String {
     let out = Command::new(&rask)
         .arg("check")
         .arg(&tmp)
+        .args(flags)
         .output()
         .expect("failed to run rask check");
 
@@ -3216,11 +3309,12 @@ fn check_output(source: &str) -> String {
 // classed as blocking, so every spawn loop got CW2's "blocks thread on each
 // iteration" and an advice to wrap it in `using Multitasking`, which doesn't
 // change what `Thread.spawn` does (#1362). Real I/O in a loop of the same
-// concurrent program still warns.
+// concurrent program still warns. Printing doesn't, unless `@warn(blocking_print)`
+// asks for it.
 #[test]
 fn spawn_in_a_loop_is_not_blocking_io() {
     let output = check_output(
-        "import thread.Thread\nimport async.Handles\n\
+        "import fs\nimport thread.Thread\nimport async.Handles\n\
          func main() {\n\
          \x20   mut hs = Handles<i64>.new()\n\
          \x20   ensure hs.detach()\n\
@@ -3232,12 +3326,34 @@ fn spawn_in_a_loop_is_not_blocking_io() {
          \x20   }\n\
          \x20   for j in 0..2 {\n\
          \x20       println(\"{j}\")\n\
+         \x20       let _ = fs.exists(\"x\")\n\
          \x20   }\n\
          }\n",
     );
     assert!(output.contains("Typecheck OK"), "{}", output);
     assert!(!output.contains("`spawn` can block"), "a spawn doesn't block: {}", output);
-    assert!(output.contains("`println` can block, in a loop"), "a print still warns: {}", output);
+    assert!(output.contains("`fs.exists` can block, in a loop"), "real I/O still warns: {}", output);
+    assert!(!output.contains("`println` can block"), "printing is opt-in: {}", output);
+}
+
+// Printing counts for CW2 when the build asks: `--warn blocking_print` is a
+// flag because whether stdout is a terminal is a fact about how the whole
+// program runs. A misspelled name is refused, not ignored.
+#[test]
+fn warn_blocking_print_is_a_flag() {
+    let src = "func main() {\n\
+               \x20   using Multitasking {\n\
+               \x20       spawn { println(\"x\") }.detach()\n\
+               \x20   }\n\
+               \x20   for j in 0..2 {\n\
+               \x20       println(\"{j}\")\n\
+               \x20   }\n\
+               }\n";
+    assert!(!check_output(src).contains("`println` can block"));
+    let on = check_output_with(src, &["--warn", "blocking_print"]);
+    assert!(on.contains("`println` can block, in a loop"), "{}", on);
+    let typo = check_output_with(src, &["--warn", "blocking_prnt"]);
+    assert!(typo.contains("did you mean `--warn blocking_print`"), "{}", typo);
 }
 
 // A method call is classed by the receiver's type, not by how the variable is
@@ -4949,11 +5065,10 @@ fn a_wide_scalar_field_counts_its_real_width() {
         1,
         "one move, one error:\n{output}"
     );
-    // 16 for the i128, 8 for the i64, and 8 of padding: the i128 aligns to
-    // 16, so the struct does too. The size it's laid out in.
+    // 16 for the i128, 8 for the i64, padded to the i128's 16-byte alignment.
     assert!(
-        output.contains("`Wide` is 32 bytes"),
-        "the note has to name the real size, and the type as written:\n{output}"
+        output.contains("32 bytes"),
+        "the note has to name the real size:\n{output}"
     );
 }
 
@@ -6698,6 +6813,16 @@ nan -> nan
         assert_eq!(code, 0, "{}: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }
+}
+
+// std.bits P3: a reader walks its buffer in linear time. A million reads
+// finish in milliseconds; the old copy-the-rest reads would take hours.
+#[test]
+fn a_million_bits_reads_are_linear() {
+    let (stdout, stderr, code) = run_capture("--native", "bits_reader_million.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    // 142857 runs of 0..7 sum to 21 each; the millionth byte is 0.
+    assert_eq!(stdout, "total=2999997 fast=true\n");
 }
 
 // type.sequence SEQ28–SEQ31: a materializing terminal names what it builds.

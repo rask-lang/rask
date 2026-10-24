@@ -54,6 +54,7 @@ impl BlockBuilder {
             }],
             entry_block,
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 

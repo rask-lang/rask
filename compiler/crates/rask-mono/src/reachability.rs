@@ -976,7 +976,7 @@ impl<'a> Monomorphizer<'a> {
             // (`BufferedReader$Buffer`) and the body after the method
             // (`BufferedReader_read$Buffer`); codegen joins the two here.
             let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
-            if let Some(layout) = crate::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
+            if let Some(layout) = rask_types::layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
                 let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
                 self.vtable_symbols.insert((layout, method.clone()), symbol);
             }

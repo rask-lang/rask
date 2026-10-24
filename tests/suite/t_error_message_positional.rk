@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// ER36: `{0}` in a positional variant's `@message` is its first payload, the
+// way `{0}` is `format`'s first argument.
+//
+// `{0}` used to be swapped for a hidden `_0` by desugar with no rule behind it,
+// so it was dropped and every payload a message mentioned had to be named. That
+// put labels on every construction of a one-field error:
+// `SourceNotFound(path: p)`. A literal `{0}` is an error in any other string, so
+// the hole can't mean anything else here.
+
+@message
+enum FsError {
+    @message("source file not found: {0}")
+    SourceNotFound(string)
+    @message("{0}: wanted {1} bytes, got {2}")
+    Short(string, i64, i64)
+    @message("{1} before {0}")
+    OutOfOrder(string, string)
+    @message("padded [{0:>4}]")
+    Padded(i64)
+    @message("named: {path}")
+    Named(path: string)
+}
+
+func lookup(path: string) -> string or FsError {
+    return FsError.SourceNotFound(path)
+}
+
+test "a positional payload is reached by its index" {
+    assert FsError.SourceNotFound("a.txt").message() == "source file not found: a.txt"
+    assert FsError.Short("b", 12, 3).message() == "b: wanted 12 bytes, got 3"
+}
+
+test "the indexes needn't come in order" {
+    assert FsError.OutOfOrder("first", "second").message() == "second before first"
+}
+
+test "a hole keeps its format spec" {
+    assert FsError.Padded(7).message() == "padded [   7]"
+}
+
+test "a named variant still names its payload" {
+    assert FsError.Named(path: "c").message() == "named: c"
+}
+
+test "it reaches the caller the same way" {
+    caller_sees(lookup("x"))
+}
+
+func caller_sees(r: string or FsError) {
+    if r is FsError as e {
+        assert "{e}" == "source file not found: x"
+    } else {
+        assert false
+    }
+}

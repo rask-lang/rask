@@ -174,8 +174,8 @@ static void map_alloc_tables(RaskMap *m, int64_t cap) {
     m->cap = cap;
     m->states = (uint8_t *)rask_alloc(cap);
     memset(m->states, MAP_EMPTY, (size_t)cap);
-    m->keys = (char *)rask_alloc(rask_safe_mul(cap, m->key_size));
-    m->vals = (char *)rask_alloc(rask_safe_mul(cap, m->val_size));
+    m->keys = (char *)rask_alloc_aligned(rask_safe_mul(cap, m->key_size), m->key_strs.align);
+    m->vals = (char *)rask_alloc_aligned(rask_safe_mul(cap, m->val_size), m->val_strs.align);
 }
 
 // Where the per-process seed belongs: bucket placement, not the hash value.
@@ -283,22 +283,19 @@ static void map_retain_entry(const RaskMap *m, char *key, char *val) {
     rask_owned_retain_all(val, m->val_strs.offsets, m->val_strs.count);
 }
 
-static RaskMap *map_with_elem_strs(RaskMap *m,
-                                   const int32_t *key_offs, int64_t n_key_offs,
-                                   const int32_t *val_offs, int64_t n_val_offs) {
-    m->key_strs.offsets = key_offs;
-    m->key_strs.count = n_key_offs;
-    m->val_strs.offsets = val_offs;
-    m->val_strs.count = n_val_offs;
-    return m;
-}
+// Every constructor's element description, gathered so the tables can be
+// allocated at the elements' alignment.
+#define MAP_ELEMS(k, nk, ka, v, nv, va) \
+    (RaskElemStrs){ .offsets = (k), .count = (nk), .align = (ka) }, \
+    (RaskElemStrs){ .offsets = (v), .count = (nv), .align = (va) }
 
 // The one constructor. `cap` is a hint: it decides the first table size and
 // nothing else, so a map built with one grows exactly like a map built
 // without. Probing is `% cap`, so any positive number works — no rounding to
 // a power of two.
-static RaskMap *map_new_custom_cap(int64_t key_size, int64_t val_size,
-                                   RaskHashFn hash, RaskEqFn eq, int64_t cap) {
+static RaskMap *map_new(int64_t key_size, int64_t val_size,
+                        RaskHashFn hash, RaskEqFn eq, int64_t cap,
+                        RaskElemStrs key_strs, RaskElemStrs val_strs) {
     RaskMap *m = (RaskMap *)rask_alloc(sizeof(RaskMap));
     *m = (RaskMap){
         .key_size = key_size,
@@ -307,33 +304,32 @@ static RaskMap *map_new_custom_cap(int64_t key_size, int64_t val_size,
         .eq_fn = eq,
         .seed = map_seed(),
         .displaced = NULL,
+        .key_strs = key_strs,
+        .val_strs = val_strs,
     };
     map_alloc_tables(m, cap > 0 ? cap : MAP_INITIAL_CAP);
     return m;
 }
 
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
-                      const int32_t *key_offs, int64_t n_key_offs,
-                      const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        rask_map_new_custom(key_size, val_size, rask_hash_bytes, rask_eq_bytes),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                      const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                      const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, rask_hash_bytes, rask_eq_bytes, MAP_INITIAL_CAP,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
-                                  const int32_t *key_offs, int64_t n_key_offs,
-                                  const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        rask_map_new_custom(key_size, val_size, rask_hash_string_key, rask_eq_string_key),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                                  const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                  const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, rask_hash_string_key, rask_eq_string_key, MAP_INITIAL_CAP,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
-                                const int32_t *key_offs, int64_t n_key_offs,
-                                const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        rask_map_new_custom(key_size, val_size, rask_hash_link_key, rask_eq_bytes),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                                const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, rask_hash_link_key, rask_eq_bytes, MAP_INITIAL_CAP,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 // A key the language compares through its own `eq` and `hash`: a struct, an
@@ -343,49 +339,39 @@ RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
 // keys with different pointers used to land in different buckets (#1391).
 RaskMap *rask_map_new_keyed(int64_t key_size, int64_t val_size,
                             RaskHashFn hash, RaskEqFn eq,
-                            const int32_t *key_offs, int64_t n_key_offs,
-                            const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        rask_map_new_custom(key_size, val_size, hash, eq),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                            const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                            const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, hash, eq, MAP_INITIAL_CAP,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 RaskMap *rask_map_new_keyed_cap(int64_t key_size, int64_t val_size, int64_t cap,
                                 RaskHashFn hash, RaskEqFn eq,
-                                const int32_t *key_offs, int64_t n_key_offs,
-                                const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        map_new_custom_cap(key_size, val_size, hash, eq, cap),
-        key_offs, n_key_offs, val_offs, n_val_offs);
-}
-
-RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
-                             RaskHashFn hash, RaskEqFn eq) {
-    return map_new_custom_cap(key_size, val_size, hash, eq, MAP_INITIAL_CAP);
+                                const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, hash, eq, cap,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 RaskMap *rask_map_new_cap(int64_t key_size, int64_t val_size, int64_t cap,
-                          const int32_t *key_offs, int64_t n_key_offs,
-                          const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        map_new_custom_cap(key_size, val_size, rask_hash_bytes, rask_eq_bytes, cap),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                          const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                          const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, rask_hash_bytes, rask_eq_bytes, cap,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 RaskMap *rask_map_new_string_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
-                                      const int32_t *key_offs, int64_t n_key_offs,
-                                      const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        map_new_custom_cap(key_size, val_size, rask_hash_string_key, rask_eq_string_key, cap),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                                      const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                      const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, rask_hash_string_key, rask_eq_string_key, cap,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
-                                    const int32_t *key_offs, int64_t n_key_offs,
-                                    const int32_t *val_offs, int64_t n_val_offs) {
-    return map_with_elem_strs(
-        map_new_custom_cap(key_size, val_size, rask_hash_link_key, rask_eq_bytes, cap),
-        key_offs, n_key_offs, val_offs, n_val_offs);
+                                    const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                    const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
+    return map_new(key_size, val_size, rask_hash_link_key, rask_eq_bytes, cap,
+                   MAP_ELEMS(key_offs, n_key_offs, key_align, val_offs, n_val_offs, val_align));
 }
 
 // Releases every string the keys and values hold, then the map itself. The two
@@ -447,7 +433,7 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
     uint8_t prev_state = m->states[slot];
     if (displaced_out && prev_state == MAP_OCCUPIED) {
         if (!m->displaced) {
-            m->displaced = (char *)rask_alloc(m->val_size);
+            m->displaced = (char *)rask_alloc_aligned(m->val_size, m->val_strs.align);
         }
         memcpy(m->displaced, m->vals + slot * m->val_size, (size_t)m->val_size);
         *displaced_out = m->displaced;
@@ -579,7 +565,8 @@ void rask_map_clear(RaskMap *m) {
 RaskVec *rask_map_keys(const RaskMap *m) {
     RaskVec *v = rask_vec_new(m ? m->key_size : 8,
                               m ? m->key_strs.offsets : NULL,
-                              m ? m->key_strs.count : 0);
+                              m ? m->key_strs.count : 0,
+                              m ? m->key_strs.align : 0);
     if (!m) return v;
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
@@ -593,7 +580,8 @@ RaskVec *rask_map_keys(const RaskMap *m) {
 RaskVec *rask_map_values(const RaskMap *m) {
     RaskVec *v = rask_vec_new(m ? m->val_size : 8,
                               m ? m->val_strs.offsets : NULL,
-                              m ? m->val_strs.count : 0);
+                              m ? m->val_strs.count : 0,
+                              m ? m->val_strs.align : 0);
     if (!m) return v;
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
@@ -610,7 +598,7 @@ RaskVec *rask_map_values(const RaskMap *m) {
 // the next eight-byte boundary read every value of a `Map<i32, i32>` four
 // bytes early.
 RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride) {
-    if (!m) return rask_vec_new(stride, NULL, 0);
+    if (!m) return rask_vec_new(stride, NULL, 0, 0);
     // Where the pair's strings land. The two shapes worth a static map are the
     // ones programs actually iterate: a string key with a string value, and a
     // string key with anything else. Any other arrangement would need an
@@ -629,7 +617,9 @@ RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride) {
         pair_offs = rask_elem_strs_one;
         n_pair_offs = 1;
     }
-    RaskVec *v = rask_vec_with_capacity(stride, m->len, pair_offs, n_pair_offs);
+    int64_t pair_align = m->key_strs.align > m->val_strs.align
+        ? m->key_strs.align : m->val_strs.align;
+    RaskVec *v = rask_vec_with_capacity(stride, m->len, pair_offs, n_pair_offs, pair_align);
     char *pair = (char *)rask_alloc(stride);
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
@@ -671,10 +661,11 @@ void rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
 // works out from the tuple's type (unlike `entries`, which only borrows and
 // can get by on a guess).
 RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
-                           const int32_t *pair_offs, int64_t n_pair_offs) {
-    if (!m) return rask_vec_new(stride, pair_offs, n_pair_offs);
+                           const int32_t *pair_offs, int64_t n_pair_offs,
+                           int64_t pair_align) {
+    if (!m) return rask_vec_new(stride, pair_offs, n_pair_offs, pair_align);
     map_check_no_borrows(m, "take_all");
-    RaskVec *v = rask_vec_with_capacity(stride, m->len, pair_offs, n_pair_offs);
+    RaskVec *v = rask_vec_with_capacity(stride, m->len, pair_offs, n_pair_offs, pair_align);
     char *pair = (char *)rask_alloc(stride);
     for (int64_t i = 0; i < m->cap; i++) {
         if (m->states[i] == MAP_OCCUPIED) {
@@ -692,10 +683,9 @@ RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
 }
 
 RaskMap *rask_map_clone(const RaskMap *m) {
-    if (!m) return rask_map_new(8, 8, NULL, 0, NULL, 0);
-    RaskMap *dst = rask_map_new_custom(m->key_size, m->val_size, m->hash_fn, m->eq_fn);
-    map_with_elem_strs(dst, m->key_strs.offsets, m->key_strs.count,
-                       m->val_strs.offsets, m->val_strs.count);
+    if (!m) return rask_map_new(8, 8, NULL, 0, 0, NULL, 0, 0);
+    RaskMap *dst = map_new(m->key_size, m->val_size, m->hash_fn, m->eq_fn, MAP_INITIAL_CAP,
+                           m->key_strs, m->val_strs);
     char *key_copy = (char *)rask_alloc(m->key_size);
     char *val_copy = (char *)rask_alloc(m->val_size);
     for (int64_t i = 0; i < m->cap; i++) {

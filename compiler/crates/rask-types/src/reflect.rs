@@ -58,10 +58,12 @@ pub trait ReflectDecls {
     /// instantiation says so, and neither backend carries that substitution on
     /// the declaration — so a walk over the fields would be reading the template.
     fn type_params(&self, name: &str) -> Vec<String>;
+    /// The checker's table, which lays types out (`crate::layout`).
+    fn type_table(&self) -> &TypeTable;
 }
 
-/// A name the type table doesn't know.
-const NO_SUCH_TYPE: &str = "names no type the program declares";
+/// A type argument the table has no type for.
+const NOT_A_TYPE: &str = "names no type this program declares";
 
 /// A generic instantiation whose fields depend on its type arguments. R5 says
 /// reflection sees the monomorphized type, and the declaration alone isn't it.
@@ -74,7 +76,7 @@ const NEEDS_INSTANTIATION: &str =
 /// `ty` is `T` as written at the call site, already substituted by
 /// monomorphization on the native path (std.reflect/R5) — so it's a concrete
 /// type like `Point` or `Vec<i32>`, never a bare type parameter.
-pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls, types: &TypeTable) -> ReflectAnswer {
+pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectAnswer {
     use ReflectAnswer::*;
     let head = ty.name().unwrap_or_default();
     match method {
@@ -96,24 +98,18 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls, types: &Typ
             Flatness::Unknown => Unsupported(NEEDS_INSTANTIATION),
         },
 
-        // The size the Copy rule measures is the size codegen lays the value
-        // out in (`TypeTable::value_layout`), so these can't disagree with
-        // whether the value copies.
+        // One size model: the layout codegen lays values out with, which the
+        // copy rule reads too (`crate::layout`). `T` is concrete here (R5).
         "size_of" | "align_of" | "is_copy" => {
+            let types = decls.type_table();
             let Ok(resolved) = resolve_type_expr(ty, types) else {
-                return Unsupported(NO_SUCH_TYPE);
+                return Unsupported(NOT_A_TYPE);
             };
-            let resolved = named(types, resolved);
-            if resolved.contains(&|t| matches!(t, Type::UnresolvedNamed(_))) {
-                return Unsupported(NO_SUCH_TYPE);
-            }
             match method {
-                "size_of" => Int(types.value_layout(&resolved).0 as u64),
-                "align_of" => Int(types.value_layout(&resolved).1 as u64),
-                _ => match types.copy_verdict_with(&resolved, &|_| false) {
-                    crate::CopyVerdict::Copy => Bool(true),
-                    crate::CopyVerdict::Move => Bool(false),
-                    crate::CopyVerdict::Unknown => Unsupported(NEEDS_INSTANTIATION),
+                "is_copy" => Bool(types.is_copy(&resolved)),
+                _ => match types.size_align(&resolved) {
+                    Some((size, align)) => Int(if method == "size_of" { size } else { align } as u64),
+                    None => Unsupported(NEEDS_INSTANTIATION),
                 },
             }
         }
@@ -457,8 +453,11 @@ pub fn field_names(types: &TypeTable, ty: &TypeExpr) -> Vec<String> {
 mod tests {
     use super::*;
 
-    struct Decls;
+    struct Decls(TypeTable);
     impl ReflectDecls for Decls {
+        fn type_table(&self) -> &TypeTable {
+            &self.0
+        }
         fn declares_struct(&self, name: &str) -> bool {
             matches!(name, "Point" | "Named" | "Boxed" | "Node" | "Conn")
         }
@@ -502,7 +501,7 @@ mod tests {
     }
 
     fn ask(method: &str, ty: TypeExpr) -> ReflectAnswer {
-        answer(method, &ty, &Decls, &TypeTable::new())
+        answer(method, &ty, &Decls(TypeTable::new()))
     }
 
     #[test]
@@ -547,15 +546,12 @@ mod tests {
     }
 
     #[test]
-    fn sizes_come_from_the_layout_rules() {
+    fn size_dependent_methods_read_the_layout() {
         assert_eq!(ask("size_of", n("i32")), ReflectAnswer::Int(4));
-        assert_eq!(ask("align_of", n("i64")), ReflectAnswer::Int(8));
-        assert_eq!(ask("size_of", opt(n("i32"))), ReflectAnswer::Int(8));
+        assert_eq!(ask("align_of", n("f64")), ReflectAnswer::Int(8));
+        assert_eq!(ask("size_of", opt(n("i64"))), ReflectAnswer::Int(16));
         assert_eq!(ask("is_copy", n("string")), ReflectAnswer::Bool(true));
-    }
-
-    #[test]
-    fn a_size_of_an_undeclared_name_says_so_rather_than_guessing() {
+        // A name nothing declares has no size, and says so rather than 0.
         assert!(matches!(ask("size_of", n("Nowhere")), ReflectAnswer::Unsupported(_)));
     }
 

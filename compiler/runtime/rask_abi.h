@@ -46,6 +46,12 @@
 // inline capacity left, so an empty string's is this.
 #define RASK_SSO_MAX 15
 
+// Where a `RaskVec` keeps its element buffer and its element width.
+// Codegen reads both to index a vector whose bounds check is already
+// proven, without calling into the runtime.
+#define RASK_VEC_DATA_OFFSET 0
+#define RASK_VEC_ELEM_SIZE_OFFSET 24
+
 // The bit of a `RaskStr`'s second word that marks the heap form.
 #define RASK_STRING_HEAP_BIT 63
 
@@ -77,7 +83,11 @@
 // The value here is described by the list being walked, from its start.
 #define RASK_OWNED_SELF 7
 
-// Word index of a vtable's `owned_release` (`rask_mir::vtable_layout`).
+// Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
+// value's size and alignment, which size an interface box's block, and
+// the release for a value the box owns.
+#define RASK_VTABLE_SIZE_WORD 0
+#define RASK_VTABLE_ALIGN_WORD 1
 #define RASK_VTABLE_OWNED_RELEASE_WORD 2
 
 // What a rack node's link field holds: `Link<T>` / `Link<T>?`,

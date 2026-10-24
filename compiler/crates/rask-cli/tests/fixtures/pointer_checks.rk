@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.unsafe, debug-mode safety: which raw-pointer accesses check for null.
+// The argument count picks the access, so one binary covers all of them.
+
+import os
+
+func read_plain(p: *i64) -> i64 {
+    return unsafe { *p }
+}
+
+@checked_unsafe
+func read_checked(p: *i64) -> i64 {
+    return unsafe { *p }
+}
+
+@unchecked_unsafe
+func read_unchecked(p: *i64) -> i64 {
+    return unsafe { *p }
+}
+
+func write_plain(p: *i64) {
+    unsafe { *p = 3 }
+}
+
+func main() {
+    let fine: Vec<i64> = [41]
+    let p = fine.as_ptr()
+    println("{read_plain(p)} {read_checked(p)} {read_unchecked(p)}")
+    let null: *i64 = nullptr
+    let which = os.args().len()
+    if which == 1 {
+        println("{read_plain(null)}")
+    } else if which == 2 {
+        println("{read_checked(null)}")
+    } else if which == 3 {
+        write_plain(null)
+    } else {
+        println("{read_unchecked(null)}")
+    }
+}

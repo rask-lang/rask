@@ -31,7 +31,7 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `size_of<T>()` | `-> usize` | Size in bytes |
 | `align_of<T>()` | `-> usize` | Alignment in bytes |
 | `name_of<T>()` | `-> string` | Type name as string (e.g. `"Vec<i32>"`) |
-| `is_copy<T>()` | `-> bool` | Whether T is implicitly copyable (≤16 bytes, all fields Copy) |
+| `is_copy<T>()` | `-> bool` | Whether T is implicitly copyable (≤16 bytes as laid out, all fields Copy) |
 | `is_resource<T>()` | `-> bool` | Whether T is a linear resource type |
 
 <!-- surface -->
@@ -74,9 +74,9 @@ extend reflect {
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
-`name_of`, `is_struct`, `is_enum`, `is_optional`, `is_vec`, `is_map`, `is_integer`, `is_float`, `is_resource` and `is_flat` fold to constants on both backends, and so does everything in the sections below.
+Everything here folds to a constant on both backends, and so does everything in the sections below.
 
-`size_of` and `align_of` are the size and alignment the value is laid out with: each field at its own width, reordered most-aligned first (`@layout(C)` keeps declaration order), padded to its alignment. That's the same size the 16-byte Copy threshold measures, so `is_copy<T>()` and `size_of<T>() <= 16` never contradict each other. `struct { a: u8, b: i64, c: u8 }` is 16 bytes, not 10 and not 24.
+`size_of` and `align_of` are the layout: the bytes the value occupies in memory, padding included (`compiler.layout`). That is the same size the 16-byte Copy threshold measures (`mem.value/VS1`), so `is_copy<T>()` is true exactly when `T` copies: `{ a: u8, b: i64 }` is 16 bytes and copies, a struct holding one of those plus a byte is 24 and moves. A generic instance has its own: `Pair<u8>` is 2 bytes.
 
 `is_resource` and `is_flat` needed no layout at all — they ask about the *declaration*, and a layout has dropped `@resource` and substituted its field types by the time it exists. Native reads the checker's type table and the interpreter reads its AST maps; one shared classifier turns either into the same answer. One case still reports: `is_flat<Boxed<i32>>()` on a generic type, because R5 wants the monomorphized type and the declaration's fields are written in its type parameters.
 
@@ -175,7 +175,7 @@ struct MethodInfo {
 
 Order is the declaration order, then what was derived.
 
-R5 decides generic receivers: a method whose `extend` header or `where` clause this instantiation doesn't meet isn't one of its methods. `Vec<i64>` has `sort` and a `Vec` of a struct that isn't `Comparable` doesn't; `read_u8` lives in `extend Vec<u8>` and only `Vec<u8>` has it. `return_type_name` has the receiver's arguments substituted. A method's own type parameters stay as written: `map` on `Vec<i64>` returns `Sequence<U>`.
+R5 decides generic receivers: a method whose `extend` header or `where` clause this instantiation doesn't meet isn't one of its methods. `Vec<i64>` has `sort` and a `Vec` of a struct that isn't `Comparable` doesn't; `flatten` lives in `extend Vec<Vec<T>>` and only a vector of vectors has it. `return_type_name` has the receiver's arguments substituted. A method's own type parameters stay as written: `map` on `Vec<i64>` returns `Sequence<U>`.
 
 The `name` argument of `has_method` and `has_field` is normally a literal, or `field.name` inside a `comptime for`, and the call folds to a constant. Any other string works too; it's compared at run time against the folded list.
 

@@ -15,7 +15,7 @@ use crate::{output, Format};
 /// here, so a cfg built afterwards for codegen came too late and every
 /// cross-compile took the host's branch (#1315).
 fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> (rask_compiler::CompileResult, Option<String>) {
-    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
+    let config = crate::compiler_config(cfg.clone());
     let output = rask_compiler::compile_file(path, &config);
 
     // Build source_files for display

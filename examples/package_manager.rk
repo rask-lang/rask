@@ -10,8 +10,8 @@
 // spawn/channels/Shared, ensure cleanup, closures in sort/join,
 // enum-based CLI dispatch, try/else error context, pattern matching at scale.
 
+import cli
 import fs
-import os
 import std
 import http
 import json
@@ -666,7 +666,9 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
     // Filter to satisfying versions, pick newest via sort_by. `versions` still
     // owns its metadata, so the candidates are clones of it.
     let want = constraint.clone()
-    mut candidates = versions.filter(|m| want.satisfies(m.version.clone())).map(|m| m.clone()).to_vec()
+    mut candidates = versions.filter(|m| want.satisfies(m.version.clone()))
+        .map(|m| m.clone())
+        .to_vec()
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
     let meta = candidates.first() ?? {
@@ -1055,100 +1057,23 @@ struct CliArgs {
     lock_path: string
 }
 
-func parse_cli_args(args: Vec<string>) -> CliArgs or FetchError {
-    mut result = CliArgs(
-        command: ""
-        manifest_path: "build.rk"
-        registry_type: RegistryType.Local
-        registry_path: "./registry"
-        registry_url: "http://packages.rask-lang.dev"
-        cache_dir: "/tmp/rask-cache"
-        lock_path: "rask.lock"
-    )
-
-    mut positional = Vec.new()
-    mut i = 1  // skip program name
-
-    while i < args.len() {
-        let arg = args[i]
-
-        match arg {
-            "--registry" => {
-                i += 1
-                if i < args.len() {
-                    match args[i] {
-                        "local" => result.registry_type = RegistryType.Local
-                        "http" => result.registry_type = RegistryType.Http
-                        _ => return FetchError.Io(IoErrorMsg.Msg("unknown registry type: {args[i]} (expected 'local' or 'http')"))
-                    }
-                }
-            }
-            "--registry-path" => {
-                i += 1
-                if i < args.len() {
-                    result.registry_path = args[i].to_string()
-                }
-            }
-            "--registry-url" => {
-                i += 1
-                if i < args.len() {
-                    result.registry_url = args[i].to_string()
-                }
-            }
-            "--cache" => {
-                i += 1
-                if i < args.len() {
-                    result.cache_dir = args[i].to_string()
-                }
-            }
-            "--manifest" => {
-                i += 1
-                if i < args.len() {
-                    result.manifest_path = args[i].to_string()
-                }
-            }
-            "--lock" => {
-                i += 1
-                if i < args.len() {
-                    result.lock_path = args[i].to_string()
-                }
-            }
-            "-h" | "--help" => {
-                print_usage()
-                std.exit(0)
-            }
-            _ => positional.push(arg.to_string())
+func cli_args_from(args: cli.Args) -> CliArgs or FetchError {
+    let registry_type = match args.option("registry") ?? "local" {
+        "local" => RegistryType.Local
+        "http" => RegistryType.Http
+        other => {
+            return FetchError.Io(IoErrorMsg.Msg("unknown registry type: {other} (expected 'local' or 'http')"))
         }
-        i += 1
     }
-
-    if positional.is_empty() {
-        return FetchError.Io(IoErrorMsg.Msg("no command specified"))
-    }
-    result.command = positional[0].to_string()
-
-    return result
-}
-
-func print_usage() {
-    println("rask-fetch: dependency resolver and package fetcher")
-    println("")
-    println("Usage: package_manager [OPTIONS] <command>")
-    println("")
-    println("Commands:")
-    println("  resolve     Resolve dependencies and print the graph")
-    println("  fetch       Resolve + download packages to cache")
-    println("  lock        Generate/update rask.lock")
-    println("  check       Verify lock file is in sync with manifest")
-    println("")
-    println("Options:")
-    println("  --manifest PATH       Path to build.rk (default: build.rk)")
-    println("  --registry local|http Registry type (default: local)")
-    println("  --registry-path PATH  Local registry directory")
-    println("  --registry-url URL    HTTP registry base URL")
-    println("  --cache PATH          Cache directory (default: /tmp/rask-cache)")
-    println("  --lock PATH           Lock file path (default: rask.lock)")
-    println("  -h, --help            Show this help")
+    return CliArgs(
+        command: args.positional()[0]
+        manifest_path: args.option("manifest") ?? "build.rk"
+        registry_type
+        registry_path: args.option("registry-path") ?? "./registry"
+        registry_url: args.option("registry-url") ?? "http://packages.rask-lang.dev"
+        cache_dir: args.option("cache") ?? "/tmp/rask-cache"
+        lock_path: args.option("lock") ?? "rask.lock"
+    )
 }
 
 // ─── Main ───────────────────────────────────────────────────────────
@@ -1237,7 +1162,7 @@ func run(args: CliArgs) -> void or FetchError {
         }
         _ => {
             println("Unknown command: {args.command}")
-            print_usage()
+            println("Run with --help to see the commands.")
             std.exit(1)
         }
     }
@@ -1246,10 +1171,22 @@ func run(args: CliArgs) -> void or FetchError {
 }
 
 func main() {
-    let args = os.args()
-    let cli_args = parse_cli_args(args) catch e => {
+    let args = cli.Parser.new("package_manager")
+        .description("rask-fetch: dependency resolver and package fetcher")
+        .option("manifest", "", "Path to build.rk (default: build.rk)")
+        .option("registry", "", "Registry type, local or http (default: local)")
+        .option("registry-path", "", "Local registry directory")
+        .option("registry-url", "", "HTTP registry base URL")
+        .option("cache", "", "Cache directory (default: /tmp/rask-cache)")
+        .option("lock", "", "Lock file path (default: rask.lock)")
+        .positional("command", "resolve, fetch (download to cache), lock (write rask.lock) or check (lock in sync?)")
+        .parse() catch e => {
+            println("rask-fetch: {e}")
+            std.exit(1)
+        }
+
+    let cli_args = cli_args_from(args) catch e => {
         println("rask-fetch: {e.message()}")
-        print_usage()
         std.exit(1)
     }
 

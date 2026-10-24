@@ -123,6 +123,14 @@ pub enum MirRValue {
         value: MirOperand,
         target_ty: MirType,
     },
+    /// The same bits as another scalar of the same width (`transmute`).
+    /// Float↔int is a register move, int↔int of one width is nothing at all.
+    /// Aggregates never come through here: they go through memory.
+    Bitcast {
+        value: MirOperand,
+        source_ty: MirType,
+        target_ty: MirType,
+    },
     /// Explicit lossy conversion (type.primitives CV5–CV10). Carries the source
     /// type so codegen has signedness/width without re-deriving it.
     Convert {

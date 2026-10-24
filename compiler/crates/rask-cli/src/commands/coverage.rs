@@ -334,7 +334,7 @@ fn exercised_calls(suite: &Path) -> Exercised {
 /// stdlib body doesn't count: it shows the stdlib using itself, not a program
 /// reaching it.
 fn calls_in(path: &Path) -> Exercised {
-    let config = rask_compiler::CompilerConfig { cfg: rask_compiler::CfgConfig::from_host("debug", vec![]) };
+    let config = crate::compiler_config(rask_compiler::CfgConfig::from_host("debug", vec![]));
     let Some(checked) = rask_compiler::check_file(&path.to_string_lossy(), &config).result else {
         return Exercised::default();
     };

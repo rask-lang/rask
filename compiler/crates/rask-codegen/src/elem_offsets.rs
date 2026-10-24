@@ -23,7 +23,7 @@
 
 use rask_mono::runtime_abi;
 use rask_mir::{ContainerKind, MirType};
-use rask_mono::{EnumLayout, FieldLayout, StructLayout};
+use rask_types::layout::{EnumLayout, FieldLayout, StructLayout};
 
 use rask_types::Type as RaskType;
 

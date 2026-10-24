@@ -43,6 +43,10 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
         self.0.nominal_targets.get(name).map(|t| vec![t.clone()])
     }
 
+    fn type_table(&self) -> &rask_types::TypeTable {
+        &self.0.types
+    }
+
     fn type_params(&self, name: &str) -> Vec<String> {
         let params = self.0.struct_decls.get(name).map(|s| &s.type_params)
             .or_else(|| self.0.enums.get(name).map(|e| &e.type_params));
@@ -100,12 +104,12 @@ impl Interpreter {
         // backend deriving its own is how `is_integer<i32>()` came back `false`
         // here while native couldn't lower the call at all (#775).
         let decls = InterpDecls(self);
-        match reflect::answer(method, ty, &decls, &self.types) {
+        match reflect::answer(method, ty, &decls) {
             reflect::ReflectAnswer::Bool(b) => Ok(Value::Bool(b)),
             reflect::ReflectAnswer::Int(n) => Ok(Value::int(n as i64)),
             reflect::ReflectAnswer::Str(s) => Ok(Value::String(Arc::new(Mutex::new(s)))),
             reflect::ReflectAnswer::Unsupported(why) => Err(RuntimeError::TypeError(format!(
-                "reflect.{method}<{}>() can't be answered: `{}` {why}", ty.source(), ty.source()
+                "reflect.{method}<{}>() can't be answered: {why}", ty.source()
             ))),
             reflect::ReflectAnswer::NoSuchMethod => Err(RuntimeError::NoSuchMethod {
                 ty: "reflect".to_string(),
@@ -126,19 +130,19 @@ impl Interpreter {
         decl: &rask_ast::decl::StructDecl,
         ty: &TypeExpr,
         params: &[String],
-    ) -> Option<rask_mono::StructLayout> {
+    ) -> Option<rask_types::layout::StructLayout> {
         let args = ty.args();
         if args.len() != params.len() {
             return None;
         }
-        let type_args: Vec<rask_types::Type> = args.iter().map(rask_mono::field_type).collect();
+        let type_args: Vec<rask_types::Type> = args.iter().map(rask_types::layout::field_type).collect();
         // `compute_struct_layout` wants the declaration in its `Decl` wrapper,
         // which is why the list is kept: the span decides whether the type
         // counts as stdlib, and a synthesized one would answer that wrong.
         let owner = self.type_decls.iter().find(|d| {
             matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
         })?;
-        Some(rask_mono::compute_struct_layout(owner, &type_args, &self.layout_cache))
+        Some(rask_types::layout::compute_struct_layout(owner, &type_args, &self.layout_cache))
     }
 
     /// reflect.fields<T>() → []FieldInfo
@@ -248,8 +252,8 @@ impl Interpreter {
             kind: rask_ast::decl::DeclKind::Enum(decl.clone()),
             span: rask_ast::Span::new(0, 0),
         };
-        let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_mono::field_type).collect();
-        let layout = rask_mono::compute_enum_layout(&decl, &type_args, &self.layout_cache);
+        let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_types::layout::field_type).collect();
+        let layout = rask_types::layout::compute_enum_layout(&decl, &type_args, &self.layout_cache);
         let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &[]);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }

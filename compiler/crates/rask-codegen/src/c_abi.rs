@@ -18,7 +18,7 @@
 //! is rejected in the checker instead (#1101).
 
 use cranelift_codegen::ir::{types, Type};
-use rask_mono::StructLayout;
+use rask_types::layout::StructLayout;
 
 /// How one argument of a C function is passed.
 #[derive(Debug, Clone, PartialEq)]

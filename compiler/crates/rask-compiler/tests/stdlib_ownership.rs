@@ -12,7 +12,7 @@ use rask_compiler::{check_source, CfgConfig, CompilerConfig};
 
 #[test]
 fn stdlib_bodies_pass_the_ownership_checker() {
-    let config = CompilerConfig { cfg: CfgConfig::from_host("debug", vec![]) };
+    let config = CompilerConfig::new(CfgConfig::from_host("debug", vec![]));
     let out = check_source("probe.rk", "func main() {}\n", &config);
     let checked = out.result.expect("an empty program checks");
     let stdlib = rask_stdlib::StubRegistry::typecheck_decls();

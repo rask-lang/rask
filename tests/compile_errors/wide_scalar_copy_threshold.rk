@@ -4,9 +4,9 @@
 //
 // The ownership checker's size table lists a width for every other scalar and
 // had no arm for `i128`/`u128`, so both fell through to the 8-byte default
-// (#936). `Wide` measured 16 bytes — right on the Copy threshold instead of
-// over it — and the two bindings below silently aliased one value. It's 32 as
-// laid out: the `i128` aligns to 16, so the struct pads to a multiple of it.
+// (#936). `Wide` measured 16 bytes instead of 24 — right on the Copy threshold
+// instead of over it — and the two bindings below silently aliased one value.
+// It is 32 now that sizes are the layout's: the i128 aligns the struct to 16.
 //
 // One error, not two: the initializer used to be reported by the expression
 // walk and again by the assignment (#1092).

@@ -134,6 +134,54 @@ pub(crate) fn display_pipeline_output<T>(
     }
 }
 
+/// Opt-in warnings from `--warn <name>`, for every command that compiles.
+static OPT_IN_WARNINGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Read every `--warn <name>` / `--warn=<name>`, refusing a name nothing answers
+/// to: a misspelled one would turn nothing on, and look exactly like a program
+/// that never trips the warning.
+fn set_opt_in_warnings(cli_args: &[String]) {
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i < cli_args.len() {
+        let a = cli_args[i].as_str();
+        let name = if a == "--warn" {
+            i += 1;
+            match cli_args.get(i) {
+                Some(n) => n.as_str(),
+                None => {
+                    eprintln!("{}: `--warn` needs a warning name", output::error_label());
+                    process::exit(1);
+                }
+            }
+        } else if let Some(n) = a.strip_prefix("--warn=") {
+            n
+        } else {
+            i += 1;
+            continue;
+        };
+        if !rask_ast::allow_names::is_known_opt_in(name) {
+            let known = rask_ast::allow_names::OPT_IN_WARNINGS.join(", ");
+            match rask_ast::allow_names::nearest_opt_in(name) {
+                Some(s) => eprintln!("{}: `--warn {}` names nothing; did you mean `--warn {}`?", output::error_label(), name, s),
+                None => eprintln!("{}: `--warn {}` names nothing. Known: {}", output::error_label(), name, known),
+            }
+            process::exit(1);
+        }
+        names.push(name.to_string());
+        i += 1;
+    }
+    let _ = OPT_IN_WARNINGS.set(names);
+}
+
+/// The compiler config every command builds: the target, and the warnings
+/// `--warn` turned on.
+pub(crate) fn compiler_config(cfg: rask_compiler::CfgConfig) -> rask_compiler::CompilerConfig {
+    let mut config = rask_compiler::CompilerConfig::new(cfg);
+    config.warn = OPT_IN_WARNINGS.get().cloned().unwrap_or_default();
+    config
+}
+
 /// Run check_file, display all diagnostics, exit on errors. Returns CheckResult on success.
 pub(crate) fn run_check_or_exit(path: &str, format: Format) -> rask_compiler::CheckResult {
     match run_check(path, format) {
@@ -154,9 +202,7 @@ pub(crate) fn run_check(
     path: &str,
     format: Format,
 ) -> Result<rask_compiler::CheckResult, usize> {
-    let config = rask_compiler::CompilerConfig {
-        cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
-    };
+    let config = compiler_config(rask_compiler::CfgConfig::from_host("debug", vec![]));
     let output = rask_compiler::check_file(path, &config);
 
     let source_files: Vec<(std::path::PathBuf, String)> = if !output.source_files.is_empty() {
@@ -216,19 +262,21 @@ fn main() {
         None => (&args[..], &[] as &[String])
     };
 
-    // Filter out format flags for command dispatch
+    set_opt_in_warnings(cli_args);
+
+    // Filter out format and --warn flags for command dispatch
     let cmd_args: Vec<&str> = cli_args
         .iter()
         .enumerate()
         .filter(|(i, a)| {
             let s = a.as_str();
-            if s == "--format=json" || s == "--json" {
+            if s == "--format=json" || s == "--json" || s.starts_with("--warn=") {
                 return false;
             }
-            if s == "--format" {
+            if s == "--format" || s == "--warn" {
                 return false;
             }
-            if *i > 0 && cli_args[i - 1] == "--format" {
+            if *i > 0 && (cli_args[i - 1] == "--format" || cli_args[i - 1] == "--warn") {
                 return false;
             }
             true

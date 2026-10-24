@@ -29,7 +29,7 @@ enum Name: u8 { A = 0, B = 1 }       // Explicit discriminants (E14-E18)
 
 | Rule | Description |
 |------|-------------|
-| **E12: Positional variants** | `Variant(T)` or `Variant(T, U)` — fields accessed by position in patterns |
+| **E12: Positional variants** | `Variant(T)` or `Variant(T, U)` — built and matched by position, and reached as `{0}`, `{1}` in the variant's `@message` (`type.errors/ER36`) |
 | **E13: Named variants** | `Variant(name: T)` — built and matched by name, like a struct (`type.structs/S1b`), and bound by name in the variant's `@message` (`type.errors/ER36`) |
 | **E14: No mixing** | A single variant is either positional or named, not both |
 

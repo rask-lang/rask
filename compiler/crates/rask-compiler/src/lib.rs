@@ -55,9 +55,16 @@ pub use rask_types::TypedProgram;
 /// Compiler configuration. Callers build this; the driver uses it.
 pub struct CompilerConfig {
     pub cfg: CfgConfig,
+    /// Opt-in warnings the command line turned on (`--warn blocking_print`).
+    pub warn: Vec<String>,
 }
 
 impl CompilerConfig {
+    /// A config for `cfg` with no opt-in warnings turned on.
+    pub fn new(cfg: CfgConfig) -> Self {
+        Self { cfg, warn: Vec::new() }
+    }
+
     /// Tell the frontend what machine it is compiling for.
     ///
     /// `usize` is pointer-sized, and nothing that builds a `Type::usize()` has
@@ -272,7 +279,7 @@ fn collect_package_error<T>(e: &rask_resolve::PackageError, out: &mut PipelineOu
 /// Was this span parsed out of `stdlib/*.rk` rather than the user's program?
 ///
 /// Re-exported so callers that render diagnostics don't each need rask-mono.
-pub use rask_mono::is_stdlib_span;
+pub use rask_types::layout::is_stdlib_span;
 
 /// The declarations the interpreter runs: the program's, plus the stdlib modules
 /// that are written in Rask.
@@ -496,7 +503,7 @@ pub fn check_loaded(
     // --- Effects (non-blocking metadata) ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -851,7 +858,7 @@ fn check_package_scoped(
     // --- Effects ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -1276,14 +1283,14 @@ fn visible_packages(
 fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
     let user_error = diags.iter().any(|d| {
         matches!(d.severity, Severity::Error)
-            && d.primary_span().is_some_and(|s| !rask_mono::is_stdlib_span(s))
+            && d.primary_span().is_some_and(|s| !rask_types::layout::is_stdlib_span(s))
     });
     if !user_error {
         return;
     }
     diags.retain(|d| {
         !matches!(d.severity, Severity::Error)
-            || d.primary_span().is_none_or(|s| !rask_mono::is_stdlib_span(s))
+            || d.primary_span().is_none_or(|s| !rask_types::layout::is_stdlib_span(s))
     });
 }
 

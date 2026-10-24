@@ -183,7 +183,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Vec operations ─────────────────────────────────────
         StdlibEntry {
             mir_name: "rask_vec_from_static", c_name: "rask_vec_from_static",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
@@ -191,7 +191,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // `mutate self` method (#1405).
         StdlibEntry {
             mir_name: "rask_vec_view", c_name: "rask_vec_view",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
         },
@@ -201,6 +201,11 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // value offset, pair size).
         StdlibEntry::simple("rask_map_insert_pairs", "rask_map_insert_pairs", &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
+        // Giving back the reference a captured variable's slot held, on the way
+        // to the slot holding another one. Spelled apart from the refcount
+        // ops because it is not this name's reference being released — see
+        // `release_replaced_captures`.
+        StdlibEntry::simple("string_free_replaced", "rask_string_free", &[types::I64], None, false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         // try_push shares push's C entry: the runtime has no reachable failure
         // yet (Vec carries no capacity bound, and OOM panics in the allocator),
@@ -451,6 +456,11 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
+            mir_name: "string_substr", c_name: "rask_string_substr",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
             mir_name: "string_append", c_name: "rask_string_append",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
@@ -586,25 +596,25 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "Map_new_string_keys", c_name: "rask_map_new_string_keys",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_new_link_keys", c_name: "rask_map_new_link_keys",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_link_keys", c_name: "rask_map_new_link_keys_cap",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_string_keys", c_name: "rask_map_new_string_keys_cap",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
         },
@@ -612,13 +622,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // addresses ride with the sizes (and the capacity) ahead of the tags.
         StdlibEntry {
             mir_name: "Map_new_keyed", c_name: "rask_map_new_keyed",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 4, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_keyed", c_name: "rask_map_new_keyed_cap",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 5, tags: 2 }, ret_adapt: RetAdapt::None,
         },
@@ -731,13 +741,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // constructor would: the container the decoder builds frees it.
         StdlibEntry {
             mir_name: "json_shape_vec", c_name: "rask_json_shape_vec",
-            params: &[types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "json_shape_map", c_name: "rask_json_shape_map",
-            params: &[types::I64, types::I64, types::I64, types::I64],
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
         },
@@ -807,6 +817,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
 
         // ── Memory allocation ─────────────────────────────────────
         StdlibEntry::simple("rask_alloc", "rask_alloc", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_alloc_aligned", "rask_alloc_aligned", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Concurrency: channels ──────────────────────────────────
         StdlibEntry::simple("channel_tx", "rask_channel_get_tx", &[types::I64], Some(types::I64), false),
@@ -832,7 +843,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Shared<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Shared_new", c_name: "rask_shared_new_ptr",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         // Cell — the internal spelling of `Shared<T, Local>`, the strategy that
@@ -841,7 +852,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // hands back the slot address for codegen to load or copy from.
         StdlibEntry {
             mir_name: "Cell_new", c_name: "rask_cell_new",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
@@ -948,7 +959,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Mutex<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Mutex_new", c_name: "rask_mutex_new_ptr",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
@@ -1233,9 +1244,7 @@ fn declared_entry(
         Some(NativeReturn::Negative) => (None, RetAdapt::NegErr),
         Some(NativeReturn::Status) => (None, RetAdapt::Status),
         Some(NativeReturn::Nothing) => (None, RetAdapt::None),
-        None if ret.is_name("string") => {
-            (Some(ArgAdapt::StringOutParam), RetAdapt::FromArgAdapt)
-        }
+        None if ret.is_name("string") => (Some(ArgAdapt::StringOutParam), RetAdapt::FromArgAdapt),
         None if result_ok(ret).is_some_and(|ok| ok.is_name("string")) => {
             (Some(ArgAdapt::StringResultOutParam), RetAdapt::FromArgAdapt)
         }
@@ -1491,9 +1500,9 @@ mod tests {
     ("math.tan",                  Ok_("t_native_reach_map_math_json")),
     ("math.to_degrees",           Ok_("t_native_reach_map_math_json")),
     ("math.to_radians",           Ok_("t_native_reach_map_math_json")),
-    ("reflect.align_of",          Ok_("t_reflect_type_facts")),
-    ("reflect.is_copy",           Ok_("t_reflect_type_facts")),
-    ("reflect.size_of",           Ok_("t_reflect_type_facts")),
+    ("reflect.align_of",          Ok_("t_reflect_size_of")),
+    ("reflect.is_copy",           Ok_("t_reflect_size_of")),
+    ("reflect.size_of",           Ok_("t_reflect_size_of")),
     ("reflect.fields",            Ok_("t_native_reach_reflect")),
     ("reflect.has_field",         Ok_("t_native_reach_reflect")),
     ("reflect.has_method",        Ok_("t_native_reach_reflect")),

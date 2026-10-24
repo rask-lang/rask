@@ -208,7 +208,7 @@ impl TypeChecker {
                     self.check_attachment_site(&s.attrs, "struct", decl.span, &declared);
                     for field in &s.fields {
                         self.check_attachment_site(&field.attrs, "field", field.name_span, &declared);
-                        self.reject_annotation_type(&field.ty, "field type", field.name_span, &declared);
+                        self.reject_annotation_type(&field.ty, "field type", field.ty_span, &declared);
                     }
                     for m in &s.methods {
                         self.check_attachment_site(&m.attrs, "method", m.span, &declared);
@@ -220,7 +220,7 @@ impl TypeChecker {
                     for variant in &e.variants {
                         self.check_attachment_site(&variant.attrs, "variant", variant.name_span, &declared);
                         for field in &variant.fields {
-                            self.reject_annotation_type(&field.ty, "variant field type", variant.name_span, &declared);
+                            self.reject_annotation_type(&field.ty, "variant field type", field.ty_span, &declared);
                         }
                     }
                     for m in &e.methods {
@@ -257,7 +257,7 @@ impl TypeChecker {
         }
     }
 
-    /// `@allow(name)` where nothing answers to `name`.
+    /// `@allow(name)` or `@warn(name)` where nothing answers to `name`.
     ///
     /// The names come from two registries that can't see each other — compiler
     /// warnings here, lint rule ids in `rask-lint` — so a misspelled one used to
@@ -299,16 +299,27 @@ impl TypeChecker {
     }
 
     fn check_allow_attrs(&mut self, attrs: &[rask_ast::attr::Attr], span: Span) {
+        use rask_ast::allow_names as names;
         for attr in attrs {
-            let Some(name) = rask_ast::allow_names::allowed_name(attr) else { continue };
-            if rask_ast::allow_names::is_known(name) {
-                continue;
+            if let Some(name) = names::allowed_name(attr) {
+                if !names::is_known(name) {
+                    self.errors.push(TypeError::UnknownAllowName {
+                        attr: "allow",
+                        name: name.to_string(),
+                        suggestion: names::nearest(name).map(str::to_string),
+                        span,
+                    });
+                }
+            } else if let Some(name) = names::warned_name(attr) {
+                // No opt-in warning is turned on from an attribute yet, so
+                // every name here would turn nothing on.
+                self.errors.push(TypeError::UnknownAllowName {
+                    attr: "warn",
+                    name: name.to_string(),
+                    suggestion: names::nearest_opt_in(name).map(str::to_string),
+                    span,
+                });
             }
-            self.errors.push(TypeError::UnknownAllowName {
-                name: name.to_string(),
-                suggestion: rask_ast::allow_names::nearest(name).map(str::to_string),
-                span,
-            });
         }
     }
 

@@ -14,3 +14,4 @@
 #   VARIANTS    an enum whose variants differ from the spec's
 #   UNTESTED    built, and no suite program green on both backends calls it
 
+std.bytes - NO-SURFACE  # proposed; the surface comes with the first implementation

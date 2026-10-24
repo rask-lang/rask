@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
-use rask_mono::{EnumLayout, MonoProgram, StructLayout};
+use rask_types::layout::{EnumLayout, StructLayout};
+use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
@@ -837,10 +838,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64) -> i64
-        // (pointer past the header words)
+        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64,
+        // env_align: i64) -> i64 (pointer past the header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -885,8 +887,9 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_retain".to_string(), id);
         }
 
-        // rask_box_alloc(value_size: i64) -> ptr — an interface object's block, with
-        // a reference count in the word before the value it returns.
+        // rask_box_alloc(vtable: i64) -> ptr — an interface object's block,
+        // sized and aligned from the vtable, with a reference count in the
+        // word before the value it returns.
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64));
@@ -907,10 +910,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_box_retain".to_string(), id);
         }
 
-        // rask_box_release(value: i64, owned_release: i64) -> void — the hook
-        // is null for a borrowed box, whose contents are the frame's (#1144).
+        // rask_box_release(value: i64, vtable: i64, owns: i64) -> void —
+        // `owns` is 0 for a borrowed box, whose contents are the frame's (#1144).
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             let id = self.module
@@ -1504,8 +1508,16 @@ impl CodeGenerator {
             let mut desc = DataDescription::new();
             desc.define(meta.bytes.clone().into_boxed_slice());
             // Elements are read as words and as `RaskStr` values, both of which
-            // want the blob eight-byte aligned.
-            desc.set_align(8);
+            // want the blob eight-byte aligned. An `@align(64)` element wants
+            // its own alignment.
+            let elem_align = meta
+                .elem
+                .iter()
+                .chain(meta.map_types.iter().flat_map(|(k, v)| [k, v]))
+                .map(|t| u64::from(t.align()))
+                .max()
+                .unwrap_or(8);
+            desc.set_align(elem_align.max(8));
 
             for (offset, text) in &meta.string_relocs {
                 let Some(&header_id) = self.string_header_data.get(text) else {
@@ -1863,6 +1875,7 @@ impl CodeGenerator {
             builder.set_line_map(lm);
         }
         builder.set_c_abi_args(&self.c_abi_args);
+        builder.set_debug_checks(self.build_mode == BuildMode::Debug);
         builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);

@@ -21,6 +21,9 @@ typedef struct {
     void *(*alloc)(int64_t size, void *ctx);
     void *(*realloc)(void *ptr, int64_t old_size, int64_t new_size, void *ctx);
     void  (*free)(void *ptr, void *ctx);
+    // A block aligned to `align`, a power of two past 16, that `free` takes
+    // back. NULL refuses over-aligned types: asking for one panics.
+    void *(*alloc_aligned)(int64_t size, int64_t align, void *ctx);
     void  *ctx;
 } RaskAllocator;
 
@@ -39,7 +42,14 @@ void  rask_alloc_stats(RaskAllocStats *out);
 void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
-void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags);
+// For a type past 16-byte alignment (`@align(N)`). At 16 or under these are
+// `rask_alloc` and `rask_realloc`. The block goes back through `rask_free` or
+// `rask_realloc(ptr, size, 0)` like any other.
+void *rask_alloc_aligned(int64_t size, int64_t align);
+void *rask_realloc_aligned(void *ptr, int64_t old_size, int64_t new_size, int64_t align);
+// `env_align` is the largest alignment a capture held by value needs.
+void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags,
+                         int64_t env_align);
 // Closure flags. Codegen passes the same bit (`task_bound` on ClosureCreate).
 #define RASK_CLOSURE_TASK_BOUND 1
 // Whether a heap closure captured a link or a `Local` box.
@@ -50,9 +60,9 @@ void  rask_closure_retain(void *ptr);
 
 // A trait object's block: `[refs | value...]`, with the fat pointer's data half
 // pointing at the value. See `rask_box_alloc` in alloc.c for why it counts.
-void *rask_box_alloc(int64_t value_size);
+void *rask_box_alloc(const int64_t *vtable);
 void  rask_box_retain(void *value);
-void  rask_box_release(void *value, void (*owned_release)(void *));
+void  rask_box_release(void *value, const int64_t *vtable, int64_t owns);
 
 // `RASK_LEAK_TRACE=1`: record where every live allocation came from, and group
 // the survivors by that at exit. `RASK_LEAK_CHECK=1` counts them; this says
@@ -118,9 +128,15 @@ typedef struct RaskVec RaskVec;
 // holds a `Vec<Item>` has to free each element's inner vector, and a bare
 // offset can only mean "string". A plain offset still reads as a string at
 // that offset, so every hand-written list below keeps its meaning.
+//
+// `align` is the element's alignment. Past 16, which is all `malloc` promises,
+// the element buffers come from `rask_alloc_aligned` (an `@align(64)` struct).
+// It rides with the element map because the same constructor argument carries
+// both, and a container derived from this one copies the two together.
 typedef struct {
     const int32_t *offsets;
     int64_t        count;
+    int64_t        align;
 } RaskElemStrs;
 
 // What a box's payload is, so the box's last release can give it back. A
@@ -239,14 +255,19 @@ extern const int32_t rask_elem_strs_pair[2];
 // build a `Vec<Vec<T>>`.
 extern const int32_t rask_elem_vec_one[1];
 
-RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs);
+// Each element description is (offsets, count, alignment): see `RaskElemStrs`.
+RaskVec *rask_vec_new(int64_t elem_size, const int32_t *str_offs, int64_t n_str_offs,
+                      int64_t elem_align);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
-                                const int32_t *str_offs, int64_t n_str_offs);
+                                const int32_t *str_offs, int64_t n_str_offs,
+                                int64_t elem_align);
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
-                              const int32_t *str_offs, int64_t n_str_offs);
+                              const int32_t *str_offs, int64_t n_str_offs,
+                              int64_t elem_align);
 // A fixed array seen as a Vec: a copy of its elements that doesn't own them.
 RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
-                       const int32_t *str_offs, int64_t n_str_offs);
+                       const int32_t *str_offs, int64_t n_str_offs,
+                       int64_t elem_align);
 void     rask_vec_free_view(RaskVec *v);
 void     rask_vec_copy_back(const RaskVec *v, char *dst);
 // A `Vec<u8>` of raw bytes, one byte per element.
@@ -260,7 +281,8 @@ int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_as_ptr(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
-                        const int32_t *str_offs, int64_t n_str_offs);
+                        const int32_t *str_offs, int64_t n_str_offs,
+                        int64_t elem_align);
 int64_t  rask_vec_bound(const RaskVec *v);
 int64_t  rask_vec_remaining(const RaskVec *v);
 int64_t  rask_vec_is_bounded(const RaskVec *v);
@@ -631,7 +653,8 @@ int64_t  rask_vec_contains_str(const RaskVec *v, const RaskStr *needle);
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.
 // Keys and values stored as raw bytes. Uses FNV-1a hashing + memcmp by default.
-// For string-keyed maps, supply custom hash/eq via rask_map_new_custom.
+// String keys, link keys and keys compared by their own `eq`/`hash` each have
+// a constructor below.
 
 typedef struct RaskMap RaskMap;
 
@@ -646,35 +669,33 @@ void     rask_map_release_elem(RaskMap *m);
 
 // The two element maps are the keys' and the values'. See `RaskElemStrs`.
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
-                      const int32_t *key_offs, int64_t n_key_offs,
-                      const int32_t *val_offs, int64_t n_val_offs);
+                      const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                      const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
-                                  const int32_t *key_offs, int64_t n_key_offs,
-                                  const int32_t *val_offs, int64_t n_val_offs);
+                                  const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                  const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
-                                const int32_t *key_offs, int64_t n_key_offs,
-                                const int32_t *val_offs, int64_t n_val_offs);
-RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
-                             RaskHashFn hash, RaskEqFn eq);
+                                const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 RaskMap *rask_map_new_keyed(int64_t key_size, int64_t val_size,
                             RaskHashFn hash, RaskEqFn eq,
-                            const int32_t *key_offs, int64_t n_key_offs,
-                            const int32_t *val_offs, int64_t n_val_offs);
+                            const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                            const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 RaskMap *rask_map_new_keyed_cap(int64_t key_size, int64_t val_size, int64_t cap,
                                 RaskHashFn hash, RaskEqFn eq,
-                                const int32_t *key_offs, int64_t n_key_offs,
-                                const int32_t *val_offs, int64_t n_val_offs);
+                                const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 // `Map.with_capacity(n)`. A hint, like the Vec one: it pre-allocates the
 // tables and sets no ceiling. `n <= 0` gets the default.
 RaskMap *rask_map_new_cap(int64_t key_size, int64_t val_size, int64_t cap,
-                          const int32_t *key_offs, int64_t n_key_offs,
-                          const int32_t *val_offs, int64_t n_val_offs);
+                          const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                          const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 RaskMap *rask_map_new_string_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
-                                      const int32_t *key_offs, int64_t n_key_offs,
-                                      const int32_t *val_offs, int64_t n_val_offs);
+                                      const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                      const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
-                                    const int32_t *key_offs, int64_t n_key_offs,
-                                    const int32_t *val_offs, int64_t n_val_offs);
+                                    const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
+                                    const int32_t *val_offs, int64_t n_val_offs, int64_t val_align);
 // Releases every string the keys and values hold, then the map itself.
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
@@ -696,7 +717,8 @@ RaskVec *rask_map_values(const RaskMap *m);
 // each, entries `stride` bytes apart. The caller lays the tuple out.
 RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride);
 RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
-                           const int32_t *pair_offs, int64_t n_pair_offs);
+                           const int32_t *pair_offs, int64_t n_pair_offs,
+                           int64_t pair_align);
 void     rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
                                int64_t voff, int64_t stride);
 RaskMap *rask_map_clone(const RaskMap *m);
@@ -753,7 +775,8 @@ int64_t   rask_rack_contains(const RaskRack *r, const void *link);
 // `tags: Vec<string>` was invisible and leaked one allocation per node.
 void     *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
                            int64_t field_count, const int32_t *fields,
-                           int64_t owned_count, const int32_t *owned);
+                           int64_t owned_count, const int32_t *owned,
+                           int64_t elem_align);
 void      rask_rack_delete(RaskRack *r, void *link);
 void      rask_rack_clear(RaskRack *r);
 RaskVec  *rask_rack_nodes(const RaskRack *r);
@@ -1002,9 +1025,9 @@ void         rask_json_tree_free(RaskJsonVal *v);
 RaskJsonShape *rask_json_shape_prim(int64_t kind);
 RaskJsonShape *rask_json_shape_struct(int64_t size);
 RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
-                                   const int32_t *owned, int64_t n_owned);
+                                   const int32_t *owned, int64_t n_owned, int64_t align);
 RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
-                                   const int32_t *owned, int64_t n_owned);
+                                   const int32_t *owned, int64_t n_owned, int64_t align);
 RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size,
                                    int64_t payload_offset);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
@@ -1459,11 +1482,13 @@ void  rask_access_stack_set(void *head);
 
 typedef struct RaskMutex RaskMutex;
 
-RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size);
+// `data_align` past 16 puts the payload in an aligned block (`@align(64)`).
+RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size, int64_t data_align);
 void       rask_mutex_free(RaskMutex *m);
 
 // Pointer-based codegen wrappers for Mutex.
-int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
+                           int64_t data_align);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
 int64_t rask_mutex_data(int64_t mutex);
@@ -1495,7 +1520,7 @@ void    rask_mutex_drop(int64_t mutex);
 
 typedef struct RaskShared RaskShared;
 
-RaskShared *rask_shared_new(const void *initial_data, int64_t data_size);
+RaskShared *rask_shared_new(const void *initial_data, int64_t data_size, int64_t data_align);
 void        rask_shared_free(RaskShared *s);
 
 // Rask closure layout (see closures.rs): [func_ptr(8) | env...].
@@ -1508,7 +1533,8 @@ int64_t rask_shared_clone_i64(int64_t shared);
 void    rask_shared_drop_i64(int64_t shared);
 
 // Pointer-based wrappers for aggregate types (struct data).
-int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
+                            int64_t data_align);
 
 // Cell — single-owner interior mutability (mem.cell). No lock.
 uint32_t rask_os_pid(void);
@@ -1524,7 +1550,8 @@ RaskVec *rask_os_env_vars(void);
 int8_t  rask_terminal_is_tty(void);
 int64_t rask_terminal_size(void);
 
-int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
+                      int64_t data_align);
 int64_t rask_cell_get(int64_t cell);
 void    rask_cell_set(int64_t cell, int64_t data_ptr);
 void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);

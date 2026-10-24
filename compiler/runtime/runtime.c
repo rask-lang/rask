@@ -951,7 +951,7 @@ int64_t rask_fs_remove_dir(const RaskStr *path) {
 int64_t rask_fs_read_dir_names(const RaskStr *path) {
     void *dir = rask_libc_opendir(rask_string_ptr(path));
     if (!dir) return -1;
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1, 0);
     const char *name;
     while ((name = rask_libc_readdir(dir)) != NULL) {
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
@@ -1128,7 +1128,7 @@ int64_t rask_file_close(int64_t file) {
 }
 
 RaskVec *rask_file_lines(int64_t file) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1, 0);
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return v;
     // Rewind to start
@@ -1373,7 +1373,7 @@ int64_t rask_io_std_flush(int64_t which) {
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
     RASK_SIM_UNSIMULATED("reading stdin");
-    RaskVec *v = rask_vec_new(1, NULL, 0);
+    RaskVec *v = rask_vec_new(1, NULL, 0, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
@@ -1541,7 +1541,7 @@ int64_t rask_net_resolve(const RaskStr *host) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     if (getaddrinfo(h, NULL, &hints, &result) != 0) return -1;
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
+    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1, 0);
     for (struct addrinfo *a = result; a; a = a->ai_next) {
         char buf[INET6_ADDRSTRLEN];
         const void *src = a->ai_family == AF_INET
@@ -1717,7 +1717,7 @@ void rask_net_local_addr(RaskStr *out, int64_t fd) {
 // Stub: create a Map from a static array of key-value pairs.
 int64_t rask_map_from(int64_t pairs_ptr) {
     (void)pairs_ptr;
-    return (int64_t)(uintptr_t)rask_map_new(8, 8, NULL, 0, NULL, 0);
+    return (int64_t)(uintptr_t)rask_map_new(8, 8, NULL, 0, 0, NULL, 0, 0);
 }
 
 // ─── JSON module ──────────────────────────────────────────────────

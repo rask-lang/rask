@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `@warn` turns nothing on yet
+// Rejects: turns nothing on
+//
+// No warning is switched on from an attribute yet. `blocking_print` is about
+// the whole build, so it's a flag (`rask check main.rk --warn blocking_print`),
+// and the per-item ones the spec lists (`implicit_copy`) aren't built. An
+// `@warn` that turned nothing on would look exactly like one that worked.
+
+// ERROR: `@warn(blocking_print)` turns nothing on
+@warn(blocking_print)
+func report(lines: Vec<string>) {
+    for line in lines {
+        println(line)
+    }
+}
+
+// ERROR: `@warn(blocking_prnt)` turns nothing on
+@warn(blocking_prnt)
+func typo() {}
+
+// ERROR: `@warn(implicit_copy)` turns nothing on
+@warn(implicit_copy)
+func copy_all() {}
+
+func main() {
+    report(Vec.new())
+    typo()
+    copy_all()
+}

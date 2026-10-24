@@ -310,8 +310,8 @@ struct Marker {}
 |-----------|----------|
 | (default) | `@layout(Rask)` — compiler reorders fields for minimal padding. User writes logical order; compiler uses optimal physical order |
 | `@layout(C)` | C layout rules: declaration order, C alignment, no reordering. Required for FFI structs |
-| `@packed` | Remove padding (may cause unaligned access) |
-| `@align(N)` | Minimum alignment of N bytes |
+| `@packed` | Remove padding: fields back to back in declaration order, alignment 1. Field reads may be unaligned |
+| `@align(N)` | Minimum alignment of N bytes, a power of two up to 2^29. The size rounds up to a multiple of N, and a struct holding one is aligned to N too. Every place the value lives honours it: frame slots, `Vec`/`Map` buffers, `Heap`, rack nodes, `Shared` payloads, closure environments, interface boxes. Can't be combined with `@packed` |
 | `@binary` | Binary wire format (see [Binary Structs](binary.md)) |
 
 The default `@layout(Rask)` means users don't think about field ordering for performance. The compiler sorts fields largest-alignment-first to minimize padding. Since field access is by name, reordering has no semantic effect.
