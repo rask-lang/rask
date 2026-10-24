@@ -145,6 +145,7 @@ mod tests {
             ret_ty: MirType::Void,
             source_file: None,
             is_extern_c: false,
+            inline_hint: false,
         };
 
         let removed = eliminate_dead_code(&mut func);
@@ -182,6 +183,7 @@ mod tests {
             ret_ty: MirType::I64,
             source_file: None,
             is_extern_c: false,
+            inline_hint: false,
         };
 
         let removed = eliminate_dead_code(&mut func);
@@ -221,6 +223,7 @@ mod tests {
             ret_ty: MirType::I64,
             source_file: None,
             is_extern_c: false,
+            inline_hint: false,
         };
 
         let removed = eliminate_dead_code(&mut func);

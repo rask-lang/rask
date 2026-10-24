@@ -41,6 +41,8 @@ use rask_ast::ty::TypeExpr;
 pub struct Effects {
     /// Can park the thread until something outside it happens.
     pub blocks: bool,
+    /// Writes to stdout or stderr. Blocks only when the reader stops reading.
+    pub prints: bool,
     /// Reads or changes state nobody passed in: the clock, the environment,
     /// the process. Doesn't wait.
     pub ambient: bool,
@@ -59,7 +61,12 @@ pub struct Effects {
 impl Effects {
     /// PU1: A function is pure if it has no effects.
     pub fn is_pure(&self) -> bool {
-        !self.blocks && !self.ambient && !self.async_ && !self.grow && !self.shrink
+        !self.can_block() && !self.ambient && !self.async_ && !self.grow && !self.shrink
+    }
+
+    /// Can park the thread, terminal output included.
+    pub fn can_block(&self) -> bool {
+        self.blocks || self.prints
     }
 
     /// Whether this function performs structural pool mutations.
@@ -70,6 +77,7 @@ impl Effects {
     /// Merge another effect set into this one.
     pub fn union(&mut self, other: Effects) {
         self.blocks |= other.blocks;
+        self.prints |= other.prints;
         self.ambient |= other.ambient;
         self.async_ |= other.async_;
         self.grow |= other.grow;
@@ -80,7 +88,7 @@ impl Effects {
     /// present, in a fixed order.
     pub fn label(&self) -> String {
         let parts: Vec<&str> = [
-            (self.blocks, "blocks"),
+            (self.can_block(), "blocks"),
             (self.ambient, "ambient"),
             (self.async_, "async"),
             (self.mutation(), "mutation"),
@@ -129,14 +137,17 @@ pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
 /// The stdlib's bodies are inferred too, so a call into it carries what the
 /// body does; warnings (CW1/CW2) are only about the program's own code.
 /// Returns the per-function effect map and those warnings. Call after type
-/// checking, with what it resolved — no AST modifications.
+/// checking, with what it resolved — no AST modifications. `warn` is the opt-in
+/// warnings the command line turned on.
 pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
     let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets);
-    let warnings = warnings::detect(program, &effects, &runtime_only, targets);
+    let warn_prints = warn.iter().any(|w| w == "blocking_print");
+    let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
     (effects, warnings)
 }
 

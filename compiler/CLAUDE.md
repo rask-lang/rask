@@ -64,14 +64,14 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/checker/type_defs.rs` — TypeDef, MethodSig, TypedProgram
 - `src/checker/builtins.rs` — built-in type registrations
 - `src/types.rs` — the `Type` enum itself
+- `src/layout.rs` — memory layouts (size, alignment, field offsets): the one size model. Monomorphization lays out with it, and `TypeTable::size_align` answers the copy rule, `reflect.size_of` and `transmute` from it
 - Inference bug: start in `unify.rs`, trace through `inference.rs`
 - New built-in type: register in `builtins.rs`, define methods in `rask-stdlib`
 
 ### rask-mono — Monomorphization
 - `src/reachability.rs` — discovers reachable functions from main(), name mangling
 - `src/instantiate.rs` — creates concrete function copies with substituted types
-- `src/layout.rs` — computes struct/enum memory layouts (size, alignment, field offsets)
-- `src/lib.rs` — MonoProgram, MonoFunction
+- `src/lib.rs` — MonoProgram, MonoFunction, the order layouts are computed in
 
 ### rask-mir — Mid-level IR (SSA control-flow graph)
 **Lowering (AST → MIR):**
@@ -100,7 +100,7 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/closures.rs` — closure codegen
 - `src/dispatch.rs` — stdlib calls into the C runtime: built from `@native("sym")` declarations plus `rask_runtime.h`, and an internal table for names MIR mints. `src/vtable.rs` — vtable layout
 - `src/debug_info.rs` — DWARF debug info
-- Struct layout bug: check `layouts.rs` and `rask-mono` layout computation
+- Struct layout bug: check `layouts.rs` and `rask_types::layout`
 
 ### rask-interp — Tree-walking interpreter (the reference backend)
 

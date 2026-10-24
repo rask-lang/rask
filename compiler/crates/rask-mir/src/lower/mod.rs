@@ -23,7 +23,7 @@ use rask_ast::{
     expr::{BinOp, Expr, ExprKind, UnaryOp},
     LineMap, NodeId, Span,
 };
-use rask_mono::{StructLayout, EnumLayout};
+use rask_types::layout::{StructLayout, EnumLayout};
 use rask_types::Type;
 use rask_ast::ty::{ParamMode, TypeExpr};
 use std::collections::HashMap;
@@ -32,7 +32,7 @@ use std::collections::HashMap;
 type TypedOperand = (MirOperand, MirType);
 
 /// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
-pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
+pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 
 /// The `none` word for a lowered type that is a niche *option*.
 ///
@@ -53,6 +53,26 @@ pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
 ///
 pub(crate) fn option_of(inner: MirType) -> MirType {
     MirType::Option(Box::new(inner))
+}
+
+/// `dst = ` a fresh heap block for a value of type `ty`, `size` bytes long.
+///
+/// `malloc` only promises 16-byte alignment, so an `@align(64)` value goes
+/// through `rask_alloc_aligned`. Both blocks go back through `rask_free`.
+pub(crate) fn alloc_block_for(dst: LocalId, size: u32, ty: &MirType) -> MirStmt {
+    let size = MirOperand::Constant(MirConst::Int(size.max(1) as i64));
+    let (name, args) = match ty.align() {
+        a if a > crate::MALLOC_ALIGN => (
+            "rask_alloc_aligned",
+            vec![size, MirOperand::Constant(MirConst::Int(a as i64))],
+        ),
+        _ => ("rask_alloc", vec![size]),
+    };
+    MirStmt::dummy(MirStmtKind::Call {
+        dst: Some(dst),
+        func: FunctionRef::internal(name.to_string()),
+        args,
+    })
 }
 
 
@@ -770,7 +790,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which is right until a type argument is an inline aggregate
     /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
     /// instance layout and falls through to the shared one. The name comes from
-    /// `rask_mono::generic_instance_name`, so both sides spell it the same way by
+    /// `rask_types::layout::generic_instance_name`, so both sides spell it the same way by
     /// construction (#781).
     pub fn generic_instance_mir_type(
         &self,
@@ -799,7 +819,7 @@ impl<'a> MirContext<'a> {
             let rask_types::GenericArg::Type(t) = arg else { return None };
             arg_tys.push((**t).clone());
         }
-        rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+        rask_types::layout::generic_instance_name(bare, &arg_tys, self.type_names)
     }
 
     /// The instance layout name for a checker type, in either spelling.
@@ -817,7 +837,7 @@ impl<'a> MirContext<'a> {
                     let rask_types::GenericArg::Type(t) = arg else { return None };
                     arg_tys.push((**t).clone());
                 }
-                rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
+                rask_types::layout::generic_instance_name(bare, &arg_tys, self.type_names)
             }
             _ => None,
         }
@@ -952,13 +972,13 @@ impl<'a> MirContext<'a> {
                 // aggregate has a layout of its own, not found under the base
                 // name: `first$Big(o: One<Big>)` was given the shared 8-byte
                 // layout while its caller passed 24 bytes (#781).
-                let arg_tys: Vec<Type> = args.iter().map(rask_mono::field_type).collect();
+                let arg_tys: Vec<Type> = args.iter().map(rask_types::layout::field_type).collect();
                 if self.nominal_underlying.contains_key(head) {
                     let generic: Vec<rask_types::GenericArg> =
                         arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
                     return self.resolve_unresolved_generic(head, &generic);
                 }
-                if let Some(name) = rask_mono::generic_instance_name(head, &arg_tys, self.type_names) {
+                if let Some(name) = rask_types::layout::generic_instance_name(head, &arg_tys, self.type_names) {
                     if let Some((idx, sl)) = self.find_struct(&name) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
                     }
@@ -1010,7 +1030,7 @@ impl<'a> MirContext<'a> {
                     })
                     .collect();
                 if let Some(instance) = arg_tys
-                    .and_then(|tys| rask_mono::generic_instance_name(name, &tys, self.type_names))
+                    .and_then(|tys| rask_types::layout::generic_instance_name(name, &tys, self.type_names))
                 {
                     if let Some((idx, sl)) = self.find_struct(&instance) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
@@ -1269,7 +1289,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which resolves to no layout and comes out a bare word that
     /// owns nothing.
     pub fn field_types(&self) -> crate::FieldTypes {
-        let field = |f: &rask_mono::FieldLayout| self.payload_to_mir(&f.ty);
+        let field = |f: &rask_types::layout::FieldLayout| self.payload_to_mir(&f.ty);
         crate::FieldTypes {
             structs: self
                 .struct_layouts
@@ -1728,6 +1748,9 @@ pub struct MirLowerer<'a> {
     pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
+    /// What the function's attributes say about raw-pointer checks
+    /// (mem.unsafe, debug-mode safety).
+    pointer_checks: PointerChecks,
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
     /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
     local_meta: HashMap<String, LocalMeta>,
@@ -2050,11 +2073,7 @@ impl<'a> MirLowerer<'a> {
             // anything reads the slot. Copy it to the heap and share that.
             let size = self.aggregate_size(ty);
             let heap = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(heap),
-                func: FunctionRef::internal("rask_alloc".to_string()),
-                args: vec![MirOperand::Constant(MirConst::Int(size as i64))],
-            }));
+            self.builder.push_stmt(alloc_block_for(heap, size, ty));
             // One store of the whole value. Copied a word at a time through
             // `Field { field_index: 0, byte_offset }`, every word read field 0:
             // codegen picks a struct's field by index and the offset never
@@ -2244,7 +2263,7 @@ impl<'a> MirLowerer<'a> {
     /// The struct layout of whatever an expression evaluates to, when it's a
     /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
     /// stays reachable.
-    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_mono::StructLayout> {
+    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_types::layout::StructLayout> {
         let from_checker = self.ctx.lookup_raw_type(expr.id).and_then(|ty| match ty {
             Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
             Type::Named(id) => self
@@ -2501,11 +2520,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
         let width = val_ty.size();
         let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(heap),
-            func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(MirConst::Int(width.max(1) as i64))],
-        }));
+        self.builder.push_stmt(alloc_block_for(heap, width, val_ty));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,
@@ -2968,9 +2983,9 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn store_wrapper_tag(&mut self, slot: LocalId, wrapper_ty: &MirType, tag: i64) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: rask_mono::abi::TAG_OFFSET,
+            offset: rask_types::abi::TAG_OFFSET,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: rask_mono::abi::TAG_BYTES,
+            store_size: rask_types::abi::TAG_BYTES,
             field: None,
         }));
         if matches!(wrapper_ty, MirType::Result { .. }) {
@@ -3086,8 +3101,8 @@ impl<'a> MirLowerer<'a> {
     /// Clear a `T or E`'s origin: no source line, no file.
     pub(crate) fn zero_result_origin(&mut self, slot: LocalId) {
         for (offset, size) in [
-            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, rask_mono::abi::RESULT_ORIGIN_LINE_BYTES),
-            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
+            (rask_types::abi::RESULT_ORIGIN_LINE_OFFSET, rask_types::abi::RESULT_ORIGIN_LINE_BYTES),
+            (rask_types::abi::RESULT_ORIGIN_FILE_OFFSET, 8),
         ] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: slot,
@@ -4298,6 +4313,7 @@ impl<'a> MirLowerer<'a> {
             spawn_result_boxed: false,
             addressed_captures: std::collections::HashSet::new(),
             parent_name: func_name,
+            pointer_checks: PointerChecks::of(&fn_decl.attrs),
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
             ensure_read_names: std::collections::HashSet::new(),
@@ -4546,6 +4562,7 @@ impl<'a> MirLowerer<'a> {
 
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
+        main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
         for f in &mut lowerer.synthesized_functions {
@@ -6365,6 +6382,29 @@ pub(crate) enum ElemWriteback {
     },
 }
 
+/// When a raw-pointer access checks for null (mem.unsafe, debug-mode safety).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PointerChecks {
+    /// Checked in a debug build, not in release.
+    DebugOnly,
+    /// `@checked_unsafe`: checked in every build.
+    Always,
+    /// `@unchecked_unsafe`: never checked.
+    Never,
+}
+
+impl PointerChecks {
+    fn of(attrs: &[rask_ast::attr::Attr]) -> PointerChecks {
+        if attrs.iter().any(|a| a.is("unchecked_unsafe")) {
+            PointerChecks::Never
+        } else if attrs.iter().any(|a| a.is("checked_unsafe")) {
+            PointerChecks::Always
+        } else {
+            PointerChecks::DebugOnly
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum LoweringError {
     UnresolvedVariable(String),
@@ -7292,7 +7332,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_construct() {
         // Shape.Circle(5.0) → store tag 0, store payload f64
-        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_types::layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let shape_enum = EnumLayout {
             name: "Shape".to_string(),
@@ -7410,7 +7450,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_no_payload() {
         // Color.Red() → store tag only
-        use rask_mono::{EnumLayout, VariantLayout};
+        use rask_types::layout::{EnumLayout, VariantLayout};
 
         let color_enum = EnumLayout {
             name: "Color".to_string(),
@@ -7491,7 +7531,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_multi_field() {
         // Msg.Pair(1, 2) → store tag + 2 payload fields
-        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_types::layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let msg_enum = EnumLayout {
             name: "Msg".to_string(),

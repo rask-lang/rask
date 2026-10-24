@@ -28,9 +28,7 @@ fn tmp_rk(src: &str) -> PathBuf {
 }
 
 fn default_config() -> CompilerConfig {
-    CompilerConfig {
-        cfg: CfgConfig::from_host("debug", vec![]),
-    }
+    CompilerConfig::new(CfgConfig::from_host("debug", vec![]))
 }
 
 fn error_count(diagnostics: &[rask_diagnostics::Diagnostic]) -> usize {

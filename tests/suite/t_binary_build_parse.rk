@@ -2,8 +2,9 @@
 //
 // type.binary: a `@binary` struct's field order is its wire layout (B1),
 // packed with no padding (B2), most significant bit first (B3). `build()`
-// writes it (G2), `T.parse(bytes)` reads it back with whatever follows (G1),
-// and `T.SIZE`/`T.SIZE_BITS` say how big it is (G4).
+// writes it (G2), `T.parse(mutate r)` reads it back off a `bits.BinaryReader`
+// and `T.from_bytes(bytes)` reads a buffer holding exactly one (G1), and
+// `T.SIZE`/`T.SIZE_BITS` say how big it is (G4).
 //
 // These used to be Rust inside the interpreter, and native had neither, so a
 // program that built a packet only ran on the interpreter.
@@ -37,13 +38,12 @@ test "type.binary/G1 — build then parse gives every field back" {
     let p = Packet(magic: 0x1234, id: 0xDEADBEEF)
     let bytes = p.build()
     assert bytes.len() == 6
-    let got = Packet.parse(bytes) catch e => {
+    let got = Packet.from_bytes(bytes) catch e => {
         assert false
         return
     }
-    assert got.0.magic == 0x1234
-    assert got.0.id == 0xDEADBEEF
-    assert got.1.len() == 0
+    assert got.magic == 0x1234
+    assert got.id == 0xDEADBEEF
 }
 
 test "type.binary/B3 — a big-endian field goes most significant byte first" {
@@ -66,11 +66,10 @@ test "type.binary/B2 — bit fields pack with no padding, little-endian is low b
     assert bytes[6] == 0xfd
     assert bytes[7] == 7
     assert bytes[8] == 9
-    let back = Header.parse(bytes) catch e => {
+    let g = Header.from_bytes(bytes) catch e => {
         assert false
         return
     }
-    let g = back.0
     assert g.version == 4
     assert g.ihl == 5
     assert g.flags == 2
@@ -81,22 +80,53 @@ test "type.binary/B2 — bit fields pack with no padding, little-endian is low b
     assert g.tag[1] == 9
 }
 
-test "type.binary/G1 — what follows the struct comes back as the rest" {
-    mut bytes = Packet(magic: 1, id: 2).build()
-    bytes.push(0xaa)
-    bytes.push(0xbb)
-    let got = Packet.parse(bytes) catch e => {
-        assert false
-        return
+func parse_one(mutate r: bits.BinaryReader) -> string {
+    let p = Packet.parse(mutate r) catch e => return e.message()
+    return "parsed {p.magic}"
+}
+
+func two_packets(bytes: Vec<u8>) -> string or bits.BinaryParseError {
+    mut r = bits.BinaryReader.new(bytes.clone())
+    let version = try r.read_u8()
+    let first = try Packet.parse(mutate r)
+    let second = try Packet.parse(mutate r)
+    assert r.pos() == 13
+    let tail = try r.read_u8()
+    // Nothing left is short of a whole packet, and says how short.
+    let missing = parse_one(mutate r)
+    return "{version} {first.magic} {first.id} {second.magic} {second.id} {tail} / {missing}"
+}
+
+test "type.binary/G1 — records parse one after another off one reader" {
+    mut bytes: Vec<u8> = [9u8]
+    for b in Packet(magic: 1, id: 2).build() {
+        bytes.push(b)
     }
-    assert got.1.len() == 2
-    assert got.1[0] == 0xaa
+    for b in Packet(magic: 3, id: 4).build() {
+        bytes.push(b)
+    }
+    bytes.push(0xaa)
+    let got = two_packets(bytes) catch e => e.message()
+    assert got == "9 1 2 3 4 170 / unexpected end: expected 6 bytes, got 0"
 }
 
 test "type.binary/G1 — too few bytes is an error, not a short read" {
     let short: Vec<u8> = [1u8, 2u8, 3u8]
-    let r = Packet.parse(short)
-    assert r is bits.BinaryParseError
+    let got = Packet.from_bytes(short) catch e => {
+        assert e.message() == "unexpected end: expected 6 bytes, got 3"
+        return
+    }
+    assert false
+}
+
+test "type.binary/G1 — from_bytes wants exactly one, not one and some" {
+    mut bytes = Packet(magic: 1, id: 2).build()
+    bytes.push(0)
+    let got = Packet.from_bytes(bytes) catch e => {
+        assert e.message() == "invalid data: 1 bytes after a Packet"
+        return
+    }
+    assert false
 }
 
 test "type.binary/G4 — SIZE rounds up to whole bytes" {
@@ -118,12 +148,12 @@ test "type.binary — floats go on the wire as their bits, NaN as one pattern" {
     assert bytes[4] == 0
     assert bytes[10] == 0x02
     assert bytes[11] == 0xc0
-    let back = Reading.parse(bytes) catch e => {
+    let back = Reading.from_bytes(bytes) catch e => {
         assert false
         return
     }
-    assert back.0.temp == 1.5
-    assert back.0.scale == -2.25
+    assert back.temp == 1.5
+    assert back.scale == -2.25
     let nan: f32 = 0.0 / 0.0
     let wire = Reading(temp: nan, scale: 0.0).build()
     assert wire[0] == 0x7f

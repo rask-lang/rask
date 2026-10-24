@@ -1065,6 +1065,18 @@ impl Interpreter {
             }
 
             ExprKind::Call { func, args } => {
+                // mem.unsafe: the checker gave the call its target type.
+                if func.name() == Some("transmute") && args.len() == 1 {
+                    let arg = &args[0].expr;
+                    let value = self.eval_expr(arg)?;
+                    let (Some(from), Some(to)) = (self.node_types.get(&arg.id), self.node_types.get(&expr.id)) else {
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError("transmute: the checker left no types for this call".to_string()),
+                            expr.span,
+                        ));
+                    };
+                    return self.transmute(&value, from, to).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
                 if let ExprKind::OptionalField { object, field } = &func.kind {
                     let obj_val = self.eval_expr(object)?;
                     let arg_vals: Vec<Value> = args

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Every name `@allow(...)` accepts.
+//! Every name `@allow(...)` and `@warn(...)` accept.
 //!
 //! Two sets of names meet in one annotation: compiler warnings, matched in the
 //! type checker, and lint rule ids, matched in `rask-lint`. Neither crate can
@@ -12,6 +12,11 @@
 
 /// Compiler warnings that can be suppressed at a declaration.
 pub const WARNINGS: &[&str] = &["torn_lock_update"];
+
+/// Compiler warnings that are off until `--warn <name>` turns them on
+/// (tool.warnings, opt-in warnings). None is turned on from an attribute yet,
+/// so `@warn(...)` has no names it accepts.
+pub const OPT_IN_WARNINGS: &[&str] = &["blocking_print"];
 
 /// Lint rule ids. Must match `rask_lint`'s registry exactly — a rule with no id
 /// here can't be suppressed, and an id with no rule suppresses nothing.
@@ -47,14 +52,28 @@ pub fn all() -> impl Iterator<Item = &'static str> {
     WARNINGS.iter().copied().chain(LINT_RULES.iter().copied())
 }
 
-/// The closest accepted name, when one is close enough to be worth showing.
+/// Is this a name `--warn` can turn on?
+pub fn is_known_opt_in(name: &str) -> bool {
+    OPT_IN_WARNINGS.contains(&name.trim())
+}
+
+/// The closest accepted `@allow` name, when one is close enough to be worth showing.
 pub fn nearest(name: &str) -> Option<&'static str> {
+    nearest_in(name, all())
+}
+
+/// The closest accepted `--warn` name.
+pub fn nearest_opt_in(name: &str) -> Option<&'static str> {
+    nearest_in(name, OPT_IN_WARNINGS.iter().copied())
+}
+
+fn nearest_in(name: &str, candidates: impl Iterator<Item = &'static str>) -> Option<&'static str> {
     let name = name.trim();
     // A third of the length, so a short name tolerates one typo and a long rule
     // id tolerates a few — a fixed budget either misses `naming/or_sufix` or
     // suggests `naming/to` for `xyz`.
     let budget = (name.len() / 3).max(1);
-    all()
+    candidates
         .map(|candidate| (edit_distance(name, candidate), candidate))
         .filter(|(d, _)| *d <= budget)
         .min_by_key(|(d, _)| *d)
@@ -80,6 +99,14 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// The name inside `@allow(...)`.
 pub fn allowed_name(attr: &crate::attr::Attr) -> Option<&str> {
     if !attr.is("allow") {
+        return None;
+    }
+    attr.positional()?.rule_name()
+}
+
+/// The name inside `@warn(...)`.
+pub fn warned_name(attr: &crate::attr::Attr) -> Option<&str> {
+    if !attr.is("warn") {
         return None;
     }
     attr.positional()?.rule_name()

@@ -63,6 +63,7 @@ struct RaskMutex {
     pthread_mutex_t lock;
     void           *data;
     int64_t         data_size;
+    int64_t         data_align;
     _Atomic int64_t refcount;
     // What the payload is, so the last release can give it back. See
     // `box_payload_free`.
@@ -95,7 +96,7 @@ static void box_payload_free(int64_t payload_kind, void *data) {
     }
 }
 
-RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
+RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size, int64_t data_align) {
     if (data_size <= 0) {
         rask_panic("Mutex data size must be positive");
     }
@@ -104,7 +105,8 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
     *m = (RaskMutex){
         .header = { .release = mutex_release },
         .data_size = data_size,
-        .data = rask_alloc(data_size),
+        .data_align = data_align,
+        .data = rask_alloc_aligned(data_size, data_align),
         .payload_kind = RASK_BOX_PAYLOAD_NONE,
     };
     pthread_mutex_init(&m->lock, NULL);
@@ -129,11 +131,12 @@ struct RaskShared {
     pthread_rwlock_t lock;
     void            *data;
     int64_t          data_size;
+    int64_t          data_align;
     _Atomic int64_t  refcount;
     int64_t          payload_kind;
 };
 
-RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
+RaskShared *rask_shared_new(const void *initial_data, int64_t data_size, int64_t data_align) {
     if (data_size <= 0) {
         rask_panic("Shared data size must be positive");
     }
@@ -142,7 +145,8 @@ RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
     *s = (RaskShared){
         .header = { .release = shared_release },
         .data_size = data_size,
-        .data = rask_alloc(data_size),
+        .data_align = data_align,
+        .data = rask_alloc_aligned(data_size, data_align),
         .payload_kind = RASK_BOX_PAYLOAD_NONE,
     };
     pthread_rwlock_init(&s->lock, NULL);
@@ -216,10 +220,10 @@ void *rask_staged_stack_swap(void *head) {
 
 // Copy the payload aside and hand back the copy's address. The caller has
 // already taken the lock.
-static int64_t staged_begin(int64_t handle, void *payload, int64_t size,
+static int64_t staged_begin(int64_t handle, void *payload, int64_t size, int64_t align,
                             RaskReleaseFn discard) {
     StagedFrame *f = (StagedFrame *)malloc(sizeof(StagedFrame));
-    void *scratch = rask_alloc(size);
+    void *scratch = rask_alloc_aligned(size, align);
     if (!f || !scratch) {
         rask_panic("out of memory staging a locked value");
     }
@@ -287,7 +291,7 @@ void rask_mutex_staged_discard(int64_t mutex) {
 int64_t rask_mutex_staged_acquire(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     user_lock(&m->lock, "Mutex lock");
-    return staged_begin(mutex, m->data, m->data_size, rask_mutex_staged_discard);
+    return staged_begin(mutex, m->data, m->data_size, m->data_align, rask_mutex_staged_discard);
 }
 
 // The working copy's address, for a word-sized payload codegen loaded into a
@@ -319,7 +323,7 @@ void rask_shared_staged_discard(int64_t shared) {
 int64_t rask_shared_staged_acquire(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     user_wrlock(&s->lock, "Shared write");
-    return staged_begin(shared, s->data, s->data_size, rask_shared_staged_discard);
+    return staged_begin(shared, s->data, s->data_size, s->data_align, rask_shared_staged_discard);
 }
 
 int64_t rask_shared_staged_data(int64_t shared) {
@@ -341,8 +345,9 @@ void rask_shared_staged_commit(int64_t shared) {
 
 // ─── Mutex i64/ptr codegen wrappers ──────────────────────
 
-int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
-    RaskMutex *m = rask_mutex_new((const void *)(intptr_t)data_ptr, data_size);
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
+                           int64_t data_align) {
+    RaskMutex *m = rask_mutex_new((const void *)(intptr_t)data_ptr, data_size, data_align);
     m->payload_kind = payload_kind;
     return (int64_t)(intptr_t)m;
 }
@@ -403,8 +408,9 @@ void rask_mutex_drop(int64_t mutex) {
 // These work with any data size. A `try_*` closure receives a pointer to
 // the data inside the Shared, not a copy, so writes land in place.
 
-int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
-    RaskShared *s = rask_shared_new((const void *)(intptr_t)data_ptr, data_size);
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
+                            int64_t data_align) {
+    RaskShared *s = rask_shared_new((const void *)(intptr_t)data_ptr, data_size, data_align);
     s->payload_kind = payload_kind;
     return (int64_t)(intptr_t)s;
 }
@@ -483,18 +489,21 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
 typedef struct {
     RaskBoxHeader header;
     int64_t       data_size;
+    int64_t       data_align;
     void         *data;
     int64_t       payload_kind;
     int64_t       refcount;
 } RaskCell;
 
-int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
+                      int64_t data_align) {
     if (data_size <= 0) rask_panic("Shared data size must be positive");
     RaskCell *c = (RaskCell *)rask_alloc(sizeof(RaskCell));
     *c = (RaskCell){
         .header = { .release = cell_release },
         .data_size = data_size,
-        .data = rask_alloc(data_size),
+        .data_align = data_align,
+        .data = rask_alloc_aligned(data_size, data_align),
         .payload_kind = payload_kind,
         .refcount = 1,
     };

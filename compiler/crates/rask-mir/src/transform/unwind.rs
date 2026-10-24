@@ -344,6 +344,7 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
         blocks,
         entry_block: check(0),
         is_extern_c: false,
+        inline_hint: false,
         source_file: func.source_file.clone(),
     })
 }

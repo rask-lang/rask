@@ -312,7 +312,10 @@ func md5_block(mutate h: [u32; 4], buf: [u8; 64]) {
             f = c ^ (b | ~d)
             g = 7 * i % 16
         }
-        let rotated = a.wrapping_add(f).wrapping_add(k[i]).wrapping_add(le_word(buf, g)).rotate_left(s[i])
+        let rotated = a.wrapping_add(f)
+            .wrapping_add(k[i])
+            .wrapping_add(le_word(buf, g))
+            .rotate_left(s[i])
         a = d
         d = c
         c = b

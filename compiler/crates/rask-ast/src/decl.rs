@@ -214,13 +214,14 @@ impl FnDecl {
     }
 
     /// The effects the stdlib declares on a function it can't show in a body:
-    /// `@grows`, `@shrinks`, `@blocks`, `@ambient`.
+    /// `@grows`, `@shrinks`, `@blocks`, `@prints`, `@ambient`.
     pub fn declared_effects(&self) -> DeclaredEffects {
         let has = |name| self.attrs.iter().any(|a| a.is(name));
         DeclaredEffects {
             grows: has("grows"),
             shrinks: has("shrinks"),
             blocks: has("blocks"),
+            prints: has("prints"),
             ambient: has("ambient"),
         }
     }
@@ -248,6 +249,9 @@ pub struct DeclaredEffects {
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,
+    /// Writes to stdout or stderr. Blocks only when whatever reads them stops
+    /// reading, so the blocking-in-a-loop warning leaves it out by default.
+    pub prints: bool,
     /// Reads or changes state nobody passed in and the program doesn't own:
     /// the clock, environment variables, the process, the random source, the
     /// task runtime. Its result isn't fixed by its arguments, and it doesn't
@@ -377,6 +381,8 @@ pub struct Field {
     pub name: String,
     pub name_span: Span,
     pub ty: crate::ty::TypeExpr,
+    /// Where the type is written. Errors about the type point here.
+    pub ty_span: Span,
     pub visibility: FieldVisibility,
     /// Field annotations: `@rename("...")`, `@no_serialize`, `@default(expr)`.
     /// Stored verbatim (e.g. `rename("user_name")`), same shape as decl attrs.

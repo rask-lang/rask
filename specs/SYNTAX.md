@@ -1118,7 +1118,7 @@ test "addition" {
 | Attribute | Target | Effect |
 |-----------|--------|--------|
 | `@entry` | Function | Marks non-main function as entry point (optional) |
-| `@inline` | Function | Hint to inline |
+| `@inline` | Function | Inline at every call, whatever its size (not a recursive one) |
 | `@no_alloc` | Function | Compile error on heap allocation |
 | `@deprecated(msg)` | Any | Warn on use |
 | `@layout(C)` | Struct | C-compatible memory layout |

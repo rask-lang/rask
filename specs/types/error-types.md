@@ -474,7 +474,7 @@ func start_app() -> App or any Error {
 | Rule | Description |
 |------|-------------|
 | **ER35: @message opt-in** | `@message` on an enum generates `func message(self) -> string`. Compile error if the enum already defines `message()` manually |
-| **ER36: Variant template** | `@message("template")` on a variant is an ordinary interpolated string, built where the variant's payloads are bound by name. A payload the template mentions is named: `NotFound(path: string)` and `{path}`. There is no positional `{0}`: a hole holding a constant is rejected in every string |
+| **ER36: Variant template** | `@message("template")` on a variant is a `format` template whose arguments are the variant's payloads. A positional variant's payloads are `{0}`, `{1}`, …, as `format`'s are (`std.fmt/F2`): `NotFound(string)` and `"not found: {0}"`. A named variant's are reached by name: `NotFound(path: string)` and `{path}`. `{N}` on a named variant, or past the last payload, is an error. Everything else in a hole is an ordinary expression, built where the payloads are bound |
 | **ER37: Auto-delegate** | A variant with a single payload that itself satisfies `Error`, and no `@message` annotation, delegates to `inner.message()` |
 | **ER38: Coverage** | A variant with neither an annotation nor a delegatable payload falls back to the derived message — the one every error enum gets from its layout (#1001). It used to be a compile error; there is nothing missing to report once the fallback exists |
 
@@ -482,8 +482,8 @@ func start_app() -> App or any Error {
 ```rask
 @message
 enum RegistryError {
-    @message("package not found: {name}")
-    PackageNotFound(name: string),
+    @message("package not found: {0}")
+    PackageNotFound(string),
 
     @message("network error: {reason}")
     NetworkError(reason: string),

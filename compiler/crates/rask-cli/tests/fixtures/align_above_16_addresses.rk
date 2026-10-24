@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Where `@align(64)`, `@align(4096)` and `@align(2097152)` values land
+// natively (#1637). Each line is an address modulo the alignment, so every one
+// should print 0.
+
+import memory.Heap
+import memory.Rack
+import std.reflect
+
+@align(64)
+struct Line {
+    hits: u64
+}
+
+@align(4096)
+struct Page {
+    n: u32
+}
+
+// A huge page. Allocators hand these to DMA engines and page tables.
+@align(2097152)
+struct Huge {
+    n: u8
+}
+
+interface Counted {
+    func count(self) -> u64
+}
+
+Line implements Counted {
+    public func count(self) -> u64 {
+        return self.hits
+    }
+}
+
+// An interface object's two words.
+struct Fat {
+    data: u64
+    vtable: u64
+}
+
+struct Outer {
+    tag: u8
+    line: Line
+}
+
+func heap_addr(h: Heap<Line>) -> u64 {
+    return unsafe { transmute(h) }
+}
+
+// `transmute` takes the box and nobody frees it after, which is fine for a
+// test of where it was put.
+func box_addr(c: any Counted) -> u64 {
+    let f: Fat = unsafe { transmute(c) }
+    return f.data
+}
+
+func huge_addr(h: Heap<Huge>) -> u64 {
+    return unsafe { transmute(h) }
+}
+
+func vec_addr(v: Vec<Line>) -> u64 {
+    let p = unsafe v.as_ptr()
+    return unsafe { transmute(p) }
+}
+
+func main() {
+    mut lines: Vec<Line> = Vec.new()
+    for i in 0..100 {
+        lines.push(Line(hits: i))
+    }
+    println("vec {vec_addr(lines) % 64}")
+
+    mut pages: Vec<Page> = Vec.with_capacity(1)
+    for i in 0..3 {
+        pages.push(Page(n: i))
+    }
+    let pp = unsafe pages.as_ptr()
+    let pa: u64 = unsafe { transmute(pp) }
+    println("pages {pa % 4096}")
+
+    mut outers: Vec<Outer> = Vec.new()
+    for i in 0..9 {
+        outers.push(Outer(tag: 1, line: Line(hits: i)))
+    }
+    let op = unsafe outers.as_ptr()
+    let oa: u64 = unsafe { transmute(op) }
+    let field = reflect.fields<Outer>()[1].offset.to<u64>()!
+    println("field {(oa + field) % 64}")
+
+    let h = Heap(Line(hits: 9))
+    ensure drop(h)
+    println("heap {heap_addr(h) % 64}")
+
+    mut r: Rack<Page> = Rack.new()
+    let a = r.insert(Page(n: 1))
+    let b = r.insert(Page(n: 2))
+    let aa: u64 = unsafe { transmute(a) }
+    let ba: u64 = unsafe { transmute(b) }
+    println("rack {aa % 4096} {ba % 4096}")
+
+    mut m: Map<i64, Line> = Map.new()
+    m.insert(1, Line(hits: 1))
+    m.insert(2, Line(hits: 2))
+    let pairs = m.take_all()
+    let mp = unsafe pairs.as_ptr()
+    let ma: u64 = unsafe { transmute(mp) }
+    println("map {ma % 64}")
+
+    println("box {box_addr(Line(hits: 3)) % 64}")
+
+    let huge = Heap(Huge(n: 7))
+    ensure drop(huge)
+    println("huge {huge_addr(huge) % 2097152}")
+}

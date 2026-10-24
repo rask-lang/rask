@@ -25,7 +25,7 @@ I split what used to be one "IO" effect in two because its two readers ask diffe
 
 | Rule | Description |
 |------|-------------|
-| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@ambient`. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless it says otherwise (INF5) |
+| **BL1: Sources** | A stdlib native says what it does on its declaration: `@blocks`, `@prints`, `@ambient`. `@prints` is terminal output: it blocks, but only when whatever reads stdout or stderr stops reading, and CW2 leaves it out unless asked. Every other stdlib function is a body, inferred like the program's. An `extern` C function is both unless it says otherwise (INF5) |
 | **BL2: Transitive** | Any function that transitively calls a source has its effect |
 | **BL3: Unsafe is what it calls** | An `unsafe` block has the effects of the calls in it. Raw pointer work touches nothing outside the program; a C call in the block is conservative on its own (INF5) |
 
@@ -49,12 +49,13 @@ func parse_header(raw: string) -> Header or ParseError {
 
 The marks sit on the natives at the bottom of the stdlib, where no body says
 what happens. What a public function does is inferred from them: `fs.exists`
-blocks because its body calls the C `access`, `Stdout.write` blocks because it
-calls the native that writes.
+blocks because its body calls the C `access`, `Stdout.write` prints because it
+calls the native that writes to the stream.
 
 | Mark | Natives |
 |------|---------|
-| `@blocks` | the print functions; `fs`'s open and create; `File`'s raw read, write, seek and close; stdio reads, writes and flush; socket listen, connect, accept, read, write and close; process run, wait and pipe I/O; `time.sleep`; `Handle.join`, `Sender.send`, `Receiver.receive` |
+| `@prints` | the print functions; stdout and stderr writes and flush |
+| `@blocks` | `fs`'s open and create; `File`'s raw read, write, seek and close; stdin reads; socket listen, connect, accept, read, write and close; process run, wait and pipe I/O; `time.sleep`; `Handle.join`, `Sender.send`, `Receiver.receive` |
 | `@ambient` | environment variables, args, `os.pid`, `os.exit`, platform and arch; process spawn and poll; signals; the clock (`Instant.now`, `elapsed`, wall time); the global random source and `Random.new`; socket addresses; `errno`; `async.cancelled`, `Handle.cancel` |
 | none | everything else: strings, collections, math, json, reflection, `Duration`, a seeded `Random` |
 
@@ -174,7 +175,7 @@ Ghost text appears after the return type (or after `{` if no return type). Same 
 | Rule | Description |
 |------|-------------|
 | **CW1: Blocking in ThreadPool** | Warn when a function that blocks is called inside `ThreadPool.spawn` (holds the pool thread). References `conc.io-context` appendix |
-| **CW2: Blocking in a loop** | Warn when a function that blocks is called in a loop without `using Multitasking`, in a program that spawns (repeated blocking) |
+| **CW2: Blocking in a loop** | Warn when a function that blocks is called in a loop without `using Multitasking`, in a program that spawns (repeated blocking). A call that only prints doesn't count unless the build passes `--warn blocking_print` (`tool.warnings/W12`) |
 
 These use the existing `tool.warnings` infrastructure (`@allow` to suppress).
 

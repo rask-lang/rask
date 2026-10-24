@@ -121,7 +121,7 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
     // const, say — is the "where did a value go after it crossed into an
     // aggregate" question (#1035), and freeing the header doesn't answer it or
     // make it worse.
-    if *ctor == "rask_alloc" {
+    if *ctor == "rask_alloc" || *ctor == "rask_alloc_aligned" {
         return Some((slot, "rask_free", MirType::Ptr));
     }
 
@@ -170,6 +170,7 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
         }],
         entry_block: BlockId(0),
         is_extern_c: true,
+        inline_hint: false,
         source_file: None,
     }
 }

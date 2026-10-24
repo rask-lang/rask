@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An index the bounds pass proved in range reads the element inline.
+//
+// `v[i]` inside `for i in 0..v.len()` has its bounds check removed, and the
+// read used to still call `rask_vec_get_unchecked` in the runtime for what is
+// one multiply and one add. It's computed in place now, off the vector's
+// header, so every element width has to come back right.
+
+struct Point {
+    x: i32
+    y: f64
+}
+
+test "narrow, wide and float elements" {
+    let bytes: Vec<u8> = [1, 2, 250]
+    mut b: i64 = 0
+    for i in 0..bytes.len() {
+        b = b + bytes[i].wrap<i64>()
+    }
+    assert b == 253
+
+    let wide: Vec<i128> = [1, 170141183460469231731687303715884105727, -5]
+    mut w: i128 = 0
+    for i in 0..wide.len() {
+        if i != 1 {
+            w = w + wide[i]
+        }
+    }
+    assert w == -4
+    assert wide[1] == 170141183460469231731687303715884105727
+
+    let fs: Vec<f64> = [0.5, 1.25, 2.0]
+    mut f = 0.0
+    for i in 0..fs.len() {
+        f = f + fs[i]
+    }
+    assert f == 3.75
+}
+
+test "struct and string elements" {
+    let pts: Vec<Point> = [Point(x: 1, y: 0.5), Point(x: -2, y: 1.5)]
+    mut sx: i32 = 0
+    mut sy = 0.0
+    for i in 0..pts.len() {
+        sx = sx + pts[i].x
+        sy = sy + pts[i].y
+    }
+    assert sx == -1
+    assert sy == 2.0
+
+    let words: Vec<string> = ["a", "bb", "a string past the inline limit"]
+    mut total: usize = 0
+    for i in 0..words.len() {
+        total = total + words[i].len()
+    }
+    assert total == 33
+}
+
+test "the vector can grow between reads" {
+    mut v: Vec<i64> = [1]
+    for i in 0..100 {
+        v.push(i)
+    }
+    mut s: i64 = 0
+    for i in 0..v.len() {
+        s = s + v[i]
+    }
+    assert s == 1 + 4950
+}
