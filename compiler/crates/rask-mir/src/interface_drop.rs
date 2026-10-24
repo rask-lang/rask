@@ -779,6 +779,7 @@ mod tests {
             concrete_type: "Loud".into(),
             interface_name: "Speaker".into(),
             concrete_size: 32,
+            concrete_align: 8,
             vtable_name: ".vtable.Loud__Speaker".into(),
         })
     }

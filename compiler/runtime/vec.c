@@ -74,12 +74,7 @@ void rask_owned_release(char *elem, int32_t entry) {
             int64_t *fat = (int64_t *)at;
             void *data = (void *)(intptr_t)fat[0];
             const int64_t *vt = (const int64_t *)(intptr_t)fat[1];
-            void (*owned_release)(void *) = NULL;
-            if (vt) {
-                owned_release =
-                    (void (*)(void *))(intptr_t)vt[RASK_VTABLE_OWNED_RELEASE_WORD];
-            }
-            rask_box_release(data, owned_release);
+            rask_box_release(data, vt, 1);
             fat[0] = 0;
             break;
         }

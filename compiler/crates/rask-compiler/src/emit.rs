@@ -405,7 +405,7 @@ fn collect_vtables(
         for block in &mir_fn.blocks {
             for stmt in &block.statements {
                 let rask_mir::MirStmtKind::InterfaceBox {
-                    concrete_type, interface_name, concrete_size, vtable_name, ..
+                    concrete_type, interface_name, concrete_size, concrete_align, vtable_name, ..
                 } = &stmt.kind else {
                     continue;
                 };
@@ -424,10 +424,6 @@ fn collect_vtables(
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();
-                let concrete_align = mono.struct_layouts.iter()
-                    .find(|s| s.name == *concrete_type)
-                    .map(|s| s.align)
-                    .unwrap_or(8);
                 // What the concrete value owns, for a box that owns it.
                 // Containers and strings both: a moved-in box has no second
                 // holder for either.
@@ -440,7 +436,7 @@ fn collect_vtables(
                     concrete_type: concrete_type.clone(),
                     interface_name: interface_name.clone(),
                     concrete_size: *concrete_size,
-                    concrete_align,
+                    concrete_align: *concrete_align,
                     methods: vt_methods,
                     owned,
                 });

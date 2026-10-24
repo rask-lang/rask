@@ -910,6 +910,7 @@ impl<'a> MirLowerer<'a> {
         let concrete_type = self.mir_type_name(concrete_mir_ty)
             .unwrap_or_else(|| "unknown".to_string());
         let concrete_size = (concrete_mir_ty.size() as i64) as u32;
+        let concrete_align = concrete_mir_ty.align();
         let vtable_name = format!(".vtable.{}__{}", concrete_type, interface_name);
         let interface_obj_ty = MirType::InterfaceObject { interface_name: interface_name.to_string() };
         let result_local = self.builder.alloc_temp(interface_obj_ty.clone());
@@ -920,6 +921,7 @@ impl<'a> MirLowerer<'a> {
             concrete_type,
             interface_name: interface_name.to_string(),
             concrete_size,
+            concrete_align,
             vtable_name,
         }));
 

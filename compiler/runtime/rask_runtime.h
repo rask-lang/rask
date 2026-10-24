@@ -60,9 +60,9 @@ void  rask_closure_retain(void *ptr);
 
 // A trait object's block: `[refs | value...]`, with the fat pointer's data half
 // pointing at the value. See `rask_box_alloc` in alloc.c for why it counts.
-void *rask_box_alloc(int64_t value_size, int64_t value_align);
+void *rask_box_alloc(const int64_t *vtable);
 void  rask_box_retain(void *value);
-void  rask_box_release(void *value, void (*owned_release)(void *));
+void  rask_box_release(void *value, const int64_t *vtable, int64_t owns);
 
 // `RASK_LEAK_TRACE=1`: record where every live allocation came from, and group
 // the survivors by that at exit. `RASK_LEAK_CHECK=1` counts them; this says

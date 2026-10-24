@@ -1020,7 +1020,7 @@ fn over_aligned_values_sit_on_their_alignment() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert_eq!(
         stdout,
-        "vec 0\npages 0\nfield 0\nheap 0\nrack 0 0\nmap 0\n",
+        "vec 0\npages 0\nfield 0\nheap 0\nrack 0 0\nmap 0\nbox 0\nhuge 0\n",
         "each line is an address modulo its alignment"
     );
 }

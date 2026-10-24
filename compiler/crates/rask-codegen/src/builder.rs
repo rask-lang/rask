@@ -1342,10 +1342,11 @@ impl<'a> FunctionBuilder<'a> {
                     Self::emit_boxed_field_release(builder, obj_val, 0, ctx)?;
                 } else {
                     let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                    let none = builder.ins().iconst(types::I64, 0);
+                    let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
+                    let borrowed = builder.ins().iconst(types::I64, 0);
                     let release_ref = ctx.func_refs.get("rask_box_release")
                         .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
-                    builder.ins().call(*release_ref, &[data_ptr, none]);
+                    builder.ins().call(*release_ref, &[data_ptr, vtable_ptr, borrowed]);
                 }
             }
 
@@ -3066,14 +3067,17 @@ impl<'a> FunctionBuilder<'a> {
         let alloc_ref = ctx.func_refs.get("rask_box_alloc")
             .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_alloc".to_string()))?;
 
+        let gv = ctx.vtable_globals.get(vtable_name.as_str())
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                format!("InterfaceBox: vtable '{}' not found", vtable_name)
+            ))?;
+        let vtable_ptr = builder.ins().global_value(types::I64, *gv);
+
         // The block carries a reference count in the word before the value, so
-        // a derived container can share it — see `rask_box_alloc`. The pointer
-        // that comes back is the value's, so nothing downstream changes.
-        let alloc_size = (*concrete_size).max(1) as i64;
-        let size_val = builder.ins().iconst(types::I64, alloc_size);
-        let align = Self::operand_mir_type(value, ctx.locals).map_or(0, |ty| ty.align() as i64);
-        let align_val = builder.ins().iconst(types::I64, align);
-        let call_inst = builder.ins().call(*alloc_ref, &[size_val, align_val]);
+        // a derived container can share it — see `rask_box_alloc`, which sizes
+        // and aligns the block from the vtable. The pointer that comes back is
+        // the value's, so nothing downstream changes.
+        let call_inst = builder.ins().call(*alloc_ref, &[vtable_ptr]);
         let data_ptr = builder.inst_results(call_inst)[0];
 
         // Copy concrete value to heap
@@ -3104,12 +3108,6 @@ impl<'a> FunctionBuilder<'a> {
             Self::store_box_scalar(builder, src_val, data_ptr, *concrete_size);
         }
 
-        // Get vtable address
-        let gv = ctx.vtable_globals.get(vtable_name.as_str())
-            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                format!("InterfaceBox: vtable '{}' not found", vtable_name)
-            ))?;
-        let vtable_ptr = builder.ins().global_value(types::I64, *gv);
 
         // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
         let (ss, _) = ctx.stack_slot_map.get(dst)

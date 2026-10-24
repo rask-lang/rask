@@ -117,10 +117,11 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];
 
-/// The largest `@align(N)` honoured: a page. Past 16 every value of the type
-/// costs up to N spare bytes in its frame slot, so a request for more than a
-/// page is far more likely a typo than a layout.
-pub const MAX_ALIGN: u32 = 4096;
+/// The largest `@align(N)` honoured, 2^29: LLVM's limit, so a layout this
+/// backend accepts is one any backend can. Nothing here needs less. The heap
+/// allocator takes any power of two, and a frame slot's spare bytes never
+/// exceed the value's own size, which is a multiple of N.
+pub const MAX_ALIGN: u32 = 1 << 29;
 
 /// What `@packed` and `@align(N)` ask of a struct's layout (type.structs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

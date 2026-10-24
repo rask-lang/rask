@@ -152,6 +152,9 @@ pub enum MirStmtKind {
         concrete_type: String,
         interface_name: String,
         concrete_size: u32,
+        /// The box's block is aligned to this; the vtable carries it to the
+        /// runtime, which reads it back on release.
+        concrete_align: u32,
         vtable_name: String,
     },
     /// Call a method through an interface object's vtable.

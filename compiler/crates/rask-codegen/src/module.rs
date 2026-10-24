@@ -887,12 +887,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_retain".to_string(), id);
         }
 
-        // rask_box_alloc(value_size: i64, value_align: i64) -> ptr — an
-        // interface object's block, with a reference count in the word before
-        // the value it returns.
+        // rask_box_alloc(vtable: i64) -> ptr — an interface object's block,
+        // sized and aligned from the vtable, with a reference count in the
+        // word before the value it returns.
         {
             let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
             let id = self.module
@@ -911,10 +910,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_box_retain".to_string(), id);
         }
 
-        // rask_box_release(value: i64, owned_release: i64) -> void — the hook
-        // is null for a borrowed box, whose contents are the frame's (#1144).
+        // rask_box_release(value: i64, vtable: i64, owns: i64) -> void —
+        // `owns` is 0 for a borrowed box, whose contents are the frame's (#1144).
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             let id = self.module

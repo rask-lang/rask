@@ -326,9 +326,8 @@ void *rask_realloc_aligned(void *ptr, int64_t old_size, int64_t new_size, int64_
 
 // ─── Closure blocks ────────────────────────────────────────
 //
-// A closure block is `[block_size | env_drop | refs | flags | lead | func_ptr |
-// captures...]`
-// and the closure value points at `func_ptr`, so the environment is still
+// A closure block is `[block_size | env_drop | refs | flags | func_ptr |
+// captures...]` and the closure value points at `func_ptr`, so the environment is still
 // `closure + 8`. Every header word is there for the same reason: whoever frees
 // the block usually didn't build it. `let tick = counter()` hands the caller a
 // block whose capture layout only `counter` knew, so the caller can neither
@@ -362,22 +361,26 @@ void *rask_realloc_aligned(void *ptr, int64_t old_size, int64_t new_size, int64_
 // `[func_ptr | captures]` in a frame — so neither of these may be called on
 // one. Nothing does: a closure that can't escape can't reach a container.
 
-// The fifth word is `lead`: how many bytes of padding sit ahead of the header.
-// The environment starts at `closure + 8`, and an `@align(64)` capture needs
-// the environment on a multiple of 64, so the header moves up the block until
-// it does. Five words put the environment at 48, on malloc's 16 with no lead.
+// An `@align(64)` capture needs the environment on a multiple of 64, so the
+// header slides up the block until it is, leaving `lead` bytes of padding in
+// front. The free has to find the block's start again, and the code freeing a
+// closure doesn't know what it captured, so the block says: `lead` rides in the
+// top half of the flags word. A closure with no over-aligned capture has no
+// lead and pays nothing for it.
 
-#define CLOSURE_HEADER_WORDS 5
+#define CLOSURE_HEADER_WORDS 4
+#define CLOSURE_LEAD_SHIFT 32
 
 static int64_t *closure_block_start(int64_t *base) {
-    return (int64_t *)((char *)base - base[4]);
+    return (int64_t *)((char *)base - (int64_t)((uint64_t)base[3] >> CLOSURE_LEAD_SHIFT));
 }
 
 void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags,
                          int64_t env_align) {
+    // The environment starts one word past the closure value.
     int64_t env_at = (CLOSURE_HEADER_WORDS + 1) * 8;
     int64_t lead = 0;
-    if (env_align > MALLOC_ALIGN) {
+    if (env_align > 8) {
         lead = ((env_at + env_align - 1) & ~(env_align - 1)) - env_at;
     }
     int64_t total = lead + block_size + CLOSURE_HEADER_WORDS * 8;
@@ -386,8 +389,7 @@ void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t f
     base[0] = total;
     base[1] = (int64_t)(intptr_t)env_drop;
     base[2] = 1;
-    base[3] = flags;
-    base[4] = lead;
+    base[3] = (int64_t)(((uint64_t)lead << CLOSURE_LEAD_SHIFT) | (uint32_t)flags);
     return (void *)(base + CLOSURE_HEADER_WORDS);
 }
 
@@ -433,15 +435,21 @@ void rask_closure_free(void *ptr) {
 // same reason — the environment's layout is known only to its generated glue,
 // as a boxed value's contents are known only to its `owned_release`.
 //
-// The word before the count is `lead`, the value's distance from the block's
-// start. Two words keep the value on malloc's 16; an `@align(64)` value sits
-// 64 in, with the two words just ahead of it.
-void *rask_box_alloc(int64_t value_size, int64_t value_align) {
-    int64_t lead = value_align > MALLOC_ALIGN ? value_align : MALLOC_ALIGN;
+// The vtable says how big the value is and how it aligns, and both the alloc
+// and the release read it there, so they can't disagree about where the block
+// starts. The count sits in the word before the value, which is 8 in for most
+// values and `align` in for anything aligned past 8.
+static int64_t box_lead(const int64_t *vtable) {
+    int64_t align = vtable[RASK_VTABLE_ALIGN_WORD];
+    return align > 8 ? align : 8;
+}
+
+void *rask_box_alloc(const int64_t *vtable) {
+    int64_t value_size = vtable[RASK_VTABLE_SIZE_WORD];
+    int64_t lead = box_lead(vtable);
     int64_t total = (value_size < 8 ? 8 : value_size) + lead;
-    char *start = (char *)rask_alloc_aligned(total, value_align);
+    char *start = (char *)rask_alloc_aligned(total, vtable[RASK_VTABLE_ALIGN_WORD]);
     int64_t *value = (int64_t *)(start + lead);
-    value[-2] = lead;
     value[-1] = 1;
     return (void *)value;
 }
@@ -452,15 +460,18 @@ void rask_box_retain(void *value) {
     refs[0] += 1;
 }
 
-// `owned_release` is the vtable's, for a box that owns its value — null for a
-// borrowed box, whose contents belong to the frame that boxed it (#1144). It
-// runs only when the last reference goes.
-void rask_box_release(void *value, void (*owned_release)(void *)) {
+// `owns` is false for a borrowed box, whose contents belong to the frame
+// that boxed it (#1144); the block goes and the value's insides stay. A box
+// that owns its value releases them through the vtable's `owned_release`, when
+// the last reference goes.
+void rask_box_release(void *value, const int64_t *vtable, int64_t owns) {
     if (!value) return;
     int64_t *refs = ((int64_t *)value) - 1;
     if ((refs[0] -= 1) > 0) return;
-    if (owned_release) owned_release(value);
-    rask_free((char *)value - refs[-1]);
+    void (*owned_release)(void *) =
+        (void (*)(void *))(intptr_t)vtable[RASK_VTABLE_OWNED_RELEASE_WORD];
+    if (owns && owned_release) owned_release(value);
+    rask_free((char *)value - box_lead(vtable));
 }
 
 void rask_free(void *ptr) {

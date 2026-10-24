@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Where `@align(64)` and `@align(4096)` values land natively (#1637). Each
-// line is an address modulo the alignment, so every one should print 0.
+// Where `@align(64)`, `@align(4096)` and `@align(2097152)` values land
+// natively (#1637). Each line is an address modulo the alignment, so every one
+// should print 0.
 
 import memory.Heap
 import memory.Rack
@@ -16,12 +17,45 @@ struct Page {
     n: u32
 }
 
+// A huge page. Allocators hand these to DMA engines and page tables.
+@align(2097152)
+struct Huge {
+    n: u8
+}
+
+interface Counted {
+    func count(self) -> u64
+}
+
+Line implements Counted {
+    public func count(self) -> u64 {
+        return self.hits
+    }
+}
+
+// An interface object's two words.
+struct Fat {
+    data: u64
+    vtable: u64
+}
+
 struct Outer {
     tag: u8
     line: Line
 }
 
 func heap_addr(h: Heap<Line>) -> u64 {
+    return unsafe { transmute(h) }
+}
+
+// `transmute` takes the box and nobody frees it after, which is fine for a
+// test of where it was put.
+func box_addr(c: any Counted) -> u64 {
+    let f: Fat = unsafe { transmute(c) }
+    return f.data
+}
+
+func huge_addr(h: Heap<Huge>) -> u64 {
     return unsafe { transmute(h) }
 }
 
@@ -72,4 +106,10 @@ func main() {
     let mp = unsafe pairs.as_ptr()
     let ma: u64 = unsafe { transmute(mp) }
     println("map {ma % 64}")
+
+    println("box {box_addr(Line(hits: 3)) % 64}")
+
+    let huge = Heap(Huge(n: 7))
+    ensure drop(huge)
+    println("huge {huge_addr(huge) % 2097152}")
 }
