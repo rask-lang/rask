@@ -2490,20 +2490,20 @@ impl Resolver {
                 DeclKind::Struct(s) => {
                     self.push_type_params(Self::declared_type_params(&s.type_params));
                     for f in &s.fields {
-                        self.check_type_annotation(&f.ty, decl.span);
+                        self.check_type_annotation(&f.ty, f.ty_span);
                     }
                     self.pop_type_params();
                 }
                 DeclKind::Union(u) => {
                     for f in &u.fields {
-                        self.check_type_annotation(&f.ty, decl.span);
+                        self.check_type_annotation(&f.ty, f.ty_span);
                     }
                 }
                 DeclKind::Enum(e) => {
                     self.push_type_params(Self::declared_type_params(&e.type_params));
                     for v in &e.variants {
-                        for ty in &v.fields {
-                            self.check_type_annotation(&ty.ty, decl.span);
+                        for f in &v.fields {
+                            self.check_type_annotation(&f.ty, f.ty_span);
                         }
                     }
                     self.pop_type_params();
@@ -3574,8 +3574,8 @@ mod tests {
                 name: name.to_string(),
                 type_params: vec![],
                 fields: vec![
-                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: TypeExpr::named("i32"), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
-                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: TypeExpr::named("i32"), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
+                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: TypeExpr::named("i32"), ty_span: Span::new(0, 0), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
+                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: TypeExpr::named("i32"), ty_span: Span::new(0, 0), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
                 ],
                 methods: vec![],
                 is_pub: true,
@@ -3880,6 +3880,7 @@ mod tests {
                     name: "max".to_string(),
                     name_span: Span::new(0, 0),
                     ty: TypeExpr::named("i64"),
+                    ty_span: Span::new(0, 0),
                     visibility: FieldVisibility::Public,
                     attrs: vec![],
                     default: None,

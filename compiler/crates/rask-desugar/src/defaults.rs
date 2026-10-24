@@ -478,7 +478,7 @@ mod tests {
 
         fn field(name: &str, ty: &str, default: Option<Expr>) -> Field {
             Field {
-                name: name.to_string(), name_span: sp(), ty: rask_ast::ty::TypeExpr::named(ty),
+                name: name.to_string(), name_span: sp(), ty: rask_ast::ty::TypeExpr::named(ty), ty_span: sp(),
                 visibility: FieldVisibility::Public, attrs: vec![], default, doc: None,
             }
         }
@@ -552,7 +552,7 @@ mod tests {
             kind: DeclKind::Struct(StructDecl {
                 name: "Config".to_string(), type_params: vec![],
                 fields: vec![Field {
-                    name: "port".to_string(), name_span: sp(), ty: rask_ast::ty::TypeExpr::named("i32"),
+                    name: "port".to_string(), name_span: sp(), ty: rask_ast::ty::TypeExpr::named("i32"), ty_span: sp(),
                     visibility: FieldVisibility::Public, attrs: vec![], default: Some(int_expr(8080)), doc: None,
                 }],
                 methods: vec![], is_pub: false, attrs: vec![], doc: None,

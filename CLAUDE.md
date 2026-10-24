@@ -74,7 +74,7 @@ wrong thing. Weigh whether the result is better.
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
-- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one.
+- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one. The compiler may add types to the set (refcounting is fine when the compiler provides it, like `string` and the proposed `bytes`); users still can't.
 
 # Working relationship
 
@@ -320,7 +320,7 @@ Systems language where **safety is invisible**. Eliminate abstraction tax, cover
 Unifying thread: **safety through visibility.** Safety mechanisms are visible in source (explicit `ensure`, `mutate`, `take`, scoped `with`) rather than hidden in destructors, lifetime annotations, or effect types. The compiler guarantees invariants; the source shows the mechanism.
 
 1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O). Small costs (bounds checks) can be implicit.
-2. **Mechanical Safety** — Safety by structure. Data races, null derefs, and dangling pointers impossible by construction; use-after-free through a stale handle is caught at the access, never silent.
+2. **Mechanical Safety** — Safety by structure. Data races, null derefs, and dangling pointers impossible by construction; deleting a rack node nulls every link to it, and a local link used after the delete is a compile error.
 3. **Practical Coverage** — Handle web services, CLI, data processing, embedded. Not limited to fixed-size programs.
 4. **Ergonomic Simplicity** — Low ceremony. If Rask needs 3+ lines where Go needs 1, question the design.
 5. **Information Without Enforcement** — Track effects, captures, and modes as metadata surfaced via tooling (IDE ghosts, lints) instead of type-system constraints. No function coloring, no effect polymorphism.

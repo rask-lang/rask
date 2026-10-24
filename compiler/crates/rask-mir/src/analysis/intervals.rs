@@ -187,8 +187,10 @@ pub struct IndexOp {
     pub index: LocalId,
     /// The collection being indexed.
     pub collection: LocalId,
-    /// The length local for this collection (if found).
-    pub len_local: Option<LocalId>,
+    /// Locals holding this collection's length — the `Vec_len` result and
+    /// its copies. Empty when the length can change in this function, since a
+    /// comparison against an old length then proves nothing.
+    pub len_locals: Vec<LocalId>,
     /// Span of the indexing operation.
     pub span: crate::Span,
     /// Whether this is a Vec_index (vs ArrayIndex).
@@ -209,16 +211,48 @@ impl IntervalAnalysis {
             }
         }
 
-        // Scan for Vec_len calls and indexing operations
+        // Every length first: the loop that indexes is usually laid out
+        // before the block that measured the vector, so finding them on the
+        // way past missed nearly all of them.
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                if let MirStmtKind::Call { dst: Some(dst), func: fref, args } = &stmt.kind {
+                    if fref.name == "Vec_len" || fref.name == "Array_len" {
+                        if let Some(MirOperand::Local(collection)) = args.first() {
+                            len_locals.insert(*dst, LenSource { collection: *collection });
+                        }
+                    }
+                }
+            }
+        }
+        // A copy of a length is the same length: `for i in 0..v.len()` compares
+        // against the range's end, which is a copy of the call's result.
+        loop {
+            let mut grew = false;
+            for block in &func.blocks {
+                for stmt in &block.statements {
+                    if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                        if let Some(source) = len_locals.get(src).cloned() {
+                            if !len_locals.contains_key(dst) {
+                                len_locals.insert(*dst, source);
+                                grew = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut stable: HashMap<LocalId, bool> = HashMap::new();
+
+        // Scan for indexing operations
         for block in &func.blocks {
             for (stmt_idx, stmt) in block.statements.iter().enumerate() {
                 match &stmt.kind {
                     MirStmtKind::Call { dst: Some(dst), func: fref, args } => {
-                        if fref.name == "Vec_len" || fref.name == "Array_len" {
-                            if let Some(MirOperand::Local(collection)) = args.first() {
-                                len_locals.insert(*dst, LenSource { collection: *collection });
-                            }
-                        }
+                        let _ = dst;
                         // Vec_index(collection, index) — the indexing operation
                         if fref.name == "Vec_index" {
                             if args.len() >= 2 {
@@ -226,16 +260,23 @@ impl IntervalAnalysis {
                                     (args.first(), args.get(1))
                                 {
                                     if let MirOperand::Local(idx_local) = idx_op {
-                                        // Find length local for this collection
-                                        let len_local = len_locals.iter()
-                                            .find(|(_, src)| src.collection == *collection)
-                                            .map(|(id, _)| *id);
+                                        let keeps_length = *stable
+                                            .entry(*collection)
+                                            .or_insert_with(|| length_is_stable(func, *collection));
+                                        let len_locals: Vec<LocalId> = if keeps_length {
+                                            len_locals.iter()
+                                                .filter(|(_, src)| src.collection == *collection)
+                                                .map(|(id, _)| *id)
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        };
                                         index_ops.push(IndexOp {
                                             block: block.id,
                                             stmt_idx,
                                             index: *idx_local,
                                             collection: *collection,
-                                            len_local,
+                                            len_locals,
                                             span: stmt.span,
                                             is_vec_get: true,
                                         });
@@ -255,7 +296,7 @@ impl IntervalAnalysis {
                                 stmt_idx,
                                 index: *idx_local,
                                 collection,
-                                len_local: None,
+                                len_locals: Vec::new(),
                                 span: stmt.span,
                                 is_vec_get: false,
                             });
@@ -542,7 +583,7 @@ fn eval_rvalue(
             }
         }
         // Explicit conversions wrap/clamp/optionalize — conservatively unknown.
-        MirRValue::Convert { .. } => Interval::TOP,
+        MirRValue::Convert { .. } | MirRValue::Bitcast { .. } => Interval::TOP,
         MirRValue::UnaryOp { op: crate::operand::UnaryOp::Neg, operand } => {
             let iv = operand_interval(operand, state);
             if iv.is_bottom() { return Interval::BOTTOM; }
@@ -598,6 +639,69 @@ pub fn analyze(func: &MirFunction) -> Option<(IntervalAnalysis, Vec<IndexOp>, Da
 }
 
 /// Check if an index operation is provably in-bounds.
+/// Whether the vector in `collection` has one length for the whole function:
+/// nothing that could push, pop or hand it to a callee touches it or any copy
+/// of its handle. A length measured before a loop says nothing about an index
+/// inside it once the body can shrink the vector.
+fn length_is_stable(func: &MirFunction, collection: LocalId) -> bool {
+    use crate::analysis::uses::stmt_uses;
+    // The handle and every local it's copied to or merged with.
+    let mut aliases: HashSet<LocalId> = HashSet::from([collection]);
+    loop {
+        let before = aliases.len();
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                        if aliases.contains(src) || aliases.contains(dst) {
+                            aliases.insert(*src);
+                            aliases.insert(*dst);
+                        }
+                    }
+                    MirStmtKind::Phi { dst, args } => {
+                        let locals: Vec<LocalId> = args
+                            .iter()
+                            .filter_map(|(_, op)| match op {
+                                MirOperand::Local(l) => Some(*l),
+                                _ => None,
+                            })
+                            .collect();
+                        if aliases.contains(dst) || locals.iter().any(|l| aliases.contains(l)) {
+                            aliases.insert(*dst);
+                            aliases.extend(locals);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if aliases.len() == before {
+            break;
+        }
+    }
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(_)), .. }
+                | MirStmtKind::Phi { .. }
+                | MirStmtKind::UnwindArm { .. } => {}
+                // Reading the length or an element, or the free at the end.
+                MirStmtKind::Call { func: fref, .. }
+                    if matches!(
+                        fref.name.as_str(),
+                        "Vec_len" | "Array_len" | "Vec_index" | "Vec_get_unchecked" | "Vec_free"
+                    ) => {}
+                _ => {
+                    if stmt_uses(stmt).iter().any(|l| aliases.contains(l)) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 pub fn is_in_bounds(
     func: &MirFunction,
     analysis: &IntervalAnalysis,
@@ -612,8 +716,8 @@ pub fn is_in_bounds(
 
     let index_interval = state.get(op.index);
 
-    // For Vec_index: check against the length local's interval
-    if let Some(len_local) = op.len_local {
+    // For Vec_index: check against each local holding the length
+    for &len_local in &op.len_locals {
         let len_interval = state.get(len_local);
         // Absolute interval proof: index.hi < len.lo
         if index_interval.provably_in_bounds(&len_interval) {
@@ -623,6 +727,8 @@ pub fn is_in_bounds(
         if index_interval.lo >= 0 && state.known_lt.contains(&(op.index, len_local)) {
             return true;
         }
+    }
+    if !op.len_locals.is_empty() {
         return false;
     }
 
@@ -780,6 +886,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -862,6 +969,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -902,6 +1010,80 @@ mod tests {
         );
     }
 
+    /// `for i in 0..v.len() { v[i] }` the way lowering lays it out: the loop's
+    /// blocks come before the one that measures the vector, and the loop
+    /// compares against a copy of the length. `extra` goes in the body.
+    fn range_loop(extra: Vec<MirStmt>) -> MirFunction {
+        let mut body = vec![call_vec_get(4, 0, 2), assign_add(5, 2, 1)];
+        body.extend(extra);
+        body.push(MirStmt {
+            kind: MirStmtKind::Assign { dst: local(2), rvalue: MirRValue::Use(MirOperand::Local(local(5))) },
+            span: sp(),
+        });
+        MirFunction {
+            name: "range_loop".into(),
+            params: vec![
+                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true, unerased: None },
+            ],
+            ret_ty: MirType::Void,
+            locals: vec![
+                MirLocal { id: local(0), name: Some("vec".into()), ty: MirType::Ptr, is_param: true, unerased: None },
+                int_local(1, "len"),
+                int_local(2, "i"),
+                MirLocal { id: local(3), name: Some("cond".into()), ty: MirType::Bool, is_param: false, unerased: None },
+                int_local(4, "result"),
+                int_local(5, "i_next"),
+                int_local(6, "end"),
+            ],
+            blocks: vec![
+                MirBlock { id: block(0), statements: vec![], terminator: term_goto(4) },
+                MirBlock { id: block(1), statements: vec![cmp_lt(3, 2, 6)], terminator: term_branch(3, 2, 3) },
+                MirBlock { id: block(2), statements: body, terminator: term_goto(1) },
+                MirBlock { id: block(3), statements: vec![], terminator: term_ret() },
+                MirBlock {
+                    id: block(4),
+                    statements: vec![
+                        call_vec_len(1, 0),
+                        MirStmt {
+                            kind: MirStmtKind::Assign { dst: local(6), rvalue: MirRValue::Use(MirOperand::Local(local(1))) },
+                            span: sp(),
+                        },
+                        assign_const(2, 0),
+                    ],
+                    terminator: term_goto(1),
+                },
+            ],
+            entry_block: block(0),
+            is_extern_c: false,
+            inline_hint: false,
+            source_file: None,
+        }
+    }
+
+    #[test]
+    fn a_length_measured_later_in_the_block_list_still_counts() {
+        let func = range_loop(Vec::new());
+        let (analysis, ops, results) = analyze(&func).expect("an index to analyze");
+        assert_eq!(ops[0].len_locals.len(), 2, "the call's result and its copy");
+        assert!(is_in_bounds(&func, &analysis, &results, &ops[0]));
+    }
+
+    #[test]
+    fn a_vector_the_loop_can_resize_keeps_its_check() {
+        let pop = MirStmt {
+            kind: MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_pop".into()),
+                args: vec![MirOperand::Local(local(0))],
+            },
+            span: sp(),
+        };
+        let func = range_loop(vec![pop]);
+        let (analysis, ops, results) = analyze(&func).expect("an index to analyze");
+        assert!(ops[0].len_locals.is_empty());
+        assert!(!is_in_bounds(&func, &analysis, &results, &ops[0]));
+    }
+
     #[test]
     fn no_analysis_without_indexing() {
         let func = MirFunction {
@@ -918,6 +1100,7 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
         assert!(analyze(&func).is_none(), "IV1: no analysis without indexing");
@@ -943,6 +1126,7 @@ mod tests {
                 }],
                 entry_block: block(0),
                 is_extern_c: false,
+                inline_hint: false,
                 source_file: None,
             };
             func

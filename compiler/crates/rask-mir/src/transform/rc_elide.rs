@@ -525,6 +525,7 @@ mod tests {
             blocks,
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         }
     }

@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 use crate::function::MirFunction;
 use crate::types::{EnumLayoutId, MirType, StructLayoutId};
-use rask_mono::{EnumLayout, StructLayout};
+use rask_types::layout::{EnumLayout, StructLayout};
 
 /// One id that doesn't match the layout it points at.
 pub struct LayoutIdMismatch {

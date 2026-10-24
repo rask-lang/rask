@@ -538,6 +538,7 @@ struct RaskJsonShape {
     // constructor takes, so the container the decoder builds frees it.
     const int32_t *elem_owned;
     int64_t n_elem_owned;
+    int64_t elem_align;
     struct RaskJsonField *fields; // struct fields
     int32_t nfields;
     int32_t cap;
@@ -584,20 +585,22 @@ RaskJsonShape *rask_json_shape_struct(int64_t size) {
 }
 
 RaskJsonShape *rask_json_shape_vec(RaskJsonShape *elem, int64_t elem_slot,
-                                   const int32_t *owned, int64_t n_owned) {
+                                   const int32_t *owned, int64_t n_owned, int64_t align) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_VEC, elem_slot);
     s->elem = elem;
     s->elem_owned = owned;
     s->n_elem_owned = n_owned;
+    s->elem_align = align;
     return s;
 }
 
 RaskJsonShape *rask_json_shape_map(RaskJsonShape *val, int64_t val_slot,
-                                   const int32_t *owned, int64_t n_owned) {
+                                   const int32_t *owned, int64_t n_owned, int64_t align) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_MAP, val_slot);
     s->elem = val;
     s->elem_owned = owned;
     s->n_elem_owned = n_owned;
+    s->elem_align = align;
     return s;
 }
 
@@ -752,7 +755,8 @@ static int json_decode_vec(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     }
     int64_t slot = shape->slot;
     RaskVec *vec = rask_vec_with_capacity(slot, v->as.arr.len,
-                                          shape->elem_owned, shape->n_elem_owned);
+                                          shape->elem_owned, shape->n_elem_owned,
+                                          shape->elem_align);
     char stack_slot[64];
     char *cell = slot <= (int64_t)sizeof(stack_slot)
         ? stack_slot
@@ -782,8 +786,9 @@ static int json_decode_map(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     }
     int64_t slot = shape->slot;
     RaskMap *map = rask_map_new_string_keys(16, slot,
-                                            rask_elem_strs_one, 1,
-                                            shape->elem_owned, shape->n_elem_owned);
+                                            rask_elem_strs_one, 1, 0,
+                                            shape->elem_owned, shape->n_elem_owned,
+                                            shape->elem_align);
     char stack_slot[64];
     char *cell = slot <= (int64_t)sizeof(stack_slot)
         ? stack_slot

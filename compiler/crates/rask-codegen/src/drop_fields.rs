@@ -53,7 +53,7 @@ pub struct DropField {
 pub fn owned_fields(
     type_name: &str,
     base_offset: u32,
-    struct_layouts: &[rask_mono::StructLayout],
+    struct_layouts: &[rask_types::layout::StructLayout],
     names: &std::collections::HashMap<rask_types::TypeId, String>,
     visited: &mut std::collections::HashSet<String>,
 ) -> Vec<DropField> {

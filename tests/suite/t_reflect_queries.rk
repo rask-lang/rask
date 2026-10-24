@@ -189,9 +189,9 @@ test "std.reflect/methods on a stdlib type" {
     // `sort` needs `T: Comparable`, and a struct holding a `Vec` isn't.
     assert reflect.has_method<Vec<i64>>("sort")
     assert !reflect.has_method<Vec<Bag>>("sort")
-    // `extend Vec<u8>` is for byte vectors only.
-    assert reflect.has_method<Vec<u8>>("read_u8")
-    assert !reflect.has_method<Vec<i64>>("read_u8")
+    // `extend Vec<Vec<T>>` is for vectors of vectors only.
+    assert reflect.has_method<Vec<Vec<i64>>>("flatten")
+    assert !reflect.has_method<Vec<i64>>("flatten")
 }
 
 test "std.reflect/has_method" {

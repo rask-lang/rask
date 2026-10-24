@@ -11,10 +11,22 @@ Precise memory layout for enums, closures, interface objects, and other compound
 
 | Rule | Description |
 |------|-------------|
-| **L1: Natural alignment** | Type aligned to its largest field's alignment (max 16 bytes) |
+| **L1: Natural alignment** | Type aligned to its largest field's alignment. Primitives top out at 16; `@align(N)` raises a struct to N, up to 2^29 (see [Over-alignment](#over-alignment)) |
 | **L2: Padding inserted** | Fields padded to maintain alignment of next field |
 | **L3: Struct tail padding** | Structs padded to multiple of their alignment |
 | **L4: Default reordering** | Default `@layout(Rask)`: compiler reorders fields for minimal padding (largest-alignment-first). `@layout(C)`: source order preserved |
+
+## Over-alignment
+
+`malloc` and a Cranelift frame both promise 16 bytes and no more, so a type aligned past 16 (an `@align(64)` cache line) needs help in both places.
+
+| Rule | Description |
+|------|-------------|
+| **OA1: Heap** | Any block that holds the value comes from `rask_alloc_aligned(size, align)`, which is `posix_memalign` under the default allocator. Growth is allocate, copy, free, since there's no aligned `realloc`. The block goes back through the ordinary free |
+| **OA2: Containers carry it** | A container's element description is (owned offsets, count, alignment), handed over at construction like the size. A container derived from another (clone, chunks, skip, a map's keys) copies it |
+| **OA3: Frame slots** | A local past 16 gets a slot `align` bytes larger, and lives at the first aligned address in it. Every access goes through that address |
+| **OA4: Headers move** | A closure environment and an interface box keep a header just before the data. When the data is aligned past 8, the header slides up the block so the data lands aligned, and the free has to find the block's start again. A closure keeps that distance in the top half of its flags word. A box doesn't keep it at all: the release recomputes it from the alignment in the vtable. Neither grows for a value that isn't over-aligned |
+| **OA5: Ceiling** | 2^29, LLVM's limit, so any backend can take a layout this one accepts. Nothing below it needs less: the heap takes any power of two, and a frame slot's spare bytes never exceed the value's size, which is a multiple of N |
 
 ## Primitive Sizes and Alignment
 

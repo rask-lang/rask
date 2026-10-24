@@ -56,13 +56,16 @@ block can't carry it, because `TestDecl` has no attributes ([#1010](https://gith
 
 ## Opt-In Warnings
 
-Off by default. Enable with `@warn(warning_name)` on items or project-wide in `rask.toml`.
+Off by default. W6–W8 are about one piece of code (auditing the copies in a hot loop), so they're enabled with `@warn(warning_name)` on items or project-wide in `rask.toml`. W12 is about the build: whether stdout is a terminal or a pipe is a fact about how the program runs, the same for every function in it, so it's enabled with `--warn blocking_print` on any command that compiles and has no attribute form.
+
+Only W12 is built. A name nothing answers to is an error rather than a silent no-op: `--warn` with an unknown name is refused with a did-you-mean, and `@warn(...)` is E0855 for every name until W6–W8 exist (for `blocking_print` the fix points at the flag).
 
 | Rule | Code | ID | Check |
 |------|------|----|-------|
 | **W6: implicit_copy** | W0904 | `implicit_copy` | Implicit copy of types at the 16-byte threshold |
 | **W7: shadowing** | W0905 | `shadowing` | Variable shadows an outer binding in the same function |
 | **W8: type_narrowing** | W0906 | `type_narrowing` | Pattern match could use a more specific type |
+| **W12: blocking_print** | W0910 | `blocking_print` | Printing counts as blocking for `comp.effects/CW2`, so a `println` in a loop of a program that spawns gets the warning `fs.read_text` would. Off by default: a terminal that stops reading is rare, and the warning on every print buried the ones that matter |
 
 <!-- test: skip -->
 ```rask
@@ -83,7 +86,7 @@ Three levels. More specific wins.
 |------|-------------|
 | **CF1: Attribute-level** | `@allow`, `@warn`, `@deny` on any item or block; cascades into nested items |
 | **CF2: Package-level** | A `[warnings]` table in `rask.toml` sets project-wide defaults. Not in the `rask-package` schema yet, so writing one is an unknown-key error today |
-| **CF3: CLI-level** | `--deny-warnings` promotes all warnings to errors |
+| **CF3: CLI-level** | `--warn <name>` turns on a build-wide opt-in warning (W12). `--deny-warnings` promotes all warnings to errors (not built yet) |
 
 <!-- test: skip -->
 ```rask

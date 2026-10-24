@@ -63,9 +63,7 @@ fn check_packages(
         .map_err(|e| e.to_string())?;
     let all_decls: Vec<Decl> = registry.get(root).map(|p| p.all_decls().cloned().collect()).unwrap_or_default();
     let mut ctx = rask_compiler::PackageContext { registry, root_id: root, all_decls };
-    let config = rask_compiler::CompilerConfig {
-        cfg: rask_comptime::CfgConfig::from_host("debug", vec![]),
-    };
+    let config = rask_compiler::CompilerConfig::new(rask_comptime::CfgConfig::from_host("debug", vec![]));
     let out = rask_compiler::check_package(&mut ctx, &config);
     match out.result {
         Some(result) if !out.has_errors() => Ok(result),

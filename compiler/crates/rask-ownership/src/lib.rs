@@ -652,33 +652,19 @@ impl<'a> OwnershipChecker<'a> {
             }
             let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
             let ty = rask_types::Type::Named(type_id);
-            let size = self.program.types.value_size(&ty);
+            let size = self.program.types.copy_size(&ty);
             if size <= 16 {
                 continue;
             }
-            // Name the field that took it over: walking in declaration order,
-            // the first one whose end crosses 16 is the one a reader would
-            // delete or shrink. More useful than the total alone, which says
-            // the type is too big without saying where to look.
+            // Name the field that took it over: in memory order, the first
+            // one whose end crosses 16 is the one a reader would delete or
+            // shrink. More useful than the total alone, which says the type is
+            // too big without saying where to look.
             let offending_field = self
                 .program
                 .types
-                .get(type_id)
-                .and_then(|def| match def {
-                    rask_types::TypeDef::Struct { fields, .. } => Some(fields.clone()),
-                    _ => None,
-                })
-                .and_then(|fields| {
-                    let mut running = 0usize;
-                    for (name, field_ty) in &fields {
-                        let field_size = self.program.types.value_size(field_ty);
-                        running += field_size;
-                        if running > 16 {
-                            return Some((name.clone(), field_size));
-                        }
-                    }
-                    None
-                });
+                .first_field_past(&ty, 16)
+                .map(|f| (f.name, f.size as usize));
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::SmallTypeTooBig {
                     type_name: s.name.clone(),
@@ -755,21 +741,21 @@ impl<'a> OwnershipChecker<'a> {
                 })
                 .collect();
 
-            let mut total = 0usize;
-            let mut offender = None;
-            for (field_name, field_ty) in &fields {
-                let concrete = substitute_params(field_ty, &subst);
-                let field_size = self.program.types.value_size(&concrete);
-                total += field_size;
-                if total > 16 && offender.is_none() {
-                    let ty_text =
-                        format!("{}", self.program.types.resolve_type_names(&concrete));
-                    offender = Some((field_name.clone(), field_size, ty_text));
-                }
-            }
+            let total = self.program.types.copy_size(&full);
             if total <= 16 {
                 continue;
             }
+            let offender = self.program.types.first_field_past(&full, 16).map(|f| {
+                let concrete = fields
+                    .iter()
+                    .find(|(n, _)| *n == f.name)
+                    .map(|(_, t)| substitute_params(t, &subst));
+                let ty_text = match concrete {
+                    Some(t) => format!("{}", self.program.types.resolve_type_names(&t)),
+                    None => f.ty.to_string(),
+                };
+                (f.name, f.size as usize, ty_text)
+            });
 
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::SmallInstantiationTooBig {
@@ -4746,7 +4732,7 @@ impl<'a> OwnershipChecker<'a> {
                             let all_fields_copy = fields.iter()
                                 .all(|(_, t)| self.is_copy(&rask_types::TypeTable::substitute_generic_field(t, &subst)));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4756,7 +4742,7 @@ impl<'a> OwnershipChecker<'a> {
                             let all_copy = variants.iter().all(|(_, data)| data.iter()
                                 .all(|t| self.is_copy(&rask_types::TypeTable::substitute_generic_field(t, &subst))));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4777,7 +4763,7 @@ impl<'a> OwnershipChecker<'a> {
                             }
                             let all_fields_copy = fields.iter().all(|(_, t)| self.is_copy(t));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4785,7 +4771,7 @@ impl<'a> OwnershipChecker<'a> {
                         rask_types::TypeDef::Enum { variants, .. } => {
                             let all_copy = variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4798,7 +4784,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             Type::Result { .. } | Type::Union(_) => MoveReason::OwnsHeapMemory { type_name },
             _ => {
-                let size = self.program.types.value_size(ty);
+                let size = self.program.types.copy_size(ty);
                 if size > 16 {
                     MoveReason::SizeExceedsThreshold { type_name, size }
                 } else {

@@ -78,6 +78,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -100,6 +101,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -135,6 +137,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -175,6 +178,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -192,6 +196,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -214,6 +219,7 @@ mod tests {
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -229,6 +235,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -278,6 +285,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -345,6 +353,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -387,6 +396,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -428,6 +438,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -455,6 +466,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -497,6 +509,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -525,6 +538,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -553,6 +567,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -576,6 +591,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -616,6 +632,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -654,6 +671,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -691,6 +709,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -742,6 +761,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -779,6 +799,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -811,6 +832,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -845,6 +867,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -875,6 +898,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -906,6 +930,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -937,6 +962,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -976,6 +1002,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1013,6 +1040,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1059,6 +1087,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1091,6 +1120,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1120,6 +1150,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1151,6 +1182,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1184,6 +1216,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1213,6 +1246,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1232,6 +1266,7 @@ mod tests {
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1247,6 +1282,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1315,6 +1351,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1344,6 +1381,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1392,6 +1430,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1431,6 +1470,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1482,6 +1522,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1509,6 +1550,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1532,6 +1574,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1573,6 +1616,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1604,6 +1648,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1655,6 +1700,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1689,6 +1735,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1722,6 +1769,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1766,6 +1814,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1817,6 +1866,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1864,6 +1914,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1890,6 +1941,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1936,6 +1988,7 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            inline_hint: false,
             source_file: None,
         };
 
@@ -1997,12 +2050,12 @@ mod tests {
         vtable_symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![
-                rask_mono::StructLayout {
+                rask_types::layout::StructLayout {
                     name: "Point".to_string(),
                     size: 8,
                     align: 4,
                     fields: vec![
-                        rask_mono::FieldLayout {
+                        rask_types::layout::FieldLayout {
                             name: "x".to_string(),
                             ty: rask_types::Type::I32,
                             offset: 0,
@@ -2014,7 +2067,7 @@ mod tests {
                             decl_index: 0,
                         is_type_param: false,
                         },
-                        rask_mono::FieldLayout {
+                        rask_types::layout::FieldLayout {
                             name: "y".to_string(),
                             ty: rask_types::Type::I32,
                             offset: 4,
@@ -2056,20 +2109,20 @@ mod tests {
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
-                rask_mono::EnumLayout {
+                rask_types::layout::EnumLayout {
                     name: "Result".to_string(),
                     size: 8,
                     align: 4,
                     tag_ty: rask_types::Type::U8,
                     tag_offset: 0,
                     variants: vec![
-                        rask_mono::VariantLayout {
+                        rask_types::layout::VariantLayout {
                             name: "Ok".to_string(),
                             tag: 0,
                             payload_offset: 4,
                             payload_size: 4,
                             fields: vec![
-                                rask_mono::FieldLayout {
+                                rask_types::layout::FieldLayout {
                                     name: "value".to_string(),
                                     ty: rask_types::Type::I32,
                                     offset: 0,
@@ -2084,13 +2137,13 @@ mod tests {
                             ],
                             attrs: vec![],
                         },
-                        rask_mono::VariantLayout {
+                        rask_types::layout::VariantLayout {
                             name: "Err".to_string(),
                             tag: 1,
                             payload_offset: 4,
                             payload_size: 4,
                             fields: vec![
-                                rask_mono::FieldLayout {
+                                rask_types::layout::FieldLayout {
                                     name: "error".to_string(),
                                     ty: rask_types::Type::I32,
                                     offset: 0,

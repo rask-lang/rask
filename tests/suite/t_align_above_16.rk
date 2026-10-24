@@ -1,0 +1,159 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `@align(N)` past 16 (#1637).
+//
+// Up to 16 it worked and past it was refused, because `malloc` and a
+// Cranelift frame only promise 16: a layout saying 64 over memory at 16 is
+// worse than an error. Every place a value lives now honours the alignment —
+// frame slots, Vec and Map buffers, Heap blocks, rack chunks, Shared payloads,
+// closure environments, interface boxes.
+//
+// This file checks what both backends can answer: the layout, and that every
+// value comes back intact from each of those places. The bytes moving is the
+// half that can break here: a Vec past 16 grows by allocate-copy-free rather
+// than `realloc`, and a closure or a box puts its header somewhere new. The
+// addresses themselves are only real natively, so the alignment of each one
+// is checked in rask-cli's compile_run tests
+// (`over_aligned_values_sit_on_their_alignment`).
+
+import std.reflect
+import memory.Heap
+import memory.Rack
+import memory.Link
+import sync.Shared
+
+@align(64)
+struct Line {
+    hits: u64
+}
+
+@align(4096)
+struct Page {
+    n: u32
+}
+
+struct Outer {
+    tag: u8
+    line: Line
+}
+
+interface Counted {
+    func count(self) -> u64
+}
+
+Line implements Counted {
+    func count(self) -> u64 {
+        return self.hits
+    }
+}
+
+func make_counter(l: Line) -> func() -> u64 {
+    return || l.hits + 1
+}
+
+func sum(v: Vec<Line>) -> u64 {
+    mut total: u64 = 0
+    for l in v {
+        total = total + l.hits
+    }
+    return total
+}
+
+test "the layout rounds the size up to the alignment" {
+    assert reflect.align_of<Line>() == 64
+    assert reflect.size_of<Line>() == 64
+    assert reflect.align_of<Page>() == 4096
+    assert reflect.size_of<Page>() == 4096
+}
+
+test "a field of an over-aligned type makes its struct over-aligned" {
+    assert reflect.align_of<Outer>() == 64
+    assert reflect.size_of<Outer>() == 128
+    // The layout puts the most-aligned field first.
+    let fields = reflect.fields<Outer>()
+    assert fields[1].offset == 0
+    assert fields[0].offset == 64
+    let o = Outer(tag: 7, line: Line(hits: 9))
+    assert o.tag == 7
+    assert o.line.hits == 9
+}
+
+test "a Vec keeps its elements through growth" {
+    mut v: Vec<Line> = Vec.new()
+    for i in 0..100 {
+        v.push(Line(hits: i))
+    }
+    assert v.len() == 100
+    assert v[0].hits == 0
+    assert v[99].hits == 99
+    assert sum(v.clone()) == 4950
+    v.shrink()
+    assert v[50].hits == 50
+    let halves = v.chunks(50)
+    assert halves[1][49].hits == 99
+    let all = v.take_all()
+    assert all[99].hits == 99
+}
+
+test "a Vec of pages keeps its elements" {
+    mut v: Vec<Page> = Vec.with_capacity(2)
+    for i in 0..5 {
+        v.push(Page(n: i))
+    }
+    assert v[4].n == 4
+    let lit: Vec<Page> = [Page(n: 7), Page(n: 8)]
+    assert lit[1].n == 8
+}
+
+test "a Heap holds one" {
+    let h = Heap(Line(hits: 41))
+    ensure drop(h)
+    assert h.hits == 41
+}
+
+test "a Map holds them as values" {
+    // Enough entries to rehash. A counted `while` rather than a range: the
+    // interpreter's range keys don't match a literal one (#1640).
+    mut m: Map<i64, Line> = Map.new()
+    mut i: i64 = 0
+    while i < 40 {
+        m.insert(i, Line(hits: (i * 2).to<u64>()!))
+        i = i + 1
+    }
+    assert m[39].hits == 78
+    let pairs = m.take_all()
+    assert pairs.len() == 40
+}
+
+test "a rack holds them as nodes" {
+    mut r: Rack<Page> = Rack.new()
+    let a = r.insert(Page(n: 1))
+    let b = r.insert(Page(n: 2))
+    assert a.n == 1
+    assert b.n == 2
+}
+
+test "a Shared holds one" {
+    let s = Shared.mutex(Line(hits: 5))
+    with s.write() as v {
+        v.hits = v.hits + 1
+    }
+    with s.read() as v {
+        assert v.hits == 6
+    }
+}
+
+test "a closure carries one it captured" {
+    let f = make_counter(Line(hits: 41))
+    assert f() == 42
+    let l = Line(hits: 3)
+    let g = || l.hits * 2
+    assert g() == 6
+}
+
+test "an interface box holds one" {
+    mut boxes: Vec<any Counted> = Vec.new()
+    boxes.push(Line(hits: 11))
+    boxes.push(Line(hits: 12))
+    assert boxes[1].count() == 12
+}

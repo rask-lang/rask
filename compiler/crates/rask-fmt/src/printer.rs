@@ -1752,8 +1752,50 @@ impl<'a> Printer<'a> {
             self.block_end = outer;
             return;
         }
+        // A chain broken across lines raises the indent for the rest of the
+        // expression, so a `catch` body after it nests under the last link.
+        let indent = self.indent;
         self.format_expr_inner(expr, None);
+        self.indent = indent;
         self.block_end = outer;
+    }
+
+    /// The method calls of a chain, innermost first, and the receiver they
+    /// start from. `a.b().c()` is `(a, [b(), c()])`.
+    fn method_chain(expr: &Expr) -> (&Expr, Vec<&Expr>) {
+        let mut links = vec![expr];
+        let mut root = expr;
+        while let ExprKind::MethodCall { object, .. } = &root.kind {
+            root = object;
+            if matches!(root.kind, ExprKind::MethodCall { .. }) {
+                links.push(root);
+            }
+        }
+        links.reverse();
+        (root, links)
+    }
+
+    /// Whether the source breaks the line before this call's `.`. The layout
+    /// of a chain is the author's, as gofmt keeps it: a break written before a
+    /// call stays, and none is added.
+    fn breaks_before_dot(&self, link: &Expr) -> bool {
+        let ExprKind::MethodCall { object, .. } = &link.kind else { return false };
+        let gap = &self.source[object.span.end..link.span.end];
+        gap.find('.').is_some_and(|dot| gap[..dot].contains('\n'))
+    }
+
+    /// `.method<T>(args)`, the part of a call after its receiver.
+    fn format_method_link(&mut self, link: &Expr) {
+        let ExprKind::MethodCall { method, type_args, args, .. } = &link.kind else { return };
+        self.emit(".");
+        self.emit(method);
+        if let Some(ref targs) = type_args {
+            let spelled: Vec<String> = targs.iter().map(|t| self.format_type(t)).collect();
+            self.emit("<");
+            self.emit(&spelled.join(", "));
+            self.emit(">");
+        }
+        self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
     }
 
     /// Emit the source for this node unchanged, dropping the comments inside it
@@ -1857,17 +1899,28 @@ impl<'a> Printer<'a> {
                 }
                 self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
             }
-            ExprKind::MethodCall { object, method, type_args, args } => {
-                self.format_postfix_receiver(object);
-                self.emit(".");
-                self.emit(method);
-                if let Some(ref targs) = type_args {
-                    let spelled: Vec<String> = targs.iter().map(|t| self.format_type(t)).collect();
-                    self.emit("<");
-                    self.emit(&spelled.join(", "));
-                    self.emit(">");
+            ExprKind::MethodCall { object, .. } => {
+                // A chain keeps the line breaks it was written with, each
+                // continued line one indent in.
+                let (root, links) = Self::method_chain(expr);
+                if links.iter().any(|l| self.breaks_before_dot(l)) {
+                    self.format_postfix_receiver(root);
+                    let mut raised = false;
+                    for link in links {
+                        if self.breaks_before_dot(link) {
+                            if !raised {
+                                self.indent += 1;
+                                raised = true;
+                            }
+                            self.emit_newline();
+                            self.emit_indent();
+                        }
+                        self.format_method_link(link);
+                    }
+                    return;
                 }
-                self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
+                self.format_postfix_receiver(object);
+                self.format_method_link(expr);
             }
             ExprKind::Field { object, field } => {
                 self.format_postfix_receiver(object);

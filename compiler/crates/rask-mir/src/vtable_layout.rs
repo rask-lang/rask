@@ -23,10 +23,10 @@
 //! buffer the frame still owned. Null for a concrete type whose value owns
 //! nothing.
 
-/// Byte offset of the size field.
-pub const VTABLE_SIZE_OFFSET: u32 = 0;
-/// Byte offset of the alignment field.
-pub const VTABLE_ALIGN_OFFSET: u32 = 8;
+/// Byte offset of the size field. The runtime reads it by word index.
+pub const VTABLE_SIZE_OFFSET: u32 = rask_mono::runtime_abi::RASK_VTABLE_SIZE_WORD as u32 * 8;
+/// Byte offset of the alignment field. The runtime reads it by word index.
+pub const VTABLE_ALIGN_OFFSET: u32 = rask_mono::runtime_abi::RASK_VTABLE_ALIGN_WORD as u32 * 8;
 /// Byte offset of the release for a value the box owns; null when the concrete
 /// type holds nothing that needs one. The runtime reads it by word index.
 pub const VTABLE_OWNED_RELEASE_OFFSET: u32 =

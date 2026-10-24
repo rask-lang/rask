@@ -23,6 +23,7 @@ mod format;
 mod operators;
 pub(crate) mod overflow;
 mod dispatch;
+mod transmute;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
 use rask_ast::span::LineMap;
@@ -151,12 +152,12 @@ pub struct Interpreter {
     ///
     /// `reflect.fields<T>()` reports each field's offset and size, and there was
     /// nothing here to compute them from — the interpreter answered 0 for both
-    /// while native answered the truth (#1104). `rask_mono::compute_struct_layout`
+    /// while native answered the truth (#1104). `rask_types::layout::compute_struct_layout`
     /// wants a `Decl`, and `struct_decls` holds the `StructDecl` inside one.
     pub(crate) type_decls: Vec<Decl>,
     /// Size and alignment of every declared type, so a struct holding another
     /// sees its real size. Computed once, when the declarations are registered.
-    pub(crate) layout_cache: rask_mono::LayoutCache,
+    pub(crate) layout_cache: rask_types::layout::LayoutCache,
     /// Nominal newtype name → what it wraps, as written.
     ///
     /// `type NodeId = u64` is transparent to everything except the type checker,
@@ -460,7 +461,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_mono::LayoutCache::new(),
+            layout_cache: rask_types::layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -504,7 +505,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_mono::LayoutCache::new(),
+            layout_cache: rask_types::layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -550,7 +551,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_mono::LayoutCache::new(),
+            layout_cache: rask_types::layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),

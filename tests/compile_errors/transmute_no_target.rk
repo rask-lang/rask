@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `transmute` with nothing to say what it produces
+//
+// Spec: mem.unsafe (Transmute)
+//
+// The target comes from where the value lands. With no annotation, inference
+// would have to pick a type nobody wrote (#1634).
+
+func show(bits: u64) {
+    println("{bits}")
+}
+
+func main() {
+    let f: f64 = 1.5
+    // ERROR[E0922]: no type to reinterpret as
+    unsafe { transmute(f) }
+
+    // A parameter is a target.
+    show(unsafe { transmute(f) })
+}

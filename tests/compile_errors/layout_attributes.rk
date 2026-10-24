@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a malformed `@packed` or `@align`
+//
+// Spec: type.structs (Memory Layout)
+//
+// Both used to be accepted and ignored, so none of these said anything.
+
+// ERROR[E0923]: past 2^29
+@align(1073741824)
+struct Huge {
+    data: [u8; 64]
+}
+
+// ERROR[E0923]: not a power of two
+@align(12)
+struct Twelve {
+    x: u8
+}
+
+// ERROR[E0923]: one integer, nothing else
+@align(x)
+struct Named {
+    x: u8
+}
+
+// ERROR[E0923]: packed means alignment 1
+@packed
+@align(8)
+struct Both {
+    x: u8
+}
+
+// ERROR[E0923]: `@packed` takes no arguments
+@packed(2)
+struct PackedTwo {
+    x: u8
+}
+
+// ERROR[E0923]: an enum's layout isn't its fields'
+@packed
+enum Colour {
+    Red
+    Blue
+}
+
+func main() {}

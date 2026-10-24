@@ -3,7 +3,7 @@
 //! MIR type system - all types are concrete, no generics.
 
 /// Result layout offsets — single source of truth in `rask_mono::abi`.
-pub use rask_mono::abi::{
+pub use rask_types::abi::{
     RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_BYTES,
     RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
 };
@@ -273,7 +273,7 @@ impl MirType {
     /// — nothing downstream should reach for the sentinel constant directly.
     pub fn niche_none(&self) -> Option<i64> {
         match self {
-            MirType::Link(_) => Some(rask_mono::abi::LINK_NONE_SENTINEL),
+            MirType::Link(_) => Some(rask_types::abi::LINK_NONE_SENTINEL),
             // Only an option directly over a link. `Link<T>??` is a tagged
             // option whose payload happens to be a niche one, and its `none`
             // is a tag, not the null address.
@@ -336,17 +336,17 @@ impl MirType {
     /// Where a `T?`, `T or E` or error union keeps its payload, and its size.
     /// `rask_mono::abi` is the one definition; `None` for anything else, and
     /// for a niche option, which is its payload.
-    pub fn wrapper_layout(&self) -> Option<rask_mono::abi::WrapperLayout> {
+    pub fn wrapper_layout(&self) -> Option<rask_types::abi::WrapperLayout> {
         match self {
             MirType::Option(inner) if inner.is_niche_payload() => None,
             MirType::Option(inner) => {
-                Some(rask_mono::abi::option_layout(inner.size(), inner.align()))
+                Some(rask_types::abi::option_layout(inner.size(), inner.align()))
             }
-            MirType::Result { ok, err } => Some(rask_mono::abi::result_layout(
+            MirType::Result { ok, err } => Some(rask_types::abi::result_layout(
                 ok.size().max(err.size()),
                 ok.align().max(err.align()),
             )),
-            MirType::Union(members) => Some(rask_mono::abi::union_layout(
+            MirType::Union(members) => Some(rask_types::abi::union_layout(
                 members.iter().map(|m| m.size()).max().unwrap_or(0),
                 members.iter().map(|m| m.align()).max().unwrap_or(1),
             )),
