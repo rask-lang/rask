@@ -1373,6 +1373,10 @@ impl Desugarer {
         let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
         match parser.parse_expr() {
             Ok(mut parsed) => {
+                // The parser numbers from zero, so every placeholder came out
+                // with the same ids and the checker's answer for one landed on
+                // all of them: `format("{count} {name}")` typed `name` as `i64`.
+                rask_ast::rewrite::rewrite_expr(&mut parsed, &mut FreshIds(&mut self.next_id));
                 offset_expr_spans(&mut parsed, span.start);
                 parsed.span = span;
                 Some(parsed)
