@@ -50,7 +50,9 @@ owner, sharing gives up changing.
 | **BY8: Thawing asks** | `b.thaw()` returns `Vec<u8>?`: the same allocation back if `b` is its only holder, `none` if anyone else shares it. A small inline value has no buffer to share, so it thaws into a fresh small `Vec`. `b.to_vec()` always copies |
 
 `thaw` returning `none` is the copy-on-write check, moved to where you can see it.
-`b.thaw() ?? b.to_vec()` reads as "reuse it if I can, copy if I must".
+"The only holder" counts `b` itself: thaw reuses the buffer when `b` isn't used
+again, so `b.thaw() ?? b.to_vec()` always copies — the fallback keeps `b` alive.
+Thaw what you're done with: `packet.thaw() ?? Vec.new()`.
 
 ## Slices and views
 
