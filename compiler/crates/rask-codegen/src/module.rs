@@ -1416,15 +1416,18 @@ impl CodeGenerator {
             .declare_data(&name, Linkage::Local, false, false)
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
-        let mut bytes = Vec::with_capacity(8 + s.len() + 1);
+        let header_size = rask_mono::runtime_abi::RASK_STRING_HEADER_SIZE as usize;
+        let mut bytes = Vec::with_capacity(header_size + s.len() + 1);
         bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // refcount: never freed
-        bytes.extend_from_slice(&(s.len() as u32).to_le_bytes()); // capacity
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&(s.len() as u64).to_le_bytes()); // capacity
+        debug_assert_eq!(bytes.len(), header_size);
         bytes.extend_from_slice(s.as_bytes());
         bytes.push(0);
 
         let mut desc = DataDescription::new();
         desc.define(bytes.into_boxed_slice());
-        // The runtime reads the two u32s straight out of the header.
+        // The runtime reads the count and capacity straight out of the header.
         desc.set_align(8);
 
         self.module

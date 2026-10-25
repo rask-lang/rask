@@ -55,6 +55,15 @@
 // The bit of a `RaskStr`'s second word that marks the heap form.
 #define RASK_STRING_HEAP_BIT 63
 
+// The bit that marks a heap value starting partway into its buffer (a
+// view). Clear, the rest of the word is the length.
+#define RASK_STRING_START_BIT 62
+
+// A heap buffer's header: a u32 count, four spare bytes, a u64
+// capacity. The data follows. A `Vec<u8>` reserves the same header so
+// it freezes into `bytes` without moving.
+#define RASK_STRING_HEADER_SIZE 16
+
 // What a box's payload is, so the box's last release can give it back.
 #define RASK_BOX_PAYLOAD_NONE 0
 #define RASK_BOX_PAYLOAD_VEC 1

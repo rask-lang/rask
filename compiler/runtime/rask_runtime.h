@@ -374,15 +374,17 @@ void    *rask_vec_last(const RaskVec *v);
 //
 // Heap mode (MSB of byte 15 = 1):
 //   [header_ptr: *u8 (8B)][tagged_len: u64 (8B)]
-//   tagged_len = len | start << 32 | (1<<63). Header: { refcount_u32, cap_u32, data[] }
-//   start is 0 for a string; a StringView shares its source's buffer and
-//   starts where its range does (string.c says more).
+//   Header: { refcount_u32, reserved_u32, cap_u64, data[] }
+//   A whole buffer: tagged_len = len | (1<<63), 62-bit len. A view sets bit
+//   62 and keeps a 31-bit start and length (string.c says more).
+//
+// `bytes` is the same value; a string is bytes that are UTF-8.
 //
 // RC only applies to heap mode. Sentinel refcount (UINT32_MAX) = static literal.
 
 typedef union {
     struct { uint8_t data[15]; uint8_t remaining; } sso;  // remaining = 15 - len
-    struct { uint8_t *header; uint64_t tagged_len; } heap; // tagged_len = len | start << 32 | (1<<63)
+    struct { uint8_t *header; uint64_t tagged_len; } heap;
     uint8_t raw[16];
 } RaskStr;
 
