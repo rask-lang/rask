@@ -338,9 +338,9 @@ test "std.csv — stream stops at a header or quoting error" {
 }
 
 test "std.csv — stream reports bytes that aren't UTF-8" {
-    let bytes: Vec<u8> = [114, 101, 103, 105, 111, 110, 10, 255, 10]
+    let octets: Vec<u8> = [114, 101, 103, 105, 111, 110, 10, 255, 10]
     mut errors: Vec<string> = Vec.new()
-    for item in csv.stream<Sale>(io.Buffer.from(bytes)) {
+    for item in csv.stream<Sale>(io.Buffer.from(octets)) {
         let _ = item catch e => {
             errors.push(describe(e))
             continue

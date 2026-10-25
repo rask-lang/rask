@@ -135,8 +135,9 @@ extend bytes {
     func ends_with(self, suffix: bytes) -> bool
     func contains(self, needle: bytes) -> bool
     func index_of(self, needle: bytes) -> usize?
+    func hash(self) -> u64
     func to_vec(self) -> Vec<u8>
-    func thaw(self) -> Vec<u8>?
+    func thaw(take self) -> Vec<u8>?
     func view(self) -> BytesView
 }
 

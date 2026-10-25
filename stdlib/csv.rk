@@ -188,7 +188,7 @@ extend csv {
                         }
                     }
                     tail = rest
-                    let lines = string.from_utf8(line_bytes) catch _ => {
+                    let lines = string.from_utf8(line_bytes.freeze()) catch _ => {
                         emit(csv_err(CsvError.BadValue(row: row + 1, column: "", reason: "the input isn't UTF-8; convert it first")))
                         return
                     }

@@ -13,26 +13,20 @@ extend string {
     // for one thing. It only existed to open `mut s = string.new()` followed by
     // pushes — the Rust `String` habit S7 rules out.
 
-    /// From validated UTF-8 bytes. Returns error on invalid UTF-8 (S4).
+    /// The same bytes as a string, once they're checked to be UTF-8 (S4). No
+    /// copy: the string shares `data`'s buffer (std.bytes/BY3).
     ///
-    /// This is the only way in from bytes: StringBuilder deliberately has no raw
-    /// byte entry point, so a program holding a `Vec<u8>` had nowhere to go and
-    /// nothing to work around it with.
-    ///
-    /// Decodes and appends in one pass rather than copying the bytes wholesale.
-    /// Going through a raw buffer would need `rask_alloc`, which the interpreter
-    /// doesn't have — and this is exactly the kind of function where the two
-    /// backends must agree about which byte sequences are legal.
-    public func from_utf8(bytes: Vec<u8>) -> string or Utf8Error {
-        let len = bytes.len().wrap<i64>()
-        mut out = StringBuilder.with_capacity(bytes.len())
-        mut i: i64 = 0
+    /// The check is written here once, so both backends agree about which
+    /// byte sequences are legal and where the first illegal one starts.
+    public func from_utf8(data: bytes) -> string or Utf8Error {
+        let len = data.len()
+        mut i: usize = 0
         while i < len {
-            let lead = (bytes.get(i) ?? 0).wrap<i64>()
+            let lead = data[i].wrap<i64>()
             // Sequence width from the lead byte. A continuation byte
             // (0x80..0xBF) can't lead; 0xC0/0xC1 are overlong two-byte forms
             // whose value fits in one; 0xF5..0xFF are past U+10FFFF.
-            let width = if lead < 0x80 {
+            let width: usize = if lead < 0x80 {
                 1
             } else if lead >= 0xC2 && lead <= 0xDF {
                 2
@@ -44,7 +38,7 @@ extend string {
                 0
             }
             if width == 0 || i + width > len {
-                return Utf8Error.InvalidByte(i.wrap<usize>())
+                return Utf8Error.InvalidByte(i)
             }
 
             // Fold the continuation bytes into the scalar, checking each.
@@ -57,11 +51,11 @@ extend string {
             } else {
                 lead - 0xF0
             }
-            mut k: i64 = 1
+            mut k: usize = 1
             while k < width {
-                let cont = (bytes.get(i + k) ?? 0).wrap<i64>()
+                let cont = data[i + k].wrap<i64>()
                 if cont < 0x80 || cont > 0xBF {
-                    return Utf8Error.InvalidByte((i + k).wrap<usize>())
+                    return Utf8Error.InvalidByte(i + k)
                 }
                 scalar = (scalar << 6) + (cont - 0x80)
                 k = k + 1
@@ -71,23 +65,17 @@ extend string {
             // a surrogate, or past U+10FFFF. Checking the decoded value covers
             // all three at once.
             if width == 3 && scalar < 0x800 {
-                return Utf8Error.InvalidByte(i.wrap<usize>())
+                return Utf8Error.InvalidByte(i)
             }
             if scalar >= 0xD800 && scalar <= 0xDFFF {
-                return Utf8Error.InvalidByte(i.wrap<usize>())
+                return Utf8Error.InvalidByte(i)
             }
             if width == 4 && (scalar < 0x10000 || scalar > 0x10FFFF) {
-                return Utf8Error.InvalidByte(i.wrap<usize>())
-            }
-
-            if char.from_u32(scalar.wrap<u32>())? as c {
-                out.push_char(c)
-            } else {
-                return Utf8Error.InvalidByte(i.wrap<usize>())
+                return Utf8Error.InvalidByte(i)
             }
             i = i + width
         }
-        return out.build()
+        return data.checked_text()
     }
 
     /// Single-character string.
@@ -387,6 +375,10 @@ extend string {
     @native("rask_string_hash")
     public func hash(self) -> u64 {}
 
+    /// The string's bytes, sharing its buffer. Free (std.bytes/BY3).
+    @native("rask_string_as_bytes")
+    public func as_bytes(self) -> bytes {}
+
     // ── C interop ───────────────────────────────────────────
 
     /// The buffer's address, for pointer+length C APIs and for the ones that
@@ -543,18 +535,6 @@ StringSlice implements Slice {
     }
 }
 
-/// Where a range stops: its end, one past it for `..=`, or `len` when it has
-/// none.
-func range_end(end: usize?, through: bool, len: usize) -> usize {
-    if end? as e {
-        if through {
-            return e + 1
-        }
-        return e
-    }
-    return len
-}
-
 /// `text[start..end]` as a slice placed `base` bytes into its source. Clamps
 /// and refuses a cut character as slicing always has.
 func slice_of(text: string, base: usize, start: usize, end: usize) -> StringSlice {
@@ -626,7 +606,7 @@ extend cstring {
     /// back stops being native here rather than growing a second copy of it
     /// in the runtime.
     public func decode(self) -> string or Utf8Error {
-        return string.from_utf8(self.bytes())
+        return string.from_utf8(self.bytes().freeze())
     }
 
     /// The bytes up to the terminator, unvalidated. `decode` is the public

@@ -37,7 +37,7 @@ func items(n: i64) -> Vec<string> {
     }
 }
 
-func bytes(s: string) -> Vec<u8> {
+func hex_bytes(s: string) -> Vec<u8> {
     let v = hex.decode(s) catch _ => {
         panic("bad hex")
     }
@@ -51,7 +51,7 @@ test "a helper that panics on error returns what it unwrapped" {
 }
 
 test "the same through a stdlib call and a binding" {
-    let b = bytes("00ff")
+    let b = hex_bytes("00ff")
     assert b.len() == 2
     assert b[1] == 255
 }

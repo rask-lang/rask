@@ -23,11 +23,11 @@ extend base64 {
 
 <!-- test: skip -->
 ```rask
-let token = base64.encode(bytes)                    // "SGVsbG8gd29ybGQ="
-let token = base64.encode(bytes, url_safe: true)    // "-" and "_" instead of "+" and "/"
-let jwt   = base64.encode(bytes, url_safe: true, padding: false)
+let token = base64.encode(octets)                    // "SGVsbG8gd29ybGQ="
+let token = base64.encode(octets, url_safe: true)    // "-" and "_" instead of "+" and "/"
+let jwt   = base64.encode(octets, url_safe: true, padding: false)
 
-let bytes = try base64.decode(token)
+let octets = try base64.decode(token)
 ```
 
 ## Core Rules

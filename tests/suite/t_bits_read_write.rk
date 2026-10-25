@@ -12,8 +12,7 @@
 import bits
 
 func reads_off_the_front() -> bool or bits.BinaryParseError {
-    let data: Vec<u8> = [0xCA, 0xFE, 0xBA, 0xBE, 0x01, 0x00, 0x2A, 0xFF]
-    mut r = bits.BinaryReader.new(data)
+    mut r = bits.BinaryReader.new(x"CA FE BA BE 01 00 2A FF")
     assert r.remaining() == 8
     let v1 = try r.read_u32be()
     assert v1 == 0xCAFEBABE
@@ -70,7 +69,7 @@ func round_trip() -> bool or bits.BinaryParseError {
         .write_bytes([7, 8, 9])
     assert data.len() == 85
 
-    mut r = bits.BinaryReader.new(data.build())
+    mut r = bits.BinaryReader.new(data.build().freeze())
     let v7 = try r.read_u8()
     assert v7 == 200
     let v8 = try r.read_i8()
@@ -109,8 +108,7 @@ func round_trip() -> bool or bits.BinaryParseError {
     assert v24 == -0.5
     let tail = try r.read_bytes(3)
     assert tail.len() == 3
-    assert tail[0] == 7
-    assert tail[2] == 9
+    assert tail == x"07 08 09"
     assert r.pos() == 85
     assert r.remaining() == 0
     return true
@@ -139,13 +137,12 @@ test "the builder lays bytes out in the order it says" {
 }
 
 func empty_head() -> bool or bits.BinaryParseError {
-    let data: Vec<u8> = [1, 2, 3]
-    mut r = bits.BinaryReader.new(data)
+    mut r = bits.BinaryReader.new(x"01 02 03")
     let head = try r.read_bytes(0)
     assert head.len() == 0
     assert r.pos() == 0
     let all = try r.read_bytes(3)
-    assert all[2] == 3
+    assert all.ends_with(x"03")
     assert r.pos() == 3
     return true
 }
@@ -160,7 +157,7 @@ test "read_bytes takes nothing or everything" {
 }
 
 func short(data: Vec<u8>, what: string) -> string {
-    mut r = bits.BinaryReader.new(data.clone())
+    mut r = bits.BinaryReader.new(data.clone().freeze())
     if what == "u32" {
         let v = r.read_u32be() catch e => return e.message()
         return "read {v}"
@@ -180,7 +177,7 @@ func short(data: Vec<u8>, what: string) -> string {
 }
 
 func end_counts(data: Vec<u8>) -> string {
-    mut r = bits.BinaryReader.new(data.clone())
+    mut r = bits.BinaryReader.new(data.clone().freeze())
     let v = r.read_i16be() catch e => {
         match e {
             bits.BinaryParseError.UnexpectedEnd(expected, actual) => return "{expected} {actual}"
@@ -206,7 +203,7 @@ test "reading past the end is an error, not a panic" {
 
 func after_a_failed_read() -> string {
     let three: Vec<u8> = [1, 2, 3]
-    mut r = bits.BinaryReader.new(three)
+    mut r = bits.BinaryReader.new(three.freeze())
     let _ = r.read_u8() catch e => return e.message()
     let missed = r.read_u32be() is bits.BinaryParseError
     // A read that fails takes nothing, so the next one starts where it did.

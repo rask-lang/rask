@@ -22,6 +22,6 @@ test "string.from_char under an import of the string file" {
 }
 
 test "a Rask-bodied string function too" {
-    let s = string.from_utf8([104u8, 105u8]) catch _ => "bad"
+    let s = string.from_utf8(x"68 69") catch _ => "bad"
     assert s == "hi"
 }

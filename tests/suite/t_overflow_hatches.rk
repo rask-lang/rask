@@ -211,8 +211,8 @@ test "overflow — checked_* folds at comptime too" {
 // The reason any of this exists: a hash that's meant to wrap.
 test "overflow — an FNV-style hash runs to completion" {
     mut hash: u32 = 2166136261
-    let bytes: Vec<u8> = [114, 97, 115, 107]
-    for byte in bytes {
+    let raw: Vec<u8> = [114, 97, 115, 107]
+    for byte in raw {
         hash = hash.wrapping_mul(16777619)
         hash = hash.wrapping_add(byte as u32)
     }

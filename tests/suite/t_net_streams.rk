@@ -46,9 +46,9 @@ test "a connection reads and writes through the stream interfaces" {
         server.read_exact(mutate rest)!
     }
     let _ = client.close()
-    let bytes = server.read_bytes()!
-    assert bytes.len() == 4
-    assert bytes[0] == 116u8
+    let raw = server.read_bytes()!
+    assert raw.len() == 4
+    assert raw[0] == 116u8
     let _ = server.close()
     let _ = listener.close()
 }

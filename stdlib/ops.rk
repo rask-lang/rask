@@ -104,3 +104,15 @@ public interface Slice {
 
     func slice(self, start: usize, end: usize?, through: bool) -> Self.Out
 }
+
+/// Where a `slice` call's range stops: its end, one past it for `..=`, or
+/// `len` when it has none. Every conformance needs this.
+public func range_end(end: usize?, through: bool, len: usize) -> usize {
+    if end? as e {
+        if through {
+            return e + 1
+        }
+        return e
+    }
+    return len
+}

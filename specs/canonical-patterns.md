@@ -97,7 +97,7 @@ Name encodes the cost. A developer — or a tool — knows what happens from the
 
 ```rask
 // as_* — cheap view, no allocation
-let bytes = s.as_bytes()
+let octets = s.as_bytes()
 let str = path.as_string()
 
 // to_* — allocates a new value, doesn't consume source

@@ -105,15 +105,15 @@ extend fs {
             return IoError.last_os_error()
         }
         let raw = try read_to_end(f)
-        mut bytes: Vec<u8> = Vec.with_capacity(raw.len.wrap<usize>())
+        mut octets: Vec<u8> = Vec.with_capacity(raw.len.wrap<usize>())
         mut i: i64 = 0
         loop {
             if i >= raw.len { break }
-            bytes.push(unsafe raw.ptr.add(i.wrap<usize>()).read())
+            octets.push(unsafe raw.ptr.add(i.wrap<usize>()).read())
             i = i + 1
         }
         unsafe rask_free(raw.ptr)
-        return bytes
+        return octets
     }
 
     /// Write a string to a file, replacing its contents.

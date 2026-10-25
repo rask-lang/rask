@@ -71,8 +71,8 @@ test "std.io — Buffer.from starts at position zero" {
     let abc: Vec<u8> = [65, 66, 67]
     mut b = Buffer.from(abc)
     assert b.len() == 3
-    let bytes = b.read_bytes()
-    if bytes is Vec<u8> as v {
+    let octets = b.read_bytes()
+    if octets is Vec<u8> as v {
         assert v.len() == 3
         assert v[0] == 65
         assert v[2] == 67
@@ -123,8 +123,8 @@ test "std.io — an empty buffer reads as empty, not as an error" {
     } else as e {
         assert false
     }
-    let bytes = b.read_bytes()
-    if bytes is Vec<u8> as v {
+    let octets = b.read_bytes()
+    if octets is Vec<u8> as v {
         assert v.len() == 0
     } else as e {
         assert false
