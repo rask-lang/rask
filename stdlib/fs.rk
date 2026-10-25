@@ -6,13 +6,13 @@ extern "C" func rask_libc_fopen(path: *u8, mode: *u8) -> *u8
 
 extern "C" func fclose(f: *u8) -> i32
 
-extern "C" func fread(ptr: *u8, size: u64, count: u64, stream: *u8) -> u64
+extern "C" func fread(ptr: *u8, size: usize, count: usize, stream: *u8) -> usize
 
-extern "C" func fwrite(ptr: *u8, size: u64, count: u64, stream: *u8) -> u64
+extern "C" func fwrite(ptr: *u8, size: usize, count: usize, stream: *u8) -> usize
 
-extern "C" func fseek(stream: *u8, offset: i64, whence: i32) -> i32
+extern "C" func fseek(stream: *u8, offset: c_long, whence: c_int) -> c_int
 
-extern "C" func ftell(stream: *u8) -> i64
+extern "C" func ftell(stream: *u8) -> c_long
 
 extern "C" func ferror(stream: *u8) -> i32
 
@@ -41,9 +41,9 @@ extern "C" func rask_libc_mkdir_or_dir(path: *u8, mode: u32) -> i32
 extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
 @memory_only
-extern "C" func strlen(s: *u8) -> u64
+extern "C" func strlen(s: *u8) -> usize
 
-extern "C" func getcwd(buf: *u8, size: u64) -> *u8
+extern "C" func getcwd(buf: *u8, size: usize) -> *u8
 
 extern "C" func getenv(name: *u8) -> *u8
 
@@ -171,8 +171,8 @@ extend fs {
             unsafe rask_free(buf)
             return IoError.last_os_error()
         }
-        let len: u64 = unsafe strlen(buf)
-        let s = unsafe string.from_raw(buf, len as usize)
+        let len = unsafe strlen(buf)
+        let s = unsafe string.from_raw(buf, len)
         unsafe rask_free(buf)
         return s
     }
@@ -397,8 +397,8 @@ extend fs {
             unsafe rask_free(buf)
             return Path.from(".")
         }
-        let len: u64 = unsafe strlen(buf)
-        let s = unsafe string.from_raw(buf, len as usize)
+        let len = unsafe strlen(buf)
+        let s = unsafe string.from_raw(buf, len)
         unsafe rask_free(buf)
         return Path.from(s)
     }
@@ -409,8 +409,8 @@ extend fs {
         if unsafe ptr.is_null() {
             return none
         }
-        let len: u64 = unsafe strlen(ptr)
-        let s = unsafe string.from_raw(ptr, len as usize)
+        let len = unsafe strlen(ptr)
+        let s = unsafe string.from_raw(ptr, len)
         return Path.from(s)
     }
 }
@@ -429,7 +429,7 @@ func read_to_end(f: *u8) -> RawBytes or IoError {
     unsafe fseek(f, 0, 2)
     let guess = unsafe ftell(f)
     unsafe fseek(f, 0, 0)
-    mut cap: i64 = if guess > 0 { guess + 1 } else { 4096 }
+    mut cap: i64 = if guess > 0 { (guess as i64) + 1 } else { 4096 }
     mut buf = unsafe rask_alloc(cap)
     mut len: i64 = 0
     loop {
@@ -437,7 +437,7 @@ func read_to_end(f: *u8) -> RawBytes or IoError {
             buf = unsafe rask_realloc(buf, cap, cap * 2)
             cap = cap * 2
         }
-        let n = unsafe fread(buf.add(len.wrap<usize>()), 1, (cap - len).wrap<u64>(), f)
+        let n = unsafe fread(buf.add(len.wrap<usize>()), 1, (cap - len).wrap<usize>(), f)
         if n == 0 {
             // errno is read before fclose can touch it.
             if (unsafe ferror(f)) != 0 {
@@ -458,11 +458,10 @@ func read_to_end(f: *u8) -> RawBytes or IoError {
 /// the close; a caller that only checked `fwrite` would report success for
 /// data that never arrived.
 func write_all_then_close(f: *u8, ptr: *u8, size: usize) -> void or IoError {
-    let len = size.wrap<u64>()
-    let wrote = unsafe fwrite(ptr, 1, len, f)
+    let wrote = unsafe fwrite(ptr, 1, size, f)
     // `ferror` as well as the count: an unbuffered stream can report the
     // whole count for a write that failed.
-    if wrote < len || (unsafe ferror(f)) != 0 {
+    if wrote < size || (unsafe ferror(f)) != 0 {
         let err = IoError.last_os_error()
         unsafe fclose(f)
         return err

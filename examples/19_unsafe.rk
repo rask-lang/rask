@@ -7,7 +7,7 @@ import string.NullByteError
 // strlen, malloc and memcpy all deal in size_t, which is usize here. An
 // `extern "C"` name is global, so declaring `strlen` with a different return
 // type than the one std.fs already declares breaks that module too.
-extern "C" func strlen(ptr: *u8) -> u64
+extern "C" func strlen(ptr: *u8) -> usize
 
 extern "C" func memcpy(dest: *u8, src: *u8, n: usize)
 
@@ -21,7 +21,7 @@ extern "C" func free(ptr: *u8)
 // looks like it would do — a whole string's buffer does end in a NUL — but it
 // hands over a pointer into a buffer the string still owns, and it can't say no
 // to a string with an interior \0, which C would read as a shorter string.
-func c_string_length(s: string) -> u64 or NullByteError {
+func c_string_length(s: string) -> usize or NullByteError {
     let terminated = try s.to_cstring()
     let ptr = unsafe terminated.as_ptr()
     return unsafe strlen(ptr)
