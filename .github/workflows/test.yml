@@ -8,9 +8,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Nine jobs that all start at once, on ten runners — gates-memcheck is a
-# two-way matrix. Seven of them run the gates that need a rask binary, one runs
-# cargo test, one builds and runs on Darwin.
+# Ten jobs that all start at once, on twelve runners — gates-memcheck and
+# gates-target32 are two-way matrices. Eight of them run the gates that need a
+# rask binary, one runs cargo test, one builds and runs on Darwin.
 #
 # The shape is "everything in parallel, nothing waits". No job needs another, so
 # the run takes as long as its slowest job and no longer. Each gate job builds
@@ -275,6 +275,53 @@ jobs:
         MEMCHECK_SHARDS: ${{ strategy.job-total }}
         MEMCHECK_SHARD: ${{ matrix.shard }}
       run: tests/memcheck_gate.sh
+
+  # ── Every program, lowered to MIR for a 32-bit target. No backend emits
+  # 32-bit code yet, so this is the frontend and MIR only: it keeps new
+  # `usize`-is-`u64` assumptions out while the backend is still to come. Two
+  # shards for the same reason memcheck has them: ~3m40 serial on four cores,
+  # 1m50 split.
+  gates-target32:
+    name: gates-target32 (32-bit lowering, shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    - name: 32-bit gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      env:
+        TARGET32_SHARDS: ${{ strategy.job-total }}
+        TARGET32_SHARD: ${{ matrix.shard }}
+      run: tests/target32_gate.sh
 
   # ── Who owns what crosses a call, and whether the programs we show people
   # still produce the output we claim.
@@ -601,7 +648,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [gates-suite, gates-matrix, gates-memory, gates-memcheck, gates-names, gates-surface, gates-concurrency]
+    needs: [gates-suite, gates-matrix, gates-memory, gates-memcheck, gates-target32, gates-names, gates-surface, gates-concurrency]
     steps:
     - name: Every gate passed
       env:
@@ -610,6 +657,7 @@ jobs:
           gates-matrix=${{ needs.gates-matrix.result }}
           gates-memory=${{ needs.gates-memory.result }}
           gates-memcheck=${{ needs.gates-memcheck.result }}
+          gates-target32=${{ needs.gates-target32.result }}
           gates-names=${{ needs.gates-names.result }}
           gates-surface=${{ needs.gates-surface.result }}
           gates-concurrency=${{ needs.gates-concurrency.result }}

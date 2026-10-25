@@ -509,7 +509,7 @@ fn main() {
                     }
                 }
             }
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps", "--trace"]);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps", "--trace", "--target"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -518,6 +518,28 @@ fn main() {
                 }
             };
             let interp = cmd_args.contains(&"--interp");
+            let target = extract_flag_value(&cmd_args, "--target");
+            if cmd_args.contains(&"--dump-mir") {
+                if interp || sim {
+                    eprintln!(
+                        "{}: `--dump-mir` prints the MIR native tests compile from — drop `{}`",
+                        output::error_label(),
+                        if interp { "--interp" } else { "--sim" },
+                    );
+                    process::exit(1);
+                }
+                commands::codegen::cmd_test_dump_mir(file, filter.as_deref(), format, target.as_deref());
+                return;
+            }
+            // Running needs a binary for this machine, so a target only means
+            // something for the MIR dump.
+            if target.is_some() {
+                eprintln!(
+                    "{}: `rask test` runs on this machine — `--target` only goes with `--dump-mir`",
+                    output::error_label(),
+                );
+                process::exit(1);
+            }
             // Native is what `test` already does, so `--native` reads as a
             // deliberate choice and changes nothing. Anyone reaching for it is
             // usually after the other backend — and silently getting native back

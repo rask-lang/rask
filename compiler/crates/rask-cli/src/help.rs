@@ -342,6 +342,8 @@ pub fn print_test_help() {
     println!("  {} Keep searching after a test fails", output::arg("--keep-going"));
     println!("  {} {} Fail a sim test that runs longer than n scheduling steps", output::arg("--max-steps"), output::arg("<n>"));
     println!("  {} {} Write one test's sim schedule, step by step, as JSON", output::arg("--trace"), output::arg("<file>"));
+    println!("  {}   Print the tests' MIR to stderr instead of running them", output::arg("--dump-mir"));
+    println!("  {} {} Lower for another target (with --dump-mir)", output::arg("--target"), output::arg("<name>"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}        Run all tests in file",
