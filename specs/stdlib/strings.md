@@ -181,14 +181,16 @@ A view is laid out as a `string` is (S8), so every read-only string operation re
 
 ```
 Heap mode (last byte MSB = 1):
-  [header_ptr: *u8 (8B)][len: u32 | start: u31 | 1]
-  header_ptr → the source string's heap header (shared refcount)
+  [header_ptr: *u8 (8B)][tagged: u64]
+  tagged, starting at byte 0:   [len: 62 bits | 0 | 1]
+  tagged, with a start:         [len: 31 bits | start: 31 bits | 1 | 1]
+  header_ptr → the buffer's heap header: { refcount: u32, reserved: u32, capacity: u64, data[] }
 
 SSO mode (last byte MSB = 0):
   [inline_data: [u8; 15]][remaining: u8]   — identical to string's SSO mode
 ```
 
-A `string` owns its buffer from the start, so its `start` is 0. A view's `start` is where its range begins in the shared buffer, which caps a view's offset at 2 GiB; one further in copies its bytes instead. A view of 15 bytes or less is copied inline (V4). Views of string literals reference sentinel-refcount storage (S6): no atomic ops, nothing pinned.
+One bit says which shape a heap value has. A `string` (or `bytes`) owns its buffer from byte 0, so it needs no start and gets a 62-bit length. A view's `start` is where its range begins in the shared buffer, and the two halves share the remaining 62 bits: a view can start at most 2 GiB in and be at most 2 GiB long. Cutting one past that panics with a message saying so; it never copies behind your back. The layout makes no assumption about pointer width or address range. A view of 15 bytes or less is copied inline (V4). Views of string literals reference sentinel-refcount storage (S6): no atomic ops, nothing pinned.
 
 `StringView` is a language primitive like `string` — user types can't opt into refcounted sharing (see "Why Only String?" and `mem.shared-rack-heap/BX2`).
 
@@ -303,7 +305,8 @@ caller either wants bytes (indexing), columns (layout), or to walk the graphemes
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
 | `"literal"` | `string` | Compile-time validated. ≤ 15 bytes → SSO (inline, no allocation). > 15 bytes → static storage, sentinel refcount (never freed) |
-| `string.from_utf8(bytes)` | `string or Utf8Error` | Validates bytes |
+| `string.from_utf8(b)` | `string or Utf8Error` | Validates a `bytes` value and shares its buffer, no copy (`std.bytes/BY3`). A `Vec<u8>` freezes first: `string.from_utf8(v.freeze())` |
+| `s.as_bytes()` | `bytes` | The same buffer as bytes, no copy |
 | `string.from_char(c)` | `string` | Single-char string |
 | `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
 | `slice.to_string()` | `string` | Copy slice bytes into new independent string (allocates) |
@@ -311,7 +314,8 @@ caller either wants bytes (indexing), columns (layout), or to walk the graphemes
 <!-- surface -->
 ```rask
 extend string {
-    func from_utf8(bytes: Vec<u8>) -> string or Utf8Error
+    func from_utf8(data: bytes) -> string or Utf8Error
+    func as_bytes(self) -> bytes
     func from_char(c: char) -> string
     func repeat(self, n: usize) -> string
 }
