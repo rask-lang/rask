@@ -99,8 +99,8 @@ public interface Reader {
     /// are legal and what a bad one reports is not something each stream
     /// should decide for itself.
     func read_text(self) -> string or IoError {
-        let octets = try self.read_bytes()
-        let text = string.from_utf8(octets.freeze()) catch e => {
+        let data = try self.read_bytes()
+        let text = string.from_utf8(data.freeze()) catch e => {
             return IoError.Other("stream is not valid UTF-8: {e.message()}")
         }
         return text
@@ -603,8 +603,8 @@ File implements Reader {
 
     /// Read from the current position to the end.
     public func read_bytes(self) -> Vec<u8> or IoError {
-        if self.read_bytes_raw() is Vec<u8> as octets {
-            return octets
+        if self.read_bytes_raw() is Vec<u8> as data {
+            return data
         }
         return IoError.last_os_error()
     }
@@ -973,11 +973,11 @@ BufferedWriter<W> implements Writer {
 
     /// A string's UTF-8 bytes, held like any others.
     public func write_text(self, data: string) -> void or IoError {
-        mut octets: Vec<u8> = Vec.with_capacity(data.len())
+        mut buf: Vec<u8> = Vec.with_capacity(data.len())
         for b in data.bytes() {
-            octets.push(b)
+            buf.push(b)
         }
-        return self.write_bytes(octets)
+        return self.write_bytes(buf)
     }
 
     /// Write out what's held, then flush `inner` (W3).

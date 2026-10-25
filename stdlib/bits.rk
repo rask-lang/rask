@@ -322,9 +322,9 @@ extend BinaryBuilder {
         return self.write_u64le(value.to_bits())
     }
 
-    public func write_bytes(take self, octets: Vec<u8>) -> BinaryBuilder {
+    public func write_bytes(take self, data: Vec<u8>) -> BinaryBuilder {
         mut b = self
-        for byte in octets {
+        for byte in data {
             b.data.push(byte)
         }
         return b

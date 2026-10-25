@@ -168,8 +168,8 @@ TcpConnection implements Reader {
 
     /// Read until the peer closes the connection.
     public func read_bytes(self) -> Vec<u8> or IoError {
-        if self.read_bytes_raw() is Vec<u8> as octets {
-            return octets
+        if self.read_bytes_raw() is Vec<u8> as buf {
+            return buf
         }
         return IoError.last_os_error()
     }
@@ -192,11 +192,11 @@ TcpConnection implements Writer {
 
     /// Write text to the connection — its UTF-8 bytes, nothing added.
     public func write_text(self, data: string) -> void or IoError {
-        mut octets: Vec<u8> = Vec.with_capacity(data.len())
+        mut buf: Vec<u8> = Vec.with_capacity(data.len())
         for b in data.bytes() {
-            octets.push(b)
+            buf.push(b)
         }
-        try self.write_bytes(octets)
+        try self.write_bytes(buf)
         return
     }
 

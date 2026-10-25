@@ -194,7 +194,7 @@ let header = IpHeader(
     dst: 0xC0A80002     // 192.168.0.2
 )
 
-let octets = header.build()  // Vec<u8> of 20 bytes
+let data = header.build()  // Vec<u8> of 20 bytes
 ```
 
 **Nested binary structs:**

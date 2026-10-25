@@ -43,10 +43,10 @@ test "same-width integers keep the bits" {
 
 test "an integer becomes its bytes, lowest first" {
     let x: u32 = 0x41424344
-    let octets: [u8; 4] = unsafe { transmute(x) }
-    assert octets[0] == 0x44
-    assert octets[3] == 0x41
-    let again: u32 = unsafe { transmute(octets) }
+    let data: [u8; 4] = unsafe { transmute(x) }
+    assert data[0] == 0x44
+    assert data[3] == 0x41
+    let again: u32 = unsafe { transmute(data) }
     assert again == 0x41424344
 }
 

@@ -45,11 +45,11 @@ test "fields at odd offsets read and write" {
     assert w.len == 70001
     assert w.crc == 513
     assert w.val == 2.5
-    let octets: [u8; 15] = unsafe { transmute(w) }
-    assert octets[0] == 1
-    assert octets[1] == 113
-    assert octets[5] == 1
-    assert octets[6] == 2
+    let data: [u8; 15] = unsafe { transmute(w) }
+    assert data[0] == 1
+    assert data[1] == 113
+    assert data[5] == 1
+    assert data[6] == 2
 }
 
 test "a packed struct nests and sits in a Vec" {

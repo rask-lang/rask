@@ -182,7 +182,7 @@ Reinterprets the bits of one type as another. Requires unsafe.
 ```rask
 unsafe {
     mut x: u32 = 0x41424344
-    mut octets: [u8; 4] = transmute(x)
+    mut data: [u8; 4] = transmute(x)
 }
 ```
 

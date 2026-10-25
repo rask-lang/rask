@@ -145,10 +145,10 @@ test "std.fs — rename moves a file" {
 test "std.fs — read_bytes gives the raw bytes" {
     let p = temp_path("bytes")
     let _ = fs.write_text(p, "abc")
-    let octets = fs.read_bytes(p) catch _ => Vec.new()
-    assert octets.len() == 3
-    assert octets[0] == 97
-    assert octets[2] == 99
+    let data = fs.read_bytes(p) catch _ => Vec.new()
+    assert data.len() == 3
+    assert data[0] == 97
+    assert data[2] == 99
     let _ = fs.remove_file(p)
 }
 

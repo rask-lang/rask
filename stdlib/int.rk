@@ -93,22 +93,22 @@ extend Integer {
         return self.to_le().to_le_bytes()
     }
 
-    public func from_le_bytes(octets: [u8; BYTES]) -> Self {
+    public func from_le_bytes(data: [u8; BYTES]) -> Self {
         mut v: Self = 0
         mut shift: Self = 0
         for i in 0..BYTES {
-            v = v | octets[i].wrap<Self>() << shift
+            v = v | data[i].wrap<Self>() << shift
             shift = shift + 8
         }
         return v
     }
 
-    public func from_be_bytes(octets: [u8; BYTES]) -> Self {
-        return Self.from_le_bytes(octets).swap_bytes()
+    public func from_be_bytes(data: [u8; BYTES]) -> Self {
+        return Self.from_le_bytes(data).swap_bytes()
     }
 
-    public func from_ne_bytes(octets: [u8; BYTES]) -> Self {
-        return Self.from_le_bytes(octets).to_le()
+    public func from_ne_bytes(data: [u8; BYTES]) -> Self {
+        return Self.from_le_bytes(data).to_le()
     }
 }
 

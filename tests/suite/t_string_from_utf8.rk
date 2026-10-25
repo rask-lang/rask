@@ -60,8 +60,8 @@ test "std.strings/S4 accepts every sequence width" {
 
 test "std.strings/S4 round-trips through bytes()" {
     let original = "Hei på deg — 世界 🌍"
-    let octets: Vec<u8> = original.bytes().to_vec()
-    let back = string.from_utf8(octets.freeze()) catch _ => "REJECTED"
+    let data: Vec<u8> = original.bytes().to_vec()
+    let back = string.from_utf8(data.freeze()) catch _ => "REJECTED"
     assert back == original
 }
 

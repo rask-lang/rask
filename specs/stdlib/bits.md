@@ -59,9 +59,9 @@ extend Integer {
     func to_be_bytes(self) -> [u8; BYTES]
     func to_le_bytes(self) -> [u8; BYTES]
     func to_ne_bytes(self) -> [u8; BYTES]
-    func from_be_bytes(octets: [u8; BYTES]) -> Self
-    func from_le_bytes(octets: [u8; BYTES]) -> Self
-    func from_ne_bytes(octets: [u8; BYTES]) -> Self
+    func from_be_bytes(data: [u8; BYTES]) -> Self
+    func from_le_bytes(data: [u8; BYTES]) -> Self
+    func from_ne_bytes(data: [u8; BYTES]) -> Self
 }
 ```
 
@@ -190,7 +190,7 @@ extend BinaryBuilder {
     func write_f32le(take self, value: f32) -> BinaryBuilder
     func write_f64be(take self, value: f64) -> BinaryBuilder
     func write_f64le(take self, value: f64) -> BinaryBuilder
-    func write_bytes(take self, octets: Vec<u8>) -> BinaryBuilder
+    func write_bytes(take self, data: Vec<u8>) -> BinaryBuilder
     func len(self) -> usize
     func build(take self) -> Vec<u8>
 }
