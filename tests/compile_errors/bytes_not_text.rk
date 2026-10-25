@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `bytes` isn't text, and has one literal (std.bytes).
+
+func main() {
+    let b = x"68 69"
+
+    // ERROR: bytes isn't Displayable; the fix is `{b:debug}` (BY6)
+    println("{b}")
+
+    // ERROR: no `+` on bytes
+    let both = b + b
+
+    // ERROR: a list literal doesn't turn into bytes (BY10)
+    let listed: bytes = [104u8, 105u8]
+
+    // ERROR: from_utf8 takes bytes; a Vec<u8> freezes first
+    let v: Vec<u8> = [104, 105]
+    let s = string.from_utf8(v) catch _ => ""
+    println("{both:debug} {listed:debug} {s}")
+}

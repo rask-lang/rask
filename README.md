@@ -14,7 +14,7 @@ Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremon
 
 **[Why a new language?](WHY_RASK.md)**
 
-**Status** (measured 2026-10-22, v0.6.0). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. Tasks are fibers with preemption on Linux. The stdlib matches its spec: all 837 functions it promises exist and run on both backends. 99 open issues, 54 of them bugs: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
+**Status** (measured 2026-10-22, v0.6.0). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. Tasks are fibers with preemption on Linux. The stdlib matches its spec: all 855 functions it promises exist and run on both backends. 99 open issues, 54 of them bugs: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
 
 ---
 

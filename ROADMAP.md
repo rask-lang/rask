@@ -43,7 +43,7 @@ Re-measure these rather than trusting them — each line names the command.
 | Concurrency files clean under sim, 100 seeds in CI | 93 of 93, 44 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 837 of 837 | `tests/stdlib_coverage_gate.sh` |
+| Stdlib items a spec promises that exist and run on both backends | 855 of 855 | `tests/stdlib_coverage_gate.sh` |
 | Open bugs | 54 of 99 open issues | issue search |
 | Open design questions | 19 | issue search |
 
@@ -410,7 +410,7 @@ The per-module percentages [TODO.md](TODO.md) used to carry were typed by hand
 and checked by nobody. Two of the gaps they listed, `SystemTime` and
 `UdpSocket`, had already shipped.
 
-**Shipped at 837 of 837 promised items; the gap registry holds only `std.bytes`, a proposed module with no surface yet.** The last
+**Shipped at 855 of 855 promised items, `std.bytes` included; the gap registry is empty.** The last
 five took two pieces of real work: one size model, so `reflect.size_of` and
 `is_copy` agree with each other and with codegen (#791), and string views that
 share their source, so a slice's `.span()` knows where it was cut (#492). TLS
