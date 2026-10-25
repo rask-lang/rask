@@ -756,7 +756,7 @@ mod tests {
         let func = make_func(
             "greet",
             vec![],
-            MirType::String,
+            MirType::Buffer,
             vec![],
             vec![MirBlock {
                 id: BlockId(0),

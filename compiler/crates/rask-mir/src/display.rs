@@ -31,7 +31,7 @@ impl fmt::Display for MirType {
             MirType::Char => write!(f, "char"),
             MirType::Ptr => write!(f, "ptr"),
             MirType::Heap(payload) => write!(f, "heap<{}>", payload),
-            MirType::String => write!(f, "string"),
+            MirType::Buffer => write!(f, "buffer"),
             MirType::Struct(id) => write!(f, "struct#{}", id.id),
             MirType::Enum(id) => write!(f, "enum#{}", id.id),
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),

@@ -265,7 +265,7 @@ impl<'a> MirLowerer<'a> {
     /// new one points at. Only a string is released anyway: it is counted,
     /// and one moved into the new value took its own reference.
     fn replaced_slot_type(&self, target: &Expr, reuses_old: bool, fty: &MirType) -> Option<MirType> {
-        if reuses_old && !matches!(fty, MirType::String) {
+        if reuses_old && !matches!(fty, MirType::Buffer) {
             return None;
         }
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
@@ -280,7 +280,7 @@ impl<'a> MirLowerer<'a> {
         // Left out, `p.run = || …` leaked the closure it replaced.
         matches!(
             fty,
-            MirType::String | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+            MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
                 | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
@@ -292,7 +292,7 @@ impl<'a> MirLowerer<'a> {
     /// a container. A scalar holds nothing to give back.
     fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
         self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::String | MirType::Container(_))
+            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Buffer | MirType::Container(_))
         })
     }
 
@@ -1725,7 +1725,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(obj_name) = object.name() {
                 match (obj_name, method.as_str()) {
                     ("fs", "read_lines") => {
-                        self.meta_mut(name).elem_type = Some(MirType::String);
+                        self.meta_mut(name).elem_type = Some(MirType::Buffer);
                     }
                     ("fs", "read_bytes") => {
                         self.meta_mut(name).elem_type = Some(MirType::U8);
@@ -1736,7 +1736,7 @@ impl<'a> MirLowerer<'a> {
             // String methods that always return Vec<string>
             match method.as_str() {
                 "lines" | "split" | "split_whitespace" | "graphemes" => {
-                    self.meta_mut(name).elem_type = Some(MirType::String);
+                    self.meta_mut(name).elem_type = Some(MirType::Buffer);
                 }
                 _ => {}
             }

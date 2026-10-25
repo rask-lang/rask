@@ -85,7 +85,7 @@ pub fn box_payload_kind_of(ty: &rask_types::Type, head: Option<&str>) -> i64 {
 /// and a fourth kind would have had to find all of them.
 pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
     match key_ty {
-        MirType::String => "Map_new_string_keys",
+        MirType::Buffer => "Map_new_string_keys",
         MirType::Link(_) => "Map_new_link_keys",
         MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => "Map_new_link_keys",
         _ => "Map_new",

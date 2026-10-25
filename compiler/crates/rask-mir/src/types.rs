@@ -135,7 +135,11 @@ pub enum MirType {
     /// checker erases `Heap<T>` to `T` (HP5), so this is the only place the
     /// fact survives.
     Heap(Box<MirType>),
-    String,
+    /// A refcounted, immutable byte buffer — 16 bytes, inline when short.
+    /// `string` and `bytes` are both this. What the bytes mean (text or not)
+    /// is the checker's to say, and lowering asks it there; nothing after
+    /// lowering needs to know.
+    Buffer,
     Struct(StructLayoutId),
     Enum(EnumLayoutId),
     Array {
@@ -211,7 +215,7 @@ impl MirType {
                 | MirType::Enum(_)
                 | MirType::Tuple(_)
                 | MirType::Array { .. }
-                | MirType::String
+                | MirType::Buffer
                 | MirType::Option(_)
                 | MirType::Result { .. }
                 | MirType::Union(_)
@@ -293,7 +297,7 @@ impl MirType {
             | MirType::Link(_) | MirType::Container(_)
             | MirType::Heap(_) => 8,
             MirType::I128 | MirType::U128 => 16,
-            MirType::String => 16,
+            MirType::Buffer => 16,
             MirType::Struct(sid) => sid.byte_size,
             MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
@@ -389,7 +393,7 @@ impl MirType {
             // isn't — a module-level `const [string; N]` copied to the heap came
             // back pointing at the dead init thunk (#1000), and `join` got an
             // array of addresses where it wanted strings (#1021).
-            MirType::String => true,
+            MirType::Buffer => true,
             // The one exception is the niche: a `Link<T>?` is a single word
             // where the link *is* the value and `none` is the null address, so
             // it keeps the word store. That's why this isn't just "everything

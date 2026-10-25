@@ -28,7 +28,7 @@ pub fn escaping_strings(func: &MirFunction) -> HashSet<LocalId> {
     let mut escaped = HashSet::new();
 
     let string_locals: HashSet<LocalId> =
-        func.locals_of_type(&MirType::String).into_iter().collect();
+        func.locals_of_type(&MirType::Buffer).into_iter().collect();
 
     if string_locals.is_empty() {
         return escaped;
@@ -112,7 +112,7 @@ mod tests {
     }
 
     fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, unerased: None }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::Buffer, is_param: false, unerased: None }
     }
 
     fn int_local(id: u32) -> MirLocal {

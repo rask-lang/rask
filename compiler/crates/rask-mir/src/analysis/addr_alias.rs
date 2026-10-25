@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn string_cast_to_int_is_an_address() {
         let f = func_with(
-            vec![(0, MirType::String), (1, MirType::I64)],
+            vec![(0, MirType::Buffer), (1, MirType::I64)],
             vec![cast(1, 0)],
         );
         let a = AddrAliases::build(&f);
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn address_survives_a_copy() {
         let f = func_with(
-            vec![(0, MirType::String), (1, MirType::I64), (2, MirType::I64)],
+            vec![(0, MirType::Buffer), (1, MirType::I64), (2, MirType::I64)],
             vec![cast(1, 0), copy(2, 1)],
         );
         let a = AddrAliases::build(&f);
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn two_definitions_keep_both_strings() {
         let f = func_with(
-            vec![(0, MirType::String), (1, MirType::String), (2, MirType::I64)],
+            vec![(0, MirType::Buffer), (1, MirType::Buffer), (2, MirType::I64)],
             vec![cast(2, 0), cast(2, 1)],
         );
         let a = AddrAliases::build(&f);
@@ -225,7 +225,7 @@ mod tests {
             ],
         });
         let f = func_with(
-            vec![(0, MirType::String), (1, MirType::I64)],
+            vec![(0, MirType::Buffer), (1, MirType::I64)],
             vec![cast(1, 0), call.clone()],
         );
         let a = AddrAliases::build(&f);

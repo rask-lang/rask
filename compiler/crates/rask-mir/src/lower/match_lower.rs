@@ -253,7 +253,7 @@ impl<'a> MirLowerer<'a> {
         let (scrutinee_op, scrutinee_ty) = self.peel_heap_value(scrutinee_op, scrutinee_ty);
 
         // String match
-        let is_string_match = matches!(scrutinee_ty, MirType::String)
+        let is_string_match = matches!(scrutinee_ty, MirType::Buffer)
             || self.ctx.lookup_raw_type(scrutinee.id)
                 .map_or(false, |ty| matches!(ty, rask_types::Type::String));
         if is_string_match {
@@ -1012,12 +1012,12 @@ impl<'a> MirLowerer<'a> {
             }
 
             if let Pattern::Ident(name) = &arm.pattern {
-                let bind_local = self.builder.alloc_local(name.clone(), MirType::String);
+                let bind_local = self.builder.alloc_local(name.clone(), MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: bind_local,
                     rvalue: MirRValue::Use(scrutinee_op.clone()),
                 }));
-                self.locals.insert(name.clone(), (bind_local, MirType::String));
+                self.locals.insert(name.clone(), (bind_local, MirType::Buffer));
             }
 
             if let Some(guard_expr) = &arm.guard {
@@ -1572,7 +1572,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(fail_block);
         for (local, field_ty, pat) in &reads {
-            if matches!(pat, Pattern::Ident(_)) && *field_ty == MirType::String {
+            if matches!(pat, Pattern::Ident(_)) && *field_ty == MirType::Buffer {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: *local,
                     rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),

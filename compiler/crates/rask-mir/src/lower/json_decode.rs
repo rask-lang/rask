@@ -175,7 +175,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Turn the runtime's status code into a `JsonError` carrying its message.
     fn emit_json_error(&mut self, status: crate::LocalId, err_ty: &MirType) -> crate::LocalId {
-        let msg = self.builder.alloc_temp(MirType::String);
+        let msg = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
             func: FunctionRef::internal("json_error_message".to_string()),
@@ -504,7 +504,7 @@ impl<'a> MirLowerer<'a> {
             buf
         };
         let shape = self.emit_shape(ty)?;
-        let out = self.builder.alloc_temp(MirType::String);
+        let out = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
             func: FunctionRef::internal("json_encode_shaped".to_string()),

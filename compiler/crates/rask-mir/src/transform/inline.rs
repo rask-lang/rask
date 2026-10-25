@@ -256,7 +256,7 @@ fn pointer_shaped(ty: &MirType) -> bool {
             | MirType::Enum(_)
             | MirType::Tuple(_)
             | MirType::Array { .. }
-            | MirType::String
+            | MirType::Buffer
             | MirType::Option(_)
             | MirType::Result { .. }
     )

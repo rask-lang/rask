@@ -951,7 +951,7 @@ mod tests {
             params: vec![],
             ret_ty: MirType::I64,
             locals: vec![
-                temp(0, MirType::String),
+                temp(0, MirType::Buffer),
             ],
             blocks: vec![
                 block(0, vec![

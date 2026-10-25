@@ -2044,7 +2044,7 @@ impl<'a> FunctionBuilder<'a> {
                         MirType::F32 => "rask_print_f32",
                         MirType::F64 => "rask_print_f64",
                         MirType::Char => "rask_print_char",
-                        MirType::String => "rask_print_string",
+                        MirType::Buffer => "rask_print_string",
                         MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => "rask_print_u64",
                         // The 64-bit printers take the low half and print a
                         // different number (#762).
@@ -2223,7 +2223,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirRValue::Cast { value, target_ty } => {
-                if target_ty == &MirType::String {
+                if target_ty == &MirType::Buffer {
                     // Casting to string requires a runtime call that writes 16-byte
                     // RaskStr into an out-param. A plain type-cast (convert_value)
                     // would return a scalar, which copy_aggregate would dereference
@@ -2451,7 +2451,7 @@ impl<'a> FunctionBuilder<'a> {
         // require `mutate` writes to flow back to the caller, which only
         // works if `p = ...` copies bytes into `*p`'s slot.
         let needs_copy = match (&dst_local.ty, rvalue) {
-            (MirType::String, _) => true,
+            (MirType::Buffer, _) => true,
             // Field on aggregate base returns pointer for aggregate elements.
             // InterfaceObject belongs here: it's a 16-byte fat pointer, so reading one
             // out of a `T?` payload as a scalar took the data half and left the
@@ -2538,7 +2538,7 @@ impl<'a> FunctionBuilder<'a> {
             && if let MirType::Option(inner) = &dst_local.ty {
                 matches!(inner.as_ref(),
                     MirType::Struct(_) | MirType::Enum(_) |
-                    MirType::Tuple(_) | MirType::String)
+                    MirType::Tuple(_) | MirType::Buffer)
             } else { false };
 
         // On the scalar-wrap path the value becomes the Option's payload, so it
@@ -3161,7 +3161,7 @@ impl<'a> FunctionBuilder<'a> {
                     | MirType::Array { .. }
                     | MirType::Result { .. }
                     | MirType::Option(_)
-                    | MirType::String
+                    | MirType::Buffer
                     | MirType::InterfaceObject { .. },
                 ) => types::I64,
                 Some(t) => mir_to_cranelift_type(t).unwrap_or(types::I64),
@@ -3978,7 +3978,7 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
             }
-            MirType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
+            MirType::Buffer => Self::emit_string_eq(builder, ctx, lhs, rhs),
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
             | MirType::Union(_) | MirType::Array { .. } | MirType::Result { .. } => {
                 Self::emit_aggregate_eq(builder, ctx, lhs, rhs, ty)
@@ -4228,7 +4228,7 @@ impl<'a> FunctionBuilder<'a> {
                 let lt = builder.ins().uextend(types::I64, lt);
                 Ok(builder.ins().isub(gt, lt))
             }
-            MirType::String => Self::emit_string_cmp(builder, ctx, lhs, rhs),
+            MirType::Buffer => Self::emit_string_cmp(builder, ctx, lhs, rhs),
             t if Self::is_structural_ord_type(t) => {
                 Self::emit_aggregate_cmp(builder, ctx, lhs, rhs, t)
             }
@@ -6962,7 +6962,7 @@ impl<'a> FunctionBuilder<'a> {
             return false;
         }
         match ty {
-            MirType::String => true,
+            MirType::Buffer => true,
             // A container owns its byte store whatever the elements are.
             MirType::Container(_) => true,
             // A block is the slot's whatever is in it, the same way a `Heap<T>`
@@ -7030,7 +7030,7 @@ impl<'a> FunctionBuilder<'a> {
             return Ok(());
         }
         match ty {
-            MirType::String => Self::emit_string_release(builder, base, offset, ctx),
+            MirType::Buffer => Self::emit_string_release(builder, base, offset, ctx),
             // The slot holds the handle; the release loads it and frees what it
             // points at, elements and all.
             MirType::Container(kind) => Self::emit_container_release(
@@ -7627,7 +7627,7 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirOperand::Local(id)) => locals
                 .iter()
                 .find(|l| l.id == *id)
-                .map(|l| l.ty == MirType::String)
+                .map(|l| l.ty == MirType::Buffer)
                 .unwrap_or(false),
             Some(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
@@ -8420,7 +8420,7 @@ impl<'a> FunctionBuilder<'a> {
         }
         // A string built at run time is a Rask string, not a C one. Passed as
         // is, the runtime printed its header's bytes (#1517).
-        if Self::operand_mir_type(op, ctx.locals) == Some(MirType::String) {
+        if Self::operand_mir_type(op, ctx.locals) == Some(MirType::Buffer) {
             let s = Self::lower_operand(builder, op, ctx)?;
             let f = ctx.func_refs.get("string_message")
                 .ok_or_else(|| CodegenError::FunctionNotFound("string_message".into()))?;

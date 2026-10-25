@@ -1094,7 +1094,7 @@ impl<'a> MirContext<'a> {
             "char" => MirType::Char,
             // `bytes` is a string's value without the UTF-8 rule: same layout,
             // same refcount, same runtime (std.bytes/BY3).
-            "string" | "bytes" => MirType::String,
+            "string" | "bytes" => MirType::Buffer,
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
@@ -1339,7 +1339,7 @@ impl<'a> MirContext<'a> {
             Type::F32 => MirType::F32,
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,
-            Type::String | Type::Bytes => MirType::String,
+            Type::String | Type::Bytes => MirType::Buffer,
             Type::Never => MirType::Void,
             Type::InterfaceObject { interface_name, decl } => MirType::InterfaceObject {
                 interface_name: self.type_defs.interface_symbol(interface_name, *decl),
@@ -1490,6 +1490,30 @@ impl<'a> MirContext<'a> {
         let found = self.node_types.get(&node_id);
         crate::fallback::record_lookup(found);
         found
+    }
+
+    /// Is a value of this checked type text: a `string`, or a nominal type
+    /// over one? Its MIR type is a `Buffer` either way, and so is `bytes`, so
+    /// this is the question to ask wherever text and bytes behave differently.
+    pub fn is_text(&self, ty: &Type) -> bool {
+        let mut ty = ty;
+        // A nominal over a nominal is fine; a cycle was rejected by the checker,
+        // but nothing here should spin on one.
+        for _ in 0..8 {
+            if matches!(ty, Type::String) {
+                return true;
+            }
+            match ty.head_name(self.type_names).and_then(|n| self.nominal_underlying.get(n)) {
+                Some(under) => ty = under,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// `is_text` for an expression node. No checker type means no.
+    pub fn node_is_text(&self, node_id: NodeId) -> bool {
+        self.lookup_raw_type(node_id).is_some_and(|t| self.is_text(t))
     }
 
     /// Extract stdlib type prefix for method name qualification.
@@ -2201,12 +2225,19 @@ impl<'a> MirLowerer<'a> {
     /// What a collection holds: the element of a `Vec`, the *value* of a
     /// `Map`. Indexing any of them yields this type.
     pub(crate) fn collection_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
+        self.collection_elem_type(ty).map(|t| self.ctx.type_to_mir(&t))
+    }
+
+    /// `collection_elem_of_checker_type`, as the checker's type. For the
+    /// questions a layout can't answer — a `Buffer` element is a `string` or
+    /// `bytes`, and only this says which.
+    pub(crate) fn collection_elem_type(&self, ty: &Type) -> Option<Type> {
         // A fixed array holds its element type outright. Without this arm every
         // element-typed dispatch decision — `join`'s string vs integer variant,
         // `sort`'s comparator — read "not a collection" and took the integer
         // branch, so `["a", "b"].join("-")` printed the bytes as numbers (#1021).
         if let Type::Array { elem, .. } = ty {
-            return Some(self.ctx.type_to_mir(elem));
+            return Some((**elem).clone());
         }
         let (name, args) = self.generic_head(ty)?;
         // A box holding a collection is transparent here: `Shared<Map<K, V>>`
@@ -2214,7 +2245,7 @@ impl<'a> MirLowerer<'a> {
         // exactly that.
         if matches!(name.as_str(), "Shared" | "Heap") {
             let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
-            return self.collection_elem_of_checker_type(inner);
+            return self.collection_elem_type(inner);
         }
         let arg = match name.as_str() {
             // Iterator is here because a `for` source is often one, and it
@@ -2230,7 +2261,23 @@ impl<'a> MirLowerer<'a> {
         match arg {
             // An unresolved variable is not an answer — see below.
             rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
-            rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
+            rask_types::GenericArg::Type(inner) => Some((**inner).clone()),
+            _ => None,
+        }
+    }
+
+    /// The checker's element type for a collection expression: its own type,
+    /// else the declared type of the field it reads.
+    pub(crate) fn collection_elem_type_of_expr(&self, expr: &Expr) -> Option<Type> {
+        if let Some(elem) = self.ctx.lookup_raw_type(expr.id).and_then(|t| self.collection_elem_type(t)) {
+            return Some(elem);
+        }
+        match &expr.kind {
+            ExprKind::Field { object, field } => {
+                let layout = self.struct_layout_of_expr(object)?;
+                let f = layout.fields.iter().find(|f| f.name == *field)?;
+                self.collection_elem_type(&f.ty.clone())
+            }
             _ => None,
         }
     }
@@ -2448,7 +2495,7 @@ impl<'a> MirLowerer<'a> {
             let text = String::from_utf8(meta.bytes.clone()).map_err(|_| {
                 LoweringError::InvalidConstruct(format!("folded string `{}` isn't UTF-8", folded.symbol))
             })?;
-            return Ok((MirOperand::Constant(MirConst::String(text)), MirType::String));
+            return Ok((MirOperand::Constant(MirConst::String(text)), MirType::Buffer));
         }
         // An aggregate's data is named as a value of its own type, so the
         // copy below is a copy between two of them. Named as a bare address,
@@ -3736,7 +3783,7 @@ impl<'a> MirLowerer<'a> {
                 | MirType::Array { .. }
                 | MirType::Tuple(_)
                 | MirType::Ptr
-                | MirType::String
+                | MirType::Buffer
         )
     }
 
@@ -4651,8 +4698,8 @@ impl<'a> MirLowerer<'a> {
                 };
                 Some((MirOperand::Constant(MirConst::Float(*val)), ty))
             }
-            ExprKind::String(s) => Some((MirOperand::Constant(MirConst::String(s.clone())), MirType::String)),
-            ExprKind::Bytes(b) => Some((MirOperand::Constant(MirConst::Bytes(b.clone())), MirType::String)),
+            ExprKind::String(s) => Some((MirOperand::Constant(MirConst::String(s.clone())), MirType::Buffer)),
+            ExprKind::Bytes(b) => Some((MirOperand::Constant(MirConst::Bytes(b.clone())), MirType::Buffer)),
             ExprKind::Bool(b) => Some((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
             _ => None,
         }
@@ -4724,14 +4771,14 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
             // String methods that produce iterators
             match method.as_str() {
-                "split" | "split_whitespace" | "lines" | "graphemes" => return Some(MirType::String),
+                "split" | "split_whitespace" | "lines" | "graphemes" => return Some(MirType::Buffer),
                 "chars" => return Some(MirType::Char),
                 "bytes" => return Some(MirType::U8),
                 _ => {}
             }
             if let Some(name) = object.name() {
                 match (name, method.as_str()) {
-                    ("fs", "read_lines") => return Some(MirType::String),
+                    ("fs", "read_lines") => return Some(MirType::Buffer),
                     ("fs", "read_bytes") => return Some(MirType::U8),
                     _ => {}
                 }
@@ -6878,7 +6925,7 @@ mod tests {
     fn lower_string_literal() {
         let decl = make_fn("f", vec![], Some("string"), vec![return_stmt(Some(string_expr("hello")))]);
         let f = lower_one(&decl);
-        assert_eq!(f.ret_ty, MirType::String);
+        assert_eq!(f.ret_ty, MirType::Buffer);
     }
 
     #[test]
@@ -7077,7 +7124,7 @@ mod tests {
         assert_eq!(ctx.resolve_type_name("f64"), MirType::F64);
         assert_eq!(ctx.resolve_type_name("bool"), MirType::Bool);
         assert_eq!(ctx.resolve_type_name("char"), MirType::Char);
-        assert_eq!(ctx.resolve_type_name("string"), MirType::String);
+        assert_eq!(ctx.resolve_type_name("string"), MirType::Buffer);
         assert_eq!(ctx.resolve_type_name("SomeStruct"), MirType::Ptr);
     }
 

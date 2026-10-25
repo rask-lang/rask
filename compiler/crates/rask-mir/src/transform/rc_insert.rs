@@ -71,7 +71,7 @@ pub fn insert_rc_ops(
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
 ) -> Vec<CarriedSite> {
-    let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
+    let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::Buffer);
 
     // Aggregates lowering already gave references of their own: a Copy
     // element copied out of a collection (`retain_copy_out_of_collection`).
@@ -1275,7 +1275,7 @@ fn aggregate_may_hold_string(ty: &MirType) -> bool {
 /// obligation itself and `drop` is what discharges it. Releasing it here as
 /// well freed an `own` closure's captured block a second time.
 fn slot_is_releasable(ty: &MirType) -> bool {
-    *ty == MirType::String
+    *ty == MirType::Buffer
         || matches!(ty, MirType::Heap(_))
         // A closure in a slot is the same case as a block in one. A *bare*
         // closure local isn't — `ClosureDrop` discharges that one, and the
@@ -1591,7 +1591,7 @@ fn places_as_definitions(func: &MirFunction) -> (MirFunction, HashSet<LocalId>) 
             _ => None,
         })
         .flatten()
-        .filter(|c| c.by_ref && func.local_ty(c.local_id) == Some(&MirType::String))
+        .filter(|c| c.by_ref && func.local_ty(c.local_id) == Some(&MirType::Buffer))
         .map(|c| c.local_id)
         .collect();
     let mut view = func.clone();
@@ -1876,7 +1876,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
 
     fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, unerased: None }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::Buffer, is_param: false, unerased: None }
     }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
@@ -1926,7 +1926,7 @@ mod tests {
         let param = MirLocal {
             id: local(1),
             name: Some("title".into()),
-            ty: MirType::String,
+            ty: MirType::Buffer,
             is_param: true,
             unerased: None,
         };
@@ -2147,8 +2147,8 @@ mod tests {
                     id: local(0),
                     name: Some("r".into()),
                     ty: MirType::Result {
-                        ok: Box::new(MirType::String),
-                        err: Box::new(MirType::String),
+                        ok: Box::new(MirType::Buffer),
+                        err: Box::new(MirType::Buffer),
                     },
                     is_param: false,
                     unerased: None,

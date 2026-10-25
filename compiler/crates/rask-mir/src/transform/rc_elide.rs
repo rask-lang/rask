@@ -217,7 +217,7 @@ fn copy_groups(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Vec<Hash
 fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     let escaped = escape::escaping_strings(func);
     let string_locals: HashSet<LocalId> =
-        func.locals_of_type(&crate::MirType::String).into_iter().collect();
+        func.locals_of_type(&crate::MirType::Buffer).into_iter().collect();
     let owned = owned_from_elsewhere(func, &string_locals);
 
     // Decide per group, not per local: keeping one local's release while
@@ -364,7 +364,7 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
 /// takes a fixed point because a copy's answer depends on its source.
 fn elide_literals(func: &mut MirFunction) -> usize {
     let string_locals: HashSet<LocalId> =
-        func.locals_of_type(&crate::MirType::String).into_iter().collect();
+        func.locals_of_type(&crate::MirType::Buffer).into_iter().collect();
 
     // Start optimistic and only ever remove: a local drops out the moment one
     // of its definitions can't be shown to be a literal.
@@ -542,7 +542,7 @@ mod tests {
 
     fn local(id: u32) -> LocalId { LocalId(id) }
 
-    fn string_local(id: u32, name: &str) -> MirLocal { MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, unerased: None } }
+    fn string_local(id: u32, name: &str) -> MirLocal { MirLocal { id: local(id), name: Some(name.into()), ty: MirType::Buffer, is_param: false, unerased: None } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {

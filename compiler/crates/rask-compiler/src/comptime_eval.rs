@@ -302,7 +302,7 @@ impl Fold<'_, '_> {
             _ => Vec::new(),
         };
         match value {
-            ComptimeValue::String(s) if *ty == rask_mir::MirType::String => {
+            ComptimeValue::String(s) if *ty == rask_mir::MirType::Buffer => {
                 Ok(ComptimeGlobalMeta { bytes: s.as_bytes().to_vec(), ..empty(FoldedForm::Text) })
             }
             // A list is a `Vec` unless the slot is a fixed array.

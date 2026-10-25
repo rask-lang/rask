@@ -54,7 +54,7 @@ fn arm_strings(func: &mut MirFunction) {
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     let addr = crate::transform::addr_taken::analyze(func);
     let strings: BTreeSet<LocalId> = func
-        .locals_of_type(&MirType::String)
+        .locals_of_type(&MirType::Buffer)
         .into_iter()
         .filter(|l| !params.contains(l) && !addr.contains(*l))
         .collect();
@@ -301,7 +301,7 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
         let ph = original.get(&release.placeholder);
         let ph_ty = ph.map(|l| l.ty.clone()).unwrap_or(MirType::Ptr);
         let (ty, unerased) = match ph_ty {
-            MirType::String => (MirType::String, None),
+            MirType::Buffer => (MirType::Buffer, None),
             other => (MirType::Ptr, ph.and_then(|l| l.unerased.clone()).or(Some(other))),
         };
         let value = fresh(ty, unerased);

@@ -461,7 +461,7 @@ fn env_drop_glue(
                         .iter()
                         .filter(|c| !c.by_ref)
                         .filter(|c| !gone(c))
-                        .filter(|c| func.local_ty(c.local_id) == Some(&MirType::String))
+                        .filter(|c| func.local_ty(c.local_id) == Some(&MirType::Buffer))
                         .map(|c| EnvSlot { offset: c.offset, holds: Holds::Str }),
                 );
                 owned.sort();
@@ -2849,7 +2849,7 @@ fn cells_this_frame_frees(
         // second owner costs a leak rather than a double free.
         let is_string = |value: &MirOperand| match value {
             MirOperand::Constant(c) if c.static_buffer().is_some() => true,
-            MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::String),
+            MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::Buffer),
             _ => false,
         };
         if values.iter().any(|(v, _)| is_string(v)) {
@@ -3176,7 +3176,7 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
                         MirStmtKind::ReleaseSlot {
                             addr: *cell,
                             offset: 0,
-                            ty: MirType::String,
+                            ty: MirType::Buffer,
                         },
                     ));
                     continue;
@@ -3239,7 +3239,7 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
             continue;
         };
         let stmts = match holds {
-            Holds::Str => vec![MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::String })],
+            Holds::Str => vec![MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::Buffer })],
             Holds::Handle(free) => {
                 let tmp = LocalId(next_local);
                 next_local += 1;

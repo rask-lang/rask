@@ -264,9 +264,14 @@ impl<'a> MirLowerer<'a> {
         // that makes sense — the enum names the error, the box erases it.
         let (err_val, err_store_size) = match &box_interface {
             Some(interface_name) => {
+                let concrete = match self.ctx.lookup_raw_type(inner.id) {
+                    Some(rask_types::Type::Result { err, .. }) => Some((**err).clone()),
+                    _ => None,
+                };
                 let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_interface_box(
                     MirOperand::Local(err_val),
                     &err_ty,
+                    concrete.as_ref(),
                     interface_name,
                 );
                 match boxed {
@@ -309,7 +314,7 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
             match text {
                 Some(text) => {
-                    let joined = self.builder.alloc_temp(MirType::String);
+                    let joined = self.builder.alloc_temp(MirType::Buffer);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(joined),
                         func: FunctionRef::internal("concat".to_string()),
