@@ -31,6 +31,9 @@ extend bytes {
 
     /// A `Vec<u8>` with the same bytes (BY8). Reuses the buffer when nothing
     /// else holds it, copies otherwise.
+    // `take self` on a Copy value consumes nothing the caller sees: it hands
+    // over a refcount, which is what lets the last holder give the buffer up.
+    @allow(naming/to)
     @native("rask_bytes_to_vec")
     public func to_vec(take self) -> Vec<u8> {}
 
