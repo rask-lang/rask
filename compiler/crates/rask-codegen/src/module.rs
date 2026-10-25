@@ -2360,7 +2360,7 @@ fn collect_element_offsets(
                     .iter()
                     .chain(mir_fn.params.iter())
                     .find(|l| l.id == *local)
-                    .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()));
+                    .map(|l| l.ty.clone());
                 if let Some(offs) = ty.and_then(|t| crate::elem_offsets::owned_offsets(&t, shapes)) {
                     lists.push(offs);
                 }

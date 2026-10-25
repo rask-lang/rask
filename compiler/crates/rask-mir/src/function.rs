@@ -65,15 +65,6 @@ pub struct MirLocal {
     pub name: Option<String>,
     pub ty: MirType,
     pub is_param: bool,
-    /// This local's type with its containers still named, when `ty` lost any.
-    ///
-    /// `ty` calls every container a bare `Ptr`, so a local holding
-    /// `Vec<Point> or JsonError` or `(Vec<i64>, i64)` says nothing about the
-    /// vector inside it, and releasing it walked straight past it. Lowering
-    /// hands the full type to `BlockBuilder`, which keeps it here and keeps
-    /// `ty` the plain spelling everything else compares against
-    /// (`MirType::Container` says why that matters).
-    pub unerased: Option<MirType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

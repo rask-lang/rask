@@ -182,7 +182,7 @@ impl<'a> MirLowerer<'a> {
         // `Vec` a `Vec`.
         let desc = |i: usize, fallback: &MirType| -> MirType {
             self.container_elem_type(call.id, i)
-                .or_else(|| written.get(i).map(|arg| self.ctx.payload_of_expr(arg)))
+                .or_else(|| written.get(i).map(|arg| self.ctx.resolve_type_expr(arg)))
                 .unwrap_or_else(|| fallback.clone())
         };
         args.push(crate::elem_strs::elem(desc(0, &key_ty)));
@@ -1032,9 +1032,9 @@ impl<'a> MirLowerer<'a> {
 
     /// An element's checked type the way its container describes it.
     ///
-    /// Through `payload_to_mir`, because a nested container is a bare `Ptr` in
-    /// MIR like every other pointer: a `Map<string, Vec<i32>>` described that
-    /// way freed its keys and left every value vector to nobody.
+    /// A nested container is `Container(kind)`: described as a bare pointer,
+    /// a `Map<string, Vec<i32>>` freed its keys and left every value vector to
+    /// nobody.
     pub(super) fn elem_type_of(&self, ty: &rask_types::Type) -> MirType {
         match ty {
             // `Map<string, func(i64) -> i64>.new()` records its argument as a
@@ -1046,7 +1046,7 @@ impl<'a> MirLowerer<'a> {
             rask_types::Type::UnresolvedNamed(name) if name.trim_start().starts_with("func(") => {
                 MirType::FuncPtr(crate::types::SignatureId(0))
             }
-            _ => self.ctx.payload_to_mir(ty),
+            _ => self.ctx.type_to_mir(ty),
         }
     }
 

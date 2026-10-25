@@ -206,8 +206,8 @@ fn mir_type_to_var_info(
         rask_mir::MirType::F32      => ("f32".into(), 4, TypeKind::Float),
         rask_mir::MirType::F64      => ("f64".into(), 8, TypeKind::Float),
         rask_mir::MirType::Char     => ("char".into(), 4, TypeKind::Unsigned),
-        rask_mir::MirType::Ptr      => ("ptr".into(), 8, TypeKind::Address),
-        rask_mir::MirType::Buffer   => ("string".into(), 8, TypeKind::Address),
+        rask_mir::MirType::Ptr | rask_mir::MirType::Container(_) => ("ptr".into(), 8, TypeKind::Address),
+        rask_mir::MirType::Buffer   => ("buffer".into(), 8, TypeKind::Address),
         rask_mir::MirType::Struct(StructLayoutId { id, byte_size, .. }) => {
             let sname = struct_layouts.get(*id as usize)
                 .map(|s| s.name.clone())

@@ -175,7 +175,7 @@ fn copied_aggregate(func: &MirFunction, c: &crate::ClosureCapture) -> Option<Mir
         return None;
     }
     let l = func.locals.iter().chain(func.params.iter()).find(|l| l.id == c.local_id)?;
-    let ty = l.unerased.clone().unwrap_or_else(|| l.ty.clone());
+    let ty = l.ty.clone();
     aggregate_may_hold_string(&ty).then_some(ty)
 }
 
@@ -545,13 +545,9 @@ fn insert_aggregate_release(
         .iter()
         // A wrapper around a container holds something worth releasing even
         // when nothing in it is a string: `Vec<i64>?` is a tag beside a handle,
-        // and the vector behind that tag was nobody's. The kind is on the local
-        // rather than in the type — `MirType::Container` says why.
-        // A bare container's handle is `container_drop`'s to free.
-        .filter(|l| {
-            aggregate_may_hold_string(&l.ty)
-                || l.unerased.as_ref().is_some_and(|t| !matches!(t, MirType::Container(_)))
-        })
+        // and the vector behind that tag was nobody's. A bare container's
+        // handle is `container_drop`'s to free.
+        .filter(|l| aggregate_may_hold_string(&l.ty) || wraps_a_container(&l.ty))
         .map(|l| l.id)
         .collect();
     if aggregates.is_empty() {
@@ -1036,7 +1032,7 @@ fn insert_aggregate_release(
                 continue;
             }
             let Some(l) = func.locals.iter().find(|l| l.id == c.local_id) else { continue };
-            site.slots.push((c.offset, l.unerased.clone().unwrap_or_else(|| l.ty.clone())));
+            site.slots.push((c.offset, l.ty.clone()));
         }
         site.slots.sort_by_key(|(off, _)| *off);
     }
@@ -1177,7 +1173,7 @@ fn part_of_field(
     }
     match ty_of.get(&dst) {
         Some(t) if aggregates.contains(&dst) && (aggregate_may_hold_string(t) || holds_a_handle(t)) => true,
-        Some(MirType::Ptr) | Some(MirType::Heap(_)) | Some(MirType::FuncPtr(_)) => true,
+        Some(MirType::Ptr | MirType::Container(_) | MirType::Heap(_) | MirType::FuncPtr(_)) => true,
         _ => false,
     }
 }
@@ -1188,7 +1184,7 @@ fn part_of_field(
 /// (`view_of_field`), and counted as a part as well it was handed on and
 /// never released.
 fn holds_a_handle(ty: &MirType) -> bool {
-    let slot = |t: &MirType| matches!(t, MirType::Ptr) || holds_a_handle(t);
+    let slot = |t: &MirType| matches!(t, MirType::Ptr | MirType::Container(_)) || holds_a_handle(t);
     match ty {
         MirType::Tuple(elems) => elems.iter().any(slot),
         MirType::Array { elem, .. } => slot(elem),
@@ -1263,6 +1259,19 @@ fn aggregate_may_hold_string(ty: &MirType) -> bool {
         MirType::Array { elem, .. } => slot_is_releasable(elem),
         MirType::Option(inner) => slot_is_releasable(inner),
         MirType::Result { ok, err } => slot_is_releasable(ok) || slot_is_releasable(err),
+        _ => false,
+    }
+}
+
+/// A container somewhere inside this type, under a tag or at an offset —
+/// not a bare one, which is `container_drop`'s.
+fn wraps_a_container(ty: &MirType) -> bool {
+    let part = |t: &MirType| matches!(t, MirType::Container(_)) || wraps_a_container(t);
+    match ty {
+        MirType::Option(inner) => part(inner),
+        MirType::Result { ok, err } => part(ok) || part(err),
+        MirType::Tuple(elems) | MirType::Union(elems) => elems.iter().any(part),
+        MirType::Array { elem, .. } => part(elem),
         _ => false,
     }
 }
@@ -1876,7 +1885,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
 
     fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::Buffer, is_param: false, unerased: None }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::Buffer, is_param: false }
     }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
@@ -1928,14 +1937,13 @@ mod tests {
             name: Some("title".into()),
             ty: MirType::Buffer,
             is_param: true,
-            unerased: None,
         };
         let mut f = MirFunction {
             name: "put".to_string(),
             params: vec![param.clone()],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true, unerased: None },
+                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true },
                 param,
             ],
             blocks: vec![MirBlock {
@@ -1973,7 +1981,7 @@ mod tests {
         let mut f = make_fn(
             vec![
                 string_local(0, "s"),
-                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false, unerased: None },
+                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false },
             ],
             vec![MirBlock {
                 id: BlockId(0),
@@ -2028,8 +2036,8 @@ mod tests {
         let mut f = make_fn(
             vec![
                 string_local(0, "s"),
-                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false, unerased: None },
-                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false, unerased: None },
+                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false },
+                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false },
             ],
             vec![MirBlock {
                 id: BlockId(0),
@@ -2081,7 +2089,7 @@ mod tests {
     fn a_string_built_only_where_it_panics_is_not_released_where_it_does_not() {
         let mut f = make_fn(
             vec![
-                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false, unerased: None },
+                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false },
                 string_local(1, "msg"),
             ],
             vec![
@@ -2151,7 +2159,6 @@ mod tests {
                         err: Box::new(MirType::Buffer),
                     },
                     is_param: false,
-                    unerased: None,
                 },
                 string_local(1, "payload"),
             ],
@@ -2347,7 +2354,7 @@ mod tests {
     #[test]
     fn no_ops_for_non_string_locals() {
         let mut f = make_fn(
-            vec![MirLocal { id: local(0), name: Some("x".into()), ty: MirType::I64, is_param: false, unerased: None, }],
+            vec![MirLocal { id: local(0), name: Some("x".into()), ty: MirType::I64, is_param: false }],
             vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Assign {

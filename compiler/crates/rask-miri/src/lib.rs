@@ -415,7 +415,6 @@ mod tests {
             name: None,
             ty,
             is_param: false,
-            unerased: None,
         }
     }
 
@@ -425,7 +424,6 @@ mod tests {
             name: None,
             ty,
             is_param: true,
-            unerased: None,
         }
     }
 

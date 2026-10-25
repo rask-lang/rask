@@ -745,7 +745,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
     fn block_id(id: u32) -> BlockId { BlockId(id) }
 
-    fn interface_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: None, ty: MirType::InterfaceObject { interface_name: "Speaker".into() }, is_param: false, unerased: None } }
+    fn interface_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: None, ty: MirType::InterfaceObject { interface_name: "Speaker".into() }, is_param: false } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {

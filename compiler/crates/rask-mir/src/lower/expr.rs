@@ -1505,6 +1505,14 @@ impl<'a> MirLowerer<'a> {
         } else {
             ty
         };
+        // A container is a word either way, so a temporary lowering typed as
+        // a bare address takes the checker's kind in place. The local and the
+        // operand then say the same thing, and what frees it is in the type.
+        if let (MirType::Container(_), MirOperand::Local(id)) = (&ty, &op) {
+            if self.builder.local_type(*id) == Some(MirType::Ptr) {
+                self.builder.set_local_type(*id, ty.clone());
+            }
+        }
         // TR5: a concrete value the checker flagged as flowing into an
         // `any Interface` position gets its vtable here — at the value, so every
         // use site is covered by one rule. Boxing at the call argument alone
@@ -2823,10 +2831,10 @@ impl<'a> MirLowerer<'a> {
         let Some((base, offset, fty, fsize)) = self.lower_place_chain(expr) else {
             return self.lower_field(expr, object, field);
         };
-        // A container field is a bare `Ptr` in the layout. Which container it
-        // is decides its free, so it comes from the checker's type.
+        // Which container a field is decides its free. Where the layout only
+        // says `Ptr`, it comes from the checker's type.
         let ty = match (&fty, self.ctx.lookup_raw_type(expr.id)) {
-            (MirType::Ptr, Some(t)) => self.ctx.payload_to_mir(t),
+            (MirType::Ptr, Some(t)) => self.ctx.type_to_mir(t),
             _ => fty.clone(),
         };
         let size = fsize;
@@ -3292,7 +3300,7 @@ impl<'a> MirLowerer<'a> {
             // truncated (#649).
             let checked_elem = match self.ctx.node_types.get(&expr.id).cloned() {
                 Some(rask_types::Type::Array { elem, .. }) => {
-                    Some(self.ctx.payload_to_mir(&elem))
+                    Some(self.ctx.type_to_mir(&elem))
                 }
                 _ => None,
             };
@@ -3305,16 +3313,13 @@ impl<'a> MirLowerer<'a> {
                 }
                 lowered.push((elem_op, ty));
             }
-            // The array keeps a container element's kind, or its release reads
-            // a `Vec` as a plain word and leaks it (#1403). Stores and wrapping
-            // want the spelling MIR stores.
-            let kept_elem = match checked_elem {
-                Some(ty) => {
-                    elem_ty = ty.without_container_kinds();
-                    ty
-                }
-                None => elem_ty.clone(),
-            };
+            // The checker's element type wins: it keeps a container element's
+            // kind, or the release reads a `Vec` as a plain word and leaks it
+            // (#1403).
+            if let Some(ty) = checked_elem {
+                elem_ty = ty;
+            }
+            let kept_elem = elem_ty.clone();
             // A bare `T` filling a `T?` slot gets its layers here, the same
             // way a struct field's does. `[1, none, 3]` in a `[i32?; 3]` used
             // to store the bare 1 where the tag belongs, so the second read
@@ -3379,10 +3384,12 @@ impl<'a> MirLowerer<'a> {
                     .zip(target.into_iter())
                     .map(|(got, want)| {
                         // A part the checker knows is a container keeps that
-                        // kind, or the temporary's release reads `Vec` as a
-                        // plain word and leaks it (#1403).
+                        // kind where lowering only had an address, or the
+                        // temporary's release reads `Vec` as a plain word and
+                        // leaks it (#1403).
                         if (Self::is_sized_scalar(&got) && Self::is_sized_scalar(&want))
-                            || want.without_container_kinds() == got
+                            || want == got
+                            || (matches!(want, MirType::Container(_)) && got == MirType::Ptr)
                         {
                             want
                         } else {
@@ -6879,7 +6886,7 @@ impl<'a> MirLowerer<'a> {
         }
         let (recv, recv_ty) = self.lower_expr(object)?;
         // A Vec is a runtime pointer; anything else with a `try_push` isn't ours.
-        if !matches!(recv_ty, MirType::Ptr) {
+        if !matches!(recv_ty, MirType::Ptr | MirType::Container(_)) {
             return Ok(None);
         }
         // `void or GrowError<T>` — the err side names the enum whose `Full`
@@ -7554,7 +7561,7 @@ impl<'a> MirLowerer<'a> {
             .ctx
             .lookup_raw_type(operand.id)
             .filter(|t| !t.has_unsolved_var())
-            .map(|t| self.ctx.payload_to_mir(t));
+            .map(|t| self.ctx.type_to_mir(t));
         match from_checker {
             Some(t) if t != MirType::Ptr => t,
             _ => operand_ty.clone(),
@@ -8991,7 +8998,7 @@ impl<'a> MirLowerer<'a> {
             // element isn't one of those kinds there is nothing honest to print
             // element by element — `[…]` says that, where the old fallthrough
             // said `609538720`.
-            MirType::Ptr => match decl.and_then(|d| self.debug_vec_elem_kind(d)) {
+            MirType::Ptr | MirType::Container(_) => match decl.and_then(|d| self.debug_vec_elem_kind(d)) {
                 Some(kind) => Ok(call(
                     self,
                     "Vec_debug",
@@ -10464,7 +10471,7 @@ impl<'a> MirLowerer<'a> {
         let MirType::Array { elem, len } = obj_ty else {
             unreachable!("try_lower_array_intrinsic matched an array");
         };
-        let elem_ty = elem.without_container_kinds();
+        let elem_ty = (**elem).clone();
         let elem_size = elem_ty.size();
         // The copy's type keeps a container element's kind, from the checker
         // as `lower_array` does: the receiver's local may have lost it, and
@@ -10472,7 +10479,7 @@ impl<'a> MirLowerer<'a> {
         // two arrays share it.
         let kept_ty = match self.ctx.node_types.get(&object.id).cloned() {
             Some(rask_types::Type::Array { elem: checked, .. }) => MirType::Array {
-                elem: Box::new(self.ctx.payload_to_mir(&checked)),
+                elem: Box::new(self.ctx.type_to_mir(&checked)),
                 len: *len,
             },
             _ => obj_ty.clone(),

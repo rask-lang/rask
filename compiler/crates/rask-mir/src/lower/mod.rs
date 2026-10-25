@@ -906,14 +906,26 @@ impl<'a> MirContext<'a> {
             .find(|(_, e)| e.name == name)
             .map(|(i, e)| (i as u32, e))
     }
-    /// The MIR type of a written type.
+    /// The MIR type of a written type. A container is `Container(kind)`, as
+    /// in `type_to_mir`.
     pub fn resolve_type_expr(&self, ty: &TypeExpr) -> MirType {
+        let mir = self.written_layout(ty);
+        if mir != MirType::Ptr {
+            return mir;
+        }
+        match ty.name().as_deref().and_then(crate::ContainerKind::from_head) {
+            Some(kind) => MirType::Container(kind),
+            None => mir,
+        }
+    }
+
+    fn written_layout(&self, ty: &TypeExpr) -> MirType {
         match ty {
             TypeExpr::Unit | TypeExpr::NoneType => MirType::Void,
-            TypeExpr::Optional(inner) => option_of(self.payload_of_expr(inner)),
+            TypeExpr::Optional(inner) => option_of(self.resolve_type_expr(inner)),
             TypeExpr::Result { ok, err } => MirType::Result {
-                ok: Box::new(self.payload_of_expr(ok)),
-                err: Box::new(self.payload_of_expr(err)),
+                ok: Box::new(self.resolve_type_expr(ok)),
+                err: Box::new(self.resolve_type_expr(err)),
             },
             // Same order the checker canonicalizes to — by member name. A
             // union's member index is what says which member is present, so the
@@ -925,7 +937,7 @@ impl<'a> MirContext<'a> {
                 MirType::Union(members.into_iter().map(|m| self.resolve_type_expr(m)).collect())
             }
             TypeExpr::Tuple(elems) => {
-                MirType::Tuple(elems.iter().map(|e| self.payload_of_expr(e)).collect())
+                MirType::Tuple(elems.iter().map(|e| self.resolve_type_expr(e)).collect())
             }
             // A literal length, then a module-level `const` naming one — read
             // from the checker's table so the two can't disagree (#906). Anything
@@ -962,10 +974,10 @@ impl<'a> MirContext<'a> {
     fn resolve_generic_expr(&self, head: &str, args: &[TypeExpr]) -> MirType {
         match (head, args) {
             ("Result", [ok, err]) => MirType::Result {
-                ok: Box::new(self.payload_of_expr(ok)),
-                err: Box::new(self.payload_of_expr(err)),
+                ok: Box::new(self.resolve_type_expr(ok)),
+                err: Box::new(self.resolve_type_expr(err)),
             },
-            ("Option", [inner]) => option_of(self.payload_of_expr(inner)),
+            ("Option", [inner]) => option_of(self.resolve_type_expr(inner)),
             ("Link", [node]) => match self.resolve_type_expr(node) {
                 MirType::Struct(sid) => MirType::Link(sid),
                 _ => MirType::Ptr,
@@ -973,7 +985,7 @@ impl<'a> MirContext<'a> {
             // `Heap<T>` is a block address, always — that is what makes it a
             // type rather than a fact about a binding. The payload keeps its
             // container kind, since `drop` has to free what it points at.
-            ("Heap", [inner]) => MirType::Heap(Box::new(self.payload_of_expr(inner))),
+            ("Heap", [inner]) => MirType::Heap(Box::new(self.resolve_type_expr(inner))),
             (head, _) if lowers_to_ptr(head) => MirType::Ptr,
             _ => {
                 // A generic instantiation whose type argument is an inline
@@ -1049,21 +1061,6 @@ impl<'a> MirContext<'a> {
                 }
                 self.resolve_type_name(name)
             }
-        }
-    }
-
-    /// A wrapper's payload as written: same as `resolve_type_expr`, except a
-    /// container keeps what it is instead of collapsing to a bare pointer.
-    pub(crate) fn payload_of_expr(&self, ty: &TypeExpr) -> MirType {
-        let mir = self.resolve_type_expr(ty);
-        if mir != MirType::Ptr {
-            return mir;
-        }
-        match ty.name().as_deref() {
-            Some("Vec") => MirType::Container(crate::ContainerKind::Vec),
-            Some("Map") => MirType::Container(crate::ContainerKind::Map),
-            Some("Rack") => MirType::Container(crate::ContainerKind::Rack),
-            _ => mir,
         }
     }
 
@@ -1285,9 +1282,6 @@ impl<'a> MirContext<'a> {
         Some(MirType::Option(Box::new(payload)))
     }
 
-    /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
-    /// what it is instead of collapsing to a bare pointer — see
-    /// `MirType::Container`.
     /// Every layout's field types as MIR types, for codegen's walks over a
     /// struct's or a variant's fields.
     ///
@@ -1296,7 +1290,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which resolves to no layout and comes out a bare word that
     /// owns nothing.
     pub fn field_types(&self) -> crate::FieldTypes {
-        let field = |f: &rask_types::layout::FieldLayout| self.payload_to_mir(&f.ty);
+        let field = |f: &rask_types::layout::FieldLayout| self.type_to_mir(&f.ty);
         crate::FieldTypes {
             structs: self
                 .struct_layouts
@@ -1311,8 +1305,12 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    pub fn payload_to_mir(&self, ty: &Type) -> MirType {
-        let mir = self.type_to_mir(ty);
+    /// The MIR type of a checked type.
+    ///
+    /// A container is `Container(kind)` wherever it sits, so what frees it is
+    /// in the type itself; everything else is the layout `type_layout` finds.
+    pub fn type_to_mir(&self, ty: &Type) -> MirType {
+        let mir = self.type_layout(ty);
         if mir != MirType::Ptr {
             return mir;
         }
@@ -1322,7 +1320,7 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    pub fn type_to_mir(&self, ty: &Type) -> MirType {
+    fn type_layout(&self, ty: &Type) -> MirType {
         match ty {
             Type::Unit | Type::None => MirType::Void,
             Type::Bool => MirType::Bool,
@@ -1361,7 +1359,7 @@ impl<'a> MirContext<'a> {
             // through it segfaulted.
             Type::UnresolvedGeneric { name, args } if name == "Heap" => {
                 let payload = match args.first() {
-                    Some(rask_types::GenericArg::Type(inner)) => self.payload_to_mir(inner),
+                    Some(rask_types::GenericArg::Type(inner)) => self.type_to_mir(inner),
                     _ => MirType::Ptr,
                 };
                 MirType::Heap(Box::new(payload))
@@ -1408,14 +1406,14 @@ impl<'a> MirContext<'a> {
             // Tuple → struct-like layout with positional fields. A container
             // part keeps its kind, as a wrapper's payload does: the release
             // walk has no other way to tell `(Vec<i64>, i64)`'s vector from a
-            // plain word (#1395). `BlockBuilder` strips it from stored types.
+            // plain word (#1395).
             Type::Tuple(fields) => {
-                MirType::Tuple(fields.iter().map(|t| self.payload_to_mir(t)).collect())
+                MirType::Tuple(fields.iter().map(|t| self.type_to_mir(t)).collect())
             }
             // Array → real array with element type and length. A container
             // element keeps its kind, the same as a tuple part (#1403).
             Type::Array { elem, len } => MirType::Array {
-                elem: Box::new(self.payload_to_mir(elem)),
+                elem: Box::new(self.type_to_mir(elem)),
                 len: *len as u32,
             },
             // Option (T or none): niche-optimized handle, or a tagged union.
@@ -1428,12 +1426,12 @@ impl<'a> MirContext<'a> {
             // niche by `MirType::is_niche_payload`, which is what the checks
             // ask, so the spelling costs nothing.
             Type::Result { ok: inner, err } if **err == Type::None => {
-                MirType::Option(Box::new(self.payload_to_mir(inner)))
+                MirType::Option(Box::new(self.type_to_mir(inner)))
             }
             // Result<T, E> → tagged union (tag + max(T, E) payload)
             Type::Result { ok, err } => MirType::Result {
-                ok: Box::new(self.payload_to_mir(ok)),
-                err: Box::new(self.payload_to_mir(err)),
+                ok: Box::new(self.type_to_mir(ok)),
+                err: Box::new(self.type_to_mir(err)),
             },
             // Union → tracks variant sizes
             Type::Union(variants) => {
@@ -2653,9 +2651,10 @@ impl<'a> MirLowerer<'a> {
     /// An element a call takes *out* of this collection, typed so a container
     /// element says which container it is (`MirType::Container`).
     ///
-    /// `elem` is the plain answer, where every container is a bare `Ptr`. The
-    /// frame owns what `remove` and friends hand over, and the free it owes a
-    /// `Vec<Vec<T>>`'s element is `Vec_free` — which a bare pointer can't say.
+    /// `elem` is what tracking found, which is a bare `Ptr` when lowering
+    /// only saw an address. The frame owns what `remove` and friends hand
+    /// over, and the free it owes a `Vec<Vec<T>>`'s element is `Vec_free` —
+    /// which a bare pointer can't say.
     /// The checker's type first; inside a monomorphized stdlib body it often
     /// has none, and the receiver's written type (substituted by mono) does.
     pub(crate) fn handed_over_elem(&self, collection: &Expr, elem: MirType) -> MirType {
@@ -2667,7 +2666,7 @@ impl<'a> MirLowerer<'a> {
                 if matches!(name.as_str(), "Vec" | "Iterator" | "Sequence") {
                     if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
                         if !matches!(**inner, Type::Var(_)) {
-                            return self.ctx.payload_to_mir(inner);
+                            return self.ctx.type_to_mir(inner);
                         }
                     }
                 }
@@ -2684,7 +2683,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(t) = written {
             if t.name().as_deref() == Some("Vec") {
                 if let Some(arg) = t.args().first() {
-                    return self.ctx.payload_of_expr(arg);
+                    return self.ctx.resolve_type_expr(arg);
                 }
             }
         }
@@ -3211,7 +3210,7 @@ impl<'a> MirLowerer<'a> {
         let arm = match wrapper_ty {
             MirType::Option(inner) => (**inner).clone(),
             MirType::Result { ok, err } => {
-                if value_ty.without_container_kinds() == err.without_container_kinds() {
+                if value_ty == &**err {
                     (**err).clone()
                 } else {
                     (**ok).clone()
@@ -3783,6 +3782,7 @@ impl<'a> MirLowerer<'a> {
                 | MirType::Array { .. }
                 | MirType::Tuple(_)
                 | MirType::Ptr
+                | MirType::Container(_)
                 | MirType::Buffer
         )
     }
@@ -3893,7 +3893,7 @@ impl<'a> MirLowerer<'a> {
             let cap_ty = self
                 .builder
                 .local_type(cap.outer)
-                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr)))
+                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr | MirType::Container(_))))
                 .unwrap_or_else(|| cap.ty.clone());
             let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
@@ -4464,7 +4464,7 @@ impl<'a> MirLowerer<'a> {
             // The parameter keeps saying which container it is, so a frame that
             // gets it back from a call knows which free matches (#1502).
             let declared_ty = match written {
-                Some(t) if !scalar_mutate => ctx.payload_of_expr(t),
+                Some(t) if !scalar_mutate => ctx.resolve_type_expr(t),
                 _ => local_ty.clone(),
             };
             let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);

@@ -251,10 +251,10 @@ impl<'a> MirLowerer<'a> {
     /// What a field slot holds that has to be given back before it is written
     /// over, or `None` when it holds nothing the release walks.
     ///
-    /// A container is the case the MIR type alone can't answer — it calls
-    /// every one of them a bare `Ptr` — so the kind comes from the checker's
-    /// type of the place, through the head name rather than `Display`, because
-    /// a resolved generic renders as `<type#7><i64>`. A string, struct, enum or
+    /// A container's kind comes from the checker's type of the place, through
+    /// the head name rather than `Display`, because a resolved generic renders
+    /// as `<type#7><i64>`; the field's MIR type can be a bare `Ptr` where
+    /// lowering only had an address. A string, struct, enum or
     /// tuple the field's own MIR type already says, and codegen walks it for
     /// whatever it holds. Leaving the aggregates out leaked the old value of
     /// `self.active = MemTable.new()` (tiered_store).
@@ -665,9 +665,9 @@ impl<'a> MirLowerer<'a> {
                             // Two shapes reach this. An aggregate's slot holds
                             // the value, so the walk over `dst_ty` finds what it
                             // holds. A container's slot holds the handle, and
-                            // `dst_ty` there is a bare `Ptr` with no kind on it
-                            // — the written type is where the kind comes from,
-                            // the same way a field assignment gets it.
+                            // where `dst_ty` there is a bare `Ptr` the written
+                            // type is where the kind comes from, the same way a
+                            // field assignment gets it.
                             //
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents

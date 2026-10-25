@@ -1205,7 +1205,7 @@ impl<'a> FunctionBuilder<'a> {
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let ty = entry.ty.clone();
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
                 }
@@ -1380,13 +1380,12 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::RcDecContents { local } => {
                 // An aggregate dying gives back the strings it holds, and any
-                // container inside it. The walk reads the full type, which
-                // still says which pointers are containers
-                // (`MirType::Container` says why `ty` doesn't).
+                // container inside it; its type says which words are
+                // containers.
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let ty = entry.ty.clone();
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
                 }
@@ -1402,7 +1401,7 @@ impl<'a> FunctionBuilder<'a> {
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let ty = entry.ty.clone();
                 let Some(offs) = Self::element_owned_offsets(Some(&ty), ctx).filter(|o| !o.is_empty()) else {
                     return Ok(());
                 };
@@ -2809,6 +2808,7 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Tuple(_)
                         | MirType::Array { .. }
                         | MirType::Ptr
+                        | MirType::Container(_)
                         // A `Heap<T>` standing where a `T` is expected (HP5):
                         // the block's address is the aggregate's address, so
                         // there is nothing to spill. Spilling it passed the
@@ -3988,7 +3988,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-            | MirType::Char | MirType::Ptr => {
+            | MirType::Char | MirType::Ptr | MirType::Container(_) => {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
@@ -6360,9 +6360,9 @@ impl<'a> FunctionBuilder<'a> {
         // branch (#259). A value that is already the wrapper goes back as is.
         if ctx.ret_ty.wrapper_layout().is_some() {
             let val_ty = value.and_then(|v| Self::operand_mir_type(v, ctx.locals));
-            let already_wrapped = val_ty.as_ref().is_some_and(|t| {
-                t.without_container_kinds() == ctx.ret_ty.without_container_kinds()
-            });
+            let already_wrapped = val_ty
+                .as_ref()
+                .is_some_and(|t| t.wrapper_depth() >= ctx.ret_ty.wrapper_depth());
             if !already_wrapped {
                 let wrapper = ctx.ret_ty.clone();
                 let is_err = Self::is_err_component(&wrapper, val_ty.as_ref());
@@ -6486,7 +6486,7 @@ impl<'a> FunctionBuilder<'a> {
                     .locals
                     .iter()
                     .find(|l| l.id == *local)
-                    .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
+                    .map(|l| l.ty.clone())
                     .is_none_or(|ty| !Self::holds_string_mir(&ty, ctx, 0)),
                 _ => false,
             })

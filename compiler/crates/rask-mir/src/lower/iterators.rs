@@ -709,7 +709,7 @@ impl<'a> MirLowerer<'a> {
         args: &[rask_ast::expr::CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
         let (obj_op, obj_ty) = self.lower_expr(object)?;
-        if !matches!(obj_ty, MirType::Ptr) {
+        if !matches!(obj_ty, MirType::Ptr | MirType::Container(_)) {
             return Ok(None);
         }
         let elem_ty = self
@@ -1134,7 +1134,9 @@ impl<'a> MirLowerer<'a> {
                     current_ty = mapped_ty;
                 }
                 super::IterAdapter::Enumerate => {
-                    let tuple_ty = MirType::Tuple(vec![MirType::I64, current_ty.clone()]);
+                    // The pair lends the element for one turn; the collection
+                    // still owns it, so releasing the pair mustn't free it.
+                    let tuple_ty = MirType::Tuple(vec![MirType::I64, current_ty.borrowed()]);
                     let tuple_local = self.builder.alloc_temp(tuple_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
@@ -1288,10 +1290,7 @@ impl<'a> MirLowerer<'a> {
         // body computes an `i32` can still yield `i64`s, widened on the way
         // out because the binding asked for a `Vec<i64>`; sized by the body,
         // the vector held 4-byte elements that every reader took 8 at a time.
-        let slot_ty = elem
-            .as_ref()
-            .map(MirType::without_container_kinds)
-            .unwrap_or_else(|| final_ty.clone());
+        let slot_ty = elem.clone().unwrap_or_else(|| final_ty.clone());
         let args = vec![
             MirOperand::Constant(MirConst::Int(slot_ty.size() as i64)),
             crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),

@@ -252,6 +252,7 @@ fn pointer_shaped(ty: &MirType) -> bool {
     matches!(
         ty,
         MirType::Ptr
+            | MirType::Container(_)
             | MirType::Struct(_)
             | MirType::Enum(_)
             | MirType::Tuple(_)
@@ -392,7 +393,6 @@ fn try_inline_call(
             name: param.name.clone(),
             ty: param.ty.clone(),
             is_param: false,
-            unerased: param.unerased.clone(),
         });
     }
 
@@ -409,7 +409,6 @@ fn try_inline_call(
             name: local.name.clone(),
             ty: local.ty.clone(),
             is_param: false,
-            unerased: local.unerased.clone(),
         });
     }
 
@@ -1117,7 +1116,6 @@ mod tests {
             name: Some(name.to_string()),
             ty,
             is_param,
-            unerased: None,
         }
     }
 

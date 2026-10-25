@@ -419,3 +419,4 @@
 # Format: one basename per line, then `# N allocations`.
 
 t_http_client_loopback.rk   # 55 allocations — #1609 a server task answering a request leaks its headers Map
+t_lent_value_copied_before_take.rk   # 22 allocations — #1636 a container reaches one name from two owners on two paths (an inlined `take self` unwrap vs a `catch … => { return Map.new() }`), and the ownership plan releases neither

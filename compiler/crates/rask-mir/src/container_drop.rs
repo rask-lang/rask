@@ -153,7 +153,6 @@ fn retain_handle_captures(func: &mut MirFunction) {
                     name: None,
                     ty,
                     is_param: false,
-                    unerased: None,
                 });
                 clones.push(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(to),
@@ -327,7 +326,7 @@ fn env_drop_glue(
         let reach = strict_reach(func);
         let def_block = defining_blocks(func);
         // Heap closures this frame builds, so a capture that is one can be told
-        // from a container handle — both are a bare `Ptr` in MIR. Closed under
+        // from a container handle — either can be a bare `Ptr` in MIR. Closed under
         // copies, because the capture is never the create's own destination:
         // the adapter's environment takes `_20`, and `_20 = _11` renames the
         // `_19` that `closure[heap]` wrote.
@@ -709,7 +708,6 @@ fn build_env_drop(
         name: Some("__env".to_string()),
         ty: MirType::Ptr,
         is_param: true,
-        unerased: None,
     };
     let mut locals = vec![param.clone()];
     let mut statements = Vec::new();
@@ -720,7 +718,6 @@ fn build_env_drop(
             name: None,
             ty: MirType::Ptr,
             is_param: false,
-            unerased: None,
         });
         let (access, free) = match slot.holds {
             Holds::Handle(free) => (crate::CaptureAccess::Value, free),
@@ -1548,7 +1545,7 @@ fn is_container_shaped(func: &MirFunction, local: LocalId) -> bool {
         .iter()
         .chain(func.params.iter())
         .find(|l| l.id == local)
-        .is_some_and(|l| matches!(l.ty, MirType::Ptr))
+        .is_some_and(|l| matches!(l.ty, MirType::Ptr | MirType::Container(_)))
 }
 
 /// The `take` container parameters this frame owns, with the free for each.
@@ -1578,7 +1575,7 @@ fn params_this_frame_owns(
         .iter()
         .enumerate()
         .filter(|(i, _)| flags.get(*i).copied().unwrap_or(false) && !(*i == 0 && receiver_lent))
-        .filter_map(|(_, p)| match unerased_type(func, p.id) {
+        .filter_map(|(_, p)| match func.local_ty(p.id).cloned() {
             Some(MirType::Container(kind)) => Some((p.id, container_free(kind))),
             _ => None,
         })
@@ -1667,7 +1664,6 @@ fn insert_for_function(
             name: None,
             ty: MirType::Ptr,
             is_param: false,
-            unerased: None,
         });
         vec![
             MirStmt::dummy(MirStmtKind::Assign {
@@ -2321,12 +2317,6 @@ fn collect_fresh_containers_with(
     fresh
 }
 
-/// A local's type with its container kinds still named (`MirLocal::unerased`).
-fn unerased_type(func: &MirFunction, local: LocalId) -> Option<MirType> {
-    let l = func.locals.iter().find(|l| l.id == local)?;
-    Some(l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
-}
-
 /// The free that gives back a container of this kind.
 fn container_free(kind: crate::ContainerKind) -> &'static str {
     match kind {
@@ -2376,7 +2366,7 @@ fn containers_and_makers(
                     // listed it, so a `Vec<Vec<T>>` element that was removed
                     // and never moved on was never freed. `pop` wraps it in an
                     // optional, which the unwrap below reads it out of.
-                    match unerased_type(func, *dst) {
+                    match func.local_ty(*dst).cloned() {
                         Some(MirType::Container(kind)) => {
                             fresh.insert(*dst, container_free(kind));
                         }
@@ -3190,7 +3180,6 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
                 name: None,
                 ty: MirType::Ptr,
                 is_param: false,
-                unerased: None,
             });
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Assign {
                 dst: tmp,
@@ -3243,7 +3232,7 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
             Holds::Handle(free) => {
                 let tmp = LocalId(next_local);
                 next_local += 1;
-                func.locals.push(crate::MirLocal { id: tmp, name: None, ty: MirType::Ptr, is_param: false, unerased: None });
+                func.locals.push(crate::MirLocal { id: tmp, name: None, ty: MirType::Ptr, is_param: false });
                 vec![
                     MirStmt::dummy(MirStmtKind::Assign { dst: tmp, rvalue: MirRValue::Deref(MirOperand::Local(*cell)) }),
                     MirStmt::dummy(MirStmtKind::Call {
