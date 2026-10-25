@@ -108,6 +108,8 @@ impl TypeTable {
 
             // String is Copy (immutable, refcounted, 16 bytes — std.strings/S1)
             Type::String => Copy,
+            // So is bytes, for the same reasons (std.bytes/BY1)
+            Type::Bytes => Copy,
 
             // Arrays, tuples and `T?`: Copy when every part is, up to 16 bytes.
             Type::Array { elem, len: _ } => verdict(elem).within(size()),

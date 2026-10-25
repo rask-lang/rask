@@ -230,7 +230,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let n = ty.scalar_bytes().expect("a scalar knows its width");
             (n, n)
         }
-        Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
+        Type::String | Type::Bytes => (16, 8), // 16-byte SSO inline (RaskStr union)
         // Niche optimization: `Link<T>?` is the node's address with null
         // for `none` — one word, no tag.
         ty if ty.as_option().is_some_and(is_link) => (8, 8),
@@ -454,6 +454,7 @@ fn primitive_or_named(name: &str) -> Type {
         "f64" => Type::F64,
         "char" => Type::Char,
         "string" => Type::String,
+        "bytes" => Type::Bytes,
         name => Type::UnresolvedNamed(name.to_string()),
     }
 }
@@ -1015,7 +1016,7 @@ fn type_arg_key(
     Some(match ty {
         Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
         | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-        | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
+        | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Bytes | Type::Unit => format!("{}", ty),
         Type::Named(id) => type_names.get(id)?.to_string(),
         // An argument substituted into an instantiated copy is named, not
         // interned — the copy's types were built by rewriting strings, not by

@@ -24,7 +24,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
     match type_name {
         "i8" | "i16" | "i32" | "i64" | "i128"
         | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "f64" | "bool" | "char" | "string"
+        | "f64" | "bool" | "char" | "string" | "bytes"
         | "Vec" | "Map" | "Rack" | "Link"
         | "Result" | "Option"
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
@@ -108,7 +108,7 @@ methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
 pub const REGISTERED_TYPES: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128",
     "u8", "u16", "u32", "u64", "u128",
-    "f64", "bool", "char", "string",
+    "f64", "bool", "char", "string", "bytes",
     "Vec", "Map", "Rack", "Link",
     "File", "Metadata",
     "TcpListener", "TcpConnection",

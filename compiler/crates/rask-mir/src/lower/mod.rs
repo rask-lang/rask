@@ -334,7 +334,7 @@ const CONST_SLOT_VALUE_LOCAL: &str = "__const_slot_value";
 fn const_init_is_literal(init: &Expr) -> bool {
     matches!(
         &init.kind,
-        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(_) | ExprKind::Bool(_)
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(_) | ExprKind::Bytes(_) | ExprKind::Bool(_)
     )
 }
 
@@ -1092,7 +1092,9 @@ impl<'a> MirContext<'a> {
             "f64" => MirType::F64,
             "bool" => MirType::Bool,
             "char" => MirType::Char,
-            "string" => MirType::String,
+            // `bytes` is a string's value without the UTF-8 rule: same layout,
+            // same refcount, same runtime (std.bytes/BY3).
+            "string" | "bytes" => MirType::String,
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
@@ -1337,7 +1339,7 @@ impl<'a> MirContext<'a> {
             Type::F32 => MirType::F32,
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,
-            Type::String => MirType::String,
+            Type::String | Type::Bytes => MirType::String,
             Type::Never => MirType::Void,
             Type::InterfaceObject { interface_name, decl } => MirType::InterfaceObject {
                 interface_name: self.type_defs.interface_symbol(interface_name, *decl),
@@ -1505,6 +1507,7 @@ impl<'a> MirContext<'a> {
         let modules = rask_stdlib::mir_metadata::stdlib_module_names();
         match ty {
             Type::String => Some("string"),
+            Type::Bytes => Some("bytes"),
             Type::UnresolvedNamed(name) => {
                 if names.contains(name.as_str()) || modules.contains(name.as_str()) {
                     Some(name.as_str())
@@ -4649,6 +4652,7 @@ impl<'a> MirLowerer<'a> {
                 Some((MirOperand::Constant(MirConst::Float(*val)), ty))
             }
             ExprKind::String(s) => Some((MirOperand::Constant(MirConst::String(s.clone())), MirType::String)),
+            ExprKind::Bytes(b) => Some((MirOperand::Constant(MirConst::Bytes(b.clone())), MirType::String)),
             ExprKind::Bool(b) => Some((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
             _ => None,
         }
@@ -5819,7 +5823,7 @@ impl<'a> MirLowerer<'a> {
             }
             // Literals — no free variables
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
-            | ExprKind::StringInterp(..)
+            | ExprKind::StringInterp(..) | ExprKind::Bytes(..)
             | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
         }
     }
@@ -6321,6 +6325,7 @@ pub fn builtin_method_prefix_for_name(name: &str) -> Option<&'static str> {
         // A string receiver never reaches `builtin_method_prefix` — it comes out
         // of `stdlib_type_prefix` instead — but it is spelled the same either way.
         "string" => return Some("string"),
+        "bytes" => return Some("bytes"),
         _ => return None,
     };
     builtin_method_prefix(&ty)
@@ -6342,7 +6347,7 @@ pub fn type_prefix_from_str(s: &str) -> Option<String> {
     // Reject primitives and empty
     if name.is_empty() { return None; }
     match name {
-        _ if rask_ast::primitives::is_builtin_scalar_or_string(name) || name == "()" => None,
+        _ if rask_ast::primitives::is_builtin_value_type(name) || name == "()" => None,
         _ if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
             Some(name.to_string())
         }
@@ -6356,7 +6361,7 @@ pub fn type_prefix_from_str(s: &str) -> Option<String> {
 /// primitive.
 pub fn type_prefix_of(ty: &TypeExpr) -> Option<String> {
     let name = ty.last_segment()?;
-    if rask_ast::primitives::is_builtin_scalar_or_string(name) {
+    if rask_ast::primitives::is_builtin_value_type(name) {
         return None;
     }
     name.starts_with(char::is_uppercase).then(|| name.to_string())

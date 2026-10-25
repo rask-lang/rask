@@ -198,7 +198,7 @@ struct CodegenCtx<'a> {
     /// read off it rather than off its rendering.
     type_names: &'a HashMap<rask_types::TypeId, String>,
     string_globals: &'a HashMap<String, GlobalValue>,
-    string_header_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
     comptime_globals: &'a HashMap<String, GlobalValue>,
     vtable_globals: &'a HashMap<String, GlobalValue>,
@@ -364,7 +364,7 @@ pub struct FunctionBuilder<'a> {
     type_names: &'a HashMap<rask_types::TypeId, String>,
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
-    string_header_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
     /// Comptime global data (const name → GlobalValue for the data address)
     comptime_globals: &'a HashMap<String, GlobalValue>,
@@ -440,7 +440,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &'a [EnumLayout],
         type_names: &'a HashMap<rask_types::TypeId, String>,
         string_globals: &'a HashMap<String, GlobalValue>,
-    string_header_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
         comptime_globals: &'a HashMap<String, GlobalValue>,
         vtable_globals: &'a HashMap<String, GlobalValue>,
@@ -2530,7 +2530,7 @@ impl<'a> FunctionBuilder<'a> {
         // address instead of the string (#613).
         let src_is_addressed = match rvalue {
             MirRValue::Use(MirOperand::Local(_)) => true,
-            MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => true,
+            MirRValue::Use(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         };
         let wrap_as_some_aggregate = wrap_as_some
@@ -7629,7 +7629,7 @@ impl<'a> FunctionBuilder<'a> {
                 .find(|l| l.id == *id)
                 .map(|l| l.ty == MirType::String)
                 .unwrap_or(false),
-            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            Some(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         }
     }
@@ -7647,7 +7647,7 @@ impl<'a> FunctionBuilder<'a> {
                 .find(|l| l.id == *id)
                 .map(|l| l.ty.passed_by_address())
                 .unwrap_or(false),
-            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            Some(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         }
     }
@@ -7823,7 +7823,7 @@ impl<'a> FunctionBuilder<'a> {
             // A string constant is already the address of its 16 bytes — same
             // shape as a string local. Reading only the operand kind, it looked
             // like a scalar and `Mutex.new("hello")` copied 8 of them.
-            Some(MirOperand::Constant(MirConst::String(_))) => (16, true),
+            Some(MirOperand::Constant(c)) if c.static_buffer().is_some() => (16, true),
             _ => (8, false),
         }
     }
@@ -8623,7 +8623,8 @@ impl<'a> FunctionBuilder<'a> {
                     // call adapter replaces with an offsets pointer and count
                     // (`ArgAdapt::ContainerCtor`). The placeholder is dead.
                     MirConst::Elem(_) => Ok(builder.ins().iconst(types::I64, 0)),
-                    MirConst::String(s) => {
+                    MirConst::String(_) | MirConst::Bytes(_) => {
+                        let s = const_val.static_buffer().expect("a string or bytes literal");
                         // Build the 16-byte `RaskStr` in a stack slot directly.
                         //
                         // This used to call `rask_string_from`, which allocates
@@ -8646,7 +8647,7 @@ impl<'a> FunctionBuilder<'a> {
                             tmp_slot.store(builder, hi_v, 8);
                             return Ok(tmp_slot.addr(builder, 0));
                         }
-                        if let Some(gv) = ctx.string_header_globals.get(s.as_str()) {
+                        if let Some(gv) = ctx.string_header_globals.get(s) {
                             let header = builder.ins().global_value(types::I64, *gv);
                             let tagged = (s.len() as u64) | crate::layouts::STRING_HEAP_FLAG;
                             let tmp_slot = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
@@ -8665,7 +8666,7 @@ impl<'a> FunctionBuilder<'a> {
                         // and a literal passed to an interface method printed
                         // as nothing (#1558).
                         Err(CodegenError::UnsupportedFeature(format!(
-                            "string literal {s:?} reached codegen without being registered"
+                            "literal {s:?} reached codegen without being registered"
                         )))
                     }
                 }
@@ -8677,13 +8678,13 @@ impl<'a> FunctionBuilder<'a> {
 /// A literal short enough for SSO, as the two little-endian words of a
 /// `RaskStr`: fifteen bytes of data then `15 - len`. `None` if it needs the
 /// heap form.
-fn sso_words(s: &str) -> Option<(i64, i64)> {
+fn sso_words(s: &[u8]) -> Option<(i64, i64)> {
     const SSO_MAX: usize = 15;
     if s.len() > SSO_MAX {
         return None;
     }
     let mut raw = [0u8; 16];
-    raw[..s.len()].copy_from_slice(s.as_bytes());
+    raw[..s.len()].copy_from_slice(s);
     raw[15] = (SSO_MAX - s.len()) as u8;
     Some((
         i64::from_le_bytes(raw[0..8].try_into().unwrap()),

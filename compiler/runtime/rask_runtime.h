@@ -448,6 +448,19 @@ int64_t     rask_string_parse_int_into(const RaskStr *s, int64_t *out);
 // String-producing operations (out-param: RaskStr *out as first param)
 void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
 void        rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
+
+// bytes (std.bytes): the same value, so most of its methods are the string
+// functions above. These are the ones that differ.
+void        rask_bytes_view_range(RaskStr *out, const RaskStr *b, int64_t start, int64_t end);
+void        rask_string_as_bytes(RaskStr *out, const RaskStr *s);
+void        rask_bytes_as_string(RaskStr *out, const RaskStr *b);
+RaskVec    *rask_bytes_to_vec(const RaskStr *b);
+void        rask_bytes_debug(RaskStr *out, const RaskStr *b);
+// The freeze/thaw seam between vec.c and string.c.
+void        rask_bytes_adopt(RaskStr *out, uint8_t *header, int64_t len, int64_t cap);
+uint8_t    *rask_bytes_release_sole(const RaskStr *b, int64_t *cap);
+void        rask_vec_freeze(RaskStr *out, RaskVec *v);
+int64_t     rask_bytes_thaw(const RaskStr *b);
 int64_t     rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_word_end_at(const RaskStr *s, int64_t start, int64_t end);

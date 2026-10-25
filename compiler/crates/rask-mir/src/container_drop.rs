@@ -2848,7 +2848,7 @@ fn cells_this_frame_frees(
         // instead (#1207). A string is refcounted, so being wrong about a
         // second owner costs a leak rather than a double free.
         let is_string = |value: &MirOperand| match value {
-            MirOperand::Constant(crate::MirConst::String(_)) => true,
+            MirOperand::Constant(c) if c.static_buffer().is_some() => true,
             MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::String),
             _ => false,
         };

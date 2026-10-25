@@ -1084,7 +1084,7 @@ impl<'a> MirLowerer<'a> {
     /// Clone function name for a type, or None if the type is Copy.
     pub(super) fn clone_fn_for_type(ty: &rask_types::Type) -> Option<&'static str> {
         match ty {
-            rask_types::Type::String => Some("string_clone"),
+            rask_types::Type::String | rask_types::Type::Bytes => Some("string_clone"),
             rask_types::Type::UnresolvedNamed(n) if n == "string" => Some("string_clone"),
             rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec" => Some("Vec_clone"),
             rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map" => Some("Map_clone"),

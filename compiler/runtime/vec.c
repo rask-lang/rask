@@ -318,6 +318,38 @@ RaskVec *rask_vec_from_bytes(const void *data, int64_t n) {
     return v;
 }
 
+// `v.freeze()` (std.bytes/BY7): the vector's allocation becomes the bytes'
+// buffer as it stands. A one-byte vector keeps a string header in front of
+// its data for exactly this. Takes the vector.
+void rask_vec_freeze(RaskStr *out, RaskVec *v) {
+    if (v->elem_size != 1) rask_panic("freeze on a vector whose elements aren't bytes");
+    vec_check_no_borrows(v, "freeze");
+    uint8_t *header = v->data ? (uint8_t *)v->data - RASK_STRING_HEADER_SIZE : NULL;
+    rask_bytes_adopt(out, header, v->len, v->cap);
+    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
+}
+
+// `b.thaw()` (std.bytes/BY8): the buffer back as a vector when `b` was its
+// only holder, a fresh vector for a small inline value, -1 (`none`) when the
+// buffer is shared. Takes `b`, so on `none` its count is given back.
+int64_t rask_bytes_thaw(const RaskStr *b) {
+    int64_t len = rask_string_len(b);
+    if (len <= RASK_SSO_MAX && !(b->raw[15] & 0x80)) {
+        return (int64_t)(uintptr_t)rask_vec_from_bytes(rask_string_ptr(b), len);
+    }
+    int64_t cap = 0;
+    uint8_t *header = rask_bytes_release_sole(b, &cap);
+    if (!header) {
+        rask_string_free(b);
+        return -1;
+    }
+    RaskVec *v = rask_vec_new(1, NULL, 0, 0);
+    v->data = (char *)header + RASK_STRING_HEADER_SIZE;
+    v->len = len;
+    v->cap = cap;
+    return (int64_t)(uintptr_t)v;
+}
+
 // elem_size comes from the caller: a static array of fat pointers (trait
 // objects, slices) has 16-byte elements, not 8.
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,

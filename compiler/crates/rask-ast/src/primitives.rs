@@ -101,10 +101,17 @@ pub fn is_scalar(name: &str) -> bool {
         || BOOL_AND_CHAR.contains(&name)
 }
 
-/// Every spelling that names a primitive-ish builtin, `string` included. For
-/// code asking "do I recognize this type name at all".
-pub fn is_builtin_scalar_or_string(name: &str) -> bool {
-    is_scalar(name) || name == "string"
+/// The spellings whose value is a string's 16 bytes: `string`, and `bytes`,
+/// which is the same value without the UTF-8 rule (std.bytes/BY3). A native
+/// that returns one fills an out-parameter.
+pub fn is_string_valued(name: &str) -> bool {
+    name == "string" || name == "bytes"
+}
+
+/// Every spelling that names a primitive-ish builtin, `string` and `bytes`
+/// included. For code asking "do I recognize this type name at all".
+pub fn is_builtin_value_type(name: &str) -> bool {
+    is_scalar(name) || name == "string" || name == "bytes"
 }
 
 #[cfg(test)]
@@ -124,10 +131,11 @@ mod tests {
 
     #[test]
     fn the_wide_set_includes_string() {
-        assert!(is_builtin_scalar_or_string("string"));
-        assert!(!is_builtin_scalar_or_string("int"));
-        assert!(is_builtin_scalar_or_string("i8"));
-        assert!(!is_builtin_scalar_or_string("Vec"));
+        assert!(is_builtin_value_type("string"));
+        assert!(is_builtin_value_type("bytes"));
+        assert!(!is_builtin_value_type("int"));
+        assert!(is_builtin_value_type("i8"));
+        assert!(!is_builtin_value_type("Vec"));
     }
 
     #[test]

@@ -1427,6 +1427,8 @@ impl<'a> InterfaceChecker<'a> {
             Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
             // String: eq, hash, clone, len, comparison, to_string
             Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "to_string" | "debug"),
+            // Bytes: the same, except it isn't text (std.bytes/BY6)
+            Type::Bytes => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "debug"),
             // Unit: eq, hash, clone
             Type::Unit => matches!(method, "eq" | "hash" | "clone" | "to_string" | "debug"),
             _ => false,

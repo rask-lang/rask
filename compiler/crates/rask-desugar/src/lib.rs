@@ -765,6 +765,7 @@ impl Desugarer {
             | ExprKind::Int(..)
             | ExprKind::Float(..)
             | ExprKind::String(_)
+            | ExprKind::Bytes(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_) => true,
             ExprKind::Field { object, .. } => Self::reads_without_effect(object),
@@ -1010,6 +1011,7 @@ impl Desugarer {
             | ExprKind::Ident(_) | ExprKind::GenericName { .. }
             | ExprKind::Null
             | ExprKind::None
+            | ExprKind::Bytes(_)
             => {}
             ExprKind::String(_) | ExprKind::StringInterp(_) => {
                 // String interpolation desugaring handled below

@@ -280,6 +280,8 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
     ("io_read_std_bytes", 0, 0, "Vec_free"),
+    // `b.to_vec()`: a copy of the bytes in a Vec of its own (std.bytes).
+    ("bytes_to_vec", 0, 0, "Vec_free"),
 ];
 
 /// Calls that take element descriptions and hand back no container. A JSON
@@ -330,6 +332,9 @@ pub const WRAPPED_CTORS: &[(&str, &str)] = &[
     // One datagram with its sender appended, in a Vec made for this call.
     ("UdpSocket_receive_raw", "Vec_free"),
     ("UdpSocket_try_receive_raw", "Vec_free"),
+    // `b.thaw()`: the buffer back as a Vec, or a fresh small one; `none`
+    // when it was shared (std.bytes/BY8).
+    ("bytes_thaw", "Vec_free"),
 ];
 
 /// What frees the container inside the wrapper this native call handed back.

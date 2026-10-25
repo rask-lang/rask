@@ -60,6 +60,7 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
         Type::UnresolvedNamed(name) => Some(name.clone()),
         Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
         Type::String => Some("string".to_string()),
+        Type::Bytes => Some("bytes".to_string()),
         // `T?` is `T or none`; it dispatches as Option, everything else as Result.
         Type::Result { err, .. } if **err == Type::None => Some("Option".to_string()),
         Type::Result { .. } => Some("Result".to_string()),

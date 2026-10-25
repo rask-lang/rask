@@ -2304,7 +2304,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
-            | ExprKind::StringInterp(_)
+            | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
             | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
 
             ExprKind::Binary { left, op: _, right } => {
@@ -4698,6 +4698,7 @@ impl<'a> OwnershipChecker<'a> {
             "bool" => Type::Bool,
             "char" => Type::Char,
             "string" => Type::String,
+            "bytes" => Type::Bytes,
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
@@ -4761,8 +4762,8 @@ impl<'a> OwnershipChecker<'a> {
             return MoveReason::Resource { type_name };
         }
         match ty {
-            // String is Copy (S1) — this branch shouldn't be reached
-            Type::String => MoveReason::Unknown,
+            // String and bytes are Copy (S1) — this branch shouldn't be reached
+            Type::String | Type::Bytes => MoveReason::Unknown,
             Type::Generic { base, args } => {
                 let base_name = self.program.types.type_name(*base);
                 // The compiler-native generics have no fields to blame — same

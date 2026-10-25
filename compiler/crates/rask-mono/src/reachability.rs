@@ -228,7 +228,7 @@ enum Dispatch {
 fn is_primitive_receiver(name: &str) -> bool {
     matches!(
         name,
-        "bool" | "char" | "string"
+        "bool" | "char" | "string" | "bytes"
             | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"
@@ -650,7 +650,7 @@ impl<'a> Monomorphizer<'a> {
                         None => true,
                         Some(r) => match bindings.get(r) {
                             Some(t) => rask_types::primitive_spelling(t).is_some(),
-                            None => rask_ast::primitives::is_builtin_scalar_or_string(r),
+                            None => rask_ast::primitives::is_builtin_value_type(r),
                         },
                     };
                     let language_pair =
@@ -1433,7 +1433,7 @@ impl<'a> Monomorphizer<'a> {
             }
             Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-            | Type::F32 | Type::F64 | Type::Char | Type::String => Some(ty.clone()),
+            | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Bytes => Some(ty.clone()),
             Type::Generic { base, args } => {
                 Self::nameable_generic(&bare(&types.type_name(*base)), args, types)
             }
@@ -2382,7 +2382,7 @@ impl<'a> Monomorphizer<'a> {
             // Leaves - no sub-expressions
             ExprKind::Int(..)
             | ExprKind::Float(..)
-            | ExprKind::String(_) | ExprKind::StringInterp(_)
+            | ExprKind::String(_) | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Null

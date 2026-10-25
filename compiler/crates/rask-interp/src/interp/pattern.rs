@@ -22,7 +22,7 @@ impl Interpreter {
         // The wide set here on purpose: a match arm can name `string`. A
         // nominal type missing from this list made `r is Meters` bind a new
         // variable called `Meters`, which always matches.
-        rask_ast::primitives::is_builtin_scalar_or_string(base)
+        rask_ast::primitives::is_builtin_value_type(base)
             || self.enums.contains_key(base)
             || self.struct_decls.contains_key(base)
             || self.nominal_targets.contains_key(base)
@@ -421,6 +421,7 @@ impl Interpreter {
             (Value::String(a), Value::String(b)) => {
                 Arc::ptr_eq(a, b) || *a.lock().unwrap() == *b.lock().unwrap()
             }
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
             (Value::Enum { name: n1, variant: v1, fields: f1, .. },
              Value::Enum { name: n2, variant: v2, fields: f2, .. }) => {
                 n1 == n2 && v1 == v2 && f1.len() == f2.len()
@@ -498,6 +499,7 @@ impl Interpreter {
             Value::Uint128(n) => n.hash(&mut hasher),
             Value::Char(c) => c.hash(&mut hasher),
             Value::String(s) => s.lock().unwrap().hash(&mut hasher),
+            Value::Bytes(b) => b.hash(&mut hasher),
             Value::Enum { name, variant, fields, .. } => {
                 name.hash(&mut hasher);
                 variant.hash(&mut hasher);
@@ -585,6 +587,7 @@ impl Interpreter {
                 }
                 Some(a.lock().unwrap().cmp(&*b.lock().unwrap()))
             }
+            (Value::Bytes(a), Value::Bytes(b)) => Some(a.as_slice().cmp(b.as_slice())),
             (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)), // false < true
             (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
             // CO3: structs — lexicographic by field declaration order

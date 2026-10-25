@@ -43,7 +43,7 @@ pub struct CodeGenerator {
     /// ever freed, because `RE3` exempts literals from RC ops on the grounds
     /// that they carry a sentinel refcount. They didn't. Now they do, and the
     /// call goes away with the allocation.
-    string_header_data: HashMap<String, cranelift_module::DataId>,
+    string_header_data: HashMap<Vec<u8>, cranelift_module::DataId>,
     /// Comptime global data (const name → DataId in the object module)
     pub comptime_data: HashMap<String, cranelift_module::DataId>,
     /// The runtime's `rask_preempt_requested`, which every function entry and
@@ -1391,8 +1391,11 @@ impl CodeGenerator {
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
                 self.string_data.insert(s.clone(), data_id);
-                self.register_string_header(s)?;
+                self.register_string_header(s.as_bytes())?;
             }
+        }
+        if let MirOperand::Constant(MirConst::Bytes(b)) = op {
+            self.register_string_header(b)?;
         }
         Ok(())
     }
@@ -1401,7 +1404,7 @@ impl CodeGenerator {
     ///
     /// Only for literals that don't fit SSO — a short one is built from two
     /// immediates at the use site and has no refcount at all.
-    fn register_string_header(&mut self, s: &str) -> CodegenResult<()> {
+    fn register_string_header(&mut self, s: &[u8]) -> CodegenResult<()> {
         const SSO_MAX: usize = 15;
         if s.len() <= SSO_MAX || self.string_header_data.contains_key(s) {
             return Ok(());
@@ -1422,7 +1425,7 @@ impl CodeGenerator {
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&(s.len() as u64).to_le_bytes()); // capacity
         debug_assert_eq!(bytes.len(), header_size);
-        bytes.extend_from_slice(s.as_bytes());
+        bytes.extend_from_slice(s);
         bytes.push(0);
 
         let mut desc = DataDescription::new();
@@ -1434,7 +1437,7 @@ impl CodeGenerator {
             .define_data(data_id, &desc)
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
-        self.string_header_data.insert(s.to_string(), data_id);
+        self.string_header_data.insert(s.to_vec(), data_id);
         Ok(())
     }
 
@@ -1485,7 +1488,7 @@ impl CodeGenerator {
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
         self.string_data.insert(s.to_string(), data_id);
-        self.register_string_header(s)?;
+        self.register_string_header(s.as_bytes())?;
         Ok(())
     }
 
@@ -1523,7 +1526,7 @@ impl CodeGenerator {
             desc.set_align(elem_align.max(8));
 
             for (offset, text) in &meta.string_relocs {
-                let Some(&header_id) = self.string_header_data.get(text) else {
+                let Some(&header_id) = self.string_header_data.get(text.as_bytes()) else {
                     return Err(CodegenError::CraneliftError(format!(
                         "comptime global `{name}` wants a string header for a {}-byte element that was never registered",
                         text.len()
@@ -1789,7 +1792,7 @@ impl CodeGenerator {
         }
 
         // Import only the string data globals that this function actually uses
-        let needed_strings = collect_used_strings(mir_fn);
+        let (needed_strings, needed_buffers) = collect_used_strings(mir_fn);
         let mut element_offset_globals: HashMap<Vec<i32>, GlobalValue> = HashMap::new();
         for (offsets, data_id) in &self.element_offset_data {
             let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
@@ -1797,15 +1800,17 @@ impl CodeGenerator {
         }
 
         let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
-        let mut string_header_globals: HashMap<String, GlobalValue> = HashMap::new();
+        let mut string_header_globals: HashMap<Vec<u8>, GlobalValue> = HashMap::new();
         for s in &needed_strings {
             if let Some(data_id) = self.string_data.get(s) {
                 let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
                 string_globals.insert(s.clone(), gv);
             }
-            if let Some(data_id) = self.string_header_data.get(s) {
+        }
+        for b in &needed_buffers {
+            if let Some(data_id) = self.string_header_data.get(b) {
                 let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
-                string_header_globals.insert(s.clone(), gv);
+                string_header_globals.insert(b.clone(), gv);
             }
         }
         // The checked-arithmetic panic messages are emitted by codegen, not
@@ -1927,33 +1932,38 @@ fn is_empty_stub(mir_fn: &MirFunction) -> bool {
         && matches!(&block.terminator.kind, rask_mir::MirTerminatorKind::Return { .. })
 }
 
-/// Collect all string constants referenced by a single MIR function.
-fn collect_used_strings(mir_fn: &MirFunction) -> HashSet<String> {
-    let mut strings = HashSet::new();
+/// The string constants a single MIR function names, and the contents of
+/// every string or bytes literal in it (whose static headers it needs).
+fn collect_used_strings(mir_fn: &MirFunction) -> (HashSet<String>, HashSet<Vec<u8>>) {
+    let mut used = UsedConstants::default();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
-            collect_operand_strings_stmt(stmt, &mut strings);
+            rask_mir::analysis::uses::visit_stmt_operands(stmt, &mut |op| used.add(op));
         }
-        collect_operand_strings_term(&block.terminator, &mut strings);
+        rask_mir::analysis::uses::visit_terminator_operands(&block.terminator, &mut |op| used.add(op));
     }
     // Source file is used for panic locations
     if let Some(ref src) = mir_fn.source_file {
-        strings.insert(src.clone());
+        used.strings.insert(src.clone());
     }
-    strings
+    (used.strings, used.buffers)
 }
 
-fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<String>) {
-    rask_mir::analysis::uses::visit_stmt_operands(stmt, &mut |op| collect_operand_string(op, out));
+#[derive(Default)]
+struct UsedConstants {
+    strings: HashSet<String>,
+    buffers: HashSet<Vec<u8>>,
 }
 
-fn collect_operand_strings_term(term: &rask_mir::MirTerminator, out: &mut HashSet<String>) {
-    rask_mir::analysis::uses::visit_terminator_operands(term, &mut |op| collect_operand_string(op, out));
-}
-
-fn collect_operand_string(op: &MirOperand, out: &mut HashSet<String>) {
-    if let MirOperand::Constant(MirConst::String(s)) = op {
-        out.insert(s.clone());
+impl UsedConstants {
+    fn add(&mut self, op: &MirOperand) {
+        let MirOperand::Constant(c) = op else { return };
+        if let MirConst::String(s) = c {
+            self.strings.insert(s.clone());
+        }
+        if let Some(b) = c.static_buffer() {
+            self.buffers.insert(b.to_vec());
+        }
     }
 }
 

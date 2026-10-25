@@ -166,6 +166,7 @@ fn expr_may_do_work(e: &Expr) -> bool {
         | ExprKind::Int(..)
         | ExprKind::Float(..)
         | ExprKind::String(_)
+        | ExprKind::Bytes(_)
         | ExprKind::Bool(_)
         | ExprKind::Char(_)
         | ExprKind::None
@@ -1535,6 +1536,10 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Float(val, suffix) => self.lower_float(expr, val, suffix),
             ExprKind::String(s) => Ok((
                 MirOperand::Constant(MirConst::String(s.clone())),
+                MirType::String,
+            )),
+            ExprKind::Bytes(b) => Ok((
+                MirOperand::Constant(MirConst::Bytes(b.clone())),
                 MirType::String,
             )),
             ExprKind::Char(c) => Ok((MirOperand::Constant(MirConst::Char(*c)), MirType::Char)),
@@ -6521,6 +6526,17 @@ impl<'a> MirLowerer<'a> {
             if self.receiver_is_copy_scalar(object) {
                 return Ok((all_args[0].clone(), obj_ty));
             }
+            // `bytes` clones the way a string does, sharing the buffer: it's
+            // the same value (std.bytes/BY1).
+            if matches!(self.ctx.lookup_raw_type(object.id), Some(rask_types::Type::Bytes)) {
+                let cloned = self.builder.alloc_temp(obj_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(cloned),
+                    func: FunctionRef::internal("string_clone".to_string()),
+                    args: vec![all_args[0].clone()],
+                }));
+                return Ok((MirOperand::Local(cloned), obj_ty));
+            }
             if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
                     let result_local = self.builder.alloc_temp(obj_ty.clone());
@@ -8918,6 +8934,12 @@ impl<'a> MirLowerer<'a> {
         let elided = |_: &mut Self| MirOperand::Constant(MirConst::String("…".to_string()));
 
         match ty {
+            // `bytes` has a string's value and its own rendering, the literal
+            // that makes it (std.bytes/BY6). Only the checker type tells them
+            // apart.
+            MirType::String if matches!(decl, Some(rask_types::Type::Bytes)) => {
+                Ok(call(self, "bytes_debug", vec![op.clone()]))
+            }
             MirType::String => Ok(call(self, "string_debug", vec![op.clone()])),
             MirType::Char => Ok(call(self, "char_debug", vec![op.clone()])),
             MirType::Struct(_) | MirType::Enum(_) if depth + 1 < MAX_DEPTH => {
@@ -9771,6 +9793,11 @@ impl<'a> MirLowerer<'a> {
     /// can read on its own, or `None` when it can't — a Vec of structs, of
     /// Vecs, of tuples. Kept next to the C `switch` it feeds.
     fn debug_vec_elem_kind(&self, decl: &rask_types::Type) -> Option<i64> {
+        // The runtime would read a `bytes` slot as a string and quote it;
+        // walking the elements renders each one as itself.
+        if matches!(Self::vec_elem_decl(decl), Some(rask_types::Type::Bytes)) {
+            return None;
+        }
         Self::debug_elem_kind(&self.vec_elem_of_checker_type(decl)?)
     }
 

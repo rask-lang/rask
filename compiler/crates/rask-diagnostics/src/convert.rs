@@ -913,7 +913,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     | "u8" | "u16" | "u32" | "u64" | "u128"
                 );
                 let is_primitive = |t: &str| is_int(t)
-                    || matches!(t, "f32" | "f64" | "bool" | "char" | "string");
+                    || matches!(t, "f32" | "f64" | "bool" | "char" | "string" | "bytes");
                 let l = left.to_string();
                 let r = right.to_string();
                 let diag = Diagnostic::error(format!(
@@ -1159,7 +1159,7 @@ impl ToDiagnostic for rask_types::TypeError {
                      surfacing later as a missing function during codegen"
                 )
             }
-            NotDisplayable { ty, is_collection, is_wrapper, interpolated, fallible_text, span } => {
+            NotDisplayable { ty, debug_only, is_wrapper, interpolated, fallible_text, span } => {
                 let site = if *interpolated { "this placeholder" } else { "this call" };
                 let mut diag = Diagnostic::error(format!(
                     "`{}` does not implement `Displayable`",
@@ -1173,11 +1173,10 @@ impl ToDiagnostic for rask_types::TypeError {
                      [std.fmt/D3, D4]",
                     if *interpolated { "`{}`" } else { "`print`" },
                 ));
-                // A container or tuple can't be extended, and doesn't want to
-                // be — `{v:debug}` already renders it (std.fmt/G2).
-                let is_container = *is_collection;
+                // A container, tuple or `bytes` can't be extended, and doesn't
+                // want to be — `{v:debug}` already renders it (std.fmt/G2).
                 // The cases have genuinely different fixes.
-                if is_container {
+                if *debug_only {
                     diag = diag
                         .with_help(format!(
                             "a `{}` has no single sensible rendering, so `{{}}` won't invent one",

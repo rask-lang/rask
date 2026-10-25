@@ -68,8 +68,7 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
                     let self_made = matches!(
                         rvalue,
                         MirRValue::Use(MirOperand::Local(_))
-                            | MirRValue::Use(MirOperand::Constant(MirConst::String(_)))
-                    );
+                    ) || matches!(rvalue, MirRValue::Use(MirOperand::Constant(c)) if c.static_buffer().is_some());
                     if !self_made {
                         owned.insert(*dst);
                     }
@@ -403,12 +402,12 @@ fn elide_literals(func: &mut MirFunction) -> usize {
                 }
                 let is_literal_def = match &stmt.kind {
                     MirStmtKind::Assign { rvalue, .. } => match rvalue {
-                        MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => true,
+                        MirRValue::Use(MirOperand::Constant(c)) => c.static_buffer().is_some(),
                         MirRValue::Use(MirOperand::Local(src)) => literal.contains(src),
                         _ => false,
                     },
                     MirStmtKind::Phi { args, .. } => args.iter().all(|(_, arg)| match arg {
-                        MirOperand::Constant(MirConst::String(_)) => true,
+                        MirOperand::Constant(c) => c.static_buffer().is_some(),
                         MirOperand::Local(src) => literal.contains(src),
                         _ => false,
                     }),

@@ -648,7 +648,7 @@ int64_t rask_string_index(const RaskStr *s, int64_t index) {
     if (index < 0 || index >= len) {
         char buf[128];
         snprintf(buf, sizeof(buf),
-                 "string index out of bounds: index is %lld but length is %lld bytes",
+                 "index out of bounds: index is %lld but length is %lld bytes",
                  (long long)index, (long long)len);
         rask_panic(buf);
     }
@@ -868,13 +868,11 @@ static int str_slice_range(const RaskStr *s, int64_t *start, int64_t *end) {
     return 1;
 }
 
-// `s[start..end].view()` without the copy (std.strings/V1): the view shares
-// `s`'s buffer and counts as one more reference to it. Clamps and panics as
-// slicing does. A range of 15 bytes or less is copied inline instead (V4) —
-// no count, nothing pinned. One past the 31 bits a view keeps its start and
-// length in panics.
-void rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
-    if (!str_slice_range(s, &start, &end)) { rask_string_new(out); return; }
+/// `s[start..end]` sharing `s`'s buffer, for a range already checked. A range
+/// of 15 bytes or less is copied inline instead (std.strings/V4) — no count,
+/// nothing pinned. One past the 31 bits a view keeps its start and length in
+/// panics.
+static void str_view_of(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
     int64_t len = end - start;
     uint64_t at = str_is_heap(s) ? str_start(s) + (uint64_t)start : 0;
     if (len <= RASK_SSO_MAX || !str_is_heap(s)) {
@@ -885,6 +883,94 @@ void rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64
     rask_string_clone(s);
     out->heap.header = s->heap.header;
     out->heap.tagged_len = tagged;
+}
+
+// `s[start..end].view()` without the copy (std.strings/V1): the view shares
+// `s`'s buffer and counts as one more reference to it. Clamps and panics as
+// slicing does.
+void rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start, int64_t end) {
+    if (!str_slice_range(s, &start, &end)) { rask_string_new(out); return; }
+    str_view_of(out, s, start, end);
+}
+
+// ─── bytes (std.bytes) ──────────────────────────────────────
+//
+// The same value as a string. Everything that doesn't look at characters is
+// the string function itself; these are the few that differ.
+
+/// `b[start..end]` sharing the buffer. The caller has clamped; there's no
+/// character to cut.
+void rask_bytes_view_range(RaskStr *out, const RaskStr *b, int64_t start, int64_t end) {
+    if (start >= end) { rask_string_new(out); return; }
+    str_view_of(out, b, start, end);
+}
+
+/// A string's bytes, sharing its buffer.
+void rask_string_as_bytes(RaskStr *out, const RaskStr *s) {
+    rask_string_clone(s);
+    *out = *s;
+}
+
+/// Bytes already checked to be UTF-8, as a string sharing the buffer.
+void rask_bytes_as_string(RaskStr *out, const RaskStr *b) {
+    rask_string_clone(b);
+    *out = *b;
+}
+
+RaskVec *rask_bytes_to_vec(const RaskStr *b) {
+    return rask_vec_from_bytes(str_data(b), str_len(b));
+}
+
+/// Take over a byte vector's allocation: `header` is the start of a buffer
+/// laid out as a string header, `cap` bytes of data and one spare byte, of
+/// which the first `len` are in use. Small values go inline and the buffer is
+/// given back, as for any other string.
+void rask_bytes_adopt(RaskStr *out, uint8_t *header, int64_t len, int64_t cap) {
+    if (len <= RASK_SSO_MAX) {
+        str_make_sso(out, header ? (const char *)hdr_data(header) : NULL, len);
+        if (header) rask_realloc(header, (int64_t)hdr_alloc_size((uint64_t)cap), 0);
+        return;
+    }
+    if ((uint64_t)cap > STR_WHOLE_MAX) rask_panic("bytes longer than 2^62");
+    *(uint32_t *)header = 1;
+    *(uint32_t *)(header + 4) = 0;
+    hdr_set_cap(header, (uint64_t)cap);
+    hdr_data(header)[len] = '\0';
+    atomic_fetch_add_explicit(&rask_string_live_buffers, 1, memory_order_relaxed);
+    out->heap.header = header;
+    out->heap.tagged_len = str_tag_whole(len);
+}
+
+/// The other way: the header of `b`'s buffer when `b` is its only holder and
+/// is the whole buffer, so a byte vector can take it over. NULL otherwise,
+/// and then `b` is untouched. `*cap` gets the buffer's capacity.
+uint8_t *rask_bytes_release_sole(const RaskStr *b, int64_t *cap) {
+    if (!str_is_heap(b) || !str_is_whole(b)) return NULL;
+    uint32_t *rc = heap_rc(b);
+    if (__atomic_load_n(rc, __ATOMIC_ACQUIRE) != 1) return NULL;
+    atomic_fetch_sub_explicit(&rask_string_live_buffers, 1, memory_order_relaxed);
+    *cap = (int64_t)heap_cap(b);
+    return b->heap.header;
+}
+
+/// `{b:debug}`: the bytes as the literal that makes them, `x"89 50 4E 47"`.
+void rask_bytes_debug(RaskStr *out, const RaskStr *b) {
+    static const char hex[] = "0123456789ABCDEF";
+    int64_t n = str_len(b);
+    const uint8_t *d = (const uint8_t *)str_data(b);
+    int64_t total = n == 0 ? 3 : rask_safe_add(3, rask_safe_mul(n, 3) - 1);
+    char *buf = (char *)rask_alloc(total);
+    int64_t at = 0;
+    buf[at++] = 'x';
+    buf[at++] = '"';
+    for (int64_t i = 0; i < n; i++) {
+        if (i > 0) buf[at++] = ' ';
+        buf[at++] = hex[d[i] >> 4];
+        buf[at++] = hex[d[i] & 15];
+    }
+    buf[at++] = '"';
+    str_make(out, buf, total);
+    rask_realloc(buf, total, 0);
 }
 
 void rask_string_replace_limit(RaskStr *out, const RaskStr *s, const RaskStr *from,

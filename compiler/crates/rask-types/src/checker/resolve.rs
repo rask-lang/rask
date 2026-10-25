@@ -629,6 +629,8 @@ impl TypeChecker {
             // type Vec", so the two backends disagreed about a program that
             // shouldn't compile. `{v:debug}` renders it and needs nothing.
             Type::Tuple(_) | Type::Array { .. } => false,
+            // Bytes aren't text (std.bytes/BY6).
+            Type::Bytes => false,
             Type::UnresolvedGeneric { name, .. } => !matches!(
                 name.as_str(),
                 "Vec" | "Map" | "Set" | "Rack" | "Iterator"
@@ -912,8 +914,8 @@ impl TypeChecker {
                 .map(|n| self.debug_fmt_calls.contains(&n))
                 .unwrap_or(false);
             if !is_debug && !self.is_displayable(&ty) {
-                let is_collection = match &ty {
-                    Type::Tuple(_) | Type::Array { .. } => true,
+                let debug_only = match &ty {
+                    Type::Tuple(_) | Type::Array { .. } | Type::Bytes => true,
                     Type::Generic { base, .. } => {
                         matches!(self.types.type_name(*base).as_str(), "Vec" | "Map" | "Set" | "Rack" | "Iterator")
                     }
@@ -924,7 +926,7 @@ impl TypeChecker {
                 };
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
-                    is_collection,
+                    debug_only,
                     is_wrapper: matches!(ty, Type::Result { .. }) || ty.is_option(),
                     interpolated: method == "__fmt",
                     fallible_text: self.fallible_text_method(&ty),
@@ -1323,6 +1325,9 @@ impl TypeChecker {
             Type::String => self
                 .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, call_node, span)
                 .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
+            Type::Bytes => self
+                .resolve_declared_primitive_method("bytes", &ty, &method, &args, &ret, call_node, span)
+                .unwrap_or_else(|| self.resolve_bytes_method(&method, &args, &ret, span)),
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
@@ -2180,6 +2185,34 @@ impl TypeChecker {
             // saying the method doesn't exist.
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::String,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// What `bytes` answers without a declaration: the comparisons and
+    /// hashing every primitive has (std.bytes/BY5). The rest is in
+    /// `stdlib/bytes.rk`.
+    pub(super) fn resolve_bytes_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                self.unify(&Type::Bytes, &args[0], span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
+            "compare" if args.len() == 1 => {
+                self.unify(&Type::Bytes, &args[0], span)?;
+                self.unify(ret, &self.ordering_type(), span)
+            }
+            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::Bytes,
                 method: method.to_string(),
                 span,
             }),
@@ -3505,7 +3538,7 @@ impl TypeChecker {
         // here as a struct is.
         let arg_is_resolved = matches!(
             arg,
-            Type::Bool | Type::Char | Type::String
+            Type::Bool | Type::Char | Type::String | Type::Bytes
             | Type::F32 | Type::F64
             | Type::Named(_) | Type::Tuple(_)
             | Type::Result { .. } | Type::Union(_)

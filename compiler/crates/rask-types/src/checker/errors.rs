@@ -148,9 +148,9 @@ pub enum TypeError {
     #[error("`{ty}` does not implement `Displayable`")]
     NotDisplayable {
         ty: String,
-        /// A collection or tuple, which can't be extended and is already
-        /// rendered by `{:debug}`.
-        is_collection: bool,
+        /// A collection, a tuple or `bytes`: no single rendering, and
+        /// `{:debug}` already gives one.
+        debug_only: bool,
         /// A `T?` or `T or E`, which may have no value to show.
         is_wrapper: bool,
         /// `Some` when it came from an interpolation, so the message can name

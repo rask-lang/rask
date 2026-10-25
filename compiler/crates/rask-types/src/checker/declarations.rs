@@ -2441,7 +2441,7 @@ impl TypeChecker {
             Type::Unit => {
                 matches!(method, "eq" | "hash" | "clone" | "debug")
             }
-            Type::String => {
+            Type::String | Type::Bytes => {
                 matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —

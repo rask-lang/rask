@@ -219,6 +219,7 @@ impl Interpreter {
             Value::Bool(a) => return self.call_bool_method(*a, method, &args),
             Value::Char(c) => return self.call_char_method(*c, method, &args),
             Value::String(s) => return self.call_string_method(s, method, args),
+            Value::Bytes(b) => return self.call_bytes_method(b, method, args),
             Value::Vec(v) => return self.call_vec_method(v, method, args),
             Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Rack(s) => return self.call_rack_method(s, method, args),

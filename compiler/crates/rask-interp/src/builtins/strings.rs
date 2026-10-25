@@ -10,6 +10,82 @@ use crate::ptr::RawPtr;
 use crate::value::{FloatKind, IntKind, IteratorState, Value};
 
 impl Interpreter {
+    /// `bytes` methods (std.bytes): the natives `stdlib/string.rk` declares,
+    /// under the names it declares them with.
+    pub(crate) fn call_bytes_method(
+        &self,
+        b: &Arc<Vec<u8>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        let arg = |i: usize| -> Result<Arc<Vec<u8>>, RuntimeError> {
+            match args.get(i) {
+                Some(Value::Bytes(x)) => Ok(Arc::clone(x)),
+                other => Err(RuntimeError::TypeError(format!(
+                    "bytes.{method} expects bytes, found {}",
+                    other.map_or("nothing", |v| v.type_name())
+                ))),
+            }
+        };
+        let find = |hay: &[u8], needle: &[u8]| -> Option<usize> {
+            if needle.is_empty() {
+                return Some(0);
+            }
+            hay.windows(needle.len()).position(|w| w == needle)
+        };
+        match method {
+            "len" => Ok(Value::Int(b.len() as i64, IntKind::U64)),
+            "is_empty" => Ok(Value::Bool(b.is_empty())),
+            "clone" | "view" => Ok(Value::Bytes(Arc::clone(b))),
+            "starts_with" => Ok(Value::Bool(b.starts_with(&arg(0)?))),
+            "ends_with" => Ok(Value::Bool(b.ends_with(&arg(0)?))),
+            "contains" => Ok(Value::Bool(find(b, &arg(0)?).is_some())),
+            "index_of" => Ok(match find(b, &arg(0)?) {
+                Some(i) => Value::some(Value::Int(i as i64, IntKind::U64)),
+                None => Value::none(),
+            }),
+            "hash" => Ok(Value::Int(crate::builtins::fnv1a(b) as i64, IntKind::U64)),
+            "eq" => Ok(Value::Bool(**b == *arg(0)?)),
+            "ne" => Ok(Value::Bool(**b != *arg(0)?)),
+            "lt" | "le" | "gt" | "ge" | "compare" => {
+                let ord = b.as_slice().cmp(arg(0)?.as_slice());
+                match method {
+                    "lt" => Ok(Value::Bool(ord.is_lt())),
+                    "le" => Ok(Value::Bool(ord.is_le())),
+                    "gt" => Ok(Value::Bool(ord.is_gt())),
+                    "ge" => Ok(Value::Bool(ord.is_ge())),
+                    _ => Ok(Value::ordering(ord)),
+                }
+            }
+            "debug" => Ok(Value::String(Arc::new(Mutex::new(rask_ast::token::bytes_literal(b))))),
+            "to_vec" => Ok(Value::vec(b.iter().map(|x| Value::Int(*x as i64, IntKind::U8)).collect())),
+            // Sole holder: what the native runtime reads off the refcount.
+            // The `Arc` count stands in for it, less the one this call holds.
+            // It agrees for a temporary and for a buffer something else still
+            // holds. It doesn't for a binding at its last use: native moves
+            // that one into the call and thaws, here the binding still counts
+            // and this answers `none`. The interpreter has no liveness to ask.
+            "thaw" => Ok(if Arc::strong_count(b) <= 2 {
+                Value::some(Value::vec(b.iter().map(|x| Value::Int(*x as i64, IntKind::U8)).collect()))
+            } else {
+                Value::none()
+            }),
+            "view_range" => {
+                let lo = args.first().map(|v| v.as_u64()).transpose().map_err(RuntimeError::TypeError)?.unwrap_or(0) as usize;
+                let hi = args.get(1).map(|v| v.as_u64()).transpose().map_err(RuntimeError::TypeError)?.unwrap_or(0) as usize;
+                let hi = hi.min(b.len());
+                let lo = lo.min(hi);
+                Ok(Value::Bytes(Arc::new(b[lo..hi].to_vec())))
+            }
+            "unshare" => Ok(Value::Bytes(Arc::new(b.to_vec()))),
+            "checked_text" => match std::str::from_utf8(b) {
+                Ok(t) => Ok(Value::String(Arc::new(Mutex::new(t.to_string())))),
+                Err(e) => Err(RuntimeError::Panic(format!("checked_text on bytes that aren't UTF-8: {e}"))),
+            },
+            _ => Err(RuntimeError::NoSuchMethod { ty: "bytes".to_string(), method: method.to_string() }),
+        }
+    }
+
     /// Handle string method calls.
     pub(crate) fn call_string_method(
         &self,
@@ -58,6 +134,9 @@ impl Interpreter {
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
+            // std.bytes/BY3. Natively free; here the text is copied once,
+            // because a Rust `String` and a byte vector can't share storage.
+            "as_bytes" => Ok(Value::Bytes(Arc::new(s.lock().unwrap().as_bytes().to_vec()))),
             "debug" => {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))

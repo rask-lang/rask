@@ -1170,6 +1170,8 @@ fn declared_entry(
             _ => None,
         }
     };
+    let string_valued =
+        |t: &TypeExpr| t.bare_name().is_some_and(rask_ast::primitives::is_string_valued);
     let result_ok = |t: &TypeExpr| -> Option<TypeExpr> {
         match t {
             TypeExpr::Result { ok, .. } => Some((**ok).clone()),
@@ -1234,10 +1236,10 @@ fn declared_entry(
         Some(NativeReturn::Negative) => (None, RetAdapt::NegErr),
         Some(NativeReturn::Status) => (None, RetAdapt::Status),
         Some(NativeReturn::Nothing) => (None, RetAdapt::None),
-        None if ret.is_name("string") => {
+        None if string_valued(ret) => {
             (Some(ArgAdapt::StringOutParam), RetAdapt::FromArgAdapt)
         }
-        None if result_ok(ret).is_some_and(|ok| ok.is_name("string")) => {
+        None if result_ok(ret).is_some_and(|ok| string_valued(&ok)) => {
             (Some(ArgAdapt::StringResultOutParam), RetAdapt::FromArgAdapt)
         }
         None if result_ok(ret).is_some() => {
@@ -1250,7 +1252,7 @@ fn declared_entry(
         }
         None => match optional(ret) {
             Some(inner) if is_type_param(&inner) => (None, RetAdapt::DerefOption),
-            Some(inner) if inner.is_name("string") => {
+            Some(inner) if string_valued(&inner) => {
                 (Some(ArgAdapt::OptionOutParam), RetAdapt::FromArgAdapt)
             }
             Some(inner) if inner.name().as_deref() == Some("Link") => (None, RetAdapt::None),

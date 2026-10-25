@@ -23,6 +23,7 @@ fn dummy_value(type_name: &str) -> Value {
         "bool" => Value::Bool(false),
         "char" => Value::Char('a'),
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
+        "bytes" => Value::Bytes(Arc::new(Vec::new())),
         "Vec" => Value::vec(vec![]),
         "Map" => Value::Map(Arc::new(Mutex::new(Default::default()))),
         "Rack" => {

@@ -783,7 +783,7 @@ fn inline_arg_size(
         // one. Without this `Wrap { value: opt(3) }` was refused outright:
         // nothing emitted an instance layout, so the shared 8-byte slot was all
         // there was (#872).
-        Type::Tuple(_) | Type::Array { .. } | Type::String | Type::Result { .. } => {
+        Type::Tuple(_) | Type::Array { .. } | Type::String | Type::Bytes | Type::Result { .. } => {
             Some(type_size_align(ty, cache).0)
         }
         _ => None,

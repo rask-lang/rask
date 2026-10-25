@@ -288,6 +288,7 @@ impl TypeTable {
         self.builtins.insert("bool".to_string(), Type::Bool);
         self.builtins.insert("char".to_string(), Type::Char);
         self.builtins.insert("string".to_string(), Type::String);
+        self.builtins.insert("bytes".to_string(), Type::Bytes);
         self.builtins.insert("()".to_string(), Type::Unit);
         self.builtins.insert("void".to_string(), Type::Unit);
         self.builtins.insert("none".to_string(), Type::None);
@@ -2425,7 +2426,7 @@ impl TypeTable {
 pub const PRIMITIVE_CONFORMANCE_TARGETS: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128",
     "u8", "u16", "u32", "u64", "u128",
-    "f32", "f64", "bool", "char", "string",
+    "f32", "f64", "bool", "char", "string", "bytes",
 ];
 
 /// The source spelling of a primitive type, or `None` for everything else.
@@ -2446,6 +2447,7 @@ pub fn primitive_spelling(ty: &Type) -> Option<&'static str> {
         Type::Bool => "bool",
         Type::Char => "char",
         Type::String => "string",
+        Type::Bytes => "bytes",
         _ => return None,
     })
 }

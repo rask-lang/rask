@@ -126,6 +126,7 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         ExprKind::Int(..)
         | ExprKind::Float(..)
         | ExprKind::String(_)
+        | ExprKind::Bytes(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null

@@ -83,6 +83,10 @@ impl Default for ErrorCodeRegistry {
                     "A numeric literal has an invalid format — perhaps a suffix typo, multiple dots, or an invalid digit for the base.",
                     "// Error: invalid suffix\nlet x = 42i3  // did you mean i32?"),
 
+                "E0005" => ("invalid bytes literal", Syntax,
+                    "A bytes literal `x\"…\"` holds pairs of hex digits, in either case, with spaces or newlines allowed between pairs. Anything else inside the quotes, or a digit left without a partner, is an error at that character.",
+                    "// Error: odd number of digits\nconst MAGIC: bytes = x\"89 50 4E 4\""),
+
                 // Parser errors (E01xx)
                 "E0100" => ("unexpected token", Syntax,
                     "The parser encountered a token that doesn't make sense in the current context. Check for missing operators, mismatched brackets, or Rust syntax habits.",

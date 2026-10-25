@@ -152,8 +152,8 @@ pub fn check_into(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 /// allocating (`canonical-patterns`).
 ///
 /// Two things say so, and either is enough. The **type**: a primitive, a raw
-/// pointer, a slice, or a `string` — a string is a sixteen-byte value plus a
-/// refcount bump.
+/// pointer, a slice, a `string` or `bytes` — each is a sixteen-byte value plus
+/// a refcount bump.
 /// Or the **body**: every `return` hands back a name, a field, or `none`,
 /// constructing nothing. That second test is what lets `as_array` hand back the
 /// `Vec` its enum payload already holds while `as_bytes`, which calls
@@ -196,7 +196,7 @@ pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 fn cheap_view_type(ret: &TypeExpr) -> bool {
     const CHEAP: &[&str] = &[
         "bool", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64",
-        "u128", "f32", "f64", "char", "usize", "isize", "string",
+        "u128", "f32", "f64", "char", "usize", "isize", "string", "bytes",
         "Span",
     ];
     match ret {

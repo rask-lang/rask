@@ -586,6 +586,7 @@ impl TypeChecker {
                 }
             }
             ExprKind::String(_) | ExprKind::StringInterp(_) => Type::String,
+            ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
@@ -2703,6 +2704,8 @@ impl TypeChecker {
             // `char` at a *character* index, so the same bracket counted two
             // different units and `s[i]` in a loop scanned from byte zero.
             Type::String => Some(Type::U8),
+            // `b[i]` too (std.bytes/BY4).
+            Type::Bytes => Some(Type::U8),
             // Vec<T>, Pool<T>, Handle<T> → element from first type arg.
             // Map<K,V> indexed by K → value type from second arg.
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
@@ -5668,7 +5671,7 @@ impl TypeChecker {
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
                 | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
                 | Type::F32 | Type::F64
-                | Type::String | Type::Char
+                | Type::String | Type::Bytes | Type::Char
         )
     }
 
@@ -6684,7 +6687,7 @@ impl TypeChecker {
     /// whose index type we don't police (user generics, type vars, `Handle`).
     fn classify_index_container(&self, ty: &Type) -> Option<IndexContainer> {
         match ty {
-            Type::Array { .. } | Type::String => Some(IndexContainer::Sequence),
+            Type::Array { .. } | Type::String | Type::Bytes => Some(IndexContainer::Sequence),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 match self.generic_base_name(ty)? {
                     "Vec" => Some(IndexContainer::Sequence),

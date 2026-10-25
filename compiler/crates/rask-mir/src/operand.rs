@@ -26,11 +26,26 @@ pub enum MirConst {
     Bool(bool),
     Char(char),
     String(String),
+    /// A `bytes` literal. Same 16-byte value and static buffer as a string
+    /// literal, without the UTF-8 promise (std.bytes/BY3).
+    Bytes(Vec<u8>),
     /// What one element of a container is, for the constructor that builds
     /// it: the element's type with its containers still named
     /// (`MirType::Container`). Codegen turns it into the offsets of what each
     /// element owns; it never becomes a runtime value itself.
     Elem(MirType),
+}
+
+impl MirConst {
+    /// A string or bytes literal's contents. Both compile to a static buffer
+    /// whose count never changes, so neither needs refcounting.
+    pub fn static_buffer(&self) -> Option<&[u8]> {
+        match self {
+            MirConst::String(s) => Some(s.as_bytes()),
+            MirConst::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
 }
 
 /// How a field read hands its value back.
