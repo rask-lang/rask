@@ -917,10 +917,6 @@ void rask_bytes_as_string(RaskStr *out, const RaskStr *b) {
     *out = *b;
 }
 
-RaskVec *rask_bytes_to_vec(const RaskStr *b) {
-    return rask_vec_from_bytes(str_data(b), str_len(b));
-}
-
 /// Take over a byte vector's allocation: `header` is the start of a buffer
 /// laid out as a string header, `cap` bytes of data and one spare byte, of
 /// which the first `len` are in use. Small values go inline and the buffer is

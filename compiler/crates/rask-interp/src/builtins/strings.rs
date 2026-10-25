@@ -58,18 +58,9 @@ impl Interpreter {
                 }
             }
             "debug" => Ok(Value::String(Arc::new(Mutex::new(rask_ast::token::bytes_literal(b))))),
+            // Native reuses the buffer when nothing else holds it; the
+            // contents are the same either way, so this always copies.
             "to_vec" => Ok(Value::vec(b.iter().map(|x| Value::Int(*x as i64, IntKind::U8)).collect())),
-            // Sole holder: what the native runtime reads off the refcount.
-            // The `Arc` count stands in for it, less the one this call holds.
-            // It agrees for a temporary and for a buffer something else still
-            // holds. It doesn't for a binding at its last use: native moves
-            // that one into the call and thaws, here the binding still counts
-            // and this answers `none`. The interpreter has no liveness to ask.
-            "thaw" => Ok(if Arc::strong_count(b) <= 2 {
-                Value::some(Value::vec(b.iter().map(|x| Value::Int(*x as i64, IntKind::U8)).collect()))
-            } else {
-                Value::none()
-            }),
             "view_range" => {
                 let lo = args.first().map(|v| v.as_u64()).transpose().map_err(RuntimeError::TypeError)?.unwrap_or(0) as usize;
                 let hi = args.get(1).map(|v| v.as_u64()).transpose().map_err(RuntimeError::TypeError)?.unwrap_or(0) as usize;

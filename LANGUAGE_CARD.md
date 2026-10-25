@@ -177,7 +177,7 @@ A chain can be split across statements inside one block — `let s = v.filter(p)
 
 `string`: UTF-8, immutable, refcounted, Copy (`std.strings`). Interpolation is the one way to combine strings — no `+`, no concat function. `StringBuilder` for loops (`push`, `push_char`, zero-copy `build()`), `join` for lists. `s[i..j]` slices are expression-scoped; `.to_string()` copies out.
 
-`bytes`: the same value without the UTF-8 rule (`std.bytes`). Literal `x"89 50 4E 47"`. Fill a `Vec<u8>`, then `v.freeze()` (no copy); `b.thaw()` gives the buffer back as `Vec<u8>?` when nothing else holds it. `s.as_bytes()` is free; `string.from_utf8(b)` checks and shares. `b[i]` is a `u8`; `b[i..j]` slices like a string (`.view()` shares, `.to_bytes()` copies). Not Displayable: print with `{b:debug}`. `bits.BinaryReader.new(b)` reads it.
+`bytes`: the same value without the UTF-8 rule (`std.bytes`). Literal `x"89 50 4E 47"`. Fill a `Vec<u8>`, then `v.freeze()` (no copy); `b.to_vec()` gives the bytes back as a `Vec<u8>`, reusing the buffer when nothing else holds it. `s.as_bytes()` is free; `string.from_utf8(b)` checks and shares. `b[i]` is a `u8`; `b[i..j]` slices like a string (`.view()` shares, `.to_bytes()` copies). Not Displayable: print with `{b:debug}`. `bits.BinaryReader.new(b)` reads it.
 
 ## Method surface
 
@@ -193,7 +193,7 @@ a string and `entries` on a map are all things that look right and aren't.
 `index_of` / `last_index_of` (→ `u64?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
 
 **`bytes`** — `len` `is_empty` `starts_with` `ends_with` `contains` `index_of`
-`hash` `to_vec` `thaw` `view`; `Vec<u8>.freeze()`
+`hash` `to_vec` `view`; `Vec<u8>.freeze()`
 
 **`Vec<T>`** — `push` `pop` `len` `is_empty` `get` `first` `last` `contains`
 `insert` `remove` `clear` `reverse` `swap` `sort` `sort_by` `chunks` `clone`

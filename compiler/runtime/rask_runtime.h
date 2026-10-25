@@ -454,13 +454,12 @@ void        rask_string_view_range(RaskStr *out, const RaskStr *s, int64_t start
 void        rask_bytes_view_range(RaskStr *out, const RaskStr *b, int64_t start, int64_t end);
 void        rask_string_as_bytes(RaskStr *out, const RaskStr *s);
 void        rask_bytes_as_string(RaskStr *out, const RaskStr *b);
-RaskVec    *rask_bytes_to_vec(const RaskStr *b);
 void        rask_bytes_debug(RaskStr *out, const RaskStr *b);
-// The freeze/thaw seam between vec.c and string.c.
+// The seam between vec.c and string.c: freeze and to_vec hand a buffer across.
 void        rask_bytes_adopt(RaskStr *out, uint8_t *header, int64_t len, int64_t cap);
 uint8_t    *rask_bytes_release_sole(const RaskStr *b, int64_t *cap);
 void        rask_vec_freeze(RaskStr *out, RaskVec *v);
-int64_t     rask_bytes_thaw(const RaskStr *b);
+RaskVec    *rask_bytes_to_vec(const RaskStr *b);
 int64_t     rask_string_trim_start_at(const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_trim_end_at(const RaskStr *s, int64_t start, int64_t end);
 int64_t     rask_string_word_end_at(const RaskStr *s, int64_t start, int64_t end);

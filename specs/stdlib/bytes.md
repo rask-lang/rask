@@ -1,6 +1,6 @@
 <!-- id: std.bytes -->
 <!-- status: decided -->
-<!-- summary: Immutable refcounted byte buffer (Copy), the string design without the UTF-8 rule. Same 16-byte value and runtime as string. Vec<u8> builds one: freezing is free, thawing is free when nobody else holds it. x"…" literals, BytesSlice and BytesView like string's slices and views -->
+<!-- summary: Immutable refcounted byte buffer (Copy), the string design without the UTF-8 rule. Same 16-byte value and runtime as string. Vec<u8> builds one: freezing is free, to_vec reuses the buffer when nobody else holds it. x"…" literals, BytesSlice and BytesView like string's slices and views -->
 <!-- depends: stdlib/strings.md, stdlib/collections.md, memory/value-semantics.md, types/temporary.md, types/reads-as.md -->
 
 # Bytes
@@ -47,12 +47,14 @@ owner, sharing gives up changing.
 | Rule | Description |
 |------|-------------|
 | **BY7: Freezing is free** | `v.freeze()` takes a `Vec<u8>` and returns `bytes` over the same allocation. O(1). A `Vec<u8>`'s buffer reserves room for the refcount header and a terminating byte, so nothing moves |
-| **BY8: Thawing asks** | `b.thaw()` returns `Vec<u8>?`: the same allocation back if `b` is its only holder, `none` if anyone else shares it. A small inline value has no buffer to share, so it thaws into a fresh small `Vec`. `b.to_vec()` always copies |
+| **BY8: to_vec reuses what nobody shares** | `b.to_vec()` returns a `Vec<u8>` with the same bytes. When `b` is the buffer's only holder and isn't used again, the vector takes the allocation over; otherwise it copies. The contents are the same either way, only the cost differs |
 
-`thaw` returning `none` is the copy-on-write check, moved to where you can see it.
-"The only holder" counts `b` itself: thaw reuses the buffer when `b` isn't used
-again, so `b.thaw() ?? b.to_vec()` always copies — the fallback keeps `b` alive.
-Thaw what you're done with: `packet.thaw() ?? Vec.new()`.
+The reuse isn't something you can observe, so it isn't a copy-on-write trap: no
+later write pays for it, and the copy, when it happens, happens at the call you
+wrote. An implementation that always copies is correct (the interpreter does).
+
+`freeze` isn't `to_bytes` because it isn't one: `to_*` leaves the source alone and
+allocates, `freeze` consumes the vector and allocates nothing.
 
 ## Slices and views
 
@@ -114,8 +116,7 @@ literal doesn't turn into `bytes`.
 | Operation | Returns | Cost |
 |-----------|---------|------|
 | `v.freeze()` | `bytes` | None (BY7) |
-| `b.thaw()` | `Vec<u8>?` | None, or `none` if shared (BY8) |
-| `b.to_vec()` | `Vec<u8>` | Copies |
+| `b.to_vec()` | `Vec<u8>` | None if nothing else holds it, else copies (BY8) |
 | `s.as_bytes()` | `bytes` | None (BY3) |
 | `string.from_utf8(b)` | `string or Utf8Error` | O(n) validation, no copy (BY3) |
 
@@ -138,8 +139,7 @@ extend bytes {
     func contains(self, needle: bytes) -> bool
     func index_of(self, needle: bytes) -> usize?
     func hash(self) -> u64
-    func to_vec(self) -> Vec<u8>
-    func thaw(take self) -> Vec<u8>?
+    func to_vec(take self) -> Vec<u8>
     func view(self) -> BytesView
 }
 

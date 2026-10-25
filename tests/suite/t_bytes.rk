@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // std.bytes: a string's value without the UTF-8 rule. Literals, indexing,
-// slices and views, freezing and thawing, the trip to and from string,
+// slices and views, freezing and back to a vector, the trip to and from string,
 // comparison and hashing, and the debug form. Run under the leak checker on
 // both backends, so every buffer that's shared here is also given back.
 import bytes.BytesView
@@ -65,33 +65,57 @@ test "a slice of a slice is placed in the original" {
     assert inner == x"0F 10 11 12 13"
 }
 
-test "freezing hands the buffer over, thawing hands it back" {
-    let b = ramp(40).freeze()
-    assert b.len() == 40
-    assert b[39] == 39
-    let copy = b.to_vec()
-    assert copy.len() == 40
-    if ramp(40).freeze().thaw()? as v {
-        mut w = v
-        w.push(7)
-        assert w.len() == 41
-        assert w[40] == 7
-    } else {
-        assert false
+func same_as_ramp(v: Vec<u8>, n: i64) -> bool {
+    if v.len() != n.wrap<usize>() {
+        return false
     }
+    for i in 0..n {
+        if v[i.wrap<usize>()] != i.wrap<u8>() {
+            return false
+        }
+    }
+    return true
 }
 
-test "a small value thaws into a fresh vector" {
-    let v = x"01 02".thaw() ?? Vec.new()
-    assert v.len() == 2
-    assert v[1] == 2
+test "to_vec of the only holder gives the bytes back" {
+    mut w = ramp(40).freeze().to_vec()
+    assert same_as_ramp(w, 40)
+    w.push(7)
+    assert w.len() == 41
+    assert w[40] == 7
 }
 
-test "a shared buffer doesn't thaw" {
+test "to_vec at a binding's last use gives the bytes back" {
+    let b = ramp(40).freeze()
+    assert b[39] == 39
+    mut w = b.to_vec()
+    w[0] = 99
+    assert w[0] == 99
+    assert w[39] == 39
+    assert w.len() == 40
+}
+
+test "to_vec of a shared buffer copies and leaves the other holder alone" {
     let b = ramp(40).freeze()
     let kept = b
-    assert b.thaw() == none
+    mut w = b.to_vec()
+    w[0] = 99
+    w.push(7)
+    assert w.len() == 41
+    assert kept[0] == 0
     assert kept.len() == 40
+    assert b[0] == 0
+}
+
+test "to_vec of a small value, and of a sliced copy" {
+    let v = x"01 02".to_vec()
+    assert v.len() == 2
+    assert v[1] == 2
+    let b = ramp(40).freeze()
+    let mid = b[10..20].to_bytes().to_vec()
+    assert mid.len() == 10
+    assert mid[0] == 10
+    assert b.len() == 40
 }
 
 test "from_utf8 checks and shares; as_bytes is the same bytes" {

@@ -29,15 +29,10 @@ extend bytes {
     @native("rask_string_hash")
     public func hash(self) -> u64 {}
 
-    /// A `Vec<u8>` of its own. Copies.
+    /// A `Vec<u8>` with the same bytes (BY8). Reuses the buffer when nothing
+    /// else holds it, copies otherwise.
     @native("rask_bytes_to_vec")
-    public func to_vec(self) -> Vec<u8> {}
-
-    /// The buffer back as a `Vec<u8>`, when nothing else holds it (BY8).
-    /// `none` when it's shared; a small inline value thaws into a fresh
-    /// `Vec`.
-    @native("rask_bytes_thaw")
-    public func thaw(take self) -> Vec<u8>? {}
+    public func to_vec(take self) -> Vec<u8> {}
 
     /// Storable, shares the buffer (BY9).
     public func view(self) -> BytesView {
