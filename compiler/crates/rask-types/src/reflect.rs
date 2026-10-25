@@ -76,7 +76,7 @@ const NEEDS_INSTANTIATION: &str =
 /// `ty` is `T` as written at the call site, already substituted by
 /// monomorphization on the native path (std.reflect/R5) — so it's a concrete
 /// type like `Point` or `Vec<i32>`, never a bare type parameter.
-pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls, types: &TypeTable) -> ReflectAnswer {
+pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectAnswer {
     use ReflectAnswer::*;
     let head = ty.name().unwrap_or_default();
     match method {

@@ -7249,7 +7249,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx), self.ctx.type_defs);
+        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
         Ok(Some(match answer {
             ReflectAnswer::Bool(b) => (
                 MirOperand::Constant(crate::operand::MirConst::Bool(b)),
