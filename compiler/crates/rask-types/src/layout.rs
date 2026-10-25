@@ -333,7 +333,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
                         // it should have been caught by the type checker.
-                        return on_unknown.unknown(format_args!("unknown type '{}' in layout", name));
+                                return on_unknown.unknown(format_args!("unknown type '{}' in layout", name));
                     }
                 }
             }
@@ -1171,8 +1171,17 @@ impl crate::TypeTable {
                         _ => None,
                     })
                     .collect();
-                for arg in &args {
-                    self.fill_layouts(arg, cache, visiting);
+                // A declared generic lays out what it holds itself: its fields,
+                // with the arguments written in. Laying out every argument first
+                // followed ones it only holds behind a pointer, so the order of
+                // asking decided sizes: `Holder { kids: Stack<Expr> }` laid
+                // `Expr` out while `Holder` was half-done, and `Expr`'s
+                // `Boxed(Holder)` payload got a guessed word (#1436's cycle,
+                // on demand).
+                if !self.layout_decls.contains_key(name.as_str()) {
+                    for arg in &args {
+                        self.fill_layouts(arg, cache, visiting);
+                    }
                 }
                 self.fill_named(name, &args, cache, visiting);
             }

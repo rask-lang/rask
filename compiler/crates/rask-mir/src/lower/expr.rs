@@ -1334,6 +1334,22 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                     }
+                    // A string variable is lent by address, the way a scalar
+                    // or a container handle is: an explicit `Ref`, so the
+                    // passes after this see that the callee may write a new
+                    // string into it. Passed as itself, it read as a plain use
+                    // — a `mut s = ""` lent to `grow(mutate s)` still looked
+                    // like the literal, and its last string was never freed.
+                    if let ExprKind::Ident(name) = &arg.kind {
+                        if let Some((id, MirType::String)) = self.locals.get(name).cloned() {
+                            let addr = self.builder.alloc_temp(MirType::Ptr);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: addr,
+                                rvalue: MirRValue::Ref(id),
+                            }));
+                            return Ok((MirOperand::Local(addr), MirType::String));
+                        }
+                    }
                 }
                 return self.lower_expr(arg);
             }
@@ -3168,42 +3184,6 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Result<TypedOperand, LoweringError> {
-            // A range index slices a string, and only a string
-            // (type.operators/IX4) — the checker rejects it on a Vec or an
-            // array, where there is no slice type for the result to have.
-            if let ExprKind::Range { start, end, inclusive } = &index.kind {
-                let (obj_op, _obj_ty) = self.lower_expr(object)?;
-                let start_op = if let Some(s) = start {
-                    let (op, _) = self.lower_expr(s)?;
-                    op
-                } else {
-                    MirOperand::Constant(MirConst::Int(0))
-                };
-                let end_op = if let Some(e) = end {
-                    let (op, _) = self.lower_expr(e)?;
-                    // `..=` includes its last index, and the runtime takes
-                    // a half-open pair. Dropping the flag here made
-                    // `s[0..=4]` four bytes on native and five on the
-                    // interpreter (#694).
-                    self.bump_inclusive_end(op, *inclusive)
-                } else {
-                    let len_local = self.builder.alloc_temp(MirType::I64);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(len_local),
-                        func: FunctionRef::internal("string_len".to_string()),
-                        args: vec![obj_op.clone()],
-                    }));
-                    MirOperand::Local(len_local)
-                };
-                let result_local = self.builder.alloc_temp(MirType::String);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef::internal("string_substr".to_string()),
-                    args: vec![obj_op, start_op, end_op],
-                }));
-                return Ok((MirOperand::Local(result_local), MirType::String));
-            }
-
             let (obj_op, obj_ty) = self.lower_expr(object)?;
             let (idx_op, _) = self.lower_expr(index)?;
 
@@ -7269,7 +7249,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx));
+        let answer = reflect::answer(method, type_name, &MirDecls(self.ctx), self.ctx.type_defs);
         Ok(Some(match answer {
             ReflectAnswer::Bool(b) => (
                 MirOperand::Constant(crate::operand::MirConst::Bool(b)),
@@ -8115,26 +8095,6 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::UnaryOp { op, operand: input },
         }));
         Ok(Some((MirOperand::Local(out), obj_ty.clone())))
-    }
-
-    /// The half-open end index for a range's written end.
-    ///
-    /// `a..=b` includes `b`, while `string_substr` takes a
-    /// half-open pair — so an inclusive range ends one past its last index.
-    fn bump_inclusive_end(&mut self, end: MirOperand, inclusive: bool) -> MirOperand {
-        if !inclusive {
-            return end;
-        }
-        let bumped = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: bumped,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: end,
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
-        MirOperand::Local(bumped)
     }
 
     /// True when this MIR type is the `Ordering` enum.

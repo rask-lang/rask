@@ -79,12 +79,12 @@ pub(super) enum TypeOwner {
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
-    /// User-defined types indexed by TypeId.
     /// A method name that two `extend` blocks with different headers both
     /// declare on one type → the names the later blocks' methods are filed
     /// under (`extend Sequence<string>` and `extend Sequence<StringSlice>`
     /// each have a `join`).
     pub(super) filed_methods: HashMap<(TypeId, String), Vec<String>>,
+    /// User-defined types indexed by TypeId.
     pub(super) types: Vec<TypeDef>,
     /// Name to TypeId mapping, as seen from program code.
     pub(super) type_names: HashMap<String, TypeId>,
@@ -2143,7 +2143,6 @@ impl TypeTable {
         self.builtin_methods.contains(&(type_id, filed.to_string()))
     }
 
-    /// OR6: the registered stand-in for a primitive, by its source spelling.
     /// Does the declaration behind `id` declare a method by this name?
     pub fn declares_method(&self, id: TypeId, method: &str) -> bool {
         let methods: &[MethodSig] = match self.get(id) {
@@ -2156,6 +2155,7 @@ impl TypeTable {
         methods.iter().any(|m| m.name == method)
     }
 
+    /// OR6: the registered stand-in for a primitive, by its source spelling.
     pub fn primitive_id(&self, name: &str) -> Option<TypeId> {
         self.primitive_ids.get(name).copied()
     }
@@ -2280,15 +2280,6 @@ impl TypeTable {
         }
     }
 
-    /// Fill in the names of every type an error carries.
-    ///
-    /// The walk is `TypeError::map_types`, which is exhaustive. This used to be a
-    /// hand-written match ending in `other => other`: it covered 17 of the 33
-    /// variants that carry a type, and every variant added after it was written
-    /// silently fell through with its names unresolved. That's why the error side
-    /// of a `T or E` printed as an internal id in `WrapperMethodCut`,
-    /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
-    /// (#646).
     /// A mismatch whose found type is a struct with a way to become the
     /// expected one: the type's own public methods that take nothing and
     /// return exactly that. `found StringSlice, expected string` offers
@@ -2321,6 +2312,15 @@ impl TypeTable {
         error
     }
 
+    /// Fill in the names of every type an error carries.
+    ///
+    /// The walk is `TypeError::map_types`, which is exhaustive. This used to be a
+    /// hand-written match ending in `other => other`: it covered 17 of the 33
+    /// variants that carry a type, and every variant added after it was written
+    /// silently fell through with its names unresolved. That's why the error side
+    /// of a `T or E` printed as an internal id in `WrapperMethodCut`,
+    /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
+    /// (#646).
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
         error.map_types(&|ty| self.display_type_names(ty));
         error
