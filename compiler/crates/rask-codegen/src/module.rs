@@ -150,6 +150,9 @@ impl CodeGenerator {
     /// field the name doesn't spell (#1185).
     pub fn new_with_target(name: &str, build_mode: BuildMode) -> CodegenResult<Self> {
         use std::str::FromStr;
+        if let Some(why) = crate::targets::no_backend(name) {
+            return Err(CodegenError::UnknownTarget(why));
+        }
         let triple = crate::targets::codegen_triple(name).map_err(CodegenError::UnknownTarget)?;
         let target = target_lexicon::Triple::from_str(triple)
             .map_err(|e| CodegenError::CraneliftError(format!("invalid target '{}': {}", triple, e)))?;

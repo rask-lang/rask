@@ -226,7 +226,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
 
     // Validate target triple (XT1-XT3)
     if let Some(ref t) = opts.target {
-        if let Err(e) = super::link::validate_target(t) {
+        if let Err(e) = super::link::validate_build_target(t) {
             eprintln!("{}: {}", output::error_label(), e);
             process::exit(1);
         }
@@ -918,6 +918,7 @@ pub fn cmd_targets() {
         (Tier::One, "Tier 1".yellow().bold(), "tested, guaranteed"),
         (Tier::Two, "Tier 2".yellow(), "builds, best-effort"),
         (Tier::Three, "Tier 3".dimmed(), "community"),
+        (Tier::FrontEnd, "Front end only".dimmed(), "checks and lowers to MIR, no backend yet"),
     ];
     for (tier, heading, note) in tiers {
         println!("  {} ({}):", heading, note);

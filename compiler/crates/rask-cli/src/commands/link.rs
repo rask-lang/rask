@@ -175,6 +175,13 @@ pub fn validate_target(target: &str) -> Result<(), String> {
     rask_codegen::targets::codegen_triple(target).map(|_| ())
 }
 
+/// `validate_target`, for a command that has to emit code: a front-end-only
+/// target is refused here, before the frontend spends its time on it.
+pub fn validate_build_target(target: &str) -> Result<(), String> {
+    validate_target(target)?;
+    rask_codegen::targets::no_backend(target).map_or(Ok(()), Err)
+}
+
 /// What `cfg.*` answers for a build: the target's facts, or the host's when
 /// there is no `--target`. Built before the front end runs, since that is
 /// where `comptime if cfg.os` picks its branch.

@@ -258,6 +258,10 @@ fn target_cfg_or_exit(target: Option<&str>, release: bool) -> rask_comptime::Cfg
 /// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
 pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool, target: Option<&str>) {
+    if let Some(Err(e)) = target.map(super::link::validate_build_target) {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
     let cfg = target_cfg_or_exit(target, release);
     let (result, source) = run_pipeline(path, format, &cfg);
     let build_mode = if release { rask_compiler::emit::BuildMode::Release } else { rask_compiler::emit::BuildMode::Debug };
