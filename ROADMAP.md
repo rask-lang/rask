@@ -34,34 +34,37 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 577 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 579 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
-| Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
-| Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
-| Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 821 of 826, 5 registered gaps | `tests/stdlib_coverage_gate.sh` |
-| Open bugs | 64 of 106 open issues | issue search |
-| Open design questions | 20 | issue search |
+| Suite programs agreeing on both backends | 801 green, 9 registered red (4 fail on both) | `tests/differential.sh` |
+| Programs that leak | 1, holding 55 allocations ([#1609](https://github.com/rask-lang/rask/issues/1609)); 7 red files not measured | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 7 known-bad of 804, 0 new (#1587, #1588, #1590, #1601); 6 not measured | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 94 | `tests/tsan_gate.sh` |
+| Soak programs within their thread budget | 6 of 6 (5 of 6 when run beside ten other gates: `s_many_tasks` hung on a loaded box) | `tests/soak_gate.sh` |
+| Concurrency files clean under sim, 20 seeds locally | 94 of 94, 44 tests exempt | `tests/sim_gate.sh` |
+| Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
+| Runtime builds under the other compiler | clean, 3 warnings | `tests/clang_gate.sh` |
+| Stdlib items a spec promises that exist and run on both backends | 829 of 831, 3 registered gaps | `tests/stdlib_coverage_gate.sh` |
+| Rust tests | 1557 pass, 0 fail | `cargo test --release` |
+| Open bugs | 59 of 115 open issues | issue search |
+| Open design questions | 19 | issue search |
 
-Nine more gates cover prototypes, packages, projects, tutorials, the book, the
-agent benchmark, internal spellings, formatter round-trips and the HTTP server.
-All green.
+The rest are green: prototypes (9 agree), projects (22), packages (33),
+tutorials (38), the book (30), agent benchmark (19 reference solutions),
+internal spellings, HTTP server on both backends, and formatter round-trips
+(896 files formatted, 0 still-compiles failures).
 
-This table was a month stale when it was last checked — it claimed 31 leaking
-programs holding 86 allocations while the gate printed 0, and 500 of 505 while
-the suite had grown to 525. That is the failure the preamble above says this
-file exists to prevent, so: re-measure before quoting it, and if you quoted it,
-you have re-measured it.
+Two numbers went the wrong way since this table was last measured. The leak gate
+read 0 allocations and memcheck's ledger was empty; both have entries again, all
+from the last week's new code (HTTP client, `std.fs` imports, `Rack` in a struct
+field). Both gates did their job: the entries are registered and tracked, not
+silent. But v0.3's "settled" is a statement about those two numbers, and they are
+no longer 0.
 
 ## v0.3 — Memory is settled — **shipped 2026-09-18**
 
-**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
+**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. It did, on ship day. Today: 55, all [#1609](https://github.com/rask-lang/rask/issues/1609).**
 
-The gate's condition is met — 521 suite files clean. That is the measure, not
+The gate's condition was met — 521 suite files clean. That is the measure, not
 the claim that nothing leaks, and what "settled" should mean beyond a green gate
 is the open question now.
 
@@ -159,8 +162,8 @@ at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position — **shipped 2026-09-22**
 
-**Done when `tests/matrix/run.sh` is green. It is: 281 of 283 cells clean, 2
-registered red, 0 new, and 5 pairs skipped as pairs the design rules out.**
+**Done when `tests/matrix/run.sh` is green. It is: 293 of 293 cells clean, none
+registered red, and 13 pairs skipped as pairs the design rules out.**
 
 Read the cell count against the old one with care — it was 284 of 286 while
 `Vec<Heap<T>>` still compiled. Fixing [#1245](https://github.com/rask-lang/rask/issues/1245)
@@ -244,10 +247,8 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   returns. A name collision in the ownership metadata, not a position.
 
 Three of those four are fixed anyway, off the backlog rather than off this
-milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
-still open, and it was briefly closed by that same batch without anything in it
-answering the question; the repro still fails and it has been reopened. Its two
-cells are the 2 red in the number above.
+milestone — #1245, #1233 and #1248 all came in with #1298. #1244 was the one
+left, and closed later; its two cells are green now.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they
@@ -410,11 +411,15 @@ The per-module percentages [TODO.md](TODO.md) used to carry were typed by hand
 and checked by nobody. Two of the gaps they listed, `SystemTime` and
 `UdpSocket`, had already shipped.
 
-**Today: 821 of 826 promised items, 5 registered gaps.** All five wait on
-something outside this theme: `string.span` on #492 (slices as views),
-`size_of`/`align_of`/`is_copy` on #791 (which size model answers), and
-`Parser.parse`, which reads real argv and is covered by a `rask-cli` fixture
-test the gate can't count. TLS left the stdlib for a package
+**Today: 829 of 831 promised items, 3 registered gaps:** `std.bytes` (no
+surface block yet), `string.span` (waits on slices as views,
+[#492](https://github.com/rask-lang/rask/issues/492)) and `Parser.parse`, which
+reads real argv and is covered by a `rask-cli` fixture test the gate can't
+count. `size_of`/`align_of`/`is_copy` are off the list: one size model landed
+(#791 closed). The open PR
+[#1632](https://github.com/rask-lang/rask/pull/1632) (bytes, string slices, closes
+#492, claims 855 of 855) is what closes the rest; none of that is on `main`, so
+none of it is in these numbers. TLS left the stdlib for a package
 ([specs/packages/tls.md](specs/packages/tls.md)).
 
 [#726](https://github.com/rask-lang/rask/issues/726) ·
@@ -423,7 +428,7 @@ test the gate can't count. TLS left the stdlib for a package
 ## Next: v0.7 — Each fact has one owner
 
 **Done when every issue [#1570](https://github.com/rask-lang/rask/issues/1570)
-lists is closed. Today: 9 of 15 open** (#1555, #1556, #1561, #1564–#1569).
+lists is closed. Today: 9 of 15 open** (#1555, #1556, #1561, #1564–#1569); none closed in the week since #1570 last moved.
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -439,6 +444,13 @@ hand down types and layouts), then #1564 + #1565 (a call names its callee,
 stdlib facts live only on the `.rk` declarations), then #1555 and #1556. #1569
 any time. Each root-cause fix lands a guard test in the style of
 `no_type_text_reparsing`, so the count only goes down.
+
+Ordering re-checked: #1568 still leads, because every later item (one
+`MirContext`, one id allocator, one config) needs its driver. Nothing under #1570
+moved this week; the work went into v0.6's PR instead.
+
+**Came off this list:** the size-model gaps (#791, one layout answers
+`size_of`/`align_of`/`is_copy`) and #1244 (function type before `or`).
 
 Bugs found inside the theme join it. Already filed and the same shape: #1553
 (the stdlib collected twice), #1592, #1610 (a hand list of typed modules) and
@@ -489,7 +501,7 @@ scheduled — only earned. What has to be true first:
   consecutive releases, measured with `git log specs/` rather than by feel. This
   is the real gate and the others are downstream of it: a language is 1.0 when
   it has stopped changing, not when it is popular.
-- Every design question closed rather than deferred. Twenty are open, and each
+- Every design question closed rather than deferred. Nineteen are open, and each
   one is a spec that hasn't stopped moving yet.
 - The stdlib at 100% of its own spec, measured.
 - No untracked bugs, and nothing registered red without an issue and a decision.
@@ -512,7 +524,7 @@ Don't plan past the next two versions. v0.9's contents are fiction today.
 
 ## Not in any version
 
-**Design questions** — twenty open issues. They're upstream of features, they
+**Design questions** — nineteen open issues. They're upstream of features, they
 have no gate, and putting them in a version is how a version stops closing. Work
 them between releases, or when one blocks a scheduled feature, and say which.
 
