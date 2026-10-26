@@ -8,6 +8,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# When GitHub's cache storage refuses reads (503 "egress is over the account
+# limit", seen twice in one afternoon), sccache's startup check fails and
+# `cargo build` dies at `rustc -vV` before compiling anything. This makes
+# sccache carry on without the cache instead: a cold build, not a red job
+# for a change that touched nothing the job builds.
+env:
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+
 # Ten jobs that all start at once, on twelve runners — gates-memcheck and
 # gates-target32 are two-way matrices. Eight of them run the gates that need a
 # rask binary, one runs cargo test, one builds and runs on Darwin.
