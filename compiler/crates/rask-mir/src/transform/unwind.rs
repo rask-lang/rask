@@ -27,8 +27,16 @@ use crate::{
 /// Codegen looks it up by name, the way it finds `__env_drop` glue.
 pub const UNWIND_SUFFIX: &str = "__unwind";
 
-/// Bytes ahead of the first slot: the record's link and its `run` pointer.
-pub const RECORD_HEADER: u32 = 16;
+/// Bytes ahead of the first slot: the record's link and its `run` pointer
+/// (`RaskUnwindRec` in the runtime).
+pub fn record_header() -> u32 {
+    2 * MirType::word()
+}
+
+/// Where slot `i` sits in a record. Each slot is one word.
+pub fn slot_offset(i: u32) -> u32 {
+    record_header() + MirType::word() * i
+}
 
 /// Arm the strings, then build every function's unwind glue.
 pub fn build_unwind_records(fns: &mut Vec<MirFunction>) {
@@ -263,7 +271,7 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
             });
             continue;
         };
-        let raw = fresh(MirType::I64);
+        let raw = fresh(MirType::Ptr);
         let armed = fresh(MirType::Bool);
         blocks.push(MirBlock {
             id: check(i),
@@ -272,8 +280,8 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
                     dst: raw,
                     rvalue: MirRValue::ArrayIndex {
                         base: MirOperand::Local(record),
-                        index: MirOperand::Constant(MirConst::Int((RECORD_HEADER / 8 + i) as i64)),
-                        elem_size: 8,
+                        index: MirOperand::Constant(MirConst::Int((slot_offset(i) / MirType::word()) as i64)),
+                        elem_size: MirType::word(),
                     },
                 }),
                 MirStmt::dummy(MirStmtKind::Assign {

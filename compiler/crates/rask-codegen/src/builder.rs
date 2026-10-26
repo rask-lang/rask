@@ -1183,14 +1183,14 @@ impl<'a> FunctionBuilder<'a> {
                             "UnwindArm of a {} value: a record slot holds one word", vty
                         )));
                     };
-                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    let off = rask_mir::transform::unwind::slot_offset(*slot);
                     rec.store(builder, val64, off as i32);
                 }
             }
             MirStmtKind::UnwindDisarm { slot } => {
                 if let Some(rec) = ctx.unwind_rec {
                     let zero = builder.ins().iconst(types::I64, 0);
-                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    let off = rask_mir::transform::unwind::slot_offset(*slot);
                     rec.store(builder, zero, off as i32);
                 }
             }
@@ -6512,13 +6512,12 @@ impl<'a> FunctionBuilder<'a> {
         let glue = format!("{}{}", mir_fn.name, rask_mir::transform::unwind::UNWIND_SUFFIX);
         let run = func_refs.get(&glue)?;
         let push = func_refs.get("rask_unwind_push")?;
-        let header = rask_mir::transform::unwind::RECORD_HEADER;
-        let size = header + 8 * slots;
+        let size = rask_mir::transform::unwind::slot_offset(slots);
         let rec = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)));
         // Zeroed, not assumed zero: a slot nothing armed yet reads as empty
         // only if something wrote it (RASK_POISON_STACK).
         let zero = builder.ins().iconst(types::I64, 0);
-        for off in (header..size).step_by(8) {
+        for off in (rask_mir::transform::unwind::record_header()..size).step_by(8) {
             rec.store(builder, zero, off as i32);
         }
         let run_ptr = builder.ins().func_addr(types::I64, *run);

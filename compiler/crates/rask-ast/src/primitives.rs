@@ -73,6 +73,22 @@ pub fn set_pointer_bits(bits: u32) {
 /// 0 means "nobody said", which reads as the host.
 static POINTER_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Whether C's `char` is unsigned on the target. Set beside the pointer width,
+/// for the same reason; `None` until then, which reads as the host.
+pub fn set_c_char_unsigned(unsigned: bool) {
+    C_CHAR.store(if unsigned { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn c_char_unsigned() -> bool {
+    match C_CHAR.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => cfg!(any(target_arch = "aarch64", target_arch = "arm")),
+        n => n == 2,
+    }
+}
+
+/// 0 unset, 1 signed, 2 unsigned.
+static C_CHAR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// The fixed-width spelling `usize` stands for on this target.
 pub fn usize_spelling() -> &'static str {
     if pointer_bits() == 32 { "u32" } else { "u64" }
@@ -205,14 +221,14 @@ mod tests {
 /// currently link, so `long` is 64-bit; the Windows LLP64 case is a target that
 /// doesn't reach codegen yet.
 ///
-/// `char` has no signedness in C. It is signed on x86-64 and unsigned on ARM,
-/// and the host says which.
+/// `char` has no signedness in C. It is signed on x86-64 and unsigned on ARM
+/// and RISC-V, and the target says which (`set_c_char_unsigned`).
 pub fn c_type_spelling(name: &str) -> Option<&'static str> {
     let long = if pointer_bits() == 32 { "i32" } else { "i64" };
     let ulong = if pointer_bits() == 32 { "u32" } else { "u64" };
     Some(match name {
         "c_char" => {
-            if cfg!(any(target_arch = "aarch64", target_arch = "arm")) { "u8" } else { "i8" }
+            if c_char_unsigned() { "u8" } else { "i8" }
         }
         "c_short" => "i16",
         "c_ushort" => "u16",
