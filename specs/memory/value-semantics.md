@@ -31,6 +31,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 |------|-------------|
 | **VS6: Fixed threshold** | 16 bytes. Not configurable. Changing it would change program semantics |
 | **VS7: Semantic boundary** | Determines copy vs move — platform ABI differences are hidden |
+| **VS7a: Same on every target** | The VS1 size is measured with 64-bit pointers on every target, so a type is Copy everywhere or nowhere. Its real layout still follows the target |
 
 | Size | What happens | Cost |
 |------|-------------|------|
@@ -240,6 +241,8 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 **The Goldilocks principle:** Languages like Hylo require explicit `.copy()` even for a `Point2D` — that's ceremony protecting from a trivial cost. Swift has the opposite problem: any struct is a value type regardless of size. Rask avoids both extremes.
 
 **Platform ABI considerations:** The 16-byte threshold is a *semantic* boundary, not an ABI boundary. On Windows x64 (8-byte register limit), 9-16 byte types are still semantically Copy but passed by hidden reference. The ABI detail is invisible to the programmer.
+
+**Pointer width (VS7a):** A struct of three pointers is 24 bytes on a 64-bit target and 12 on a 32-bit one. If VS1 measured the real layout, it would move on one and copy on the other, and the same source would have use-after-move errors on only one of them. So VS1 measures every type as if pointers were 8 bytes, whatever the target, and the layout in memory uses the real width. On a 32-bit target some small types are therefore moved when copying would be cheap. I'd rather pay that than have a program's meaning depend on where it's built.
 
 **What about performance-critical code?** Projects that need to audit every copy can enable `@warn(implicit_copy)` — an opt-in warning that flags all implicit copies without changing semantics. See `tool.warnings`.
 
