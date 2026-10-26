@@ -82,8 +82,8 @@ extend Url {
             explicit_port: self.explicit_port
             path: self.path
             query: query
-            fragment: url_copy(self.fragment)
-            user: url_copy(self.user)
+            fragment: self.fragment.clone()
+            user: self.user.clone()
         )
     }
 }
@@ -149,9 +149,9 @@ Url implements Div<string> {
             host: self.host
             explicit_port: self.explicit_port
             path: path
-            query: url_copy(self.query)
-            fragment: url_copy(self.fragment)
-            user: url_copy(self.user)
+            query: self.query.clone()
+            fragment: self.fragment.clone()
+            user: self.user.clone()
         )
     }
 }
@@ -360,16 +360,6 @@ extend url {
 
 // ─── Internals ──────────────────────────────────────────────────
 
-/// A copy of an optional field. Workaround: `self.field.clone()` is what this
-/// should be, and inside a stdlib body that call is never rewritten to the
-/// wrapper's clone, so native can't compile it (#1621).
-func url_copy(s: string?) -> string? {
-    if s? as x {
-        return x.clone()
-    }
-    return none
-}
-
 func url_default_port(scheme: string) -> u16? {
     match scheme {
         "http" => return 80
@@ -481,7 +471,7 @@ func url_check_escapes(s: string) -> void or UrlError {
 
 func url_decode(s: string, plus_is_space: bool) -> string or UrlError {
     let len = s.len()
-    mut bytes: Vec<u8> = Vec.with_capacity(len)
+    mut raw: Vec<u8> = Vec.with_capacity(len)
     mut i: usize = 0
     while i < len {
         let b = s.byte_at(i) ?? 0
@@ -491,18 +481,18 @@ func url_decode(s: string, plus_is_space: bool) -> string or UrlError {
             if i + 2 >= len || hi < 0 || lo < 0 {
                 return UrlError.BadEscape(url_escape_text(s, i))
             }
-            bytes.push((hi * 16 + lo).wrap<u8>())
+            raw.push((hi * 16 + lo).wrap<u8>())
             i = i + 3
         } else if b == 43 && plus_is_space {
-            bytes.push(32)
+            raw.push(32)
             i = i + 1
         } else {
-            bytes.push(b)
+            raw.push(b)
             i = i + 1
         }
     }
     // "%FF" is a well-formed escape for a byte that isn't UTF-8 on its own.
-    return string.from_utf8(bytes) catch _ => {
+    return string.from_utf8(raw.freeze()) catch _ => {
         return UrlError.BadEscape(s)
     }
 }

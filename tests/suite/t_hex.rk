@@ -7,24 +7,24 @@
 import hex
 
 func decoded(s: string) -> string {
-    let bytes = hex.decode(s) catch e => {
+    let raw = hex.decode(s) catch e => {
         match e {
             hex.HexError.BadCharacter(byte, at) => return "bad {byte} at {at}"
             hex.HexError.OddLength(len) => return "odd {len}"
         }
     }
     mut parts: Vec<string> = Vec.new()
-    for b in bytes {
+    for b in raw {
         parts.push("{b}")
     }
     return "[{parts.join(",")}]"
 }
 
 test "std.hex/H1 — lowercase by default, uppercase on request" {
-    let bytes: Vec<u8> = [222, 173, 190, 239, 0, 15, 16, 255]
-    assert hex.encode(bytes) == "deadbeef000f10ff"
-    assert hex.encode(bytes, upper: true) == "DEADBEEF000F10FF"
-    assert hex.encode(bytes, upper: false) == "deadbeef000f10ff"
+    let raw: Vec<u8> = [222, 173, 190, 239, 0, 15, 16, 255]
+    assert hex.encode(raw) == "deadbeef000f10ff"
+    assert hex.encode(raw, upper: true) == "DEADBEEF000F10FF"
+    assert hex.encode(raw, upper: false) == "deadbeef000f10ff"
 }
 
 test "std.hex — empty in, empty out" {
@@ -84,9 +84,9 @@ test "std.hex — errors say what went wrong" {
 }
 
 func main() {
-    let bytes: Vec<u8> = [1, 35, 69, 103, 137, 171, 205, 239]
-    println(hex.encode(bytes))
-    println(hex.encode(bytes, upper: true))
+    let raw: Vec<u8> = [1, 35, 69, 103, 137, 171, 205, 239]
+    println(hex.encode(raw))
+    println(hex.encode(raw, upper: true))
     println(decoded("0123456789ABCDEF"))
     println(decoded("abc"))
     println(decoded("0x00"))

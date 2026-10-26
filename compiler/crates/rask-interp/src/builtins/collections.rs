@@ -204,6 +204,15 @@ impl Interpreter {
             // element gets its own copy of what it holds. Copying the item list
             // shared a nested `Vec` between the two, and a push through the
             // clone showed up in the source; native gives it a vector of its own.
+            // std.bytes/BY7. Natively the allocation changes hands; here
+            // the bytes are read out once, since the two storages differ.
+            "freeze" => {
+                let guard = v.lock().unwrap();
+                let bytes = guard.items.iter().map(|x| x.as_u64().map(|n| n as u8))
+                    .collect::<Result<Vec<u8>, _>>()
+                    .map_err(RuntimeError::TypeError)?;
+                Ok(Value::Bytes(Arc::new(bytes)))
+            }
             "clone" | "to_vec" => {
                 let guard = v.lock().unwrap();
                 let cloned = crate::value::VecData {

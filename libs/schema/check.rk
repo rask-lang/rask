@@ -276,7 +276,7 @@ func is_version(s: string) -> bool {
 func is_numbers(s: string, least: i64, most: i64) -> bool {
     mut parts = 0
     for p in s.split(".") {
-        if p.is_empty() || digits_then(p, 0) != p.len() {
+        if p.is_empty() || digits_then(p.to_string(), 0) != p.len() {
             return false
         }
         parts = parts + 1

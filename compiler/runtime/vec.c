@@ -32,6 +32,41 @@ struct RaskVec {
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
 
+// ─── Element buffer ─────────────────────────────────────────
+//
+// A vector of one-byte elements keeps a string header in front of its data
+// and one spare byte after it, so `freeze` hands the allocation to `bytes`
+// as it stands (std.bytes/BY7). `data` points past the header either way,
+// which is all codegen and the rest of this file see.
+
+static int64_t vec_buf_lead(int64_t elem_size) {
+    return elem_size == 1 ? RASK_STRING_HEADER_SIZE : 0;
+}
+
+static int64_t vec_buf_size(int64_t elem_size, int64_t cap) {
+    if (elem_size == 1) return rask_safe_add(RASK_STRING_HEADER_SIZE + 1, cap);
+    return rask_safe_mul(elem_size, cap);
+}
+
+static char *vec_buf_alloc(int64_t elem_size, int64_t cap, int64_t align) {
+    char *base = (char *)rask_alloc_aligned(vec_buf_size(elem_size, cap), align);
+    return base + vec_buf_lead(elem_size);
+}
+
+static char *vec_buf_realloc(char *data, int64_t elem_size, int64_t old_cap,
+                             int64_t new_cap, int64_t align) {
+    if (!data) return vec_buf_alloc(elem_size, new_cap, align);
+    int64_t lead = vec_buf_lead(elem_size);
+    char *base = (char *)rask_realloc_aligned(data - lead, vec_buf_size(elem_size, old_cap),
+                                              vec_buf_size(elem_size, new_cap), align);
+    return base + lead;
+}
+
+static void vec_buf_free(char *data, int64_t elem_size, int64_t cap) {
+    if (!data) return;
+    rask_realloc(data - vec_buf_lead(elem_size), vec_buf_size(elem_size, cap), 0);
+}
+
 const int32_t rask_elem_strs_one[1] = {0};
 const int32_t rask_elem_strs_pair[2] = {0, 16};
 // The element *is* a container handle: one entry, offset zero, kind VEC. What
@@ -262,7 +297,7 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
         .strs = { .offsets = str_offs, .count = n_str_offs, .align = elem_align },
     };
     if (cap > 0) {
-        v->data = (char *)rask_alloc_aligned(rask_safe_mul(elem_size, cap), elem_align);
+        v->data = vec_buf_alloc(elem_size, cap, elem_align);
         v->cap = cap;
     } else {
         v->data = NULL;
@@ -276,10 +311,39 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n) {
     RaskVec *v = rask_vec_new(1, NULL, 0, 0);
     if (n <= 0) return v;
-    v->data = (char *)rask_alloc(n);
+    v->data = vec_buf_alloc(1, n, 0);
     v->cap = n;
     v->len = n;
     memcpy(v->data, data, (size_t)n);
+    return v;
+}
+
+// `v.freeze()` (std.bytes/BY7): the vector's allocation becomes the bytes'
+// buffer as it stands. A one-byte vector keeps a string header in front of
+// its data for exactly this. Takes the vector.
+void rask_vec_freeze(RaskStr *out, RaskVec *v) {
+    if (v->elem_size != 1) rask_panic("freeze on a vector whose elements aren't bytes");
+    vec_check_no_borrows(v, "freeze");
+    uint8_t *header = v->data ? (uint8_t *)v->data - RASK_STRING_HEADER_SIZE : NULL;
+    rask_bytes_adopt(out, header, v->len, v->cap);
+    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
+}
+
+// `b.to_vec()` (std.bytes/BY8): the buffer itself when `b` was its only
+// holder, a copy otherwise. Takes `b`, so a copy gives its count back.
+RaskVec *rask_bytes_to_vec(const RaskStr *b) {
+    int64_t len = rask_string_len(b);
+    int64_t cap = 0;
+    uint8_t *header = rask_bytes_release_sole(b, &cap);
+    if (!header) {
+        RaskVec *copy = rask_vec_from_bytes(rask_string_ptr(b), len);
+        rask_string_free(b);
+        return copy;
+    }
+    RaskVec *v = rask_vec_new(1, NULL, 0, 0);
+    v->data = (char *)header + RASK_STRING_HEADER_SIZE;
+    v->len = len;
+    v->cap = cap;
     return v;
 }
 
@@ -298,7 +362,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
         .strs = { .offsets = str_offs, .count = n_str_offs, .align = elem_align },
     };
     int64_t total = rask_safe_mul(elem_size, count);
-    v->data = (char *)rask_alloc_aligned(total, elem_align);
+    v->data = vec_buf_alloc(elem_size, count, elem_align);
     memcpy(v->data, data, total);
     // No retain on the elements. The array these bytes came from owns a
     // reference already — lowering emits an `rc_inc` before storing a string
@@ -334,7 +398,7 @@ RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
         .strs = { .offsets = str_offs, .count = n_str_offs, .align = elem_align },
     };
     int64_t total = rask_safe_mul(elem_size, count);
-    v->data = (char *)rask_alloc_aligned(total, elem_align);
+    v->data = vec_buf_alloc(elem_size, count, elem_align);
     memcpy(v->data, data, total);
     return v;
 }
@@ -342,7 +406,7 @@ RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
 void rask_vec_free_view(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
-    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+    vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
 
@@ -367,7 +431,7 @@ void rask_vec_free(RaskVec *v) {
             rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
         }
     }
-    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+    vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
 
@@ -430,10 +494,7 @@ static int vec_grow(RaskVec *v, int64_t needed) {
         if (new_cap > INT64_MAX / 2) rask_panic("Vec capacity overflow");
         new_cap *= 2;
     }
-    char *new_data = (char *)rask_realloc_aligned(v->data, rask_safe_mul(v->cap, v->elem_size),
-                                                  rask_safe_mul(new_cap, v->elem_size),
-                                                  v->strs.align);
-    v->data = new_data;
+    v->data = vec_buf_realloc(v->data, v->elem_size, v->cap, new_cap, v->strs.align);
     v->cap = new_cap;
     return 0;
 }
@@ -606,15 +667,12 @@ static void vec_shrink(RaskVec *v, int64_t min_cap) {
     int64_t want = v->len > min_cap ? v->len : min_cap;
     if (want >= v->cap) return;
     if (want == 0) {
-        if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+        vec_buf_free(v->data, v->elem_size, v->cap);
         v->data = NULL;
         v->cap = 0;
         return;
     }
-    char *new_data = (char *)rask_realloc_aligned(v->data, rask_safe_mul(v->cap, v->elem_size),
-                                                  rask_safe_mul(want, v->elem_size),
-                                                  v->strs.align);
-    v->data = new_data;
+    v->data = vec_buf_realloc(v->data, v->elem_size, v->cap, want, v->strs.align);
     v->cap = want;
 }
 

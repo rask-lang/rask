@@ -59,9 +59,9 @@ extend Integer {
     func to_be_bytes(self) -> [u8; BYTES]
     func to_le_bytes(self) -> [u8; BYTES]
     func to_ne_bytes(self) -> [u8; BYTES]
-    func from_be_bytes(bytes: [u8; BYTES]) -> Self
-    func from_le_bytes(bytes: [u8; BYTES]) -> Self
-    func from_ne_bytes(bytes: [u8; BYTES]) -> Self
+    func from_be_bytes(data: [u8; BYTES]) -> Self
+    func from_le_bytes(data: [u8; BYTES]) -> Self
+    func from_ne_bytes(data: [u8; BYTES]) -> Self
 }
 ```
 
@@ -106,8 +106,8 @@ I canonicalize NaN because a payload is whatever the hardware left in it. A prog
 
 | Rule | Description |
 |------|-------------|
-| **P3: Reader** | `BinaryReader.new(data)` takes a `Vec<u8>` and reads it front to back. It owns the buffer and keeps its own position: `pos()` is how many bytes have been read, `remaining()` how many are left, and `into_inner()` hands the whole buffer back |
-| **P4: Read methods** | `r.read_u8()`, `r.read_u16be()`, … read the next value and move past it, returning `T or BinaryParseError`. One per type and byte order: `u8`, `i8`, then `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `f32`, `f64`, each with a `be` and an `le` form. `r.read_bytes(n)` copies out the next `n` bytes as a `Vec<u8>` |
+| **P3: Reader** | `BinaryReader.new(data)` reads a `bytes` value front to back (`std.bytes`). It shares the buffer and keeps its own position: `pos()` is how many bytes have been read, `remaining()` how many are left, and `into_inner()` hands the whole buffer back |
+| **P4: Read methods** | `r.read_u8()`, `r.read_u16be()`, … read the next value and move past it, returning `T or BinaryParseError`. One per type and byte order: `u8`, `i8`, then `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `f32`, `f64`, each with a `be` and an `le` form. `r.read_bytes(n)` hands back the next `n` bytes as a `BytesView` sharing the buffer, no copy |
 | **P5: Short input** | Reading more bytes than are left is `BinaryParseError.UnexpectedEnd(expected, actual)`: how many the read needed, how many were left. A read that fails doesn't move the position. Nothing panics |
 
 <!-- surface -->
@@ -115,10 +115,10 @@ I canonicalize NaN because a payload is whatever the hardware left in it. A prog
 struct BinaryReader { }
 
 extend BinaryReader {
-    func new(take data: Vec<u8>) -> BinaryReader
+    func new(data: bytes) -> BinaryReader
     func pos(self) -> usize
     func remaining(self) -> usize
-    func into_inner(take self) -> Vec<u8>
+    func into_inner(take self) -> bytes
     func read_u8(mutate self) -> u8 or BinaryParseError
     func read_i8(mutate self) -> i8 or BinaryParseError
     func read_u16be(mutate self) -> u16 or BinaryParseError
@@ -137,7 +137,7 @@ extend BinaryReader {
     func read_f32le(mutate self) -> f32 or BinaryParseError
     func read_f64be(mutate self) -> f64 or BinaryParseError
     func read_f64le(mutate self) -> f64 or BinaryParseError
-    func read_bytes(mutate self, n: usize) -> Vec<u8> or BinaryParseError
+    func read_bytes(mutate self, n: usize) -> BytesView or BinaryParseError
 }
 ```
 
@@ -152,7 +152,7 @@ let payload = try r.read_bytes(length)
 
 I went with a reader over passing offsets around. An offset form (`data.read_u8(at)` handing back the next offset) is just as fast, but every line repeats the position twice, once going in and once coming out, and nothing stops a line from passing the wrong one. The reader says it once.
 
-The reader owns the buffer rather than pointing into it: Rask has no stored references, and owning it costs nothing, since `new` takes the `Vec` and `into_inner` gives it back. A read only looks at the bytes where they lie, so walking a buffer is linear in its length. The first version handed back the rest of the buffer as a new `Vec` with every value, which was a copy per read and quadratic over the buffer.
+The reader holds a `bytes` rather than pointing into a buffer: Rask has no stored references, and a `bytes` is a refcounted share of the buffer, so holding one costs a count. It's also why `read_bytes` can hand back a view instead of a copy. A `Vec<u8>` you filled yourself freezes into one for free (`v.freeze()`). A read only looks at the bytes where they lie, so walking a buffer is linear in its length. The first version handed back the rest of the buffer as a new `Vec` with every value, which was a copy per read and quadratic over the buffer.
 
 `read_bytes` used to be `take(n)`, infallible. A short buffer has to fail somewhere, an infallible `take` could only panic, and `Vec.take(n)` is already the sequence method that lazily yields the first `n` elements. `read_bytes` is the byte-count sibling of the other `read_*` methods and fails the same way they do.
 
@@ -190,7 +190,7 @@ extend BinaryBuilder {
     func write_f32le(take self, value: f32) -> BinaryBuilder
     func write_f64be(take self, value: f64) -> BinaryBuilder
     func write_f64le(take self, value: f64) -> BinaryBuilder
-    func write_bytes(take self, bytes: Vec<u8>) -> BinaryBuilder
+    func write_bytes(take self, data: Vec<u8>) -> BinaryBuilder
     func len(self) -> usize
     func build(take self) -> Vec<u8>
 }

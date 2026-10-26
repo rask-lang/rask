@@ -274,6 +274,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("collections.rk", include_str!("../../../../stdlib/collections.rk")),
     ("memory.rk", include_str!("../../../../stdlib/memory.rk")),
     ("string.rk", include_str!("../../../../stdlib/string.rk")),
+    ("bytes.rk", include_str!("../../../../stdlib/bytes.rk")),
     ("option.rk", include_str!("../../../../stdlib/option.rk")),
     ("result.rk", include_str!("../../../../stdlib/result.rk")),
     ("io.rk", include_str!("../../../../stdlib/io.rk")),
@@ -991,7 +992,7 @@ fn fn_to_method_stub(
         .args()
         .iter()
         .filter_map(TypeExpr::bare_name)
-        .filter(|n| !rask_ast::primitives::is_builtin_scalar_or_string(n))
+        .filter(|n| !rask_ast::primitives::is_builtin_value_type(n))
         .map(str::to_string)
         .chain(f.type_params.iter().map(|p| p.name.clone()))
         .collect();

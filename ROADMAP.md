@@ -34,18 +34,18 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 577 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 579 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
+| Suite programs agreeing on both backends | 798 green, 9 registered red | `tests/differential.sh` |
+| Programs that leak | 1, holding 55 allocations (#1609), 0 deferred | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 7 of 801, each filed (the gate used to watch `timeout`, not the test) | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 93 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
-| Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
+| Concurrency files clean under sim, 100 seeds in CI | 93 of 93, 44 tests exempt | `tests/sim_gate.sh` |
+| Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 821 of 826, 5 registered gaps | `tests/stdlib_coverage_gate.sh` |
-| Open bugs | 64 of 106 open issues | issue search |
-| Open design questions | 20 | issue search |
+| Stdlib items a spec promises that exist and run on both backends | 855 of 855 | `tests/stdlib_coverage_gate.sh` |
+| Open bugs | 54 of 99 open issues | issue search |
+| Open design questions | 19 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
@@ -394,7 +394,7 @@ Ships open:
   tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
 - macOS runs tasks on threads until it has a kqueue poller.
 
-## v0.6 — The stdlib matches its own spec
+## v0.6 — The stdlib matches its own spec — **shipped 2026-10-22**
 
 **Done when the stdlib coverage gate reads 100% for every module.**
 
@@ -410,12 +410,11 @@ The per-module percentages [TODO.md](TODO.md) used to carry were typed by hand
 and checked by nobody. Two of the gaps they listed, `SystemTime` and
 `UdpSocket`, had already shipped.
 
-**Today: 821 of 826 promised items, 5 registered gaps.** All five wait on
-something outside this theme: `string.span` on #492 (slices as views),
-`size_of`/`align_of`/`is_copy` on #791 (which size model answers), and
-`Parser.parse`, which reads real argv and is covered by a `rask-cli` fixture
-test the gate can't count. TLS left the stdlib for a package
-([specs/packages/tls.md](specs/packages/tls.md)).
+**Shipped at 855 of 855 promised items, `std.bytes` included; the gap registry is empty.** The last
+five took two pieces of real work: one size model, so `reflect.size_of` and
+`is_copy` agree with each other and with codegen (#791), and string views that
+share their source, so a slice's `.span()` knows where it was cut (#492). TLS
+left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 
 [#726](https://github.com/rask-lang/rask/issues/726) ·
 [#980](https://github.com/rask-lang/rask/issues/980)

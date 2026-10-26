@@ -230,7 +230,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let n = ty.scalar_bytes().expect("a scalar knows its width");
             (n, n)
         }
-        Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
+        Type::String | Type::Bytes => (16, 8), // 16-byte SSO inline (RaskStr union)
         // Niche optimization: `Link<T>?` is the node's address with null
         // for `none` — one word, no tag.
         ty if ty.as_option().is_some_and(is_link) => (8, 8),
@@ -293,9 +293,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         }
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                // A `StringView` is a `RaskStr` that shares the source's buffer
-                // (std.strings/V1) — same 16 bytes as a string.
-                "string" | "Path" | "StringView" => (16, 8),
+                "string" | "Path" => (16, 8),
                 // A scalar written as a name is the same scalar. `char` used
                 // to answer 4 here and 8 through the typed arm above; one
                 // source now.
@@ -335,7 +333,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
                         // it should have been caught by the type checker.
-                        return on_unknown.unknown(format_args!("unknown type '{}' in layout", name));
+                                return on_unknown.unknown(format_args!("unknown type '{}' in layout", name));
                     }
                 }
             }
@@ -456,6 +454,7 @@ fn primitive_or_named(name: &str) -> Type {
         "f64" => Type::F64,
         "char" => Type::Char,
         "string" => Type::String,
+        "bytes" => Type::Bytes,
         name => Type::UnresolvedNamed(name.to_string()),
     }
 }
@@ -1017,7 +1016,7 @@ fn type_arg_key(
     Some(match ty {
         Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
         | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-        | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
+        | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Bytes | Type::Unit => format!("{}", ty),
         Type::Named(id) => type_names.get(id)?.to_string(),
         // An argument substituted into an instantiated copy is named, not
         // interned — the copy's types were built by rewriting strings, not by
@@ -1173,8 +1172,17 @@ impl crate::TypeTable {
                         _ => None,
                     })
                     .collect();
-                for arg in &args {
-                    self.fill_layouts(arg, cache, visiting);
+                // A declared generic lays out what it holds itself: its fields,
+                // with the arguments written in. Laying out every argument first
+                // followed ones it only holds behind a pointer, so the order of
+                // asking decided sizes: `Holder { kids: Stack<Expr> }` laid
+                // `Expr` out while `Holder` was half-done, and `Expr`'s
+                // `Boxed(Holder)` payload got a guessed word (#1436's cycle,
+                // on demand).
+                if !self.layout_decls.contains_key(name.as_str()) {
+                    for arg in &args {
+                        self.fill_layouts(arg, cache, visiting);
+                    }
                 }
                 self.fill_named(name, &args, cache, visiting);
             }

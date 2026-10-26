@@ -36,7 +36,19 @@ pub struct OwnershipResult {
     /// and the interpreter read this to decide whether a capture is the value
     /// or a pointer to it.
     pub escaping_closures: HashSet<rask_ast::NodeId>,
+    /// What each `return` moves, keyed by the returned expression: the
+    /// bindings its value takes. See `ReturnMoves`.
+    pub return_moves: ReturnMoves,
 }
+
+/// The bindings each `return` hands to the caller, keyed by the returned
+/// expression.
+///
+/// Lowering needs it where a `return` doesn't run in the frame it answers
+/// for: the body of a `for` over a sequence is a closure, so `return out`
+/// there moves the enclosing function's `out` from inside a different
+/// function. The frame has to know `out` left on that exit and on no other.
+pub type ReturnMoves = HashMap<rask_ast::NodeId, Vec<String>>;
 
 impl OwnershipResult {
     pub fn is_ok(&self) -> bool {
@@ -264,6 +276,8 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::return_moves`.
+    return_moves: ReturnMoves,
     /// Closure literals whose body assigns to something they captured. MC4
     /// promises the caller sees those writes, which only a borrow capture can
     /// deliver, so these are never swept up by the call-result rule in
@@ -417,6 +431,7 @@ impl<'a> OwnershipChecker<'a> {
             task_bodies: HashSet::new(),
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
+            return_moves: HashMap::new(),
             closure_writes_a_capture: HashSet::new(),
             mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
@@ -464,6 +479,36 @@ impl<'a> OwnershipChecker<'a> {
             },
             span: expr.span,
         });
+    }
+
+    /// type.sequence/SEQ47 for `Vec.zip`: it borrows both vectors and builds
+    /// pairs that own what they hold, so each side has to be something a
+    /// copy can produce. For a vector of vectors nothing could: the pairs and
+    /// the source both held the same inner vectors and freed them twice
+    /// (#1652). The interpreter copies values and never noticed.
+    fn check_zip_items_copy(&mut self, expr: &Expr) {
+        let is_vec_zip = matches!(
+            self.program.call_targets.get(&expr.id),
+            Some(rask_types::Callee::Method { recv, method, .. })
+                if method == "zip"
+                    && rask_types::receiver_name(recv, &self.program.types).as_deref() == Some("Vec")
+        );
+        if !is_vec_zip {
+            return;
+        }
+        let Some(Type::Tuple(parts)) = self.node_ty(&expr.id).and_then(Self::vec_elem) else { return };
+        for elem in &parts {
+            if matches!(elem, Type::Var(_)) || self.is_copy(elem) || Self::is_boxed_interface(elem) {
+                continue;
+            }
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ZipOfLentItems {
+                    elem: format!("{}", self.program.types.resolve_type_names(elem)),
+                },
+                span: expr.span,
+            });
+            return;
+        }
     }
 
     /// The adapter that makes `expr` a chain of lent items: one that hands on
@@ -630,6 +675,7 @@ impl<'a> OwnershipChecker<'a> {
         OwnershipResult {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
+            return_moves: self.return_moves,
         }
     }
 
@@ -2027,7 +2073,29 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
+                    let held: Vec<String> = self
+                        .bindings
+                        .iter()
+                        .filter(|(_, st)| Self::is_available(st))
+                        .map(|(n, _)| n.clone())
+                        .collect();
                     self.check_expr(expr);
+                    // What the value took on the way (a constructor's fields),
+                    // and the variable itself when the value *is* one: the
+                    // move `handle_assignment` makes for `let y = x`, which a
+                    // return doesn't record because the function ends there.
+                    let whole = self.moved_whole(expr);
+                    let mut moved: Vec<String> = held
+                        .into_iter()
+                        .filter(|n| {
+                            whole.as_deref() == Some(n.as_str())
+                                || self.bindings.get(n).is_some_and(|st| !Self::is_available(st))
+                        })
+                        .collect();
+                    if !moved.is_empty() {
+                        moved.sort();
+                        self.return_moves.insert(expr.id, moved);
+                    }
                     self.consume_returned_resources(expr);
                     self.check_borrowed_field_escape(expr);
                     self.check_borrowed_capture_escape(expr);
@@ -2266,7 +2334,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
-            | ExprKind::StringInterp(_)
+            | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
             | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
 
             ExprKind::Binary { left, op: _, right } => {
@@ -2382,6 +2450,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(object);
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
+                }
+                if method == "zip" && args.len() == 1 {
+                    self.check_zip_items_copy(expr);
                 }
                 self.note_link_into_container(object, method, args);
                 // #296/PM3: consume arguments bound to `take` parameters. T1: a
@@ -3963,6 +4034,19 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// The variable `expr` moves when it's taken as a value, by
+    /// `handle_assignment`'s rule: a whole variable of a type that isn't Copy,
+    /// or an `Owned` box whatever its payload. A field or an element borrows
+    /// instead, and a Copy value is copied.
+    fn moved_whole(&self, expr: &Expr) -> Option<String> {
+        let ExprKind::Ident(name) = &expr.kind else { return None };
+        let ty = self.node_ty(&expr.id)?;
+        if self.is_copy(ty) && !self.owned_bindings.contains(name) {
+            return None;
+        }
+        Some(name.clone())
+    }
+
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
         if let Some(ty) = self.node_ty(&expr.id) {
             // Copy types: both source and target remain valid (VS1/VS2). An
@@ -4647,6 +4731,7 @@ impl<'a> OwnershipChecker<'a> {
             "bool" => Type::Bool,
             "char" => Type::Char,
             "string" => Type::String,
+            "bytes" => Type::Bytes,
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
@@ -4703,15 +4788,15 @@ impl<'a> OwnershipChecker<'a> {
         if self.is_link_type(ty) {
             return MoveReason::LinkDeleted;
         }
-        let type_name = format!("{}", self.program.types.resolve_type_names(ty));
+        let type_name = format!("{}", self.program.types.display_type_names(ty));
         // Before size: a resource moves because it's linear, and blaming the
         // copy threshold suggested `.clone()` on a value that has none.
         if self.type_is_resource(ty) {
             return MoveReason::Resource { type_name };
         }
         match ty {
-            // String is Copy (S1) — this branch shouldn't be reached
-            Type::String => MoveReason::Unknown,
+            // String and bytes are Copy (S1) — this branch shouldn't be reached
+            Type::String | Type::Bytes => MoveReason::Unknown,
             Type::Generic { base, args } => {
                 let base_name = self.program.types.type_name(*base);
                 // The compiler-native generics have no fields to blame — same
@@ -7714,7 +7799,18 @@ pub fn check_ownership_with_stdlib(
     stdlib_decls: &[Decl],
 ) -> OwnershipResult {
     let checker = OwnershipChecker::new(program);
-    checker.check_with_signatures(decls, stdlib_decls)
+    let mut result = checker.check_with_signatures(decls, stdlib_decls);
+    // The stdlib's bodies are lowered like the program's, so lowering needs
+    // their returns' moves too. They aren't checked for errors here — only
+    // walked for this.
+    let mut stdlib = OwnershipChecker::new(program);
+    stdlib.collect_signatures(decls);
+    stdlib.collect_signatures(stdlib_decls);
+    for decl in stdlib_decls {
+        stdlib.check_decl(decl);
+    }
+    result.return_moves.extend(stdlib.return_moves);
+    result
 }
 
 /// The statements of a declaration's bodies: a function's, each method's, a

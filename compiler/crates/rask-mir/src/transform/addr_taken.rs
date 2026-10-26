@@ -322,7 +322,6 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
             name: Some(format!("__mem{}_{}", of.0, id.0)),
             ty: ty.clone(),
             is_param: false,
-            unerased: None,
         });
         id
     };

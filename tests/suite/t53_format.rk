@@ -14,6 +14,15 @@ test "std.fmt/F3 — named placeholders capture from scope" {
     assert format("hi {name}, {count} times") == "hi world, 3 times"
 }
 
+// Each placeholder is parsed on its own. They used to share node ids, so the
+// type of the last one stood for all of them and `name` printed as a number.
+test "std.fmt/F3 — named placeholders of different types, in either order" {
+    let name = "world"
+    let count = 3
+    assert format("{count} {name}") == "3 world"
+    assert format("{name} {count}") == "world 3"
+}
+
 test "std.fmt/F4 — doubled braces are literal" {
     assert format("{{x}} {}", 1) == "{{x}} 1"
     assert format("{{}}") == "{{}}"

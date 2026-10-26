@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an `x"…"` bytes literal that isn't pairs of hex digits
+// (std.bytes/BY10). The error points at the character that broke it.
+
+func main() {
+    // ERROR: 'G' is not a hex digit
+    let bad = x"89 5G"
+
+    // ERROR: a digit with no partner
+    let odd = x"89 504"
+
+    // ERROR: whitespace inside a pair splits it
+    let split = x"8 9"
+    println(bad.len() + odd.len() + split.len())
+}

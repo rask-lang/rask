@@ -24,12 +24,12 @@ extend BinaryParseError {
 /// A byte buffer read front to back. Each `read_*` takes the next value and
 /// moves past it, so nothing is copied but what a read hands back.
 public struct BinaryReader {
-    data: Vec<u8>
+    data: bytes
     at: usize
 }
 
 extend BinaryReader {
-    public func new(take data: Vec<u8>) -> BinaryReader {
+    public func new(data: bytes) -> BinaryReader {
         return BinaryReader(data: data, at: 0)
     }
 
@@ -44,7 +44,7 @@ extend BinaryReader {
     }
 
     /// The whole buffer back, read part included.
-    public func into_inner(take self) -> Vec<u8> {
+    public func into_inner(take self) -> bytes {
         return self.data
     }
 
@@ -138,15 +138,12 @@ extend BinaryReader {
         return f64.from_bits(u64.from_le_bytes(b))
     }
 
-    /// The next `n` bytes, copied out.
-    public func read_bytes(mutate self, n: usize) -> Vec<u8> or BinaryParseError {
+    /// The next `n` bytes, sharing the buffer (std.bytes/BY9).
+    public func read_bytes(mutate self, n: usize) -> BytesView or BinaryParseError {
         try self.need(n)
-        mut head: Vec<u8> = Vec.with_capacity(n)
-        for i in self.at..self.at + n {
-            head.push(self.data[i])
-        }
+        let at = self.at
         self.at += n
-        return head
+        return self.data[at..at + n].view()
     }
 
     /// Fails unless at least `n` bytes are left.
@@ -325,9 +322,9 @@ extend BinaryBuilder {
         return self.write_u64le(value.to_bits())
     }
 
-    public func write_bytes(take self, bytes: Vec<u8>) -> BinaryBuilder {
+    public func write_bytes(take self, data: Vec<u8>) -> BinaryBuilder {
         mut b = self
-        for byte in bytes {
+        for byte in data {
             b.data.push(byte)
         }
         return b

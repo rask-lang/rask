@@ -36,14 +36,14 @@ test "the last byte of a file read by the runtime" {
         return
     }
     ensure f.close()
-    let bytes = f.read_bytes() catch e => {
+    let raw = f.read_bytes() catch e => {
         assert false
         return
     }
     let _ = f.close()
-    assert bytes.len() == 5
-    assert (bytes.get(4) ?? 0) == 111
-    let text = string.from_utf8(bytes) catch e => {
+    assert raw.len() == 5
+    assert (raw.get(4) ?? 0) == 111
+    let text = string.from_utf8(raw.freeze()) catch e => {
         assert false
         return
     }

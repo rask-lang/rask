@@ -270,15 +270,15 @@ impl<'a> MirLowerer<'a> {
                 {
                     // `join` is over strings, and the collected ones are the
                     // temporary vector's to release.
-                    let (vec_op, _) = self.lower_iter_collect(&chain, Some(MirType::String))?;
+                    let (vec_op, _) = self.lower_iter_collect(&chain, Some(MirType::Buffer))?;
                     let (sep_op, _) = self.lower_expr(&args[0].expr)?;
-                    let dst = self.builder.alloc_temp(MirType::String);
+                    let dst = self.builder.alloc_temp(MirType::Buffer);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(dst),
                         func: FunctionRef::internal("Vec_join".to_string()),
                         args: vec![vec_op, sep_op],
                     }));
-                    return Ok(Some((MirOperand::Local(dst), MirType::String)));
+                    return Ok(Some((MirOperand::Local(dst), MirType::Buffer)));
                 }
             }
             // `min`/`max` — the same fused loop, keeping the running extreme.
@@ -709,7 +709,7 @@ impl<'a> MirLowerer<'a> {
         args: &[rask_ast::expr::CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
         let (obj_op, obj_ty) = self.lower_expr(object)?;
-        if !matches!(obj_ty, MirType::Ptr) {
+        if !matches!(obj_ty, MirType::Ptr | MirType::Container(_)) {
             return Ok(None);
         }
         let elem_ty = self
@@ -1134,7 +1134,9 @@ impl<'a> MirLowerer<'a> {
                     current_ty = mapped_ty;
                 }
                 super::IterAdapter::Enumerate => {
-                    let tuple_ty = MirType::Tuple(vec![MirType::I64, current_ty.clone()]);
+                    // The pair lends the element for one turn; the collection
+                    // still owns it, so releasing the pair mustn't free it.
+                    let tuple_ty = MirType::Tuple(vec![MirType::I64, current_ty.borrowed()]);
                     let tuple_local = self.builder.alloc_temp(tuple_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
@@ -1288,10 +1290,7 @@ impl<'a> MirLowerer<'a> {
         // body computes an `i32` can still yield `i64`s, widened on the way
         // out because the binding asked for a `Vec<i64>`; sized by the body,
         // the vector held 4-byte elements that every reader took 8 at a time.
-        let slot_ty = elem
-            .as_ref()
-            .map(MirType::without_container_kinds)
-            .unwrap_or_else(|| final_ty.clone());
+        let slot_ty = elem.clone().unwrap_or_else(|| final_ty.clone());
         let args = vec![
             MirOperand::Constant(MirConst::Int(slot_ty.size() as i64)),
             crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
@@ -2138,7 +2137,7 @@ impl<'a> MirLowerer<'a> {
     /// runtime's own lexicographic compare, so route there instead.
     fn emit_key_less(&mut self, key_ty: &MirType, left: LocalId, right: LocalId) -> LocalId {
         let less = self.builder.alloc_temp(MirType::Bool);
-        if matches!(key_ty, MirType::String) {
+        if matches!(key_ty, MirType::Buffer) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(less),
                 func: FunctionRef::internal("string_lt".to_string()),

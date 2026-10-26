@@ -64,7 +64,7 @@ func main() {
 
     // Splitting strings
     let sentence = "one two three four five"
-    let words = sentence.split_whitespace().to_vec()
+    let words = sentence.split_whitespace().to_strings()
 
     print("Words: ")
     for word in words {
@@ -76,7 +76,7 @@ func main() {
 
     // Split by delimiter
     let csv = "apple,banana,orange,grape"
-    let fruits = csv.split(",").to_vec()
+    let fruits = csv.split(",").to_strings()
 
     print("Fruits: ")
     for fruit in fruits {

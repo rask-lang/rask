@@ -279,6 +279,10 @@ enum RawToken {
     #[regex(r#"r"[^"]*""#)]
     RawString,
 
+    // Hex bytes literal (x"89 50 4E 47" — std.bytes/BY10)
+    #[regex(r#"x"[^"]*""#)]
+    HexBytes,
+
     // Raw string literal with hash delimiters (r#"..."# — handles embedded quotes)
     #[token("r#", raw_hash_string)]
     RawHashString,
@@ -292,6 +296,34 @@ enum RawToken {
     // === Identifier (must come after keywords) ===
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Ident,
+}
+
+/// The bytes of an `x"…"` literal. `base` is the offset of the first
+/// character inside the quotes. Whitespace may sit between pairs, not inside
+/// one.
+fn parse_hex_bytes(inner: &str, base: usize) -> Result<Vec<u8>, LexError> {
+    let mut out = Vec::with_capacity(inner.len() / 2);
+    let mut high: Option<(u8, usize)> = None;
+    for (i, ch) in inner.char_indices() {
+        let pos = base + i;
+        if ch.is_ascii_whitespace() {
+            if let Some((_, at)) = high {
+                return Err(LexError::odd_hex_digits(at));
+            }
+            continue;
+        }
+        let Some(digit) = ch.to_digit(16) else {
+            return Err(LexError::bad_hex_byte(ch, pos));
+        };
+        match high.take() {
+            Some((h, _)) => out.push(h << 4 | digit as u8),
+            None => high = Some((digit as u8, pos)),
+        }
+    }
+    if let Some((_, at)) = high {
+        return Err(LexError::odd_hex_digits(at));
+    }
+    Ok(out)
 }
 
 /// Lex a raw hash string: r#"..."#, r##"..."##, etc.
@@ -545,8 +577,15 @@ impl<'a> Lexer<'a> {
 
             let kind = match result {
                 Ok(raw) => {
+                    let is_bytes = matches!(raw, RawToken::HexBytes);
                     match self.convert_token(raw, slice, span.start, span.end) {
                         Ok(kind) => kind,
+                        // A bad bytes literal is still a literal where it
+                        // stands, so the parser has nothing to add about it.
+                        Err(e) if is_bytes => {
+                            self.errors.push(e);
+                            TokenKind::Bytes(Vec::new())
+                        }
                         Err(e) => {
                             self.errors.push(e);
                             continue; // Skip this token and continue
@@ -830,6 +869,10 @@ impl<'a> Lexer<'a> {
                 let inner = &slice[content_start..content_end];
                 TokenKind::String(inner.to_string(), StrPositions::new(content_start))
             }
+            RawToken::HexBytes => {
+                let inner = &slice[2..slice.len() - 1];
+                TokenKind::Bytes(parse_hex_bytes(inner, start + 2)?)
+            }
             RawToken::Ident => TokenKind::Ident(slice.to_string()),
 
             RawToken::DocComment => {
@@ -1029,6 +1072,28 @@ impl LexError {
             code: "E0004",
             label: "not a valid number",
             why: "the lexer expected a valid token at this position",
+        }
+    }
+
+    fn bad_hex_byte(ch: char, pos: usize) -> Self {
+        Self {
+            span: Span::new(pos, pos + ch.len_utf8()),
+            message: format!("'{}' is not a hex digit", ch.escape_default()),
+            hint: Some("a bytes literal holds pairs of hex digits, with spaces or newlines between pairs: x\"89 50 4E 47\"".to_string()),
+            code: "E0005",
+            label: "not a hex digit",
+            why: "each byte in x\"…\" is written as two hex digits",
+        }
+    }
+
+    fn odd_hex_digits(pos: usize) -> Self {
+        Self {
+            span: Span::new(pos, pos + 1),
+            message: "this hex digit has no partner".to_string(),
+            hint: Some("each byte takes two digits: write `0F`, not `F`".to_string()),
+            code: "E0005",
+            label: "half a byte",
+            why: "each byte in x\"…\" is written as two hex digits, so the digits come in pairs",
         }
     }
 

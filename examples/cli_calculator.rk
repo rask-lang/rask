@@ -349,7 +349,7 @@ func main() -> void or Error {
 
     loop {
         print("> ")
-        let input = (try io.read_line()).trim()
+        let input = (try io.read_line()).trim().to_string()
 
         if input.is_empty() { continue }
 

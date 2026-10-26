@@ -10,11 +10,11 @@ import sync.Local
 import sync.Mutex
 
 test "narrow integers keep their values and signs" {
-    mut bytes: Vec<u8> = Vec.new()
-    bytes.push(200)
-    bytes.push(7)
-    assert bytes[0] == 200
-    assert bytes.len() == 2
+    mut raw: Vec<u8> = Vec.new()
+    raw.push(200)
+    raw.push(7)
+    assert raw[0] == 200
+    assert raw.len() == 2
     let small: Vec<i16> = Vec.from([-300, 5, 32000])
     assert small[0] == -300
     assert small[2] == 32000
@@ -43,8 +43,8 @@ test "bools and chars" {
 }
 
 test "join prints each element as it prints alone" {
-    let bytes: Vec<u8> = Vec.from([200, 1])
-    assert bytes.join(",") == "200,1"
+    let raw: Vec<u8> = Vec.from([200, 1])
+    assert raw.join(",") == "200,1"
     let fs: Vec<f32> = Vec.from([1.5, 2.0])
     assert fs.join(" ") == "1.5 2"
     let flags: Vec<bool> = Vec.from([true, false])

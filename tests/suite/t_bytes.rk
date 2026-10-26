@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.bytes: a string's value without the UTF-8 rule. Literals, indexing,
+// slices and views, freezing and back to a vector, the trip to and from string,
+// comparison and hashing, and the debug form. Run under the leak checker on
+// both backends, so every buffer that's shared here is also given back.
+import bytes.BytesView
+import bits
+
+const PNG: bytes = x"89 50 4E 47 0D 0A 1A 0A"
+
+func ramp(n: i64) -> Vec<u8> {
+    mut v: Vec<u8> = Vec.new()
+    for i in 0..n {
+        v.push(i.wrap<u8>())
+    }
+    return v
+}
+
+struct Frame {
+    kind: u8
+    payload: BytesView
+}
+
+func parse_frame(packet: bytes) -> Frame or bits.BinaryParseError {
+    mut r = bits.BinaryReader.new(packet)
+    let kind = try r.read_u8()
+    let len = try r.read_u16be()
+    let payload = try r.read_bytes(len.wrap<usize>())
+    return Frame(kind: kind, payload: payload)
+}
+
+test "a hex literal is its bytes, in either case and across lines" {
+    let b = x"89 50 4e 47
+              0D 0A 1A 0A"
+    assert b == PNG
+    assert PNG.len() == 8
+    assert PNG[0] == 0x89
+    assert PNG[7] == 0x0A
+    assert x"".is_empty()
+}
+
+test "a literal too long to sit inline" {
+    let long = x"00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13"
+    assert long.len() == 20
+    assert long[19] == 0x13
+    assert long == ramp(20).freeze()
+}
+
+test "slices clamp, views share, to_bytes copies" {
+    let text = "a header that is long enough to sit on the heap".as_bytes()
+    assert text[2..8].to_bytes() == "header".as_bytes()
+    assert text[40..100].to_bytes() == "he heap".as_bytes()
+    assert text[9..9].to_bytes().is_empty()
+    let v = text[2..30].view()
+    assert v.len() == 28
+    assert v.starts_with("header".as_bytes())
+    assert v[7..11].to_bytes() == "that".as_bytes()
+    let again = v.view()
+    assert again.to_bytes() == text[2..30].to_bytes()
+}
+
+test "a slice of a slice is placed in the original" {
+    let b = ramp(40).freeze()
+    let inner = b[10..30][5..10].to_bytes()
+    assert inner == x"0F 10 11 12 13"
+}
+
+func same_as_ramp(v: Vec<u8>, n: i64) -> bool {
+    if v.len() != n.wrap<usize>() {
+        return false
+    }
+    for i in 0..n {
+        if v[i.wrap<usize>()] != i.wrap<u8>() {
+            return false
+        }
+    }
+    return true
+}
+
+test "to_vec of the only holder gives the bytes back" {
+    mut w = ramp(40).freeze().to_vec()
+    assert same_as_ramp(w, 40)
+    w.push(7)
+    assert w.len() == 41
+    assert w[40] == 7
+}
+
+test "to_vec at a binding's last use gives the bytes back" {
+    let b = ramp(40).freeze()
+    assert b[39] == 39
+    mut w = b.to_vec()
+    w[0] = 99
+    assert w[0] == 99
+    assert w[39] == 39
+    assert w.len() == 40
+}
+
+test "to_vec of a shared buffer copies and leaves the other holder alone" {
+    let b = ramp(40).freeze()
+    let kept = b
+    mut w = b.to_vec()
+    w[0] = 99
+    w.push(7)
+    assert w.len() == 41
+    assert kept[0] == 0
+    assert kept.len() == 40
+    assert b[0] == 0
+}
+
+test "to_vec of a small value, and of a sliced copy" {
+    let v = x"01 02".to_vec()
+    assert v.len() == 2
+    assert v[1] == 2
+    let b = ramp(40).freeze()
+    let mid = b[10..20].to_bytes().to_vec()
+    assert mid.len() == 10
+    assert mid[0] == 10
+    assert b.len() == 40
+}
+
+test "from_utf8 checks and shares; as_bytes is the same bytes" {
+    let s = string.from_utf8("héllo wörld, long enough for the heap".as_bytes()) catch _ => "BAD"
+    assert s == "héllo wörld, long enough for the heap"
+    let r = string.from_utf8(x"68 FF")
+    assert r is Utf8Error
+    assert (string.from_utf8(x"68 69") catch _ => "BAD") == "hi"
+}
+
+test "equality, order and hashing are bytewise" {
+    assert x"01 02" < x"01 03"
+    assert x"01" < x"01 00"
+    assert x"FF" > x"01 FF"
+    assert x"AB" == x"ab"
+    assert x"68 69".hash() == "hi".hash()
+    assert PNG.index_of(x"0D 0A") == 4
+    assert PNG.index_of(x"FF") == none
+    assert PNG.contains(x"1A")
+    assert PNG.ends_with(x"1A 0A")
+}
+
+test "bytes key a map" {
+    mut m: Map<bytes, i64> = Map.new()
+    m.insert(PNG, 1)
+    m.insert(x"00", 2)
+    m.insert(ramp(30).freeze(), 3)
+    assert m.get(PNG) == 1
+    assert m.get(x"00") == 2
+    assert m.get(ramp(30).freeze()) == 3
+    assert m.get(x"01") == none
+}
+
+test "debug prints the literal that makes it" {
+    assert "{PNG:debug}" == "x\"89 50 4E 47 0D 0A 1A 0A\""
+    assert "{x"":debug}" == "x\"\""
+}
+
+test "a binary reader reads bytes and hands back views" {
+    let frame = parse_frame(x"07 00 03 61 62 63 FF") catch _ => Frame(kind: 0, payload: x"".view())
+    assert frame.kind == 7
+    assert frame.payload == "abc".as_bytes()
+    let short = parse_frame(x"07 00 09 61")
+    assert short is bits.BinaryParseError
+}

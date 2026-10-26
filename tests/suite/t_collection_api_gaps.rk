@@ -214,14 +214,14 @@ test "map insert_if_missing — a string value survives the closure" {
 
 // #888: an empty separator matches at every boundary.
 test "split — an empty separator gives every boundary" {
-    let parts = "ab".split("").to_vec()
+    let parts = "ab".split("").to_strings()
     assert parts.len() == 4
     assert parts.join("|") == "|a|b|"
 
     // One character: a boundary each side.
-    assert "a".split("").to_vec().len() == 3
+    assert "a".split("").to_strings().len() == 3
     // Nothing at all: the two ends are the same boundary, counted twice.
-    assert "".split("").to_vec().len() == 2
+    assert "".split("").to_strings().len() == 2
 }
 
 test "split — an empty separator walks characters, not bytes" {
@@ -231,10 +231,10 @@ test "split — an empty separator walks characters, not bytes" {
 // The non-empty separators always agreed; they're here so a change to the empty
 // case can't quietly move them.
 test "split — a real separator is unchanged" {
-    assert "a,,b".split(",").to_vec().len() == 3
+    assert "a,,b".split(",").to_strings().len() == 3
     assert "a,,b".split(",").join("|") == "a||b"
     assert ",a,".split(",").join("|") == "|a|"
-    assert "".split(",").to_vec().len() == 1
+    assert "".split(",").to_strings().len() == 1
 }
 
 func main() {}

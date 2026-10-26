@@ -29,7 +29,7 @@ runtime_constants! {
     /// The tag of the absent or failed side (`None`, `Err`).
     RASK_TAG_ABSENT = rask_stdlib::wrappers::ABSENT_TAG as i64;
     /// Where a `T or E` keeps the source line its error came from: a
-    /// `uint32_t`, zero for none (`crate::abi`).
+    /// `uint32_t`, zero for none (`rask_types::abi`).
     RASK_RESULT_ORIGIN_LINE_OFFSET = rask_types::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
 
     /// How the runtime reads one element of a vector it formats or sorts. The
@@ -66,6 +66,13 @@ runtime_constants! {
     RASK_VEC_ELEM_SIZE_OFFSET = 24;
     /// The bit of a `RaskStr`'s second word that marks the heap form.
     RASK_STRING_HEAP_BIT = 63;
+    /// The bit that marks a heap value starting partway into its buffer (a
+    /// view). Clear, the rest of the word is the length.
+    RASK_STRING_START_BIT = 62;
+    /// A heap buffer's header: a u32 count, four spare bytes, a u64
+    /// capacity. The data follows. A `Vec<u8>` reserves the same header so
+    /// it freezes into `bytes` without moving.
+    RASK_STRING_HEADER_SIZE = 16;
 
     /// What a box's payload is, so the box's last release can give it back.
     RASK_BOX_PAYLOAD_NONE = 0;

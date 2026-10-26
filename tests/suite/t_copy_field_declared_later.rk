@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Whether a struct copies doesn't depend on declaration order (mem.value/VS1).
+//
+// `Rect` names `Point` before `Point` is declared. The field used to be
+// recorded as a bare name, which the Copy rule couldn't size or classify, so
+// `Rect` was move-only here and Copy with the two declarations swapped. The
+// error said it "owns heap memory", which it doesn't.
+
+struct Rect {
+    origin: Point
+    width: i32
+}
+
+enum Mark {
+    At(Point)
+    Nowhere
+}
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+test "a struct whose field is declared below it still copies" {
+    let r = Rect(origin: Point(x: 1, y: 2), width: 3)
+    let a = r
+    let b = r
+    assert a.width == 3
+    assert b.origin.x == 1
+}
+
+test "an enum whose payload is declared below it still copies" {
+    let m = Mark.At(Point(x: 4, y: 5))
+    let a = m
+    let b = m
+    assert a is Mark.At
+    assert b is Mark.At
+}

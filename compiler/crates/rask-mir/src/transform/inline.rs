@@ -252,11 +252,12 @@ fn pointer_shaped(ty: &MirType) -> bool {
     matches!(
         ty,
         MirType::Ptr
+            | MirType::Container(_)
             | MirType::Struct(_)
             | MirType::Enum(_)
             | MirType::Tuple(_)
             | MirType::Array { .. }
-            | MirType::String
+            | MirType::Buffer
             | MirType::Option(_)
             | MirType::Result { .. }
     )
@@ -392,7 +393,6 @@ fn try_inline_call(
             name: param.name.clone(),
             ty: param.ty.clone(),
             is_param: false,
-            unerased: param.unerased.clone(),
         });
     }
 
@@ -409,7 +409,6 @@ fn try_inline_call(
             name: local.name.clone(),
             ty: local.ty.clone(),
             is_param: false,
-            unerased: local.unerased.clone(),
         });
     }
 
@@ -836,6 +835,10 @@ fn remap_stmt(
         MirStmtKind::ZeroAggregate { local } => MirStmtKind::ZeroAggregate {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::MovedOut { local } => MirStmtKind::MovedOut {
+            local: local_map.get(local).copied().unwrap_or(*local),
+        },
+        MirStmtKind::Guarded { .. } => unreachable!("a release pass expands its guarded releases before it returns"),
         MirStmtKind::ReleaseSlot { addr, offset, ty } => MirStmtKind::ReleaseSlot {
             addr: local_map.get(addr).copied().unwrap_or(*addr),
             offset: *offset,
@@ -1114,7 +1117,6 @@ mod tests {
             name: Some(name.to_string()),
             ty,
             is_param,
-            unerased: None,
         }
     }
 

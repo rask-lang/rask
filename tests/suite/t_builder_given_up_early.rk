@@ -43,11 +43,11 @@ extend BadByte {
 }
 
 // Gives up on the first byte over 127, so the builder is live at the return.
-func ascii_only(bytes: Vec<u8>) -> string or BadByte {
+func ascii_only(raw: Vec<u8>) -> string or BadByte {
     mut out = StringBuilder.new()
     mut i = 0
-    while i < bytes.len().clamp<i64>() {
-        let b = (bytes.get(i) ?? 0).clamp<i64>()
+    while i < raw.len().clamp<i64>() {
+        let b = (raw.get(i) ?? 0).clamp<i64>()
         if b > 127 {
             return BadByte(at: i)
         }
@@ -90,8 +90,8 @@ func until_stop(words: Vec<string>) -> string or BadByte {
 }
 
 test "mem.linear — the builder is built on the path that finishes" {
-    let bytes: Vec<u8> = [104, 105]
-    if ascii_only(bytes) is string as s {
+    let raw: Vec<u8> = [104, 105]
+    if ascii_only(raw) is string as s {
         assert s == "hi"
     } else {
         assert false
@@ -99,8 +99,8 @@ test "mem.linear — the builder is built on the path that finishes" {
 }
 
 test "mem.linear — and released on the path that gives up" {
-    let bytes: Vec<u8> = [104, 200, 105]
-    if ascii_only(bytes) is BadByte as e {
+    let raw: Vec<u8> = [104, 200, 105]
+    if ascii_only(raw) is BadByte as e {
         assert e.at == 1
     } else {
         assert false
@@ -134,8 +134,8 @@ test "mem.linear — both paths in a loop" {
     mut ok = 0
     mut rejected = 0
     for i in 1..8 {
-        let bytes: Vec<u8> = [104, (i * 40).clamp<u8>()]
-        if ascii_only(bytes) is string as s {
+        let raw: Vec<u8> = [104, (i * 40).clamp<u8>()]
+        if ascii_only(raw) is string as s {
             ok = ok + s.len().clamp<i64>()
         } else {
             rejected = rejected + 1
@@ -148,8 +148,8 @@ test "mem.linear — both paths in a loop" {
 // The one the whole thing came from: `string.from_utf8` rejecting a sequence.
 test "std.strings/S4 — a rejected sequence leaves nothing behind" {
     let bad: Vec<u8> = [0xFF, 0x41]
-    assert (string.from_utf8(bad) catch _ => "REJECTED") == "REJECTED"
+    assert (string.from_utf8(bad.freeze()) catch _ => "REJECTED") == "REJECTED"
 
     let good: Vec<u8> = [0x41, 0x42]
-    assert (string.from_utf8(good) catch _ => "REJECTED") == "AB"
+    assert (string.from_utf8(good.freeze()) catch _ => "REJECTED") == "AB"
 }

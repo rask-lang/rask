@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `bytes` travelling the way any value does: as a parameter, a closure's
+// element, a struct field, a tuple part and a vector element. To MIR a bytes
+// value and a string are the same buffer, so each of these is a place where
+// lowering has to ask the checker which one it holds.
+
+struct Packet {
+    tag: string
+    body: bytes
+}
+
+func total_len(parts: Vec<bytes>) -> usize {
+    mut n: usize = 0
+    for p in parts {
+        n += p.len()
+    }
+    return n
+}
+
+func starts(b: bytes, prefix: bytes) -> bool {
+    return b.starts_with(prefix)
+}
+
+test "a bytes parameter calls bytes methods" {
+    assert starts(x"01 02 03", x"01")
+    assert !starts(x"01 02 03", x"02")
+    assert total_len([x"01", x"02 03", x""]) == 3
+}
+
+test "a closure over bytes elements" {
+    mut v: Vec<bytes> = [x"03", x"01 FF", x"02"]
+    v.sort_by(|a, b| a.compare(b))
+    assert v[0] == x"01 FF"
+    assert v[2] == x"03"
+    assert v.any(|b| b.len() == 2)
+}
+
+test "bytes inside other values print as bytes" {
+    let p = Packet(tag: "hi", body: x"0A 0B")
+    assert "{p:debug}" == "Packet(tag: \"hi\", body: x\"0A 0B\")"
+    let pair = (x"FF", "s")
+    assert "{pair:debug}" == "(x\"FF\", \"s\")"
+    let v: Vec<bytes> = [x"01", x"02 03"]
+    assert "{v:debug}" == "[x\"01\", x\"02 03\"]"
+}
+
+test "a cloned bytes value is the same bytes" {
+    let a = "a buffer long enough to live on the heap".as_bytes()
+    let b = a.clone()
+    assert a == b
+    assert b.len() == a.len()
+}

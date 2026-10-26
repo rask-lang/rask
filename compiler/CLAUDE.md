@@ -84,6 +84,14 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/lower/closures.rs` — closure capture and lowering
 - `src/lower/iterators.rs` — iterator chain fusion
 
+**MIR types say what a value's bytes are and how it's released, nothing about
+what it means.** Lowering takes meaning from the checker's type. `string` and
+`bytes` are both `Buffer`; whether to print it quoted, which methods it has,
+how it renders under `{:debug}` is asked of the checker during lowering, and
+no pass after lowering needs to know. The release kinds: nothing (scalars,
+`Ptr`, `FuncPtr`), a refcount (`Buffer`), its kind's free (`Container(kind)`),
+an owned block (`Heap(T)`), and aggregates release their parts.
+
 **MIR types:**
 - `src/lib.rs` — MirFunction, MirStmt, MirTerminator, BlockId, LocalId
 - `src/types.rs` — MirType, `src/operand.rs` — MirOperand, MirConst, MirRValue

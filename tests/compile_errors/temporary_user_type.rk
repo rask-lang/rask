@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a program's own `@temporary` type gets the slice's rule (E0303, E0305, E0307)
+//
+// Nothing in the compiler names a string slice for type.temporary or
+// type.reads-as. `Window` declares both on itself and is refused the same
+// way, with the advice its own declaration gives.
+
+@temporary(keep: [owned])
+@reads_as(rows)
+struct Window {
+    rows: Vec<i64>
+    from: usize
+}
+
+extend Window {
+    func owned(self) -> Vec<i64> {
+        return self.rows.clone()
+    }
+}
+
+func window(rows: Vec<i64>) -> Window {
+    return Window(rows: rows.clone(), from: 0)
+}
+
+// ERROR: `Label` has no field `txt` to read as [E0305]
+@reads_as(txt)
+struct Label {
+    text: string
+}
+
+func main() {
+    let rows: Vec<i64> = [1, 2, 3]
+    // Reading through the field is fine where the window is made.
+    println("{window(rows).len()}")
+    // ERROR: `w` would keep a `Window` [E0303]
+    let w = window(rows)
+    // ERROR: `Window` doesn't lend `push`: it doesn't only read [E0307]
+    window(rows).push(4)
+    println("{w.from} {Label(text: \"x\").text}")
+}

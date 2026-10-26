@@ -765,6 +765,7 @@ impl Desugarer {
             | ExprKind::Int(..)
             | ExprKind::Float(..)
             | ExprKind::String(_)
+            | ExprKind::Bytes(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_) => true,
             ExprKind::Field { object, .. } => Self::reads_without_effect(object),
@@ -1010,6 +1011,7 @@ impl Desugarer {
             | ExprKind::Ident(_) | ExprKind::GenericName { .. }
             | ExprKind::Null
             | ExprKind::None
+            | ExprKind::Bytes(_)
             => {}
             ExprKind::String(_) | ExprKind::StringInterp(_) => {
                 // String interpolation desugaring handled below
@@ -1076,6 +1078,61 @@ impl Desugarer {
             }
         }
         // Not and Ref remain as unary
+
+        // `x[a..b]` is the range-index operator: `x.slice(a, b, false)`, `x[a..]`
+        // passes `none` for the end and `x[..b]` a `0` start, `..=` sets the
+        // last argument. Like the others it answers to a conformance, `Slice`
+        // (type.operator-resolution/OR2), so any type can be sliced and none is
+        // the compiler's.
+        if matches!(&expr.kind, ExprKind::Index { index, .. } if matches!(index.kind, ExprKind::Range { .. })) {
+            let old = std::mem::replace(&mut expr.kind, ExprKind::Bool(false));
+            if let ExprKind::Index { object, index } = old {
+                if let ExprKind::Range { start, end, inclusive } = index.kind {
+                    let index_span = index.span;
+                    let mut synth = |kind: ExprKind| Expr { id: self.fresh_id(), kind, span: index_span };
+                    // An end takes any integer type (type.operators/IX1), so one
+                    // that isn't a literal goes through the checked conversion:
+                    // a negative end panics, as an index does.
+                    let mut as_usize = |e: Expr, synth: &mut dyn FnMut(ExprKind) -> Expr| {
+                        if matches!(e.kind, ExprKind::Int(..)) {
+                            return e;
+                        }
+                        let span = e.span;
+                        let to = Expr {
+                            id: synth(ExprKind::Bool(false)).id,
+                            kind: ExprKind::Convert {
+                                expr: Box::new(e),
+                                target: rask_ast::ty::TypeExpr::named("usize"),
+                                kind: ConvertKind::To,
+                            },
+                            span,
+                        };
+                        Expr {
+                            id: synth(ExprKind::Bool(false)).id,
+                            kind: ExprKind::Unwrap { expr: Box::new(to), message: None, bang: span },
+                            span,
+                        }
+                    };
+                    let start = match start {
+                        Some(e) => as_usize(*e, &mut synth),
+                        None => synth(ExprKind::Int(0, Some(rask_ast::token::IntSuffix::Usize))),
+                    };
+                    let end = match end {
+                        Some(e) => as_usize(*e, &mut synth),
+                        None => synth(ExprKind::None),
+                    };
+                    let through = synth(ExprKind::Bool(inclusive));
+                    let arg = |expr| CallArg { name: None, mode: ArgMode::Default, expr };
+                    self.operator_calls.insert(expr.id);
+                    expr.kind = ExprKind::MethodCall {
+                        object,
+                        method: rask_ast::operators::SLICE_METHOD.to_string(),
+                        type_args: None,
+                        args: vec![arg(start), arg(end), arg(through)],
+                    };
+                }
+            }
+        }
 
         // Desugar StringInterp: segments → "lit".concat(expr.to_string()).concat("lit")...
         if let ExprKind::StringInterp(segments) = &expr.kind {
@@ -1316,6 +1373,10 @@ impl Desugarer {
         let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
         match parser.parse_expr() {
             Ok(mut parsed) => {
+                // The parser numbers from zero, so every placeholder came out
+                // with the same ids and the checker's answer for one landed on
+                // all of them: `format("{count} {name}")` typed `name` as `i64`.
+                rask_ast::rewrite::rewrite_expr(&mut parsed, &mut FreshIds(&mut self.next_id));
                 offset_expr_spans(&mut parsed, span.start);
                 parsed.span = span;
                 Some(parsed)

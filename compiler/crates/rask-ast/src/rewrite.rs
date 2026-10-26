@@ -266,6 +266,7 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         ExprKind::Int(..)
         | ExprKind::Float(..)
         | ExprKind::String(_)
+        | ExprKind::Bytes(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
         | ExprKind::Null

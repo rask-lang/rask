@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container's MIR type says which container it is, everywhere it sits: a
+// local, an optional's payload, a tuple part, an array element, an error
+// result's ok side. Run under the leak checker, so each of those has to be
+// freed by the right free exactly once.
+//
+// The kind used to be stripped from stored types because codegen told an
+// already-wrapped return from a bare payload by type equality, and a second
+// spelling of `Vec<i64>?` made `return none` wrap the option twice:
+// `maybe(0)? as w` took the present branch and called `len` on the tag.
+
+func maybe(n: i64) -> Vec<i64>? {
+    if n == 0 {
+        return none
+    }
+    mut v: Vec<i64> = Vec.new()
+    for i in 0..n {
+        v.push(i)
+    }
+    return v
+}
+
+func pair(n: i64) -> (Vec<i64>, i64) {
+    return (maybe(n) ?? Vec.new(), n)
+}
+
+struct Nope {
+    why: string
+}
+
+extend Nope {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func parse(ok: bool) -> Vec<string> or Nope {
+    if !ok {
+        return Nope(why: "nope, and long enough to sit on the heap")
+    }
+    return ["a heap string long enough to need freeing".to_uppercase(), "b"]
+}
+
+test "none comes back as none, a vector as itself" {
+    if maybe(0)? as w {
+        assert w.len() == 99
+    }
+    assert maybe(0) == none
+    if maybe(3)? as w {
+        assert w.len() == 3
+        assert w[2] == 2
+    } else {
+        assert false
+    }
+}
+
+test "a vector in a tuple and an array" {
+    let (v, n) = pair(4)
+    assert v.len() == 4
+    assert n == 4
+    let both = [maybe(2) ?? Vec.new(), maybe(1) ?? Vec.new()]
+    assert both[0].len() == 2
+    assert both[1].len() == 1
+}
+
+test "a vector on the ok side of a result" {
+    let got = parse(true) catch _ => Vec.new()
+    assert got.len() == 2
+    assert got[0].starts_with("A HEAP")
+    assert parse(false) is Nope
+}
+
+// `enumerate` pairs each element with its index for one turn. The element is
+// still the collection's, so the pair holds it as a plain word; as a container
+// slot, releasing the pair freed the element and `lsm_database` crashed.
+test "enumerate lends a vector of vectors its elements" {
+    let vv: Vec<Vec<i64>> = [maybe(2) ?? Vec.new(), maybe(3) ?? Vec.new()]
+    mut total: u64 = 0
+    for (i, v) in vv.enumerate() {
+        total += v.len()
+    }
+    assert total == 5
+    let blocks = (maybe(10) ?? Vec.new()).chunks(4)
+    mut n: u64 = 0
+    for (i, block) in blocks.enumerate() {
+        n += block.len()
+    }
+    for block in blocks {
+        n += block.len()
+    }
+    assert n == 20
+}
+
+test "a vector taken out of a vector of vectors" {
+    mut vv: Vec<Vec<i64>> = Vec.new()
+    vv.push(maybe(2) ?? Vec.new())
+    vv.push(maybe(5) ?? Vec.new())
+    if vv.pop()? as last {
+        assert last.len() == 5
+    }
+    let first = vv.remove(0)
+    assert first.len() == 2
+}

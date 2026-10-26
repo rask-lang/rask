@@ -17,8 +17,8 @@ test "read_line at end of input is UnexpectedEof" {
 test "Stdin.read_bytes at end of input is empty" {
     mut inp = stdin()
     ensure inp.close()
-    let bytes = inp.read_bytes()!
-    assert bytes.len() == 0
+    let raw = inp.read_bytes()!
+    assert raw.len() == 0
     inp.close()
 }
 
@@ -36,8 +36,8 @@ test "Stdin.read_text at end of input is empty" {
 test "Stdout.write_bytes takes an empty vector and flushes clean" {
     mut out = stdout()
     ensure out.close()
-    let bytes: Vec<u8> = []
-    out.write_bytes(bytes)!
+    let raw: Vec<u8> = []
+    out.write_bytes(raw)!
     out.flush()!
     out.close()
 }
@@ -66,8 +66,8 @@ test "Buffer.write_bytes appends, and reads back in order" {
 test "Buffer.write_bytes mixes with write_text" {
     mut buf = Buffer.new()
     buf.write_text("hi ")!
-    let bytes: Vec<u8> = [0x74u8, 0x68, 0x65, 0x72, 0x65]
-    buf.write_bytes(bytes)!
+    let raw: Vec<u8> = [0x74u8, 0x68, 0x65, 0x72, 0x65]
+    buf.write_bytes(raw)!
     let _ = buf.seek(SeekFrom.Start(0))
     assert buf.read_text()! == "hi there"
 }

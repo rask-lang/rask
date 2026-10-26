@@ -116,7 +116,7 @@ mod tests {
     fn local(n: u32) -> LocalId { LocalId(n) }
     fn block(n: u32) -> BlockId { BlockId(n) }
 
-    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I64, is_param: false, unerased: None } }
+    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I64, is_param: false } }
 
     #[test]
     fn removes_unreachable_block() {

@@ -91,7 +91,6 @@ mod tests {
                 name: Some("x".to_string()),
                 ty: MirType::I32,
                 is_param: false,
-                unerased: None,
             }],
             blocks: vec![MirBlock {
                 id: BlockId(0),

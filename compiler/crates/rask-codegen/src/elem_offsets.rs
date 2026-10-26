@@ -129,7 +129,7 @@ fn describe(
         return None;
     }
     match ty {
-        MirType::String => out.push(entry(base, KIND_STRING)),
+        MirType::Buffer => out.push(entry(base, KIND_STRING)),
         // The element is the container. Its own list travels with it, so this
         // level says "a Vec lives here" and stops there. A rack is an arena
         // whose nodes outlive any one element (mem.racks), so it's nobody's

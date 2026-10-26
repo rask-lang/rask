@@ -13,8 +13,8 @@ test "println is captured" {
 test "Stdout.write_bytes is captured too" {
     mut out = io.stdout()
     ensure out.close()
-    let bytes: Vec<u8> = [0x6fu8, 0x6b, 0x0a]
-    out.write_bytes(bytes)!
+    let raw: Vec<u8> = [0x6fu8, 0x6b, 0x0a]
+    out.write_bytes(raw)!
     out.close()
 }
 

@@ -152,8 +152,7 @@ extend Compiler {
         // --- Token consumption ---
 
         // Move to the next token. Previous = what was current.
-        let prev = self.current
-        self.previous = prev
+        self.previous = self.current.clone()
         match self.lexer.next_token() {
             Token as tok => self.current = tok
             LexError as e => return CompileError.LexError(e)

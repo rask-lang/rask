@@ -1071,6 +1071,8 @@ pub enum Value {
     Char(char),
     /// String (mutable, like Vec)
     String(Arc<Mutex<String>>),
+    /// `bytes`: immutable, so the `Arc` is the refcount and nothing locks
+    Bytes(Arc<Vec<u8>>),
     /// Struct instance (shared reference for mutation through self methods)
     Struct(Arc<Mutex<StructData>>),
     /// Enum variant
@@ -1498,6 +1500,7 @@ impl Value {
             Value::Float(_, _) => "f64",
             Value::Char(_) => "char",
             Value::String(_) => "string",
+            Value::Bytes(_) => "bytes",
             Value::Struct(_) => "struct",
             Value::Enum { .. } => "enum",
             Value::Function { .. } => "func",
@@ -1728,6 +1731,9 @@ impl fmt::Display for Value {
             Value::Float(n, k) => write!(f, "{}", k.format(*n)),
             Value::Char(c) => write!(f, "{}", c),
             Value::String(s) => write!(f, "{}", s.lock().unwrap()),
+            // Not Displayable (std.bytes/BY6); this is only reached by
+            // internal rendering, which gets the literal form.
+            Value::Bytes(b) => write!(f, "{}", rask_ast::token::bytes_literal(b)),
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
                 write!(f, "{}(", guard.name)?;

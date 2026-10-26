@@ -213,11 +213,11 @@ search: loop {
 Closures are independent scopes for `return`. `return` inside a closure exits the **closure**, not the enclosing function. This matches function semantics — a closure is an anonymous function. Block-bodied closures require explicit `return`, same as functions.
 
 ```rask
-func format_size(bytes: i64) -> string {
-    if bytes < 1024 {
-        return "{bytes} B"
+func format_size(size: i64) -> string {
+    if size < 1024 {
+        return "{size} B"
     }
-    return "{bytes / 1024} KB"
+    return "{size / 1024} KB"
 }
 
 // return in closure exits the closure, not process_items

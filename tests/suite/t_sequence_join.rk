@@ -4,7 +4,7 @@
 //     println("{s.split(", ").join("|")}")
 //     error: codegen 'main': Function not found: Iterator_join
 //
-// The interpreter ran it, and `s.split(", ").to_vec().join("|")` — two
+// The interpreter ran it, and `s.split(", ").to_strings().join("|")` — two
 // characters longer — compiled. The materializing lowering was gated on the
 // chain having at least one adapter, because it also matches a bare `Vec`, and
 // `Vec.join` has to keep answering for itself: it picks the right runtime by
@@ -56,7 +56,7 @@ test "sequence join — a chain with adapters still fuses" {
 
 test "sequence join — the long way round agrees" {
     let s = "a, b, c"
-    assert s.split(", ").to_vec().join("|") == s.split(", ").join("|")
+    assert s.split(", ").to_strings().join("|") == s.split(", ").join("|")
 }
 
 test "sequence join — an empty separator and a single element" {

@@ -201,7 +201,7 @@ impl<'a> MirLowerer<'a> {
             (MirType::InterfaceObject { interface_name: have }, MirType::InterfaceObject { interface_name: want })
                 if have == want
         );
-        let box_interface: Option<String> = match (&handler, &wrap, self.builder.ret_ty()) {
+        let box_interface: Option<String> = match (&handler, &wrap, &self.return_ty()) {
             (None, None, MirType::Result { err, .. }) => match &**err {
                 MirType::InterfaceObject { interface_name } if !already_boxed(err) => {
                     Some(interface_name.clone())
@@ -264,9 +264,14 @@ impl<'a> MirLowerer<'a> {
         // that makes sense — the enum names the error, the box erases it.
         let (err_val, err_store_size) = match &box_interface {
             Some(interface_name) => {
+                let concrete = match self.ctx.lookup_raw_type(inner.id) {
+                    Some(rask_types::Type::Result { err, .. }) => Some((**err).clone()),
+                    _ => None,
+                };
                 let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_interface_box(
                     MirOperand::Local(err_val),
                     &err_ty,
+                    concrete.as_ref(),
                     interface_name,
                 );
                 match boxed {
@@ -309,7 +314,7 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
             match text {
                 Some(text) => {
-                    let joined = self.builder.alloc_temp(MirType::String);
+                    let joined = self.builder.alloc_temp(MirType::Buffer);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(joined),
                         func: FunctionRef::internal("concat".to_string()),
@@ -351,8 +356,7 @@ impl<'a> MirLowerer<'a> {
         // typed after the *source* optional instead of the return. That's how
         // `try raw` in a `-> u16?` built a `string?`-shaped Result and the
         // caller's `??` read a payload of 1 where the default belonged (#608).
-        if let MirType::Option(_) = self.builder.ret_ty() {
-            let none_ty = self.builder.ret_ty().clone();
+        if let none_ty @ MirType::Option(_) = self.return_ty() {
             let ret_none = self.builder.alloc_temp(none_ty.clone());
             self.store_wrapper_tag(ret_none, &none_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
             self.terminate_return(Some(MirOperand::Local(ret_none)));
@@ -364,8 +368,8 @@ impl<'a> MirLowerer<'a> {
         // hands back. Using the callee's Result type gave the caller a slot of
         // the wrong shape whenever the two differed, e.g. propagating a
         // `KV? or E` out of a `string or E` function.
-        let ret_result_ty = match self.builder.ret_ty() {
-            ty @ MirType::Result { .. } => ty.clone(),
+        let ret_result_ty = match self.return_ty() {
+            ty @ MirType::Result { .. } => ty,
             _ => result_ty.clone(),
         };
         let ret_result = self.builder.alloc_temp(ret_result_ty.clone());
@@ -470,7 +474,7 @@ impl<'a> MirLowerer<'a> {
         err_store_size: u32,
         err_ty: &MirType,
     ) -> (crate::LocalId, u32) {
-        let MirType::Result { err: ret_err, .. } = self.builder.ret_ty() else {
+        let MirType::Result { err: ret_err, .. } = self.return_ty() else {
             return (err_val, err_store_size);
         };
         let MirType::Union(members) = ret_err.as_ref() else {
@@ -584,8 +588,8 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         // The handler binds `e` at the enclosing function's error type — that's
         // what the checker scopes it as.
-        let err_ty = match self.builder.ret_ty() {
-            MirType::Result { err, .. } => (**err).clone(),
+        let err_ty = match self.return_ty() {
+            MirType::Result { err, .. } => *err,
             _ => MirType::I64,
         };
         let err_val = self.builder.alloc_temp(err_ty.clone());

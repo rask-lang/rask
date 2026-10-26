@@ -22,8 +22,9 @@
 //!
 //! A value is released where it is owned and none of the names that might hold
 //! it is live any more, under a name that certainly holds it there. Where no
-//! name does, or the value is ours on some paths into a point and not others,
-//! nothing is released: that is a leak, never a double free.
+//! name does, nothing is released: that is a leak, never a double free. A value
+//! ours on some paths into a join and not on others, and still needed past it,
+//! gets a drop flag there (`Guards`), and its releases run under the flag.
 //!
 //! The pass supplies the facts — which statement makes a value, copies a name,
 //! reads into one, hands one over — because what counts as each is particular
@@ -164,21 +165,119 @@ pub struct Facts {
 /// A release to insert, under `name`. `made` is the name the value was made
 /// under, so a pass that has to act on what the value was built from (a
 /// closure's captures) finds the statement that built it. `None` for a value
-/// that is one of several, after a join.
+/// that is one of several, after a join. `guard` is the plan's flag the
+/// release runs under (`Guards::wrap`), for a value that is ours only on
+/// some of the paths here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Release {
     /// Before statement `at` of block `block` (an index into the original
     /// statements and blocks).
-    At { block: usize, at: usize, name: LocalId, made: Option<LocalId> },
+    At { block: usize, at: usize, name: LocalId, made: Option<LocalId>, guard: Option<usize> },
     /// On the edge between two blocks: the value is still needed on the way
     /// out of `from`, because another successor reads it, and not by `to`.
-    OnEdge { from: BlockId, to: BlockId, name: LocalId, made: Option<LocalId> },
+    OnEdge { from: BlockId, to: BlockId, name: LocalId, made: Option<LocalId>, guard: Option<usize> },
 }
+
+impl Release {
+    pub fn guard(&self) -> Option<usize> {
+        match self {
+            Release::At { guard, .. } | Release::OnEdge { guard, .. } => *guard,
+        }
+    }
+}
+
+/// A drop flag: set on each way into `block`, from the predecessor's side.
+#[derive(Clone, Debug)]
+pub struct Guard {
+    pub block: BlockId,
+    pub ins: Vec<(BlockId, FlagIn)>,
+}
+
+/// What a flag is set to on the way in from one predecessor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagIn {
+    Yes,
+    No,
+    /// Whatever another of the plan's flags is.
+    Same(usize),
+}
+
+/// The flags a plan's releases and arms name, numbered as they name them.
+#[derive(Default)]
+struct FlagIndex {
+    index: BTreeMap<GuardKey, usize>,
+    keys: Vec<GuardKey>,
+}
+
+impl FlagIndex {
+    fn of(&mut self, key: Option<GuardKey>) -> Option<usize> {
+        let key = key?;
+        let next = self.keys.len();
+        Some(*self.index.entry(key).or_insert_with(|| {
+            self.keys.push(key);
+            next
+        }))
+    }
+
+    /// Every numbered flag's settings, numbering the flags they copy as it
+    /// goes.
+    fn guards(mut self, func: &MirFunction, defs: &GuardDefs) -> Vec<Guard> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.keys.len() {
+            let key = self.keys[i];
+            let ins = defs
+                .get(&key)
+                .map(|srcs| {
+                    srcs.iter()
+                        .map(|(p, src)| {
+                            let flag = match src {
+                                FlagSrc::Yes => FlagIn::Yes,
+                                FlagSrc::No => FlagIn::No,
+                                FlagSrc::Same(g) => FlagIn::Same(self.of(Some(*g)).unwrap()),
+                            };
+                            (func.blocks[*p].id, flag)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push(Guard { block: func.blocks[key.block as usize].id, ins });
+            i += 1;
+        }
+        out
+    }
+}
+
+/// A drop flag: the join where a value became ours on some paths in and not
+/// on others, and the value. One per join and value, so solving again names
+/// the same flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct GuardKey {
+    block: u32,
+    value: Value,
+}
+
+/// What a flag is set to on the way in from one predecessor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FlagSrc {
+    /// The value is ours on this path.
+    Yes,
+    /// It isn't: never made on this path, handed on, or something else's.
+    No,
+    /// Ours exactly when this other flag says so.
+    Same(GuardKey),
+}
+
+/// Each flag a join set up, and what it is on the way in from each
+/// predecessor, by block index.
+type GuardDefs = BTreeMap<GuardKey, Vec<(usize, FlagSrc)>>;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct State {
     bind: BTreeMap<LocalId, BTreeSet<Bind>>,
     own: BTreeMap<Value, bool>,
+    /// Owned values that are ours only where a runtime flag says so.
+    guard: BTreeMap<Value, GuardKey>,
 }
 
 impl State {
@@ -421,11 +520,22 @@ fn apply(
                         !held.is_empty()
                             && held.iter().all(|b| matches!(b, Bind::Own(v) | Bind::Part(v) if st.owned(*v)))
                     });
+                // What comes back is ours where everything that went in was:
+                // under the one flag the inputs share, if any. Two different
+                // flags would need both, which no single flag says.
+                let flags: BTreeSet<GuardKey> = srcs
+                    .iter()
+                    .flat_map(|src| st.binds(*src))
+                    .filter_map(|b| b.value().and_then(|v| st.guard.get(&v).copied()))
+                    .collect();
                 for src in srcs {
                     hand_over(st, *src);
                 }
-                if ours {
+                if ours && flags.len() <= 1 {
                     make(st, *dst, bi, si);
+                    if let Some(g) = flags.into_iter().next() {
+                        st.guard.insert(Value { block: bi as u32, at: si as u32, name: *dst }, g);
+                    }
                 } else {
                     st.bind.insert(*dst, BTreeSet::from([Bind::Other]));
                 }
@@ -486,6 +596,7 @@ fn hand_over(st: &mut State, n: LocalId) {
         if let Bind::Own(v) | Bind::Part(v) = b {
             if st.own.contains_key(&v) {
                 st.own.insert(v, false);
+                st.guard.remove(&v);
             }
         }
     }
@@ -495,6 +606,7 @@ fn make(st: &mut State, n: LocalId, bi: usize, si: usize) {
     let v = Value { block: bi as u32, at: si as u32, name: n };
     st.bind.insert(n, BTreeSet::from([Bind::Own(v)]));
     st.own.insert(v, true);
+    st.guard.remove(&v);
 }
 
 /// The state on entry to `bi`, from its predecessors' exits.
@@ -512,6 +624,7 @@ fn join(
     exits: &[Option<State>],
     entry_live: &BTreeSet<LocalId>,
     kills: &Kills,
+    defs: &mut GuardDefs,
 ) -> Option<State> {
     let preds: Vec<usize> = sh.preds[bi].iter().copied().filter(|p| exits[*p].is_some()).collect();
     if preds.is_empty() {
@@ -525,6 +638,14 @@ fn join(
     let mut out = State::default();
     let mut absorbed: BTreeSet<(usize, Value)> = BTreeSet::new();
     let mut joined: Vec<Value> = Vec::new();
+    // What a value's flag is on the way in along path `k`: set, or whatever
+    // flag it already had there.
+    let flag_of = |k: usize, v: Value| -> FlagSrc {
+        match seen[k].guard.get(&v) {
+            Some(g) => FlagSrc::Same(*g),
+            None => FlagSrc::Yes,
+        }
+    };
 
     let mut names: BTreeSet<LocalId> = BTreeSet::new();
     for st in &seen {
@@ -565,6 +686,13 @@ fn join(
             }
             if takes.len() == seen.len() {
                 let j = Value { block: bi as u32, at: u32::MAX, name: n };
+                // A value that came in under a flag is taken over under it.
+                let srcs: Vec<(usize, FlagSrc)> = takes.iter().map(|(k, v)| (preds[*k], flag_of(*k, *v))).collect();
+                if srcs.iter().any(|(_, s)| *s != FlagSrc::Yes) {
+                    let key = GuardKey { block: bi as u32, value: j };
+                    out.guard.insert(j, key);
+                    defs.insert(key, srcs);
+                }
                 absorbed.extend(takes);
                 joined.push(j);
                 out.bind.insert(n, BTreeSet::from([Bind::Own(j)]));
@@ -578,19 +706,74 @@ fn join(
         out.bind.insert(n, u);
     }
 
+    // A value ours on every way in stays ours. One ours on some ways in and
+    // not on others, that something still needs, is ours from here exactly
+    // when it was on the way in: a flag set on each edge says which, and its
+    // release runs under the flag. Unneeded, it was released on the way in
+    // where it was ours, and is nobody's here.
     let mut values: BTreeSet<Value> = BTreeSet::new();
     for st in &seen {
         values.extend(st.own.keys().copied());
     }
-    for v in values {
-        let owned = seen
-            .iter()
-            .enumerate()
-            .all(|(k, st)| st.owned(v) && !absorbed.contains(&(k, v)));
-        out.own.insert(v, owned);
+    let mut flagged: Vec<(Value, Vec<bool>)> = Vec::new();
+    // A join's own value arriving along a back edge is the last turn's: the
+    // name takes over a new one here, settled below.
+    for v in values.into_iter().filter(|v| !joined.contains(v)) {
+        let ours: Vec<bool> =
+            seen.iter().enumerate().map(|(k, st)| st.owned(v) && !absorbed.contains(&(k, v))).collect();
+        if ours.iter().all(|o| *o) {
+            out.own.insert(v, true);
+            let flags: BTreeSet<Option<GuardKey>> = seen.iter().map(|st| st.guard.get(&v).copied()).collect();
+            if flags.len() > 1 {
+                let key = GuardKey { block: bi as u32, value: v };
+                out.guard.insert(v, key);
+                defs.insert(key, (0..seen.len()).map(|k| (preds[k], flag_of(k, v))).collect());
+            } else if let Some(Some(g)) = flags.into_iter().next() {
+                out.guard.insert(v, g);
+            }
+        } else if ours.iter().any(|o| *o) && out.needed(v, entry_live) {
+            out.own.insert(v, true);
+            let key = GuardKey { block: bi as u32, value: v };
+            out.guard.insert(v, key);
+            let srcs = (0..seen.len())
+                .map(|k| (preds[k], if ours[k] { flag_of(k, v) } else { FlagSrc::No }))
+                .collect();
+            defs.insert(key, srcs);
+            flagged.push((v, ours));
+        } else {
+            out.own.insert(v, false);
+        }
     }
     for j in joined {
         out.own.insert(j, true);
+    }
+    // A name holding the flagged value on every path where it is ours, and
+    // something untracked on the rest, certainly holds it whenever the flag
+    // is set, which is the only time it is released.
+    for (v, ours) in &flagged {
+        for (n, set) in out.bind.iter_mut() {
+            if set.len() < 2 {
+                continue;
+            }
+            let mut held: Option<Bind> = None;
+            let fits = seen.iter().enumerate().all(|(k, st)| {
+                let s = st.binds(*n);
+                if !ours[k] {
+                    return s.iter().all(|b| *b == Bind::Other);
+                }
+                let one = (s.len() == 1).then(|| *s.iter().next().unwrap());
+                match one {
+                    Some(b) if b.value() == Some(*v) && held.is_none_or(|h| h == b) => {
+                        held = Some(b);
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            if let (true, Some(b)) = (fits, held) {
+                *set = BTreeSet::from([b]);
+            }
+        }
     }
     Some(out)
 }
@@ -601,6 +784,7 @@ fn edge_view(bi: usize, p: usize, sh: &Shape, exit: &State, kills: &Kills) -> St
     for (k_from, k_to, v) in &kills.edges {
         if *k_from == p && *k_to == bi {
             st.own.insert(*v, false);
+            st.guard.remove(v);
         }
     }
     for (dst, ops) in &sh.phis[bi] {
@@ -641,6 +825,7 @@ fn killed_at(st: &mut State, kills: &Kills, bi: usize, si: usize) {
     for (b, s, v) in &kills.at {
         if *b == bi && *s == si {
             st.own.insert(*v, false);
+            st.guard.remove(v);
         }
     }
 }
@@ -666,21 +851,23 @@ fn solve(
     live: &Live,
     kills: &Kills,
     updates: &mut HashSet<(usize, usize)>,
-) -> (Vec<Option<State>>, Vec<Option<State>>) {
+) -> (Vec<Option<State>>, Vec<Option<State>>, GuardDefs) {
     let n = func.blocks.len();
     let mut entries: Vec<Option<State>> = vec![None; n];
     let mut exits: Vec<Option<State>> = vec![None; n];
+    let mut defs = GuardDefs::new();
     let mut changed = true;
     let mut rounds = 0;
     while changed && rounds < 100 {
         changed = false;
         rounds += 1;
         updates.clear();
+        defs.clear();
         for &bi in &sh.rpo {
             let entry = if bi == 0 {
                 Some(entry_state(facts))
             } else {
-                join(bi, sh, &exits, &live.at[bi][0], kills)
+                join(bi, sh, &exits, &live.at[bi][0], kills, &mut defs)
             };
             let Some(entry) = entry else { continue };
             let exit = transfer(func, facts, live, bi, &entry, kills, updates);
@@ -691,7 +878,7 @@ fn solve(
             entries[bi] = Some(entry);
         }
     }
-    (entries, exits)
+    (entries, exits, defs)
 }
 
 /// Joins where a value is still needed, seen from each block.
@@ -773,6 +960,8 @@ pub enum Placement {
 pub struct Plan {
     pub releases: Vec<Release>,
     pub unwind: Vec<Mark>,
+    /// The drop flags `releases` and `unwind` name by index.
+    pub guards: Vec<Guard>,
 }
 
 /// Where each value this frame owns is released, and under which name.
@@ -805,8 +994,9 @@ pub fn plan_carrying(
     disjoint: &dyn Fn(LocalId, LocalId) -> bool,
 ) -> (Plan, Carried) {
     if func.blocks.is_empty() {
-        return (Plan { releases: Vec::new(), unwind: Vec::new() }, Carried::new());
+        return (Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new() }, Carried::new());
     }
+    let mut flags = FlagIndex::default();
     let sh = shape(func, &facts.names);
     let ids: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
 
@@ -840,13 +1030,13 @@ pub fn plan_carrying(
     };
     let edges: usize = sh.succs.iter().map(|s| s.len()).sum();
     for _ in 0..(4 * edges + 64) {
-        let (entries, exits) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
+        let (entries, exits, _) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
         let later = NeededLater::new(func, &sh, &live, &entries);
         if placement == Placement::LastUse {
             let found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
             if !found.is_empty() {
-                for (block, si, name, v) in found {
-                    out.push(Release::At { block, at: si + 1, name, made: v.made() });
+                for (block, si, name, v, g) in found {
+                    out.push(Release::At { block, at: si + 1, name, made: v.made(), guard: flags.of(g) });
                     kills.at.insert((block, si, v));
                 }
                 continue;
@@ -855,41 +1045,42 @@ pub fn plan_carrying(
         let found = on_edges(func, facts, &sh, &live, &entries, &exits, &kills, &later, placement);
         if found.is_empty() {
             if placement == Placement::ScopeEnd {
-                before_returns(func, facts, &live, &entries, &kills, &mut out);
+                before_returns(func, facts, &live, &entries, &kills, &mut flags, &mut out);
             }
             break;
         }
         // One edge per solve, the earliest in program order: a release on it
         // changes what reaches everything after it, a loop's own back edge
         // included, so the rest wait for the next solve.
-        let first = found.iter().map(|(pi, bi, _, _)| (order[*bi], order[*pi])).min().unwrap();
-        for (pi, bi, name, v) in found {
+        let first = found.iter().map(|(pi, bi, _, _, _)| (order[*bi], order[*pi])).min().unwrap();
+        for (pi, bi, name, v, g) in found {
             if (order[bi], order[pi]) != first {
                 continue;
             }
-            out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name, made: v.made() });
+            out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name, made: v.made(), guard: flags.of(g) });
             kills.edges.insert((pi, bi, v));
         }
     }
     out.sort();
     out.dedup();
+    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
     if std::env::var("RASK_OWNERSHIP_TRACE").is_ok_and(|v| v == func.name) {
-        let (entries, _) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
         for bi in 0..func.blocks.len() {
             eprintln!("bb{} entry {:?}", ids[bi].0, entries[bi]);
             eprintln!("    live in {:?} out {:?}", live.at[bi][0], live.out[bi]);
         }
         eprintln!("fill updates {:?}", updates);
         eprintln!("releases {:?}", out);
+        eprintln!("flags {:?}", defs);
     }
-    let (entries, exits) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
     let carried = if facts.events.iter().flatten().flatten().any(|e| matches!(e, Event::Carry(_))) {
         carried_outright(func, facts, &live, &entries, &kills, disjoint)
     } else {
         Carried::new()
     };
-    let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills);
-    (Plan { releases: out, unwind }, carried)
+    let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills, &mut flags);
+    let guards = flags.guards(func, &defs);
+    (Plan { releases: out, unwind, guards }, carried)
 }
 
 /// The `Carry` events that hand over an owned value, or part of one, that
@@ -919,7 +1110,9 @@ fn carried_outright(
                 else {
                     continue;
                 };
-                if !st.owned(v) {
+                // Ours only under a flag: the environment would release it
+                // on every path.
+                if !st.owned(v) || st.guard.contains_key(&v) {
                     continue;
                 }
                 // The names this statement defines aren't the frame's: the
@@ -955,7 +1148,7 @@ fn after_last_use(
     entries: &[Option<State>],
     kills: &Kills,
     later: &NeededLater,
-) -> Vec<(usize, usize, LocalId, Value)> {
+) -> Vec<(usize, usize, LocalId, Value, Option<GuardKey>)> {
     let mut out = Vec::new();
     for bi in 0..func.blocks.len() {
         let Some(entry) = &entries[bi] else { continue };
@@ -986,7 +1179,7 @@ fn after_last_use(
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &touched) {
-                    out.push((bi, si, name, v));
+                    out.push((bi, si, name, v, st.guard.remove(&v)));
                     st.own.insert(v, false);
                 }
             }
@@ -1007,7 +1200,7 @@ fn on_edges(
     kills: &Kills,
     later: &NeededLater,
     placement: Placement,
-) -> Vec<(usize, usize, LocalId, Value)> {
+) -> Vec<(usize, usize, LocalId, Value, Option<GuardKey>)> {
     let mut out = Vec::new();
     for pi in 0..func.blocks.len() {
         let Some(px) = &exits[pi] else { continue };
@@ -1050,7 +1243,7 @@ fn on_edges(
                     continue;
                 }
                 if let Some(name) = pick(px, v, &[]) {
-                    out.push((pi, bi, name, v));
+                    out.push((pi, bi, name, v, px.guard.get(&v).copied()));
                 }
             }
         }
@@ -1065,6 +1258,7 @@ fn before_returns(
     live: &Live,
     entries: &[Option<State>],
     kills: &Kills,
+    flags: &mut FlagIndex,
     out: &mut Vec<Release>,
 ) {
     for bi in 0..func.blocks.len() {
@@ -1080,7 +1274,8 @@ fn before_returns(
         for (v, owned) in &st.own {
             if *owned {
                 if let Some(name) = pick(&st, *v, &[]) {
-                    out.push(Release::At { block: bi, at: len, name, made: v.made() });
+                    let guard = flags.of(st.guard.get(v).copied());
+                    out.push(Release::At { block: bi, at: len, name, made: v.made(), guard });
                 }
             }
         }
@@ -1132,8 +1327,9 @@ pub enum MarkAt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MarkKind {
     /// `slot` holds what `name` holds from here on. `made` is the name the
-    /// value was made under, as `Release` carries it.
-    Arm { slot: u32, name: LocalId, made: Option<LocalId> },
+    /// value was made under, and `guard` the flag it is ours under, as
+    /// `Release` carries them.
+    Arm { slot: u32, name: LocalId, made: Option<LocalId>, guard: Option<usize> },
     Disarm { slot: u32 },
 }
 
@@ -1152,6 +1348,7 @@ fn unwind_marks(
     entries: &[Option<State>],
     exits: &[Option<State>],
     kills: &Kills,
+    flags: &mut FlagIndex,
 ) -> Vec<Mark> {
     let n = func.blocks.len();
     let ids: Vec<BlockId> = func.blocks.iter().map(|b| b.id).collect();
@@ -1257,9 +1454,10 @@ fn unwind_marks(
                     let Some(next) = held_before[&v].iter().copied().filter(|m| now.contains(m)).min() else {
                         continue;
                     };
+                    let guard = flags.of(st.guard.get(&v).copied());
                     marks.push(Mark {
                         at: MarkAt::In { block: bi, at: si, late: true },
-                        kind: MarkKind::Arm { slot: slot(v, next), name: next, made: v.made() },
+                        kind: MarkKind::Arm { slot: slot(v, next), name: next, made: v.made(), guard },
                     });
                     arm.insert(v, next);
                 }
@@ -1281,9 +1479,10 @@ fn unwind_marks(
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &[]) {
+                    let guard = flags.of(st.guard.get(&v).copied());
                     marks.push(Mark {
                         at: MarkAt::In { block: bi, at: si + 1, late: false },
-                        kind: MarkKind::Arm { slot: slot(v, name), name, made: v.made() },
+                        kind: MarkKind::Arm { slot: slot(v, name), name, made: v.made(), guard },
                     });
                     arm.insert(v, name);
                 }
@@ -1343,9 +1542,10 @@ fn unwind_marks(
             .count();
         for (v, name) in earm {
             if b == 0 || need[b].contains(v) {
+                let guard = flags.of(entries[b].as_ref().and_then(|e| e.guard.get(v).copied()));
                 marks.push(Mark {
                     at: MarkAt::In { block: b, at: first, late: false },
-                    kind: MarkKind::Arm { slot: slot(*v, *name), name: *name, made: v.made() },
+                    kind: MarkKind::Arm { slot: slot(*v, *name), name: *name, made: v.made(), guard },
                 });
             }
         }
@@ -1532,6 +1732,7 @@ pub type EdgeStmts = Vec<(BlockId, BlockId, Vec<MirStmt>)>;
 pub fn place_unwind(
     func: &mut MirFunction,
     marks: Vec<Mark>,
+    guards: &Guards,
     release: &mut dyn FnMut(&mut MirFunction, LocalId, Option<LocalId>) -> Vec<MirStmt>,
 ) -> (Shifted, EdgeStmts) {
     let base = next_unwind_slot(func);
@@ -1539,8 +1740,8 @@ pub fn place_unwind(
     let mut in_block: Vec<Vec<(usize, bool, MirStmt)>> = vec![Vec::new(); func.blocks.len()];
     let mut edges: EdgeStmts = Vec::new();
     for m in marks {
-        let kind = match m.kind {
-            MarkKind::Arm { slot, name, made } => {
+        let stmt = match m.kind {
+            MarkKind::Arm { slot, name, made, guard } => {
                 let slot = base + slot;
                 let release = match templates.get(&slot) {
                     Some(t) => t.clone(),
@@ -1550,15 +1751,16 @@ pub fn place_unwind(
                         t
                     }
                 };
-                MirStmtKind::UnwindArm { slot, value: name, release }
+                let arm = MirStmt::dummy(MirStmtKind::UnwindArm { slot, value: name, release });
+                guards.wrap(guard, vec![arm]).pop().unwrap()
             }
-            MarkKind::Disarm { slot } => MirStmtKind::UnwindDisarm { slot: base + slot },
+            MarkKind::Disarm { slot } => MirStmt::dummy(MirStmtKind::UnwindDisarm { slot: base + slot }),
         };
         match m.at {
-            MarkAt::In { block, at, late } => in_block[block].push((at, late, MirStmt::dummy(kind))),
+            MarkAt::In { block, at, late } => in_block[block].push((at, late, stmt)),
             MarkAt::Edge { from, to } => match edges.iter_mut().find(|(f, t, _)| *f == from && *t == to) {
-                Some((_, _, all)) => all.push(MirStmt::dummy(kind)),
-                None => edges.push((from, to, vec![MirStmt::dummy(kind)])),
+                Some((_, _, all)) => all.push(stmt),
+                None => edges.push((from, to, vec![stmt])),
             },
         }
     }
@@ -1668,6 +1870,167 @@ pub fn insert_on_edges(func: &mut MirFunction, edges: Vec<(BlockId, BlockId, Vec
             statements: releases,
             terminator: MirTerminator::new(MirTerminatorKind::Goto { target: to }, span),
         });
+    }
+}
+
+// ─── Drop flags ────────────────────────────────────────────
+//
+// A value that is ours on some paths into a join and not on others, and still
+// needed past it, can't be released by a statement that runs on every path.
+// `f() catch e => Vec.new()` holds the result's vector on one side, which the
+// result frees, and a fresh vector on the other, which nothing did (#1636). The
+// plan gives each such join a flag: set on each way in to whether the value is
+// ours there, and every release or unwind arm of it from there on runs under
+// it. A pass places them like any other release, through `Guards::wrap`, and
+// calls `Guards::finish` last, which turns each guarded group into a branch.
+
+/// One bool local per flag of a plan.
+pub struct Guards {
+    flags: Vec<LocalId>,
+    plan: Vec<Guard>,
+}
+
+impl Guards {
+    /// A local for each of the plan's flags.
+    pub fn new(func: &mut MirFunction, plan: &Plan) -> Guards {
+        let mut next = func.locals.iter().map(|l| l.id.0).max().map_or(0, |m| m + 1);
+        let flags = plan
+            .guards
+            .iter()
+            .map(|_| {
+                let id = LocalId(next);
+                next += 1;
+                func.locals.push(crate::MirLocal { id, name: None, ty: crate::MirType::Bool, is_param: false });
+                id
+            })
+            .collect();
+        Guards { flags, plan: plan.guards.clone() }
+    }
+
+    /// `stmts` as they run under `guard`.
+    pub fn wrap(&self, guard: Option<usize>, stmts: Vec<MirStmt>) -> Vec<MirStmt> {
+        match guard {
+            Some(g) if !stmts.is_empty() => {
+                vec![MirStmt::dummy(MirStmtKind::Guarded { flag: self.flags[g], body: stmts })]
+            }
+            _ => stmts,
+        }
+    }
+
+    /// Each flag's setting on each way into its join, to go on the edges after
+    /// everything else there: a release on a loop's back edge reads the turn
+    /// that is ending. A flag copied from another flag set on the same edge
+    /// reads it before either changes.
+    pub fn edges(&self, func: &mut MirFunction) -> EdgeStmts {
+        let mut by_edge: BTreeMap<(BlockId, BlockId), Vec<(LocalId, FlagIn)>> = BTreeMap::new();
+        for (g, guard) in self.plan.iter().enumerate() {
+            for (from, src) in &guard.ins {
+                by_edge.entry((*from, guard.block)).or_default().push((self.flags[g], *src));
+            }
+        }
+        let mut next = func.locals.iter().map(|l| l.id.0).max().map_or(0, |m| m + 1);
+        let mut out = EdgeStmts::new();
+        for ((from, to), sets) in by_edge {
+            let written: BTreeSet<LocalId> = sets.iter().map(|(f, _)| *f).collect();
+            let mut stmts = Vec::new();
+            let mut sources: Vec<MirOperand> = Vec::new();
+            for (_, src) in &sets {
+                sources.push(match *src {
+                    FlagIn::Yes => MirOperand::Constant(crate::MirConst::Bool(true)),
+                    FlagIn::No => MirOperand::Constant(crate::MirConst::Bool(false)),
+                    FlagIn::Same(h) if !written.contains(&self.flags[h]) => MirOperand::Local(self.flags[h]),
+                    FlagIn::Same(h) => {
+                        let tmp = LocalId(next);
+                        next += 1;
+                        func.locals.push(crate::MirLocal {
+                            id: tmp,
+                            name: None,
+                            ty: crate::MirType::Bool,
+                            is_param: false,
+                        });
+                        stmts.push(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: tmp,
+                            rvalue: crate::MirRValue::Use(MirOperand::Local(self.flags[h])),
+                        }));
+                        MirOperand::Local(tmp)
+                    }
+                });
+            }
+            for ((f, _), src) in sets.iter().zip(sources) {
+                stmts.push(MirStmt::dummy(MirStmtKind::Assign { dst: *f, rvalue: crate::MirRValue::Use(src) }));
+            }
+            out.push((from, to, stmts));
+        }
+        out
+    }
+
+    /// Start every flag unset, then split each block around its guarded
+    /// groups. Run after the pass placed everything, edges included.
+    pub fn finish(&self, func: &mut MirFunction) {
+        if self.flags.is_empty() || func.blocks.is_empty() {
+            return;
+        }
+        let init = self.flags.iter().map(|f| {
+            MirStmt::dummy(MirStmtKind::Assign {
+                dst: *f,
+                rvalue: crate::MirRValue::Use(MirOperand::Constant(crate::MirConst::Bool(false))),
+            })
+        });
+        func.blocks[0].statements.splice(0..0, init);
+        split_guarded(func);
+    }
+}
+
+/// `head; if flag { body }; tail` becomes three blocks: the head branches on
+/// the flag to the body, and both reach the tail, which ends the way the
+/// block did.
+fn split_guarded(func: &mut MirFunction) {
+    let mut next_id = func.blocks.iter().map(|b| b.id.0).max().unwrap_or(0) + 1;
+    let mut bi = 0;
+    while bi < func.blocks.len() {
+        let Some(at) =
+            func.blocks[bi].statements.iter().position(|s| matches!(s.kind, MirStmtKind::Guarded { .. }))
+        else {
+            bi += 1;
+            continue;
+        };
+        let tail = func.blocks[bi].statements.split_off(at + 1);
+        let Some(MirStmt { kind: MirStmtKind::Guarded { flag, body }, .. }) = func.blocks[bi].statements.pop()
+        else {
+            unreachable!()
+        };
+        let (run, rest) = (BlockId(next_id), BlockId(next_id + 1));
+        next_id += 2;
+        let head = func.blocks[bi].id;
+        let span = func.blocks[bi].terminator.span;
+        let term = std::mem::replace(
+            &mut func.blocks[bi].terminator,
+            MirTerminator::new(
+                MirTerminatorKind::Branch { cond: MirOperand::Local(flag), then_block: run, else_block: rest },
+                span,
+            ),
+        );
+        // The tail is where the block's successors are reached from now.
+        for succ in cfg::successors(&term) {
+            if let Some(block) = func.blocks.iter_mut().find(|b| b.id == succ) {
+                for stmt in &mut block.statements {
+                    if let MirStmtKind::Phi { args, .. } = &mut stmt.kind {
+                        for (pred, _) in args.iter_mut() {
+                            if *pred == head {
+                                *pred = rest;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        func.blocks.push(MirBlock {
+            id: run,
+            statements: body,
+            terminator: MirTerminator::new(MirTerminatorKind::Goto { target: rest }, span),
+        });
+        func.blocks.push(MirBlock { id: rest, statements: tail, terminator: term });
+        bi += 1;
     }
 }
 

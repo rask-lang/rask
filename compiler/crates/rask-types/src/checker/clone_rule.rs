@@ -32,7 +32,7 @@ impl TypeTable {
             false
         };
         match ty {
-            Type::Unit | Type::None | Type::Never | Type::Bool | Type::Char | Type::String
+            Type::Unit | Type::None | Type::Never | Type::Bool | Type::Char | Type::String | Type::Bytes
             | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
             | Type::F32 | Type::F64

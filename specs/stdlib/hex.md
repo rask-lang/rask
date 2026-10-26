@@ -24,7 +24,7 @@ let sum = digest.sha256(contents)
 println(hex.encode(sum))                  // "e3b0c44298fc1c14..."
 println(hex.encode(sum, upper: true))     // "E3B0C44298FC1C14..."
 
-let bytes = try hex.decode("deadbeef")
+let data = try hex.decode("deadbeef")
 ```
 
 ## Core Rules

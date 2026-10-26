@@ -11,10 +11,9 @@ impl fmt::Display for MirType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             MirType::Void => write!(f, "void"),
-            // Never stored, so never dumped — see `MirType::Container`. Here
-            // for the exhaustiveness check, and spelled so a dump that somehow
-            // shows one says what went wrong.
-            MirType::Container(k) => write!(f, "{:?}ptr(unerased)", k),
+            MirType::Container(crate::ContainerKind::Vec) => write!(f, "vec"),
+            MirType::Container(crate::ContainerKind::Map) => write!(f, "map"),
+            MirType::Container(crate::ContainerKind::Rack) => write!(f, "rack"),
             MirType::Bool => write!(f, "bool"),
             MirType::I8 => write!(f, "i8"),
             MirType::I16 => write!(f, "i16"),
@@ -31,7 +30,7 @@ impl fmt::Display for MirType {
             MirType::Char => write!(f, "char"),
             MirType::Ptr => write!(f, "ptr"),
             MirType::Heap(payload) => write!(f, "heap<{}>", payload),
-            MirType::String => write!(f, "string"),
+            MirType::Buffer => write!(f, "buffer"),
             MirType::Struct(id) => write!(f, "struct#{}", id.id),
             MirType::Enum(id) => write!(f, "enum#{}", id.id),
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
@@ -78,6 +77,7 @@ impl fmt::Display for MirConst {
             MirConst::Int128(n) => write!(f, "{}", n),
             MirConst::Char(c) => write!(f, "'{}'", c),
             MirConst::String(s) => write!(f, "\"{}\"", s),
+            MirConst::Bytes(b) => write!(f, "{}", rask_ast::token::bytes_literal(b)),
             MirConst::Elem(t) => write!(f, "elem<{}>", t),
         }
     }
@@ -306,6 +306,14 @@ impl fmt::Display for MirStmt {
                 write!(f, "release_slot(_{}+{}: {})", addr.0, offset, ty)
             }
             MirStmtKind::ZeroAggregate { local } => write!(f, "zero_aggregate(_{})", local.0),
+            MirStmtKind::MovedOut { local } => write!(f, "moved_out(_{})", local.0),
+            MirStmtKind::Guarded { flag, body } => {
+                write!(f, "if _{} {{ ", flag.0)?;
+                for s in body {
+                    write!(f, "{}; ", s)?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -358,19 +366,13 @@ impl fmt::Display for MirFunction {
         }
         writeln!(f, ") -> {} {{", self.ret_ty)?;
 
-        // Locals (non-param). The container kind rides beside the type rather
-        // than in it (`MirType::Container`), so a dump has to say it separately
-        // or "who frees the vector behind this tag" is invisible.
+        // Locals (non-param).
         for local in &self.locals {
             if !local.is_param {
-                let holds = match &local.unerased {
-                    Some(t) => format!(" [{}]", t),
-                    None => String::new(),
-                };
                 if let Some(name) = &local.name {
-                    writeln!(f, "  let {}: {}{}  // _{}", name, local.ty, holds, local.id.0)?;
+                    writeln!(f, "  let {}: {}  // _{}", name, local.ty, local.id.0)?;
                 } else {
-                    writeln!(f, "  let _{}: {}{}", local.id.0, local.ty, holds)?;
+                    writeln!(f, "  let _{}: {}", local.id.0, local.ty)?;
                 }
             }
         }

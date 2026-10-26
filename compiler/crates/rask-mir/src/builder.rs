@@ -5,25 +5,6 @@
 use crate::{BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType};
 use rask_ast::Span;
 
-/// Split a type lowering handed over into the spelling MIR stores and, when
-/// that spelling lost a container, the full type.
-///
-/// `MirType::Container` exists so lowering can say which container a pointer
-/// points at, and it must not survive into a stored type — MIR compares types
-/// for equality all over, and two spellings of `Vec<i64>?` is a bug factory
-/// (see `MirType::Container`). So every local made here keeps the plain type
-/// and the full one side by side.
-///
-/// A bare container is kept too: `container_drop` frees those, and an element
-/// taken out of a `Vec<Vec<T>>` is a bare `Ptr` that has to say it's a `Vec`
-/// for the right free to be found. The aggregate walk in `rc_insert` skips a
-/// bare one, or it would free it a second time.
-fn split_container(ty: MirType) -> (MirType, Option<MirType>) {
-    let erased = ty.without_container_kinds();
-    let unerased = (erased != ty).then_some(ty);
-    (erased, unerased)
-}
-
 pub struct BlockBuilder {
     function: MirFunction,
     current_block: BlockId,
@@ -40,7 +21,6 @@ impl BlockBuilder {
     }
 
     pub fn new(name: String, ret_ty: MirType) -> Self {
-        let ret_ty = ret_ty.without_container_kinds();
         let entry_block = BlockId(0);
         let function = MirFunction {
             name,
@@ -98,13 +78,11 @@ impl BlockBuilder {
     pub fn alloc_temp(&mut self, ty: MirType) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;
-        let (ty, container) = split_container(ty);
         self.function.locals.push(MirLocal {
             id,
             name: None,
             ty,
             is_param: false,
-            unerased: container,
         });
         id
     }
@@ -112,13 +90,11 @@ impl BlockBuilder {
     pub fn alloc_local(&mut self, name: String, ty: MirType) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;
-        let (ty, container) = split_container(ty);
         self.function.locals.push(MirLocal {
             id,
             name: Some(name),
             ty,
             is_param: false,
-            unerased: container,
         });
         id
     }
@@ -134,13 +110,11 @@ impl BlockBuilder {
     pub fn add_param(&mut self, name: String, ty: MirType) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;
-        let (ty, container) = split_container(ty);
         let local = MirLocal {
             id,
             name: Some(name),
             ty,
             is_param: true,
-            unerased: container,
         };
         self.function.params.push(local.clone());
         self.function.locals.push(local);
@@ -165,10 +139,8 @@ impl BlockBuilder {
     /// destination local before the body is lowered, but the body's type isn't
     /// known until after.
     pub fn set_local_type(&mut self, id: LocalId, ty: MirType) {
-        let (ty, container) = split_container(ty);
         if let Some(local) = self.function.locals.iter_mut().find(|l| l.id == id) {
             local.ty = ty;
-            local.unerased = container;
         }
     }
 

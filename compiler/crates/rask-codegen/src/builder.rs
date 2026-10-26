@@ -198,7 +198,7 @@ struct CodegenCtx<'a> {
     /// read off it rather than off its rendering.
     type_names: &'a HashMap<rask_types::TypeId, String>,
     string_globals: &'a HashMap<String, GlobalValue>,
-    string_header_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
     comptime_globals: &'a HashMap<String, GlobalValue>,
     vtable_globals: &'a HashMap<String, GlobalValue>,
@@ -334,7 +334,7 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if n.starts_with("string_parse") => HandAdapt::Parse,
         "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
-        "string_clone" | "string_to_owned" | "string_view" | "StringView_view" => {
+        "string_clone" | "string_to_owned" => {
             HandAdapt::ShareString
         }
         "Channel_unbuffered" => HandAdapt::Unbuffered,
@@ -364,7 +364,7 @@ pub struct FunctionBuilder<'a> {
     type_names: &'a HashMap<rask_types::TypeId, String>,
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
-    string_header_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
     /// Comptime global data (const name → GlobalValue for the data address)
     comptime_globals: &'a HashMap<String, GlobalValue>,
@@ -440,7 +440,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &'a [EnumLayout],
         type_names: &'a HashMap<rask_types::TypeId, String>,
         string_globals: &'a HashMap<String, GlobalValue>,
-    string_header_globals: &'a HashMap<String, GlobalValue>,
+    string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
         comptime_globals: &'a HashMap<String, GlobalValue>,
         vtable_globals: &'a HashMap<String, GlobalValue>,
@@ -1196,6 +1196,13 @@ impl<'a> FunctionBuilder<'a> {
             }
             // Only the unwind glue reads these zeroes: none without a record,
             // and nothing to read in an aggregate that holds nothing.
+            // Only the ownership passes read it.
+            MirStmtKind::MovedOut { .. } => {}
+            MirStmtKind::Guarded { .. } => {
+                return Err(CodegenError::UnsupportedFeature(
+                    "a guarded release reached codegen; its pass should have split the block".to_string(),
+                ));
+            }
             MirStmtKind::ZeroAggregate { local } => {
                 if ctx.unwind_rec.is_none() {
                     return Ok(());
@@ -1203,7 +1210,7 @@ impl<'a> FunctionBuilder<'a> {
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let ty = entry.ty.clone();
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
                 }
@@ -1378,13 +1385,12 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::RcDecContents { local } => {
                 // An aggregate dying gives back the strings it holds, and any
-                // container inside it. The walk reads the full type, which
-                // still says which pointers are containers
-                // (`MirType::Container` says why `ty` doesn't).
+                // container inside it; its type says which words are
+                // containers.
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let ty = entry.ty.clone();
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
                 }
@@ -1400,7 +1406,7 @@ impl<'a> FunctionBuilder<'a> {
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let ty = entry.ty.clone();
                 let Some(offs) = Self::element_owned_offsets(Some(&ty), ctx).filter(|o| !o.is_empty()) else {
                     return Ok(());
                 };
@@ -2042,7 +2048,7 @@ impl<'a> FunctionBuilder<'a> {
                         MirType::F32 => "rask_print_f32",
                         MirType::F64 => "rask_print_f64",
                         MirType::Char => "rask_print_char",
-                        MirType::String => "rask_print_string",
+                        MirType::Buffer => "rask_print_string",
                         MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => "rask_print_u64",
                         // The 64-bit printers take the low half and print a
                         // different number (#762).
@@ -2221,7 +2227,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirRValue::Cast { value, target_ty } => {
-                if target_ty == &MirType::String {
+                if target_ty == &MirType::Buffer {
                     // Casting to string requires a runtime call that writes 16-byte
                     // RaskStr into an out-param. A plain type-cast (convert_value)
                     // would return a scalar, which copy_aggregate would dereference
@@ -2329,14 +2335,9 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
                 let val = builder.use_var(*var);
 
-                // For aggregate types the variable already IS a pointer
+                // A value held by address: the variable already IS the pointer.
                 let local_ty = ctx.locals.iter().find(|l| l.id == *local_id).map(|l| &l.ty);
-                let is_aggregate = matches!(
-                    local_ty,
-                    Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. }
-                         | MirType::Tuple(_) | MirType::Option(_)
-                         | MirType::Result { .. } | MirType::Union(_))
-                );
+                let is_aggregate = local_ty.is_some_and(|t| t.passed_by_address());
 
                 // A scalar that lives in a slot is addressed the same way. The
                 // spill below is a *copy*, so handing back its address is only
@@ -2454,7 +2455,7 @@ impl<'a> FunctionBuilder<'a> {
         // require `mutate` writes to flow back to the caller, which only
         // works if `p = ...` copies bytes into `*p`'s slot.
         let needs_copy = match (&dst_local.ty, rvalue) {
-            (MirType::String, _) => true,
+            (MirType::Buffer, _) => true,
             // Field on aggregate base returns pointer for aggregate elements.
             // InterfaceObject belongs here: it's a 16-byte fat pointer, so reading one
             // out of a `T?` payload as a scalar took the data half and left the
@@ -2533,7 +2534,7 @@ impl<'a> FunctionBuilder<'a> {
         // address instead of the string (#613).
         let src_is_addressed = match rvalue {
             MirRValue::Use(MirOperand::Local(_)) => true,
-            MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => true,
+            MirRValue::Use(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         };
         let wrap_as_some_aggregate = wrap_as_some
@@ -2541,7 +2542,7 @@ impl<'a> FunctionBuilder<'a> {
             && if let MirType::Option(inner) = &dst_local.ty {
                 matches!(inner.as_ref(),
                     MirType::Struct(_) | MirType::Enum(_) |
-                    MirType::Tuple(_) | MirType::String)
+                    MirType::Tuple(_) | MirType::Buffer)
             } else { false };
 
         // On the scalar-wrap path the value becomes the Option's payload, so it
@@ -2812,6 +2813,7 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Tuple(_)
                         | MirType::Array { .. }
                         | MirType::Ptr
+                        | MirType::Container(_)
                         // A `Heap<T>` standing where a `T` is expected (HP5):
                         // the block's address is the aggregate's address, so
                         // there is nothing to spill. Spilling it passed the
@@ -3164,7 +3166,7 @@ impl<'a> FunctionBuilder<'a> {
                     | MirType::Array { .. }
                     | MirType::Result { .. }
                     | MirType::Option(_)
-                    | MirType::String
+                    | MirType::Buffer
                     | MirType::InterfaceObject { .. },
                 ) => types::I64,
                 Some(t) => mir_to_cranelift_type(t).unwrap_or(types::I64),
@@ -3981,7 +3983,7 @@ impl<'a> FunctionBuilder<'a> {
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().fcmp(FloatCC::Equal, a, b))
             }
-            MirType::String => Self::emit_string_eq(builder, ctx, lhs, rhs),
+            MirType::Buffer => Self::emit_string_eq(builder, ctx, lhs, rhs),
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
             | MirType::Union(_) | MirType::Array { .. } | MirType::Result { .. } => {
                 Self::emit_aggregate_eq(builder, ctx, lhs, rhs, ty)
@@ -3991,7 +3993,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-            | MirType::Char | MirType::Ptr => {
+            | MirType::Char | MirType::Ptr | MirType::Container(_) => {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
@@ -4231,7 +4233,7 @@ impl<'a> FunctionBuilder<'a> {
                 let lt = builder.ins().uextend(types::I64, lt);
                 Ok(builder.ins().isub(gt, lt))
             }
-            MirType::String => Self::emit_string_cmp(builder, ctx, lhs, rhs),
+            MirType::Buffer => Self::emit_string_cmp(builder, ctx, lhs, rhs),
             t if Self::is_structural_ord_type(t) => {
                 Self::emit_aggregate_cmp(builder, ctx, lhs, rhs, t)
             }
@@ -6363,9 +6365,9 @@ impl<'a> FunctionBuilder<'a> {
         // branch (#259). A value that is already the wrapper goes back as is.
         if ctx.ret_ty.wrapper_layout().is_some() {
             let val_ty = value.and_then(|v| Self::operand_mir_type(v, ctx.locals));
-            let already_wrapped = val_ty.as_ref().is_some_and(|t| {
-                t.without_container_kinds() == ctx.ret_ty.without_container_kinds()
-            });
+            let already_wrapped = val_ty
+                .as_ref()
+                .is_some_and(|t| t.wrapper_depth() >= ctx.ret_ty.wrapper_depth());
             if !already_wrapped {
                 let wrapper = ctx.ret_ty.clone();
                 let is_err = Self::is_err_component(&wrapper, val_ty.as_ref());
@@ -6489,7 +6491,7 @@ impl<'a> FunctionBuilder<'a> {
                     .locals
                     .iter()
                     .find(|l| l.id == *local)
-                    .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
+                    .map(|l| l.ty.clone())
                     .is_none_or(|ty| !Self::holds_string_mir(&ty, ctx, 0)),
                 _ => false,
             })
@@ -6681,7 +6683,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     // ─── Option/Result slot constructors ────────────────────────
-    // `rask_mono::abi` lays the slots out; these write them, and every wrapping
+    // `rask_types::abi` lays the slots out; these write them, and every wrapping
     // site goes through here instead of emitting the stores inline. A tag is
     // one byte at offset 0. A payload sits at the wrapper's own offset, as the
     // side it fills: a scalar at that side's width, an aggregate copied whole.
@@ -6965,7 +6967,7 @@ impl<'a> FunctionBuilder<'a> {
             return false;
         }
         match ty {
-            MirType::String => true,
+            MirType::Buffer => true,
             // A container owns its byte store whatever the elements are.
             MirType::Container(_) => true,
             // A block is the slot's whatever is in it, the same way a `Heap<T>`
@@ -7033,7 +7035,7 @@ impl<'a> FunctionBuilder<'a> {
             return Ok(());
         }
         match ty {
-            MirType::String => Self::emit_string_release(builder, base, offset, ctx),
+            MirType::Buffer => Self::emit_string_release(builder, base, offset, ctx),
             // The slot holds the handle; the release loads it and frees what it
             // points at, elements and all.
             MirType::Container(kind) => Self::emit_container_release(
@@ -7630,9 +7632,9 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirOperand::Local(id)) => locals
                 .iter()
                 .find(|l| l.id == *id)
-                .map(|l| l.ty == MirType::String)
+                .map(|l| l.ty == MirType::Buffer)
                 .unwrap_or(false),
-            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            Some(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         }
     }
@@ -7650,7 +7652,7 @@ impl<'a> FunctionBuilder<'a> {
                 .find(|l| l.id == *id)
                 .map(|l| l.ty.passed_by_address())
                 .unwrap_or(false),
-            Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
+            Some(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         }
     }
@@ -7826,7 +7828,7 @@ impl<'a> FunctionBuilder<'a> {
             // A string constant is already the address of its 16 bytes — same
             // shape as a string local. Reading only the operand kind, it looked
             // like a scalar and `Mutex.new("hello")` copied 8 of them.
-            Some(MirOperand::Constant(MirConst::String(_))) => (16, true),
+            Some(MirOperand::Constant(c)) if c.static_buffer().is_some() => (16, true),
             _ => (8, false),
         }
     }
@@ -8423,7 +8425,7 @@ impl<'a> FunctionBuilder<'a> {
         }
         // A string built at run time is a Rask string, not a C one. Passed as
         // is, the runtime printed its header's bytes (#1517).
-        if Self::operand_mir_type(op, ctx.locals) == Some(MirType::String) {
+        if Self::operand_mir_type(op, ctx.locals) == Some(MirType::Buffer) {
             let s = Self::lower_operand(builder, op, ctx)?;
             let f = ctx.func_refs.get("string_message")
                 .ok_or_else(|| CodegenError::FunctionNotFound("string_message".into()))?;
@@ -8626,7 +8628,8 @@ impl<'a> FunctionBuilder<'a> {
                     // call adapter replaces with an offsets pointer and count
                     // (`ArgAdapt::ContainerCtor`). The placeholder is dead.
                     MirConst::Elem(_) => Ok(builder.ins().iconst(types::I64, 0)),
-                    MirConst::String(s) => {
+                    MirConst::String(_) | MirConst::Bytes(_) => {
+                        let s = const_val.static_buffer().expect("a string or bytes literal");
                         // Build the 16-byte `RaskStr` in a stack slot directly.
                         //
                         // This used to call `rask_string_from`, which allocates
@@ -8649,7 +8652,7 @@ impl<'a> FunctionBuilder<'a> {
                             tmp_slot.store(builder, hi_v, 8);
                             return Ok(tmp_slot.addr(builder, 0));
                         }
-                        if let Some(gv) = ctx.string_header_globals.get(s.as_str()) {
+                        if let Some(gv) = ctx.string_header_globals.get(s) {
                             let header = builder.ins().global_value(types::I64, *gv);
                             let tagged = (s.len() as u64) | crate::layouts::STRING_HEAP_FLAG;
                             let tmp_slot = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
@@ -8668,7 +8671,7 @@ impl<'a> FunctionBuilder<'a> {
                         // and a literal passed to an interface method printed
                         // as nothing (#1558).
                         Err(CodegenError::UnsupportedFeature(format!(
-                            "string literal {s:?} reached codegen without being registered"
+                            "literal {s:?} reached codegen without being registered"
                         )))
                     }
                 }
@@ -8680,13 +8683,13 @@ impl<'a> FunctionBuilder<'a> {
 /// A literal short enough for SSO, as the two little-endian words of a
 /// `RaskStr`: fifteen bytes of data then `15 - len`. `None` if it needs the
 /// heap form.
-fn sso_words(s: &str) -> Option<(i64, i64)> {
+fn sso_words(s: &[u8]) -> Option<(i64, i64)> {
     const SSO_MAX: usize = 15;
     if s.len() > SSO_MAX {
         return None;
     }
     let mut raw = [0u8; 16];
-    raw[..s.len()].copy_from_slice(s.as_bytes());
+    raw[..s.len()].copy_from_slice(s);
     raw[15] = (SSO_MAX - s.len()) as u8;
     Some((
         i64::from_le_bytes(raw[0..8].try_into().unwrap()),

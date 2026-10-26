@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value that is the frame's on some paths into a join and not on others.
+//
+// `fails() catch e => Vec.new()` holds the result's vector on one side, which
+// the result frees, and a fresh vector on the other, which is the frame's.
+// After the join no single release is right on both paths, so the fallback
+// leaked (#1636). A flag set on each way in now says which it is.
+
+struct Bad {
+    at: i64
+}
+
+extend Bad {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func fails() -> Vec<i64> or Bad {
+    return Bad(at: 1)
+}
+
+func works() -> Vec<i64> or Bad {
+    return [1, 2, 3]
+}
+
+func maybe(n: i64) -> Vec<i64>? {
+    if n > 0 {
+        return [1, 2, 3]
+    }
+    return none
+}
+
+func or_empty(n: i64) -> Vec<i64> {
+    let v = works() catch e => { return Vec.new() }
+    if n > 0 {
+        return v
+    }
+    return maybe(n) ?? Vec.new()
+}
+
+test "catch fallback is released when the error path runs" {
+    let a = fails() catch e => Vec.new()
+    assert a.len() == 0
+}
+
+test "catch keeps the result's vector when the call succeeds" {
+    let b = works() catch e => Vec.new()
+    assert b.len() == 3
+}
+
+test "?? fallback on an owned optional" {
+    let a = maybe(0) ?? Vec.new()
+    let b = maybe(1) ?? Vec.new()
+    assert a.len() == 0
+    assert b.len() == 3
+}
+
+test "early return beside a fallback" {
+    assert or_empty(1).len() == 3
+    assert or_empty(0).len() == 0
+}
+
+test "a fallback chosen in a loop" {
+    mut total = 0
+    for i in 0..4 {
+        let v = maybe(i % 2) ?? Vec.new()
+        total += v.len()
+    }
+    assert total == 6
+}

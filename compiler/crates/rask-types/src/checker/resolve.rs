@@ -629,6 +629,8 @@ impl TypeChecker {
             // type Vec", so the two backends disagreed about a program that
             // shouldn't compile. `{v:debug}` renders it and needs nothing.
             Type::Tuple(_) | Type::Array { .. } => false,
+            // Bytes aren't text (std.bytes/BY6).
+            Type::Bytes => false,
             Type::UnresolvedGeneric { name, .. } => !matches!(
                 name.as_str(),
                 "Vec" | "Map" | "Set" | "Rack" | "Iterator"
@@ -714,6 +716,13 @@ impl TypeChecker {
         // nothing downstream reports it again (#1485).
         if matches!(ty, Type::Error) {
             return Ok(self.poison(&ret));
+        }
+
+        // type.reads-as: a compared operand is its field (RA6), and a method
+        // the type doesn't declare is its field's.
+        let args = self.read_compared_operands(&method, &args, call_node);
+        if let Some(read) = self.read_through_field(&ty, &method, &args, &ret, span, call_node) {
+            return read;
         }
 
         // mem.linear/L8: a value consumed exactly once has no copy. `clone`
@@ -905,8 +914,8 @@ impl TypeChecker {
                 .map(|n| self.debug_fmt_calls.contains(&n))
                 .unwrap_or(false);
             if !is_debug && !self.is_displayable(&ty) {
-                let is_collection = match &ty {
-                    Type::Tuple(_) | Type::Array { .. } => true,
+                let debug_only = match &ty {
+                    Type::Tuple(_) | Type::Array { .. } | Type::Bytes => true,
                     Type::Generic { base, .. } => {
                         matches!(self.types.type_name(*base).as_str(), "Vec" | "Map" | "Set" | "Rack" | "Iterator")
                     }
@@ -917,7 +926,7 @@ impl TypeChecker {
                 };
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
-                    is_collection,
+                    debug_only,
                     is_wrapper: matches!(ty, Type::Result { .. }) || ty.is_option(),
                     interpolated: method == "__fmt",
                     fallible_text: self.fallible_text_method(&ty),
@@ -1316,6 +1325,9 @@ impl TypeChecker {
             Type::String => self
                 .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, call_node, span)
                 .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
+            Type::Bytes => self
+                .resolve_declared_primitive_method("bytes", &ty, &method, &args, &ret, call_node, span)
+                .unwrap_or_else(|| self.resolve_bytes_method(&method, &args, &ret, span)),
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
@@ -1434,7 +1446,42 @@ impl TypeChecker {
                     }
                 };
 
-                let found = methods.iter().find(|m| m.name == method);
+                // The block whose header this receiver fits, where two blocks
+                // declare the method (`TypeTable::filed_methods`).
+                let filed = self.types.filed_methods.get(&(*base, method.clone())).cloned().unwrap_or_default();
+                let candidates: Vec<&MethodSig> =
+                    methods.iter().filter(|m| m.name == method || filed.contains(&m.name)).collect();
+                let found = if candidates.len() > 1 {
+                    let settled = generic_args.iter().all(|a| match a {
+                        GenericArg::Type(t) => !self.ctx.apply(t).has_unsolved_var(),
+                        _ => true,
+                    });
+                    // Which block a `Sequence<?U>` fits waits on what `?U`
+                    // turns out to be, often a closure's return type, which is
+                    // settled after the main solve. The retry queue runs then.
+                    if !settled {
+                        self.deferred_methods.push(TypeConstraint::HasMethod {
+                            ty: ty.clone(),
+                            method,
+                            args,
+                            ret,
+                            span,
+                            call_node,
+                        });
+                        return Ok(false);
+                    }
+                    candidates.iter().copied().find(|m| self.header_fits(m, *base, generic_args))
+                } else {
+                    candidates.first().copied()
+                };
+                if let (Some(sig), Some(node)) = (found, call_node) {
+                    if sig.name != method {
+                        self.filed_methods.calls.insert(node, sig.name.clone());
+                        if let Some(Callee::Method { method: called, .. }) = self.call_targets.get_mut(&node) {
+                            *called = sig.name.clone();
+                        }
+                    }
+                }
 
                 // What the block's header binds, on top of what the type
                 // declares. `extend Sequence<(K, V)>` on a `Sequence<(i64, i64)>`
@@ -2099,13 +2146,13 @@ impl TypeChecker {
             // it and the binding was reported as un-inferrable (#620). Ordering
             // is lexicographic and both backends already do it.
             "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "contains" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             // std.strings/S7: `string` has no mutation methods. These two were
@@ -2127,7 +2174,7 @@ impl TypeChecker {
             // it only worked because the fallthrough below used to accept any
             // name at all.
             "compare" if args.len() == 1 => {
-                self.unify(&args[0], &Type::String, span)?;
+                self.unify(&Type::String, &args[0], span)?;
                 self.unify(ret, &self.ordering_type(), span)
             }
             // A method `string` doesn't have is an error here, the way it
@@ -2138,6 +2185,34 @@ impl TypeChecker {
             // saying the method doesn't exist.
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::String,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// What `bytes` answers without a declaration: the comparisons and
+    /// hashing every primitive has (std.bytes/BY5). The rest is in
+    /// `stdlib/bytes.rk`.
+    pub(super) fn resolve_bytes_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
+                self.unify(&Type::Bytes, &args[0], span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
+            "compare" if args.len() == 1 => {
+                self.unify(&Type::Bytes, &args[0], span)?;
+                self.unify(ret, &self.ordering_type(), span)
+            }
+            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::Bytes,
                 method: method.to_string(),
                 span,
             }),
@@ -3463,7 +3538,7 @@ impl TypeChecker {
         // here as a struct is.
         let arg_is_resolved = matches!(
             arg,
-            Type::Bool | Type::Char | Type::String
+            Type::Bool | Type::Char | Type::String | Type::Bytes
             | Type::F32 | Type::F64
             | Type::Named(_) | Type::Tuple(_)
             | Type::Result { .. } | Type::Union(_)
@@ -3491,6 +3566,9 @@ impl TypeChecker {
     /// The operator a desugared method name came from, so the message quotes
     /// what was written rather than `add`.
     pub(super) fn operator_spelling(method: &str) -> &'static str {
+        if method == rask_ast::operators::SLICE_METHOD {
+            return "[a..b]";
+        }
         rask_ast::expr::binary_op_of_method(method).map_or("this operator", rask_ast::expr::BinOp::symbol)
     }
 
@@ -3808,5 +3886,31 @@ impl TypeChecker {
                 self.unify(ret, &Type::RawPtr(Box::new(target)), span)
             }
         }
+    }
+
+    /// Does this receiver's type arguments fit the header of the block that
+    /// declared `sig`? A concrete leaf has to be the argument; a parameter
+    /// binds anything.
+    fn header_fits(&self, sig: &MethodSig, base: crate::TypeId, args: &[GenericArg]) -> bool {
+        if sig.owner_patterns.is_empty() {
+            return true;
+        }
+        let applied: Vec<GenericArg> = args
+            .iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(&self.ctx.apply(t)))),
+                other => other.clone(),
+            })
+            .collect();
+        let Some(bound) = crate::bind_header_patterns(&self.types, &sig.owner_patterns, &applied) else {
+            return false;
+        };
+        let params = self.types.get(base).map(|d| d.type_params().to_vec()).unwrap_or_default();
+        bound.iter().all(|(leaf, actual)| {
+            super::declarations::is_type_param_name(leaf)
+                || params.iter().any(|p| p == leaf)
+                || super::parse_type::resolve_type_expr(&rask_ast::ty::TypeExpr::named(leaf), &self.types)
+                    .is_ok_and(|t| self.resolve_named(&t) == self.resolve_named(actual))
+        })
     }
 }

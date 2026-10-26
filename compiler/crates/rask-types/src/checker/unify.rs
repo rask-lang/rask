@@ -198,6 +198,7 @@ impl TypeChecker {
                             expected: a,
                             found: b,
                             span,
+                            convert: Vec::new(),
                         });
                     }
                 }
@@ -251,7 +252,7 @@ impl TypeChecker {
     fn primitive_against_container(&self, a: &Type, b: &Type) -> bool {
         let is_primitive = |t: &Type| matches!(
             t,
-            Type::Bool | Type::Char | Type::String | Type::Unit
+            Type::Bool | Type::Char | Type::String | Type::Bytes | Type::Unit
             | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
             | Type::F32 | Type::F64
@@ -443,7 +444,7 @@ impl TypeChecker {
         );
         let is_float = |t: &Type| matches!(t, Type::F32 | Type::F64);
         let is_concrete_primitive = |t: &Type| is_int(t) || is_float(t)
-            || matches!(t, Type::Bool | Type::Char | Type::String);
+            || matches!(t, Type::Bool | Type::Char | Type::String | Type::Bytes);
 
         if !is_concrete_primitive(recv) || !is_concrete_primitive(arg) {
             return true;
@@ -540,8 +541,8 @@ impl TypeChecker {
                 self.resolve_error_branch(value, result, span)
             }
 
-            TypeConstraint::Index { object, index, result, is_range, span } => {
-                self.resolve_index(object, index, result, is_range, span)
+            TypeConstraint::Index { object, index, result, span } => {
+                self.resolve_index(object, index, result, span)
             }
 
             TypeConstraint::OptionalChain { field, result, span } => {
@@ -626,6 +627,7 @@ impl TypeChecker {
             expected,
             found: Type::Array { elem: Box::new(elem), len: elems.len() },
             span,
+            convert: Vec::new(),
         }
     }
 
@@ -905,6 +907,7 @@ impl TypeChecker {
                 expected: Type::option(self.ctx.fresh_var()),
                 found: other.clone(),
                 span,
+                convert: Vec::new(),
             }),
         }
     }
@@ -979,21 +982,14 @@ impl TypeChecker {
         object: Type,
         index: Type,
         result: Type,
-        is_range: bool,
         span: Span,
     ) -> Result<bool, TypeError> {
         let obj = self.ctx.apply(&object);
         if matches!(obj, Type::Var(_)) {
-            self.ctx.add_constraint(TypeConstraint::Index {
-                object,
-                index,
-                result,
-                is_range,
-                span,
-            });
+            self.ctx.add_constraint(TypeConstraint::Index { object, index, result, span });
             return Ok(false);
         }
-        let progressed = match self.index_result_type(&obj, is_range) {
+        let progressed = match self.index_result_type(&obj) {
             Some(elem) => {
                 self.unify(&result, &elem, span)?;
                 true
@@ -1007,7 +1003,7 @@ impl TypeChecker {
         // index went unchecked — `self.rows["nope"]` on a `Vec<Row>` field passed.
         // The container is known now, and `validate_pending_index` runs after the
         // solver, so registering here still lands in time.
-        self.check_index_types(&obj, &index, is_range, span);
+        self.check_index_types(&obj, &index, span);
         Ok(progressed)
     }
 
@@ -1333,6 +1329,7 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+
 
         if let Some(node) = value_node {
             if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {
@@ -1676,6 +1673,7 @@ impl TypeChecker {
                             expected: other.clone(),
                             found: self.ctx.literal_default(*id, kind),
                             span,
+                            convert: Vec::new(),
                         });
                     }
                 }
@@ -1708,6 +1706,7 @@ impl TypeChecker {
                             expected: other.clone(),
                             found: self.ctx.literal_default(*id, kind),
                             span,
+                            convert: Vec::new(),
                         });
                     }
                 }
@@ -1741,6 +1740,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 let mut progress = false;
@@ -1787,6 +1787,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 // FT1: a parameter's mode is part of the function type. A
@@ -1819,6 +1820,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 let mut progress = false;
@@ -1859,6 +1861,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 self.unify(e1, e2, span)
@@ -1894,6 +1897,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     });
                 }
                 let mut progress = false;
@@ -1921,6 +1925,7 @@ impl TypeChecker {
                         expected: t2,
                         found: t1,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -1935,6 +1940,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -1948,6 +1954,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -2014,6 +2021,7 @@ impl TypeChecker {
                         expected: t1,
                         found: t2,
                         span,
+                        convert: Vec::new(),
                     })
                 }
             }
@@ -2042,6 +2050,7 @@ impl TypeChecker {
                 expected: t1,
                 found: t2,
                 span,
+                convert: Vec::new(),
             }),
         }
     }

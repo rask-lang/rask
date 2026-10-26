@@ -78,6 +78,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("packed", ArgForm::Exprs, Writer::Anyone),
     ("align", ArgForm::Exprs, Writer::Anyone),
     ("message", ArgForm::Exprs, Writer::Anyone),
+    ("reads_as", ArgForm::Exprs, Writer::Anyone),  // type.reads-as
+    ("temporary", ArgForm::Exprs, Writer::Anyone), // type.temporary
     // Functions
     ("entry", ArgForm::Exprs, Writer::Anyone),
     ("no_alloc", ArgForm::Exprs, Writer::Anyone),

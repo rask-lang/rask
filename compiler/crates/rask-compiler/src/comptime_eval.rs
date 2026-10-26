@@ -302,13 +302,13 @@ impl Fold<'_, '_> {
             _ => Vec::new(),
         };
         match value {
-            ComptimeValue::String(s) if *ty == rask_mir::MirType::String => {
+            ComptimeValue::String(s) if *ty == rask_mir::MirType::Buffer => {
                 Ok(ComptimeGlobalMeta { bytes: s.as_bytes().to_vec(), ..empty(FoldedForm::Text) })
             }
             // A list is a `Vec` unless the slot is a fixed array.
             ComptimeValue::Array(items) if !matches!(ty, rask_mir::MirType::Array { .. }) => {
                 let elem = match type_args.first() {
-                    Some(t) => self.ctx.payload_to_mir(t),
+                    Some(t) => self.ctx.type_to_mir(t),
                     None => items.first().and_then(natural_type).unwrap_or(rask_mir::MirType::I64),
                 };
                 let ser = encode_list(items, &elem, self.ctx, self.mono)?;
@@ -322,7 +322,7 @@ impl Fold<'_, '_> {
             }
             ComptimeValue::Map(entries) => {
                 let (k, v) = match type_args.as_slice() {
-                    [k, v] => (self.ctx.payload_to_mir(k), self.ctx.payload_to_mir(v)),
+                    [k, v] => (self.ctx.type_to_mir(k), self.ctx.type_to_mir(v)),
                     _ => entries
                         .first()
                         .and_then(|(k, v)| Some((natural_type(k)?, natural_type(v)?)))

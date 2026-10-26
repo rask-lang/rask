@@ -19,11 +19,11 @@ func of(bs: Vec<i64>) -> Vec<u8> {
 }
 
 func decoded(bs: Vec<i64>) -> string {
-    return string.from_utf8(of(bs)) catch _ => "REJECTED"
+    return string.from_utf8(of(bs).freeze()) catch _ => "REJECTED"
 }
 
 func rejected_at(bs: Vec<i64>) -> i64 {
-    let r = string.from_utf8(of(bs))
+    let r = string.from_utf8(of(bs).freeze())
     if r is Utf8Error as e {
         match e {
             Utf8Error.InvalidByte(pos) => return pos.wrap<i64>(),
@@ -60,8 +60,8 @@ test "std.strings/S4 accepts every sequence width" {
 
 test "std.strings/S4 round-trips through bytes()" {
     let original = "Hei på deg — 世界 🌍"
-    let bytes: Vec<u8> = original.bytes().to_vec()
-    let back = string.from_utf8(bytes) catch _ => "REJECTED"
+    let data: Vec<u8> = original.bytes().to_vec()
+    let back = string.from_utf8(data.freeze()) catch _ => "REJECTED"
     assert back == original
 }
 

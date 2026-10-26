@@ -603,7 +603,9 @@ impl<'a> MirLowerer<'a> {
         // Where a `return` inside the body leaves its answer. The flag is
         // separate from the value because the value's type is the enclosing
         // function's return type, and `void` has no value to test.
-        let outer_ret = self.builder.ret_ty().clone();
+        // The enclosing function's: inside another loop's body the builder's
+        // own is that body's `bool`.
+        let outer_ret = self.return_ty();
         let ret_flag = self.builder.alloc_local(
             format!("__seq_ret_flag_{}", self.closure_counter), MirType::I64,
         );
@@ -665,6 +667,9 @@ impl<'a> MirLowerer<'a> {
 
         let mut inner_flag = None;
         let mut inner_value = None;
+        // The body reaches the loop's variables by address, like any borrowing
+        // closure (`addressed_captures`).
+        let mut body_captures = std::collections::HashSet::new();
         for (i, (name, outer_id, ty, _)) in free_vars.iter().enumerate() {
             let dst = yb.alloc_local(name.clone(), ty.clone());
             yb.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
@@ -679,6 +684,7 @@ impl<'a> MirLowerer<'a> {
                 inner_value = Some(dst);
             } else {
                 yield_locals.insert(name.clone(), (dst, ty.clone()));
+                body_captures.insert(dst);
             }
         }
 
@@ -688,9 +694,13 @@ impl<'a> MirLowerer<'a> {
         let nonlocal_block = yb.create_block();
 
         let mut body_result: Result<(), LoweringError> = Ok(());
+        // The frame's variables a `return` in the body moved.
+        let mut moved_out: Vec<LocalId> = Vec::new();
         {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
+            let saved_captures = std::mem::replace(&mut self.addressed_captures, body_captures);
+            let saved_moved = std::mem::replace(&mut self.seq_moved_names, Some(Default::default()));
             let saved_loops = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
@@ -753,6 +763,18 @@ impl<'a> MirLowerer<'a> {
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
+            self.addressed_captures = saved_captures;
+            let moved = std::mem::replace(&mut self.seq_moved_names, saved_moved).unwrap_or_default();
+            // A `return` in a loop nested in another loop's body leaves that
+            // body too, so what it moved is moved there as well.
+            if let Some(outer) = self.seq_moved_names.as_mut() {
+                outer.extend(moved.iter().cloned());
+            }
+            moved_out = free_vars
+                .iter()
+                .filter(|(name, _, _, _)| moved.contains(name))
+                .map(|(_, outer_id, _, _)| *outer_id)
+                .collect();
         }
         body_result?;
 
@@ -826,9 +848,10 @@ impl<'a> MirLowerer<'a> {
             else_block: done,
         }));
         self.builder.switch_to_block(taken);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-            value: ret_value.map(MirOperand::Local),
-        }));
+        for local in moved_out {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::MovedOut { local }));
+        }
+        self.terminate_return(ret_value.map(MirOperand::Local));
         self.builder.switch_to_block(done);
         Ok(())
     }

@@ -377,8 +377,8 @@ RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t 
 // Releases every string the keys and values hold, then the map itself. The two
 // maps came from the constructor — see `RaskElemStrs`.
 void rask_map_free(RaskMap *m) {
-    map_check_no_borrows(m, "free");
     if (!m) return;
+    map_check_no_borrows(m, "free");
     int has_key = m->key_strs.offsets && m->key_strs.count > 0;
     int has_val = m->val_strs.offsets && m->val_strs.count > 0;
     if ((has_key || has_val) && m->states) {

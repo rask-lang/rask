@@ -109,6 +109,7 @@ fn stub_name(s: &str) -> Type {
     match s {
         "bool" => Type::Bool,
         "string" => Type::String,
+        "bytes" => Type::Bytes,
         "char" => Type::Char,
         "i8" => Type::I8,
         "i16" => Type::I16,

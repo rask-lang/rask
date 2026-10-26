@@ -19,9 +19,9 @@ func main() {
 
     let t = Tagged(tag: 1, value: 2)
     // ERROR[E0921]: the padding byte counts, so this is 8 into 5
-    let bytes: [u8; 5] = unsafe { transmute(t) }
+    let raw: [u8; 5] = unsafe { transmute(t) }
 
     // Same size: fine.
     let same: u64 = unsafe { transmute(t) }
-    println("{wide} {bytes[0]} {same}")
+    println("{wide} {raw[0]} {same}")
 }

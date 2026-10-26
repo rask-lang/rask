@@ -80,8 +80,12 @@ Everything here folds to a constant on both backends, and so does everything in 
 
 `is_resource` and `is_flat` needed no layout at all — they ask about the *declaration*, and a layout has dropped `@resource` and substituted its field types by the time it exists. Native reads the checker's type table and the interpreter reads its AST maps; one shared classifier turns either into the same answer. One case still reports: `is_flat<Boxed<i32>>()` on a generic type, because R5 wants the monomorphized type and the declaration's fields are written in its type parameters.
 
-<!-- test: skip -->
 ```rask
+struct Point {
+    x: i32
+    y: i32
+}
+
 comptime {
     let size = reflect.size_of<Point>()       // 8
     let align = reflect.align_of<Point>()     // 4
