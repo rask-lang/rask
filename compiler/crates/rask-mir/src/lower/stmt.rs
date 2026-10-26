@@ -1084,7 +1084,7 @@ impl<'a> MirLowerer<'a> {
                 // side, and both tags of a flat `T? or E`.
                 let niche = self.option_niche(expr, &val_ty);
                 let is_niche = niche.is_some();
-                let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+                let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
                 let matches = test.matches;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Local(matches),

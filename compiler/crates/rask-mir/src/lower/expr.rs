@@ -1931,7 +1931,7 @@ impl<'a> MirLowerer<'a> {
             let (val, val_ty) = self.lower_expr(expr)?;
             let niche = self.option_niche(expr, &val_ty);
             let is_niche = niche.is_some();
-            let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+            let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
 
             let ok_block = self.builder.create_block();
             let else_block = self.builder.create_block();
@@ -2001,7 +2001,7 @@ impl<'a> MirLowerer<'a> {
                 return self.lower_struct_is(inner, val, val_ty, pattern);
             }
             let niche = self.option_niche(inner, &val_ty);
-            let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+            let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
             Ok((MirOperand::Local(test.matches), MirType::Bool))
         }
 
@@ -3755,7 +3755,7 @@ impl<'a> MirLowerer<'a> {
             // `T or ErrEnum` routes to the err side (tag 1) instead of
             // falling through to 0 like the bare `pattern_tag` does — and a
             // variant of that error enum tests both layers.
-            let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+            let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
             let matches = test.matches;
 
             let then_block = self.builder.create_block();
@@ -8222,11 +8222,32 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
         niche: Option<i64>,
         pattern: &rask_ast::expr::Pattern,
-    ) -> PatternTest {
+    ) -> Result<PatternTest, LoweringError> {
+        // A variant nested inside a variant can't be one flat expression: the
+        // inner tag means nothing until the outer one has passed, so it's
+        // tested with branches and the answer collected in a bool (#1645).
+        if matches!(val_ty, MirType::Enum(_)) && Self::has_nested_variant(pattern) {
+            let matches = self.builder.alloc_temp(MirType::Bool);
+            let fail = self.builder.create_block();
+            let done = self.builder.create_block();
+            self.emit_subpattern_test(val, val_ty, pattern, fail)?;
+            for (block, answer) in [(None, true), (Some(fail), false)] {
+                if let Some(b) = block {
+                    self.builder.switch_to_block(b);
+                }
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: matches,
+                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(answer))),
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+            }
+            self.builder.switch_to_block(done);
+            return Ok(PatternTest { matches, flat_payload: None });
+        }
         let tag = self.emit_option_tag(val, niche);
         let is_niche = niche.is_some();
         if let Some(matches) = self.emit_err_layer_test(val, val_ty, tag, is_niche, pattern) {
-            return PatternTest { matches, flat_payload: None };
+            return Ok(PatternTest { matches, flat_payload: None });
         }
         if let (MirType::Result { ok, .. }, Some(want)) = (val_ty, self.flat_leaf_named(pattern, val_ty)) {
             let payload_ty = match ok.as_ref() {
@@ -8235,7 +8256,7 @@ impl<'a> MirLowerer<'a> {
             };
             let (inner, leaf) = self.emit_flat_leaf(val, ok);
             let matches = self.emit_eq_const(leaf, want as i64);
-            return PatternTest { matches, flat_payload: Some((inner, payload_ty)) };
+            return Ok(PatternTest { matches, flat_payload: Some((inner, payload_ty)) });
         }
         let expected = self.pattern_tag_in_type_context(pattern, val_ty);
         let mut matches = self.emit_eq_const(tag, expected);
@@ -8248,7 +8269,22 @@ impl<'a> MirLowerer<'a> {
                 matches = self.emit_and(matches, ok);
             }
         }
-        PatternTest { matches, flat_payload: None }
+        Ok(PatternTest { matches, flat_payload: None })
+    }
+
+    /// Whether a variant pattern has another variant pattern in a field.
+    fn has_nested_variant(pattern: &rask_ast::expr::Pattern) -> bool {
+        use rask_ast::expr::Pattern;
+        let nested = |p: &Pattern| match p {
+            Pattern::Constructor { .. } | Pattern::Struct { .. } => true,
+            Pattern::Ident(n) => super::is_variant_name(n),
+            _ => false,
+        };
+        match pattern {
+            Pattern::Constructor { fields, .. } => fields.iter().any(nested),
+            Pattern::Struct { fields, .. } => fields.iter().any(|(_, p)| nested(p)),
+            _ => false,
+        }
     }
 
     /// The fields a variant pattern on a user enum tests with a literal or a
@@ -8544,7 +8580,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// `local == k` as a fresh bool temp.
-    fn emit_eq_const(&mut self, local: crate::LocalId, k: i64) -> crate::LocalId {
+    pub(super) fn emit_eq_const(&mut self, local: crate::LocalId, k: i64) -> crate::LocalId {
         let result = self.builder.alloc_temp(MirType::Bool);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result,
@@ -10784,7 +10820,7 @@ impl<'a> MirLowerer<'a> {
         }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
-        let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+        let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
         let matches = test.matches;
 
         let bind_block = self.builder.create_block();

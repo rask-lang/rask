@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A variant pattern inside another variant's field.
+//
+// Native tested only the outer tag and never bound the inner names, so
+// `Wrapped(Inner.Good(_))` took the first `Wrapped` arm whatever was inside,
+// and `Wrapped(Inner.Bad(msg))` failed to compile with "unresolved variable
+// `msg`" (#1645). The interpreter had both right all along.
+
+enum Inner {
+    Bad(string)
+    Good(i64)
+    Empty
+}
+
+enum Outer {
+    Wrapped(Inner)
+    Other(string)
+}
+
+enum Deep {
+    Layer(Outer)
+    Bottom
+}
+
+enum Shape {
+    Box(inner: Inner, label: string)
+}
+
+func describe(o: Outer) -> string {
+    match o {
+        Outer.Wrapped(Inner.Bad(msg)) => return "bad {msg}"
+        Outer.Wrapped(Inner.Good(0)) => return "good zero"
+        Outer.Wrapped(Inner.Good(n)) if n > 100 => return "good big {n}"
+        Outer.Wrapped(Inner.Good(n)) => return "good {n}"
+        Outer.Wrapped(Inner.Empty) => return "empty"
+        Outer.Other(s) => return "other {s}"
+    }
+}
+
+test "the inner variant picks the arm" {
+    assert describe(Outer.Wrapped(Inner.Bad("low"))) == "bad low"
+    assert describe(Outer.Wrapped(Inner.Good(0))) == "good zero"
+    assert describe(Outer.Wrapped(Inner.Good(500))) == "good big 500"
+    assert describe(Outer.Wrapped(Inner.Good(7))) == "good 7"
+    assert describe(Outer.Wrapped(Inner.Empty)) == "empty"
+    assert describe(Outer.Other("x")) == "other x"
+}
+
+test "three levels deep" {
+    let d = Deep.Layer(Outer.Wrapped(Inner.Good(42)))
+    let got = match d {
+        Deep.Layer(Outer.Wrapped(Inner.Bad(_))) => "bad"
+        Deep.Layer(Outer.Wrapped(Inner.Good(n))) => "good {n}"
+        _ => "else"
+    }
+    assert got == "good 42"
+}
+
+test "named fields nest too" {
+    let s = Shape.Box(inner: Inner.Bad("worn"), label: "crate")
+    let got = match s {
+        Shape.Box(inner: Inner.Good(_), label) => "good {label}"
+        Shape.Box(inner: Inner.Bad(why), label) => "bad {why} {label}"
+        _ => "else"
+    }
+    assert got == "bad worn crate"
+}
+
+test "is tests and binds the nested variant" {
+    let a = Outer.Wrapped(Inner.Good(3))
+    if a is Outer.Wrapped(Inner.Good(n)) {
+        assert n == 3
+    } else {
+        assert false, "expected Good"
+    }
+    assert !(a is Outer.Wrapped(Inner.Bad(_)))
+}
+
+test "a tuple element nests" {
+    let t = (Outer.Wrapped(Inner.Good(9)), 1)
+    let got = match t {
+        (Outer.Wrapped(Inner.Bad(_)), _) => "bad"
+        (Outer.Wrapped(Inner.Good(n)), k) => "good {n} {k}"
+        _ => "else"
+    }
+    assert got == "good 9 1"
+}
+
+test "a nested string bound from a vector element outlives the slot" {
+    mut v = Vec.new()
+    v.push(Outer.Wrapped(Inner.Bad("kept")))
+    match v[0] {
+        Outer.Wrapped(Inner.Bad(msg)) => {
+            v[0] = Outer.Other("replaced")
+            assert msg == "kept"
+        }
+        _ => assert false, "expected Bad"
+    }
+}

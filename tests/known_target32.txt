@@ -5,7 +5,6 @@
 # Measured 2026-10-25. Nothing here fails because of the width yet: every one
 # of these fails on the 64-bit host too, and is tracked where it's owned.
 
-examples/litmus_edge_cases.rk                      # its tests: nested enum pattern binding unresolved in MIR — #1645
 tests/suite/p09_simd.rk                            # SIMD vector types unbuilt — pending_features, #1059
 tests/suite/p11_gradual_generalization.rk          # gradual generalization unbuilt — pending_features
 tests/suite/t_random_range_imported.rk             # imported random.range result type open — #1604
