@@ -421,8 +421,8 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 
 ## Next: v0.7 — Each fact has one owner
 
-**Done when every issue [#1570](https://github.com/rask-lang/rask/issues/1570)
-lists is closed. Today: 9 of 15 open** (#1555, #1556, #1561, #1564–#1569).
+**Done when `cargo test -p rask-cli --test one_owner_sites` reads every
+ratchet at its target. Today: 448 sites restate a fact, 441 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -432,12 +432,97 @@ once and codegen kept a second table of them, the checker's call rewrites
 reached the program's copy of the stdlib but not the copy it compiles
 (#1621), and layout sizes opaque handles from a hand list (#1592).
 
-The order is #1570's own. #1568 first (one driver instead of a pipeline
-assembled by hand in five places), then #1566 + #1567 (the checker and mono
-hand down types and layouts), then #1564 + #1565 (a call names its callee,
-stdlib facts live only on the `.rk` declarations), then #1555 and #1556. #1569
-any time. Each root-cause fix lands a guard test in the style of
-`no_type_text_reparsing`, so the count only goes down.
+The audit is [#1570](https://github.com/rask-lang/rask/issues/1570). Its gate
+was "every listed issue closed", which is a list, and this file says a version
+is a number. So the number is the test: one ratchet per kind of restatement,
+each pinned at today's count, each with the count it has to reach.
+
+| Restated fact | Today | Target | Issue |
+|---|---|---|---|
+| MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 29 | 0 | #1564, #1566 |
+| Checker answers a stdlib method from a Rust table (`resolve_*_method`) | 24 | 0 | #1561 |
+| `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
+| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 105 | 0 | #1564, #1565 |
+| Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
+| Public entry points into the passes | 14 | 7 | #1568 |
+| Interpreters built outside the driver | 11 | 0 | #1568 |
+| Size or alignment computed outside the layout model | 5 | 0 | #1567 |
+| Readers of the pointer-width process global | 15 | 0 | #1568 |
+
+A ratchet at its target gets deleted, and the thing that made the sites
+impossible stays: a Cargo dependency that can't reach the old answer, or a type
+that can't hold it. The Cargo graph is the strongest guard there is. Once
+`rask-codegen` depends on `mir` and `mono` only, nothing in it can reach back
+for a checker type by accident, and no grep test has to say so.
+
+**Order.** Not #1570's own; two things moved.
+
+1. The crate split, in two halves.
+
+   `rask-diagnostics` converts every crate's errors, so it depends on them
+   all, and MIR depends on it, so MIR and codegen are compiled against the
+   interpreter. Split it into a core (spans, codes, formatter) and move each
+   `ToDiagnostic` into the crate whose error it converts. Mechanical, and
+   it's what makes the layering in #1568 enforceable.
+
+   Then one crate for the facts about the language, as opposed to facts
+   about a program. The operator table (symbol, binding power, desugared
+   method, interface), the keyword list, the stdlib's declarations, the
+   runtime's constants and C signatures: nobody computes these, so they're
+   stated once and read by every stage. Most are already Rask source
+   (`stdlib/*.rk`, `ops.rk`), so the crate parses them once and hands out
+   tables; the rest (`rask_runtime.h`'s `#define`s and prototypes) it
+   either generates or checks against. Today that role is spread over
+   `rask-ast`, the lexer, `rask-stdlib` and, for the runtime constants,
+   nothing at all. Facts about a program (a `Type`, a layout, a callee) are
+   not definitions, they're a stage's output, and they stay with the stage
+   that produces them; only their shapes are shared.
+
+   What stops the drift is the dependency direction, not where the tables
+   live. `rask-mir` depends on `rask-parser` today, which is how it ends up
+   parsing. Once it depends only on the type data and mono's output, the
+   only way for it to learn a fact is to be handed one.
+2. **#1561** before anything is handed down. Every later step is "carry the
+   checker's answer to the next pass". If the checker's answer for
+   `Vec.capacity` comes from a table that says `u64` while `collections.rk`
+   says `usize?`, a pipe just delivers the wrong fact faster. The `.rk`
+   declaration becomes the only source first.
+3. The rest of **#1568**: the LSP and spec-test front ends, the interpreter
+   setups, the config built fifteen times, node ids, and the pointer width
+   out of its global and into the config the driver hands down.
+4. **#1566 + #1567.** The checker records what it decided per node (which
+   variant a pattern names, which side a return goes to, that a call was an
+   operator), and layout moves into its own crate. That needs `rask-types`
+   split into the `Type` data and the checker, since the checker reads sizes
+   for the copy rule and layout reads `Type`. The crate takes `Type`, type
+   definitions whose fields are already `Type`s, and a `Target`; the copy
+   rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
+   `compiler/CLAUDE.md` calls `rask_types::layout` "the one size model"
+   today; it will be right once the other five answers are gone.
+5. **#1564 + #1565.** A call carries its callee's identity and signature;
+   stdlib facts live only on the `.rk` declarations. #1656 is the first
+   consumer of that flow and a good proof it works, but not a gate.
+6. **#1555.** MIR states what an assignment and a runtime call do; codegen
+   translates. That's what v0.8 needs.
+7. **#1569** any time, and a good lane for a session that shouldn't touch
+   the middle of the pipeline.
+
+**Cut: #1556.** Running comptime on the MIR interpreter is a new evaluator,
+not a copy removed, and it sits at the end of the longest chain here. It's the
+natural theme for v0.8, and step 6 is the last thing it waits on.
+
+**How each PR goes.** The method is the one #425 used: tally which fallback
+answers on the whole corpus, close the gap upstream, delete the fallback, lower
+the ratchet. A PR that adds the new field and leaves the old sniff beside it
+"for now" is the shape this version exists to remove, so it doesn't merge.
+`expr.rs` is eleven thousand lines; it gets shorter by deletion, not rewritten.
+
+**Lanes.** Three at most, partitioned by which fact they own, with `main`
+merged in daily. The seven-lane run in [PLAN.md](PLAN.md) cost seven
+collisions, four of them caught by nothing. Lane A owns structure (steps 1, 3
+and 7: `rask-compiler`, `rask-diagnostics`, `rask-lsp`, `rask-ast`). Lane B
+owns the checker as source of truth (step 2 and the checker half of 4). Lane C
+owns layout (the mono half of 4). Step 5 waits for B.
 
 Bugs found inside the theme join it. Already filed and the same shape: #1553
 (the stdlib collected twice), #1592, #1610 (a hand list of typed modules) and
