@@ -112,18 +112,20 @@ interface Scheduler {
 }
 
 using Multitasking(FrameScheduler.new(budget: 16.ms)) {
-    ...
+    spawn { render() }                       // on the frame scheduler
+    let irq = InterruptScheduler.new()
+    spawn(on: irq) { read_sensors() }        // on another one
 }
 ```
 
 | Rule | Description |
 |------|-------------|
-| **SP1: One scheduler type per program** | `using Multitasking(s)` installs `s` where `s: Scheduler`; with no argument it installs the stdlib's work-stealing scheduler. The type is a fact of the whole program, resolved at monomorphization like a `Shared` strategy (`conc.sync/SH2`) or an allocator (`mem.alloc/AL4`): every park site is a direct call to that type's `park`, and the slot keeps only the installed-or-not flag the sync fallback (`conc.runtime/IO2`) already needs. Two blocks naming different types in one program is a compile error; `conc.async/C1` already forbids two at once |
+| **SP1: A task knows its scheduler** | `using Multitasking(s)` installs `s` where `s: Scheduler` as the default; with no argument that's the stdlib's work-stealing scheduler. A plain `spawn` goes on the scheduler of the task doing the spawning, `spawn(on: s)` on another, and the task header carries its scheduler's address from then on. A park site therefore asks the current task, never a global, and the slot keeps only the installed-or-not flag the sync fallback (`conc.runtime/IO2`) already needs. The set of scheduler types a program uses is a fact of the whole program at monomorphization, like a `Shared` strategy (`conc.sync/SH2`) or an allocator (`mem.alloc/AL4`): one type and every park is a direct call; several and it's a tag check over that closed set, the way a widened method call is dispatched. One check next to a context switch is noise. `conc.async/C1` still forbids two `using` blocks at once; `spawn(on:)` is how a second scheduler is reached |
 | **SP2: `Task` is the compiler's, and linear** | A `Task` is a fiber with its stack, or a frame under SL1; a scheduler never sees inside. It's linear: `resume(take t) -> Parked or Done` hands it back only when the task stops, so running one task on two threads at once is unrepresentable (`rulings` test 3). A wrong scheduler can hang; it can't corrupt a stack |
-| **SP3: `Waker` is an opaque token** | Handed out by `park`, consumed by `wake`. On an MCU an interrupt handler's whole job is `wake(w)`, which is Embassy's model with the `async` removed |
+| **SP3: `Waker` is an opaque token** | Handed out by `park`, consumed by `wake`. It carries the parked task's scheduler, so a wake from a task on another scheduler, or from an interrupt, lands on the right one. On an MCU an interrupt handler's whole job is `wake(w)`, which is Embassy's model with the `async` removed |
 | **SP4: The sync primitives speak the protocol** | `Shared<T, Mutex>`'s blocking path, channels, `join` and `sleep` call `park` and `wake` on the slot. Every primitive therefore works under every scheduler, and no scheduler has to know about any of them |
 | **SP5: The reactor is the scheduler's** | How readiness becomes a wake is policy: `epoll` on a server, the interrupt controller on a chip, a virtual clock under sim. The stdlib scheduler keeps `conc.runtime/R1`–`R3` as its own detail |
-| **SP6: Still no coloring** | I/O functions check the slot's flag exactly as before and then call the program's scheduler directly. No vtable, no hidden parameter, nothing in a signature |
+| **SP6: Still no coloring** | I/O functions check the slot's flag exactly as before and then park on the current task's scheduler. No `any Scheduler`, no hidden parameter, nothing in a signature |
 
 What a library gets: a frame-budgeted scheduler for a game, a deterministic one for a
 test, a run-to-completion loop for a chip, written in Rask and installed with one line.
