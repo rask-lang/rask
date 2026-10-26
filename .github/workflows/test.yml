@@ -431,7 +431,7 @@ jobs:
   # what a blocked task costs in OS threads. The soak is v0.5's second number:
   # its known-red programs are the fiber switch's to turn green.
   gates-concurrency:
-    name: gates-concurrency (tsan, thread-count soak, fiber switch)
+    name: gates-concurrency (tsan, thread-count soak, fiber switch, aarch64 C ABI)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -479,6 +479,13 @@ jobs:
       id: compiler
       run: cargo build --release -p rask-cli
       working-directory: compiler
+
+    # C structs passed by value, cross-compiled for aarch64 and run under the
+    # qemu installed above: the only place aarch64's calling convention runs.
+    - name: C struct ABI (aarch64 under qemu)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      timeout-minutes: 3
+      run: C_ABI_GATE_REQUIRE_AARCH64=1 tests/c_abi_gate.sh
 
     - name: Data-race gate (ThreadSanitizer)
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
