@@ -324,8 +324,11 @@ decisions and are the ones to weigh if embedded ever becomes a goal.
   reserves a stack. Embassy's tasks are state machines sized to what they hold across
   an `await`, run with no OS, and fit by the hundred where fibers fit by the dozen.
   Section 5 forbids tasks outright on a bare build, which leaves interrupts as the only
-  concurrency. No function coloring rules out the stackless answer, so this one has no
-  fix inside the design.
+  concurrency. No function coloring rules out Rust's stackless answer.
+  [scheduler-protocol.md](../concurrency/scheduler-protocol.md) proposes two others: a
+  stack that grows by copying, which Rask can have without a GC because nothing stores
+  a reference, and a stackless mode driven by the inferred Blocks effect for builds with
+  no heap.
 - **Synchronization types are closed.** Embedded code is made of hand-built cells: a
   mutex that masks interrupts, a wrapper over the chip's hardware spinlocks, a queue
   between an interrupt and the main loop. Rust writes each as a crate. Here each is a

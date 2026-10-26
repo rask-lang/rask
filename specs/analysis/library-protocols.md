@@ -251,7 +251,6 @@ out of the block, so a panic in a critical section restores interrupts.
   is "safe to reach from two tasks through its methods", and the Rask-side name should
   come from how a program reads, not from the cheat sheet (`std.api`).
 - **The scheduler as a library.** Embassy's real trick is that the executor is a crate.
-  `using Allocator` (`mem.alloc/AL7`) already threads a runtime policy as a
-  context; a `using Scheduler` in the same shape would let a bare build supply its own
-  loop over fibers. That doesn't fix the stack-per-task cost, so it's a smaller win than
-  it sounds, and it belongs on a page of its own.
+  That's [scheduler-protocol.md](../concurrency/scheduler-protocol.md) now: the runtime
+  slot holds a `Scheduler` conformance, and the stack-per-task cost gets its own answer
+  there (a growable stack, and a stackless mode for builds with no heap).
