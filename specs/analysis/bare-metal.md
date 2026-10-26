@@ -313,6 +313,45 @@ copy.
   type for both would need every `Vec` to carry a refcount, which is the hidden-copy
   problem `std.bytes` avoids.
 
+## Where Rask pays more than Rust
+
+Rask was never designed for this work, and the list above is what it costs to make it
+possible. This is the other list: what the design makes worse on a microcontroller than
+embedded Rust, by choice. Three have a build-mode answer; two follow from settled
+decisions and are the ones to weigh if embedded ever becomes a goal.
+
+- **A task is a stack.** Tasks are stackful fibers (`conc.runtime`), so each one
+  reserves a stack. Embassy's tasks are state machines sized to what they hold across
+  an `await`, run with no OS, and fit by the hundred where fibers fit by the dozen.
+  Section 5 forbids tasks outright on a bare build, which leaves interrupts as the only
+  concurrency. No function coloring rules out the stackless answer, so this one has no
+  fix inside the design.
+- **Synchronization types are closed.** Embedded code is made of hand-built cells: a
+  mutex that masks interrupts, a wrapper over the chip's hardware spinlocks, a queue
+  between an interrupt and the main loop. Rust writes each as a crate. Here each is a
+  compiler change, the way `Critical` is in section 4 (`mem.shared-rack-heap/BX1`).
+  [library-protocols.md](library-protocols.md) is a design for getting most of them
+  back without opening the set.
+- **Panics unwind, and every frame pays up front.** A frame that owns something pushes
+  an unwind record on entry, and `ensure` bodies run during the unwind. Rust embedded
+  builds with `panic = "abort"` and pays nothing until a panic. A bare build could drop
+  the records and hand a panic straight to the handler; that is a mode to design.
+- **Strings carry an atomic refcount** (`std.strings/S6`). A Cortex-M0+ has no atomic
+  instructions, so each count change is an interrupts-off section; an M33 has them.
+  Strings of 15 bytes or less and all literals never touch the count, and a heap string
+  needs a heap. `&str` is free on both counts.
+- **Overflow panics in every build** (`type.overflow/OV1`, `OV4`): a check and a panic
+  path per `+`. Rust's release builds wrap. `Wrapping<T>` covers code that wants it;
+  by default the code size is paid.
+- **An escaping closure allocates** (`mem.closures/CM1`). A callback a driver keeps
+  outlives its frame, so it gets a heap block, where Rust stores an `impl Fn` inline.
+  Without a heap those become plain functions plus state.
+
+Not worse: compile-time sizes exist (`comptime N: usize`), so the fixed-capacity `Vec`
+above needs no new mechanism for its size. Linearity is stronger than Rust's, because
+there is no `forget`, and section 3's DMA transfer depends on exactly that. And the
+effect checks on handlers have no Rust equivalent.
+
 ## Still open
 
 - **Panics on bare metal.** A panic handler that resets the chip is the usual answer. But
