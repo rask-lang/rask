@@ -838,6 +838,7 @@ fn remap_stmt(
         MirStmtKind::MovedOut { local } => MirStmtKind::MovedOut {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::Guarded { .. } => unreachable!("a release pass expands its guarded releases before it returns"),
         MirStmtKind::ReleaseSlot { addr, offset, ty } => MirStmtKind::ReleaseSlot {
             addr: local_map.get(addr).copied().unwrap_or(*addr),
             offset: *offset,

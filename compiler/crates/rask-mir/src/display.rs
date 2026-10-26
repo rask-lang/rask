@@ -307,6 +307,13 @@ impl fmt::Display for MirStmt {
             }
             MirStmtKind::ZeroAggregate { local } => write!(f, "zero_aggregate(_{})", local.0),
             MirStmtKind::MovedOut { local } => write!(f, "moved_out(_{})", local.0),
+            MirStmtKind::Guarded { flag, body } => {
+                write!(f, "if _{} {{ ", flag.0)?;
+                for s in body {
+                    write!(f, "{}; ", s)?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }

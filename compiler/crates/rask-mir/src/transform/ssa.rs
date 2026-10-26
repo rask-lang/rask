@@ -472,6 +472,7 @@ fn rename_stmt(
         | MirStmtKind::MovedOut { local: addr } => {
             *addr = current_version(*addr, version_stack, num_orig_locals);
         }
+        MirStmtKind::Guarded { .. } => unreachable!("a release pass expands its guarded releases before it returns"),
         MirStmtKind::EnsureHookRegister { captures, .. } => {
             for cap in captures.iter_mut() {
                 cap.local_id = current_version(cap.local_id, version_stack, num_orig_locals);

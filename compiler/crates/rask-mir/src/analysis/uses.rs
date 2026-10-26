@@ -88,6 +88,10 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         }
         // A hand-over: the value is read on its way out.
         MirStmtKind::MovedOut { local } => f(Named::Local(*local)),
+        MirStmtKind::Guarded { flag, body } => {
+            f(Named::Local(*flag));
+            body.iter().for_each(|s| visit_stmt_named(s, f));
+        }
         MirStmtKind::ClosureCall { closure, args, .. } => {
             f(Named::Local(*closure));
             args.iter().for_each(|a| f(Named::Operand(a)));
@@ -268,6 +272,10 @@ pub fn visit_stmt_use_locals_mut(
         // pass that moves the aggregate to another local moves this too.
         MirStmtKind::ZeroAggregate { local } => f(local, UseKind::Value),
         MirStmtKind::MovedOut { local } => f(local, UseKind::Value),
+        MirStmtKind::Guarded { flag, body } => {
+            f(flag, UseKind::Value);
+            body.iter_mut().for_each(|s| visit_stmt_use_locals_mut(s, f));
+        }
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }

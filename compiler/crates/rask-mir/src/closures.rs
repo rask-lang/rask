@@ -847,36 +847,43 @@ fn insert_drops(
         out.push(MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name, made }));
         out
     };
+    let guards = crate::analysis::ownership::Guards::new(func, &plan);
     let (shifted, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
+        &guards,
         &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| drops_for(name, made),
     );
     for (bi, si, closure, made) in shared {
         let at = shifted.at(bi, si);
         func.blocks[bi].statements.insert(at, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made }));
     }
-    let mut at_end: Vec<(usize, LocalId, Option<LocalId>)> = Vec::new();
+    let mut at_end: Vec<(usize, LocalId, Option<LocalId>, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(crate::BlockId, crate::BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            crate::analysis::ownership::Release::At { block, name, made, .. } => {
-                at_end.push((block, name, made))
+            crate::analysis::ownership::Release::At { block, name, made, guard, .. } => {
+                at_end.push((block, name, made, guard))
             }
-            crate::analysis::ownership::Release::OnEdge { from, to, name, made } => {
-                on_edges.push((from, to, drops_for(name, made)))
+            crate::analysis::ownership::Release::OnEdge { from, to, name, made, guard } => {
+                on_edges.push((from, to, guards.wrap(guard, drops_for(name, made))))
             }
         }
     }
-    at_end.sort_by_key(|(b, l, _)| (*b, l.0));
-    for (block, name, made) in at_end {
-        let drops = drops_for(name, made);
+    at_end.sort_by_key(|(b, l, _, _)| (*b, l.0));
+    for (block, name, made, guard) in at_end {
+        let drops = guards.wrap(guard, drops_for(name, made));
         func.blocks[block].statements.extend(drops);
     }
+    let flag_edges = guards.edges(func);
     crate::analysis::ownership::insert_on_edges(
         func,
-        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+        crate::analysis::ownership::merge_edges(
+            crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+            flag_edges,
+        ),
     );
+    guards.finish(func);
 }
 
 /// What each statement does to the closures this frame may hold.

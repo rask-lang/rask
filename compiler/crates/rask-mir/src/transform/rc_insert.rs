@@ -1046,50 +1046,61 @@ fn insert_aggregate_release(
     // The unwind marks go in first, against the blocks as planned. A literal
     // is armed from its `ZeroAggregate`, which leaves every field it hasn't
     // stored yet reading as empty (#1518).
+    let guards = ownership::Guards::new(func, &plan);
     let (shifted, unwind_edges) = ownership::place_unwind(
         func,
         plan.unwind,
+        &guards,
         &mut |_: &mut MirFunction, name: LocalId, _| {
             vec![MirStmt::dummy(MirStmtKind::RcDecContents { local: name })]
         },
     );
-    let mut by_block: HashMap<usize, Vec<(usize, LocalId)>> = HashMap::new();
+    let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<usize>)>> = HashMap::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            ownership::Release::At { block, at, name, .. } => {
+            ownership::Release::At { block, at, name, guard, .. } => {
                 let stmts = &func.blocks[block].statements;
                 let mut at = shifted.at(block, at);
                 while at < stmts.len() && matches!(stmts[at].kind, MirStmtKind::RcInc { .. }) {
                     at += 1;
                 }
-                by_block.entry(block).or_default().push((at, name));
+                by_block.entry(block).or_default().push((at, name, guard));
             }
-            ownership::Release::OnEdge { from, to, name, .. } => {
+            ownership::Release::OnEdge { from, to, name, guard, .. } => {
                 let span = func
                     .blocks
                     .iter()
                     .find(|b| b.id == from)
                     .map(|b| b.terminator.span)
                     .unwrap_or(crate::Span::new(0, 0));
-                on_edges.push((from, to, vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)]));
+                let release = vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)];
+                on_edges.push((from, to, guards.wrap(guard, release)));
             }
         }
     }
     for (bi, mut list) in by_block {
         list.sort_by(|a, b| b.0.cmp(&a.0).then(b.1 .0.cmp(&a.1 .0)));
-        for (at, name) in list {
+        for (at, name, guard) in list {
             let block = &mut func.blocks[bi];
             let span = block
                 .statements
                 .get(at.saturating_sub(1))
                 .map(|s| s.span)
                 .unwrap_or(block.terminator.span);
-            block.statements.insert(at, MirStmt::new(MirStmtKind::RcDecContents { local: name }, span));
+            let release = vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)];
+            for (k, stmt) in guards.wrap(guard, release).into_iter().enumerate() {
+                block.statements.insert(at + k, stmt);
+            }
         }
     }
     // After the in-block ones: those index into the blocks as they were.
-    ownership::insert_on_edges(func, ownership::merge_edges(unwind_edges, on_edges));
+    let flag_edges = guards.edges(func);
+    ownership::insert_on_edges(
+        func,
+        ownership::merge_edges(ownership::merge_edges(unwind_edges, on_edges), flag_edges),
+    );
+    guards.finish(func);
     sites.into_iter().map(|(_, s)| s).collect()
 }
 

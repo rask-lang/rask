@@ -259,6 +259,15 @@ pub enum MirStmtKind {
     MovedOut {
         local: LocalId,
     },
+    /// `body` runs only when `flag` is true: a release of a value that is the
+    /// frame's on some paths into a join and not on others (a drop flag).
+    /// Lives only inside a release pass: `ownership::Guards::finish` splits
+    /// the block around it before the pass returns, so no other pass and no
+    /// backend ever sees one.
+    Guarded {
+        flag: LocalId,
+        body: Vec<MirStmt>,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

@@ -1198,6 +1198,11 @@ impl<'a> FunctionBuilder<'a> {
             // and nothing to read in an aggregate that holds nothing.
             // Only the ownership passes read it.
             MirStmtKind::MovedOut { .. } => {}
+            MirStmtKind::Guarded { .. } => {
+                return Err(CodegenError::UnsupportedFeature(
+                    "a guarded release reached codegen; its pass should have split the block".to_string(),
+                ));
+            }
             MirStmtKind::ZeroAggregate { local } => {
                 if ctx.unwind_rec.is_none() {
                     return Ok(());

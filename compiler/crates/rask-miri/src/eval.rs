@@ -276,6 +276,14 @@ impl MiriEngine {
             | MirStmtKind::ZeroAggregate { .. }
             | MirStmtKind::MovedOut { .. } => {}
 
+            MirStmtKind::Guarded { flag, body } => {
+                if self.stack.current()?.get(*flag)?.as_bool()? {
+                    for s in body {
+                        self.eval_stmt(s)?;
+                    }
+                }
+            }
+
             // Forbidden at comptime
             MirStmtKind::ResourceRegister { .. }
             | MirStmtKind::ResourceConsume { .. } => {

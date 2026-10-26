@@ -1525,19 +1525,24 @@ fn container_stored_into(
 /// is a byte offset, and freeing it as a `cstring` frees an address that was
 /// never one.
 ///
-/// Slot zero is read on the error path too, and that read is the error value,
-/// which is an aggregate — so "one machine word" separates the two. Pointer or
-/// not: an opaque handle like `cstring` is an `i64` and is still a container
-/// whose free the caller owns.
-fn holds_the_payload(func: &MirFunction, local: LocalId, field_index: u32) -> bool {
+/// Slot zero is read on the error path too, and on every other variant of an
+/// enum, so the read has to have the type the container comes back as: the
+/// wrapper's success type, or a handle when the wrapper is an enum of the
+/// program's own. "One machine word" used to be the test, and a `u64` that an
+/// enum's other variant carried in slot zero was freed as a vector once the
+/// ownership plan stopped leaking it (#1636). An opaque handle like `cstring`
+/// is an `i64` and is still a container whose free the caller owns, which the
+/// success type says.
+fn holds_the_payload(func: &MirFunction, local: LocalId, wrapper: LocalId, field_index: u32) -> bool {
     if field_index != 0 {
         return false;
     }
-    func.locals
-        .iter()
-        .chain(func.params.iter())
-        .find(|l| l.id == local)
-        .is_some_and(|l| !l.ty.passed_by_address() && l.ty.size() == 8)
+    let Some(ty) = func.local_ty(local) else { return false };
+    match func.local_ty(wrapper) {
+        Some(MirType::Option(inner)) => **inner == *ty,
+        Some(MirType::Result { ok, .. }) => **ok == *ty,
+        _ => matches!(ty, MirType::Ptr | MirType::Container(_)),
+    }
 }
 
 fn is_container_shaped(func: &MirFunction, local: LocalId) -> bool {
@@ -1644,6 +1649,7 @@ fn insert_for_function(
     let with_closure = captures_freed_with_the_closure(func, &fresh);
     let with_closure = one_free_per_group(func, with_closure, &value_groups(func, &fresh));
 
+    let guards = crate::analysis::ownership::Guards::new(func, &plan);
     // A release under a lent slot frees what the slot holds *now*: the callee
     // may have put a different container there, so the handle is loaded at the
     // release rather than taken from any earlier name.
@@ -1678,28 +1684,34 @@ fn insert_for_function(
     let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
+        &guards,
         &mut |func: &mut MirFunction, name: LocalId, _| release(func, name),
     );
-    let mut at_end: Vec<(usize, LocalId)> = Vec::new();
+    let mut at_end: Vec<(usize, LocalId, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
-            crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
-                let stmts = release(func, name);
+            crate::analysis::ownership::Release::At { block, name, guard, .. } => at_end.push((block, name, guard)),
+            crate::analysis::ownership::Release::OnEdge { from, to, name, guard, .. } => {
+                let stmts = guards.wrap(guard, release(func, name));
                 on_edges.push((from, to, stmts));
             }
         }
     }
-    at_end.sort_by_key(|(b, l)| (*b, l.0));
-    for (block, name) in at_end {
-        let stmts = release(func, name);
+    at_end.sort_by_key(|(b, l, _)| (*b, l.0));
+    for (block, name, guard) in at_end {
+        let stmts = guards.wrap(guard, release(func, name));
         func.blocks[block].statements.extend(stmts);
     }
+    let flag_edges = guards.edges(func);
     crate::analysis::ownership::insert_on_edges(
         func,
-        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+        crate::analysis::ownership::merge_edges(
+            crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+            flag_edges,
+        ),
     );
+    guards.finish(func);
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
     }
@@ -2449,7 +2461,7 @@ fn containers_and_makers(
             };
             let MirOperand::Local(src) = base else { continue };
             if let Some(free) = unwrap_for.get(src) {
-                if holds_the_payload(func, *dst, *field_index) {
+                if holds_the_payload(func, *dst, *src, *field_index) {
                     fresh.insert(*dst, free);
                     unwrapped.insert(*dst);
                 }
