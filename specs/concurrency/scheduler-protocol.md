@@ -118,12 +118,12 @@ using Multitasking(FrameScheduler.new(budget: 16.ms)) {
 
 | Rule | Description |
 |------|-------------|
-| **SP1: The slot holds a conformance** | `using Multitasking(s)` installs `s` where `s: Scheduler`. `using Multitasking` with no argument installs the stdlib's work-stealing scheduler. `conc.async/C1` holds: one at a time |
+| **SP1: One scheduler type per program** | `using Multitasking(s)` installs `s` where `s: Scheduler`; with no argument it installs the stdlib's work-stealing scheduler. The type is a fact of the whole program, resolved at monomorphization like a `Shared` strategy (`conc.sync/SH2`) or an allocator (`mem.alloc/AL4`): every park site is a direct call to that type's `park`, and the slot keeps only the installed-or-not flag the sync fallback (`conc.runtime/IO2`) already needs. Two blocks naming different types in one program is a compile error; `conc.async/C1` already forbids two at once |
 | **SP2: `Task` is the compiler's, and linear** | A `Task` is a fiber with its stack, or a frame under SL1; a scheduler never sees inside. It's linear: `resume(take t) -> Parked or Done` hands it back only when the task stops, so running one task on two threads at once is unrepresentable (`rulings` test 3). A wrong scheduler can hang; it can't corrupt a stack |
 | **SP3: `Waker` is an opaque token** | Handed out by `park`, consumed by `wake`. On an MCU an interrupt handler's whole job is `wake(w)`, which is Embassy's model with the `async` removed |
 | **SP4: The sync primitives speak the protocol** | `Shared<T, Mutex>`'s blocking path, channels, `join` and `sleep` call `park` and `wake` on the slot. Every primitive therefore works under every scheduler, and no scheduler has to know about any of them |
 | **SP5: The reactor is the scheduler's** | How readiness becomes a wake is policy: `epoll` on a server, the interrupt controller on a chip, a virtual clock under sim. The stdlib scheduler keeps `conc.runtime/R1`–`R3` as its own detail |
-| **SP6: Still no coloring** | I/O functions check the slot exactly as before. The slot dispatches through a vtable; a few nanoseconds per park, against a syscall |
+| **SP6: Still no coloring** | I/O functions check the slot's flag exactly as before and then call the program's scheduler directly. No vtable, no hidden parameter, nothing in a signature |
 
 What a library gets: a frame-budgeted scheduler for a game, a deterministic one for a
 test, a run-to-completion loop for a chip, written in Rask and installed with one line.
@@ -170,7 +170,7 @@ list SG2 asks for in the form the copy needs.
 
 - `conc.runtime/T3` gains stack growth; the "demand-paged fixed reservation" line in
   the P3 rationale goes, since the room check now exists and P3 shares it.
-- `conc.runtime/IO1`: the slot holds `any Scheduler`.
+- `conc.runtime/IO1`: the slot is a flag; the scheduler is the program's type.
 - `sim` (`specs/sim.md`) is a `Scheduler` conformance written in Rask.
 - `conc.runtime-strategy/B1` lists SG1 among Phase B's parts.
 - `analysis/bare-metal.md` section 5: a bare build may run tasks under SL1, and its
@@ -181,10 +181,10 @@ list SG2 asks for in the form the copy needs.
 
 - **The starting size.** Go uses 2 KB (it was 8). Rask's frames are leaner than Go's
   in one way (no GC headers) and fatter in another (strings are 16 bytes). Measure.
-- **Whether the slot is `any Scheduler` or a type parameter.** `any` costs a vtable
-  call per park and lets the scheduler be chosen at runtime. A parameter is faster
-  and means the whole program is compiled for one scheduler, which a chip would prefer.
-  Probably both: `any` by default, `using Multitasking<S>` where it matters.
+- **A library that installs nothing but wants to run under a specific scheduler**
+  (a test harness that needs `sim`'s determinism) has to ask the program to install
+  it, since the type is the program's. `conc.async/C6` already says libraries don't
+  install runtimes, so this is the existing rule with a sharper edge.
 - **`Thread.spawn` and `ThreadPool`** are OS threads and untouched; only green tasks
   go through the slot. Whether a scheduler conformance should be able to say "I have
   no threads" for a chip is a question for the bare build.
