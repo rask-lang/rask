@@ -457,11 +457,31 @@ for a checker type by accident, and no grep test has to say so.
 
 **Order.** Not #1570's own; two things moved.
 
-1. The crate split. `rask-diagnostics` converts every crate's errors, so it
-   depends on them all, and MIR depends on it, so MIR and codegen are compiled
-   against the interpreter. Split it into a core (spans, codes, formatter) and
-   move each `ToDiagnostic` into the crate whose error it converts. Mechanical,
-   and it's what makes the layering in #1568 enforceable.
+1. The crate split, in two halves.
+
+   `rask-diagnostics` converts every crate's errors, so it depends on them
+   all, and MIR depends on it, so MIR and codegen are compiled against the
+   interpreter. Split it into a core (spans, codes, formatter) and move each
+   `ToDiagnostic` into the crate whose error it converts. Mechanical, and
+   it's what makes the layering in #1568 enforceable.
+
+   Then one crate for the facts about the language, as opposed to facts
+   about a program. The operator table (symbol, binding power, desugared
+   method, interface), the keyword list, the stdlib's declarations, the
+   runtime's constants and C signatures: nobody computes these, so they're
+   stated once and read by every stage. Most are already Rask source
+   (`stdlib/*.rk`, `ops.rk`), so the crate parses them once and hands out
+   tables; the rest (`rask_runtime.h`'s `#define`s and prototypes) it
+   either generates or checks against. Today that role is spread over
+   `rask-ast`, the lexer, `rask-stdlib` and, for the runtime constants,
+   nothing at all. Facts about a program (a `Type`, a layout, a callee) are
+   not definitions, they're a stage's output, and they stay with the stage
+   that produces them; only their shapes are shared.
+
+   What stops the drift is the dependency direction, not where the tables
+   live. `rask-mir` depends on `rask-parser` today, which is how it ends up
+   parsing. Once it depends only on the type data and mono's output, the
+   only way for it to learn a fact is to be handed one.
 2. **#1561** before anything is handed down. Every later step is "carry the
    checker's answer to the next pass". If the checker's answer for
    `Vec.capacity` comes from a table that says `u64` while `collections.rk`
