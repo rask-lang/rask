@@ -4055,6 +4055,17 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     ))
             }
 
+            ZipOfLentItems { elem } => {
+                Diagnostic::error(format!("`zip` can't pair `{}` — both vectors only lend their elements", elem))
+                    .with_code("E0924")
+                    .with_primary(self.span, "the pairs would need elements of their own")
+                    .with_fix("pair by index and clone where you mean it: `for i in 0..a.len() { pairs.push((a[i].clone(), b[i])) }`")
+                    .with_why(format!(
+                        "`zip` borrows both vectors and builds pairs that own what they hold. A copy can give a pair its own Copy value, and a `{}` isn't one; `zip` won't deep-clone it on your behalf, because the allocation would be invisible [type.sequence/SEQ47]",
+                        elem
+                    ))
+            }
+
             ConsumeBorrowedParam { name, declared_at, is_mutate, sink, of_closure } => {
                 let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
                 let label = match sink {

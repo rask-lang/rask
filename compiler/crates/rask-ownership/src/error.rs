@@ -189,6 +189,14 @@ pub enum OwnershipErrorKind {
         adapter: String,
     },
 
+    /// type.sequence/SEQ47: `Vec.zip` over elements that aren't Copy. It
+    /// lends both vectors, so a pair has no element of its own to hold.
+    #[error("`zip` can't pair `{elem}` — both vectors only lend their elements")]
+    ZipOfLentItems {
+        /// The element type, as written for the reader.
+        elem: String,
+    },
+
     /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
     /// lent out can't be given away.
     ///

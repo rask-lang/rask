@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `Vec.zip` over elements that aren't Copy
+//
+// `zip` borrows both vectors and builds pairs that own what they hold, so a
+// copy has to be able to produce each side (type.sequence/SEQ47). This used to
+// compile, and natively the pairs and the source then shared their inner
+// vectors and freed them twice (#1652).
+
+struct User {
+    name: string
+    tags: Vec<string>
+}
+
+func main() {
+    let groups: Vec<Vec<i64>> = [[1], [2, 3]]
+    let ids: Vec<i64> = [10, 20]
+    // ERROR: the pair would hold a lent `Vec<i64>`
+    let bad = groups.zip(ids)
+
+    let users: Vec<User> = []
+    // ERROR: the second side is lent too
+    let also_bad = ids.zip(users)
+
+    // Fine: Copy values and strings copy into the pair.
+    let names: Vec<string> = ["a", "b"]
+    let good = ids.zip(names)
+
+    // Fine: pairing by index, with the clone written.
+    mut pairs: Vec<(Vec<i64>, i64)> = Vec.new()
+    for i in 0..groups.len() {
+        pairs.push((groups[i].clone(), ids[i]))
+    }
+    println("{bad.len()} {also_bad.len()} {good.len()} {pairs.len()}")
+}

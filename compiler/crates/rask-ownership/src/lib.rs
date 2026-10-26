@@ -481,6 +481,36 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
+    /// type.sequence/SEQ47 for `Vec.zip`: it borrows both vectors and builds
+    /// pairs that own what they hold, so each side has to be something a
+    /// copy can produce. For a vector of vectors nothing could: the pairs and
+    /// the source both held the same inner vectors and freed them twice
+    /// (#1652). The interpreter copies values and never noticed.
+    fn check_zip_items_copy(&mut self, expr: &Expr) {
+        let is_vec_zip = matches!(
+            self.program.call_targets.get(&expr.id),
+            Some(rask_types::Callee::Method { recv, method, .. })
+                if method == "zip"
+                    && rask_types::receiver_name(recv, &self.program.types).as_deref() == Some("Vec")
+        );
+        if !is_vec_zip {
+            return;
+        }
+        let Some(Type::Tuple(parts)) = self.node_ty(&expr.id).and_then(Self::vec_elem) else { return };
+        for elem in &parts {
+            if matches!(elem, Type::Var(_)) || self.is_copy(elem) || Self::is_boxed_interface(elem) {
+                continue;
+            }
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ZipOfLentItems {
+                    elem: format!("{}", self.program.types.resolve_type_names(elem)),
+                },
+                span: expr.span,
+            });
+            return;
+        }
+    }
+
     /// The adapter that makes `expr` a chain of lent items: one that hands on
     /// what it was given, with no `map` between it and the source. `None` for
     /// anything that isn't a chain, or one a `map` makes values for.
@@ -2420,6 +2450,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(object);
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
+                }
+                if method == "zip" && args.len() == 1 {
+                    self.check_zip_items_copy(expr);
                 }
                 self.note_link_into_container(object, method, args);
                 // #296/PM3: consume arguments bound to `take` parameters. T1: a
