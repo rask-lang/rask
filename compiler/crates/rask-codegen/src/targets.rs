@@ -24,6 +24,10 @@ pub enum Tier {
     Two,
     /// Community.
     Three,
+    /// Type-checks and lowers to MIR, and no backend emits code for it yet.
+    /// Listed so `--dump-mir --target` can check a program against it
+    /// (tests/target32_gate.sh), and so building for it says why it can't.
+    FrontEnd,
 }
 
 /// One target Rask names.
@@ -44,13 +48,27 @@ pub const TARGETS: &[Target] = &[
     Target { name: "aarch64-macos", triple: "aarch64-apple-darwin", tier: Tier::One },
     Target { name: "x86_64-windows-msvc", triple: "x86_64-pc-windows-msvc", tier: Tier::Two },
     Target { name: "aarch64-windows-msvc", triple: "aarch64-pc-windows-msvc", tier: Tier::Two },
-    Target { name: "wasm32-none", triple: "wasm32-unknown-unknown", tier: Tier::Two },
+    Target { name: "wasm32-none", triple: "wasm32-unknown-unknown", tier: Tier::FrontEnd },
     Target { name: "x86_64-linux-musl", triple: "x86_64-unknown-linux-musl", tier: Tier::Two },
     Target { name: "aarch64-linux-musl", triple: "aarch64-unknown-linux-musl", tier: Tier::Two },
     Target { name: "riscv64-linux", triple: "riscv64gc-unknown-linux-gnu", tier: Tier::Three },
     Target { name: "x86_64-freebsd", triple: "x86_64-unknown-freebsd", tier: Tier::Three },
-    Target { name: "arm-none", triple: "armv7-unknown-none-eabihf", tier: Tier::Three },
+    Target { name: "arm-none", triple: "armv7-unknown-none-eabihf", tier: Tier::FrontEnd },
 ];
+
+/// Why no backend can build for `name`, or `None` if one can.
+///
+/// Cranelift has no 32-bit ARM and no wasm, so these failed in Cranelift's own
+/// words ("Support for this target has not been implemented yet") after the
+/// whole frontend had run, on targets `rask targets` listed as buildable (#1642).
+pub fn no_backend(name: &str) -> Option<String> {
+    let t = TARGETS.iter().find(|t| t.name == name || t.triple == name)?;
+    (t.tier == Tier::FrontEnd).then(|| format!(
+        "no backend emits code for `{}` yet — it type-checks and lowers \
+         (`rask compile --dump-mir --target {}`), and that's all (#1646)",
+        t.name, t.name,
+    ))
+}
 
 /// The triple to build codegen for, from a `--target` name.
 ///
@@ -186,9 +204,9 @@ mod tests {
     }
 
     /// The four Tier 1 targets are the ones a release ships, so their OS has to
-    /// be the one named and Cranelift has to have a backend for them.
+    /// be the one named.
     #[test]
-    fn tier_one_targets_have_a_backend() {
+    fn tier_one_targets_name_their_os() {
         for t in TARGETS.iter().filter(|t| t.tier == Tier::One) {
             let triple = Triple::from_str(t.triple).unwrap();
             let named_macos = t.name.contains("macos");
@@ -197,11 +215,17 @@ mod tests {
                 OperatingSystem::Darwin | OperatingSystem::MacOSX { .. },
             );
             assert_eq!(named_macos, is_macos, "{}", t.name);
-            assert!(
-                cranelift_codegen::isa::lookup(triple).is_ok(),
-                "no Cranelift backend for {}",
-                t.triple,
-            );
+        }
+    }
+
+    /// A listed target has a backend exactly when its tier says so. `arm-none`
+    /// and `wasm32-none` sat in tiers 2 and 3 with none (#1642); if Cranelift
+    /// grows one, this fails until the tier moves.
+    #[test]
+    fn tier_says_whether_a_backend_exists() {
+        for t in TARGETS {
+            let has = cranelift_codegen::isa::lookup(Triple::from_str(t.triple).unwrap()).is_ok();
+            assert_eq!(has, t.tier != Tier::FrontEnd, "{} is {:?}", t.name, t.tier);
         }
     }
 

@@ -271,7 +271,7 @@ func main() -> void or Error {
 
     let target_fps = 60.0f32
     let dt = 1.0f32 / target_fps
-    let NUM_PHYSICS_THREADS: usize = 4u64
+    let NUM_PHYSICS_THREADS: usize = 4
 
     mut last_time = 0.0f32  // Simplified: track elapsed time
     mut accumulator = 0.0f32

@@ -57,7 +57,7 @@ pub struct CodeGenerator {
     /// struct parameter. A call site can't read this off the declared signature
     /// — a struct in registers looks like any other `i64` there — so the plan
     /// is kept beside it (#948).
-    c_abi_args: HashMap<String, Vec<crate::c_abi::CArg>>,
+    c_abi_args: HashMap<String, Vec<rask_mir::c_call::CArg>>,
     /// Declared param types per Rask function. Call sites need these to pass
     /// aggregates by pointer even when the caller's own local is a scalar.
     fn_param_types: HashMap<String, Vec<rask_mir::MirType>>,
@@ -150,6 +150,9 @@ impl CodeGenerator {
     /// field the name doesn't spell (#1185).
     pub fn new_with_target(name: &str, build_mode: BuildMode) -> CodegenResult<Self> {
         use std::str::FromStr;
+        if let Some(why) = crate::targets::no_backend(name) {
+            return Err(CodegenError::UnknownTarget(why));
+        }
         let triple = crate::targets::codegen_triple(name).map_err(CodegenError::UnknownTarget)?;
         let target = target_lexicon::Triple::from_str(triple)
             .map_err(|e| CodegenError::CraneliftError(format!("invalid target '{}': {}", triple, e)))?;
@@ -1181,7 +1184,9 @@ impl CodeGenerator {
     /// Declare the C functions a header brought in.
     ///
     /// `layouts` are the program's struct layouts, needed because a C parameter
-    /// declared as a struct doesn't cross the ABI as a pointer — see `c_abi`.
+    /// declared as a struct doesn't cross the ABI as a pointer — see
+    /// `rask_mir::c_call`, which decides how; this only spells its answer in
+    /// Cranelift types.
     /// They arrive here rather than through `declare_functions` because the
     /// declarations come first.
     pub fn declare_extern_functions(
@@ -1189,9 +1194,17 @@ impl CodeGenerator {
         extern_decls: &[crate::ExternFuncSig],
         layouts: &[StructLayout],
     ) -> CodegenResult<()> {
-        use crate::c_abi::CArg;
+        use rask_mir::c_call::{CArg, CallConv};
         use cranelift_codegen::ir::ArgumentPurpose;
 
+        let conv = {
+            let triple = self.module.isa().triple();
+            let os = match triple.operating_system {
+                target_lexicon::OperatingSystem::Windows => "windows",
+                _ => "",
+            };
+            CallConv::for_target(&triple.architecture.to_string(), os)
+        };
         for decl in extern_decls {
             // Skip if already declared (e.g. a runtime or stdlib function with the same name)
             if self.func_ids.contains_key(&decl.name) {
@@ -1202,22 +1215,25 @@ impl CodeGenerator {
             for param_ty in &decl.param_types {
                 let mir_ty = extern_type_to_mir(param_ty);
                 let cl_ty = mir_to_cranelift_type(&mir_ty)?;
-                let arg = crate::c_abi::classify(param_ty, cl_ty, layouts);
+                let arg = rask_mir::c_call::classify(conv, param_ty, layouts);
                 match &arg {
-                    CArg::Scalar(t) => sig.params.push(AbiParam::new(*t)),
-                    CArg::Pieces(tys) => {
-                        for t in tys {
-                            sig.params.push(AbiParam::new(*t));
+                    CArg::Scalar => sig.params.push(AbiParam::new(cl_ty)),
+                    CArg::Registers(pieces) => {
+                        for p in pieces {
+                            sig.params.push(AbiParam::new(piece_type(p.kind)));
                         }
                     }
-                    CArg::Memory(size) => sig.params.push(AbiParam::special(
+                    CArg::StackCopy(size) => sig.params.push(AbiParam::special(
                         types::I64,
                         ArgumentPurpose::StructArgument(*size),
                     )),
+                    // The address of the caller's copy; a call through an
+                    // unsupported plan is refused before it is made.
+                    CArg::ByAddress(_) | CArg::Unsupported => sig.params.push(AbiParam::new(types::I64)),
                 }
                 plan.push(arg);
             }
-            if plan.iter().any(|a| !matches!(a, CArg::Scalar(_))) {
+            if plan.iter().any(|a| !matches!(a, CArg::Scalar)) {
                 self.c_abi_args.insert(decl.name.clone(), plan);
             }
             if let Some(ret) = &decl.ret_ty {
@@ -2383,4 +2399,14 @@ fn collect_element_offsets(
         }
     }
     lists
+}
+
+/// The Cranelift type one register's worth of a C struct argument travels as.
+pub(crate) fn piece_type(kind: rask_mir::c_call::PieceKind) -> cranelift_codegen::ir::Type {
+    use rask_mir::c_call::PieceKind;
+    match kind {
+        PieceKind::Int => types::I64,
+        PieceKind::Vector | PieceKind::F64 => types::F64,
+        PieceKind::F32 => types::F32,
+    }
 }

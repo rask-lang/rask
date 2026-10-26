@@ -333,7 +333,11 @@ pub fn lay_out_captures(
     items
         .into_iter()
         .map(|(local_id, ty, by_ref, copy)| {
-            let (size, align) = if by_ref { (8, 8) } else { (ty.size(), ty.align().max(1)) };
+            let (size, align) = if by_ref {
+                (crate::MirType::word(), crate::MirType::word())
+            } else {
+                (ty.size(), ty.align().max(1))
+            };
             let offset = end.next_multiple_of(align);
             end = offset + size;
             ClosureCapture { local_id, offset, size, by_ref, copy }

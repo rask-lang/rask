@@ -521,9 +521,11 @@ Format: `<arch>-<os>` or `<arch>-<os>-<env>`
 
 **Tier 1 (tested, guaranteed):** `x86_64-linux`, `aarch64-linux`, `x86_64-macos`, `aarch64-macos`
 
-**Tier 2 (builds, best-effort):** `x86_64-windows-msvc`, `aarch64-windows-msvc`, `wasm32-none`, `x86_64-linux-musl`, `aarch64-linux-musl`
+**Tier 2 (builds, best-effort):** `x86_64-windows-msvc`, `aarch64-windows-msvc`, `x86_64-linux-musl`, `aarch64-linux-musl`
 
-**Tier 3 (community):** `riscv64-linux`, `x86_64-freebsd`, `arm-none`
+**Tier 3 (community):** `riscv64-linux`, `x86_64-freebsd`
+
+**Front end only:** `wasm32-none`, `arm-none`. They type-check and lower to MIR, and no backend emits code for them yet: Cranelift has no wasm and no 32-bit ARM. CI lowers every test program for `arm-none`, so 32-bit assumptions get caught before a backend exists. Building for one is an error that says so.
 
 These short names are Rask's own spelling. Each maps to a full triple before
 codegen sees it (`aarch64-macos` → `aarch64-apple-darwin`), and a name that

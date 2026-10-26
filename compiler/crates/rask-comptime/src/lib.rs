@@ -56,6 +56,13 @@ impl CfgConfig {
         }
     }
 
+    /// Whether C's `char` is unsigned here: on ARM, AArch64, RISC-V and
+    /// PowerPC it is, on x86 and wasm it isn't.
+    pub fn c_char_unsigned(&self) -> bool {
+        let a = self.arch.as_str();
+        a.starts_with("arm") || a.starts_with("aarch64") || a.starts_with("riscv") || a.starts_with("powerpc")
+    }
+
     /// How wide a pointer is on this target, in bits.
     ///
     /// The arch names are the ones a target triple uses, so this reads the

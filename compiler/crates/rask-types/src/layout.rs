@@ -7,9 +7,59 @@ use rask_ast::ty::TypeExpr;
 use crate::Type;
 use std::collections::HashMap;
 
-/// Cache of already-computed type layouts, keyed by type name.
-/// Used so struct fields referencing other user-defined types get correct sizes.
-pub type LayoutCache = HashMap<String, (u32, u32)>;
+/// Already-computed type layouts, keyed by type name, for one pointer width.
+///
+/// The width is the cache's because every layout in it was computed with it: a
+/// struct holding a `Vec` is 8 bytes bigger on a 64-bit target than on a 32-bit
+/// one, and so is everything holding that struct. Real layouts use the
+/// target's width (`LayoutCache::new`). The copy rule measures with 8 on every
+/// target (`mem.value/VS7a`), so a type copies everywhere or nowhere
+/// (`LayoutCache::for_copy_rule`).
+#[derive(Debug, Clone)]
+pub struct LayoutCache {
+    sizes: HashMap<String, (u32, u32)>,
+    word: u32,
+}
+
+impl LayoutCache {
+    /// For the target being compiled for.
+    pub fn new() -> Self {
+        Self::with_word(rask_ast::primitives::pointer_bits() / 8)
+    }
+
+    /// For the copy rule and `@small`: 64-bit pointers whatever the target.
+    pub fn for_copy_rule() -> Self {
+        Self::with_word(8)
+    }
+
+    fn with_word(word: u32) -> Self {
+        Self { sizes: HashMap::new(), word }
+    }
+
+    /// Bytes in a pointer, and its alignment.
+    pub fn word(&self) -> u32 {
+        self.word
+    }
+}
+
+impl Default for LayoutCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::ops::Deref for LayoutCache {
+    type Target = HashMap<String, (u32, u32)>;
+    fn deref(&self) -> &Self::Target {
+        &self.sizes
+    }
+}
+
+impl std::ops::DerefMut for LayoutCache {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sizes
+    }
+}
 
 /// Struct memory layout
 #[derive(Debug, Clone)]
@@ -183,15 +233,15 @@ fn wrapper_layout_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknow
 /// inference variable, a name nothing declares.
 trait Unknown {
     /// The size to use instead, or `None` to give up on the whole question.
-    fn unknown(&mut self, what: std::fmt::Arguments) -> Option<(u32, u32)>;
+    fn unknown(&mut self, what: std::fmt::Arguments, word: u32) -> Option<(u32, u32)>;
 }
 
 /// Codegen's answer: a word, with a warning. Laying out has to finish.
 struct Lenient;
 impl Unknown for Lenient {
-    fn unknown(&mut self, what: std::fmt::Arguments) -> Option<(u32, u32)> {
-        eprintln!("warning: {what}, defaulting to (8, 8)");
-        Some((8, 8))
+    fn unknown(&mut self, what: std::fmt::Arguments, word: u32) -> Option<(u32, u32)> {
+        eprintln!("warning: {what}, defaulting to a word ({word} bytes)");
+        Some((word, word))
     }
 }
 
@@ -199,7 +249,7 @@ impl Unknown for Lenient {
 /// `transmute` test — gets no answer rather than a guess.
 struct Strict;
 impl Unknown for Strict {
-    fn unknown(&mut self, _: std::fmt::Arguments) -> Option<(u32, u32)> {
+    fn unknown(&mut self, _: std::fmt::Arguments, _: u32) -> Option<(u32, u32)> {
         None
     }
 }
@@ -216,6 +266,7 @@ pub fn known_size_align(ty: &Type, cache: &LayoutCache) -> Option<(u32, u32)> {
 }
 
 fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -> Option<(u32, u32)> {
+    let w = cache.word();
     Some(match ty {
         // Every value holds its own width, wherever it sits: a struct field,
         // an enum tag or payload field, a wrapper's payload. Nothing is padded
@@ -230,10 +281,12 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let n = ty.scalar_bytes().expect("a scalar knows its width");
             (n, n)
         }
-        Type::String | Type::Bytes => (16, 8), // 16-byte SSO inline (RaskStr union)
+        // The runtime's `RaskStr`: 16 bytes on every target, since its heap
+        // form holds a 64-bit length beside the pointer.
+        Type::String | Type::Bytes => (16, 8),
         // Niche optimization: `Link<T>?` is the node's address with null
         // for `none` — one word, no tag.
-        ty if ty.as_option().is_some_and(is_link) => (8, 8),
+        ty if ty.as_option().is_some_and(is_link) => (w, w),
         Type::Result { .. } => {
             let l = wrapper_layout_in(ty, cache, on_unknown)?;
             (l.size, l.align)
@@ -254,13 +307,13 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let (elem_size, elem_align) = size_align_in(elem, cache, on_unknown)?;
             (elem_size * (*len as u32), elem_align)
         }
-        Type::Fn { .. } => (8, 8), // Function pointer
+        Type::Fn { .. } => (w, w), // Function pointer
         Type::Named(_) | Type::Generic { .. } => {
             // Named types carry a TypeId — can't resolve by name here.
             // Assume pointer-sized; struct/enum layouts are computed separately.
-            (8, 8)
+            (w, w)
         }
-        Type::UnresolvedGeneric { name, .. } if generic_is_one_word(name) => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if generic_is_one_word(name) => (w, w),
         Type::UnresolvedGeneric { name, args } => {
             if let Some(found) = cached_generic_layout(name, args, cache) {
                 return Some(found);
@@ -269,20 +322,20 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                 "unresolved generic type in layout: {}<{} arg(s)>",
                 name,
                 args.len()
-            ));
+            ), w);
         }
         Type::Var(id) => {
-            return on_unknown.unknown(format_args!("type variable ?{} in layout computation", id.0));
+            return on_unknown.unknown(format_args!("type variable ?{} in layout computation", id.0), w);
         }
         // AT6: projections resolve during type checking. One that got here
         // named a conformance that doesn't exist, and the error for that is
         // already reported — lay it out as a word rather than panicking on top.
-        Type::Assoc { .. } => (8, 8),
+        Type::Assoc { .. } => (w, w),
         // A raw pointer field written `*u8` arrives as a name too. It's a
         // pointer, so the fallback size was right — but it went through the
         // unknown-type branch and warned about a program with nothing wrong
         // with it.
-        Type::UnresolvedNamed(name) if name.starts_with('*') => (8, 8),
+        Type::UnresolvedNamed(name) if name.starts_with('*') => (w, w),
         // A `c_int` field out of an `import c` header is an `i32` — the widths
         // live in one table (`c_type_spelling`) so the checker and the layout
         // can't drift. Without this an imported C struct sized every field at a
@@ -293,7 +346,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         }
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                "string" | "Path" => (16, 8),
+                "string" | "Path" => size_align_in(&Type::String, cache, on_unknown)?,
                 // A scalar written as a name is the same scalar. `char` used
                 // to answer 4 here and 8 through the typed arm above; one
                 // source now.
@@ -311,7 +364,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                 "char" => scalar_by_name(&Type::Char),
                 // One word: the address of storage the runtime made. Its
                 // declaration has no fields, so the layout cache says zero.
-                name if rask_stdlib::is_runtime_handle(name) => (8, 8),
+                name if rask_stdlib::is_runtime_handle(name) => (w, w),
                 // A word, but not for the reason the line above is: these two
                 // are an `int64_t` of nanoseconds in the runtime, not a pointer
                 // to anything. Their Rask declarations are empty structs, so
@@ -327,13 +380,14 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                     if let Some(&cached) = cached_size {
                         cached
                     } else if is_typevar_name(name) {
-                        // Unsubstituted type parameter — pointer-sized fallback,
-                        // silent because mono always picks a concrete size on real call sites.
-                        (8, 8)
+                        // Unsubstituted type parameter. A shared layout holds it
+                        // as an `i64` (`stand_ins`), whatever the pointer width;
+                        // silent because mono picks a concrete size at real call sites.
+                        scalar_by_name(&Type::I64)
                     } else {
                         // Treat as opaque pointer-sized. If this is a user type,
                         // it should have been caught by the type checker.
-                                return on_unknown.unknown(format_args!("unknown type '{}' in layout", name));
+                        return on_unknown.unknown(format_args!("unknown type '{}' in layout", name), w);
                     }
                 }
             }
@@ -349,9 +403,9 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         }
         Type::Never => (0, 1),
         Type::None => (0, 1),
-        Type::InterfaceObject { .. } => (16, 8), // Fat pointer: data_ptr + vtable_ptr
-        Type::RawPtr(_) => (8, 8), // Pointer-sized
-        Type::Error => return on_unknown.unknown(format_args!("Error type in layout computation")),
+        Type::InterfaceObject { .. } => (2 * w, w), // Fat pointer: data_ptr + vtable_ptr
+        Type::RawPtr(_) => (w, w),
+        Type::Error => return on_unknown.unknown(format_args!("Error type in layout computation"), w),
     })
 }
 
@@ -1110,8 +1164,13 @@ impl crate::TypeTable {
 
     /// `size_align` for the copy rule, which has to answer inside a generic
     /// body too: a type parameter counts as a word there.
+    ///
+    /// Measured with 64-bit pointers on every target (`mem.value/VS7a`).
     pub fn copy_size(&self, ty: &Type) -> usize {
-        self.size_align_spelled(&spell_lenient(ty, self)).0 as usize
+        let spelled = spell_lenient(ty, self);
+        let mut cache = LayoutCache::for_copy_rule();
+        self.fill_layouts(&spelled, &mut cache, &mut Vec::new());
+        type_size_align(&spelled, &cache).0 as usize
     }
 
     /// Size and alignment of a type already spelled by name, as a declaration
@@ -1124,9 +1183,18 @@ impl crate::TypeTable {
 
     /// The layout of the struct `name`, with these type arguments.
     pub fn struct_layout_named(&self, name: &str, args: &[Type]) -> Option<StructLayout> {
+        self.struct_layout_in(name, args, LayoutCache::new())
+    }
+
+    /// `struct_layout_named` as the copy rule measures it. What a `@small`
+    /// error explains itself with, so it has to agree with `copy_size`.
+    fn struct_layout_for_copy_rule(&self, name: &str, args: &[Type]) -> Option<StructLayout> {
+        self.struct_layout_in(name, args, LayoutCache::for_copy_rule())
+    }
+
+    fn struct_layout_in(&self, name: &str, args: &[Type], mut cache: LayoutCache) -> Option<StructLayout> {
         let decl = self.layout_decls.get(name)?;
         let rask_ast::decl::DeclKind::Struct(_) = &decl.kind else { return None };
-        let mut cache = LayoutCache::new();
         for ty in args {
             self.fill_layouts(ty, &mut cache, &mut Vec::new());
         }
@@ -1150,7 +1218,7 @@ impl crate::TypeTable {
                 .collect(),
             _ => Vec::new(),
         };
-        let mut layout = self.struct_layout_named(&name, &args)?;
+        let mut layout = self.struct_layout_for_copy_rule(&name, &args)?;
         layout.fields.sort_by_key(|f| f.offset);
         layout.fields.into_iter().find(|f| f.offset + f.size > limit)
     }
@@ -1206,7 +1274,8 @@ impl crate::TypeTable {
             return;
         }
         if self.layout_stand_ins.contains(name) {
-            cache.insert(key, (8, 8));
+            let w = cache.word();
+            cache.insert(key, (w, w));
             return;
         }
         let Some(decl) = self.layout_decls.get(name) else {
@@ -1386,6 +1455,23 @@ mod tests {
     /// Shorthand: type_size_align with empty cache (for primitive tests)
     fn tsa(ty: &Type) -> (u32, u32) {
         type_size_align(ty, &empty_cache())
+    }
+
+    /// A pointer is the target's word; the copy rule's cache measures 8
+    /// whatever the target (`mem.value/VS7a`), so `Three` is 24 there and 16
+    /// in a 32-bit layout.
+    #[test]
+    fn pointers_follow_the_cache_word() {
+        let three = make_struct("Three", vec![("x", "i64"), ("p", "*u8"), ("q", "*u8")]);
+        let narrow = LayoutCache::with_word(4);
+        assert_eq!(compute_struct_layout(&three, &[], &narrow).size, 16);
+        assert_eq!(compute_struct_layout(&three, &[], &LayoutCache::for_copy_rule()).size, 24);
+
+        let holder = make_struct("Holder", vec![("v", "Vec<i64>"), ("tag", "u8")]);
+        assert_eq!(compute_struct_layout(&holder, &[], &narrow).size, 8);
+        // The runtime's string is 16 bytes on every target.
+        assert_eq!(type_size_align(&Type::String, &narrow), (16, 8));
+        assert_eq!(type_size_align(&Type::RawPtr(Box::new(Type::U8)), &narrow), (4, 4));
     }
 
     #[test]

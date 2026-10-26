@@ -15,8 +15,19 @@ use crate::{output, Format};
 /// here, so a cfg built afterwards for codegen came too late and every
 /// cross-compile took the host's branch (#1315).
 fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> (rask_compiler::CompileResult, Option<String>) {
+    run_pipeline_with(path, format, cfg, |_, _| {})
+}
+
+/// `run_pipeline` with a rewrite of the declarations before lowering — how
+/// test blocks become functions.
+fn run_pipeline_with(
+    path: &str,
+    format: Format,
+    cfg: &rask_comptime::CfgConfig,
+    transform: impl FnOnce(&mut Vec<rask_ast::decl::Decl>, &rask_types::TypedProgram),
+) -> (rask_compiler::CompileResult, Option<String>) {
     let config = crate::compiler_config(cfg.clone());
-    let output = rask_compiler::compile_file(path, &config);
+    let output = rask_compiler::compile_file_with(path, &config, transform);
 
     // Build source_files for display
     let source_files: Vec<(std::path::PathBuf, String)> = if output.result.is_some() {
@@ -162,7 +173,7 @@ pub fn cmd_mono(path: &str, format: Format) {
 pub fn cmd_mir(path: &str, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let (result, source) = run_pipeline(path, format, &cfg);
-    let functions = lower_or_exit(&result, path, source.as_deref());
+    let functions = lower_or_exit(&result, path, source.as_deref(), &rask_compiler::emit::Entry::Main);
     if format == Format::Human {
         println!(
             "{} MIR ({} function{}) {}\n",
@@ -184,7 +195,26 @@ pub fn cmd_mir(path: &str, format: Format) {
 pub fn cmd_dump_mir(path: &str, format: Format, release: bool, target: Option<&str>) {
     let cfg = target_cfg_or_exit(target, release);
     let (result, source) = run_pipeline(path, format, &cfg);
-    for func in &lower_or_exit(&result, path, source.as_deref()) {
+    for func in &lower_or_exit(&result, path, source.as_deref(), &rask_compiler::emit::Entry::Main) {
+        eprintln!("{}", func);
+    }
+}
+
+/// `cmd_dump_mir` for a file's tests: the MIR `rask test` would compile, for
+/// any target. Lowering needs no backend, so a target codegen can't reach yet
+/// still gets its frontend and MIR checked (tests/target32_gate.sh).
+pub fn cmd_test_dump_mir(path: &str, filter: Option<&str>, format: Format, target: Option<&str>) {
+    let cfg = target_cfg_or_exit(target, false);
+    let mut tests = Vec::new();
+    let (result, source) = run_pipeline_with(path, format, &cfg, |decls, _typed| {
+        tests = rask_compiler::runners::extract_tests(decls, filter);
+    });
+    if tests.is_empty() {
+        eprintln!("{}: no runtime tests in {} to lower", output::error_label(), path);
+        process::exit(1);
+    }
+    let entry = rask_compiler::emit::Entry::Tests(&tests);
+    for func in &lower_or_exit(&result, path, source.as_deref(), &entry) {
         eprintln!("{}", func);
     }
 }
@@ -194,9 +224,10 @@ fn lower_or_exit(
     result: &rask_compiler::CompileResult,
     path: &str,
     source: Option<&str>,
+    entry: &rask_compiler::emit::Entry,
 ) -> Vec<rask_mir::MirFunction> {
     let input = rask_compiler::emit::BackEnd::of(result, Some(path), source);
-    match rask_compiler::emit::lower(&input, &rask_compiler::emit::Entry::Main) {
+    match rask_compiler::emit::lower(&input, entry) {
         Ok(lowered) => lowered.functions,
         Err(errors) => {
             for e in &errors {
@@ -227,6 +258,10 @@ fn target_cfg_or_exit(target: Option<&str>, release: bool) -> rask_comptime::Cfg
 /// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
 pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool, target: Option<&str>) {
+    if let Some(Err(e)) = target.map(super::link::validate_build_target) {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
     let cfg = target_cfg_or_exit(target, release);
     let (result, source) = run_pipeline(path, format, &cfg);
     let build_mode = if release { rask_compiler::emit::BuildMode::Release } else { rask_compiler::emit::BuildMode::Debug };

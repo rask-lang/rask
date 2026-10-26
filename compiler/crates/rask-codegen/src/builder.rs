@@ -228,7 +228,7 @@ struct CodegenCtx<'a> {
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
-    c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
+    c_abi_args: &'a HashMap<String, Vec<rask_mir::c_call::CArg>>,
     /// Each layout's field types as MIR types (`MirContext::field_types`).
     field_types: &'a rask_mir::FieldTypes,
     /// The frame's unwind record (ctrl.panic/U6), when it owns anything a
@@ -400,7 +400,7 @@ pub struct FunctionBuilder<'a> {
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
 
     /// C functions taking a struct by value, and how each argument goes.
-    c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
+    c_abi_args: &'a HashMap<String, Vec<rask_mir::c_call::CArg>>,
 
     /// Each layout's field types as MIR types, for the ownership walks.
     field_types: &'a rask_mir::FieldTypes,
@@ -413,7 +413,7 @@ pub struct FunctionBuilder<'a> {
 }
 
 /// No C function in this program takes a struct by value.
-static NO_C_ABI_ARGS: std::sync::LazyLock<HashMap<String, Vec<crate::c_abi::CArg>>> =
+static NO_C_ABI_ARGS: std::sync::LazyLock<HashMap<String, Vec<rask_mir::c_call::CArg>>> =
     std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> CodegenCtx<'a> {
@@ -496,7 +496,7 @@ impl<'a> FunctionBuilder<'a> {
 
     /// The C-ABI argument plans, when the program imports a header whose
     /// functions take a struct by value.
-    pub fn set_c_abi_args(&mut self, plans: &'a HashMap<String, Vec<crate::c_abi::CArg>>) {
+    pub fn set_c_abi_args(&mut self, plans: &'a HashMap<String, Vec<rask_mir::c_call::CArg>>) {
         self.c_abi_args = plans;
     }
 
@@ -1183,14 +1183,14 @@ impl<'a> FunctionBuilder<'a> {
                             "UnwindArm of a {} value: a record slot holds one word", vty
                         )));
                     };
-                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    let off = rask_mir::transform::unwind::slot_offset(*slot);
                     rec.store(builder, val64, off as i32);
                 }
             }
             MirStmtKind::UnwindDisarm { slot } => {
                 if let Some(rec) = ctx.unwind_rec {
                     let zero = builder.ins().iconst(types::I64, 0);
-                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    let off = rask_mir::transform::unwind::slot_offset(*slot);
                     rec.store(builder, zero, off as i32);
                 }
             }
@@ -4991,31 +4991,44 @@ impl<'a> FunctionBuilder<'a> {
                 .unwrap_or(false);
         let param_offset = usize::from(injects_out_param);
 
-        // A struct passed by value doesn't reach C as a pointer: it is cut into
-        // register-sized pieces, or copied onto the stack. The declared
-        // signature can't say which — a struct piece looks like any other
-        // `i64` there — so the plan is looked up by name (#948).
+        // A struct passed by value doesn't reach C as a pointer: it goes in
+        // registers, a copy on the stack, or the address of a copy, as
+        // `rask_mir::c_call` decided for the target. The declared signature
+        // can't say which, so the plan is looked up by name (#948).
         let abi_plan = ctx.c_abi_args.get(func.name.as_str());
 
         let mut arg_vals = Vec::with_capacity(args.len());
         let mut slot = param_offset;
         for (i, a) in args.iter().enumerate() {
             match abi_plan.and_then(|p| p.get(i)) {
-                Some(crate::c_abi::CArg::Pieces(piece_tys)) => {
+                Some(rask_mir::c_call::CArg::Registers(pieces)) => {
                     let addr = Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?;
-                    for (n, piece_ty) in piece_tys.iter().enumerate() {
-                        let off = (n * 8) as i32;
-                        let raw = builder.ins().load(types::I64, MemFlags::new(), addr, off);
-                        arg_vals.push(if *piece_ty == types::F64 {
-                            builder.ins().bitcast(types::F64, MemFlags::new(), raw)
-                        } else {
-                            raw
-                        });
+                    for p in pieces {
+                        let ty = crate::module::piece_type(p.kind);
+                        arg_vals.push(builder.ins().load(ty, MemFlags::new(), addr, p.offset as i32));
                     }
-                    slot += piece_tys.len();
+                    slot += pieces.len();
                     continue;
                 }
-                Some(crate::c_abi::CArg::Memory(_)) => {
+                Some(rask_mir::c_call::CArg::ByAddress(size)) => {
+                    // The callee may write to its parameter, so it gets a copy.
+                    let src = Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?;
+                    let copy = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, *size, 3,
+                    )));
+                    Self::copy_aggregate(builder, src, copy, *size);
+                    arg_vals.push(copy.addr(builder, 0));
+                    slot += 1;
+                    continue;
+                }
+                Some(rask_mir::c_call::CArg::Unsupported) => {
+                    return Err(CodegenError::UnsupportedFeature(format!(
+                        "`{}` takes a C struct by value, and how one is passed isn't \
+                         worked out for this target yet",
+                        func.name,
+                    )));
+                }
+                Some(rask_mir::c_call::CArg::StackCopy(_)) => {
                     // Cranelift copies it onto the stack from this address.
                     arg_vals.push(Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?);
                     slot += 1;
@@ -6512,13 +6525,12 @@ impl<'a> FunctionBuilder<'a> {
         let glue = format!("{}{}", mir_fn.name, rask_mir::transform::unwind::UNWIND_SUFFIX);
         let run = func_refs.get(&glue)?;
         let push = func_refs.get("rask_unwind_push")?;
-        let header = rask_mir::transform::unwind::RECORD_HEADER;
-        let size = header + 8 * slots;
+        let size = rask_mir::transform::unwind::slot_offset(slots);
         let rec = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3)));
         // Zeroed, not assumed zero: a slot nothing armed yet reads as empty
         // only if something wrote it (RASK_POISON_STACK).
         let zero = builder.ins().iconst(types::I64, 0);
-        for off in (header..size).step_by(8) {
+        for off in (rask_mir::transform::unwind::record_header()..size).step_by(8) {
             rec.store(builder, zero, off as i32);
         }
         let run_ptr = builder.ins().func_addr(types::I64, *run);

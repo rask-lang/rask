@@ -73,6 +73,7 @@ impl CompilerConfig {
     /// different machine from the `cfg` values in the same config.
     fn declare_target(&self) {
         rask_ast::primitives::set_pointer_bits(self.cfg.pointer_bits());
+        rask_ast::primitives::set_c_char_unsigned(self.cfg.c_char_unsigned());
     }
 }
 

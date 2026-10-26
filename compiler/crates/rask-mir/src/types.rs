@@ -282,6 +282,11 @@ impl MirType {
         }
     }
 
+    /// Bytes in a pointer on the target, which is also its alignment.
+    pub fn word() -> u32 {
+        rask_ast::primitives::pointer_bits() / 8
+    }
+
     /// Byte size of this type, as it sits in memory.
     pub fn size(&self) -> u32 {
         match self {
@@ -289,11 +294,11 @@ impl MirType {
             MirType::Bool | MirType::I8 | MirType::U8 => 1,
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
-            | MirType::Link(_) | MirType::Container(_)
-            | MirType::Heap(_) => 8,
+            MirType::I64 | MirType::U64 | MirType::F64 => 8,
+            MirType::Ptr | MirType::FuncPtr(_) | MirType::Link(_) | MirType::Container(_)
+            | MirType::Heap(_) => Self::word(),
             MirType::I128 | MirType::U128 => 16,
-            MirType::Buffer => 16,
+            MirType::Buffer => 16, // the runtime's RaskStr, 16 bytes on every target
             MirType::Struct(sid) => sid.byte_size,
             MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
@@ -306,9 +311,9 @@ impl MirType {
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
                 (end + max_align - 1) & !(max_align - 1)
             }
-            MirType::InterfaceObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
+            MirType::InterfaceObject { .. } => 2 * Self::word(), // data_ptr + vtable_ptr
             MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
-                self.wrapper_layout().map_or(8, |l| l.size)
+                self.wrapper_layout().map_or(Self::word(), |l| l.size)
             }
             MirType::SimdVector { elem, lanes } => elem.size() * lanes,
         }
@@ -325,11 +330,12 @@ impl MirType {
             MirType::Struct(sid) => sid.align,
             MirType::Enum(eid) => eid.align,
             MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
-                self.wrapper_layout().map_or(8, |l| l.align)
+                self.wrapper_layout().map_or(Self::word(), |l| l.align)
             }
             MirType::Array { elem, .. } => elem.align(),
             MirType::SimdVector { .. } => self.size().min(32),
-            _ => 8,
+            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Buffer => 8,
+            _ => Self::word(),
         }
     }
 

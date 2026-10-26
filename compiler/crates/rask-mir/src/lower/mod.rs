@@ -5471,6 +5471,129 @@ impl<'a> MirLowerer<'a> {
         self.retain_pattern_copies(pattern, scrutinee, scrutinee_ty);
     }
 
+    /// Whether `pattern` binds a name anywhere inside a variant's fields.
+    fn binds_any(pattern: &rask_ast::expr::Pattern) -> bool {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Constructor { fields, .. } => fields.iter().any(|f| {
+                matches!(f, Pattern::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
+            }),
+            Pattern::Struct { fields, .. } => fields.iter().any(|(_, f)| {
+                matches!(f, Pattern::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a variant field's pattern needs testing at runtime: a nested
+    /// variant, or a literal or range somewhere inside one. A bare name or
+    /// `_` takes any value.
+    pub(super) fn nested_needs_test(pattern: &rask_ast::expr::Pattern) -> bool {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Wildcard => false,
+            Pattern::Ident(n) => is_variant_name(n),
+            _ => true,
+        }
+    }
+
+    /// Test `pattern` against `value`, a `ty`, branching to `fail` when it
+    /// doesn't match. Returns in the block where it did.
+    ///
+    /// For a pattern nested inside a variant's field: `Outer.Wrapped(Inner.Bad(m))`
+    /// tests `Wrapped` with the switch and `Bad` here. Each level reads its tag
+    /// only after the level above has passed, so a payload is never read as a
+    /// variant it isn't. Nothing is bound: `bind_pattern_fields` does that once
+    /// the whole test has passed. Before this the inner tag wasn't tested at all,
+    /// so `Wrapped(Inner.Good(_))` took the first `Wrapped` arm, and the inner
+    /// binding was never made (#1645).
+    pub(super) fn emit_subpattern_test(
+        &mut self,
+        value: &MirOperand,
+        ty: &MirType,
+        pattern: &rask_ast::expr::Pattern,
+        fail: BlockId,
+    ) -> Result<(), LoweringError> {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Wildcard => Ok(()),
+            Pattern::Ident(name) if !is_variant_name(name) => Ok(()),
+            Pattern::Literal(_) | Pattern::Range { .. } => {
+                let pass = self.builder.create_block();
+                self.emit_pattern_test(value, pattern, pass, fail)?;
+                self.builder.switch_to_block(pass);
+                Ok(())
+            }
+            // A named variant tests like its positional spelling.
+            Pattern::Struct { name, fields, .. } => {
+                let Some(names) = self.variant_field_names(ty, name) else {
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "`{name} {{ … }}` nested in a variant pattern needs an enum field, \
+                         found `{ty:?}`"
+                    )));
+                };
+                let positional = names
+                    .iter()
+                    .map(|n| {
+                        fields.iter().find(|(f, _)| f == n).map_or(Pattern::Wildcard, |(_, p)| p.clone())
+                    })
+                    .collect();
+                let as_constructor = Pattern::Constructor { name: name.clone(), fields: positional };
+                self.emit_subpattern_test(value, ty, &as_constructor, fail)
+            }
+            Pattern::Ident(name) | Pattern::Constructor { name, .. } => {
+                let fields: &[Pattern] = match pattern {
+                    Pattern::Constructor { fields, .. } => fields,
+                    _ => &[],
+                };
+                let (Some(tag), Some(field_types)) =
+                    (self.variant_tag_in_scrutinee(name, ty), self.variant_field_types(ty, name))
+                else {
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "`{name}` nested in a variant pattern names no variant of the \
+                         field's type `{ty:?}`; only an enum's own variants nest so far"
+                    )));
+                };
+                let tag_local = self.emit_enum_tag(value.clone());
+                let is_variant = self.emit_eq_const(tag_local, tag);
+                let pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(is_variant),
+                    then_block: pass,
+                    else_block: fail,
+                }));
+                self.builder.switch_to_block(pass);
+                for (j, field_pat) in fields.iter().enumerate() {
+                    if !Self::nested_needs_test(field_pat) {
+                        continue;
+                    }
+                    let Some((field_ty, off, sz)) = field_types.get(j).cloned() else {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "`{name}` has {} fields, the pattern names {}",
+                            field_types.len(),
+                            fields.len(),
+                        )));
+                    };
+                    let inner = self.builder.alloc_temp(field_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: inner,
+                        rvalue: MirRValue::Field {
+                            base: value.clone(),
+                            field_index: j as u32,
+                            byte_offset: Some(off),
+                            access: FieldAccess::for_field(&field_ty, sz),
+                        },
+                    }));
+                    self.emit_subpattern_test(&MirOperand::Local(inner), &field_ty, field_pat, fail)?;
+                }
+                Ok(())
+            }
+            other => Err(LoweringError::InvalidConstruct(format!(
+                "`{other:?}` nested in a variant pattern isn't lowered natively yet"
+            ))),
+        }
+    }
+
     fn bind_pattern_fields(
         &mut self,
         pattern: &rask_ast::expr::Pattern,
@@ -5560,6 +5683,28 @@ impl<'a> MirLowerer<'a> {
                         if let Some(prefix) = self.mir_type_name(&field_ty) {
                             self.meta_mut(&name).type_prefix = Some(prefix);
                         }
+                    } else if Self::binds_any(field_pat) && !is_niche {
+                        // A nested variant pattern: its tags were tested before
+                        // binding, so the field holds that variant. Read it out
+                        // and bind inside it the same way (#1645).
+                        let Some((field_ty, off, sz)) =
+                            variant_fields.as_ref().and_then(|vf| vf.get(i).cloned())
+                        else {
+                            continue;
+                        };
+                        let inner = self.builder.alloc_temp(field_ty.clone());
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: inner,
+                            rvalue: MirRValue::Field {
+                                base: value.clone(),
+                                field_index: i as u32,
+                                byte_offset: Some(off),
+                                access: FieldAccess::for_field(&field_ty, sz),
+                            },
+                        }));
+                        self.bind_pattern_fields(
+                            field_pat, MirOperand::Local(inner), None, false, &field_ty,
+                        );
                     }
                     // Wildcard, Literal in field position — skip binding
                 }
