@@ -220,6 +220,10 @@ Multi-line
 string literal
 """
 
+// Bytes
+x"89 50 4E 47"      // bytes literal: hex pairs, spaces allowed between them
+x""                 // empty bytes
+
 // Characters
 'a'
 '\n'

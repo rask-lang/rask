@@ -78,7 +78,7 @@ with units[i] as e: e.health -= 10 // one-liner form
 
 - Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). A rack needs no `with` at all: a link is already a stable name for a node, so you hold it directly.
 - Aliasing: many readers XOR one mutator, per field — disjoint fields of the same struct can be borrowed simultaneously (F2).
-- String slices `s[i..j]` are expression-scoped views; store `s[i..j].to_string()` or `Span` indices instead.
+- String slices `s[i..j]` are expression-scoped views (`@temporary`); store `s[i..j].to_string()` or `Span` indices instead. A slice reads as a string as a method receiver only: pass `s[i..j].to_string()` where a `string` goes.
 - All checks are function-local. Errors point at the function you're editing.
 
 ## Racks and links
@@ -177,6 +177,8 @@ A chain can be split across statements inside one block — `let s = v.filter(p)
 
 `string`: UTF-8, immutable, refcounted, Copy (`std.strings`). Interpolation is the one way to combine strings — no `+`, no concat function. `StringBuilder` for loops (`push`, `push_char`, zero-copy `build()`), `join` for lists. `s[i..j]` slices are expression-scoped; `.to_string()` copies out.
 
+`bytes`: the same value without the UTF-8 rule (`std.bytes`). Literal `x"89 50 4E 47"`. Fill a `Vec<u8>`, then `v.freeze()` (no copy); `b.to_vec()` gives the bytes back as a `Vec<u8>`, reusing the buffer when nothing else holds it. `s.as_bytes()` is free; `string.from_utf8(b)` checks and shares. `b[i]` is a `u8`; `b[i..j]` slices like a string (`.view()` shares, `.to_bytes()` copies). Not Displayable: print with `{b:debug}`. `bits.BinaryReader.new(b)` reads it.
+
 ## Method surface
 
 The names below are the ones that exist. Guessing from Rust or Python is the
@@ -188,7 +190,10 @@ a string and `entries` on a map are all things that look right and aren't.
 `repeat` `reverse` `substring` `char_count` `is_ascii` `to_string`
 `split` `split_whitespace` `lines` `chars` `char_indices` `bytes`
 `parse_int` `parse_float` `parse`
-`index_of` / `last_index_of` (→ `u64?`, not a plain index) · `char_at` (→ `char?`)
+`index_of` / `last_index_of` (→ `u64?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
+
+**`bytes`** — `len` `is_empty` `starts_with` `ends_with` `contains` `index_of`
+`hash` `to_vec` `view`; `Vec<u8>.freeze()`
 
 **`Vec<T>`** — `push` `pop` `len` `is_empty` `get` `first` `last` `contains`
 `insert` `remove` `clear` `reverse` `swap` `sort` `sort_by` `chunks` `clone`
@@ -206,6 +211,9 @@ means buffering it — `to_vec()` then `sort()`), and it's `take`, not `limit`.
 **Terminals** — `to_vec` `to_map` `join` `fold` `reduce` `sum` `product`
 `count` `min` `max` `min_by` `max_by` `min_by_key` `max_by_key` `any` `all`
 `find` `for_each`. A chain ends in one of these or in a `for` loop.
+A string splitter yields slices of the string, which can't be kept as they are:
+`s.split(",").to_strings()` copies them into a `Vec<string>`, and `to_vec()`
+there is an error.
 
 There is no `.iter()`: a collection is its own chain head, so `v.map(f)`
 starts a lazy sequence over `v` and `v.map(f).to_vec()` builds the Vec

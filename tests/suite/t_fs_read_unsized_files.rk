@@ -10,8 +10,8 @@ import fs
 test "a proc file reports size 0 and still has contents" {
     let text = try fs.read_text("/proc/version")
     assert text.starts_with("Linux version")
-    let bytes = try fs.read_bytes("/proc/version")
-    assert bytes.len() == text.len()
+    let raw = try fs.read_bytes("/proc/version")
+    assert raw.len() == text.len()
 }
 
 test "a sysfs file reads what it holds, not a page" {

@@ -15,14 +15,14 @@ func bytes_of(s: string) -> Vec<u8> {
 }
 
 func decoded(s: string) -> string {
-    let bytes = base64.decode(s) catch e => {
+    let raw = base64.decode(s) catch e => {
         match e {
             base64.Base64Error.BadCharacter(byte, at) => return "bad {byte} at {at}"
             base64.Base64Error.BadLength(len) => return "length {len}"
             base64.Base64Error.BadPadding => return "padding"
         }
     }
-    let text = string.from_utf8(bytes) catch _ => {
+    let text = string.from_utf8(raw.freeze()) catch _ => {
         return "not utf-8"
     }
     return "'{text}'"

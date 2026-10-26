@@ -95,6 +95,7 @@ See `mem.ownership` for complete Copy/move semantics.
 | **M5: Multiple blocks** | Multiple `extend` blocks for the same type are allowed (for organization) |
 | **M6: A field is not a method** | A field whose type is a function is not callable as `h.run(5)`. Method resolution looks at the type's `extend` blocks, and a field is not in one. Reading the field is fine, and so is calling what you read |
 | **M7: One name per member** | A field and a method on the same type may not share a name. The declaration is the error, reported at the method |
+| **M8: Reading as a field** | `@reads_as(field)` lends a struct the read-only methods of one of its fields, as a receiver only (`type.reads-as`). `@temporary` makes its values live for the expression that makes them (`type.temporary`) |
 
 ```rask
 struct Handler {

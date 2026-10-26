@@ -61,7 +61,7 @@ test "std.fs — a multi-line file keeps its lines" {
     let p = temp_path("lines")
     let _ = fs.write_text(p, "a\nb\nc")
     let got = fs.read_text(p) catch _ => ""
-    let lines = got.lines().to_vec()
+    let lines = got.lines().to_strings()
     assert lines.len() == 3
     assert lines[0] == "a"
     assert lines[2] == "c"

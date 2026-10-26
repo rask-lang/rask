@@ -218,6 +218,15 @@ impl TypeChecker {
             let params = owner_type_params(&decl.kind, &self.types);
             self.with_type_params(params, |this| this.collect_type_declaration(decl));
         }
+        // A field may name a type declared further down. While the
+        // declarations were being registered that name had no entry yet and
+        // resolved to a bare name, which the Copy rule can neither size nor
+        // classify: `struct Rect { origin: Point }` above `struct Point` was
+        // move-only, below it Copy. Every name has an entry now.
+        for decl in decls {
+            let params = owner_type_params(&decl.kind, &self.types);
+            self.with_type_params(params, |this| this.resolve_forward_field_types(decl));
+        }
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
                 let params = owner_type_params(&decl.kind, &self.types);
@@ -249,6 +258,80 @@ impl TypeChecker {
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
         self.pre_register_inferred_fns(decls);
+    }
+
+    /// Re-resolve a struct's fields or an enum's payloads now that every
+    /// type is registered. Only a type that resolves now replaces what was
+    /// recorded.
+    fn resolve_forward_field_types(&mut self, decl: &Decl) {
+        let resolve = |types: &crate::TypeTable, fields: &[rask_ast::decl::Field]| -> Vec<Option<Type>> {
+            fields.iter().map(|f| resolve_type_expr(&f.ty, types).ok()).collect()
+        };
+        // Only a field recorded as a name that is now declared gets replaced;
+        // anything else was resolved right the first time.
+        let types = &self.types;
+        let was_forward = |old: &Type| {
+            old.contains(&|t| match t {
+                Type::UnresolvedNamed(n) | Type::UnresolvedGeneric { name: n, .. } => {
+                    !types.is_type_param_in_scope(n) && types.get_type_id(n).is_some()
+                }
+                _ => false,
+            })
+        };
+        // A field that would store its own type inline stays a name: the type
+        // has no size, `reject_recursive_type` says so when the declaration is
+        // checked, and until then every walk over the table has to end.
+        let mut seen = Vec::new();
+        let mut chain = Vec::new();
+        let mut cycles = |types: &Self, new: &Type, owner| {
+            seen.clear();
+            chain.clear();
+            types.reaches_inline(new, owner, &mut seen, &mut chain)
+        };
+        match &decl.kind {
+            DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
+                let Some(id) = self.types.get_type_id(&s.name) else { return };
+                let Some(TypeDef::Struct { fields, .. }) = self.types.get(id) else { return };
+                let fresh: Vec<Option<Type>> = resolve(&self.types, &s.fields)
+                    .into_iter()
+                    .zip(fields)
+                    .map(|(new, (_, old))| new.filter(|n| was_forward(old) && !cycles(self, n, id)))
+                    .collect();
+                if let Some(TypeDef::Struct { fields, .. }) = self.types.get_mut(id) {
+                    for ((_, ty), new) in fields.iter_mut().zip(fresh) {
+                        if let Some(new) = new {
+                            *ty = new;
+                        }
+                    }
+                }
+            }
+            DeclKind::Enum(e) => {
+                let Some(id) = self.types.get_type_id(&e.name) else { return };
+                let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else { return };
+                let fresh: Vec<Vec<Option<Type>>> = e
+                    .variants
+                    .iter()
+                    .zip(variants)
+                    .map(|(v, (_, old))| {
+                        resolve(&self.types, &v.fields)
+                            .into_iter()
+                            .zip(old)
+                            .map(|(new, old)| new.filter(|n| was_forward(old) && !cycles(self, n, id)))
+                            .collect()
+                    })
+                    .collect();
+                if let Some(TypeDef::Enum { variants, .. }) = self.types.get_mut(id) {
+                    for ((_, payload), new) in variants.iter_mut().zip(fresh) {
+                        for (ty, new) in payload.iter_mut().zip(new) {
+                            if let Some(new) = new {
+                                *ty = new;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Register one type declaration, with its own type parameters in scope.
@@ -1251,6 +1334,46 @@ impl TypeChecker {
                 sig
             })
             .collect();
+        // Two `extend` blocks with different headers can declare one method
+        // name: `join` on a `Sequence<string>` and on a `Sequence<StringSlice>`.
+        // The later block's method is filed under a name of its own, so each
+        // body has one symbol on every backend; a call picks the block whose
+        // header its receiver fits (`resolve_method`).
+        let mut new_methods = new_methods;
+        if interface.is_none() && !header_args.is_empty() {
+            let suffix: String = owner_patterns
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join("_")
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            let existing: Vec<(String, Vec<TypeExpr>)> = match self.types.get(type_id) {
+                Some(TypeDef::Struct { methods, .. })
+                | Some(TypeDef::Enum { methods, .. })
+                | Some(TypeDef::NominalAlias { methods, .. }) => {
+                    methods.iter().map(|m| (m.name.clone(), m.owner_patterns.clone())).collect()
+                }
+                _ => Vec::new(),
+            };
+            for sig in &mut new_methods {
+                let clashes = existing
+                    .iter()
+                    .any(|(name, patterns)| *name == sig.name && *patterns != sig.owner_patterns);
+                if !clashes {
+                    continue;
+                }
+                let plain = sig.name.clone();
+                let filed = format!("{plain}__{suffix}");
+                let list = self.types.filed_methods.entry((type_id, plain.clone())).or_default();
+                if !list.contains(&filed) {
+                    list.push(filed.clone());
+                }
+                self.filed_methods.decls.insert((decl_id, plain), filed.clone());
+                sig.name = filed;
+            }
+        }
         // OR12: `@builtin` says the pair's types are written here and the
         // arithmetic is the compiler's — `instant - instant` is a machine
         // subtraction on two nanosecond counts. The backends have to know
@@ -1369,6 +1492,42 @@ impl TypeChecker {
         }
     }
 
+    /// type.reads-as/RA1: the field `@reads_as(field)` names. A name the
+    /// struct has no field for is reported and nothing reads as anything.
+    fn declared_reads_as(&mut self, s: &StructDecl) -> Option<String> {
+        let attr = s.attrs.iter().find(|a| a.is("reads_as"))?;
+        let field = attr.positional().and_then(|v| v.ident()).map(str::to_string);
+        match field {
+            Some(f) if s.fields.iter().any(|x| x.name == f) => Some(f),
+            _ => {
+                self.errors.push(TypeError::ReadsAsNoField {
+                    ty: s.name.clone(),
+                    written: field,
+                    fields: s.fields.iter().map(|f| f.name.clone()).collect(),
+                    span: attr.span,
+                });
+                None
+            }
+        }
+    }
+
+    /// type.temporary/TM1: `@temporary`, with the methods `keep:` names as the
+    /// ways to keep a value. The names are checked when a value is kept.
+    fn temporary_keepers(s: &StructDecl) -> Option<Vec<String>> {
+        let attr = s.attrs.iter().find(|a| a.is("temporary"))?;
+        let keep = match attr.arg("keep").and_then(|v| v.expr()).map(|e| &e.kind) {
+            Some(rask_ast::expr::ExprKind::Array(items)) => items
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    rask_ast::expr::ExprKind::Ident(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Some(keep)
+    }
+
     /// `@packed` and `@align` lay out a struct's fields (type.structs). On
     /// anything else they'd be read by nothing.
     fn refuse_struct_only_layout(&mut self, attrs: &[rask_ast::attr::Attr], what: &str) {
@@ -1460,6 +1619,8 @@ impl TypeChecker {
         // `@no_serialize` narrows the wire form; this says there isn't one.
         let no_encode = s.attrs.iter().any(|a| a.is("no_encode"));
         let no_decode = s.attrs.iter().any(|a| a.is("no_decode"));
+        let reads_as = self.declared_reads_as(s);
+        let temporary = Self::temporary_keepers(s);
 
         // For @binary structs, convert binary field specifiers to runtime types
         let fields = if is_binary {
@@ -1491,6 +1652,8 @@ impl TypeChecker {
             is_transitive_resource: is_resource,
             no_encode,
             no_decode,
+            reads_as,
+            temporary,
         });
 
         for m in &s.methods {
@@ -2115,6 +2278,9 @@ impl TypeChecker {
                 if shape.methods.iter().any(|s| s.name == m) {
                     continue;
                 }
+                if m != "clone" && self.compares_through_field(id) {
+                    continue;
+                }
                 candidates.push((id, m, shape.clone()));
             }
         }
@@ -2132,6 +2298,13 @@ impl TypeChecker {
             }
             set = keep;
         }
+    }
+
+    /// type.reads-as/RA6: comparing a value is reading it, so a type that
+    /// reads as a field compares and hashes as that field rather than getting
+    /// a structural `eq`, `hash` or `compare` of its own.
+    fn compares_through_field(&self, id: crate::types::TypeId) -> bool {
+        matches!(self.types.get(id), Some(TypeDef::Struct { reads_as: Some(_), .. }))
     }
 
     /// What deriving reads off a struct or enum: its fields' (or payloads')
@@ -2188,10 +2361,11 @@ impl TypeChecker {
             // EQ1/EQ3, HA1, CL1/CL2, CO1/ORD2: each when every field or
             // payload has it (`parts_derive`). No `default`: there is no
             // Default interface (type.generics, "No Default Interface").
-            let eq_ok = self.parts_derive(&shape, "eq");
-            let hash_ok = self.parts_derive(&shape, "hash");
+            let reads = self.compares_through_field(id);
+            let eq_ok = !reads && self.parts_derive(&shape, "eq");
+            let hash_ok = !reads && self.parts_derive(&shape, "hash");
             let clone_ok = self.parts_derive(&shape, "clone");
-            let cmp_ok = self.parts_derive(&shape, "compare");
+            let cmp_ok = !reads && self.parts_derive(&shape, "compare");
 
             let mut new_methods = Vec::new();
             if eq_ok && !declared("eq") {
@@ -2267,7 +2441,7 @@ impl TypeChecker {
             Type::Unit => {
                 matches!(method, "eq" | "hash" | "clone" | "debug")
             }
-            Type::String => {
+            Type::String | Type::Bytes => {
                 matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —
@@ -2720,8 +2894,7 @@ impl TypeChecker {
                 } else {
                     self.define_local_module_const(c.name.clone(), init_ty);
                 }
-                // ESAD Phase 2: reject volatile views at module level too
-                self.check_view_at_binding(&c.name, &c.init, decl.span);
+
             }
             DeclKind::Test(t) => {
                 // `@allow(name)` on the block, same as on a function. A test

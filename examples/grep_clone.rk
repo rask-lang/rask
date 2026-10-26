@@ -6,6 +6,7 @@ import cli
 import fs
 import io.IoError
 import std
+import string.StringView
 
 struct GrepOptions {
     pattern: string
@@ -15,7 +16,7 @@ struct GrepOptions {
     invert_match: bool
 }
 
-func line_matches(line: string, opts: GrepOptions) -> bool {
+func line_matches(line: StringView, opts: GrepOptions) -> bool {
     if opts.ignore_case {
         return line.to_lowercase().contains(opts.pattern.to_lowercase())
     }
@@ -27,13 +28,13 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or IoError {
 
     mut match_count: i64 = 0
     for (i, line) in content.lines().enumerate() {
-        if line_matches(line, opts) == opts.invert_match { continue }
+        if line_matches(line.view(), opts) == opts.invert_match { continue }
         match_count += 1
         if opts.count_only { continue }
         if opts.line_numbers {
             println("{i + 1}:{line}")
         } else {
-            println(line)
+            println("{line}")
         }
     }
 

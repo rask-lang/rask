@@ -136,6 +136,7 @@ pub struct Monomorphizer<'a> {
     pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Assignments in the copies whose new value takes the old one.
     pub instantiated_field_reuses: HashSet<NodeId>,
+    pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
     /// Closures in the copies that may not reach another task (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
     /// Per-call-site type arguments for the copies. A generic calling another
@@ -227,7 +228,7 @@ enum Dispatch {
 fn is_primitive_receiver(name: &str) -> bool {
     matches!(
         name,
-        "bool" | "char" | "string"
+        "bool" | "char" | "string" | "bytes"
             | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"
@@ -524,6 +525,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_err_returns: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
             instantiated_field_reuses: HashSet::new(),
+            instantiated_return_moves: HashMap::new(),
             instantiated_task_bound_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
             interface_methods,
@@ -648,7 +650,7 @@ impl<'a> Monomorphizer<'a> {
                         None => true,
                         Some(r) => match bindings.get(r) {
                             Some(t) => rask_types::primitive_spelling(t).is_some(),
-                            None => rask_ast::primitives::is_builtin_scalar_or_string(r),
+                            None => rask_ast::primitives::is_builtin_value_type(r),
                         },
                     };
                     let language_pair =
@@ -702,6 +704,10 @@ impl<'a> Monomorphizer<'a> {
             // the source, and substitution doesn't change it.
             if typed.field_reuses.contains(&old_id) {
                 self.instantiated_field_reuses.insert(new_id);
+            }
+            // So is which bindings a `return` moves.
+            if let Some(moved) = typed.return_moves.get(&old_id) {
+                self.instantiated_return_moves.insert(new_id, moved.clone());
             }
             // A closure that captured a link or a `Local` box of a concrete
             // type is task-bound in every copy. One whose capture has a type
@@ -1427,7 +1433,7 @@ impl<'a> Monomorphizer<'a> {
             }
             Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
-            | Type::F32 | Type::F64 | Type::Char | Type::String => Some(ty.clone()),
+            | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Bytes => Some(ty.clone()),
             Type::Generic { base, args } => {
                 Self::nameable_generic(&bare(&types.type_name(*base)), args, types)
             }
@@ -2376,7 +2382,7 @@ impl<'a> Monomorphizer<'a> {
             // Leaves - no sub-expressions
             ExprKind::Int(..)
             | ExprKind::Float(..)
-            | ExprKind::String(_) | ExprKind::StringInterp(_)
+            | ExprKind::String(_) | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Null

@@ -40,7 +40,7 @@
 func collect_lines(text: string) -> Vec<string> {
     mut out: Vec<string> = Vec.new()
     for line in text.lines() {
-        out.push(line)
+        out.push(line.to_string())
     }
     return out
 }
@@ -49,7 +49,7 @@ func collect_lines(text: string) -> Vec<string> {
 func index_words(text: string) -> Map<string, string> {
     mut out: Map<string, string> = Map.new()
     for w in text.split(",") {
-        out.insert(w.clone(), w)
+        out.insert(w.to_string(), w.to_string())
     }
     return out
 }
@@ -124,7 +124,7 @@ test "mem.ownership — the same chains in a loop" {
 // `for` loop — the collecting vector is emitted by the iterator lowering, not
 // written in source, and it was the one with no element map at all.
 test "mem.ownership — split collected with to_vec" {
-    let parts = "one-long-enough-to-need-heap,two-long-enough-to-need-heap".split(",").to_vec()
+    let parts = "one-long-enough-to-need-heap,two-long-enough-to-need-heap".split(",").to_strings()
     assert parts.len() == 2
     assert parts[0] == "one-long-enough-to-need-heap"
     assert parts[1] == "two-long-enough-to-need-heap"

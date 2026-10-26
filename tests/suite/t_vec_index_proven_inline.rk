@@ -13,10 +13,10 @@ struct Point {
 }
 
 test "narrow, wide and float elements" {
-    let bytes: Vec<u8> = [1, 2, 250]
+    let raw: Vec<u8> = [1, 2, 250]
     mut b: i64 = 0
-    for i in 0..bytes.len() {
-        b = b + bytes[i].wrap<i64>()
+    for i in 0..raw.len() {
+        b = b + raw[i].wrap<i64>()
     }
     assert b == 253
 

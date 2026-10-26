@@ -74,6 +74,8 @@ impl TypeChecker {
         for err in found {
             self.errors.push(err);
         }
+        // type.temporary/TM2: nothing keeps a temporary value.
+        self.check_temporaries(decls, node_types);
     }
 }
 

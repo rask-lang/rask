@@ -4,14 +4,14 @@ struct Row { name: string, score: i64 }
 func parse_csv(text: string) -> Vec<Row> {
     mut rows: Vec<Row> = Vec.new()
     mut first = true
-    for raw in text.lines().to_vec() {
+    for raw in text.lines().to_strings() {
         let line = raw.trim().to_string()
         if first {
             first = false
             continue
         }
         if line.is_empty() { continue }
-        let fields = line.split(",").to_vec()
+        let fields = line.split(",").to_strings()
         if fields.len() != 2 { continue }
         let score = fields[1].trim().to_string().parse<i64>() catch _ => {
             continue

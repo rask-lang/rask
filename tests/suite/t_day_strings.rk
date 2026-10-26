@@ -74,18 +74,18 @@ test "char_at and byte_at" {
 }
 
 test "splitting and joining" {
-    let parts = "a,b,c".split(",").to_vec()
+    let parts = "a,b,c".split(",").to_strings()
     assert parts.len() == 3
     assert parts[0] == "a"
     assert parts[2] == "c"
     assert parts.join("-") == "a-b-c"
-    let words = "one two  three".split_whitespace().to_vec()
+    let words = "one two  three".split_whitespace().to_strings()
     assert words.len() == 3
     assert words[1] == "two"
 }
 
 test "lines" {
-    let ls = "a\nb\nc".lines().to_vec()
+    let ls = "a\nb\nc".lines().to_strings()
     assert ls.len() == 3
     assert ls[0] == "a"
     assert ls[2] == "c"

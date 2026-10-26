@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 func word_frequency(text: string) -> Map<string, i64> {
     mut counts: Map<string, i64> = Map.new()
-    for word in text.split_whitespace().to_vec() {
+    for word in text.split_whitespace().to_strings() {
         let key = word.to_lowercase()
         let seen = counts.get(key) ?? 0
         counts.insert(key, seen + 1)
@@ -10,7 +10,7 @@ func word_frequency(text: string) -> Map<string, i64> {
 }
 
 func most_common(text: string) -> string {
-    mut words = text.split_whitespace().to_vec().map(|w| w.to_lowercase()).to_vec()
+    mut words = text.split_whitespace().to_strings().map(|w| w.to_lowercase()).to_vec()
     words.sort()
     let counts = word_frequency(text)
     mut best = ""

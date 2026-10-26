@@ -85,7 +85,7 @@ pub fn box_payload_kind_of(ty: &rask_types::Type, head: Option<&str>) -> i64 {
 /// and a fourth kind would have had to find all of them.
 pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
     match key_ty {
-        MirType::String => "Map_new_string_keys",
+        MirType::Buffer => "Map_new_string_keys",
         MirType::Link(_) => "Map_new_link_keys",
         MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => "Map_new_link_keys",
         _ => "Map_new",
@@ -196,7 +196,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // fresh string. Neither points into the source — unlike the splitters
     // below, which look identical from here and are not.
     ("string_chars", 0, 0, "Vec_free"),
-    ("StringView_chars", 0, 0, "Vec_free"),
+
     ("string_graphemes", 0, 0, "Vec_free"),
     // The third of that family and the one left out: `char_indices` pushes a
     // (byte offset, scalar) pair per character into a fresh vector. Two
@@ -237,9 +237,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("channel_tx", 0, 0, "Sender_drop"),
     ("channel_rx", 0, 0, "Receiver_drop"),
     ("Sender_clone", 0, 0, "Sender_drop"),
-    ("string_split", 0, 0, "Vec_free"),
-    ("string_lines", 0, 0, "Vec_free"),
-    ("string_split_whitespace", 0, 0, "Vec_free"),
     // A string builder is the frame's until `build()` takes it away. Nothing
     // released one on a path that gives up before building, and
     // `string.from_utf8` returns a `Utf8Error` from eight places — so every
@@ -272,9 +269,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Vec_clone", 0, 0, "Vec_free"),
     ("Map_clone", 0, 0, "Map_free"),
     // `bytes()` builds a fresh Vec of the string's bytes and hands it over —
-    // no view into the source, so nothing reads it after the frame ends. The
-    // splitters below are the family it belongs to and stay out for the reason
-    // written there; this one was measured on its own.
+    // no view into the source, so nothing reads it after the frame ends.
     ("string_bytes", 0, 0, "Vec_free"),
     // Same shape on the C side: the bytes up to the terminator, copied into a
     // fresh Vec that `string.from_utf8` reads and nobody else holds (#949).
@@ -285,14 +280,8 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
     ("io_read_std_bytes", 0, 0, "Vec_free"),
-    //
-    // The string splitters — `string_split`, `string_lines` and friends — are
-    // absent for a nearer reason: each does hand back a fresh Vec, and
-    // registering them clears the leak, but `simple_grep` then finds nothing
-    // and `markdown_renderer` aborts on `malloc(): unaligned tcache chunk`.
-    // Their result is a Vec of *views into the source string*, so the elements
-    // outlive the free. `bytes()` copies instead, which is why it is listed
-    // above and they are not. Measured both ways on #1050.
+    // `b.to_vec()`: a copy of the bytes in a Vec of its own (std.bytes).
+    ("bytes_to_vec", 0, 0, "Vec_free"),
 ];
 
 /// Calls that take element descriptions and hand back no container. A JSON

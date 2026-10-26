@@ -752,9 +752,23 @@ impl Interpreter {
                     Some(&b) => Ok(Value::Int(b as i64, crate::value::IntKind::U8)),
                     None => Err(RuntimeDiagnostic::new(
                         RuntimeError::Panic(format!(
-                            "string index out of bounds: index is {} but length is {} bytes",
+                            "index out of bounds: index is {} but length is {} bytes",
                             i,
                             str_val.len()
+                        )),
+                        span,
+                    )),
+                }
+            }
+            // `b[i]` (std.bytes/BY4), with the message a string's has.
+            (Value::Bytes(b), Value::Int(i, _)) => {
+                match usize::try_from(*i).ok().and_then(|n| b.get(n)) {
+                    Some(&x) => Ok(Value::Int(x as i64, crate::value::IntKind::U8)),
+                    None => Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(format!(
+                            "index out of bounds: index is {} but length is {} bytes",
+                            i,
+                            b.len()
                         )),
                         span,
                     )),
@@ -981,6 +995,7 @@ impl Interpreter {
             // to the literal `{braces}`, and the re-scan read that back as an
             // interpolation and went looking for a variable (#521).
             ExprKind::String(s) => Ok(Value::String(Arc::new(Mutex::new(s.clone())))),
+            ExprKind::Bytes(b) => Ok(Value::Bytes(Arc::new(b.clone()))),
 
             // Parsed segments, for the paths that skip desugar (the spec test
             // runner). Desugar turns these into a concat chain instead.

@@ -112,7 +112,6 @@ pub enum TypeConstraint {
         /// is known — at the index site it had nothing to classify against.
         index: Type,
         result: Type,
-        is_range: bool,
         span: Span,
     },
     /// `a?.b` — the chain's result, once `b`'s own type is known.

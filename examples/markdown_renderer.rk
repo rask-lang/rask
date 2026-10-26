@@ -501,7 +501,7 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
 // Line-by-line state machine that produces Block AST nodes.
 
 func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
-    let lines = input.lines().to_vec()
+    let lines = input.lines().to_strings()
     mut blocks = Vec.new()
     mut i = 0
     let line_count = lines.len()
@@ -667,7 +667,7 @@ func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
                     i = i + 1
                 } else if it.starts_with("  ") || it.starts_with("\t") {
                     if !items.is_empty() {
-                        let nested_inlines = try parse_inline(it.trim())
+                        let nested_inlines = try parse_inline(it.trim().to_string())
                         with items[items.len() - 1] as last_item {
                             last_item.children.push(Block.Paragraph(nested_inlines))
                         }

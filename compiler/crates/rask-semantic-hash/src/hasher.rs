@@ -616,6 +616,10 @@ impl Hasher {
                 self.feed_tag(42);
                 self.feed_str(s);
             }
+            ExprKind::Bytes(b) => {
+                self.feed_tag(105);
+                self.feed_str(&rask_ast::token::bytes_literal(b));
+            }
             ExprKind::StringInterp(segments) => {
                 self.feed_tag(99);
                 for seg in segments {

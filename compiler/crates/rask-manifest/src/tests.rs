@@ -144,7 +144,7 @@ fn json_schema_patterns_agree_with_the_loader() {
 
 fn run_rask_tests(result: &rask_compiler::CheckResult) -> Vec<String> {
     let mut interp = interpreter_for(result);
-    let results = interp.run_tests(&rask_compiler::program_decls(&result.decls), None);
+    let results = interp.run_tests(&rask_compiler::program_decls(&result.decls, Some(&result.typed)), None);
     assert!(results.len() > 10, "only {} tests ran", results.len());
     results.iter().filter(|r| !r.passed).map(|r| r.name.clone()).collect()
 }

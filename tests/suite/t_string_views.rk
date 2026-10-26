@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Slices, spans and views of a string (std.strings/S2, V1).
+//
+// `s[i..j]` and `s.trim()` are slices: values that know where they were cut
+// (std.strings/S2). `.view()` shares the source's buffer instead of copying it,
+// and `.span()` is the slice's place in the source (#492).
+import string.StringView
+
+struct Header {
+    name: StringView
+    value: StringView
+}
+
+func parse_header(line: string) -> Header? {
+    let colon = try line.index_of(":")
+    return Header(name: line[0..colon].trim().view(), value: line[colon + 1..].trim().view())
+}
+
+func long_text() -> string {
+    return "   the quick brown fox jumps over the lazy dog   "
+}
+
+test "a slice's span is its range in the source" {
+    let s = "hello world, long enough for the heap"
+    let sp = s[6..11].span()
+    assert sp.start == 6
+    assert sp.end == 11
+    assert s[..5].span().end == 5
+    assert s[30..].span().start == 30
+    assert s[30..].span().end == s.len()
+    assert s[0..=4].span().end == 5
+}
+
+test "a whole string's span is all of it" {
+    let s = "abc"
+    assert s.span().start == 0
+    assert s.span().end == 3
+}
+
+test "out of range clamps, as slicing does" {
+    let s = "short"
+    let sp = s[2..99].span()
+    assert sp.start == 2
+    assert sp.end == 5
+    assert s[9..12].span().len() == 0
+}
+
+test "a trim's span is what it keeps" {
+    let s = "   padded   "
+    let sp = s.trim().span()
+    assert sp.start == 3
+    assert sp.end == 9
+    assert s.trim_start().span().start == 3
+    assert s.trim_start().span().end == 12
+    assert s.trim_end().span().end == 9
+    assert "     ".trim().span().len() == 0
+}
+
+test "a trim after a slice stays inside the slice" {
+    let s = "key :  value  ; rest"
+    let sp = s[5..14].trim().span()
+    assert sp.start == 7
+    assert sp.end == 12
+}
+
+test "a view is the text its chain picks out" {
+    let s = long_text()
+    let v = s.trim().view()
+    assert v.to_string() == "the quick brown fox jumps over the lazy dog"
+    assert s[7..12].view().to_string() == "quick"
+    assert s[3..].view().len() == s.len() - 3
+}
+
+test "views outlive the string they were cut from" {
+    mut keep: Vec<StringView> = Vec.new()
+    if true {
+        let s = long_text()
+        keep.push(s[13..28].view())
+        keep.push(s.trim().view())
+    }
+    assert keep[0].to_string() == "brown fox jumps"
+    assert keep[1].len() == 43
+}
+
+test "the spec's header parser keeps both halves as views" {
+    let h = parse_header("   Content-Type   :    application/json; charset=utf-8   ")!
+    assert h.name.to_string() == "Content-Type"
+    assert h.value.to_string() == "application/json; charset=utf-8"
+}
+
+func counted(mutate calls: i64) -> string {
+    calls += 1
+    return "  counted source string, long enough  "
+}
+
+test "the source of a chain is evaluated once" {
+    mut calls = 0
+    let v = counted(mutate calls)[2..9].trim().view()
+    assert v.to_string() == "counted"
+    assert calls == 1
+}
+
+test "a slice of a slice is placed in the source" {
+    let s = "0123456789abcdef"
+    let sp = s[4..14][2..5].span()
+    assert sp.start == 6
+    assert sp.end == 9
+    assert s[4..14][2..5].view().to_string() == "678"
+}
+
+test "a slice trims inside itself" {
+    let s = "[  inner  ]"
+    let start = s[1..10].trim_start().span()
+    assert start.start == 3
+    assert start.end == 10
+    let end = s[1..10].trim_end().span()
+    assert end.start == 1
+    assert end.end == 8
+    assert s[1..10].trim().view().to_string() == "inner"
+}
+
+test "a slice reads as a string" {
+    let s = "  Content-Length: 42  "
+    assert s.trim().len() == 18
+    assert s.trim().starts_with("Content")
+    assert s.trim().index_of(":") == 14
+    assert s.trim() == "Content-Length: 42"
+    assert s[2..9].to_uppercase() == "CONTENT"
+}
+
+func shout(s: string) -> string {
+    return s.to_uppercase()
+}
+
+// A slice reads as its text only as a receiver (type.reads-as/RA4). Where a
+// `string` is passed the callee could keep it, so the copy is written out.
+test "a slice passed for a string is copied where you can see it" {
+    let s = "quiet please"
+    assert shout(s[0..5].to_string()) == "QUIET"
+    mut words: Vec<string> = Vec.new()
+    words.push(s[6..].trim().to_string())
+    assert words[0] == "please"
+}
+
+test "a split can be named and looped over later" {
+    let line = "a, bb , a"
+    let words = line.split(",")
+    mut n = 0
+    for w in words {
+        if w.trim() == "a" {
+            n += 1
+        }
+    }
+    assert n == 2
+}
+
+test "slices compare inside an enumerate" {
+    let line = "x,a,y"
+    mut at = 99
+    for (i, w) in line.split(",").enumerate() {
+        if "a" == w && w == line[2..3] {
+            at = i
+        }
+    }
+    assert at == 1
+}
+
+test "a comparison reads a slice on either side" {
+    let s = "  key: value  "
+    assert "key: value" == s.trim()
+    assert s.trim() == "key: value"
+    assert s[2..5] == s[2..5]
+    assert "kez" > s[2..5]
+    assert s[2..5] != "val"
+}

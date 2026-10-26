@@ -597,7 +597,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             // `rask run --interp`: without it `ctx.package_dir.as_string()`
             // was "no method `as_string` on type `Path`", since Path's
             // methods live in stdlib/path.rk.
-            let script_decls = rask_compiler::program_decls(&build_decls);
+            let script_decls = rask_compiler::program_decls(&build_decls, None);
             match interp.run_build(&script_decls, build_state) {
                 Ok(_) => {
                     if opts.verbose {

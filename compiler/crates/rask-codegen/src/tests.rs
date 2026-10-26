@@ -14,11 +14,11 @@ mod tests {
     // ── MIR construction helpers ────────────────────────────────
 
     fn local(id: u32, name: &str, ty: MirType, is_param: bool) -> MirLocal {
-        MirLocal { id: LocalId(id), name: Some(name.to_string()), ty, is_param, unerased: None }
+        MirLocal { id: LocalId(id), name: Some(name.to_string()), ty, is_param }
     }
 
     fn temp(id: u32, ty: MirType) -> MirLocal {
-        MirLocal { id: LocalId(id), name: None, ty, is_param: false, unerased: None }
+        MirLocal { id: LocalId(id), name: None, ty, is_param: false }
     }
 
     fn block(id: u32, stmts: Vec<MirStmt>, term: MirTerminator) -> MirBlock {
@@ -951,7 +951,7 @@ mod tests {
             params: vec![],
             ret_ty: MirType::I64,
             locals: vec![
-                temp(0, MirType::String),
+                temp(0, MirType::Buffer),
             ],
             blocks: vec![
                 block(0, vec![
@@ -2022,6 +2022,7 @@ mod tests {
             instantiated_err_returns: Default::default(),
         instantiated_escaping_closures: Default::default(),
         instantiated_field_reuses: Default::default(),
+        instantiated_return_moves: Default::default(),
         instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
             functions: vec![],
@@ -2046,6 +2047,7 @@ mod tests {
             instantiated_err_returns: Default::default(),
         instantiated_escaping_closures: Default::default(),
         instantiated_field_reuses: Default::default(),
+        instantiated_return_moves: Default::default(),
         instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
             functions: vec![],
@@ -2104,6 +2106,7 @@ mod tests {
             instantiated_err_returns: Default::default(),
         instantiated_escaping_closures: Default::default(),
         instantiated_field_reuses: Default::default(),
+        instantiated_return_moves: Default::default(),
         instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
             functions: vec![],

@@ -729,6 +729,7 @@ impl Interpreter {
             Value::Float(_, _) => Some("f64".to_string()),
             Value::Char(_) => Some("char".to_string()),
             Value::String(_) => Some("string".to_string()),
+            Value::Bytes(_) => Some("bytes".to_string()),
             _ => None,
         }
     }

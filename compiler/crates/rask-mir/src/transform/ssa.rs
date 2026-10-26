@@ -18,9 +18,9 @@ use crate::{
     MirStmtKind, MirTerminator, MirTerminatorKind,
 };
 
-/// What a new SSA version of a local copies from the original: its name, its
-/// type, and the container behind its wrapper tag.
-type LocalInfo = (Option<String>, crate::MirType, Option<crate::MirType>);
+/// What a new SSA version of a local copies from the original: its name and
+/// its type.
+type LocalInfo = (Option<String>, crate::MirType);
 
 // ---------------------------------------------------------------------------
 // SSA construction
@@ -208,19 +208,19 @@ fn rename_variables(
     let orig_local_info: Vec<LocalInfo> = {
         let mut info = Vec::with_capacity(num_orig_locals);
         for param in &func.params {
-            info.push((param.name.clone(), param.ty.clone(), param.unerased.clone()));
+            info.push((param.name.clone(), param.ty.clone()));
         }
         for local in &func.locals {
             if (local.id.0 as usize) >= info.len() {
                 // Extend to cover gaps
                 while info.len() < local.id.0 as usize {
-                    info.push((None, crate::MirType::I64, None));
+                    info.push((None, crate::MirType::I64));
                 }
-                info.push((local.name.clone(), local.ty.clone(), local.unerased.clone()));
+                info.push((local.name.clone(), local.ty.clone()));
             }
         }
         while info.len() < num_orig_locals {
-            info.push((None, crate::MirType::I64, None));
+            info.push((None, crate::MirType::I64));
         }
         info
     };
@@ -256,13 +256,12 @@ fn new_version(
     let version = version_counter[orig];
     let new_id = LocalId((func.locals.len() + func.params.len()) as u32);
 
-    let (ref name, ref ty, ref unerased) = orig_local_info[orig];
+    let (ref name, ref ty) = orig_local_info[orig];
     func.locals.push(MirLocal {
         id: new_id,
         name: name.as_ref().map(|n| format!("{}_v{}", n, version)),
         ty: ty.clone(),
         is_param: false,
-        unerased: unerased.clone(),
     });
 
     version_stack[orig].push(new_id);
@@ -468,9 +467,12 @@ fn rename_stmt(
         | MirStmtKind::RcIncContents { local } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
-        MirStmtKind::ZeroAggregate { local: addr } | MirStmtKind::ReleaseSlot { addr, .. } => {
+        MirStmtKind::ZeroAggregate { local: addr }
+        | MirStmtKind::ReleaseSlot { addr, .. }
+        | MirStmtKind::MovedOut { local: addr } => {
             *addr = current_version(*addr, version_stack, num_orig_locals);
         }
+        MirStmtKind::Guarded { .. } => unreachable!("a release pass expands its guarded releases before it returns"),
         MirStmtKind::EnsureHookRegister { captures, .. } => {
             for cap in captures.iter_mut() {
                 cap.local_id = current_version(cap.local_id, version_stack, num_orig_locals);
@@ -747,7 +749,7 @@ mod tests {
     fn block(n: u32) -> BlockId { BlockId(n) }
     fn local(n: u32) -> LocalId { LocalId(n) }
 
-    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I32, is_param: false, unerased: None } }
+    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I32, is_param: false } }
 
     fn assign_const(dst: u32, val: i64) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Assign {
@@ -982,7 +984,7 @@ mod tests {
         // bb3: return p0
         let mut func = MirFunction {
             name: "test".to_string(),
-            params: vec![MirLocal { id: local(0), name: Some("p0".into()), ty: MirType::I32, is_param: true, unerased: None }],
+            params: vec![MirLocal { id: local(0), name: Some("p0".into()), ty: MirType::I32, is_param: true }],
             ret_ty: MirType::I32,
             locals: vec![],
             blocks: vec![

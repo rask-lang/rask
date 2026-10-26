@@ -9,7 +9,7 @@ func sum_bytes(n: usize) -> u64 or bits.BinaryParseError {
     for i in 0..n {
         data.push((i % 7).wrap<u8>())
     }
-    mut r = bits.BinaryReader.new(data)
+    mut r = bits.BinaryReader.new(data.freeze())
     mut total: u64 = 0
     while r.remaining() > 0 {
         let b = try r.read_u8()

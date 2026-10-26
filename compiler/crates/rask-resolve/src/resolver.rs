@@ -2546,7 +2546,7 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
-            ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
+            ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
             ExprKind::Ident(name) => self.resolve_name(expr, name),
             ExprKind::GenericName { name, type_args } => {
                 self.resolve_name(expr, name);

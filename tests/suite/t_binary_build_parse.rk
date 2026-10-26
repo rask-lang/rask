@@ -36,9 +36,9 @@ struct Reading {
 
 test "type.binary/G1 — build then parse gives every field back" {
     let p = Packet(magic: 0x1234, id: 0xDEADBEEF)
-    let bytes = p.build()
-    assert bytes.len() == 6
-    let got = Packet.from_bytes(bytes) catch e => {
+    let raw = p.build()
+    assert raw.len() == 6
+    let got = Packet.from_bytes(raw) catch e => {
         assert false
         return
     }
@@ -47,26 +47,26 @@ test "type.binary/G1 — build then parse gives every field back" {
 }
 
 test "type.binary/B3 — a big-endian field goes most significant byte first" {
-    let bytes = Packet(magic: 0x1234, id: 0).build()
-    assert bytes[0] == 0x12
-    assert bytes[1] == 0x34
+    let raw = Packet(magic: 0x1234, id: 0).build()
+    assert raw[0] == 0x12
+    assert raw[1] == 0x34
 }
 
 test "type.binary/B2 — bit fields pack with no padding, little-endian is low byte first" {
     let h = Header(version: 4, ihl: 5, flags: 2, offset: 0x1abc, ttl: 64, port: 0x1f90, delta: -3, tag: [7u8, 9u8])
-    let bytes = h.build()
-    assert bytes.len() == Header.SIZE
-    assert bytes[0] == 0x45
+    let raw = h.build()
+    assert raw.len() == Header.SIZE
+    assert raw[0] == 0x45
     // flags 010 then the top five bits of offset 1 1010 1011 1100.
-    assert bytes[1] == 0x5a
-    assert bytes[2] == 0xbc
-    assert bytes[3] == 64
-    assert bytes[4] == 0x90
-    assert bytes[5] == 0x1f
-    assert bytes[6] == 0xfd
-    assert bytes[7] == 7
-    assert bytes[8] == 9
-    let g = Header.from_bytes(bytes) catch e => {
+    assert raw[1] == 0x5a
+    assert raw[2] == 0xbc
+    assert raw[3] == 64
+    assert raw[4] == 0x90
+    assert raw[5] == 0x1f
+    assert raw[6] == 0xfd
+    assert raw[7] == 7
+    assert raw[8] == 9
+    let g = Header.from_bytes(raw) catch e => {
         assert false
         return
     }
@@ -85,8 +85,8 @@ func parse_one(mutate r: bits.BinaryReader) -> string {
     return "parsed {p.magic}"
 }
 
-func two_packets(bytes: Vec<u8>) -> string or bits.BinaryParseError {
-    mut r = bits.BinaryReader.new(bytes.clone())
+func two_packets(raw: Vec<u8>) -> string or bits.BinaryParseError {
+    mut r = bits.BinaryReader.new(raw.clone().freeze())
     let version = try r.read_u8()
     let first = try Packet.parse(mutate r)
     let second = try Packet.parse(mutate r)
@@ -98,15 +98,15 @@ func two_packets(bytes: Vec<u8>) -> string or bits.BinaryParseError {
 }
 
 test "type.binary/G1 — records parse one after another off one reader" {
-    mut bytes: Vec<u8> = [9u8]
+    mut raw: Vec<u8> = [9u8]
     for b in Packet(magic: 1, id: 2).build() {
-        bytes.push(b)
+        raw.push(b)
     }
     for b in Packet(magic: 3, id: 4).build() {
-        bytes.push(b)
+        raw.push(b)
     }
-    bytes.push(0xaa)
-    let got = two_packets(bytes) catch e => e.message()
+    raw.push(0xaa)
+    let got = two_packets(raw) catch e => e.message()
     assert got == "9 1 2 3 4 170 / unexpected end: expected 6 bytes, got 0"
 }
 
@@ -120,9 +120,9 @@ test "type.binary/G1 — too few bytes is an error, not a short read" {
 }
 
 test "type.binary/G1 — from_bytes wants exactly one, not one and some" {
-    mut bytes = Packet(magic: 1, id: 2).build()
-    bytes.push(0)
-    let got = Packet.from_bytes(bytes) catch e => {
+    mut raw = Packet(magic: 1, id: 2).build()
+    raw.push(0)
+    let got = Packet.from_bytes(raw) catch e => {
         assert e.message() == "invalid data: 1 bytes after a Packet"
         return
     }
@@ -138,17 +138,17 @@ test "type.binary/G4 — SIZE rounds up to whole bytes" {
 
 test "type.binary — floats go on the wire as their bits, NaN as one pattern" {
     let r = Reading(temp: 1.5, scale: -2.25)
-    let bytes = r.build()
-    assert bytes.len() == Reading.SIZE
+    let raw = r.build()
+    assert raw.len() == Reading.SIZE
     // 1.5f32 is 0x3fc00000, most significant byte first.
-    assert bytes[0] == 0x3f
-    assert bytes[1] == 0xc0
-    assert bytes[2] == 0
+    assert raw[0] == 0x3f
+    assert raw[1] == 0xc0
+    assert raw[2] == 0
     // -2.25 is 0xc002000000000000, least significant byte first.
-    assert bytes[4] == 0
-    assert bytes[10] == 0x02
-    assert bytes[11] == 0xc0
-    let back = Reading.from_bytes(bytes) catch e => {
+    assert raw[4] == 0
+    assert raw[10] == 0x02
+    assert raw[11] == 0xc0
+    let back = Reading.from_bytes(raw) catch e => {
         assert false
         return
     }

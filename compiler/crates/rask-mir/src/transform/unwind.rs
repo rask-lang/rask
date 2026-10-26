@@ -54,7 +54,7 @@ fn arm_strings(func: &mut MirFunction) {
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     let addr = crate::transform::addr_taken::analyze(func);
     let strings: BTreeSet<LocalId> = func
-        .locals_of_type(&MirType::String)
+        .locals_of_type(&MirType::Buffer)
         .into_iter()
         .filter(|l| !params.contains(l) && !addr.contains(*l))
         .collect();
@@ -242,11 +242,11 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
 
     let record = LocalId(0);
     let record_local =
-        MirLocal { id: record, name: Some("record".to_string()), ty: MirType::Ptr, is_param: true, unerased: None };
+        MirLocal { id: record, name: Some("record".to_string()), ty: MirType::Ptr, is_param: true };
     let mut locals: Vec<MirLocal> = vec![record_local.clone()];
-    let mut fresh = |ty: MirType, unerased: Option<MirType>| -> LocalId {
+    let mut fresh = |ty: MirType| -> LocalId {
         let id = LocalId(locals.len() as u32);
-        locals.push(MirLocal { id, name: None, ty, is_param: false, unerased });
+        locals.push(MirLocal { id, name: None, ty, is_param: false });
         id
     };
 
@@ -263,8 +263,8 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
             });
             continue;
         };
-        let raw = fresh(MirType::I64, None);
-        let armed = fresh(MirType::Bool, None);
+        let raw = fresh(MirType::I64);
+        let armed = fresh(MirType::Bool);
         blocks.push(MirBlock {
             id: check(i),
             statements: vec![
@@ -295,29 +295,33 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
         // The value is one word whatever it is: a handle, a string pointer,
         // or the address of what the frame holds in place. A local of an
         // aggregate type would get a slot of its own and be copied into, so
-        // it is a pointer here, with the full type kept for a walk that needs
-        // it.
+        // it is a pointer here, and a walk over what sits at that address
+        // says the type it walks (`ReleaseSlot`) instead of reading it off
+        // the local.
         let mut map: HashMap<LocalId, LocalId> = HashMap::new();
-        let ph = original.get(&release.placeholder);
-        let ph_ty = ph.map(|l| l.ty.clone()).unwrap_or(MirType::Ptr);
-        let (ty, unerased) = match ph_ty {
-            MirType::String => (MirType::String, None),
-            other => (MirType::Ptr, ph.and_then(|l| l.unerased.clone()).or(Some(other))),
-        };
-        let value = fresh(ty, unerased);
+        let ph_ty = original.get(&release.placeholder).map(|l| l.ty.clone()).unwrap_or(MirType::Ptr);
+        let value = fresh(match ph_ty {
+            MirType::Buffer => MirType::Buffer,
+            _ => MirType::Ptr,
+        });
         map.insert(release.placeholder, value);
         let mut stmts = vec![MirStmt::dummy(MirStmtKind::Assign {
             dst: value,
             rvalue: MirRValue::Use(MirOperand::Local(raw)),
         })];
         for stmt in &release.stmts {
-            let mut stmt = stmt.clone();
+            let mut stmt = match &stmt.kind {
+                MirStmtKind::RcDecContents { local } if *local == release.placeholder => {
+                    MirStmt::new(
+                        MirStmtKind::ReleaseSlot { addr: *local, offset: 0, ty: ph_ty.clone() },
+                        stmt.span,
+                    )
+                }
+                _ => stmt.clone(),
+            };
             if let Some(d) = uses::stmt_def(&stmt) {
-                let l = original.get(&d);
-                let id = fresh(
-                    l.map(|l| l.ty.clone()).unwrap_or(MirType::Ptr),
-                    l.and_then(|l| l.unerased.clone()),
-                );
+                let ty = original.get(&d).map(|l| l.ty.clone()).unwrap_or(MirType::Ptr);
+                let id = fresh(ty);
                 map.insert(d, id);
             }
             rename(&mut stmt, &map);

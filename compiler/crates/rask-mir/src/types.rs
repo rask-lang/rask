@@ -2,7 +2,7 @@
 
 //! MIR type system - all types are concrete, no generics.
 
-/// Result layout offsets — single source of truth in `rask_mono::abi`.
+/// Result layout offsets — single source of truth in `rask_types::abi`.
 pub use rask_types::abi::{
     RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_BYTES,
     RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
@@ -35,28 +35,31 @@ pub enum ContainerKind {
 }
 
 impl MirType {
-    /// This type with every container kind stripped back to a bare pointer —
-    /// the spelling MIR stores. See `MirType::Container`.
-    pub fn without_container_kinds(&self) -> MirType {
+    /// How many `T?` / `T or E` layers wrap the value: `i64` is 0, `Vec<i64>?`
+    /// is 1, `i64? or E` is 2. A value with fewer layers than the slot it goes
+    /// into still needs wrapping; one with as many already is the wrapper.
+    ///
+    /// The count is the question both lowering and codegen ask before
+    /// wrapping. Codegen used to ask it as type equality instead, and equality
+    /// also compares what the payload is: `Vec<i64>?` against `ptr?` said
+    /// "not the same, so wrap", and `return none` came back wrapped twice.
+    pub fn wrapper_depth(&self) -> usize {
+        match self {
+            MirType::Option(inner) => 1 + inner.wrapper_depth(),
+            MirType::Result { ok, .. } => 1 + ok.wrapper_depth(),
+            _ => 0,
+        }
+    }
+
+    /// This type in a slot that holds something another owner releases. A
+    /// container handle there is a plain word: `Container(kind)` says the
+    /// slot's owner frees it, and a borrowed element isn't the slot's.
+    ///
+    /// A string needs no such spelling: a borrowed one copied into a slot
+    /// takes a reference of its own, so the slot does own one.
+    pub fn borrowed(&self) -> MirType {
         match self {
             MirType::Container(_) => MirType::Ptr,
-            MirType::Option(inner) => {
-                MirType::Option(Box::new(inner.without_container_kinds()))
-            }
-            MirType::Result { ok, err } => MirType::Result {
-                ok: Box::new(ok.without_container_kinds()),
-                err: Box::new(err.without_container_kinds()),
-            },
-            MirType::Tuple(elems) => {
-                MirType::Tuple(elems.iter().map(|e| e.without_container_kinds()).collect())
-            }
-            MirType::Array { elem, len } => MirType::Array {
-                elem: Box::new(elem.without_container_kinds()),
-                len: *len,
-            },
-            MirType::Union(vs) => {
-                MirType::Union(vs.iter().map(|v| v.without_container_kinds()).collect())
-            }
             other => other.clone(),
         }
     }
@@ -102,23 +105,17 @@ pub enum MirType {
     F64,
     Char,
     Ptr,
-    /// A container handle, tagged with what frees it.
+    /// A container handle: one word, freed by its kind's free.
     ///
-    /// Every container is a pointer, so `Vec<Point> or JsonError` lowers to
-    /// `ptr or enum#7`: releasing that freed the error's string and walked
-    /// straight past the vector, and `json.decode<Vec<Point>>(t) catch e => …`
-    /// leaked everything it decoded. The checker's type knows which it is;
-    /// this is how lowering says so.
+    /// Every `Vec`, `Map` and `Rack` is this, wherever it sits — a local, a
+    /// field, a tuple part, an optional's payload. A bare `Ptr` here said
+    /// nothing about what freed it, so `Vec<Point> or JsonError` lowered to
+    /// `ptr or enum#7`, releasing it walked straight past the vector, and
+    /// `json.decode<Vec<Point>>(t) catch e => …` leaked everything it decoded.
     ///
-    /// **This never reaches a stored type.** `BlockBuilder` strips it out of
-    /// every local and return type it is handed and keeps the kind on the
-    /// `MirLocal` instead, so MIR's own types are exactly what they were.
-    /// They have to be: equality on `MirType` is how codegen tells an
-    /// already-wrapped return from a bare payload, and a second spelling of
-    /// `Vec<i64>?` made `return none` wrap the option a second time —
-    /// `maybe(0)? as w` took the present branch and called `Vec_len` on the
-    /// tag. Codegen puts the kind back on the one type it walks, in the one
-    /// place that walks it.
+    /// It used to be stripped back to `Ptr` in every stored type, with the
+    /// kind kept on the side, because codegen told an already-wrapped return
+    /// from a bare payload by type equality (see `wrapper_depth`).
     Container(ContainerKind),
     /// `Heap<T>` — the address of a block holding a `T`.
     ///
@@ -131,11 +128,14 @@ pub enum MirType {
     /// `*b` and `drop(b)` were each wrong for eight of the sixteen payload
     /// kinds (#1234, #1256).
     ///
-    /// Unlike `Container`, this one *does* reach stored types. It has to: the
-    /// checker erases `Heap<T>` to `T` (HP5), so this is the only place the
-    /// fact survives.
+    /// The checker erases `Heap<T>` to `T` (HP5), so this is the only place
+    /// the fact survives.
     Heap(Box<MirType>),
-    String,
+    /// A refcounted, immutable byte buffer — 16 bytes, inline when short.
+    /// `string` and `bytes` are both this. What the bytes mean (text or not)
+    /// is the checker's to say, and lowering asks it there; nothing after
+    /// lowering needs to know.
+    Buffer,
     Struct(StructLayoutId),
     Enum(EnumLayoutId),
     Array {
@@ -211,7 +211,7 @@ impl MirType {
                 | MirType::Enum(_)
                 | MirType::Tuple(_)
                 | MirType::Array { .. }
-                | MirType::String
+                | MirType::Buffer
                 | MirType::Option(_)
                 | MirType::Result { .. }
                 | MirType::Union(_)
@@ -293,7 +293,7 @@ impl MirType {
             | MirType::Link(_) | MirType::Container(_)
             | MirType::Heap(_) => 8,
             MirType::I128 | MirType::U128 => 16,
-            MirType::String => 16,
+            MirType::Buffer => 16,
             MirType::Struct(sid) => sid.byte_size,
             MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
@@ -334,7 +334,7 @@ impl MirType {
     }
 
     /// Where a `T?`, `T or E` or error union keeps its payload, and its size.
-    /// `rask_mono::abi` is the one definition; `None` for anything else, and
+    /// `rask_types::abi` is the one definition; `None` for anything else, and
     /// for a niche option, which is its payload.
     pub fn wrapper_layout(&self) -> Option<rask_types::abi::WrapperLayout> {
         match self {
@@ -389,7 +389,7 @@ impl MirType {
             // isn't — a module-level `const [string; N]` copied to the heap came
             // back pointing at the dead init thunk (#1000), and `join` got an
             // array of addresses where it wanted strings (#1021).
-            MirType::String => true,
+            MirType::Buffer => true,
             // The one exception is the niche: a `Link<T>?` is a single word
             // where the link *is* the value and `none` is the null address, so
             // it keeps the word store. That's why this isn't just "everything

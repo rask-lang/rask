@@ -40,6 +40,8 @@ pub enum ExprKind {
     Float(f64, Option<FloatSuffix>),
     /// String literal
     String(String),
+    /// Bytes literal `x"…"`, decoded
+    Bytes(Vec<u8>),
     /// String with interpolation: "hello {name}, age {age}"
     /// Segments alternate between literal strings and expressions.
     StringInterp(Vec<StringSegment>),
@@ -746,6 +748,7 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Int { .. } => "Int",
         ExprKind::Float { .. } => "Float",
         ExprKind::String { .. } => "String",
+        ExprKind::Bytes { .. } => "Bytes",
         ExprKind::StringInterp { .. } => "StringInterp",
         ExprKind::Char { .. } => "Char",
         ExprKind::Bool { .. } => "Bool",

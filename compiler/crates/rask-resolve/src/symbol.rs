@@ -132,6 +132,7 @@ pub enum BuiltinTypeKind {
     Set,
     /// string - UTF-8 string
     String,
+    Bytes,
     /// Error - error type
     Error,
     /// Channel<T> - message channel
@@ -236,6 +237,7 @@ pub const BUILTIN_TYPES: &[BuiltinTypeEntry] = &[
     always("Map", BuiltinTypeKind::Map),
     always("Set", BuiltinTypeKind::Set),
     always("string", BuiltinTypeKind::String),
+    always("bytes", BuiltinTypeKind::Bytes),
     always("Error", BuiltinTypeKind::Error),
     always("Channel", BuiltinTypeKind::Channel),
 

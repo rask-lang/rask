@@ -271,7 +271,6 @@ mod tests {
                 name: None,
                 ty: MirType::I32,
                 is_param: false,
-                unerased: None,
             })
             .collect();
         MirFunction {

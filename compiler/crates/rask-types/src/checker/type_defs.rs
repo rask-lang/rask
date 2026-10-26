@@ -60,6 +60,7 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
         Type::UnresolvedNamed(name) => Some(name.clone()),
         Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
         Type::String => Some("string".to_string()),
+        Type::Bytes => Some("bytes".to_string()),
         // `T?` is `T or none`; it dispatches as Option, everything else as Result.
         Type::Result { err, .. } if **err == Type::None => Some("Option".to_string()),
         Type::Result { .. } => Some("Result".to_string()),
@@ -134,6 +135,13 @@ pub enum TypeDef {
         /// type's data doesn't go on a wire, whatever its fields would allow.
         no_encode: bool,
         no_decode: bool,
+        /// `@reads_as(field)`: methods the type doesn't declare are the
+        /// field's read-only ones, called on the field (type.reads-as).
+        reads_as: Option<String>,
+        /// `@temporary(keep: [...])`: a value lives for the expression that
+        /// makes it, and these methods are the ways to keep one
+        /// (type.temporary). `None` for an ordinary type.
+        temporary: Option<Vec<String>>,
     },
     Enum {
         name: String,
@@ -483,12 +491,10 @@ impl TypedProgram {
     /// whoever runs next: every pass after this one reads the declarations,
     /// and none of them should have to know the checker wrote some.
     /// Write each call the checker placed into its declaration: arguments in
-    /// parameter order, defaults filled in. `attach_derived` does it for the
-    /// program; the stdlib bodies native compiles are fresh copies of the ones
-    /// that were checked, so the compile path does it for those too — without
-    /// that, a stdlib body calling a method with a default argument reached
-    /// codegen one argument short.
-    pub fn place_args(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
+    /// parameter order, defaults filled in. Without it on the stdlib's copy, a
+    /// stdlib body calling a method with a default argument reached codegen
+    /// one argument short.
+    fn place_args(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
         // Calls the checker placed: each argument moves to its parameter, and
         // a parameter left out gets its default. Where that would change
         // which argument's code runs first, those arguments are bound to
@@ -546,31 +552,14 @@ impl TypedProgram {
         }
     }
 
-    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
-        struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>, &'a std::collections::HashSet<NodeId>);
-        impl rask_ast::rewrite::Rewrite for Calls<'_> {
-            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-                use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
-                if self.1.contains(&e.id) {
-                    if let ExprKind::MethodCall { object, .. } = &e.kind {
-                        *e = object.as_ref().clone();
-                    }
-                    return;
-                }
-                let Some((callee, name)) = self.0.get(&e.id) else { return };
-                let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
-                let ExprKind::MethodCall { object, mut args, .. } = old else {
-                    e.kind = old;
-                    return;
-                };
-                let mut call_args = vec![CallArg { name: None, mode: ArgMode::Default, expr: *object }];
-                call_args.extend(args.drain(..).map(|a| CallArg { name: None, mode: ArgMode::Default, expr: a.expr }));
-                e.kind = ExprKind::Call {
-                    func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
-                    args: call_args,
-                };
-            }
-        }
+    /// Write into `decls` what the checker decided about particular nodes:
+    /// a `==` on two wrappers sent to the wrapper's `eq`, a `.clone()` that is
+    /// a copy, a collection standing for a `Sequence`, a call's arguments
+    /// placed. Keyed by node, so it applies to any copy of checked
+    /// declarations: the program's, and each fresh copy of the stdlib's bodies
+    /// a backend compiles. Those copies used to get only the placed arguments,
+    /// so a stdlib body couldn't write what a program can (#1621).
+    pub fn rewrite_checked_nodes(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
         rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_calls, &self.copied_clones));
 
         // A collection standing in for a `Sequence<E>` (SEQ48) gets the
@@ -601,6 +590,12 @@ impl TypedProgram {
         }
 
         self.place_args(decls);
+        self.reads_as.rewrite(decls);
+        self.filed_methods.rewrite(decls);
+    }
+
+    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        self.rewrite_checked_nodes(decls);
 
         if !self.struct_shorthand_patterns.is_empty() {
             struct_shorthands(decls, &self.struct_shorthand_patterns);
@@ -686,6 +681,72 @@ impl TypedProgram {
             }
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut AnySymbols(&self.types));
+    }
+}
+
+/// Where an `extend` block's method is filed under a name of its own, and the
+/// calls that reach it: written into the declarations so every backend sees
+/// one name per body.
+#[derive(Debug, Clone, Default)]
+pub struct FiledMethods {
+    /// `(impl block, method as written)` → the name it's filed under.
+    pub decls: HashMap<(NodeId, String), String>,
+    /// A call → the filed name of the method it reaches.
+    pub calls: HashMap<NodeId, String>,
+}
+
+impl FiledMethods {
+    fn rewrite(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        if self.decls.is_empty() && self.calls.is_empty() {
+            return;
+        }
+        for decl in decls.iter_mut() {
+            if let rask_ast::decl::DeclKind::Impl(i) = &mut decl.kind {
+                for m in &mut i.methods {
+                    if let Some(filed) = self.decls.get(&(decl.id, m.name.clone())) {
+                        m.name = filed.clone();
+                    }
+                }
+            }
+        }
+        struct Calls<'a>(&'a HashMap<NodeId, String>);
+        impl rask_ast::rewrite::Rewrite for Calls<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                if let Some(filed) = self.0.get(&e.id) {
+                    if let rask_ast::expr::ExprKind::MethodCall { method, .. } = &mut e.kind {
+                        *method = filed.clone();
+                    }
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.calls));
+    }
+}
+
+/// The wrapper `==` calls and copied clones the checker recorded, keyed by
+/// node (`rewrite_checked_nodes`).
+struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>, &'a std::collections::HashSet<NodeId>);
+impl rask_ast::rewrite::Rewrite for Calls<'_> {
+    fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+        use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
+        if self.1.contains(&e.id) {
+            if let ExprKind::MethodCall { object, .. } = &e.kind {
+                *e = object.as_ref().clone();
+            }
+            return;
+        }
+        let Some((callee, name)) = self.0.get(&e.id) else { return };
+        let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
+        let ExprKind::MethodCall { object, mut args, .. } = old else {
+            e.kind = old;
+            return;
+        };
+        let mut call_args = vec![CallArg { name: None, mode: ArgMode::Default, expr: *object }];
+        call_args.extend(args.drain(..).map(|a| CallArg { name: None, mode: ArgMode::Default, expr: a.expr }));
+        e.kind = ExprKind::Call {
+            func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
+            args: call_args,
+        };
     }
 }
 
@@ -781,6 +842,9 @@ pub struct TypedProgram {
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.
     pub field_reuses: std::collections::HashSet<NodeId>,
+    /// The bindings each `return` moves, keyed by the returned expression
+    /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
+    pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,
     /// Closure literals that capture a link or a `Local` box, so they may not
     /// reach another task (mem.ownership/T2, conc.sync/SH7). A task block that
     /// names one of these by itself is rejected at compile time; one that
@@ -863,6 +927,12 @@ pub struct TypedProgram {
     /// A collection filling a `Sequence<E>` slot: value node → the node of
     /// the `as_sequence()` call `attach_derived` wraps it in (SEQ48).
     pub sequence_coercions: HashMap<NodeId, NodeId>,
+    /// Receivers read through the field their type reads as (`reads_as.rs`).
+    pub reads_as: super::ReadsAs,
+    /// Methods filed under a name of their own because another `extend` block
+    /// with a different header declares the same one, and the calls that
+    /// reach them.
+    pub filed_methods: FiledMethods,
     /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
     pub wrapper_fns: Vec<super::derive::WrapperFns>,
     /// The methods the checker wrote for generic types, as `Type_method`

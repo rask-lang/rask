@@ -3,7 +3,7 @@ func build_index(documents: Vec<string>) -> Map<string, Vec<i64>> {
     mut index: Map<string, Vec<i64>> = Map.new()
     mut doc: i64 = 0
     for text in documents {
-        for raw in text.split_whitespace().to_vec() {
+        for raw in text.split_whitespace().to_strings() {
             let word = raw.to_lowercase()
             mut postings = index.get_clone(word) ?? Vec.new()
             if postings.len() == 0 || postings[postings.len() - 1] != doc {

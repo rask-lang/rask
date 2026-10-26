@@ -146,7 +146,7 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
         if !trimmed.starts_with("INDEX:") { continue }
 
         let entry = trimmed[6..].to_string()
-        let parts = entry.split("\t").to_vec()
+        let parts = entry.split("\t").to_strings()
         if parts.len() < 3 { continue }
 
         let offset = parts[1].trim().parse<i64>() is i64 as v else {

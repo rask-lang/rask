@@ -422,29 +422,36 @@ fn insert_for_function(
             owns: owning.contains(&interface_object),
         })
     };
+    let guards = crate::analysis::ownership::Guards::new(func, &plan);
     let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
+        &guards,
         &mut |_: &mut MirFunction, name: LocalId, _| vec![drop_of(name)],
     );
-    let mut at_end: Vec<(usize, LocalId)> = Vec::new();
+    let mut at_end: Vec<(usize, LocalId, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
-            crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
-                on_edges.push((from, to, vec![drop_of(name)]))
+            crate::analysis::ownership::Release::At { block, name, guard, .. } => at_end.push((block, name, guard)),
+            crate::analysis::ownership::Release::OnEdge { from, to, name, guard, .. } => {
+                on_edges.push((from, to, guards.wrap(guard, vec![drop_of(name)])))
             }
         }
     }
-    at_end.sort_by_key(|(b, l)| (*b, l.0));
-    for (block, name) in at_end {
-        func.blocks[block].statements.push(drop_of(name));
+    at_end.sort_by_key(|(b, l, _)| (*b, l.0));
+    for (block, name, guard) in at_end {
+        func.blocks[block].statements.extend(guards.wrap(guard, vec![drop_of(name)]));
     }
+    let flag_edges = guards.edges(func);
     crate::analysis::ownership::insert_on_edges(
         func,
-        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+        crate::analysis::ownership::merge_edges(
+            crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+            flag_edges,
+        ),
     );
+    guards.finish(func);
 }
 
 /// The names whose drop releases the boxed value too, not only the block.
@@ -745,7 +752,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
     fn block_id(id: u32) -> BlockId { BlockId(id) }
 
-    fn interface_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: None, ty: MirType::InterfaceObject { interface_name: "Speaker".into() }, is_param: false, unerased: None } }
+    fn interface_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: None, ty: MirType::InterfaceObject { interface_name: "Speaker".into() }, is_param: false } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {

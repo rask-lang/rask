@@ -82,7 +82,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }
-    let all = rask_compiler::program_decls(&result.decls);
+    let all = rask_compiler::program_decls(&result.decls, Some(&result.typed));
     match interp.run(&all) {
         Ok(_) => {}
         Err(diag) if matches!(diag.error, rask_interp::RuntimeError::Exit(..)) => {
@@ -426,7 +426,7 @@ fn run_test_file_interp(
         interp.register_packages(&result.package_names);
     }
 
-    let all = rask_compiler::program_decls(&result.decls);
+    let all = rask_compiler::program_decls(&result.decls, Some(&result.typed));
     let test_results = interp.run_tests(&all, filter);
 
     // Render in the same format as native (JSON-per-line, then summarize).
@@ -1184,7 +1184,7 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }
-    let all = rask_compiler::program_decls(&result.decls);
+    let all = rask_compiler::program_decls(&result.decls, Some(&result.typed));
     let results = interp.run_benchmarks(&all, filter.as_deref());
 
     if results.is_empty() {

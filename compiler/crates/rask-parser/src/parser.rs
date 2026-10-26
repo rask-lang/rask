@@ -380,6 +380,9 @@ impl Parser {
                     bracket_depth -= 1;
                     if bracket_depth < 0 { return false; }
                 }
+                // An array type's `;` sits inside its brackets:
+                // `size_of<[u16; 3]>()`.
+                TokenKind::Semi if bracket_depth > 0 => {}
                 TokenKind::Eof | TokenKind::Newline | TokenKind::Semi => {
                     return false;
                 }
@@ -3195,7 +3198,7 @@ impl Parser {
     fn is_expr_start(&self) -> bool {
         matches!(
             self.current_kind(),
-            TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(..) | TokenKind::Bool(_)
+            TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(..) | TokenKind::Bytes(_) | TokenKind::Bool(_)
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
                 | TokenKind::If | TokenKind::Match | TokenKind::With
                 | TokenKind::Select | TokenKind::SelectPriority
@@ -3734,6 +3737,10 @@ impl Parser {
                 } else {
                     Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span })
                 }
+            }
+            TokenKind::Bytes(b) => {
+                self.advance();
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Bytes(b), span: self.span(start, self.tokens[self.pos - 1].span.end) })
             }
             TokenKind::Char(c) => {
                 self.advance();

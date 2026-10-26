@@ -285,6 +285,7 @@ pub enum ComptimeValue {
     F64(f64),
     Char(char),
     String(String),
+    Bytes(Vec<u8>),
     Array(Vec<ComptimeValue>),
     /// Entries in insertion order, not a hash table.
     ///
@@ -373,6 +374,7 @@ fn show(v: &ComptimeValue) -> String {
         ComptimeValue::F64(n) => n.to_string(),
         ComptimeValue::Char(c) => format!("'{c}'"),
         ComptimeValue::String(t) => format!("\"{t}\""),
+        ComptimeValue::Bytes(b) => rask_ast::token::bytes_literal(b),
         ComptimeValue::Array(items) | ComptimeValue::Tuple(items) => {
             let inner: Vec<String> = items.iter().map(show).collect();
             match v {
@@ -413,6 +415,7 @@ impl ComptimeValue {
             ComptimeValue::F64(_) => "f64",
             ComptimeValue::Char(_) => "char",
             ComptimeValue::String(_) => "String",
+            ComptimeValue::Bytes(_) => "bytes",
             ComptimeValue::Array(_) => "Array",
             ComptimeValue::Map(_) => "Map",
             ComptimeValue::Tuple(_) => "Tuple",
@@ -1348,6 +1351,7 @@ impl ComptimeInterpreter {
             }
             ExprKind::Float(v, _) => ComptimeValue::F64(*v),
             ExprKind::String(s) => ComptimeValue::String(s.clone()),
+            ExprKind::Bytes(b) => ComptimeValue::Bytes(b.clone()),
             ExprKind::Char(c) => ComptimeValue::Char(*c),
             ExprKind::Bool(b) => ComptimeValue::Bool(*b),
 

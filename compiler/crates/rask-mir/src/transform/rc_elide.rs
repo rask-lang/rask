@@ -68,8 +68,7 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
                     let self_made = matches!(
                         rvalue,
                         MirRValue::Use(MirOperand::Local(_))
-                            | MirRValue::Use(MirOperand::Constant(MirConst::String(_)))
-                    );
+                    ) || matches!(rvalue, MirRValue::Use(MirOperand::Constant(c)) if c.static_buffer().is_some());
                     if !self_made {
                         owned.insert(*dst);
                     }
@@ -82,6 +81,18 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
                     if string_locals.contains(dst) =>
                 {
                     owned.insert(*dst);
+                }
+                // A variable lent by address — to a `mutate` parameter, or to
+                // a closure that captures it by reference — can come back
+                // holding a string the borrower wrote, with that string's
+                // reference. Its release is the only one there will be.
+                MirStmtKind::Assign { rvalue: MirRValue::Ref(src), .. } if string_locals.contains(src) => {
+                    owned.insert(*src);
+                }
+                MirStmtKind::ClosureCreate { captures, .. } => {
+                    for c in captures.iter().filter(|c| c.by_ref && string_locals.contains(&c.local_id)) {
+                        owned.insert(c.local_id);
+                    }
                 }
                 _ => {}
             }
@@ -206,7 +217,7 @@ fn copy_groups(func: &MirFunction, string_locals: &HashSet<LocalId>) -> Vec<Hash
 fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     let escaped = escape::escaping_strings(func);
     let string_locals: HashSet<LocalId> =
-        func.locals_of_type(&crate::MirType::String).into_iter().collect();
+        func.locals_of_type(&crate::MirType::Buffer).into_iter().collect();
     let owned = owned_from_elsewhere(func, &string_locals);
 
     // Decide per group, not per local: keeping one local's release while
@@ -353,7 +364,7 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
 /// takes a fixed point because a copy's answer depends on its source.
 fn elide_literals(func: &mut MirFunction) -> usize {
     let string_locals: HashSet<LocalId> =
-        func.locals_of_type(&crate::MirType::String).into_iter().collect();
+        func.locals_of_type(&crate::MirType::Buffer).into_iter().collect();
 
     // Start optimistic and only ever remove: a local drops out the moment one
     // of its definitions can't be shown to be a literal.
@@ -362,6 +373,23 @@ fn elide_literals(func: &mut MirFunction) -> usize {
     // A parameter's value comes from the caller — nothing here can vouch for it.
     for param in &func.params {
         literal.remove(&param.id);
+    }
+    // Nor for a variable lent by address — to a `mutate` parameter, or to a
+    // closure that captures it by reference. The borrower can write a new
+    // string into it, so `mut s = ""` stops being the literal the moment it's
+    // lent.
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Ref(src), .. } => {
+                literal.remove(src);
+            }
+            MirStmtKind::ClosureCreate { captures, .. } => {
+                for c in captures.iter().filter(|c| c.by_ref) {
+                    literal.remove(&c.local_id);
+                }
+            }
+            _ => {}
+        }
     }
 
     loop {
@@ -374,12 +402,12 @@ fn elide_literals(func: &mut MirFunction) -> usize {
                 }
                 let is_literal_def = match &stmt.kind {
                     MirStmtKind::Assign { rvalue, .. } => match rvalue {
-                        MirRValue::Use(MirOperand::Constant(MirConst::String(_))) => true,
+                        MirRValue::Use(MirOperand::Constant(c)) => c.static_buffer().is_some(),
                         MirRValue::Use(MirOperand::Local(src)) => literal.contains(src),
                         _ => false,
                     },
                     MirStmtKind::Phi { args, .. } => args.iter().all(|(_, arg)| match arg {
-                        MirOperand::Constant(MirConst::String(_)) => true,
+                        MirOperand::Constant(c) => c.static_buffer().is_some(),
                         MirOperand::Local(src) => literal.contains(src),
                         _ => false,
                     }),
@@ -514,7 +542,7 @@ mod tests {
 
     fn local(id: u32) -> LocalId { LocalId(id) }
 
-    fn string_local(id: u32, name: &str) -> MirLocal { MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, unerased: None } }
+    fn string_local(id: u32, name: &str) -> MirLocal { MirLocal { id: local(id), name: Some(name.into()), ty: MirType::Buffer, is_param: false } }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
         MirFunction {

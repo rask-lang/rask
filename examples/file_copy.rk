@@ -57,10 +57,10 @@ func copy_file(opts: CopyOptions) -> u64 or CopyError {
     return meta.size
 }
 
-func format_size(bytes: u64) -> string {
-    if bytes < 1024 { return "{bytes} B" }
-    if bytes < 1048576 { return "{bytes / 1024} KB" }
-    return "{bytes / 1048576} MB"
+func format_size(raw: u64) -> string {
+    if raw < 1024 { return "{raw} B" }
+    if raw < 1048576 { return "{raw / 1024} KB" }
+    return "{raw / 1048576} MB"
 }
 
 func main() {

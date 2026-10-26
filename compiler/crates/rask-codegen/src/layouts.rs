@@ -2,7 +2,7 @@
 
 //! Layout constants for runtime data structures.
 //!
-//! The values the C runtime also reads come from `rask_mono::abi` and
+//! The values the C runtime also reads come from `rask_types::abi` and
 //! `rask_mono::runtime_abi`; the runtime gets the latter as rask_abi.h.
 
 // ── Fat pointer (interface object) ───────────────────────────────────
@@ -10,7 +10,7 @@ pub const FAT_PTR_DATA_OFFSET: i32 = 0;
 pub const FAT_PTR_VTABLE_OFFSET: i32 = 8;
 
 // ── Result / Option / union ──────────────────────────────────────
-// `rask_mono::abi` is the one definition; these are i32 for Cranelift's
+// `rask_types::abi` is the one definition; these are i32 for Cranelift's
 // load/store offsets. A wrapper's payload offset depends on the payload, so it
 // comes from `MirType::payload_offset`, never a constant.
 pub const TAG_OFFSET: i32 = rask_types::abi::TAG_OFFSET as i32;

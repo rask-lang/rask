@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// bytes: immutable, refcounted, Copy, 16 bytes (std.bytes). A string's value
+// without the UTF-8 rule, so nearly every method here is string's own native,
+// and BytesSlice and BytesView are built the way string's slice and view are.
+
+extend bytes {
+    /// Byte length. O(1).
+    @native("rask_string_len")
+    public func len(self) -> usize {}
+
+    @native("rask_string_is_empty")
+    public func is_empty(self) -> bool {}
+
+    @native("rask_string_starts_with")
+    public func starts_with(self, prefix: bytes) -> bool {}
+
+    @native("rask_string_ends_with")
+    public func ends_with(self, suffix: bytes) -> bool {}
+
+    @native("rask_string_contains")
+    public func contains(self, needle: bytes) -> bool {}
+
+    /// Where `needle` first starts, or none.
+    @native("rask_string_find")
+    public func index_of(self, needle: bytes) -> usize? {}
+
+    /// FNV-1a over the bytes, the same as a string with the same bytes.
+    @native("rask_string_hash")
+    public func hash(self) -> u64 {}
+
+    /// A `Vec<u8>` with the same bytes (BY8). Reuses the buffer when nothing
+    /// else holds it, copies otherwise.
+    // `take self` on a Copy value consumes nothing the caller sees: it hands
+    // over a refcount, which is what lets the last holder give the buffer up.
+    @allow(naming/to)
+    @native("rask_bytes_to_vec")
+    public func to_vec(take self) -> Vec<u8> {}
+
+    /// Storable, shares the buffer (BY9).
+    public func view(self) -> BytesView {
+        return BytesView(data: self)
+    }
+
+    /// `{b:debug}`: the literal that makes it, `x"89 50 4E 47"` (BY6).
+    @native("rask_bytes_debug")
+    func debug(self) -> string {}
+
+    /// `self[i]` (BY4). Panics out of range.
+    @native("rask_string_index", panics: true)
+    func index(self, i: usize) -> u8 {}
+
+    /// `self[start..end]` sharing the buffer. The caller has clamped.
+    @native("rask_bytes_view_range")
+    func view_range(self, start: usize, end: usize) -> bytes {}
+
+    /// The same bytes in a buffer of their own.
+    @native("rask_string_unshare")
+    func unshare(self) -> bytes {}
+
+    /// These bytes as a string, sharing the buffer. Only `string.from_utf8`
+    /// calls it, after checking them.
+    @native("rask_bytes_as_string")
+    func checked_text(self) -> string {}
+}
+
+extend Vec<u8> {
+    /// The buffer as `bytes`, without copying (BY7).
+    @native("rask_vec_freeze")
+    public func freeze(take self) -> bytes {}
+}
+
+// ─── BytesSlice ─────────────────────────────────────────────────
+//
+// What `b[i..j]` is: a piece of a `bytes` that knows where it was cut. It
+// lives for the expression that makes it (type.temporary); `.view()` keeps it
+// sharing the buffer, `.to_bytes()` copies it out. It reads as its `data`
+// (type.reads-as), so every read-only bytes method works on a slice.
+
+@temporary(keep: [view, to_bytes])
+@reads_as(data)
+public struct BytesSlice {
+    /// The slice's bytes, sharing the source's buffer.
+    data: bytes
+    /// Where they sit in the source.
+    start: usize
+    end: usize
+}
+
+extend BytesSlice {
+    /// The slice as a view sharing its source's buffer. No copy.
+    public func view(self) -> BytesView {
+        return BytesView(data: self.data)
+    }
+
+    /// The slice's bytes in a buffer of their own. Copies.
+    public func to_bytes(self) -> bytes {
+        return self.data.unshare()
+    }
+}
+
+// `b[i..j]` (type.operators/IX4). A slice of a slice is still placed in the
+// original.
+
+bytes implements Slice {
+    type Out = BytesSlice
+
+    func slice(self, start: usize, end: usize?, through: bool) -> BytesSlice {
+        return bytes_slice_of(self, 0, start, range_end(end, through, self.len()))
+    }
+}
+
+BytesView implements Slice {
+    type Out = BytesSlice
+
+    func slice(self, start: usize, end: usize?, through: bool) -> BytesSlice {
+        return bytes_slice_of(self.data, 0, start, range_end(end, through, self.data.len()))
+    }
+}
+
+BytesSlice implements Slice {
+    type Out = BytesSlice
+
+    func slice(self, start: usize, end: usize?, through: bool) -> BytesSlice {
+        return bytes_slice_of(self.data, self.start, start, range_end(end, through, self.data.len()))
+    }
+}
+
+/// `data[start..end]` as a slice placed `base` bytes into its source. Out of
+/// range clamps, as slicing a string does.
+func bytes_slice_of(data: bytes, base: usize, start: usize, end: usize) -> BytesSlice {
+    let n = data.len()
+    mut hi = end
+    if hi > n {
+        hi = n
+    }
+    mut lo = start
+    if lo > hi {
+        lo = hi
+    }
+    return BytesSlice(data: data.view_range(lo, hi), start: base + lo, end: base + hi)
+}
+
+// ─── BytesView ──────────────────────────────────────────────────
+//
+// A storable range of a `bytes` (BY9). It holds a count on the source's
+// buffer and keeps all of it alive, which is the cost the name says.
+
+@reads_as(data)
+public struct BytesView {
+    data: bytes
+}
+
+extend BytesView {
+    /// The view's bytes in a buffer of their own, letting go of the source.
+    /// Copies.
+    public func to_bytes(self) -> bytes {
+        return self.data.unshare()
+    }
+
+    /// The same view: a view is already storable.
+    public func view(self) -> BytesView {
+        return self
+    }
+}

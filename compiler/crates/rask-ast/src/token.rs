@@ -144,6 +144,8 @@ pub enum TokenKind {
     Int(i128, Option<IntSuffix>),
     Float(f64, Option<FloatSuffix>),
     String(String, StrPositions),
+    /// `x"…"`, already decoded (std.bytes/BY10)
+    Bytes(Vec<u8>),
     Char(char),
     Bool(bool),
 
@@ -282,6 +284,7 @@ impl TokenKind {
             TokenKind::Int(_, _) => "a number",
             TokenKind::Float(_, _) => "a number",
             TokenKind::String(..) => "a string",
+            TokenKind::Bytes(_) => "a bytes literal",
             TokenKind::Char(_) => "a character",
 
             // Identifier
@@ -361,4 +364,20 @@ fn quoted_keyword(word: &'static str) -> &'static str {
         .get(word)
         .map(String::as_str)
         .unwrap_or(word)
+}
+
+/// `bytes` as source: `x"89 50 4E 47"`, uppercase pairs with a space between
+/// them. What `{b:debug}` prints, so debug output pastes back as a literal
+/// (std.bytes/BY6).
+pub fn bytes_literal(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(3 + bytes.len() * 3);
+    out.push_str("x\"");
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&format!("{b:02X}"));
+    }
+    out.push('"');
+    out
 }

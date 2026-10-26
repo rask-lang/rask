@@ -76,6 +76,8 @@ pub enum Type {
     Char,
     /// String
     String,
+    /// Immutable refcounted bytes: a string's value without the UTF-8 rule
+    Bytes,
     /// Named user-defined type (struct, enum, etc.)
     Named(TypeId),
     /// Unresolved named type (before type registration)
@@ -421,6 +423,7 @@ impl fmt::Display for Type {
             Type::F64 => write!(f, "f64"),
             Type::Char => write!(f, "char"),
             Type::String => write!(f, "string"),
+            Type::Bytes => write!(f, "bytes"),
             Type::Named(id) => write!(f, "<type#{}>", id.0),
             Type::UnresolvedNamed(name) => write!(f, "{}", name),
             Type::Generic { base, args } => {

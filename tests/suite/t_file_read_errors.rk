@@ -14,8 +14,8 @@ test "reading a file opened for writing is an IoError" {
     let f = try fs.create_file(p)
     ensure f.close()
     try f.write_text("abc")
-    let bytes = f.read_bytes()
-    if bytes is IoError as e {
+    let data = f.read_bytes()
+    if data is IoError as e {
         assert e.message().contains("Bad file descriptor")
     } else {
         assert false

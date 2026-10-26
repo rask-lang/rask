@@ -251,6 +251,23 @@ pub enum MirStmtKind {
     ZeroAggregate {
         local: LocalId,
     },
+    /// The value in `local` left the frame here, moved by something the frame
+    /// doesn't see do it: the body of a `for` over a sequence is a closure,
+    /// and its `return out` moves the frame's `out` from inside that closure.
+    /// The frame takes the early exit right after, and from the passes' side
+    /// this is where `out` was handed over. Emits nothing.
+    MovedOut {
+        local: LocalId,
+    },
+    /// `body` runs only when `flag` is true: a release of a value that is the
+    /// frame's on some paths into a join and not on others (a drop flag).
+    /// Lives only inside a release pass: `ownership::Guards::finish` splits
+    /// the block around it before the pass returns, so no other pass and no
+    /// backend ever sees one.
+    Guarded {
+        flag: LocalId,
+        body: Vec<MirStmt>,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

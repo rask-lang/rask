@@ -956,6 +956,11 @@ mod tests {
     }
 
     #[test]
+    fn generic_call_array_type_arg() {
+        assert_generic_call("size_of<[u16; 3]>()", "size_of", &["[u16; 3]"]);
+    }
+
+    #[test]
     fn comparison_not_generic_call_no_paren() {
         // `a < b > c` — no `(` after `>`, so both angle brackets are comparison
         // operators, not a generic argument list.

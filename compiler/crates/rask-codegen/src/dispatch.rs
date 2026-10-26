@@ -201,11 +201,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // value offset, pair size).
         StdlibEntry::simple("rask_map_insert_pairs", "rask_map_insert_pairs", &[types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_from", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        // Giving back the reference a captured variable's slot held, on the way
-        // to the slot holding another one. Spelled apart from the refcount
-        // ops because it is not this name's reference being released — see
-        // `release_replaced_captures`.
-        StdlibEntry::simple("string_free_replaced", "rask_string_free", &[types::I64], None, false),
         StdlibEntry::simple("Vec_free", "rask_vec_free", &[types::I64], None, false),
         // try_push shares push's C entry: the runtime has no reachable failure
         // yet (Vec carries no capacity bound, and OOM panics in the allocator),
@@ -453,11 +448,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "string_concat", c_name: "rask_string_concat",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "string_substr", c_name: "rask_string_substr",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -1180,6 +1170,8 @@ fn declared_entry(
             _ => None,
         }
     };
+    let string_valued =
+        |t: &TypeExpr| t.bare_name().is_some_and(rask_ast::primitives::is_string_valued);
     let result_ok = |t: &TypeExpr| -> Option<TypeExpr> {
         match t {
             TypeExpr::Result { ok, .. } => Some((**ok).clone()),
@@ -1244,8 +1236,10 @@ fn declared_entry(
         Some(NativeReturn::Negative) => (None, RetAdapt::NegErr),
         Some(NativeReturn::Status) => (None, RetAdapt::Status),
         Some(NativeReturn::Nothing) => (None, RetAdapt::None),
-        None if ret.is_name("string") => (Some(ArgAdapt::StringOutParam), RetAdapt::FromArgAdapt),
-        None if result_ok(ret).is_some_and(|ok| ok.is_name("string")) => {
+        None if string_valued(ret) => {
+            (Some(ArgAdapt::StringOutParam), RetAdapt::FromArgAdapt)
+        }
+        None if result_ok(ret).is_some_and(|ok| string_valued(&ok)) => {
             (Some(ArgAdapt::StringResultOutParam), RetAdapt::FromArgAdapt)
         }
         None if result_ok(ret).is_some() => {
@@ -1258,7 +1252,7 @@ fn declared_entry(
         }
         None => match optional(ret) {
             Some(inner) if is_type_param(&inner) => (None, RetAdapt::DerefOption),
-            Some(inner) if inner.is_name("string") => {
+            Some(inner) if string_valued(&inner) => {
                 (Some(ArgAdapt::OptionOutParam), RetAdapt::FromArgAdapt)
             }
             Some(inner) if inner.name().as_deref() == Some("Link") => (None, RetAdapt::None),

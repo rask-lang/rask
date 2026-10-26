@@ -93,3 +93,26 @@ public interface Shr<Rhs = Self> {
 
     func shr(self, rhs: Rhs) -> Self.Out
 }
+
+// ─── Range indexing ─────────────────────────────────────────────
+
+/// `x[a..b]`, `x[a..]`, `x[..b]` and `x[a..=b]` (type.operators/IX4): a piece
+/// of `x`. `end` is `none` for `x[a..]`, and `through` is set for `..=`. The
+/// range isn't a second operand, so there's no `Rhs`: one conformance per type.
+public interface Slice {
+    type Out = Self
+
+    func slice(self, start: usize, end: usize?, through: bool) -> Self.Out
+}
+
+/// Where a `slice` call's range stops: its end, one past it for `..=`, or
+/// `len` when it has none. Every conformance needs this.
+public func range_end(end: usize?, through: bool, len: usize) -> usize {
+    if end? as e {
+        if through {
+            return e + 1
+        }
+        return e
+    }
+    return len
+}

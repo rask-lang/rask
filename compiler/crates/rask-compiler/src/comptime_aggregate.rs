@@ -79,7 +79,7 @@ pub(crate) fn encode_map(
 /// checked type didn't come through.
 pub(crate) fn natural_type(v: &ComptimeValue) -> Option<MirType> {
     Some(match v {
-        ComptimeValue::String(_) => MirType::String,
+        ComptimeValue::String(_) => MirType::Buffer,
         ComptimeValue::Bool(_) => MirType::Bool,
         ComptimeValue::Char(_) => MirType::Char,
         ComptimeValue::I8(_) => MirType::I8,
@@ -135,7 +135,7 @@ impl Writer<'_, '_> {
                 let f = float(v).ok_or_else(|| gap(format!("a `{}` where an `f64` goes", v.type_name())))?;
                 self.put(at, &f.to_le_bytes());
             }
-            MirType::String => {
+            MirType::Buffer => {
                 let ComptimeValue::String(_) = v else {
                     return Err(gap(format!("a `{}` where a `string` goes", v.type_name())));
                 };

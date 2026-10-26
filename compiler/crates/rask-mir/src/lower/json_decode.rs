@@ -45,7 +45,7 @@ impl<'a> MirLowerer<'a> {
         let target_mir = self.ctx.type_to_mir(target);
         // The same type as a wrapper's payload: a `Vec<T>` target keeps what it
         // is there, so releasing the result frees the vector the decoder built.
-        let payload_mir = self.ctx.payload_to_mir(target);
+        let payload_mir = self.ctx.type_to_mir(target);
 
         // `decode<JsonValue>` is the untyped path — that's exactly what
         // `json.parse` already does, in Rask, so call it instead of teaching the
@@ -66,9 +66,7 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("json_parse".to_string()),
                 args: vec![input],
             }));
-            // The kind is on the local now; hand the caller the plain type, the
-            // way every other lowering does (`MirType::Container`).
-            return Ok((MirOperand::Local(out), result_ty.without_container_kinds()));
+            return Ok((MirOperand::Local(out), result_ty));
         }
 
         let Some(shape) = self.emit_shape(target) else {
@@ -170,12 +168,12 @@ impl<'a> MirLowerer<'a> {
             }));
 
         self.builder.switch_to_block(done_block);
-        Ok((MirOperand::Local(result), result_ty.without_container_kinds()))
+        Ok((MirOperand::Local(result), result_ty))
     }
 
     /// Turn the runtime's status code into a `JsonError` carrying its message.
     fn emit_json_error(&mut self, status: crate::LocalId, err_ty: &MirType) -> crate::LocalId {
-        let msg = self.builder.alloc_temp(MirType::String);
+        let msg = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
             func: FunctionRef::internal("json_error_message".to_string()),
@@ -282,7 +280,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(elem) = self.collection_arg(ty, "Vec", 0) {
             let elem_shape = self.emit_shape(&elem)?;
             let slot = self.slot_size_for_type(&elem)?;
-            let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&elem));
+            let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&elem));
             return Some(self.emit_shape_call("json_shape_vec", vec![
                 MirOperand::Local(elem_shape),
                 MirOperand::Constant(MirConst::Int(slot)),
@@ -299,7 +297,7 @@ impl<'a> MirLowerer<'a> {
             let val = self.collection_arg(ty, "Map", 1)?;
             let val_shape = self.emit_shape(&val)?;
             let slot = self.slot_size_for_type(&val)?;
-            let owned = crate::elem_strs::elem(self.ctx.payload_to_mir(&val));
+            let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&val));
             return Some(self.emit_shape_call("json_shape_map", vec![
                 MirOperand::Local(val_shape),
                 MirOperand::Constant(MirConst::Int(slot)),
@@ -504,7 +502,7 @@ impl<'a> MirLowerer<'a> {
             buf
         };
         let shape = self.emit_shape(ty)?;
-        let out = self.builder.alloc_temp(MirType::String);
+        let out = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
             func: FunctionRef::internal("json_encode_shaped".to_string()),

@@ -26,7 +26,7 @@ ParseError implements Error {
 }
 
 func first_line(text: string) -> string or ReadError {
-    let lines = text.lines().to_vec()
+    let lines = text.lines().to_strings()
     if lines.len() == 0 { return ReadError.Empty }
     if lines.len() < 2 { return ReadError.TooShort(saw: lines.len().to<i64>()!) }
     return lines[0]
