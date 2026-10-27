@@ -1656,10 +1656,7 @@ impl TypeTable {
     /// closure literal; monomorphization asks again for a closure in a generic
     /// body, whose capture types are only concrete per instantiation.
     pub fn task_bound(&self, ty: &Type) -> Option<TaskBound> {
-        if let Some(args) = self.shared_args(ty) {
-            return (self.shared_strategy_name(args) == "Local").then_some(TaskBound::LocalBox);
-        }
-        self.holds_link(ty).then_some(TaskBound::Link)
+        self.task_bound_inner(ty, &mut Vec::new())
     }
 
     /// Is a closure in a generic body task-bound in one instantiation? Its
@@ -1705,65 +1702,66 @@ impl TypeTable {
         }
     }
 
-    /// Does a value of this type carry a `Link` — itself, in an option or a
-    /// container, or in a field of a struct or enum it holds?
+    /// The walk behind `task_bound`: the first `Local` box or `Link` anywhere
+    /// in the type — itself, in an option or a container, in a field of a
+    /// struct or enum it holds, inside a locking `Shared`. A link is a node's
+    /// address (`mem.ownership/T2`) and a `Local` box takes no lock
+    /// (`conc.sync/SH7`), and either keeps the whole value on its task however
+    /// deep it sits. The top of the type used to be the only place a `Local`
+    /// box was looked for, so one field down crossed a spawn unseen (#1669).
     ///
-    /// A link is a node's address, so a value carrying one can't go to another
-    /// task (`mem.ownership/T2`). A `Rack` is the exception and isn't walked:
-    /// moving the whole rack takes its nodes' links with the nodes they point
-    /// at, which is how `snapshot()` hands a graph over.
-    pub fn holds_link(&self, ty: &Type) -> bool {
-        self.holds_link_inner(ty, &mut Vec::new())
-    }
-
-    fn holds_link_inner(&self, ty: &Type, seen: &mut Vec<TypeId>) -> bool {
+    /// A `Rack` isn't walked: moving the whole rack takes its nodes' links with
+    /// the nodes they point at, which is how `snapshot()` hands a graph over.
+    fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>) -> Option<TaskBound> {
+        if let Some(args) = self.shared_args(ty) {
+            if self.shared_strategy_name(args) == "Local" {
+                return Some(TaskBound::LocalBox);
+            }
+        }
         let generic = |base: &str, args: &[GenericArg], seen: &mut Vec<TypeId>| match base {
-            "Link" => true,
-            "Rack" => false,
-            _ => args
-                .iter()
-                .any(|a| matches!(a, GenericArg::Type(t) if self.holds_link_inner(t, seen))),
+            "Link" => Some(TaskBound::Link),
+            "Rack" => None,
+            _ => args.iter().find_map(|a| match a {
+                GenericArg::Type(t) => self.task_bound_inner(t, seen),
+                _ => None,
+            }),
         };
         match ty {
-            Type::Named(id) => self.def_holds_link(*id, seen),
+            Type::Named(id) => self.def_task_bound(*id, seen),
             Type::UnresolvedNamed(name) => {
-                let base = name;
-                self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen))
             }
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                let name = full.as_str();
-                generic(name, args, seen) || self.def_holds_link(*base, seen)
+                generic(full.as_str(), args, seen).or_else(|| self.def_task_bound(*base, seen))
             }
-            Type::UnresolvedGeneric { name, args } => {
-                let base = name;
-                generic(base, args, seen)
-                    || self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
-            }
+            Type::UnresolvedGeneric { name, args } => generic(name, args, seen).or_else(|| {
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen))
+            }),
             Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(|t| self.holds_link_inner(t, seen))
+                elems.iter().find_map(|t| self.task_bound_inner(t, seen))
             }
-            Type::Array { elem, .. } => self.holds_link_inner(elem, seen),
-            Type::Result { ok, err } => {
-                self.holds_link_inner(ok, seen) || self.holds_link_inner(err, seen)
-            }
-            _ => false,
+            Type::Array { elem, .. } => self.task_bound_inner(elem, seen),
+            Type::Result { ok, err } => self
+                .task_bound_inner(ok, seen)
+                .or_else(|| self.task_bound_inner(err, seen)),
+            _ => None,
         }
     }
 
-    fn def_holds_link(&self, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
+    fn def_task_bound(&self, id: TypeId, seen: &mut Vec<TypeId>) -> Option<TaskBound> {
         if seen.contains(&id) {
-            return false;
+            return None;
         }
         seen.push(id);
         match self.types.get(id.0 as usize) {
             Some(TypeDef::Struct { fields, .. }) => {
-                fields.iter().any(|(_, t)| self.holds_link_inner(t, seen))
+                fields.iter().find_map(|(_, t)| self.task_bound_inner(t, seen))
             }
-            Some(TypeDef::Enum { variants, .. }) => variants
-                .iter()
-                .any(|(_, payload)| payload.iter().any(|t| self.holds_link_inner(t, seen))),
-            _ => false,
+            Some(TypeDef::Enum { variants, .. }) => variants.iter().find_map(|(_, payload)| {
+                payload.iter().find_map(|t| self.task_bound_inner(t, seen))
+            }),
+            _ => None,
         }
     }
 

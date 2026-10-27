@@ -2708,10 +2708,12 @@ fn error_resource_unconsumed_in_test_body() {
 fn error_a_task_local_shared_cannot_be_sent() {
     let (failed, out) = compile_error_output("local_shared_sent.rk");
     assert!(failed, "sending a `Local` box must be rejected: {}", out);
+    // The bare `Shared.local` capture and the one a struct field down (#1669);
+    // neither the default nor the `mutex` box is reported.
     assert_eq!(
         out.matches("error[E0346]").count(),
-        1,
-        "exactly the `Shared.local` capture, not the default or the `mutex` one: {}",
+        2,
+        "exactly the two `Shared.local` captures, not the default or the `mutex` one: {}",
         out
     );
     assert!(
