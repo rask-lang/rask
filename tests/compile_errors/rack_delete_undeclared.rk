@@ -57,6 +57,17 @@ func drop_bare(mutate s: Rack<Node>, take n: Link<Node>) {
     s.delete(n)
 }
 
+// Not fine: forwarding the rack to a `deleting` parameter is the same unnamed
+// delete one call further away. The caller above `forward` still holds links
+// and was told `mutate`, which promises them nothing dies (#1664).
+func forward(mutate g: Graph) {
+    wipe_declared(deleting g)   // ERROR: E0329 — declare `deleting g`
+}
+
+func wipe_declared(deleting g: Graph) {
+    g.nodes.clear()
+}
+
 func main() {
     mut g = Graph(nodes: Rack.new())
     let a = g.nodes.insert(Node(id: 1, peer: none))
@@ -64,6 +75,7 @@ func main() {
     drop_all(mutate g)
     wipe(mutate g)
     drop_first(mutate g)
+    forward(mutate g)
     mut l: Rack<Node> = Rack.new()
     mut r: Rack<Node> = Rack.new()
     from_left(mutate l, mutate r)

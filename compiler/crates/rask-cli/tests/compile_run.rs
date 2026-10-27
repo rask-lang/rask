@@ -2279,11 +2279,12 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 fn error_rack_delete_undeclared() {
     let (failed, out) = compile_error_output("rack_delete_undeclared.rk");
     assert!(failed, "an undeclared unnamed delete must be rejected: {}", out);
-    // Three ways to pick your own victim: walk the rack, clear it, or hand a
-    // link you derived to something that consumes it.
+    // Four ways to pick your own victim: walk the rack, clear it, hand a link
+    // you derived to something that consumes it, or hand the rack itself to a
+    // `deleting` parameter (#1664) — plus the two-rack blame case below.
     assert_eq!(
         out.matches("error[E0329]").count(),
-        4,
+        5,
         "each unnamed delete is reported once: {}",
         out
     );
