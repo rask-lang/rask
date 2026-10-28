@@ -2921,6 +2921,31 @@ fn error_bare_shared_with() {
     );
 }
 
+/// mem.borrowing/W1: `with c.write() as v` over a user type's own `write`
+/// (#1658). The call returns a value, so `v` was a copy and every write to it
+/// was dropped at block exit — both backends compiled it and printed the old
+/// value. Checks the code and that the fix is shown as code, not prose.
+#[test]
+fn error_with_over_a_call() {
+    let (failed, out) = compile_error_output("with_over_a_call.rk");
+    assert!(failed, "should reject `with c.write() as v` on a type that isn't a Shared");
+    assert!(
+        out.contains("E0925"),
+        "should be the call-source error, not something else: {}",
+        out,
+    );
+    assert!(
+        out.contains("let v = c.write()"),
+        "should show the fix as code: {}",
+        out,
+    );
+    assert!(
+        !out.contains("E0874"),
+        "a call is its own case, not the plain-place one: {}",
+        out,
+    );
+}
+
 #[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");

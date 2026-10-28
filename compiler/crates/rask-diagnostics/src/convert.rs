@@ -2067,6 +2067,35 @@ impl ToDiagnostic for rask_types::TypeError {
                 )
             }
 
+            WithOverCall { call, receiver_ty, result_ty, binding, span } => {
+                Diagnostic::error(format!(
+                    "`with` can't scope `{}` — it's a call on a `{}`, not a `Shared` lock",
+                    call, receiver_ty
+                ))
+                .with_code("E0925")
+                .with_primary(
+                    *span,
+                    format!(
+                        "returns a `{}` by value, so `{}` is a copy and nothing writes it back",
+                        result_ty, binding
+                    ),
+                )
+                .with_fix(format!("let {} = {}", binding, call))
+                .with_why(format!(
+                    "a `with` block holds one place open across several statements \
+                     and writes the binding back when the block ends: an element \
+                     reached by key (`with items[i] as e`) or the payload behind a \
+                     `Shared` lock (`with shared.write() as v`). A `{}` is neither — \
+                     a user type can't take part in `with` yet (analysis.library-protocols \
+                     proposes an `Access` conformance for that) — so `{}` is an ordinary \
+                     call whose result the block would silently discard. Call it and \
+                     bind the result; if the method should change the value where it \
+                     lives, give it `mutate self` and call it directly \
+                     [mem.borrowing/W1, W5]",
+                    receiver_ty, call
+                ))
+            }
+
             OverlappingArgumentBorrow { callee, written, other, span } => {
                 let same = written == other;
                 let headline = if same {

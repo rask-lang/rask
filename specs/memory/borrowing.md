@@ -282,7 +282,7 @@ One syntax for all container types that hold values behind indirection. Bindings
 | Vec/Map | `with items[k] as e { ... }` | inline reads |
 | Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` — mutation is E0360 |
 
-A source that is neither an element reached by key nor a `Shared` is a compile error (`E0874`). Those are the two cases the block earns its keep in — it keeps one element's access alive across several statements, and it holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does. A `Link<T>` has neither either, and for a better reason: it is already the node.
+A source that is neither an element reached by key nor a `Shared` is a compile error (`E0874`). Those are the two cases the block earns its keep in — it keeps one element's access alive across several statements, and it holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does. A `Link<T>` has neither either, and for a better reason: it is already the node. A call on anything but a `Shared` is a compile error too (`E0925`), and the worse case: `with c.write() as v` over a user type's `write` returns a value, so `v` is a copy and every write to it is thrown away at block exit. A user type can't take part in `with` yet; [library-protocols.md](../analysis/library-protocols.md) proposes an `Access` conformance for that.
 
 Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. A `.read()` binding is the one read-only binding: mutating through it is rejected at the mutation site (E0360), and it never writes back.
 

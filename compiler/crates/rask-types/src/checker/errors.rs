@@ -551,6 +551,19 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.borrowing/W1: a `with` source that is a call on something other
+    /// than a `Shared`. The call hands back a value, so the binding is a copy
+    /// and every write to it is thrown away when the block ends.
+    #[error("`with` can't scope `{call}` — it's a call on a `{receiver_ty}`, not a `Shared` lock")]
+    WithOverCall {
+        /// The call as the author wrote it, `c.write()`.
+        call: String,
+        receiver_ty: String,
+        result_ty: String,
+        binding: String,
+        span: Span,
+    },
+
     /// F3: two arguments of one call reach the same storage and one of them
     /// writes. `written` is the path going in as `mutate`, `other` the path it
     /// overlaps.
@@ -1767,6 +1780,7 @@ impl TypeError {
             | MissingMutateMarker { .. }
             | OverlappingArgumentBorrow { .. }
             | WithNeedsElementOrBox { .. }
+            | WithOverCall { .. }
             | UnsafeRequired { .. }
             | LayoutAttribute { .. }
             | CStructReturn { .. }
