@@ -1,6 +1,6 @@
 <!-- id: analysis.forest -->
 <!-- status: exploration -->
-<!-- summary: Ownership is a forest and racks are the only cross-edges. Five things fall out: contracts get their frame from parameter modes, required edges have a delete-policy menu, a rack is a dependency graph for derived values, every owned value is sendable, and "no leaks" is a theorem with one exception left to close -->
+<!-- summary: Ownership is a forest and racks are the only cross-edges. Five things fall out: contracts get their frame from parameter modes, required edges have a delete-policy menu, a rack is a dependency graph for derived values, every owned value is sendable, and "no leaks" is a theorem now that a box can't hold its own holder -->
 <!-- depends: memory/racks.md, memory/parameters.md, memory/linear.md, memory/shared-rack-heap.md, concurrency/sync.md, concurrency/async.md, compiler/effects.md, stdlib/encoding.md, memory/relocatable.md -->
 
 # What the forest buys
@@ -252,8 +252,8 @@ of RK13 rather than needing its own.
 **Claim.** When a scope ends, every value owned by a binding of that scope is
 released, transitively and in reverse declaration order, and a linear value
 has been consumed exactly once on every path including unwinding. Therefore a
-Rask program allocates nothing it does not release, with two exceptions
-named below.
+Rask program allocates nothing it does not release. Two cases need naming:
+one was a hole and is closed, the other only looks like one.
 
 **Why it holds.** Release is a walk down from the binding. By clause 1 the
 walk is over a tree, so it terminates and reaches every value the binding
@@ -265,42 +265,76 @@ those paths. Containers release their elements as part of the walk, and
 walk never has an obligation it cannot discharge. `tests/leak_gate.sh` is this claim run over
 the suite under `RASK_LEAK_CHECK=1`.
 
-**Exception one: orphans inside a rack.** A node that no link names and no
-local binding holds is still owned by its rack and is freed with it. That is
-a logical leak, a row nobody references, not a memory leak, and it is the
-price RK1 pays for stable identity. The rack has what a check needs: a node
-with an empty incoming index is an orphan unless a local link holds it, and
-local links are compile-time knowledge. So a debug or test helper,
-`rack.orphans()`, lists nodes with no recorded holder, and a test can assert
-it is empty after an operation that should have cleaned up. For racks with
-declared roots the stronger check is a mark from the roots, linear in the
-rack and touching nothing outside it, which is the bounded, local collection
-that generational and regional collectors approximate. Neither needs to run
-in production; both close the exception in tests.
+**Exception one, now closed: `Shared` cycles.** A struct may hold a `Shared`,
+so a box could hold a clone of a box that holds a clone of it, and a refcount
+can't see a cycle. That was the one place outside a rack where the language
+could build a cycle, and it leaked (rask-lang/rask#1672). It is now a type
+error, `conc.sync/SH10`: a `Shared` field whose payload can hold a box of
+the owning type again, by value or through further boxes, is rejected the
+way `mem.resource-types/RC1` rejects a linear element in a `Vec`. The rule
+is on the shape, so a tree of boxes is rejected along with the cycle it
+could become, and the answer in both cases is the one the design already
+gives for values that point at each other: put them in a rack and share the
+rack.
 
-**Exception two: `Shared` cycles (rask-lang/rask#1672).** A struct may hold a
-`Shared`, a box may hold a clone of a box that holds a clone of it, and
-refcounts can't see a cycle. This is the one place outside a rack where the
-language can build a cycle, it leaks today, and nothing checks it. Two ways
-to close it: forbid a `Shared<T>` whose `T` can reach a `Shared` of the same
-type, the way `mem.resource-types/RC1` forbids a linear element in a `Vec`,
-or collect cycles at runtime. I'd forbid it. The design already says graphs live in racks, and a
-graph of boxes is the reference-counted shape the "Why Not Reference
-Counting?" section rejects. With that rule the theorem reads "no leaks
-outside racks, and a rack-local check closes the rack", which is the sentence
-I'd put on the website.
+**Exception two: orphans inside a rack, which are not leaks.** A node that no
+link names and no local binding holds is still owned by its rack and freed
+with it. Call that what it is. A leak is memory that can be neither reached
+nor released. An orphan can be reached (`rack.nodes()` walks it) and released
+(`delete` frees it), so by the definition every other language uses it is not
+a leak; it is unintended retention, the same thing as an element you forgot
+to remove from a `Vec`. With SH10 in place the theorem therefore reads **a
+Rask program allocates nothing it does not release**, full stop, and
+`tests/leak_gate.sh` is its proof over the suite.
+
+What is left is ergonomic: a program that thinks of a rack as a graph, where
+a node unreachable from the rest *should* die, has to delete it by hand. The
+rack can do that itself, and it already holds everything the job needs.
+
+**Anchored racks.** Today a rack is a set: a node lives until deleted, and
+iteration is one of its access paths. The other reading is that a node lives
+while something points at it. I'd offer that as a rack strategy, the way
+`Shared` takes its locking strategy as a type argument, spelled here as
+`Rack<T, Anchored>` with the name undecided:
+
+- A node is held by its recorded edges, the ones the rack already indexes
+  for RK3: a `Link` field in another live node, or a foreign holder outside
+  the rack. When the last recorded edge to a node goes, the node is deleted,
+  which nulls its own outgoing edges and may free its targets in turn. The
+  in-degree is the length of the index the rack keeps anyway, so this costs
+  nothing a plain rack doesn't pay.
+- A local link is a temporary, as now. When its binding ends and the
+  compiler can see the link was never stored, the node it names has no holder
+  left, and the compiler emits the delete there: one in-degree test per local
+  link that dies, only in an anchored rack. The ownership pass already knows
+  which local links were stored, since RK6 tracks the same thing.
+- Cycles among unheld nodes are the one case in-degree can't see. They are
+  collected by a mark from the foreign holders, and the moment to run it is
+  the end of any `deleting` operation on the rack. PM9 revokes every local
+  link into the rack at such a call, so at that point the recorded edges are
+  the whole root set, with no stack to scan. A rack with no edge removed
+  since the last collection runs nothing.
+
+That is reference counting where the stored half is paid for by an index the
+rack keeps for other reasons, the local half is the compiler's scope
+analysis, and the cycle half is a bounded, rack-local mark whose roots are
+exact by construction. A plain `Rack<T>` keeps set semantics and no new cost.
+Compile-time detection of orphans beyond the "inserted and never stored"
+case is not on offer, since whether a node is still held is decided at run
+time, which is why the mechanism is dynamic and the choice of strategy is in
+the type.
 
 ## What I'd do first
 
 1. State the invariant in `CORE_DESIGN` principle 3, three clauses, one
    paragraph.
-2. Decide #1672 (forbid `Shared` cycles) and add `rack.orphans()`; the release
-   theorem is then fully checkable.
-3. Write the mode theorems into `mem.parameters` as one row: a view preserves
+2. Write the mode theorems into `mem.parameters` as one row: a view preserves
    its subtree, `mutate` preserves a rack's node set, only `deleting` shrinks
    it.
-4. Required edges with cascade and restrict, with the batch block, replacing
+3. Required edges with cascade and restrict, with the batch block, replacing
    the RK7 deferral.
+4. Anchored racks, as a strategy on `Rack`, once required edges exist: a
+   cascade edge and an anchored node are the same mechanism from two sides.
 5. Derived values as a library over two rack hooks, keyword later or never.
-6. Contracts last, as a `rask test` boundary check, once the three above have
+6. Contracts last, as a `rask test` boundary check, once the four above have
    shown what the postconditions need to say.
