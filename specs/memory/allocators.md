@@ -1,33 +1,20 @@
 <!-- id: mem.alloc -->
 <!-- status: proposed -->
-<!-- summary: Custom allocators via using clauses; scope-restricted arena lifetimes -->
-<!-- depends: memory/ownership.md, stdlib/collections.md -->
+<!-- summary: Dynamic current allocator — `using` installs one for a block and every allocation underneath takes it; collections remember theirs; escape and stash are compile errors -->
+<!-- depends: memory/ownership.md, memory/borrowing.md, stdlib/collections.md, concurrency/async.md -->
 
-# Custom Allocators
+# Allocators
 
-Collections use the global allocator by default. `using` clauses let functions receive a different allocator — zero overhead, compile-time checked.
+Every task carries a current allocator. `using arena { … }` swaps it for the block, and every collection built while it's installed, in your code or in a library three calls down, takes memory from it. Nothing is declared, no type changes, and the compiler catches the two ways it could go wrong: a value leaving the block, and a callee hiding a fresh allocation somewhere that outlives the block.
 
-> **The mechanism this was written against is gone.** A `using` clause on a
-> *signature* only ever declared a `Pool<T>`, and it went out with the pool
-> (rask-lang/rask#908) along with the hidden-parameter pass that threaded it in,
-> the ambiguity rules, and `frozen`. Nothing in the corpus ever wrote
-> `using Allocator`, so nothing broke — but AL7/AL8/AL15–AL18 below describe a
-> signature form that no longer parses, and the rules they say they "follow
-> exactly" (CC1, CC2, CC8, CC9, CC10) no longer exist. The block form —
-> `using Arena.scoped(…) { … }` — is unaffected: it installs something for a
-> lexical scope, which is what `using Multitasking { … }` still does.
->
-> So this spec now has two halves in different states. The block half (AL10–AL14)
-> still describes a mechanism the language has. The signature half would need a
-> new one, and reintroducing it should be priced on its own merits rather than
-> inherited from a design that was retired.
+I chose this over threading the allocator through signatures and types (`Vec<T, A>`, the Zig and Rust shape) because threading is viral in exactly the place that can't be fixed later. The moment a struct holds a `Map`, the struct grows an `A`, and a library whose author didn't thread it is `Global` forever. Here a library written without a thought for arenas runs in one unchanged. The price is a pointer per collection and an indirect call where the compiler can't see the caller, and the loss of reading a function and knowing where its memory goes — the ghost carries that instead.
 
 ## Allocator Interface
 
 | Rule | Description |
 |------|-------------|
 | **AL1: Interface definition** | `Allocator` interface requires `alloc`, `dealloc`, `realloc` |
-| **AL2: Global default** | `Global` implements `Allocator`, is zero-sized, used when no context present |
+| **AL2: Global default** | `Global` implements `Allocator` and is the current allocator when nothing was installed |
 | **AL3: Fallible allocation** | `alloc` returns `&raw u8 or AllocError`; `realloc` same |
 
 <!-- test: skip -->
@@ -37,238 +24,142 @@ interface Allocator {
     func dealloc(self, ptr: &raw u8, size: usize, align: usize)
     func realloc(self, ptr: &raw u8, old_size: usize, new_size: usize, align: usize) -> &raw u8 or AllocError
 }
+```
 
-// Zero-sized, no pointer stored, no overhead
-struct Global {}
+AL4–AL11 are deleted. They made the allocator a defaulted type parameter (`Vec<T, Global>`) and threaded it through signatures as a hidden `using Allocator` parameter. The signature half went out with pools (#908); the type half went with this rewrite, since a type parameter is the viral part.
 
-extend Global: Allocator {
-    func alloc(self, size: usize, align: usize) -> &raw u8 or AllocError {
-        // delegates to system malloc
+## The Current Allocator
+
+| Rule | Description |
+|------|-------------|
+| **AL12: Using block** | `using expr { body }` where `expr: Allocator` installs `expr` as the current allocator for `body`, restored on exit — normal, `return`, `try`, and unwind alike |
+| **AL21: Per task, dynamic** | The current allocator is a task-local value. A fresh collection (`Vec.new()`, `Map.new()`, a built `string`, `Heap(…)`, `Rack.new()`) takes whatever is current at the moment it allocates, however deep the call. AL14 (lexical only) is deleted: propagation into callees is the point |
+| **AL22: A collection remembers its own** | A collection records the allocator it first allocated from and grows, shrinks and frees through that one, never through the current one. A `Global` vec pushed to inside an arena block keeps growing in `Global` |
+| **AL23: Explicit choice** | `Vec.new_in(a)` and the same on every constructor builds the collection under `a` whatever is current. Same type as `Vec.new()`; only the remembered allocator differs |
+| **AL24: Spawn starts at Global** | A spawned task starts with `Global` current. It never inherits the spawning block's allocator, because it may outlive it |
+
+<!-- test: skip -->
+```rask
+public func parse_json(body: string) -> Json {     // written once, no allocator in sight
+    mut fields = Map.new()
+    …
+}
+
+func handle_request(req: Request) -> Response {
+    using Arena.scoped(256.kilobytes()) {
+        let body = try parse_json(req.body)       // the whole Json, nested maps included, lives in the arena
+        return Response.json(body.keep())         // copied out to Global on the way back
     }
-    // ...
 }
 ```
 
-## Collection Type Parameter
+## Escape
 
 | Rule | Description |
 |------|-------------|
-| **AL4: Default type parameter** | `Vec<T>` is sugar for `Vec<T, Global>`. Same for `Map`, `string` |
-| **AL5: Zero-cost default** | `Global` is a ZST — collections carry no allocator pointer when using it |
-| **AL6: Non-default stored** | Non-Global allocators are stored as a reference in the collection |
+| **AL13: Block-born values stay in the block** | Any non-Copy value produced inside a `using` block — built there, or returned by a call made there — is block-born. A block-born value cannot be returned from the block, assigned to a binding or field declared outside it, pushed into a collection born outside it, sent on a channel, or captured by `spawn`. Compile error (E0420) |
+| **AL25: Copy-out is explicit** | `.clone()` inside the block clones into the current allocator, so it doesn't help. `.keep()` deep-copies a value under `Global` and the result is not block-born. It's the one way out, and it's written where the copy happens |
+| **AL26: Callers' values pass through** | A value born outside the block may be read and mutated inside it. AL22 keeps its growth in its own allocator, so passing it by `mutate` to a callee is fine |
 
-<!-- test: skip -->
-```rask
-let v = Vec.new()               // Vec<i32, Global> — no allocator pointer
-let v2 = Vec.new(arena)         // Vec<i32, Arena> — stores &Arena
+AL13 is keyed on where the value was produced, not on its type, because its type doesn't say. That is the same shape as the `with` block rule for borrows (`mem.borrowing/W2`): a scope that lends you something checks that nothing leaves with it.
 
-// Vec<T> and Vec<T, Global> are the same type
-func sum(v: Vec<i32>) -> i32 { ... }     // accepts Vec<i32, Global>
-```
+## Stash
 
-## Using Allocator Context
+A library can't leak a block-born value out of the block — AL13 is checked at the call site. What it can do is take a fresh allocation and put it somewhere that outlives the call: `self.index.insert(key, Vec.new())`, a global cache, an interner. Called under an arena, that's a use-after-free waiting for the block to end.
 
 | Rule | Description |
 |------|-------------|
-| **AL7: Unnamed context** | `using Allocator` — threads allocator as hidden parameter; collections auto-resolve it |
-| **AL8: Named context** | `using alloc: Allocator` — same as AL7, plus creates a local binding `alloc` for direct use |
-| **AL9: Resolution** | Search order: local vars → params → self fields → own `using` clause |
-| **AL10: Propagation** | A function's `using Allocator` satisfies callees requiring the same context |
-| **AL11: No context = Global** | Functions without `using Allocator` always use Global for new allocations |
+| **AL27: Stash is inferred** | For every function the compiler computes, transitively over calls, which parameters and globals a fresh allocation can be moved into. Nothing is declared; it's a property of the body, shown as a ghost on the signature and by `rask api` |
+| **AL28: Stashing into the outside is an error** | A call inside a `using` block to a function that stashes into a parameter the caller passes a non-block-born value for, or into a global, is a compile error (E0421) at the call, naming the line inside the callee that stashes. Fix: hoist the call out of the block, or wrap it in `using Global { … }` |
+| **AL29: Block-born storage is fine** | Stashing into a parameter whose argument is block-born passes: the storage dies with the block too. A builder made in the block and filled by a helper is the common case |
+| **AL30: Indirect calls** | Through a function value, a stored closure or an interface, the callee isn't one function. The compiler takes the union of the stash sets over every reachable target of that type, the way a widened method call is dispatched. A callback entered from C runs under `Global` whatever the task had installed, since its call site is where no check can run (`conc.async/CC3` draws the same line for `spawn`) |
 
-Unnamed (`using Allocator`) is enough when you only need collections to auto-resolve. Named (`using alloc: Allocator`) is needed when you reference the allocator directly — passing it on to a constructor, calling `alloc.reset()`, etc.
+AL17 and AL18 are deleted. An inline closure runs under whatever is current when it runs, which is what AL17 said; a stored closure does too, which is the opposite of AL18.
 
-<!-- test: skip -->
-```rask
-// Unnamed — collections auto-resolve, don't need the allocator directly
-func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
-    let map = Map.new()    // uses the caller's allocator
-    for item in items {
-        map.insert(item.name, item)
-    }
-    return map
-}
-
-// Named — need direct access to pass the allocator on
-func init_world() using alloc: Allocator {
-    let entities = Rack.new(alloc)     // rack backed by this allocator
-    let spatial = Map.new()            // also uses alloc via auto-resolution
-    // ...
-}
-
-// Default: always uses Global, no annotation needed
-func build_index_default(items: Vec<Item>) -> Map<string, Item> {
-    let map = Map.new()    // always Global
-    // ...
-}
-```
-
-## Scoped Allocator Blocks
+## Racks and Heap
 
 | Rule | Description |
 |------|-------------|
-| **AL12: Using block** | `using expr { body }` sets the allocator for all allocations lexically in `body` |
-| **AL13: Scope restriction** | Values allocated in a `using` allocator block cannot escape that block |
-| **AL14: Lexical only** | The allocator override applies to allocations in the block's lexical scope, not to callees (unless they declare `using Allocator`) |
+| **AL19: Rack backing allocator** | `Rack.new()` takes the current allocator for its chunks and remembers it (AL22). Under an arena the rack and every node go with the block |
 
-<!-- test: skip -->
-```rask
-func process() {
-    let result = Vec.new()            // Global
+`Heap(…)` takes the current allocator too (`mem.heap/HP6`). An arena is a bump allocator, so `drop` on an arena-backed `Heap<T>` runs the destructor and frees nothing; the block end frees the lot.
 
-    using Arena.scoped(1.megabytes()) {
-        let scratch = Vec.new()       // Arena — cannot escape this block
-        scratch.push(1)
-        scratch.push(2)
-
-        for x in scratch {
-            result.push(x)             // copies value into Global-backed Vec
-        }
-
-        // return scratch              // COMPILE ERROR: arena-scoped, cannot escape
-    }
-    // arena freed, all scratch memory gone
-
-    do_stuff(result)
-}
-```
-
-## Visibility
+## Cost
 
 | Rule | Description |
 |------|-------------|
-| **AL15: Public declaration required** | Public functions that create collections with a context allocator must declare `using Allocator` |
-| **AL16: Private inference** | Private functions can have `using Allocator` inferred from collection construction in allocator context |
+| **AL31: One pointer per collection** | The remembered allocator is one pointer in the collection header, null for `Global`. A `Vec` is 32 bytes, not 24. `string` keeps it in the heap header it already has |
+| **AL32: Static where visible** | Direct calls lexically inside a `using` block, and every call in a program that never writes `using`, resolve at compile time. In a program with no `using` block at all the header pointer is removed, since every collection is provably `Global`. Semantics are AL21 either way |
 
-Public functions declare; private ones infer.
-
-## Compiler Desugaring
-
-<!-- test: skip -->
-```rask
-// What you write:
-func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
-    let map = Map.new()
-    return map
-}
-
-// What the compiler generates (conceptual):
-func build_index(items: Vec<Item>, __ctx_alloc: &Allocator) -> Map<string, Item, __A> {
-    let map = Map.__new_with(__ctx_alloc)
-    return map
-}
-```
-
-## Closures
-
-| Rule | Description |
-|------|-------------|
-| **AL17: Immediate closure inheritance** | Expression-scoped closures inherit the enclosing allocator context |
-| **AL18: Storable closure exclusion** | Storable closures cannot capture allocator context — must pass explicitly |
-
-An inline callback runs inside the scope that resolved the context; a stored one can outlive it.
-
-## Interaction with Racks
-
-| Rule | Description |
-|------|-------------|
-| **AL19: Rack backing allocator** | `Rack.new()` uses Global. An arena-backed rack would take the allocator the enclosing block installed |
-
-<!-- test: skip -->
-```rask
-func game_frame() {
-    let frame_arena = Arena.scoped(4.megabytes())
-
-    using frame_arena {
-        mut particles: Rack<Particle> = Rack.new()   // chunks from the arena
-        spawn_particles(mutate particles)
-
-        for p in particles.nodes() {
-            p.lifetime -= 1
-        }
-    }
-    // arena freed — the rack and every node with it
-}
-```
-
-AL20 used to sit here: `using Pool<T>` and `using Allocator` were independent
-contexts a function could declare together. With pools gone there is only one
-kind of `using` left, so there is nothing to be orthogonal to.
+Allocation already costs a `malloc`; the indirect call next to it is noise. The pointer is the real price and it's paid only by programs that install an allocator somewhere.
 
 ## Standard Allocators
 
 | Allocator | Description |
 |-----------|-------------|
-| `Global` | System allocator (malloc/free). ZST, default |
-| `Arena` | Bump allocator. Bulk free on drop. No individual dealloc |
-| `FixedBuffer` | Allocates from a fixed `[u8; N]` buffer. No system calls. Embedded-friendly |
+| `Global` | System allocator (malloc/free). Default |
+| `Arena` | Bump allocator. Bulk free on drop, `dealloc` is a no-op. Fixed size, exhaustion is `AllocError`, never a hidden `malloc` |
+| `FixedBuffer` | Allocates from a `[u8; N]` the caller owns. No system calls. Embedded-friendly |
 
 <!-- test: skip -->
 ```rask
-// Arena — bulk allocation, freed together
-let arena = Arena.new(1.megabytes())
-using arena {
-    let tokens = Vec.new()
-    let nodes = Vec.new()
-    // ... parse ...
+// Request scratch — freed as one block
+using Arena.scoped(1.megabytes()) {
+    let tokens = tokenize(src)
+    let ast = parse(tokens)
+    return typecheck(ast).keep()
 }
-// all memory freed at once
 
-// FixedBuffer — no malloc, embedded-safe
+// No malloc at all
 mut buf: [u8; 4096] = [0; 4096]
-let alloc = FixedBuffer.new(buf)
-using alloc {
+using FixedBuffer.new(buf) {
     let data = Vec.new()
-    data.push(42)        // allocated from buf, no system call
+    data.push(42)
 }
 ```
 
 ## Error Messages
 
-**Arena-scoped value escaping [AL13]:**
+**Block-born value escaping [AL13]:**
 ```
-ERROR [mem.alloc/AL13]: arena-scoped value cannot escape using block
+ERROR [mem.alloc/AL13]: value born inside `using` block cannot leave it
    |
 5  |  using Arena.scoped(1.megabytes()) {
-6  |      let v = Vec.new()
+6  |      let v = parse(src)
 7  |      return v
-   |      ^^^^^^^^ v allocated from arena, cannot leave this scope
-   |
-WHY: Arena memory is freed when the using block exits. Returning
-     arena-allocated data would create a dangling pointer.
+   |      ^^^^^^^^ `v` was allocated under the arena, which is freed when the block ends
 
-FIX: Copy the data into an outer-scoped collection:
+FIX: Copy it out, or move the allocation out of the block:
 
-  let result = Vec.new()          // Global
-  using Arena.scoped(1.megabytes()) {
-      let v = Vec.new()           // Arena
-      for x in v { result.push(x) }
-  }
+  return v.keep()
 ```
 
-**Missing context on public function [AL15]:**
+**Callee stashes into the outside [AL28]:**
 ```
-ERROR [mem.alloc/AL15]: public function creates collection with context allocator without declaring it
+ERROR [mem.alloc/AL28]: `index.add` would keep arena memory past the block
    |
-1  |  public func build(items: Vec<Item>) -> Map<string, Item> {
-   |                                         ^^^^^^^^^^^^^^^^^^ allocates with context
+12 |  using frame_arena {
+13 |      index.add(name, parts)
+   |      ^^^^^^^^^^^^^^^^^^^^^^ `index` was made outside the block
    |
-FIX: Add a using clause:
+   = `Index.add` stores a fresh `Vec` into `self.entries` (index.rk:41),
+     and `self` here outlives the arena
 
-  public func build(items: Vec<Item>) -> Map<string, Item> using Allocator {
+FIX: Hoist the call out of the block, or run it under Global:
+
+  using Global { index.add(name, parts.keep()) }
 ```
 
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Nested `using` blocks | AL12 | Inner block overrides outer for its scope |
-| Arena-allocated value assigned to outer variable | AL13 | Compile error |
-| Collection created in `using` block passed to callee | AL14 | OK — callee receives it by reference, doesn't escape |
-| Multiple allocators in scope | AL8 | Would need a named context — see the note at the top |
-| Arena-backed rack, link sent via channel | AL13 | Compile error — a link never crosses a task boundary anyway (`mem.racks`) |
-| `try_push` on FixedBuffer-backed Vec | AL3 | Returns `PushError` when buffer full |
-| Comptime allocations | — | Use compiler arena (CT17), not runtime allocators |
+| Nested `using` blocks | AL12 | Inner installs for its scope; values born in the inner block can't leave it for the outer one |
+| Outer collection pushed to inside the block | AL22, AL26 | Grows in its own allocator; the pushed value must not be block-born (AL13) |
+| Block-born value pushed into block-born collection | AL13 | Fine, both die together |
+| Comptime allocations | — | Compiler arena (`ctrl.comptime/CT17`), `using` is a compile error inside `comptime` |
+| `try_push` on a `FixedBuffer`-backed vec | AL3 | `GrowError` when the buffer is full |
+| Panic inside the block | AL12 | Unwind restores the previous allocator and frees the arena after `ensure` blocks ran |
 
 ---
 
@@ -276,73 +167,22 @@ FIX: Add a using clause:
 
 ### Rationale
 
-**AL4 (default type parameter):** Most code doesn't need custom allocators. Making Global the default and zero-sized means the common case has zero cost — no extra pointer, no vtable, no indirection. The allocator type only appears when you need it.
+**Why dynamic (AL21).** "Which allocator" has a different answer for the same function depending on who called it. Anything static has to clone the function per calling context, and per provenance of every parameter it grows through, and it still breaks at the first vtable. The runtime part is the minimum the semantics force: one pointer saying "current", one per collection saying "mine". AL32 recovers the static case wherever the compiler can see it.
 
-**AL7/AL8 (unnamed vs named):** these followed the pool context rules (CC1/CC2) exactly, which is now a dependency on something deleted. The distinction itself is still the right one if a signature form ever comes back: most allocator usage is implicit, and a name is only needed where the allocator has to be passed on explicitly.
+**Why not type-erase the default (AL31).** The pointer is only there because the type doesn't say. A program that never installs an allocator has every collection on `Global` and the compiler knows it, so it drops the field. The cost lands on the programs that use the feature.
 
-**AL13 (scope restriction):** Rask doesn't have lifetime annotations. Scope restriction is the alternative: the compiler enforces that arena-allocated data doesn't outlive the arena, without requiring the user to annotate lifetimes. This is the same strategy as `with` block restrictions for borrows (mem.borrowing/W2).
+**Why `keep()` and not `clone()` (AL25).** Clone under an arena clones into the arena; that's what the current allocator means. Leaving the block is a different operation with a different cost, and the transparency rule wants it written where it happens.
 
-**AL14 (lexical only):** Implicit propagation through callees (dynamic scoping) would break transparency of cost — you couldn't tell from reading a function whether it uses an arena. Lexical scoping keeps the behavior visible. This half is the one that survives intact, and it is the half that matters: a block that installs something for its scope is a mechanism the language still has.
+**Why infer stash and not declare it (AL27).** Declaring it is function colouring under another name: it goes on every signature it's true of and every caller of those. Inference costs the compiler one transitive pass over MIR it already has the moves for, and the user nothing. If the analysis turns out to fire on every builder in a real program, the answer is a finer analysis, not an annotation.
 
-**Why not type-erased allocators?** Type erasure (storing `&dyn Allocator`) adds a vtable call to every allocation and makes every Vec 8 bytes larger. Since the common case is Global (which is zero-sized), the default type parameter approach is strictly better — zero cost when you don't use custom allocators, monomorphized when you do.
+### Open
 
-**Why not Zig-style parameter passing?** Zig passes allocators as explicit function parameters, which makes every allocating function's signature viral. Rask's `using` mechanism provides the same compile-time threading without signature pollution.
-
-### Patterns & Guidance
-
-**Request-scoped arena (web server):**
-<!-- test: skip -->
-```rask
-func handle_request(req: Request) -> Response {
-    using Arena.scoped(256.kilobytes()) {
-        let params = parse_query(req.url)     // arena, if parse_query uses Allocator
-        let body = try parse_json(req.body)
-        let result = process(params, body)
-
-        // Response is built and returned — its data copied to Global
-        return Response.json(result)
-    }
-}
-```
-
-**Compiler pass:**
-<!-- test: skip -->
-```rask
-func typecheck(ast: Ast) -> TypedAst {
-    using Arena.scoped(16.megabytes()) {
-        mut types: Vec<TypeInfo> = Vec.new()     // backed by the arena
-        mut scopes: Vec<Scope> = Vec.new()       // backed by the arena
-
-        let result = resolve_types(ast, types, scopes)
-        return result.freeze()         // copies result to Global
-    }
-}
-```
-
-**Embedded fixed-buffer:**
-<!-- test: skip -->
-```rask
-func sensor_loop() {
-    mut buf: [u8; 2048] = [0; 2048]
-    let alloc = FixedBuffer.new(buf)
-
-    using alloc {
-        let readings = Vec.with_capacity(64)
-        loop {
-            readings.clear()               // reuse buffer, no reallocation
-            collect_readings(readings)
-            transmit(readings)
-        }
-    }
-}
-```
+An arena rewind marker (`frame_begin`/`frame_end` in Raido's terms) so a game loop acquires backing memory once and rewinds per frame instead of allocating and freeing an arena per frame. One rule, not yet written; see [c3-lessons.md](../analysis/c3-lessons.md).
 
 ### See Also
 
-- [Ownership](ownership.md) — Value lifetimes within allocator scopes (`mem.ownership`)
-- [Linearity](linear.md) — Arena vs linear: why they're separate mechanisms (`mem.linear`)
-- [Racks and Links](racks.md) — Nodes with stable identity, delete-time edge fixup (`mem.racks`)
-- [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
-- [Shared, Rack and Heap](shared-rack-heap.md) — All three allocate through the ambient allocator (`mem.shared-rack-heap`)
-- [Heap Values](heap.md) — `own expr` allocates through the context allocator (`mem.heap`)
-- [Collections](../stdlib/collections.md) — Vec, Map allocation semantics (`std.collections`)
+- [Borrowing](borrowing.md) — the `with` block rule AL13 is modelled on (`mem.borrowing/W2`)
+- [Heap Values](heap.md) — `Heap(…)` takes the current allocator (`mem.heap/HP6`)
+- [Racks and Links](racks.md) — rack chunks under an arena (`mem.racks`)
+- [Async](../concurrency/async.md) — `using Multitasking { … }` installs a scheduler the same way
+- [Collections](../stdlib/collections.md) — constructors and `new_in` (`std.collections`)
