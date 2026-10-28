@@ -12,6 +12,84 @@ use std::sync::OnceLock;
 
 /// How many sources the stdlib contributes to the `file_id` space.
 ///
+/// Which layer a stdlib module belongs to: what it needs from the machine
+/// (rask-lang/rask#1648).
+///
+/// The cut follows the hardware. `Core` needs nothing and runs anywhere, an
+/// interrupt handler included. `Alloc` needs a heap. `Std` needs an operating
+/// system: files, sockets, threads, clocks, a process. A module may only name
+/// things from its own layer and below, and `stdlib_layers` in rask-cli's
+/// tests holds that line, so a no-OS build can leave `Std` out and a no-heap
+/// build `Alloc` too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Layer {
+    Core,
+    Alloc,
+    Std,
+}
+
+impl Layer {
+    pub fn name(self) -> &'static str {
+        match self {
+            Layer::Core => "core",
+            Layer::Alloc => "alloc",
+            Layer::Std => "std",
+        }
+    }
+}
+
+/// The layer of each stdlib file. Every entry of `STUB_SOURCES` has one; a
+/// test checks.
+const LAYERS: &[(&str, Layer)] = &[
+    ("ops.rk", Layer::Core),
+    ("option.rk", Layer::Core),
+    ("result.rk", Layer::Core),
+    ("int.rk", Layer::Core),
+    ("num.rk", Layer::Core),
+    ("float.rk", Layer::Core),
+    ("math.rk", Layer::Core),
+    ("char.rk", Layer::Core),
+    ("range.rk", Layer::Core),
+    ("sync.rk", Layer::Core),
+    ("string.rk", Layer::Alloc),
+    ("bytes.rk", Layer::Alloc),
+    ("collections.rk", Layer::Alloc),
+    (FORWARDERS_FILE, Layer::Alloc),
+    ("memory.rk", Layer::Alloc),
+    ("builtins.rk", Layer::Alloc),
+    ("bits.rk", Layer::Alloc),
+    ("fmt.rk", Layer::Alloc),
+    ("hex.rk", Layer::Alloc),
+    ("base64.rk", Layer::Alloc),
+    ("digest.rk", Layer::Alloc),
+    ("sequence.rk", Layer::Alloc),
+    ("reflect.rk", Layer::Alloc),
+    ("encoding.rk", Layer::Alloc),
+    ("json.rk", Layer::Alloc),
+    ("url.rk", Layer::Alloc),
+    ("path.rk", Layer::Alloc),
+    ("error_context.rk", Layer::Alloc),
+    ("csv.rk", Layer::Alloc),
+    ("random.rk", Layer::Alloc),
+    ("fs.rk", Layer::Std),
+    ("net.rk", Layer::Std),
+    ("http.rk", Layer::Std),
+    ("io.rk", Layer::Std),
+    ("os.rk", Layer::Std),
+    ("cli.rk", Layer::Std),
+    ("terminal.rk", Layer::Std),
+    ("time.rk", Layer::Std),
+    ("thread.rk", Layer::Std),
+    ("async.rk", Layer::Std),
+    ("sim.rk", Layer::Std),
+    ("std.rk", Layer::Std),
+];
+
+/// The layer of a stdlib file, by the name `stub_sources` gives it.
+pub fn layer_of(file: &str) -> Option<Layer> {
+    LAYERS.iter().find(|(f, _)| *f == file).map(|(_, l)| *l)
+}
+
 /// One past `STUB_SOURCES` for the generated forwarders, which have no file of
 /// their own but still need spans that resolve somewhere.
 pub const STDLIB_FILE_COUNT: u16 = STUB_SOURCES.len() as u16 + 1;
@@ -1503,6 +1581,14 @@ mod boundary_tests {
             broken.len(),
             broken.join("\n  ")
         );
+    }
+
+    #[test]
+    fn every_stdlib_file_has_a_layer() {
+        let missing: Vec<&str> = all_sources().iter().map(|(n, _)| *n).filter(|n| layer_of(n).is_none()).collect();
+        assert!(missing.is_empty(), "stdlib files with no entry in LAYERS: {missing:?}");
+        let extra: Vec<&str> = LAYERS.iter().map(|(n, _)| *n).filter(|n| !all_sources().iter().any(|(m, _)| m == n)).collect();
+        assert!(extra.is_empty(), "LAYERS names files that aren't stub sources: {extra:?}");
     }
 
     #[test]
