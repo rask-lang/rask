@@ -1556,10 +1556,15 @@ impl TypeChecker {
             .collect();
         // ER3/ER4: validate nested `T or E` in field types (deferred — see
         // pending_result_validations; extend-defined `message()` must be visible).
-        for (fspan, fty) in &field_tys {
+        for (f, (fspan, fty)) in s.fields.iter().zip(&field_tys) {
             self.pending_result_validations.push((fty.clone(), *fspan));
             // RC1/RC3: a `Vec`/`Map` field can't hold linear elements.
             self.note_linear_container_site(*fspan, fty.clone());
+            // SH10: a `Shared` field is checked for a box cycle once every
+            // type is registered.
+            if !self.types.direct_shared_payloads(fty).is_empty() {
+                self.pending_shared_fields.push((s.name.clone(), f.name.clone(), fty.clone(), *fspan));
+            }
         }
         let fields: Vec<_> = s
             .fields
@@ -1768,11 +1773,16 @@ impl TypeChecker {
             })
             .collect();
         // ER3/ER4: validate nested `T or E` in variant payload types (deferred).
-        for (_, field_types) in &variants {
+        for (vname, field_types) in &variants {
             for (fspan, fty) in field_types {
                 self.pending_result_validations.push((fty.clone(), *fspan));
                 // RC1/RC3: a `Vec`/`Map` payload can't hold linear elements.
                 self.note_linear_container_site(*fspan, fty.clone());
+                // SH10: a `Shared` payload is checked for a box cycle once
+                // every type is registered.
+                if !self.types.direct_shared_payloads(fty).is_empty() {
+                    self.pending_shared_fields.push((e.name.clone(), vname.clone(), fty.clone(), *fspan));
+                }
             }
         }
         let variants: Vec<_> = variants

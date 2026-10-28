@@ -538,6 +538,10 @@ pub struct TypeChecker {
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
     pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
+    /// SH10: struct fields and enum payloads that spell a `Shared`, checked
+    /// for a box cycle once every declaration is registered, since the cycle
+    /// can close through a type declared later. (Owner, field, type, span).
+    pub(super) pending_shared_fields: Vec<(String, String, Type, rask_ast::Span)>,
     /// Bare names in patterns read as a type test (`r is ParseError`), by the
     /// span `check_pattern` was handed. See `TypedProgram::type_test_patterns`.
     pub(super) type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
@@ -727,6 +731,7 @@ impl TypeChecker {
             method_calls: Vec::new(),
             closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
+            pending_shared_fields: Vec::new(),
 
             type_test_patterns: std::collections::HashSet::new(),
             struct_shorthand_patterns: std::collections::HashSet::new(),
@@ -925,6 +930,9 @@ impl TypeChecker {
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
         // concrete.
         self.validate_pending_linear_containers();
+
+        // SH10: a `Shared` field whose payload can hold the owner again.
+        self.validate_shared_cycles();
 
         // TR5: an element pushed into a container the checker only resolved
         // later. A concrete value going into an `any Interface` slot has to be boxed

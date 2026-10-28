@@ -2730,6 +2730,31 @@ fn error_a_task_local_shared_cannot_be_sent() {
 }
 
 #[test]
+fn error_shared_cycle() {
+    let (failed, out) = compile_error_output("shared_cycle.rk");
+    assert!(failed, "a box that can hold its own holder must be rejected: {}", out);
+    // Direct, two mutual, through a Vec, and by value: five fields close a
+    // cycle. The box over a config and the box over a rack of linked nodes
+    // are the shapes that must stay legal.
+    assert_eq!(
+        out.matches("error[E0925]").count(),
+        5,
+        "one error per field that closes a box cycle, none for the rack or the config: {}",
+        out
+    );
+    assert!(
+        out.contains("Inner.back") && out.contains("Outer"),
+        "the by-value case names the holder the payload reaches: {}",
+        out
+    );
+    assert!(
+        out.contains("Shared<Rack<"),
+        "the fix has to point at the rack: {}",
+        out
+    );
+}
+
+#[test]
 fn error_rack_link_use_after_delete() {
     let (failed, out) = compile_error_output("rack_link_use_after_delete.rk");
     assert!(failed, "using a link after its delete must be rejected: {}", out);

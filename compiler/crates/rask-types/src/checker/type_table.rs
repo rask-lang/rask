@@ -1765,6 +1765,171 @@ impl TypeTable {
         }
     }
 
+    /// Walk what a value of `ty` holds by value. Every struct or enum met on
+    /// the way goes in `named` (and, with `descend`, its fields are walked
+    /// too, once); the payload of every `Shared` met goes in `payloads` and
+    /// the box is not entered, since its payload is a separate allocation that
+    /// other boxes may share. A `Link` is not entered either: it owns nothing.
+    fn walk_by_value(
+        &self,
+        ty: &Type,
+        descend: bool,
+        seen: &mut Vec<TypeId>,
+        named: &mut Vec<TypeId>,
+        payloads: &mut Vec<Type>,
+    ) {
+        if let Some(args) = self.shared_args(ty) {
+            if let Some(GenericArg::Type(p)) = args.first() {
+                payloads.push((**p).clone());
+            }
+            return;
+        }
+        if let Some(inner) = ty.as_option() {
+            return self.walk_by_value(inner, descend, seen, named, payloads);
+        }
+        let def = |id: TypeId, seen: &mut Vec<TypeId>, named: &mut Vec<TypeId>, payloads: &mut Vec<Type>| {
+            named.push(id);
+            if !descend || seen.contains(&id) {
+                return;
+            }
+            seen.push(id);
+            match self.get(id) {
+                Some(TypeDef::Struct { fields, .. }) => {
+                    for (_, t) in fields {
+                        self.walk_by_value(t, descend, seen, named, payloads);
+                    }
+                }
+                Some(TypeDef::Enum { variants, .. }) => {
+                    for (_, payload) in variants {
+                        for t in payload {
+                            self.walk_by_value(t, descend, seen, named, payloads);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        };
+        match ty {
+            Type::Named(id) => def(*id, seen, named, payloads),
+            Type::UnresolvedNamed(name) => {
+                if let Some(&id) = self.type_names.get(name) {
+                    def(id, seen, named, payloads);
+                }
+            }
+            Type::Generic { base, args } => {
+                if self.type_name(*base) == "Link" {
+                    return;
+                }
+                def(*base, seen, named, payloads);
+                for a in args {
+                    if let GenericArg::Type(t) = a {
+                        self.walk_by_value(t, descend, seen, named, payloads);
+                    }
+                }
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                if name == "Link" {
+                    return;
+                }
+                if let Some(&id) = self.type_names.get(name) {
+                    def(id, seen, named, payloads);
+                }
+                for a in args {
+                    if let GenericArg::Type(t) = a {
+                        self.walk_by_value(t, descend, seen, named, payloads);
+                    }
+                }
+            }
+            Type::Tuple(elems) | Type::Union(elems) => {
+                for t in elems {
+                    self.walk_by_value(t, descend, seen, named, payloads);
+                }
+            }
+            Type::Array { elem, .. } => self.walk_by_value(elem, descend, seen, named, payloads),
+            Type::Result { ok, err } => {
+                self.walk_by_value(ok, descend, seen, named, payloads);
+                self.walk_by_value(err, descend, seen, named, payloads);
+            }
+            _ => {}
+        }
+    }
+
+    /// The payloads of the `Shared` boxes written directly in `ty` (not in
+    /// the fields of a type it names). What a declaration site asks before
+    /// queueing itself for the cycle check.
+    pub fn direct_shared_payloads(&self, ty: &Type) -> Vec<Type> {
+        let mut payloads = Vec::new();
+        self.walk_by_value(ty, false, &mut Vec::new(), &mut Vec::new(), &mut payloads);
+        payloads
+    }
+
+    /// Every struct or enum a box with this payload can hold: the payload's
+    /// own type, what it holds by value, and the same through any box nested
+    /// in it.
+    fn shared_targets(&self, payload: &Type, seen: &mut Vec<TypeId>, out: &mut Vec<TypeId>) {
+        let mut nested = Vec::new();
+        self.walk_by_value(payload, true, seen, out, &mut nested);
+        for p in nested {
+            self.shared_targets(&p, seen, out);
+        }
+    }
+
+    /// The types a value of `id` can reach through one `Shared` it holds,
+    /// directly or in something it holds by value.
+    fn shared_edges(&self, id: TypeId) -> Vec<TypeId> {
+        let mut payloads = Vec::new();
+        self.walk_by_value(&Type::Named(id), true, &mut Vec::new(), &mut Vec::new(), &mut payloads);
+        let mut out = Vec::new();
+        for p in &payloads {
+            self.shared_targets(p, &mut Vec::new(), &mut out);
+        }
+        out.sort_by_key(|t| t.0);
+        out.dedup();
+        out
+    }
+
+    /// conc.sync/SH10: can a box with this payload, held by a value of
+    /// `owner`, hold a value of `owner` again, directly or through further
+    /// boxes? If so, two boxes can point at each other and neither count ever
+    /// reaches zero (#1672). The answer is the chain of type names from the
+    /// payload back to the owner, for the message.
+    pub fn shared_cycle(&self, owner: TypeId, payload: &Type) -> Option<Vec<String>> {
+        let mut starts = Vec::new();
+        self.shared_targets(payload, &mut Vec::new(), &mut starts);
+        let mut visited: Vec<TypeId> = Vec::new();
+        for start in starts {
+            let mut path = vec![start];
+            if self.shared_path_to(start, owner, &mut visited, &mut path) {
+                return Some(path.iter().map(|id| self.type_name(*id)).collect());
+            }
+        }
+        None
+    }
+
+    fn shared_path_to(
+        &self,
+        from: TypeId,
+        to: TypeId,
+        visited: &mut Vec<TypeId>,
+        path: &mut Vec<TypeId>,
+    ) -> bool {
+        if from == to {
+            return true;
+        }
+        if visited.contains(&from) {
+            return false;
+        }
+        visited.push(from);
+        for next in self.shared_edges(from) {
+            path.push(next);
+            if self.shared_path_to(next, to, visited, path) {
+                return true;
+            }
+            path.pop();
+        }
+        false
+    }
+
     /// Container wrappers that hold values without becoming linear themselves.
     /// A `Link` is a copyable reference; `Vec`/`Map`/`Rack` are handled by the
     /// outer walk.
