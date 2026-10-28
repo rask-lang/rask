@@ -8338,6 +8338,8 @@ fn a_c_struct_goes_by_value() {
         "triple 321",
         "rgba 4321",
         "mixed 50",
+        "seg 4321",
+        "tri 321",
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }
