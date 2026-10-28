@@ -27,6 +27,7 @@ Concurrency model for Rask.
 | [sync.md](sync.md) | Draft | **Shared state**: `Shared<T, S>` — one type, three strategies |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 | [phase-b-transforms.md](phase-b-transforms.md) | Proposed | **Phase B transforms**: vtable ABI, closures, separate compilation, FFI |
+| [scheduler-protocol.md](scheduler-protocol.md) | Proposed | **Tasks and schedulers**: growable stacks, a stackless mode, the scheduler as a conformance |
 | [heterogeneous-hardware.md](heterogeneous-hardware.md) | Proposed | **GPU/accelerator map + decisions**: read this first for the Wide story |
 | [data-parallel.md](data-parallel.md) | Proposed | **Wide[T] algebra**: stage/submit/await, primitives, observability |
 | [wide-backend.md](wide-backend.md) | Proposed | **Backend contract**: the library-implemented interface to devices |

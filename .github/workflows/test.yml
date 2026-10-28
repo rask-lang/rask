@@ -80,13 +80,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -124,13 +135,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -167,13 +189,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -238,13 +271,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -262,12 +306,12 @@ jobs:
       run: cargo build --release -p rask-cli
       working-directory: compiler
 
+    # Through tests/lib/apt_install.sh: a slow Azure mirror falls back to
+    # Ubuntu's main archive instead of running out the clock.
     - name: Install valgrind
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      timeout-minutes: 6
-      run: |
-        APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
-        sudo apt-get $APT update && sudo apt-get $APT install -y valgrind
+      timeout-minutes: 8
+      run: tests/lib/apt_install.sh valgrind
 
     - name: Memory error gate (valgrind)
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
@@ -292,13 +336,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -332,13 +387,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -437,7 +503,6 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     # The context switch on x86_64 and, under qemu, aarch64 — the one place
@@ -446,12 +511,8 @@ jobs:
     # out, which reads as a fiber hang. Bound it, retry it, and keep it a step
     # of its own so the log says which half stopped.
     - name: Install qemu and the aarch64 toolchain
-      timeout-minutes: 6
-      run: |
-        APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
-        sudo apt-get $APT update -qq
-        sudo apt-get $APT install -y -qq --no-install-recommends \
-          qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross > /dev/null
+      timeout-minutes: 8
+      run: tests/lib/apt_install.sh qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross
     - name: Fiber switch (x86_64, aarch64 under qemu)
       timeout-minutes: 3
       run: FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
@@ -463,6 +524,18 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -512,7 +585,6 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
@@ -521,6 +593,18 @@ jobs:
         targets: wasm32-unknown-unknown
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
@@ -686,7 +770,6 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
 
@@ -695,6 +778,18 @@ jobs:
 
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
 
     # Separate key from the gate jobs so the two don't race to write the same
     # cache. The gate jobs share one key between them, which is fine — whoever
@@ -787,13 +882,24 @@ jobs:
     env:
       RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
       SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
       uses: mozilla-actions/sccache-action@v0.0.11
+    # GitHub's cache store has refused sccache's startup read (503, "egress is
+    # over the account limit") four times in one afternoon, and a server that
+    # can't start fails `cargo build` at `rustc -vV` before compiling anything.
+    # SCCACHE_IGNORE_SERVER_IO_ERROR does not cover that path. So the wrapper
+    # is only turned on once the server is up; otherwise the job builds cold.
+    - name: Start sccache, or build without it
+      run: |
+        if sccache --start-server; then
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        else
+          echo "sccache could not start; building without the cache"
+        fi
     - name: Cache Cargo
       uses: actions/cache@v4
       with:
