@@ -199,8 +199,8 @@ see below: atomics need an API that doesn't look like locking, so they keep
 their own type.)
 
 **Why the type stays uniform.** The strategy is a defaulted type parameter —
-`Shared<T, S = Local>` — resolved at monomorphization, exactly like the
-allocator parameter (`mem.alloc/AL4`). So it's zero-cost, and one type covers
+`Shared<T, S = Local>` — resolved at monomorphization. So it's zero-cost, and
+one type covers
 what `Mutex<T>` and `Shared<T>` need two of today: an API no longer has to pick
 a lock type that its callers must then match.
 
