@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A field forwarded as a closure's `mutate` argument writes back.
+//
+//     func write<R>(mutate self, body: func(mutate i64) -> R) -> R {
+//         return body(mutate self.value)
+//     }
+//
+// Native lost the write: `c.write(|mutate v| { v += 41 })` answered 42 and
+// left `c.value` at 1 (#1659). The inliner refuses to inline a function that
+// writes through a parameter, since inlining copies the argument into a fresh
+// local first, but it only looked at plain calls when asking what a parameter
+// was forwarded to. A closure call never counted, so `write` was inlined and
+// the closure stored into the copy of `self`.
+//
+// A scalar `mutate` parameter forwarded the same way (`bump` below) always
+// worked: it is a pointer value, and a copied pointer still points at the
+// caller's variable. An aggregate's local is the storage itself, so the copy
+// is what loses the write.
+
+struct Cell {
+    value: i64
+}
+
+struct Outer {
+    inner: Cell
+}
+
+extend Cell {
+    func write<R>(mutate self, body: func(mutate i64) -> R) -> R {
+        return body(mutate self.value)
+    }
+
+    func write_plain(mutate self, body: func(mutate i64) -> i64) -> i64 {
+        return body(mutate self.value)
+    }
+}
+
+extend Outer {
+    func write_inner(mutate self, body: func(mutate i64) -> i64) -> i64 {
+        return body(mutate self.inner.value)
+    }
+}
+
+func bump(body: func(mutate i64) -> i64, mutate n: i64) -> i64 {
+    return body(mutate n)
+}
+
+func bump_field(body: func(mutate i64) -> i64, mutate c: Cell) -> i64 {
+    return body(mutate c.value)
+}
+
+func bump_nested(body: func(mutate i64) -> i64, mutate o: Outer) -> i64 {
+    return body(mutate o.inner.value)
+}
+
+test "a field of self forwarded to a closure, generic return" {
+    mut c = Cell(value: 1)
+    let r = c.write(|mutate v: i64| {
+        v += 41
+        return v
+    })
+    assert r == 42
+    assert c.value == 42
+}
+
+test "a field of self forwarded to a closure" {
+    mut c = Cell(value: 1)
+    let r = c.write_plain(|mutate v: i64| {
+        v += 41
+        return v
+    })
+    assert r == 42
+    assert c.value == 42
+}
+
+test "a nested field of self forwarded to a closure" {
+    mut o = Outer(inner: Cell(value: 1))
+    let r = o.write_inner(|mutate v: i64| {
+        v += 41
+        return v
+    })
+    assert r == 42
+    assert o.inner.value == 42
+}
+
+test "a field of a mutate parameter forwarded to a closure" {
+    mut c = Cell(value: 1)
+    let r = bump_field(|mutate v: i64| {
+        v += 41
+        return v
+    }, mutate c)
+    assert r == 42
+    assert c.value == 42
+}
+
+test "a nested field of a mutate parameter forwarded to a closure" {
+    mut o = Outer(inner: Cell(value: 1))
+    let r = bump_nested(|mutate v: i64| {
+        v += 41
+        return v
+    }, mutate o)
+    assert r == 42
+    assert o.inner.value == 42
+}
+
+test "a field of a local forwarded to a closure" {
+    mut c = Cell(value: 1)
+    let add = |mutate v: i64| -> i64 {
+        v += 41
+        return v
+    }
+    let r = add(mutate c.value)
+    assert r == 42
+    assert c.value == 42
+}
+
+test "a scalar mutate parameter forwarded to a closure" {
+    mut x = 1
+    let r = bump(|mutate v: i64| {
+        v += 41
+        return v
+    }, mutate x)
+    assert r == 42
+    assert x == 42
+}
+
+func main() {}
