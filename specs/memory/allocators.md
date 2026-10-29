@@ -77,6 +77,31 @@ A library can't leak a block-born value out of the block — AL13 is checked at 
 
 AL17 and AL18 are deleted. An inline closure runs under whatever is current when it runs, which is what AL17 said; a stored closure does too, which is the opposite of AL18.
 
+## Frames
+
+A game loop wants one block of memory for the whole run and a clean slate every frame. `Arena.scoped` gets the clean slate by acquiring and freeing the backing memory each time. A `FrameArena` keeps the memory and rewinds it at the end of each frame.
+
+| Rule | Description |
+|------|-------------|
+| **AL34: A frame is a `using` that rewinds** | `using frames.frame() { body }` installs `frames` as the current allocator and rewinds it to empty on exit, normal, `return`, `try` and unwind alike. `frame()` is only valid as a `using` operand |
+| **AL35: A frame arena holds nothing but the current frame** | `FrameArena` doesn't implement `Allocator`, so it can't be installed with a plain `using` or named in `new_in`/`clone_in`; `frame()` is the only way in. `frame()` borrows it exclusively for the block, like `with` (`mem.borrowing`), so frames don't nest. Everything in the arena was born in the open frame, AL13 keeps it there, and the rewind frees exactly that |
+
+<!-- test: skip -->
+```rask
+func run(mut world: World) {
+    let frames = FrameArena.new(4.megabytes())    // backing acquired once
+    loop {
+        using frames.frame() {
+            let visible = cull(world.entities)    // frame scratch
+            draw(visible)
+            world.tick()                          // world's own vecs grow in Global (AL22)
+        }                                         // rewound, ready for the next frame
+    }
+}
+```
+
+Data that has to outlive a frame, like a loaded level, lives in `Global` or in an ordinary `Arena` around the loop. It can't share the frame arena, and AL35 is why.
+
 ## Racks and Heap
 
 | Rule | Description |
@@ -100,6 +125,7 @@ Allocation already costs a `malloc`; the indirect call next to it is noise. The 
 |-----------|-------------|
 | `Global` | The process allocator. `malloc`/`free` unless the program replaces it before its first allocation (`rask_allocator_set` in the runtime), which is how a build with no OS gets a heap over a static buffer ([bare-metal.md](../analysis/bare-metal.md)). Default |
 | `Arena` | Bump allocator. Bulk free on drop, `dealloc` is a no-op. Fixed size, exhaustion is `AllocError`, never a hidden `malloc` |
+| `FrameArena` | Bump memory that only hands out frames (AL34). Fixed size, rewound to empty after each frame |
 | `FixedBuffer` | Allocates from a `[u8; N]` the caller owns. No system calls. Embedded-friendly |
 
 <!-- test: skip -->
@@ -161,6 +187,11 @@ FIX: Hoist the call out of the block, or run it under Global:
 | Comptime allocations | — | Compiler arena (`ctrl.comptime/CT17`), `using` is a compile error inside `comptime` |
 | `try_push` on a `FixedBuffer`-backed vec | AL3 | `GrowError` when the buffer is full |
 | Panic inside the block | AL12 | Unwind restores the previous allocator and frees the arena after `ensure` blocks ran |
+| Frame-born value assigned to a binding outside the frame | AL13 | Compile error, same as any nested block |
+| `Vec.new_in(frames)` or `using frames { }` | AL35 | Compile error: a `FrameArena` isn't an `Allocator` |
+| `frames.frame()` inside another `frames.frame()` | AL35 | Compile error: `frames` is already borrowed by the outer frame |
+| Frame runs out of room | AL3 | `AllocError` from the allocation that didn't fit. The arena never grows, so a frame never hides a `malloc` |
+| Outer `World` mutated in place inside a frame | AL22 | Fine. Its collections remember `Global` and grow there |
 | Pointer from `.as_ptr()` handed to C inside a block | AL13 | No new rule. A raw pointer is already invalid once its source is dropped (`struct.c-interop/ST4`), the source is block-born so it's dropped no later than the block ends, and the arena is freed no earlier. C keeping it longer was already the `unsafe` block's promise to break |
 | `return "done"` from inside a block | AL13 | Fine. A literal is born under nothing |
 | A 32-byte struct of numbers built in the block | AL13 | Fine. Its type owns no heap memory, so the allocator never touched it |
@@ -182,15 +213,15 @@ FIX: Hoist the call out of the block, or run it under Global:
 
 **Why infer stash and not declare it (AL27).** Declaring it is function colouring under another name: it goes on every signature it's true of and every caller of those. Inference costs the compiler one transitive pass over MIR it already has the moves for, and the user nothing. If the analysis turns out to fire on every builder in a real program, the answer is a finer analysis, not an annotation.
 
-### Open
+**Why frames get their own type (AL35).** Raido's frame marker keeps everything below the mark and rewinds only what the frame added. Copied here as a frame on an ordinary `Arena`, it's unsound under AL22. A value born under the arena before the frame still grows through the arena, so `level.enemies.push(e)` inside the frame takes room above the mark, and the rewind frees it while `level` still points at it. Nested frames have the same hole one level down. Ruling out growth of older values inside a frame would need a third inferred property per function, "grows this parameter". A type that holds only the current frame needs nothing: there are no older values.
 
-An arena rewind marker (`frame_begin`/`frame_end` in Raido's terms) so a game loop acquires backing memory once and rewinds per frame instead of allocating and freeing an arena per frame. One rule, not yet written; see [c3-lessons.md](../analysis/c3-lessons.md).
+### Open
 
 **Whether `extern "C"` functions always run under `Global` (AL30) is provisional.** It's the simplest rule that's safe, and safety doesn't depend on the choice: everything a callback builds under `Global` can go anywhere. What it costs is speed and one surprise. Callbacks never see the caller's arena, and Rask code calling an exported function directly gets `Global` allocations inside an arena block. The alternative is inheriting the current allocator when C calls back on a Rask task's thread, which makes passing a Rask function to C count as calling it for the escape and stash checks. I don't know yet which matters more over time. What would settle it is real C libraries with callbacks in the validation programs (SQLite row callbacks in the HTTP server, a SAX-style parser), measured: how much callback allocation misses the arena, and how often the userdata workaround gets written.
 
 ### See Also
 
-- [Borrowing](borrowing.md) — the `with` block rule AL13 is modelled on (`mem.borrowing/W2`)
+- [Borrowing](borrowing.md) — the `with` block rule AL13 is modelled on (`mem.borrowing/W2`), and the exclusive borrow `frame()` takes (AL35)
 - [Heap Values](heap.md) — `Heap(…)` takes the current allocator (`mem.heap/HP6`)
 - [Racks and Links](racks.md) — rack chunks under an arena (`mem.racks`)
 - [Async](../concurrency/async.md) — `using Multitasking { … }` installs a scheduler the same way
