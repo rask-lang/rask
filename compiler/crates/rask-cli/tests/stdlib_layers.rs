@@ -26,13 +26,7 @@ use rask_stdlib::stubs::{layer_of, stub_sources, Layer, StubRegistry};
 
 /// Upward edges that exist today, `(from, to, why)`. Each is a module that
 /// has to be cut in two before its row in the layer table is true.
-const ALLOWED: &[(&str, &str, &str)] = &[(
-    "csv.rk",
-    "io.rk",
-    "`Reader`, `Writer` and `IoError` are interfaces over bytes and belong in \
-     alloc; stdin, stdout and the file-backed readers are what needs an OS. \
-     Cutting io.rk in two removes this edge.",
-)];
+const ALLOWED: &[(&str, &str, &str)] = &[];
 
 #[test]
 fn no_stdlib_module_names_a_layer_above_its_own() {

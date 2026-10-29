@@ -12,15 +12,18 @@ use std::sync::OnceLock;
 
 /// How many sources the stdlib contributes to the `file_id` space.
 ///
-/// Which layer a stdlib module belongs to: what it needs from the machine
-/// (rask-lang/rask#1648).
+/// Which layer a stdlib module belongs to (rask-lang/rask#1648).
 ///
-/// The cut follows the hardware. `Core` needs nothing and runs anywhere, an
-/// interrupt handler included. `Alloc` needs a heap. `Std` needs an operating
-/// system: files, sockets, threads, clocks, a process. A module may only name
-/// things from its own layer and below, and `stdlib_layers` in rask-cli's
-/// tests holds that line, so a no-OS build can leave `Std` out and a no-heap
-/// build `Alloc` too.
+/// Two things decide it. What the module needs from the machine: `Core`
+/// needs nothing and runs anywhere, an interrupt handler included; `Alloc`
+/// needs a heap; `Std` needs an operating system. And what a small build
+/// should carry: `Core` and `Alloc` together are what a chip ships, so they
+/// hold the language's own types and the collections and nothing that is
+/// merely useful. A CSV parser needs only a heap, and it still isn't `Alloc`,
+/// because a program that never parses CSV shouldn't pay for one. The
+/// formats and codecs are `Std` for that reason, not because they need an
+/// OS. A module may only name things from its own layer and below, and
+/// `stdlib_layers` in rask-cli's tests holds that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Layer {
     Core,
@@ -59,18 +62,20 @@ const LAYERS: &[(&str, Layer)] = &[
     ("builtins.rk", Layer::Alloc),
     ("bits.rk", Layer::Alloc),
     ("fmt.rk", Layer::Alloc),
-    ("hex.rk", Layer::Alloc),
-    ("base64.rk", Layer::Alloc),
-    ("digest.rk", Layer::Alloc),
     ("sequence.rk", Layer::Alloc),
-    ("reflect.rk", Layer::Alloc),
-    ("encoding.rk", Layer::Alloc),
-    ("json.rk", Layer::Alloc),
-    ("url.rk", Layer::Alloc),
-    ("path.rk", Layer::Alloc),
-    ("error_context.rk", Layer::Alloc),
-    ("csv.rk", Layer::Alloc),
     ("random.rk", Layer::Alloc),
+    ("error_context.rk", Layer::Alloc),
+    // Useful, not essential: a build that never names them shouldn't carry
+    // them, so they sit above the chip's layers whatever they need.
+    ("hex.rk", Layer::Std),
+    ("base64.rk", Layer::Std),
+    ("digest.rk", Layer::Std),
+    ("reflect.rk", Layer::Std),
+    ("encoding.rk", Layer::Std),
+    ("json.rk", Layer::Std),
+    ("url.rk", Layer::Std),
+    ("path.rk", Layer::Std),
+    ("csv.rk", Layer::Std),
     ("fs.rk", Layer::Std),
     ("net.rk", Layer::Std),
     ("http.rk", Layer::Std),
