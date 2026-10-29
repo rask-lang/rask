@@ -2729,6 +2729,20 @@ fn error_a_task_local_shared_cannot_be_sent() {
     );
 }
 
+// ctrl.comptime/CT68: a generic that recurses at a bigger type stops at the
+// depth limit with the chain, instead of hanging the compiler (#1663). The
+// interpreter has nothing to instantiate and answers.
+#[test]
+fn polymorphic_recursion_stops_at_the_depth_limit() {
+    let (_stdout, stderr, code) = run_capture("--native", "polymorphic_recursion.rk");
+    assert_ne!(code, 0, "native has no finite set of copies to build: {stderr}");
+    assert!(stderr.contains("E0927"), "{stderr}");
+    assert!(stderr.contains("`nest<i32>` needs `nest<Vec<i32>>`"), "the chain starts readable: {stderr}");
+    let (stdout, stderr, code) = run_capture("--interp", "polymorphic_recursion.rk");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "0\n");
+}
+
 #[test]
 fn error_rack_delete_while_held() {
     let (failed, out) = compile_error_output("rack_delete_while_held.rk");

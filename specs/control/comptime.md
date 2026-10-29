@@ -137,7 +137,7 @@ Comptime evaluation and monomorphization are not separate phases. Comptime code 
 | **CT65: No compilation-state observation** | Comptime code observes source-declared facts (fields, variants, declared conformances, annotations) and build config (`cfg`) — never compilation progress (which instantiations exist, evaluation order, caches). Comptime results are deterministic and independent of evaluation order |
 | **CT66: Types are not values** | Types reach comptime code only as generic arguments. No storing types in variables, returning them, or creating new types at comptime. The set of types and conformances is fixed by source before evaluation begins — this is what makes CT65 hold |
 | **CT67: Value cycles are errors** | A comptime evaluation that demands its own result — directly, or through const initializers, type layouts, or instantiations — is a compile error reporting the full dependency chain. Residual calls demand only the callee's signature, never its comptime results: recursive and mutually recursive generic functions stay legal |
-| **CT68: Instantiation depth limit** | An instantiation chain (each instantiation demanding the next) deeper than 64 is a compile error showing the chain. Override with `--instantiation-limit=N` |
+| **CT68: Instantiation depth limit** | An instantiation chain (each instantiation demanding the next) deeper than 64 is a compile error (E0927) showing where the chain starts. Polymorphic recursion, `nest<T>` calling `nest<Vec<T>>`, is the case it exists for: native code needs a copy per level and there is no last one. The limit is fixed; a legitimate chain is far shorter, and a knob would only let the same program fail later |
 
 <!-- test: skip -->
 ```rask

@@ -977,6 +977,9 @@ fn monomorphize_inner(
     mono.add_exported_roots();
 
     mono.run();
+    if let Some(chain) = mono.too_deep.take() {
+        return Err(MonomorphizeError::InstantiationTooDeep { chain });
+    }
 
     let type_names: HashMap<rask_types::TypeId, String> = program
         .types
@@ -1077,6 +1080,11 @@ pub enum MonomorphizeError {
         type_name: String,
         reason: String,
     },
+    /// ctrl.comptime/CT68: each generic instance demanded a deeper one, past
+    /// `reachability::INSTANTIATION_LIMIT`. The chain, outermost first.
+    InstantiationTooDeep {
+        chain: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for MonomorphizeError {
@@ -1090,6 +1098,19 @@ impl std::fmt::Display for MonomorphizeError {
             ),
             Self::LayoutError { type_name, reason } => {
                 write!(f, "cannot lay out `{}` in memory: {}", type_name, reason)
+            }
+            Self::InstantiationTooDeep { chain } => {
+                let first = chain.first().map(String::as_str).unwrap_or("?");
+                match chain.get(1) {
+                    Some(second) => write!(
+                        f,
+                        "`{}` needs `{}`, and every copy needs a bigger one: instantiation never ends ({} levels and counting)",
+                        first,
+                        second,
+                        chain.len()
+                    ),
+                    None => write!(f, "instantiating `{}` never ends", first),
+                }
             }
         }
     }

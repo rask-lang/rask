@@ -1078,7 +1078,25 @@ fn finalize_compile_inner(
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            diags.push(Diagnostic::error(e.to_string()));
+            let d = match &e {
+                rask_mono::MonomorphizeError::InstantiationTooDeep { .. } => {
+                    Diagnostic::error(e.to_string())
+                        .with_code("E0927")
+                        .with_fix(
+                            "give the recursion a type that stops changing: recurse at the same \
+                             `T`, or move the varying part into a value (a `Vec<T>` you pass along) \
+                             instead of a type argument",
+                        )
+                        .with_why(
+                            "native code is one copy per set of type arguments, and here every \
+                             copy calls one with a bigger type, so there is no finite set to \
+                             compile [ctrl.comptime/CT68]. The interpreter runs it, because it \
+                             makes no copies",
+                        )
+                }
+                _ => Diagnostic::error(e.to_string()),
+            };
+            diags.push(d);
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };
