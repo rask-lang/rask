@@ -146,6 +146,23 @@ fn builds_borrowing_closure(func: &MirFunction) -> bool {
 /// written through, so a function forwarding an `i64` stays inlinable. An
 /// unknown callee (extern, stdlib) is assumed to write through any pointer-shaped
 /// argument, because there's nothing here that could prove otherwise.
+///
+/// A callee reached through a value is unknown too, and only plain `Call`
+/// statements were looked at, so a parameter handed to a closure or to an
+/// interface method was never seen as forwarded:
+///
+/// ```text
+/// func write<R>(mutate self, body: |mutate i64| -> R) -> R {
+///     return body(mutate self.value)      // closure_call(_1, _0): _0 is self
+/// }
+/// ```
+///
+/// `write` was inlined, `self` became a copy of the caller's struct, and the
+/// closure's store landed on the copy: `c.write(|mutate v| { v += 41 })` left
+/// `c.value` alone (#1659). A scalar `mutate` parameter survived the same
+/// shape only because it is a pointer *value*, which still points at the
+/// caller's variable after being copied; an aggregate's local *is* the
+/// storage, so copying it is what loses the write.
 /// Locals that name a parameter's storage: the parameter itself, plus whatever
 /// is derived from it by a copy or by adding a field offset. Both `Store` and a
 /// forwarded call argument are checked against this rather than against the
@@ -212,17 +229,23 @@ fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collectio
             let mut add: HashSet<usize> = HashSet::new();
             for b in &f.blocks {
                 for s in &b.statements {
-                    let MirStmtKind::Call { func: callee, args, .. } = &s.kind else { continue };
+                    // Every statement that hands arguments to a callee. A
+                    // closure or an interface method has no body here to
+                    // inspect, so it is an unknown callee.
+                    let (callee, args) = match &s.kind {
+                        MirStmtKind::Call { func, args, .. } => (Some(func.name.as_str()), args),
+                        MirStmtKind::ClosureCall { args, .. }
+                        | MirStmtKind::InterfaceCall { args, .. } => (None, args),
+                        _ => continue,
+                    };
                     for (j, arg) in args.iter().enumerate() {
                         let MirOperand::Local(id) = arg else { continue };
                         let Some(&i) = alias.get(id) else { continue };
                         if !pointer_shaped(&f.params[i].ty) {
                             continue;
                         }
-                        let callee_writes = match known.get(callee.name.as_str()) {
-                            Some(_) => written
-                                .get(&callee.name)
-                                .is_some_and(|s| s.contains(&j)),
+                        let callee_writes = match callee.filter(|name| known.contains_key(name)) {
+                            Some(name) => written.get(name).is_some_and(|s| s.contains(&j)),
                             // Nothing to inspect — assume the worst.
                             None => true,
                         };
@@ -1338,6 +1361,59 @@ mod tests {
         let _ = inline_functions(&mut fns);
         // Should NOT have inlined — block count unchanged
         assert_eq!(fns[0].blocks.len(), blocks_before);
+    }
+
+    /// `func write(mutate self: Cell, body: |mutate i64|) { body(mutate self.value) }`
+    /// hands `self`'s storage to a closure, so it writes through parameter 0
+    /// and must not be inlined (#1659). The same through an interface method.
+    fn forwards_param_to(call: MirStmtKind) -> MirFunction {
+        let cell = MirType::Struct(crate::types::StructLayoutId::new(0, 8, 8));
+        MirFunction {
+            name: "write".to_string(),
+            params: vec![
+                make_local(0, "self", cell.clone(), true),
+                make_local(1, "body", MirType::Ptr, true),
+            ],
+            ret_ty: MirType::Void,
+            locals: vec![
+                make_local(0, "self", cell, true),
+                make_local(1, "body", MirType::Ptr, true),
+            ],
+            blocks: vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![MirStmt::dummy(call)],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+            entry_block: BlockId(0),
+            is_extern_c: false,
+            inline_hint: false,
+            source_file: None,
+        }
+    }
+
+    #[test]
+    fn a_param_handed_to_a_closure_counts_as_written_through() {
+        let f = forwards_param_to(MirStmtKind::ClosureCall {
+            dst: None,
+            closure: LocalId(1),
+            args: vec![MirOperand::Local(LocalId(0))],
+        });
+        let written = params_written_through(&[f]);
+        assert!(written["write"].contains(&0), "self goes to the closure by address");
+        assert!(!written["write"].contains(&1), "the closure value itself is only read");
+    }
+
+    #[test]
+    fn a_param_handed_to_an_interface_method_counts_as_written_through() {
+        let f = forwards_param_to(MirStmtKind::InterfaceCall {
+            dst: None,
+            interface_object: LocalId(1),
+            method_name: "add".to_string(),
+            vtable_offset: 0,
+            args: vec![MirOperand::Local(LocalId(0))],
+        });
+        let written = params_written_through(&[f]);
+        assert!(written["write"].contains(&0));
     }
 
     #[test]

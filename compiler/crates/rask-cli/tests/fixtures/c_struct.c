@@ -14,6 +14,8 @@ int rask_test_rgba(Rgba c) { return c.r + c.g * 10 + c.b * 100 + c.a * 1000; }
 int rask_test_mixed(Rect r, int k, Vec2d v) {
     return r.width * r.height + k + (int)(v.x + v.y);
 }
+float rask_test_seg(Seg s) { return s.a.x + s.a.y * 10 + s.b.x * 100 + s.b.y * 1000; }
+float rask_test_tri(Tri t) { return t.v[0] + t.v[1] * 10 + t.w * 100; }
 Rect rask_test_make(int w, int h) {
     Rect r;
     r.width = w;

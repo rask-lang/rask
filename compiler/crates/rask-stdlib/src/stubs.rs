@@ -12,6 +12,92 @@ use std::sync::OnceLock;
 
 /// How many sources the stdlib contributes to the `file_id` space.
 ///
+/// Which layer a stdlib module belongs to (rask-lang/rask#1648).
+///
+/// Two things decide it. What the module needs from the machine: `Core`
+/// needs nothing and runs anywhere, an interrupt handler included; `Alloc`
+/// needs a heap; `Std` needs an operating system. And what a small build
+/// should carry: `Core` and `Alloc` together are what a chip ships, and
+/// they are the language's own surface rather than libraries: its types,
+/// the ambient functions, the collections, Encode/Decode and reflection, and
+/// the few essentials a chip reaches for (hex and base64). `Std` is the
+/// libraries. A CSV parser needs only a heap, and it still isn't `Alloc`,
+/// because a program that never parses CSV shouldn't pay for one; the
+/// formats are `Std` for that reason, not because they need an OS. A module may only name things from its own layer and below, and
+/// `stdlib_layers` in rask-cli's tests holds that line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Layer {
+    Core,
+    Alloc,
+    Std,
+}
+
+impl Layer {
+    pub fn name(self) -> &'static str {
+        match self {
+            Layer::Core => "core",
+            Layer::Alloc => "alloc",
+            Layer::Std => "std",
+        }
+    }
+}
+
+/// The layer of each stdlib file. Every entry of `STUB_SOURCES` has one; a
+/// test checks.
+const LAYERS: &[(&str, Layer)] = &[
+    ("ops.rk", Layer::Core),
+    ("option.rk", Layer::Core),
+    ("result.rk", Layer::Core),
+    ("int.rk", Layer::Core),
+    ("num.rk", Layer::Core),
+    ("float.rk", Layer::Core),
+    ("math.rk", Layer::Core),
+    ("char.rk", Layer::Core),
+    ("range.rk", Layer::Core),
+    ("sync.rk", Layer::Core),
+    ("string.rk", Layer::Alloc),
+    ("bytes.rk", Layer::Alloc),
+    ("collections.rk", Layer::Alloc),
+    (FORWARDERS_FILE, Layer::Alloc),
+    ("memory.rk", Layer::Alloc),
+    ("builtins.rk", Layer::Alloc),
+    ("bits.rk", Layer::Alloc),
+    ("fmt.rk", Layer::Alloc),
+    ("sequence.rk", Layer::Alloc),
+    ("random.rk", Layer::Alloc),
+    ("hex.rk", Layer::Alloc),
+    ("base64.rk", Layer::Alloc),
+    // Encode/Decode and field reflection are language features the compiler
+    // does most of; the files are their surface. Alloc because what they
+    // hand back (field names, a Vec of them) lives on the heap.
+    ("encoding.rk", Layer::Alloc),
+    ("reflect.rk", Layer::Alloc),
+    // Useful, not essential: a build that never names them shouldn't carry
+    // them, so they sit above the chip's layers whatever they need.
+    ("digest.rk", Layer::Std),
+    ("json.rk", Layer::Std),
+    ("url.rk", Layer::Std),
+    ("path.rk", Layer::Std),
+    ("csv.rk", Layer::Std),
+    ("fs.rk", Layer::Std),
+    ("net.rk", Layer::Std),
+    ("http.rk", Layer::Std),
+    ("io.rk", Layer::Std),
+    ("os.rk", Layer::Std),
+    ("cli.rk", Layer::Std),
+    ("terminal.rk", Layer::Std),
+    ("time.rk", Layer::Std),
+    ("thread.rk", Layer::Std),
+    ("async.rk", Layer::Std),
+    ("sim.rk", Layer::Std),
+    ("std.rk", Layer::Std),
+];
+
+/// The layer of a stdlib file, by the name `stub_sources` gives it.
+pub fn layer_of(file: &str) -> Option<Layer> {
+    LAYERS.iter().find(|(f, _)| *f == file).map(|(_, l)| *l)
+}
+
 /// One past `STUB_SOURCES` for the generated forwarders, which have no file of
 /// their own but still need spans that resolve somewhere.
 pub const STDLIB_FILE_COUNT: u16 = STUB_SOURCES.len() as u16 + 1;
@@ -313,7 +399,6 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("float.rk", include_str!("../../../../stdlib/float.rk")),
     ("int.rk", include_str!("../../../../stdlib/int.rk")),
-    ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
     // OR2: the operator interfaces. After num.rk so the numeric roster is in
@@ -1503,6 +1588,14 @@ mod boundary_tests {
             broken.len(),
             broken.join("\n  ")
         );
+    }
+
+    #[test]
+    fn every_stdlib_file_has_a_layer() {
+        let missing: Vec<&str> = all_sources().iter().map(|(n, _)| *n).filter(|n| layer_of(n).is_none()).collect();
+        assert!(missing.is_empty(), "stdlib files with no entry in LAYERS: {missing:?}");
+        let extra: Vec<&str> = LAYERS.iter().map(|(n, _)| *n).filter(|n| !all_sources().iter().any(|(m, _)| m == n)).collect();
+        assert!(extra.is_empty(), "LAYERS names files that aren't stub sources: {extra:?}");
     }
 
     #[test]

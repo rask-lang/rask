@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `with` source that is a call on something other than a `Shared`
+//
+// Spec: mem.borrowing (W1, W5), conc.sync (R1, R2)
+//
+// `with` writes its binding back to the source when the block ends. That needs
+// a place to write to: an element reached by key, or the payload behind a
+// `Shared` lock. A method on a user type returns a value, so the binding is a
+// copy and the write-back has nowhere to go.
+//
+// Both backends compiled `with c.write() as v { v += 1 }` and printed the old
+// value (#1658): the source said "mutate inside a scope" and the program did
+// nothing. The checker let any method call through as if it were a lock.
+
+import sync.Shared
+import sync.Mutex
+
+struct Cell {
+    value: i64
+}
+
+extend Cell {
+    func write(mutate self) -> i64 {
+        return self.value
+    }
+
+    func read(self) -> i64 {
+        return self.value
+    }
+
+    func slot(mutate self) -> i64 {
+        return self.value
+    }
+
+    func bump(mutate self) {
+        self.value = self.value + 1
+        return
+    }
+}
+
+func write_on_a_user_type() {
+    mut c = Cell(value: 1)
+    // ERROR: `with` can't scope `c.write()` — it's a call on a `Cell`, not a `Shared` lock [E0926]
+    with c.write() as v {
+        v += 1
+    }
+}
+
+func read_on_a_user_type() {
+    mut c = Cell(value: 1)
+    // ERROR: `with` can't scope `c.read()` — same rule, same code [E0926]
+    with c.read() as v {
+        v += 1
+    }
+}
+
+func any_other_method() {
+    mut c = Cell(value: 1)
+    // ERROR: a method with any other name is no better [E0926]
+    with c.slot() as v {
+        v += 1
+    }
+}
+
+// FIX 1: call it and bind what it returns
+func bind_the_result() -> i64 {
+    mut c = Cell(value: 1)
+    let v = c.write()
+    return v + 1
+}
+
+// FIX 2: change the value where it lives, inside a `mutate self` method
+func mutate_in_place() {
+    mut c = Cell(value: 1)
+    c.bump()
+}
+
+// A lock on a `Shared` is still the legal call source
+const TOTAL: Shared<i64, Mutex> = Shared.mutex(0)
+
+func through_a_lock() {
+    with TOTAL.write() as n {
+        n = n + 1
+    }
+}
