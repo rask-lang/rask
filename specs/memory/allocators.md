@@ -186,6 +186,8 @@ FIX: Hoist the call out of the block, or run it under Global:
 
 An arena rewind marker (`frame_begin`/`frame_end` in Raido's terms) so a game loop acquires backing memory once and rewinds per frame instead of allocating and freeing an arena per frame. One rule, not yet written; see [c3-lessons.md](../analysis/c3-lessons.md).
 
+**Whether `extern "C"` functions always run under `Global` (AL30) is provisional.** It's the simplest rule that's safe, and safety doesn't depend on the choice: everything a callback builds under `Global` can go anywhere. What it costs is speed and one surprise. Callbacks never see the caller's arena, and Rask code calling an exported function directly gets `Global` allocations inside an arena block. The alternative is inheriting the current allocator when C calls back on a Rask task's thread, which makes passing a Rask function to C count as calling it for the escape and stash checks. I don't know yet which matters more over time. What would settle it is real C libraries with callbacks in the validation programs (SQLite row callbacks in the HTTP server, a SAX-style parser), measured: how much callback allocation misses the arena, and how often the userdata workaround gets written.
+
 ### See Also
 
 - [Borrowing](borrowing.md) — the `with` block rule AL13 is modelled on (`mem.borrowing/W2`)
