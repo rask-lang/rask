@@ -40,7 +40,7 @@ extend Cell {
 
 func write_on_a_user_type() {
     mut c = Cell(value: 1)
-    // ERROR: `with` can't scope `c.write()` — it's a call on a `Cell`, not a `Shared` lock [E0925]
+    // ERROR: `with` can't scope `c.write()` — it's a call on a `Cell`, not a `Shared` lock [E0926]
     with c.write() as v {
         v += 1
     }
@@ -48,7 +48,7 @@ func write_on_a_user_type() {
 
 func read_on_a_user_type() {
     mut c = Cell(value: 1)
-    // ERROR: `with` can't scope `c.read()` — same rule, same code [E0925]
+    // ERROR: `with` can't scope `c.read()` — same rule, same code [E0926]
     with c.read() as v {
         v += 1
     }
@@ -56,7 +56,7 @@ func read_on_a_user_type() {
 
 func any_other_method() {
     mut c = Cell(value: 1)
-    // ERROR: a method with any other name is no better [E0925]
+    // ERROR: a method with any other name is no better [E0926]
     with c.slot() as v {
         v += 1
     }

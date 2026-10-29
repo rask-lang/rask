@@ -2958,7 +2958,7 @@ fn error_with_over_a_call() {
     let (failed, out) = compile_error_output("with_over_a_call.rk");
     assert!(failed, "should reject `with c.write() as v` on a type that isn't a Shared");
     assert!(
-        out.contains("E0925"),
+        out.contains("E0926"),
         "should be the call-source error, not something else: {}",
         out,
     );

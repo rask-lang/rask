@@ -129,7 +129,7 @@ test "with over a staged Shared" {
 }
 
 // The Shared can sit behind a field; the source is still its lock. A user
-// type's own `write` method is not one (E0925, #1658) — a call on anything
+// type's own `write` method is not one (E0926, #1658) — a call on anything
 // but a Shared returns a value the block would silently throw away.
 struct Guard {
     hits: Shared<i64, Mutex>

@@ -2072,7 +2072,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "`with` can't scope `{}` — it's a call on a `{}`, not a `Shared` lock",
                     call, receiver_ty
                 ))
-                .with_code("E0925")
+                .with_code("E0926")
                 .with_primary(
                     *span,
                     format!(
