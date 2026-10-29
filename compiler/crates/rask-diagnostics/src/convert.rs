@@ -3711,32 +3711,36 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
             }
 
             FieldViewStored { into, path, root, field_ty, bound } => {
-                use rask_ownership::ViewSink;
+                use rask_ownership::Sink;
                 // The value as written at the store: the field read, or the
                 // name that holds the view.
                 let shown = bound.as_ref().map(|(n, _)| n.as_str()).unwrap_or(path);
                 let (headline, owner) = match into {
-                    ViewSink::Place(target) => (
+                    Sink::Return => (
+                        format!("returning `{}` would give it a second owner", path),
+                        "the caller".to_string(),
+                    ),
+                    Sink::Place { place: target, .. } => (
                         format!("`{}` and `{}` would be the same `{}`", target, path, field_ty),
                         format!("`{}`", target),
                     ),
-                    ViewSink::StructField { ty, field } => (
+                    Sink::StructField { ty, field } => (
                         format!("the new `{}` would share its `{}` with `{}`", ty, field, path),
                         format!("the new `{}`", ty),
                     ),
-                    ViewSink::Element => (
+                    Sink::Element => (
                         format!("`{}` stored in a tuple or array would get a second owner", path),
                         "the tuple or array".to_string(),
                     ),
-                    ViewSink::Payload { variant } => (
+                    Sink::Payload { variant } => (
                         format!("`{}` would share its payload with `{}`", variant, path),
                         format!("`{}`", variant),
                     ),
-                    ViewSink::Heap => (
+                    Sink::Heap => (
                         format!("`Heap({})` would be a second owner of `{}`", shown, path),
                         "the `Heap`".to_string(),
                     ),
-                    ViewSink::TakeArg { callee } => (
+                    Sink::TakeArg { callee } => (
                         format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
                         format!("`{}`", callee),
                     ),
@@ -3747,7 +3751,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                         name, path
                     ),
                     None => match into {
-                        ViewSink::Place(target) => format!(
+                        Sink::Place { place: target, .. } => format!(
                             "store a separate value: `{} = {}.clone()`",
                             target, path
                         ),
@@ -3840,26 +3844,35 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            LentValueEscapes { call, holder, lender, payload_ty, clone_form, lent_at } => {
+            LentValueEscapes { into, call, holder, lender, payload_ty, clone_form, lent_at } => {
+                use rask_ownership::Sink;
+                let verb = if matches!(into, Sink::Return) { "hand back" } else { "store" };
                 let fix = match clone_form {
                     Some(m) => format!(
-                        "hand back a copy — `{}` has `{}`, which allocates a new `{}` and says so at the call site",
-                        lender, m, payload_ty
+                        "{} a copy — `{}` has `{}`, which allocates a new `{}` and says so at the call site",
+                        verb, lender, m, payload_ty
                     ),
                     None => format!(
-                        "hand back a copy — `.clone()` what the lookup answers with, so the new `{}` is visible here",
-                        payload_ty
+                        "{} a copy — `.clone()` what the lookup answers with, so the new `{}` is visible here",
+                        verb, payload_ty
                     ),
                 };
-                Diagnostic::error(format!(
-                    "`{}` hands back what `{}` still holds — returning it gives the caller a second name for it",
-                    call, holder
-                ))
+                let second = match into {
+                    Sink::Return => "returning it gives the caller a second name for it".to_string(),
+                    Sink::Place { place, .. } => format!("storing it in `{}` gives it a second owner", place),
+                    Sink::StructField { ty, field } => format!("the new `{}`'s `{}` would be a second owner of it", ty, field),
+                    Sink::Element => "a tuple or array holding it would be a second owner".to_string(),
+                    Sink::Payload { variant } => format!("`{}` holding it would be a second owner", variant),
+                    Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
+                    Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
+                };
+                let primary = match into {
+                    Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
+                    _ => format!("this would own a `{}` that `{}` still holds", payload_ty, holder),
+                };
+                Diagnostic::error(format!("`{}` hands back what `{}` still holds — {}", call, holder, second))
                 .with_code("E0879")
-                .with_primary(
-                    self.span,
-                    format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
-                )
+                .with_primary(self.span, primary)
                 .with_secondary(*lent_at, format!("`{}` keeps the value; the lookup reads it in place", holder))
                 .with_fix(fix)
                 .with_why(

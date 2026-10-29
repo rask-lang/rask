@@ -73,7 +73,7 @@ pub enum OwnershipErrorKind {
     /// with two owners.
     #[error("`{path}` would get a second owner")]
     FieldViewStored {
-        into: ViewSink,
+        into: Sink,
         path: String,
         /// `src` of `src.items`.
         root: String,
@@ -111,14 +111,18 @@ pub enum OwnershipErrorKind {
         field_ty: String,
     },
 
-    /// mem.borrowing/S3 one level out: a value a container lent, returned.
+    /// mem.borrowing/S3 one level out: a value a container lent, given a
+    /// second owner — returned, stored in a field, or built into a tuple,
+    /// struct or variant.
     ///
     /// `return index.get(word) ?? Vec.new()` is fresh on one path and the map's
     /// own vector on the other. One name, two owners — freeing it corrupts the
     /// map, not freeing it leaks — so the shape is rejected and the copy is
     /// written down.
-    #[error("`{call}` hands back what `{holder}` still holds — returning it gives the caller a second name for it")]
+    #[error("`{call}` hands back what `{holder}` still holds, and this would give it a second owner")]
     LentValueEscapes {
+        /// Where it was going.
+        into: Sink,
         /// `index.get(…)`.
         call: String,
         /// The container the value belongs to. Not called `source`:
@@ -642,11 +646,16 @@ pub enum OwnershipErrorKind {
     },
 }
 
-/// What a field view was handed to. Drives the E0909 copy.
+/// Where a value is handed: every place it gets a new holder. The ownership
+/// pass asks one question at each (`check_flow`), and the messages name the
+/// destination from this.
 #[derive(Debug, Clone)]
-pub enum ViewSink {
-    /// `out.items = …`, `v = …`: the place, rendered.
-    Place(String),
+pub enum Sink {
+    /// `return …`, or a closure's result.
+    Return,
+    /// `out.items = …`, `v = …`: the place rendered, and the binding it
+    /// belongs to.
+    Place { place: String, root: String },
     /// `Bag(items: …)`.
     StructField { ty: String, field: String },
     /// `(…, 1)` or `[…]`.

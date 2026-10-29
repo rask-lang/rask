@@ -15,7 +15,7 @@ pub use field_reuse::field_reuses;
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
     AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
-    ViewSink,
+    Sink,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -1627,21 +1627,122 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
-    /// S1/S5 at an assignment: `out.items = src.items` stores a view of
-    /// `src.items` in a place that owns what it holds. Returns whether it
-    /// reported.
+    // ─── Where a value may go ────────────────────────────────────────────
+
+    /// Is `expr` allowed to go to `into`? Asked at every place a value gets a
+    /// new holder: a return, a store, a struct, tuple, variant or `Heap`
+    /// being built, a `take` argument. Returns whether it reported, in which
+    /// case the caller has nothing to move.
     ///
-    /// This used to be caught by accident: the read was recorded as an
-    /// *exclusive* borrow of `src`, which collided with whatever else borrowed
-    /// it. A borrowed parameter always collides, so the error named `src` and
-    /// called the read a write. An owned local usually didn't, so the program
-    /// compiled: the interpreter shared one vector between both names and
-    /// native freed it twice (#1283).
-    fn check_field_view_stored(&mut self, target: &Expr, value: &Expr) -> bool {
-        let Some(into) = Self::render_place(target) else {
-            return false;
+    /// Two kinds of value are restricted, and an aggregate treats them
+    /// differently. A value that may not get a second owner — a view of a
+    /// field, an element a lookup lent, a borrowed parameter — is caught where
+    /// it first gets one, and building a tuple or struct around it is such a
+    /// place, so its parts are asked there. A value that may not outlive a
+    /// scope — a link into a rack this body declared — has no owner to get,
+    /// so an aggregate carries it along and the question is asked again where
+    /// the aggregate goes.
+    ///
+    /// Each of these used to be checked by its own walk, and each walk
+    /// followed a different subset of shapes: the link check looked inside
+    /// tuples but not branches, the lookup check inside branches but not
+    /// tuples, and only at a return (#1662).
+    fn check_flow(&mut self, expr: &Expr, into: Sink, span: Span) -> bool {
+        let owned = self.check_flow_second_owner(expr, &into);
+        let scoped = self.check_flow_outlives(expr, &into, span);
+        owned || scoped
+    }
+
+    /// The second-owner half of `check_flow`, on its own for a closure's
+    /// result: a closure returns to its caller in the same frame, so nothing
+    /// it hands back outlives a rack that frame declared.
+    fn check_flow_second_owner(&mut self, expr: &Expr, into: &Sink) -> bool {
+        let mut values = Vec::new();
+        self.values_reaching(expr, false, &mut values);
+        let mut hit = false;
+        for value in values {
+            hit |= self.check_lent_escape(value, into);
+            hit |= match into {
+                Sink::Return => {
+                    let field = self.check_borrowed_field_escape(value);
+                    let capture = self.check_borrowed_capture_escape(value);
+                    field || capture
+                }
+                _ => self.check_view_owned(value, into.clone()),
+            };
+        }
+        hit
+    }
+
+    /// The outlives half of `check_flow`. Only a return and a store can take
+    /// a value past the scope it was made in.
+    fn check_flow_outlives(&mut self, expr: &Expr, into: &Sink, span: Span) -> bool {
+        let via = match into {
+            Sink::Return => LinkEscape::Return,
+            Sink::Place { root, .. } => LinkEscape::Assignment { target: root.clone() },
+            _ => return false,
         };
-        self.check_view_owned(value, ViewSink::Place(into))
+        let mut values = Vec::new();
+        self.values_reaching(expr, true, &mut values);
+        let mut hit = false;
+        // Two arms returning the same name are one escape, not two.
+        let mut seen: Vec<&str> = Vec::new();
+        for value in values {
+            if let ExprKind::Ident(name) = &value.kind {
+                if seen.contains(&name.as_str()) {
+                    continue;
+                }
+                seen.push(name);
+            }
+            hit |= self.check_link_escape(value, via.clone(), span);
+        }
+        hit
+    }
+
+    /// The values `expr` hands over: itself, or what each branch of an `if`
+    /// or `match` and a block's tail produces. With `through_parts`, also the
+    /// parts of a tuple, array, struct or variant built right here, which go
+    /// wherever the aggregate goes.
+    fn values_reaching<'e>(&self, expr: &'e Expr, through_parts: bool, out: &mut Vec<&'e Expr>) {
+        match &expr.kind {
+            ExprKind::If { then_branch, else_branch, .. } => {
+                self.values_reaching(then_branch, through_parts, out);
+                if let Some(e) = else_branch {
+                    self.values_reaching(e, through_parts, out);
+                }
+            }
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.values_reaching(&arm.body, through_parts, out);
+                }
+            }
+            ExprKind::Block(stmts) => {
+                if let Some(tail) = Self::stmts_tail(stmts) {
+                    self.values_reaching(tail, through_parts, out);
+                }
+            }
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) if through_parts => {
+                for e in elems {
+                    self.values_reaching(e, through_parts, out);
+                }
+            }
+            ExprKind::StructLit { fields, spread, .. } if through_parts => {
+                for f in fields {
+                    self.values_reaching(&f.value, through_parts, out);
+                }
+                if let Some(sp) = spread {
+                    self.values_reaching(sp, through_parts, out);
+                }
+            }
+            ExprKind::MethodCall { object, method, args, .. }
+                if through_parts && self.names_a_variant(object, method) =>
+            {
+                for a in args {
+                    self.values_reaching(&a.expr, through_parts, out);
+                }
+            }
+            _ => out.push(expr),
+        }
     }
 
     /// S1/S3 wherever a value gets an owner: a field read, or a name bound to
@@ -1652,7 +1753,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Only the assignment was checked at first (#1283). `Bag { items:
     /// src.items }` and `let tmp = src.items` followed by `out.items = tmp`
     /// still compiled, and native freed the caller's Vec (#1459).
-    fn check_view_owned(&mut self, expr: &Expr, into: ViewSink) -> bool {
+    fn check_view_owned(&mut self, expr: &Expr, into: Sink) -> bool {
         let Some(view) = self.field_view(expr) else {
             return false;
         };
@@ -1964,19 +2065,24 @@ impl<'a> OwnershipChecker<'a> {
                 if !reinit_target {
                     self.check_node_write(target, stmt.span);
                 }
-                if let Some(target_root) = Self::extract_root_and_fields(target).0 {
-                    self.check_link_escape(
-                        value,
-                        LinkEscape::Assignment { target: target_root },
-                        stmt.span,
-                    );
+                let mut second_owner = false;
+                if let Some(root) = Self::extract_root_and_fields(target).0 {
+                    let place = Self::render_place(target).unwrap_or_else(|| format!("{root}[…]"));
+                    let into = Sink::Place { place, root };
+                    // S1/S5: `out.items = src.items` would store a view of
+                    // `src.items` in a place that owns what it holds. This
+                    // used to be caught by accident, as an exclusive borrow
+                    // of `src` colliding with another; an owned local didn't
+                    // collide, and native freed one vector twice (#1283).
+                    second_owner = self.check_flow_second_owner(value, &into);
+                    self.check_flow_outlives(value, &into, stmt.span);
                 }
                 let link_into_field = !reinit_target
                     && self
                         .node_ty(&value.id)
                         .cloned()
                         .is_some_and(|ty| self.is_link_type(&ty));
-                if !link_into_field && !self.check_field_view_stored(target, value) {
+                if !link_into_field && !second_owner {
                     self.handle_assignment(value, stmt.span, true);
                 }
                 if reinit_target {
@@ -2097,10 +2203,7 @@ impl<'a> OwnershipChecker<'a> {
                         self.return_moves.insert(expr.id, moved);
                     }
                     self.consume_returned_resources(expr);
-                    self.check_borrowed_field_escape(expr);
-                    self.check_borrowed_capture_escape(expr);
-                    self.check_lent_return(expr);
-                    self.check_link_escape(expr, LinkEscape::Return, stmt.span);
+                    self.check_flow(expr, Sink::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
                     // consume or a replacement.
@@ -2350,7 +2453,7 @@ impl<'a> OwnershipChecker<'a> {
                 // after it had gone into the list, and a linked list of
                 // resources couldn't be built one node at a time.
                 if matches!(op, UnaryOp::Heap) {
-                    self.consume_into_owner(operand, ViewSink::Heap);
+                    self.consume_into_owner(operand, Sink::Heap);
                 }
             }
             ExprKind::Call { func, args } => {
@@ -2436,7 +2539,7 @@ impl<'a> OwnershipChecker<'a> {
                         // `drop(src.items)` has its own message (E0890).
                         let callee = callee_name.clone().unwrap_or_else(|| "this call".to_string());
                         if callee == "drop"
-                            || !self.check_view_owned(&arg.expr, ViewSink::TakeArg { callee })
+                            || !self.check_flow(&arg.expr, Sink::TakeArg { callee }, arg.expr.span)
                         {
                             self.consume_arg_or_commit(&arg.expr, callee_name.as_deref());
                         }
@@ -2517,7 +2620,7 @@ impl<'a> OwnershipChecker<'a> {
                             Some(o) => format!("{}.{}", o, method),
                             None => method.clone(),
                         };
-                        if !self.check_view_owned(&arg.expr, ViewSink::TakeArg { callee }) {
+                        if !self.check_flow(&arg.expr, Sink::TakeArg { callee }, arg.expr.span) {
                             self.consume_arg_or_commit(&arg.expr, Some(method.as_str()));
                         }
                     }
@@ -2989,11 +3092,10 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 if !matches!(body.kind, ExprKind::Block(_)) {
-                    self.check_borrowed_capture_escape(body);
                     // The implicit return of an expression body, held to the
-                    // same rule as `return`, for the closure's own parameters.
-                    // An enclosing function's parameter reached here is a
-                    // capture, which the line above answers for.
+                    // same second-owner rule as `return`, for the closure's
+                    // own parameters. An enclosing function's parameter
+                    // reached here is a capture, which has its own check.
                     let in_scope_borrowed = std::mem::take(&mut self.borrowed_params);
                     let in_scope_mutate = std::mem::take(&mut self.mutate_params);
                     for p in params {
@@ -3004,7 +3106,7 @@ impl<'a> OwnershipChecker<'a> {
                             self.mutate_params.insert(p.name.clone(), *entry);
                         }
                     }
-                    self.check_borrowed_field_escape(body);
+                    self.check_flow_second_owner(body, &Sink::Return);
                     self.borrowed_params = in_scope_borrowed;
                     self.mutate_params = in_scope_mutate;
                 }
@@ -3665,27 +3767,11 @@ impl<'a> OwnershipChecker<'a> {
     /// A link into a *parameter* rack is fine — the caller owns it, so it
     /// outlives the call. That's the case that has to keep working:
     /// `func first(mutate s: Rack<T>) -> Link<T>` is an ordinary accessor.
-    fn check_link_escape(&mut self, expr: &Expr, via: LinkEscape, span: Span) {
-        // A link inside an aggregate escapes just as well as a bare one —
-        // `return Holder(link: n)` is the same dangle with a wrapper on it.
-        match &expr.kind {
-            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
-                for e in elems {
-                    self.check_link_escape(e, via.clone(), span);
-                }
-                return;
-            }
-            ExprKind::StructLit { fields, spread, .. } => {
-                for f in fields {
-                    self.check_link_escape(&f.value, via.clone(), span);
-                }
-                if let Some(sp) = spread {
-                    self.check_link_escape(sp, via.clone(), span);
-                }
-                return;
-            }
-            _ => {}
-        }
+    ///
+    /// A link inside an aggregate escapes just as well as a bare one —
+    /// `return Holder(link: n)` is the same dangle with a wrapper on it — so
+    /// `check_flow_outlives` hands this each part. Returns whether it reported.
+    fn check_link_escape(&mut self, expr: &Expr, via: LinkEscape, span: Span) -> bool {
         // A container that had a link put into it escapes with the link inside
         // it. Asked first, because the container's own type isn't a link and the
         // walk below would stop at that (#941).
@@ -3697,19 +3783,19 @@ impl<'a> OwnershipChecker<'a> {
         let rack = match via_container {
             Some(rack) => rack,
             None => {
-                let Some(ty) = self.node_ty(&expr.id) else { return };
+                let Some(ty) = self.node_ty(&expr.id) else { return false };
                 if !self.is_link_type(ty) {
-                    return;
+                    return false;
                 }
-                let Some(rack) = self.link_root_of_expr(expr) else { return };
+                let Some(rack) = self.link_root_of_expr(expr) else { return false };
                 rack
             }
         };
         // A parameter rack outlives this body, so nothing can escape it here.
         if self.param_types.contains_key(&rack) {
-            return;
+            return false;
         }
-        let Some(&rack_block) = self.binding_decl_blocks.get(&rack) else { return };
+        let Some(&rack_block) = self.binding_decl_blocks.get(&rack) else { return false };
         let escapes = match &via {
             LinkEscape::Return => true,
             LinkEscape::Assignment { target } => self
@@ -3718,7 +3804,7 @@ impl<'a> OwnershipChecker<'a> {
                 .is_some_and(|&target_block| rack_block > target_block),
         };
         if !escapes {
-            return;
+            return false;
         }
         let link = match &expr.kind {
             ExprKind::Ident(n) => n.clone(),
@@ -3728,6 +3814,7 @@ impl<'a> OwnershipChecker<'a> {
             kind: OwnershipErrorKind::LinkOutlivesRack { link, rack, via, carried },
             span,
         });
+        true
     }
 
     /// Which rack a link expression came out of, by root name. Follows the two
@@ -4428,14 +4515,28 @@ impl<'a> OwnershipChecker<'a> {
     /// safe and leaks — so the shape is rejected instead and the copy is
     /// written down (#1206).
     ///
-    /// This is mem.borrowing/S3, which already says a view can't be stored in a
-    /// struct, returned, or sent to another task. Only the return is checked
-    /// here; storing a lookup in a field is the same mistake and still gets
-    /// through.
-    fn check_lent_return(&mut self, expr: &Expr) {
-        let Some(lent) = self.lent_value(expr) else { return };
+    /// This is mem.borrowing/S3, which says a view can't be stored in a
+    /// struct, returned, or sent to another task, and it holds wherever the
+    /// value is going: a return, a field, an aggregate part, a `Heap`. Only
+    /// the return was checked at first, and a lookup stored in a field or
+    /// returned inside a tuple read freed memory (#1662).
+    ///
+    /// Two destinations belong to other checks. A bare local name keeps the
+    /// lookup as a view (`record_lent_binding`), which is asked again where
+    /// the name goes. A `take` argument is `check_lent_value_taken`'s, whose
+    /// message names the method. Returns whether it reported.
+    fn check_lent_escape(&mut self, expr: &Expr, into: &Sink) -> bool {
+        match into {
+            Sink::TakeArg { .. } => return false,
+            // `place` and `root` are both rendered from the target, and they
+            // are equal exactly when the target is a bare name.
+            Sink::Place { place, root } if place == root => return false,
+            _ => {}
+        }
+        let Some(lent) = self.lent_value(expr) else { return false };
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::LentValueEscapes {
+                into: into.clone(),
                 call: lent.call,
                 holder: lent.holder,
                 lender: lent.lender,
@@ -4445,6 +4546,7 @@ impl<'a> OwnershipChecker<'a> {
             },
             span: expr.span,
         });
+        true
     }
 
     /// S3: a view into a borrowed parameter's field, handed back to the caller.
@@ -4465,35 +4567,15 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// So is the parameter itself: `func back(b: Bag) -> Bag { return b }`
     /// gave the caller its own `Bag` back under a second name (#1452).
-    fn check_borrowed_field_escape(&mut self, expr: &Expr) {
-        // The value a branch produces is the value returned.
-        match &expr.kind {
-            ExprKind::If { then_branch, else_branch, .. } => {
-                self.check_borrowed_field_escape(then_branch);
-                if let Some(e) = else_branch {
-                    self.check_borrowed_field_escape(e);
-                }
-                return;
-            }
-            ExprKind::Match { arms, .. } => {
-                for arm in arms {
-                    self.check_borrowed_field_escape(&arm.body);
-                }
-                return;
-            }
-            ExprKind::Block(stmts) => {
-                if let Some(StmtKind::Expr(tail)) = stmts.last().map(|s| &s.kind) {
-                    self.check_borrowed_field_escape(tail);
-                }
-                return;
-            }
-            _ => {}
-        }
+    ///
+    /// The value a branch produces is the value returned; `check_flow` hands
+    /// this each one. Returns whether it reported.
+    fn check_borrowed_field_escape(&mut self, expr: &Expr) -> bool {
         // `let t = b.items; return t` returns `b.items` under another name.
         if let ExprKind::Ident(name) = &expr.kind {
             if let Some(view) = self.field_views.get(name).cloned() {
                 let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&view.root) else {
-                    return;
+                    return false;
                 };
                 let of_closure = self.closure_params.contains(&view.root);
                 self.errors.push(OwnershipError {
@@ -4507,11 +4589,11 @@ impl<'a> OwnershipChecker<'a> {
                     },
                     span: expr.span,
                 });
-                return;
+                return true;
             }
         }
         let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
-            return;
+            return false;
         };
         let fields = fields.unwrap_or_default();
         // The whole parameter. A return never reaches `consume_binding`, so
@@ -4523,7 +4605,7 @@ impl<'a> OwnershipChecker<'a> {
             match (self.borrowed_params.get(&root), self.mutate_params.get(&root)) {
                 (Some(&found), _) => Some(found),
                 (None, Some(&declared_at)) => Some((declared_at, true)),
-                (None, None) => return,
+                (None, None) => return false,
             }
         } else {
             None
@@ -4539,13 +4621,13 @@ impl<'a> OwnershipChecker<'a> {
         let Some((declared_at, is_mutate)) =
             whole_param.or_else(|| self.borrowed_params.get(&root).copied())
         else {
-            return;
+            return false;
         };
         let Some(ty) = self.node_ty(&expr.id).cloned() else {
-            return;
+            return false;
         };
         if self.copy_verdict(&ty) != CopyVerdict::Move {
-            return;
+            return false;
         }
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::BorrowedFieldEscapes {
@@ -4558,23 +4640,24 @@ impl<'a> OwnershipChecker<'a> {
             },
             span: expr.span,
         });
+        true
     }
 
     /// A non-Copy capture, or a part of one, handed back as the closure's
     /// result. The body may not give a capture away (`mem.closures/CM4`):
     /// every call would hand out the same value (#1449).
-    fn check_borrowed_capture_escape(&mut self, expr: &Expr) {
+    fn check_borrowed_capture_escape(&mut self, expr: &Expr) -> bool {
         let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
-            return;
+            return false;
         };
         let Some(&closure_at) = self.borrowed_captures.get(&root) else {
-            return;
+            return false;
         };
         let Some(ty) = self.node_ty(&expr.id).cloned() else {
-            return;
+            return false;
         };
         if self.copy_verdict(&ty) != CopyVerdict::Move {
-            return;
+            return false;
         }
         let path = match fields {
             Some(f) if !f.is_empty() => format!("{}.{}", root, f.join(".")),
@@ -4589,6 +4672,7 @@ impl<'a> OwnershipChecker<'a> {
             },
             span: expr.span,
         });
+        true
     }
 
     /// LP14: Extract the collection name from a for-loop iterator expression.
@@ -7447,7 +7531,7 @@ impl<'a> OwnershipChecker<'a> {
         match &expr.kind {
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for e in elems {
-                    self.consume_into_owner(e, ViewSink::Element);
+                    self.consume_into_owner(e, Sink::Element);
                 }
             }
             ExprKind::StructLit { name, fields, spread, .. } => {
@@ -7456,7 +7540,7 @@ impl<'a> OwnershipChecker<'a> {
                     .map(|t| self.resource_type_display(t))
                     .unwrap_or_else(|| name.clone());
                 for f in fields {
-                    let into = ViewSink::StructField { ty: ty.clone(), field: f.name.clone() };
+                    let into = Sink::StructField { ty: ty.clone(), field: f.name.clone() };
                     self.consume_into_owner(&f.value, into);
                 }
                 // A spread reads the fields nobody listed (type.structs/FD5),
@@ -7476,7 +7560,7 @@ impl<'a> OwnershipChecker<'a> {
                     None => method.clone(),
                 };
                 for arg in args {
-                    self.consume_into_owner(&arg.expr, ViewSink::Payload { variant: variant.clone() });
+                    self.consume_into_owner(&arg.expr, Sink::Payload { variant: variant.clone() });
                 }
             }
             _ => {}
@@ -7484,8 +7568,8 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// One value handed to an owner: an aggregate's part or a `Heap`'s payload.
-    fn consume_into_owner(&mut self, expr: &Expr, into: ViewSink) {
-        if self.check_view_owned(expr, into) {
+    fn consume_into_owner(&mut self, expr: &Expr, into: Sink) {
+        if self.check_flow(expr, into, expr.span) {
             return;
         }
         let ExprKind::Ident(name) = &expr.kind else {

@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A restricted value is restricted wherever it goes, whatever shape it goes in.
+//
+// Each of these compiled while each restriction had its own walk: the link
+// check looked inside tuples and structs but not branches, and the lookup check
+// looked inside branches but not tuples, and only at a `return`. All four read
+// freed memory natively (#1662). One walk now hands every value that reaches a
+// destination to every check.
+
+import memory.Rack
+import memory.Link
+
+struct Holder {
+    items: Vec<i32>
+}
+
+struct Node {
+    v: i32
+    next: Link<Node>?
+}
+
+// A lookup's element stored into a field: `rows` still holds it.
+func lent_into_field(rows: Vec<Vec<i32>>) {
+    mut h = Holder(items: Vec.new())
+    h.items = rows[0]            // ERROR: E0879
+    h.items.push(9)
+}
+
+// A lookup's element returned inside a tuple.
+func lent_in_tuple(rows: Vec<Vec<i32>>) -> (Vec<i32>, i32) {
+    return (rows[0], 1)          // ERROR: E0879
+}
+
+// A link into a rack this body declared, returned through an `if`.
+func link_through_if(b: bool) -> Link<Node> {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, next: none))
+    let c = r.insert(Node(v: 2, next: none))
+    return if b { a } else { c }  // ERROR: E0379
+}
+
+// The same through a `match`. Two arms naming one link are one error.
+func link_through_match(k: i32) -> Link<Node> {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, next: none))
+    return match k {             // ERROR: E0379
+        0 => a,
+        _ => a,
+    }
+}
+
+// Fine: the copy is written down.
+func lent_copied(rows: Vec<Vec<i32>>) -> (Vec<i32>, i32) {
+    return (rows[0].clone(), 1)
+}
+
+// Fine: the rack is the caller's, so the link outlives this call.
+func link_into_callers(mutate r: Rack<Node>, b: bool) -> Link<Node> {
+    let a = r.insert(Node(v: 1, next: none))
+    let c = r.insert(Node(v: 2, next: none))
+    return if b { a } else { c }
+}
+
+func main() {
+    let rows: Vec<Vec<i32>> = [[1, 2], [3, 4]]
+    lent_into_field(rows)
+    let _ = lent_in_tuple(rows)
+    let _ = lent_copied(rows)
+    mut r: Rack<Node> = Rack.new()
+    let _ = link_into_callers(mutate r, true)
+}

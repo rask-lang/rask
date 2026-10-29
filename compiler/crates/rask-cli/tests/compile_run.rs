@@ -2730,6 +2730,21 @@ fn error_a_task_local_shared_cannot_be_sent() {
 }
 
 #[test]
+fn error_flow_through_shapes() {
+    let (failed, out) = compile_error_output("flow_through_shapes.rk");
+    assert!(failed, "restricted values reaching a destination must be rejected: {}", out);
+    // A lookup stored in a field and returned in a tuple; a link returned
+    // through an `if` (two arms, two links) and a `match` (two arms, one link).
+    assert_eq!(out.matches("error[E0879]").count(), 2, "lookup escapes: {}", out);
+    assert_eq!(out.matches("error[E0379]").count(), 3, "link escapes, one per link: {}", out);
+    assert!(
+        out.contains("storing it in `h.items`") && out.contains("a tuple or array holding it"),
+        "the lookup message names where it was going: {}",
+        out
+    );
+}
+
+#[test]
 fn error_shared_cycle() {
     let (failed, out) = compile_error_output("shared_cycle.rk");
     assert!(failed, "a box that can hold its own holder must be rejected: {}", out);
