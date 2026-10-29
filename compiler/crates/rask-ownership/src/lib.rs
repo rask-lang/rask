@@ -9,6 +9,7 @@
 mod state;
 mod error;
 mod field_reuse;
+mod resize;
 
 pub use field_reuse::field_reuses;
 
@@ -70,8 +71,12 @@ impl OwnershipResult {
 /// W2 tracking: active `with` block binding info.
 #[derive(Debug, Clone)]
 struct WithBindingInfo {
-    /// Collection variable name (e.g. "rows" from `with rows[i] as r`)
+    /// The source as written (e.g. "rows" from `with rows[i] as r`, or
+    /// "h.items"), for messages.
     collection_name: String,
+    /// The same as a path: the binding it belongs to, and the fields below it.
+    root: String,
+    fields: Vec<String>,
     /// Span of the `with` binding for error messages
     span: Span,
 }
@@ -79,8 +84,11 @@ struct WithBindingInfo {
 /// LP14/LP16: Tracks the collection being iterated in a `for mutate` loop.
 #[derive(Debug, Clone)]
 struct ForMutateInfo {
-    /// Collection variable name (e.g. "items" from `for mutate item in items`)
+    /// Collection as written (e.g. "items" from `for mutate item in items`)
     collection_name: String,
+    /// The same as a path, as in `WithBindingInfo`.
+    root: String,
+    fields: Vec<String>,
     /// Binding variable names (e.g. ["item"])
     binding_names: Vec<String>,
     /// Span for error messages
@@ -287,6 +295,9 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// Which parameters each function and method can resize (`resize.rs`).
+    fn_resizes: resize::FnResizes,
+    method_resizes: resize::MethodResizes,
     /// See `OwnershipResult::task_bound_closures`.
     task_bound_closures: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::generic_closure_captures`.
@@ -454,6 +465,8 @@ impl<'a> OwnershipChecker<'a> {
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
             generic_closure_captures: HashMap::new(),
+            fn_resizes: HashMap::new(),
+            method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
             header_type_params: Vec::new(),
             return_moves: HashMap::new(),
@@ -641,6 +654,7 @@ impl<'a> OwnershipChecker<'a> {
     pub fn check_with_signatures(mut self, decls: &[Decl], extra: &[Decl]) -> OwnershipResult {
         self.collect_signatures(extra);
         self.collect_signatures(decls);
+        self.infer_resizes(&[extra, decls]);
         self.run(decls)
     }
 
@@ -2230,6 +2244,11 @@ impl<'a> OwnershipChecker<'a> {
                 self.store_target = t_root.map(|r| (r, t_fields.unwrap_or_default()));
                 self.check_expr(value);
                 self.store_target = None;
+                // W2/LP14: replacing what a `with` or `for mutate` holds a
+                // place in frees the buffer that place is in.
+                if let Some(place) = self.replaced_place(stmt) {
+                    self.report_held_source_change(place, "replace", None, stmt.span);
+                }
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                     // What it holds now is whatever the assignment put there;
@@ -2441,10 +2460,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 // LP14/LP16: track for-mutate context
                 if *mutate {
-                    let collection_name = Self::extract_iter_collection(iter);
-                    if let Some(coll) = collection_name {
+                    if let Some((collection_name, root, fields)) = Self::held_source(iter) {
                         self.active_for_mutates.push(ForMutateInfo {
-                            collection_name: coll,
+                            collection_name,
+                            root,
+                            fields,
                             binding_names: binding_names.clone(),
                             span: stmt.span,
                         });
@@ -2694,6 +2714,8 @@ impl<'a> OwnershipChecker<'a> {
                 for rack_arg in &deleting_args {
                     self.forward_to_deleting_param(rack_arg, expr.span);
                 }
+                // W2/LP14: an argument handed to a parameter the callee resizes.
+                self.check_held_sources(expr);
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
@@ -2826,49 +2848,9 @@ impl<'a> OwnershipChecker<'a> {
                 for rack_arg in &method_deleting_args {
                     self.forward_to_deleting_param(rack_arg, expr.span);
                 }
-                // What the method's declaration says it does to the
-                // receiver's size (`@grows`, `@shrinks`). A name list here
-                // didn't know `remove_where`, and a `with v[0]` binding
-                // outlived the element it named (#1560).
-                let structural = self.program.declared_effects(expr.id).changes_size();
-                // W2: Check structural mutations inside `with` blocks
-                if structural {
-                    if let Some(coll_name) = object.name() {
-                        for wb in &self.active_with_bindings {
-                            if wb.collection_name == *coll_name {
-                                // W2: a structural mutation can reallocate the
-                                // buffer the binding names.
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::WithBlockStructuralMutation {
-                                        collection: coll_name.to_string(),
-                                        operation: method.clone(),
-                                        binding_span: wb.span,
-                                    },
-                                    span: expr.span,
-                                });
-                                break;
-                            }
-                        }
-                    }
-                }
-                // LP14: Check structural mutations on collection during `for mutate`
-                if structural {
-                    if let Some(coll_name) = object.name() {
-                        for fm in &self.active_for_mutates {
-                            if fm.collection_name == *coll_name {
-                                self.errors.push(OwnershipError {
-                                    kind: OwnershipErrorKind::ForMutateStructuralMutation {
-                                        collection: coll_name.to_string(),
-                                        operation: method.clone(),
-                                        loop_span: fm.span,
-                                    },
-                                    span: expr.span,
-                                });
-                                break;
-                            }
-                        }
-                    }
-                }
+                // W2/LP14: a size change to what a `with` or `for mutate`
+                // holds a place in, through the receiver or an argument.
+                self.check_held_sources(expr);
                 // A `take self` method consumes its receiver.
                 let takes_self = self.is_take_self_method(object, method);
                 if let (true, Some(ensure_at)) = (takes_self, self.ensure_at) {
@@ -3530,9 +3512,11 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(&binding.source);
                     // W2: Track binding info for structural mutation checking
                     if let ExprKind::Index { object, .. } = &binding.source.kind {
-                        if let Some(coll_name) = object.name() {
+                        if let Some((collection_name, root, fields)) = Self::held_source(object) {
                             self.active_with_bindings.push(WithBindingInfo {
-                                collection_name: coll_name.to_string(),
+                                collection_name,
+                                root,
+                                fields,
                                 span: binding.source.span,
                             });
                         }
@@ -4828,22 +4812,68 @@ impl<'a> OwnershipChecker<'a> {
         true
     }
 
-    /// LP14: Extract the collection name from a for-loop iterator expression.
-    /// `items` → Some("items"), `items.iter()` → Some("items")
-    fn extract_iter_collection(iter: &Expr) -> Option<String> {
-        match &iter.kind {
-            ExprKind::Ident(name) => Some(name.clone()),
-            ExprKind::MethodCall { object, .. } => {
-                if let Some(name) = object.name() {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
-            }
-            _ => None,
+    /// W2/LP14 at a call: the receiver of a size-changing method, or an
+    /// argument handed to a parameter the callee can resize, asked against
+    /// every place a `with` or `for mutate` is holding. Only a method called
+    /// on the held name was asked before, so `grow(mutate v)` inside
+    /// `with v[0]` cleared the vector under the binding (#1668).
+    fn check_held_sources(&mut self, call: &Expr) {
+        let operation = match &call.kind {
+            ExprKind::MethodCall { method, .. } => method.clone(),
+            _ => "resize".to_string(),
+        };
+        for (place, via) in self.resized_places(call) {
+            let op = if via.is_some() { "resize".to_string() } else { operation.clone() };
+            self.report_held_source_change(place, &op, via, call.span);
         }
     }
 
+    /// Report `place` changing size or being replaced, once per kind of
+    /// holder, if it overlaps something a `with` or `for mutate` holds a
+    /// place in: the same path, a part of it, or what it is a part of.
+    fn report_held_source_change(&mut self, place: &Expr, operation: &str, via: Option<String>, span: Span) {
+        let (Some(root), fields) = Self::extract_root_and_fields(place) else { return };
+        let fields = fields.unwrap_or_default();
+        let overlaps = |r: &str, f: &[String]| {
+            r == root && (f.starts_with(&fields) || fields.starts_with(f))
+        };
+        if let Some(wb) = self.active_with_bindings.iter().find(|w| overlaps(&w.root, &w.fields)) {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::WithBlockStructuralMutation {
+                    collection: wb.collection_name.clone(),
+                    operation: operation.to_string(),
+                    via: via.clone(),
+                    binding_span: wb.span,
+                },
+                span,
+            });
+        }
+        if let Some(fm) = self.active_for_mutates.iter().find(|f| overlaps(&f.root, &f.fields)) {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ForMutateStructuralMutation {
+                    collection: fm.collection_name.clone(),
+                    operation: operation.to_string(),
+                    via,
+                    loop_span: fm.span,
+                },
+                span,
+            });
+        }
+    }
+
+    /// The collection a `with` or `for mutate` holds a place in, as written
+    /// and as a path: `rows`, `h.items`, and for a loop `items.iter()` is
+    /// `items`. `None` for anything that isn't a name or a field chain.
+    fn held_source(expr: &Expr) -> Option<(String, String, Vec<String>)> {
+        let place = match &expr.kind {
+            ExprKind::MethodCall { object, .. } => object,
+            _ => expr,
+        };
+        let (root, fields) = Self::extract_root_and_fields(place);
+        let root = root?;
+        let shown = Self::render_place(place).unwrap_or_else(|| root.clone());
+        Some((shown, root, fields.unwrap_or_default()))
+    }
 
     fn create_borrow_with_projection(
         &mut self,

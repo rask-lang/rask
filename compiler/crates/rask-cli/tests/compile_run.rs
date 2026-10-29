@@ -2730,6 +2730,23 @@ fn error_a_task_local_shared_cannot_be_sent() {
 }
 
 #[test]
+fn error_held_source_resized() {
+    let (failed, out) = compile_error_output("held_source_resized.rk");
+    assert!(failed, "resizing what a with/for mutate holds must be rejected: {}", out);
+    // Through a helper (two levels), a reassignment, a held field cleared or
+    // reset through its owner's method: E0808. Through a helper and on a held
+    // field during `for mutate`: E0814. The allowed shapes report nothing.
+    assert_eq!(out.matches("error[E0808]").count(), 4, "with: {}", out);
+    // ... plus one through an interface object, taken to resize.
+    assert_eq!(out.matches("error[E0814]").count(), 3, "for mutate: {}", out);
+    assert!(
+        out.contains("`wipe_twice` can resize `v`") && out.contains("`reset` can resize `h.items`"),
+        "the message names the callee that would resize it: {}",
+        out
+    );
+}
+
+#[test]
 fn error_flow_through_shapes() {
     let (failed, out) = compile_error_output("flow_through_shapes.rk");
     assert!(failed, "restricted values reaching a destination must be rejected: {}", out);

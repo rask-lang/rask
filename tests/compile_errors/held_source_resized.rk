@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `with` block or a `for mutate` loop holds a place inside its collection's
+// buffer, so nothing may resize or replace that collection until it ends
+// (mem.borrowing/W2, ctrl.loops/LP14) — however the change gets there.
+//
+// Only a method called on the held name itself used to be asked. A helper
+// taking the collection as `mutate`, a method resizing its own `self`, a held
+// field (`with h.items[0]`) and a plain reassignment all compiled, and native
+// read past the end or freed the buffer under the binding (#1668). Whether a
+// helper can resize its parameter is inferred from its body, transitively
+// (comp.advanced/EF3): no annotation says so.
+
+struct Item {
+    a: i64
+    b: i64
+    c: i64
+}
+
+struct Bag {
+    items: Vec<Item>
+    other: Vec<i64>
+    count: i64
+}
+
+func wipe(mutate v: Vec<Item>) {
+    v.clear()
+}
+
+// Resizes through another helper: the fact travels up the call graph.
+func wipe_twice(mutate v: Vec<Item>) {
+    wipe(mutate v)
+}
+
+// Writes an element and grows only its own scratch vector, so `v` keeps its
+// size: callable inside a `with` over `v`.
+func touch(mutate v: Vec<Item>) {
+    mut scratch: Vec<i64> = Vec.new()
+    scratch.push(1)
+    v[0].a = scratch[0]
+}
+
+extend Bag {
+    func reset(mutate self) {
+        self.items = Vec.new()
+    }
+}
+
+func through_helper(mutate v: Vec<Item>) {
+    with v[0] as it {
+        wipe_twice(mutate v)     // ERROR: E0808
+        it.a = 1
+    }
+}
+
+func through_helper_in_loop(mutate v: Vec<Item>) {
+    for mutate x in v {
+        wipe(mutate v)           // ERROR: E0814
+        x.a = 2
+    }
+}
+
+func by_reassignment(mutate v: Vec<Item>) {
+    with v[0] as it {
+        v = Vec.new()            // ERROR: E0808
+        it.a = 3
+    }
+}
+
+func on_a_field(mutate h: Bag) {
+    with h.items[0] as it {
+        h.items.clear()          // ERROR: E0808
+        it.a = 4
+    }
+    with h.items[0] as it {
+        h.reset()                // ERROR: E0808
+        it.a = 5
+    }
+    for mutate x in h.items {
+        h.items.push(Item(a: 0, b: 0, c: 0))  // ERROR: E0814
+        x.a = 6
+    }
+}
+
+// Through an interface object the body can't be seen, so a `mutate`
+// parameter is taken to resize what it's handed.
+interface Resizer {
+    func go(self, mutate v: Vec<Item>)
+}
+
+func through_interface(r: any Resizer, mutate v: Vec<Item>) {
+    for mutate x in v {
+        r.go(mutate v)           // ERROR: E0814
+        x.a = 7
+    }
+}
+
+// Fine: element writes, a helper that keeps the size, another field, a Copy
+// field.
+func allowed(mutate v: Vec<Item>, mutate h: Bag) {
+    with v[0] as it {
+        v[1].a = 7
+        touch(mutate v)
+        it.b = 8
+    }
+    with h.items[0] as it {
+        h.other.push(5)
+        h.count = 3
+        it.a = 9
+    }
+}
+
+func main() {}

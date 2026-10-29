@@ -4749,13 +4749,20 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                            consumed on some paths but not others has no definite answer at scope exit (C4)")
             }
 
-            WithBlockStructuralMutation { collection, operation, binding_span } => {
-                Diagnostic::error(format!(
-                    "cannot {} `{}` inside `with` block",
-                    operation, collection
-                ))
+            WithBlockStructuralMutation { collection, operation, via, binding_span } => {
+                let (headline, primary) = match via {
+                    Some(callee) => (
+                        format!("`{}` can resize `{}`, and a `with` block is holding an element of it", callee, collection),
+                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                    ),
+                    None => (
+                        format!("cannot {} `{}` inside `with` block", operation, collection),
+                        format!("{} not allowed inside with block", operation),
+                    ),
+                };
+                Diagnostic::error(headline)
                 .with_code("E0808")
-                .with_primary(self.span, format!("{} not allowed inside with block", operation))
+                .with_primary(self.span, primary)
                 .with_secondary(*binding_span, "element borrowed here")
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
@@ -4815,13 +4822,20 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a task works on its own copy of what it captured, and `join()` is not a write-back — the write would be thrown away when the task ends")
             }
 
-            ForMutateStructuralMutation { collection, operation, loop_span } => {
-                Diagnostic::error(format!(
-                    "cannot {} `{}` during `for mutate` — invalidates iteration",
-                    operation, collection
-                ))
+            ForMutateStructuralMutation { collection, operation, via, loop_span } => {
+                let (headline, primary) = match via {
+                    Some(callee) => (
+                        format!("`{}` can resize `{}`, which a `for mutate` is iterating", callee, collection),
+                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                    ),
+                    None => (
+                        format!("cannot {} `{}` during `for mutate` — invalidates iteration", operation, collection),
+                        format!("{} not allowed during mutable iteration", operation),
+                    ),
+                };
+                Diagnostic::error(headline)
                 .with_code("E0814")
-                .with_primary(self.span, format!("{} not allowed during mutable iteration", operation))
+                .with_primary(self.span, primary)
                 .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
                 .with_help("collect changes and apply them after the loop")
                 .with_why("structural mutations (insert, remove, push, clear) invalidate the iterator — elements may shift or be reallocated")

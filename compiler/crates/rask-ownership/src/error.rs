@@ -567,6 +567,9 @@ pub enum OwnershipErrorKind {
     WithBlockStructuralMutation {
         collection: String,
         operation: String,
+        /// The callee that would do it, when the change is a parameter the
+        /// callee resizes rather than a method on the held name itself.
+        via: Option<String>,
         binding_span: Span,
     },
 
@@ -575,6 +578,8 @@ pub enum OwnershipErrorKind {
     ForMutateStructuralMutation {
         collection: String,
         operation: String,
+        /// As in `WithBlockStructuralMutation`.
+        via: Option<String>,
         loop_span: Span,
     },
 
