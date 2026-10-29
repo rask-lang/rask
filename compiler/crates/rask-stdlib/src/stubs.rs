@@ -18,11 +18,11 @@ use std::sync::OnceLock;
 /// needs nothing and runs anywhere, an interrupt handler included; `Alloc`
 /// needs a heap; `Std` needs an operating system. And what a small build
 /// should carry: `Core` and `Alloc` together are what a chip ships, so they
-/// hold the language's own types and the collections and nothing that is
-/// merely useful. A CSV parser needs only a heap, and it still isn't `Alloc`,
-/// because a program that never parses CSV shouldn't pay for one. The
-/// formats and codecs are `Std` for that reason, not because they need an
-/// OS. A module may only name things from its own layer and below, and
+/// hold the language's own types, the collections and the essentials a chip
+/// reaches for (hex and base64 are two), and nothing that is merely useful.
+/// A CSV parser needs only a heap, and it still isn't `Alloc`, because a
+/// program that never parses CSV shouldn't pay for one. The formats are
+/// `Std` for that reason, not because they need an OS. A module may only name things from its own layer and below, and
 /// `stdlib_layers` in rask-cli's tests holds that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Layer {
@@ -65,10 +65,10 @@ const LAYERS: &[(&str, Layer)] = &[
     ("sequence.rk", Layer::Alloc),
     ("random.rk", Layer::Alloc),
     ("error_context.rk", Layer::Alloc),
+    ("hex.rk", Layer::Alloc),
+    ("base64.rk", Layer::Alloc),
     // Useful, not essential: a build that never names them shouldn't carry
     // them, so they sit above the chip's layers whatever they need.
-    ("hex.rk", Layer::Std),
-    ("base64.rk", Layer::Std),
     ("digest.rk", Layer::Std),
     ("reflect.rk", Layer::Std),
     ("encoding.rk", Layer::Std),
