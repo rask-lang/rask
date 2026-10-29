@@ -57,8 +57,9 @@ func handle_request(req: Request) -> Response {
 
 | Rule | Description |
 |------|-------------|
-| **AL13: A value can't outlive its allocator** | A value whose type owns heap memory (a collection, `string`, `Heap`, `Rack`, `Shared`, or anything holding one) is born under the allocator that was current when it was built, or under `a` for `new_in(a)` and `clone_in(a)`. A call's result counts as born under the allocator current at the call. A literal or `const` is born under nothing and lives forever. A value born under a `using` block's allocator is block-born: it cannot be returned from that block, assigned to a binding or field declared outside it, pushed into a collection born outside it, sent on a channel, or captured by `spawn`. Compile error (E0420). Under `Global` nothing is block-born |
+| **AL13: A value can't outlive its allocator** | A value whose type owns heap memory (a collection, `string`, `Heap`, `Rack`, `Shared`, or anything holding one) is born under the allocator that was current when it was built, or under `a` for `new_in(a)` and `clone_in(a)`. A call's result is born where AL33 says. A literal or `const` is born under nothing and lives forever. A value born under a `using` block's allocator is block-born: it cannot be returned from that block, assigned to a binding or field declared outside it, pushed into a collection born outside it, sent on a channel, or captured by `spawn`. Compile error (E0420). Under `Global` nothing is block-born |
 | **AL25: Copy-out is a clone with a target** | `.clone()` inside the block clones into the current allocator, so it doesn't help. `.clone_in(a)` deep-copies under `a`, and the result lives as long as `a` does: `clone_in(Global)` can leave every block, `clone_in(outer)` can leave the inner block but not `outer`'s. It's the one way out, and it's written where the copy happens. This is AL13 applied to the copy |
+| **AL33: Call results are inferred like stashes** | For every function the compiler computes, in the same pass as AL27, where its result's heap memory can come from: a fresh allocation under the current allocator, a fresh one under a named allocator, or a parameter passed through. At the call the result is born under the shortest-lived of those: the current allocator for a fresh one, the named allocator for a named one, the argument's own allocator for a pass-through. Indirect calls take the union over targets (AL30). Nothing is declared |
 | **AL26: Callers' values pass through** | A value born outside the block may be read and mutated inside it. AL22 keeps its growth in its own allocator, so passing it by `mutate` to a callee is fine |
 
 AL13 is keyed on where the value was produced, not on its type, because its type doesn't say. That is the same shape as the `with` block rule for borrows (`mem.borrowing/W2`): a scope that lends you something checks that nothing leaves with it.
@@ -164,6 +165,8 @@ FIX: Hoist the call out of the block, or run it under Global:
 | `return "done"` from inside a block | AL13 | Fine. A literal is born under nothing |
 | A 32-byte struct of numbers built in the block | AL13 | Fine. Its type owns no heap memory, so the allocator never touched it |
 | `let v = Vec.new_in(Global)` in the block, then returned | AL13 | Fine. Born under `Global` |
+| `let cfg = pick(global_cfg)` in the block, then returned | AL33 | Fine when `pick` only ever returns its argument: `cfg` is born where `global_cfg` was. Rejected if `pick` can also build a fresh one, since that one would be in the arena |
+| C callback wants the caller's arena | AL30 | Pass the arena through C's userdata pointer and install it with `using` in the callback body. That block is ordinary Rask and checked like any other; the cast back from `*void` is `unsafe`, and it carries the promise that the arena is still alive when C calls |
 
 ---
 
