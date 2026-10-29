@@ -48,7 +48,7 @@ public func parse_json(body: string) -> Json {     // written once, no allocator
 func handle_request(req: Request) -> Response {
     using Arena.scoped(256.kilobytes()) {
         let body = try parse_json(req.body)       // the whole Json, nested maps included, lives in the arena
-        return Response.json(body.keep())         // copied out to Global on the way back
+        return Response.json(body.clone_in(Global))   // copied out to Global on the way back
     }
 }
 ```
@@ -58,7 +58,7 @@ func handle_request(req: Request) -> Response {
 | Rule | Description |
 |------|-------------|
 | **AL13: Block-born values stay in the block** | Any non-Copy value produced inside a `using` block — built there, or returned by a call made there — is block-born. A block-born value cannot be returned from the block, assigned to a binding or field declared outside it, pushed into a collection born outside it, sent on a channel, or captured by `spawn`. Compile error (E0420) |
-| **AL25: Copy-out is explicit** | `.clone()` inside the block clones into the current allocator, so it doesn't help. `.keep()` deep-copies a value under `Global` and the result is not block-born. It's the one way out, and it's written where the copy happens |
+| **AL25: Copy-out is a clone with a target** | `.clone()` inside the block clones into the current allocator, so it doesn't help. `.clone_in(a)` deep-copies under `a`, and the result lives as long as `a` does: `clone_in(Global)` can leave every block, `clone_in(outer)` can leave the inner block but not `outer`'s. It's the one way out, and it's written where the copy happens |
 | **AL26: Callers' values pass through** | A value born outside the block may be read and mutated inside it. AL22 keeps its growth in its own allocator, so passing it by `mutate` to a callee is fine |
 
 AL13 is keyed on where the value was produced, not on its type, because its type doesn't say. That is the same shape as the `with` block rule for borrows (`mem.borrowing/W2`): a scope that lends you something checks that nothing leaves with it.
@@ -107,7 +107,7 @@ Allocation already costs a `malloc`; the indirect call next to it is noise. The 
 using Arena.scoped(1.megabytes()) {
     let tokens = tokenize(src)
     let ast = parse(tokens)
-    return typecheck(ast).keep()
+    return typecheck(ast).clone_in(Global)
 }
 
 // No malloc at all
@@ -131,7 +131,7 @@ ERROR [mem.alloc/AL13]: value born inside `using` block cannot leave it
 
 FIX: Copy it out, or move the allocation out of the block:
 
-  return v.keep()
+  return v.clone_in(Global)
 ```
 
 **Callee stashes into the outside [AL28]:**
@@ -147,7 +147,7 @@ ERROR [mem.alloc/AL28]: `index.add` would keep arena memory past the block
 
 FIX: Hoist the call out of the block, or run it under Global:
 
-  using Global { index.add(name, parts.keep()) }
+  using Global { index.add(name, parts.clone_in(Global)) }
 ```
 
 ## Edge Cases
@@ -171,7 +171,7 @@ FIX: Hoist the call out of the block, or run it under Global:
 
 **Why not type-erase the default (AL31).** The pointer is only there because the type doesn't say. A program that never installs an allocator has every collection on `Global` and the compiler knows it, so it drops the field. The cost lands on the programs that use the feature.
 
-**Why `keep()` and not `clone()` (AL25).** Clone under an arena clones into the arena; that's what the current allocator means. Leaving the block is a different operation with a different cost, and the transparency rule wants it written where it happens.
+**Why `clone_in(a)` and not `clone()` (AL25).** Clone under an arena clones into the arena; that's what the current allocator means. Leaving the block needs the copy to land somewhere else, and the call site should say where. `clone_in` reuses two words a reader already has: `clone` for the cost, `_in` from `Vec.new_in(a)` for the target.
 
 **Why infer stash and not declare it (AL27).** Declaring it is function colouring under another name: it goes on every signature it's true of and every caller of those. Inference costs the compiler one transitive pass over MIR it already has the moves for, and the user nothing. If the analysis turns out to fire on every builder in a real program, the answer is a finer analysis, not an annotation.
 
