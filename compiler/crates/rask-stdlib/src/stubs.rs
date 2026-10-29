@@ -17,12 +17,13 @@ use std::sync::OnceLock;
 /// Two things decide it. What the module needs from the machine: `Core`
 /// needs nothing and runs anywhere, an interrupt handler included; `Alloc`
 /// needs a heap; `Std` needs an operating system. And what a small build
-/// should carry: `Core` and `Alloc` together are what a chip ships, so they
-/// hold the language's own types, the collections and the essentials a chip
-/// reaches for (hex and base64 are two), and nothing that is merely useful.
-/// A CSV parser needs only a heap, and it still isn't `Alloc`, because a
-/// program that never parses CSV shouldn't pay for one. The formats are
-/// `Std` for that reason, not because they need an OS. A module may only name things from its own layer and below, and
+/// should carry: `Core` and `Alloc` together are what a chip ships, and
+/// they are the language's own surface rather than libraries: its types,
+/// the ambient functions, the collections, Encode/Decode and reflection, and
+/// the few essentials a chip reaches for (hex and base64). `Std` is the
+/// libraries. A CSV parser needs only a heap, and it still isn't `Alloc`,
+/// because a program that never parses CSV shouldn't pay for one; the
+/// formats are `Std` for that reason, not because they need an OS. A module may only name things from its own layer and below, and
 /// `stdlib_layers` in rask-cli's tests holds that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Layer {
@@ -64,7 +65,6 @@ const LAYERS: &[(&str, Layer)] = &[
     ("fmt.rk", Layer::Alloc),
     ("sequence.rk", Layer::Alloc),
     ("random.rk", Layer::Alloc),
-    ("error_context.rk", Layer::Alloc),
     ("hex.rk", Layer::Alloc),
     ("base64.rk", Layer::Alloc),
     // Encode/Decode and field reflection are language features the compiler
@@ -399,7 +399,6 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("char.rk", include_str!("../../../../stdlib/char.rk")),
     ("float.rk", include_str!("../../../../stdlib/float.rk")),
     ("int.rk", include_str!("../../../../stdlib/int.rk")),
-    ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
     // OR2: the operator interfaces. After num.rk so the numeric roster is in
