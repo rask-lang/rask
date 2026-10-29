@@ -21,6 +21,10 @@ func main() {
     let s = c.Stamp(t: 0.5, id: 41i64)
     let t = c.Triple(a: 1i64, b: 2i64, c: 3i64)
     let col = c.Rgba(r: 1u8, g: 2u8, b: 3u8, a: 4u8)
+    // Floats behind a nested struct or an array are still floats to the ABI
+    // (#1655): Seg is four floats, Tri three, and both go in float registers.
+    let seg = c.Seg(a: c.Vec2(x: 1.0f32, y: 2.0f32), b: c.Vec2(x: 3.0f32, y: 4.0f32))
+    let tri = c.Tri(v: [1.0f32, 2.0f32], w: 3.0f32)
 
     // Fields read on the Rask side, at the widths the header declares.
     println("fields {r.width} {r.height} {col.a}")
@@ -33,5 +37,7 @@ func main() {
         println("triple {c.rask_test_triple(t)}")
         println("rgba {c.rask_test_rgba(col)}")
         println("mixed {c.rask_test_mixed(r, 5, vd)}")
+        println("seg {c.rask_test_seg(seg)}")
+        println("tri {c.rask_test_tri(tri)}")
     }
 }

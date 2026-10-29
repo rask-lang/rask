@@ -89,15 +89,46 @@ pub struct AbiField {
 /// Classify a parameter of declared type `ty`, given the program's struct
 /// layouts. Anything that names no struct is a scalar.
 pub fn classify(conv: CallConv, ty: &rask_ast::ty::TypeExpr, layouts: &[StructLayout]) -> CArg {
-    let Some(layout) = ty.name().and_then(|n| layouts.iter().find(|l| l.name == n)) else {
+    let Some(layout) = ty.name().and_then(|n| struct_named(&n, layouts)) else {
         return CArg::Scalar;
     };
-    let fields: Vec<AbiField> = layout
-        .fields
-        .iter()
-        .map(|f| AbiField { offset: f.offset, size: f.size, is_float: is_float(&f.ty) })
-        .collect();
+    let mut fields = Vec::new();
+    flatten_struct(layout, 0, layouts, &mut fields);
     classify_aggregate(conv, layout.size, &fields)
+}
+
+/// Every scalar in the struct, at its absolute offset.
+///
+/// Both conventions look through nesting: `{Vec2 a; Vec2 b}` is four floats
+/// to the ABI, and so is `{float v[2]; float w}` minus one. Reading only the
+/// top-level fields counted a nested struct as "not a float", which put a
+/// struct of float structs in integer registers everywhere (#1655).
+fn flatten_struct(layout: &StructLayout, base: u32, layouts: &[StructLayout], out: &mut Vec<AbiField>) {
+    for f in &layout.fields {
+        flatten_field(&f.ty, base + f.offset, f.size, layouts, out);
+    }
+}
+
+fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[StructLayout], out: &mut Vec<AbiField>) {
+    use rask_types::Type as T;
+    match ty {
+        T::Array { len: 0, .. } => {}
+        T::Array { elem, len } => {
+            let stride = size / *len as u32;
+            for i in 0..*len as u32 {
+                flatten_field(elem, offset + i * stride, stride, layouts, out);
+            }
+        }
+        T::UnresolvedNamed(name) => match struct_named(name, layouts) {
+            Some(inner) => flatten_struct(inner, offset, layouts, out),
+            None => out.push(AbiField { offset, size, is_float: is_float(ty) }),
+        },
+        _ => out.push(AbiField { offset, size, is_float: is_float(ty) }),
+    }
+}
+
+fn struct_named<'a>(name: &str, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
+    layouts.iter().find(|l| l.name == name)
 }
 
 /// Classify a struct of `size` bytes with these fields.
@@ -263,6 +294,74 @@ mod tests {
         assert_eq!(classify_aggregate(CallConv::Win64, 4, &[f(0, 4, false)]), regs(&[(0, Int)]));
         assert_eq!(classify_aggregate(CallConv::Win64, 16, &[f(0, 8, true), f(8, 8, true)]), CArg::ByAddress(16));
         assert_eq!(classify_aggregate(CallConv::Win64, 12, &[f(0, 4, false), f(4, 4, false), f(8, 4, false)]), CArg::ByAddress(12));
+    }
+
+    fn layout(name: &str, size: u32, fields: &[(&str, rask_types::Type, u32, u32)]) -> StructLayout {
+        use rask_types::layout::FieldLayout;
+        StructLayout {
+            name: name.to_string(),
+            size,
+            align: 4,
+            is_resource: false,
+            fields: fields
+                .iter()
+                .enumerate()
+                .map(|(i, (n, ty, offset, size))| FieldLayout {
+                    name: n.to_string(),
+                    ty: ty.clone(),
+                    offset: *offset,
+                    size: *size,
+                    align: 4,
+                    attrs: vec![],
+                    has_declared_default: false,
+                    is_public: true,
+                    decl_index: i as u32,
+                    is_type_param: false,
+                })
+                .collect(),
+        }
+    }
+
+    fn named(n: &str) -> rask_types::Type {
+        rask_types::Type::UnresolvedNamed(n.to_string())
+    }
+
+    #[test]
+    fn floats_behind_a_nested_struct_are_still_floats() {
+        use rask_types::Type as T;
+        let layouts = [
+            layout("Vec2", 8, &[("x", T::F32, 0, 4), ("y", T::F32, 4, 4)]),
+            layout("Seg", 16, &[("a", named("Vec2"), 0, 8), ("b", named("Vec2"), 8, 8)]),
+        ];
+        let seg = rask_ast::ty::TypeExpr::named("Seg");
+        assert_eq!(classify(CallConv::SysV64, &seg, &layouts), regs(&[(0, Vector), (8, Vector)]));
+        assert_eq!(
+            classify(CallConv::Aapcs64, &seg, &layouts),
+            regs(&[(0, F32), (4, F32), (8, F32), (12, F32)])
+        );
+    }
+
+    #[test]
+    fn floats_behind_an_array_are_still_floats() {
+        use rask_types::Type as T;
+        let arr = T::Array { elem: Box::new(T::F32), len: 2 };
+        let layouts = [layout("Tri", 12, &[("v", arr, 0, 8), ("w", T::F32, 8, 4)])];
+        let tri = rask_ast::ty::TypeExpr::named("Tri");
+        assert_eq!(classify(CallConv::SysV64, &tri, &layouts), regs(&[(0, Vector), (8, Vector)]));
+        assert_eq!(classify(CallConv::Aapcs64, &tri, &layouts), regs(&[(0, F32), (4, F32), (8, F32)]));
+    }
+
+    #[test]
+    fn an_int_inside_a_nested_struct_makes_its_piece_integer() {
+        use rask_types::Type as T;
+        let layouts = [
+            layout("Rect", 8, &[("w", T::I32, 0, 4), ("h", T::I32, 4, 4)]),
+            layout("Box", 16, &[("origin", named("Vec2"), 0, 8), ("extent", named("Rect"), 8, 8)]),
+            layout("Vec2", 8, &[("x", T::F32, 0, 4), ("y", T::F32, 4, 4)]),
+        ];
+        let b = rask_ast::ty::TypeExpr::named("Box");
+        assert_eq!(classify(CallConv::SysV64, &b, &layouts), regs(&[(0, Vector), (8, Int)]));
+        assert_eq!(classify(CallConv::Aapcs64, &b, &layouts), regs(&[(0, Int), (8, Int)]));
     }
 
     #[test]

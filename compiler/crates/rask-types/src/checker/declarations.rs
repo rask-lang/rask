@@ -119,18 +119,33 @@ impl TypeChecker {
                 .map(|sym| sym.name.clone()),
         );
 
+        // A header's own type names, per namespace. The struct is registered
+        // as `c.Vec2`, but a field written `Vec2 a;` in the same header names
+        // it bare, and bare it names nothing the layout can find: `Seg`'s two
+        // `Vec2` fields each got a word's worth of unknown and went to C in
+        // integer registers (#1655).
+        let own_types: std::collections::HashMap<&str, Vec<&str>> = members.iter().fold(std::collections::HashMap::new(), |mut m, (ns, name, id)| {
+            if self.c_struct_fields(*id).is_some() {
+                m.entry(ns.as_str()).or_default().push(name.as_str());
+            }
+            m
+        });
+
         let mut decls = Vec::new();
-        for (ns, name, id) in members {
-            let Some(field_syms) = self.c_struct_fields(id) else { continue };
-            let span = self.resolved.symbols.get(id).map_or(Span::new(0, 0), |s| s.span);
+        for (ns, name, id) in &members {
+            let Some(field_syms) = self.c_struct_fields(*id) else { continue };
+            let span = self.resolved.symbols.get(*id).map_or(Span::new(0, 0), |s| s.span);
+            let siblings = own_types.get(ns.as_str()).map(Vec::as_slice).unwrap_or(&[]);
             let fields: Vec<Field> = field_syms
                 .iter()
                 .filter_map(|(fname, fid)| {
                     let f = self.resolved.symbols.get(*fid)?;
+                    let mut ty = f.ty.clone()?;
+                    ty.rename(&|n| siblings.contains(&n).then(|| format!("{ns}.{n}")));
                     Some(Field {
                         name: fname.clone(),
                         name_span: f.span,
-                        ty: f.ty.clone()?,
+                        ty,
                         // A C header field: the declaration is the only place there is.
                         ty_span: f.span,
                         visibility: FieldVisibility::Public,

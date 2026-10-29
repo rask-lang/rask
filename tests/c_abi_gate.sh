@@ -55,7 +55,7 @@ qemu-aarch64 -L /usr/aarch64-linux-gnu "$WORK/prog" > "$WORK/out" 2>&1
 
 status=0
 for expected in "fields 6 7 4" "area 42" "vec2 3.75" "vec2d 3.75" "stamp 41.5" \
-                "triple 321" "rgba 4321" "mixed 50"; do
+                "triple 321" "rgba 4321" "mixed 50" "seg 4321" "tri 321"; do
   if ! grep -qx "$expected" "$WORK/out"; then
     echo "FAIL  aarch64: expected \`$expected\`"
     status=1

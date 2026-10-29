@@ -147,3 +147,23 @@ extend SelectError {
         }
     }
 }
+
+/// An error carrying a message about what was being done when another
+/// error happened, with that error's text. The transform-and-leave form:
+///
+///     let text = fs.read_text(path) catch e => return context("reading {path}", e)
+public struct ContextError {
+    public context: string
+    public source: string
+}
+
+extend ContextError {
+    public func message(self) -> string {
+        return "{self.context}: {self.source}"
+    }
+}
+
+/// Wrap any error with a message about what was being attempted.
+public func context<E: Error>(msg: string, err: E) -> ContextError {
+    return ContextError(context: msg, source: err.message())
+}
