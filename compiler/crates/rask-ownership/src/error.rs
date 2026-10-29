@@ -320,6 +320,24 @@ pub enum OwnershipErrorKind {
         ty: String,
     },
 
+    /// conc.sync/SH7: a task-local `Shared` captured by a task block.
+    #[error("this `Shared` is task-local and cannot be sent")]
+    LocalSharedSent {
+        name: String,
+    },
+
+    /// mem.ownership/T2: a value carrying a `Link` captured by a task block.
+    /// A link is a node's address; two tasks holding it would both write the
+    /// node.
+    #[error("`{name}` holds a link, which can't go to another task")]
+    LinkSent {
+        name: String,
+        /// The captured value's type, for the message.
+        ty: String,
+        /// The value is a link itself rather than something holding one.
+        bare_link: bool,
+    },
+
     /// analysis.fourth-option: a link that would outlive the rack it points into.
     ///
     /// A link is a pointer to a node, and the nodes live in the rack. When the

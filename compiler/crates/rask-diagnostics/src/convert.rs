@@ -1711,44 +1711,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("the rack owns its nodes for their whole life [mem.racks/RK1], and a link is a reference to one [RK2]. `take self` consumes the receiver, which would leave the rack holding a node that is gone — every other link to it would read freed memory")
             }
 
-            LocalSharedSent { name, span } => {
-                Diagnostic::error("this `Shared` is task-local and cannot be sent")
-                    .with_code("E0346")
-                    .with_primary(*span, format!("`{}` uses the `Local` strategy", name))
-                    .with_fix(
-                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
-                         locks more cheaply when writes dominate"
-                    )
-                    .with_why(
-                        "`Local` takes no lock at all, so two tasks touching it would \
-                         race. It is the opt-out, not the default, and this error is \
-                         what makes it safe to reach for [conc.sync/SH7]",
-                    )
-            }
-
-            LinkSent { name, ty, span } => {
-                let rendered = ty.to_string();
-                let label = if rendered.starts_with("Link<") {
-                    format!("`{}` is a link into a rack", name)
-                } else {
-                    format!("`{}` is a `{}`, which holds a link", name, rendered)
-                };
-                Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
-                    .with_code("E0901")
-                    .with_primary(*span, label)
-                    .with_fix(
-                        "copy out what the task needs before the spawn — `let id = n.id` — \
-                         or hand it the whole graph: `let copy = rack.snapshot()` and use \
-                         `copy` inside",
-                    )
-                    .with_why(
-                        "a link is its node's address, and every link can write the node, \
-                         so two tasks holding one would both write the same memory with \
-                         nothing ordering them. A rack moves as a whole, links and all; a \
-                         link on its own never crosses [mem.ownership/T2]",
-                    )
-            }
-
             SharedStrategyMismatch { found, expected, span } => {
                 Diagnostic::error(format!(
                     "this `Shared` uses the `{}` strategy, but `{}` is expected here",
@@ -4353,6 +4315,41 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
+            LocalSharedSent { name } => {
+                Diagnostic::error("this `Shared` is task-local and cannot be sent")
+                    .with_code("E0346")
+                    .with_primary(self.span, format!("`{}` uses the `Local` strategy", name))
+                    .with_fix(
+                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
+                         locks more cheaply when writes dominate"
+                    )
+                    .with_why(
+                        "`Local` takes no lock at all, so two tasks touching it would \
+                         race. It is the opt-out, not the default, and this error is \
+                         what makes it safe to reach for [conc.sync/SH7]",
+                    )
+            }
+            LinkSent { name, ty, bare_link } => {
+                let label = if *bare_link {
+                    format!("`{}` is a link into a rack", name)
+                } else {
+                    format!("`{}` is a `{}`, which holds a link", name, ty)
+                };
+                Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
+                    .with_code("E0901")
+                    .with_primary(self.span, label)
+                    .with_fix(
+                        "copy out what the task needs before the spawn — `let id = n.id` — \
+                         or hand it the whole graph: `let copy = rack.snapshot()` and use \
+                         `copy` inside",
+                    )
+                    .with_why(
+                        "a link is its node's address, and every link can write the node, \
+                         so two tasks holding one would both write the same memory with \
+                         nothing ordering them. A rack moves as a whole, links and all; a \
+                         link on its own never crosses [mem.ownership/T2]",
+                    )
+            }
             LinkOutlivesRack { link, rack, via, carried } => {
                 let holds = if *carried { "holds links into" } else { "lives in" };
                 let (primary, fix) = match via {

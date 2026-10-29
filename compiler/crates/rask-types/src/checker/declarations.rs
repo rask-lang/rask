@@ -3284,7 +3284,7 @@ impl TypeChecker {
 /// `struct Holder<Output>` is the parameter, not `os.Output` (#1487). A header
 /// that leaves the arguments off (`extend Wrapper` on a `Wrapper<T>`) has the
 /// declaration's names, and a `where` clause can only bound a parameter.
-pub(super) fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<String> {
+pub fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<String> {
     let declared: Vec<String> = i
         .target_ty
         .name()

@@ -39,6 +39,17 @@ pub struct OwnershipResult {
     /// What each `return` moves, keyed by the returned expression: the
     /// bindings its value takes. See `ReturnMoves`.
     pub return_moves: ReturnMoves,
+    /// Closure literals that capture a link or a `Local` box, so they may not
+    /// reach another task (mem.ownership/T2, conc.sync/SH7). A task block
+    /// that captures one is an error here; a closure value that reaches
+    /// `spawn` some other way is refused when the task starts, from a flag
+    /// lowering puts on it (#1356).
+    pub task_bound_closures: HashSet<rask_ast::NodeId>,
+    /// Closure literals in a generic body whose captures mention a type
+    /// parameter, with each such capture's name and type. Whether one may
+    /// cross is decided per instantiation, by mono and the interpreter
+    /// (`TypeTable::generic_closure_task_bound`).
+    pub generic_closure_captures: HashMap<rask_ast::NodeId, Vec<(String, Type)>>,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -276,6 +287,16 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::task_bound_closures`.
+    task_bound_closures: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::generic_closure_captures`.
+    generic_closure_captures: HashMap<rask_ast::NodeId, Vec<(String, Type)>>,
+    /// The type parameters the body being walked can name: its own and its
+    /// owner's.
+    type_params_in_scope: Vec<String>,
+    /// The parameters an `extend` header brings into scope, while its methods
+    /// are walked (`rask_types::header_type_params`).
+    header_type_params: Vec<String>,
     /// See `OwnershipResult::return_moves`.
     return_moves: ReturnMoves,
     /// Closure literals whose body assigns to something they captured. MC4
@@ -431,6 +452,10 @@ impl<'a> OwnershipChecker<'a> {
             task_bodies: HashSet::new(),
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
+            task_bound_closures: HashSet::new(),
+            generic_closure_captures: HashMap::new(),
+            type_params_in_scope: Vec::new(),
+            header_type_params: Vec::new(),
             return_moves: HashMap::new(),
             closure_writes_a_capture: HashSet::new(),
             mutable_captures: Vec::new(),
@@ -676,6 +701,8 @@ impl<'a> OwnershipChecker<'a> {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
             return_moves: self.return_moves,
+            task_bound_closures: self.task_bound_closures,
+            generic_closure_captures: self.generic_closure_captures,
         }
     }
 
@@ -1082,9 +1109,12 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Extern(_) => {}
             DeclKind::Impl(impl_decl) => {
                 self.self_ty = self.declared_type_from_name(&impl_decl.target_ty);
+                let header = rask_types::header_type_params(impl_decl, &self.program.types);
                 for method in &impl_decl.methods {
+                    self.header_type_params = header.clone();
                     self.check_fn(method, &impl_decl.where_bounds);
                 }
+                self.header_type_params.clear();
                 self.self_ty = None;
             }
             DeclKind::Import(_) => {}
@@ -1111,6 +1141,7 @@ impl<'a> OwnershipChecker<'a> {
     /// until something iterated the map to decide which names to invalidate, at
     /// which point a `first` from one test body got marked dead in another.
     fn reset_body_state(&mut self) {
+        self.type_params_in_scope.clear();
         self.bindings.clear();
         self.binding_types.clear();
         self.binding_decl_blocks.clear();
@@ -1163,6 +1194,13 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_fn(&mut self, fn_decl: &FnDecl, owner_params: &[rask_ast::decl::TypeParam]) {
         self.reset_body_state();
+        // The checker's own rules for which names are parameters: the
+        // owner's header, its `where` clause, and the function's declared and
+        // implied ones.
+        let mut params = self.header_type_params.clone();
+        params.extend(owner_params.iter().map(|p| p.name.clone()));
+        params.extend(rask_types::signature_type_param_names(fn_decl));
+        self.type_params_in_scope = params;
         self.copy_params = owner_params
             .iter()
             .chain(&fn_decl.type_params)
@@ -2949,6 +2987,13 @@ impl<'a> OwnershipChecker<'a> {
                 let mut captures = Vec::new();
                 let mut capture_projections: HashMap<String, Option<Vec<String>>> = HashMap::new();
                 self.collect_free_vars_with_projections(body, &param_names, &mut captures, &mut capture_projections);
+
+                // T2/SH7: what this closure takes with it, asked whether it may
+                // reach another task. A generic body re-walked for one
+                // instantiation sees the same captures; once is enough.
+                if self.instance.is_none() {
+                    self.check_task_crossing(expr.id, body, &captures, is_task);
+                }
 
                 // Separate resource captures from non-resource captures
                 let resource_captures: Vec<String> = captures.iter()
@@ -5753,6 +5798,110 @@ impl<'a> OwnershipChecker<'a> {
             && !self.escaping_closures.contains(&expr.id)
     }
 
+    // ─── What may reach another task ──────────────────────────────────────
+
+    /// mem.ownership/T2, conc.sync/SH7: a closure's captures, asked whether
+    /// they may reach another task. A link is its node's address and a
+    /// `Local` box takes no lock, so either keeps a value on the task that
+    /// made it, however deep it sits (`TypeTable::task_bound`).
+    ///
+    /// A task block that captures one is an error at the capture. Any other
+    /// closure that does is marked, so a task that reaches it as a value
+    /// refuses it when the task starts (#1356). A capture whose type mentions
+    /// a type parameter is task-bound in some instantiations and not others,
+    /// so it is recorded for whoever sees the concrete type.
+    ///
+    /// The type checker used to answer this from spans: every name used
+    /// inside a `spawn` block's span. This pass already knows each closure's
+    /// captures, so the question moved here, next to the rest of "may this
+    /// value go there" (#1662).
+    fn check_task_crossing(
+        &mut self,
+        closure_id: rask_ast::NodeId,
+        body: &Expr,
+        captures: &[String],
+        is_task: bool,
+    ) {
+        for name in captures {
+            // The first use is the outer binding's: a name shadowed earlier
+            // in the body isn't a capture at all.
+            let Some(at) = Self::first_use(body, name) else { continue };
+            let Some(ty) = self.node_ty(&at.id).cloned() else { continue };
+            match self.program.types.task_bound(&ty) {
+                Some(reason) => {
+                    self.task_bound_closures.insert(closure_id);
+                    if is_task {
+                        self.report_task_bound(name, &ty, reason, at.span);
+                    }
+                }
+                None => {
+                    let generic = ty.mentions_type_param(&|n| {
+                        self.type_params_in_scope.iter().any(|p| p == n)
+                    });
+                    if generic {
+                        let entry = self.generic_closure_captures.entry(closure_id).or_default();
+                        if !entry.iter().any(|(n, t)| n == name && *t == ty) {
+                            entry.push((name.clone(), ty));
+                        }
+                    }
+                }
+            }
+        }
+        // A closure the block calls by name crosses with it, so what that
+        // closure captured is asked as this task's. The flag on the closure
+        // would refuse it at run time; here it's a compile error with the
+        // capture under the caret.
+        if is_task {
+            for name in captures {
+                let Some(lit) = self.closure_literals.get(name).cloned() else { continue };
+                let ExprKind::Closure { params, body: inner, .. } = &lit.kind else { continue };
+                let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                let mut inner_captures = Vec::new();
+                self.collect_free_vars_with_projections(inner, &locals, &mut inner_captures, &mut HashMap::new());
+                for cap in inner_captures {
+                    let Some(at) = Self::first_use(inner, &cap) else { continue };
+                    let Some(ty) = self.node_ty(&at.id).cloned() else { continue };
+                    if let Some(reason) = self.program.types.task_bound(&ty) {
+                        self.report_task_bound(&cap, &ty, reason, at.span);
+                    }
+                }
+            }
+        }
+        // A generic capture already known to be task-bound needs no
+        // per-instantiation answer.
+        if self.task_bound_closures.contains(&closure_id) {
+            self.generic_closure_captures.remove(&closure_id);
+        }
+    }
+
+    fn report_task_bound(&mut self, name: &str, ty: &Type, reason: rask_types::TaskBound, span: Span) {
+        let kind = match reason {
+            rask_types::TaskBound::LocalBox => OwnershipErrorKind::LocalSharedSent { name: name.to_string() },
+            rask_types::TaskBound::Link => OwnershipErrorKind::LinkSent {
+                name: name.to_string(),
+                ty: self.program.types.resolve_type_names(ty).to_string(),
+                bare_link: self.is_link_type(ty),
+            },
+        };
+        self.errors.push(OwnershipError { kind, span });
+    }
+
+    /// The first place `name` is read in `expr`, in source order.
+    fn first_use<'e>(expr: &'e Expr, name: &str) -> Option<&'e Expr> {
+        let mut found: Option<&'e Expr> = None;
+        rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
+            if found.is_some() {
+                return false;
+            }
+            if matches!(&e.kind, ExprKind::Ident(n) if n == name) {
+                found = Some(e);
+                return false;
+            }
+            true
+        });
+        found
+    }
+
     /// Whether a closure literal carries its captures rather than pointing at
     /// them. `mem.closures/CM1`: it does exactly when it outlives its frame.
     fn closure_carries_captures(&self, id: rask_ast::NodeId) -> bool {
@@ -8019,6 +8168,9 @@ pub fn check_ownership_with_stdlib(
         stdlib.check_decl(decl);
     }
     result.return_moves.extend(stdlib.return_moves);
+    // A stdlib closure crosses to a task the same way a program's does.
+    result.task_bound_closures.extend(stdlib.task_bound_closures);
+    result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result
 }
 
