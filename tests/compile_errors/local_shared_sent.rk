@@ -7,12 +7,28 @@
 // needs no such rule, which is why it's the default.
 
 import sync.Shared
+import sync.Local
 
 func races() {
     using Multitasking {
         let counter = Shared.local(0)       // Local — no lock
         let h = spawn {
             with counter.write() as c { c += 1 }   // ERROR: E0346
+        }
+        let _ = h.join()
+    }
+}
+
+// The rule is about the box wherever it sits. One field down is still a
+// `Local` box reaching a second task; the walk that finds links in a struct
+// finds this too (#1669).
+struct Counter { hits: Shared<i32, Local> }
+
+func hidden_in_a_field() {
+    using Multitasking {
+        let c = Counter(hits: Shared.local(0))
+        let h = spawn {
+            with c.hits.write() as n { n += 1 }   // ERROR: E0346
         }
         let _ = h.join()
     }

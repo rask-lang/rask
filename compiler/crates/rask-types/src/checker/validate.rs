@@ -288,6 +288,30 @@ impl TypeChecker {
     /// inserts have been seen. `Map<f64, V>` was accepted, and then a NaN key
     /// found its own entry natively and missed on the interpreter (#306), which
     /// is the contract violation HA4 names.
+    /// conc.sync/SH10: a `Shared` field or payload whose box can hold the
+    /// owner's type again. Two such boxes pointing at each other keep both
+    /// counts above zero for good (#1672). Checked here rather than at the
+    /// declaration because the cycle can close through a type declared later.
+    pub(super) fn validate_shared_cycles(&mut self) {
+        let pending = std::mem::take(&mut self.pending_shared_fields);
+        for (owner, field, ty, span) in pending {
+            let Some(owner_id) = self.types.get_type_id(&owner) else { continue };
+            let ty = self.ctx.apply(&ty);
+            for payload in self.types.direct_shared_payloads(&ty) {
+                if let Some(path) = self.types.shared_cycle(owner_id, &payload) {
+                    self.errors.push(TypeError::SharedCycle {
+                        owner: owner.clone(),
+                        field: field.clone(),
+                        payload: self.types.resolve_type_names(&payload),
+                        path,
+                        span,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
     pub(super) fn validate_pending_linear_containers(&mut self) {
         let pending = std::mem::take(&mut self.pending_linear_containers);
         let mut reported: Vec<Span> = Vec::new();

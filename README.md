@@ -86,7 +86,7 @@ More `.clone()` calls. Some patterns restructure:
 - string slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
 - arbitrary graphs → `Rack<T>` + `Link<T>`
 
-That's most of the cost. What you get back: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races. I think it's a good trade. Some days I'm less sure.
+That's most of the cost. What you get back: no lifetime annotations in signatures, no GC pauses, no use-after-free, no data races, and in safe code no memory leaks. That last one is by design rather than by checking: every value has one owner, nothing stores a reference, there's no `forget`, and nothing refcounted can form a cycle, so every allocation has a release point. Rust chose not to promise it (`mem::forget` is safe there). The implementation is held to it by a leak gate over the whole suite, and `tests/known_leaks.txt` is the honest list of where it still falls short. I think it's a good trade. Some days I'm less sure.
 
 ---
 

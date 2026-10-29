@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// conc.sync/SH10: a `Shared` whose box can hold the owner's type again.
+//
+// A box is refcounted. Two boxes holding clones of each other keep both counts
+// above zero after every outside name is gone, and nothing ever frees them
+// (#1672). The rule is on the type, not the value: if the shape can close a
+// cycle, it is rejected, even when a particular program would only ever build
+// a tree out of it. Values that point at each other live in a rack.
+
+import sync.Shared
+import memory.Rack
+import memory.Link
+
+// The direct case: a Node's box can hold a Node.
+struct Node {
+    name: string
+    next: Shared<Node>?           // ERROR: E0925
+}
+
+// Mutual: Left boxes Right, Right boxes Left. Reported at each field that closes the loop.
+struct Left {
+    right: Shared<Right>?         // ERROR: E0925
+}
+
+struct Right {
+    left: Shared<Left>?           // ERROR: E0925
+}
+
+// Through a container: the box is one Vec element down, still a cycle.
+struct Tree {
+    children: Vec<Shared<Tree>>   // ERROR: E0925
+}
+
+// By value: Outer holds Inner by value, and Inner's box holds an Outer, so
+// the box's payload holds the box's holder.
+struct Outer {
+    inner: Inner
+}
+
+struct Inner {
+    back: Shared<Outer>?          // ERROR: E0925
+}
+
+// Fine: a box whose payload can't reach a box of this type.
+struct Config {
+    verbose: bool
+}
+
+struct Service {
+    config: Shared<Config>
+}
+
+// Fine: the graph lives in a rack and the rack is what's shared. Links are
+// not entered by the walk — a link owns nothing, so it can't keep a box alive.
+struct Vertex {
+    next: Link<Vertex>?
+}
+
+struct Graph {
+    vertices: Shared<Rack<Vertex>>
+}
+
+func main() {
+    let s = Service(config: Shared.new(Config(verbose: true)))
+    let g = Graph(vertices: Shared.new(Rack.new()))
+    let _ = s
+    let _ = g
+}
