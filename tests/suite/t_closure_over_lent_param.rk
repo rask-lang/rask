@@ -9,8 +9,7 @@
 // `make` had been inlined and the capture looked like `v` itself; the next
 // closure over `v` read freed memory and the program crashed. The caller must
 // also still free `v` itself, exactly once, which the leak and memcheck gates
-// see. A `main` rather than `test` blocks, because the crash needed `make`
-// inlined into the frame that owns `v`.
+// see. 
 
 func make(base: Vec<i64>) -> func(i64) -> i64 {
     return |x| x + base.len().wrap<i64>()
@@ -25,13 +24,17 @@ struct Holder {
 // other is called. Keep this file to `make`'s two sites here: the glue is one
 // per closure function, and a third site anywhere in the program that
 // disagrees about ownership switches the glue off and hides the bug.
-func main() {
+test "two closures over a borrowed vector, released at different times" {
     let v: Vec<i64> = [1, 2]
     let h = Holder(cb: make(v), n: 2)
     let c = h.cb
-    println("{c(2)} {h.n}")
+    assert c(2) == 4
+    assert h.n == 2
     let o: (func(i64) -> i64)? = make(v)
     if o? as g {
-        println("{g(3)}")
+        assert g(3) == 5
+    } else {
+        assert false, "the optional holds a closure"
     }
+    assert v.len() == 2
 }
