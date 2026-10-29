@@ -66,6 +66,43 @@ func closure_in_tuple() -> (func(i64) -> i64, i32) {
     return (make(v), 1)          // ERROR: E0862
 }
 
+// The limit rides along in an aggregate bound to a name, and comes back out
+// of it by destructuring or a field read.
+struct Callback {
+    cb: func(i64) -> i64
+    n: i32
+}
+
+func closure_in_bound_tuple() -> (func(i64) -> i64, i32) {
+    let v: Vec<i64> = [1, 2]
+    let p = (make(v), 1)
+    return p                     // ERROR: E0862
+}
+
+func closure_destructured() -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    let p = (make(v), 1)
+    let (f, _) = p
+    return f                     // ERROR: E0862
+}
+
+func closure_field_read() -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    let h = Callback(cb: make(v), n: 2)
+    return h.cb                  // ERROR: E0862
+}
+
+// Fine: the aggregate never leaves, and a part that can't hold a closure
+// carries no limit.
+func closure_kept_local() -> i32 {
+    let v: Vec<i64> = [1, 2]
+    let p = (make(v), 1)
+    let (f, n) = p
+    println("{f(1)}")
+    let h = Callback(cb: make(v), n: 2)
+    return h.n + n
+}
+
 // Fine: the copy is written down.
 func lent_copied(rows: Vec<Vec<i32>>) -> (Vec<i32>, i32) {
     return (rows[0].clone(), 1)
@@ -85,4 +122,5 @@ func main() {
     let _ = lent_copied(rows)
     mut r: Rack<Node> = Rack.new()
     let _ = link_into_callers(mutate r, true)
+    let _ = closure_kept_local()
 }

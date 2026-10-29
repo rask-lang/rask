@@ -1662,7 +1662,6 @@ impl<'a> OwnershipChecker<'a> {
         let mut hit = false;
         for value in values {
             hit |= self.check_lent_escape(value, into);
-            hit |= self.check_frame_bound_closure(value, into);
             hit |= match into {
                 Sink::Return => {
                     let field = self.check_borrowed_field_escape(value);
@@ -1675,26 +1674,25 @@ impl<'a> OwnershipChecker<'a> {
         hit
     }
 
-    /// SL2: a closure that points at its frame, given a holder the limit
-    /// can't follow. The limit is tracked through plain local names only, so
-    /// a return, a field, a tuple, a variant or a `Heap` is where it would be
-    /// lost, and each is refused. A plain name takes the limit over (the
-    /// assignment and `let` code does that), and a `take` argument has its
-    /// own rule, which knows the parameter's mode (`check_closure_arg_escape`).
+    // ─── Closures that point at their frame ────────────────────────────────
+
+    /// SL2: a closure that points at its frame, going somewhere that outlives
+    /// it: out of the function, or into a field or an index. A plain name
+    /// takes the limit over instead (`inherit_frame_limit`), and so does a
+    /// tuple, struct or variant built around one: the limit rides along to
+    /// whatever name the aggregate is bound to, and is asked again where that
+    /// goes. A `take` argument has its own rule, which knows the parameter's
+    /// mode (`check_closure_arg_escape`).
     ///
     /// A closure returned through an `if` or inside a tuple used to compile:
     /// only a bare name or the returned expression itself was asked (#1662).
     fn check_frame_bound_closure(&mut self, expr: &Expr, into: &Sink) -> bool {
         match into {
-            Sink::TakeArg { .. } => return false,
-            Sink::Place { place, root } if place == root => return false,
-            _ => {}
-        }
-        let name = match &expr.kind {
-            ExprKind::Ident(name) if self.scope_limited_closures.contains_key(name) => name.clone(),
-            _ if self.closure_scope_limits.contains_key(&expr.id) => "<closure>".to_string(),
+            Sink::Return => {}
+            Sink::Place { place, root } if place != root => {}
             _ => return false,
-        };
+        }
+        let Some((_, name)) = self.frame_limit_of(expr) else { return false };
         // Reported here, so the block exit doesn't report it again.
         self.scope_limited_closures.remove(&name);
         self.errors.push(OwnershipError {
@@ -1702,6 +1700,117 @@ impl<'a> OwnershipChecker<'a> {
             span: expr.span,
         });
         true
+    }
+
+    /// The innermost block a closure in `expr` points into, and a name for the
+    /// message: a tracked name, a closure built right here, or a part read out
+    /// of a tracked name (`pair.0`, `h.callback`) whose type can hold one.
+    /// Looks through branches and through the aggregates built here.
+    fn frame_limit_of(&self, expr: &Expr) -> Option<(u32, String)> {
+        let mut values = Vec::new();
+        self.values_reaching(expr, true, &mut values);
+        let mut found: Option<(u32, String)> = None;
+        for value in values {
+            let hit = match &value.kind {
+                ExprKind::Ident(name) => self
+                    .scope_limited_closures
+                    .get(name)
+                    .map(|&(limit, _)| (limit, name.clone())),
+                _ => None,
+            }
+            .or_else(|| {
+                self.closure_scope_limits.get(&value.id).map(|&limit| (limit, "<closure>".to_string()))
+            })
+            .or_else(|| {
+                let root = Self::projection_root(value)?;
+                let &(limit, _) = self.scope_limited_closures.get(root)?;
+                let ty = self.node_ty(&value.id)?;
+                let shown = Self::render_place(value).unwrap_or_else(|| root.to_string());
+                self.type_holds_callable(ty, &mut Vec::new()).then_some((limit, shown))
+            });
+            if let Some((limit, name)) = hit {
+                found = Some(match found {
+                    Some((l, n)) if l >= limit => (l, n),
+                    _ => (limit, name),
+                });
+            }
+        }
+        found
+    }
+
+    /// The name a field, index or unwrap chain reads out of, if it ends in one.
+    fn projection_root(expr: &Expr) -> Option<&str> {
+        match &expr.kind {
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. } => match &object.kind {
+                ExprKind::Ident(name) => Some(name),
+                _ => Self::projection_root(object),
+            },
+            ExprKind::Unwrap { expr: inner, .. } | ExprKind::IsPresent { expr: inner, .. } => {
+                match &inner.kind {
+                    ExprKind::Ident(name) => Some(name),
+                    _ => Self::projection_root(inner),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Can a value of this type hold a closure: is it one, or does it hold one
+    /// in a tuple element, an option, a container, or a struct or enum field?
+    fn type_holds_callable(&self, ty: &Type, seen: &mut Vec<rask_types::TypeId>) -> bool {
+        if Self::type_is_callable(ty) {
+            return true;
+        }
+        let def = |id: rask_types::TypeId, seen: &mut Vec<rask_types::TypeId>| -> bool {
+            if seen.contains(&id) {
+                return false;
+            }
+            seen.push(id);
+            match self.program.types.get(id) {
+                Some(rask_types::TypeDef::Struct { fields, .. }) => {
+                    fields.iter().any(|(_, t)| self.type_holds_callable(t, seen))
+                }
+                Some(rask_types::TypeDef::Enum { variants, .. }) => variants
+                    .iter()
+                    .any(|(_, payload)| payload.iter().any(|t| self.type_holds_callable(t, seen))),
+                _ => false,
+            }
+        };
+        match ty {
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(|t| self.type_holds_callable(t, seen))
+            }
+            Type::Array { elem, .. } => self.type_holds_callable(elem, seen),
+            Type::Result { ok, err } => {
+                self.type_holds_callable(ok, seen) || self.type_holds_callable(err, seen)
+            }
+            Type::Named(id) => def(*id, seen),
+            Type::Generic { base, args } => {
+                args.iter().any(|a| matches!(a, rask_types::GenericArg::Type(t) if self.type_holds_callable(t, seen)))
+                    || def(*base, seen)
+            }
+            _ => ty.as_option().is_some_and(|inner| self.type_holds_callable(inner, seen)),
+        }
+    }
+
+    /// A name bound from `from` takes over the frame limit of any closure
+    /// `from` holds, if the name's type can hold one. `binding_block` is where
+    /// the name was declared, which is what the block-exit check compares the
+    /// limit against.
+    fn inherit_frame_limit(&mut self, names: &[String], from: &Expr, binding_block: u32) {
+        let Some((limit, _)) = self.frame_limit_of(from) else { return };
+        for name in names {
+            let holds = self
+                .binding_types
+                .get(name)
+                .cloned()
+                .is_some_and(|ty| self.type_holds_callable(&ty, &mut Vec::new()));
+            if holds {
+                self.scope_limited_closures.insert(name.clone(), (limit, binding_block));
+            }
+        }
     }
 
     /// The outlives half of `check_flow`. Only a return and a store can take
@@ -1712,9 +1821,9 @@ impl<'a> OwnershipChecker<'a> {
             Sink::Place { root, .. } => LinkEscape::Assignment { target: root.clone() },
             _ => return false,
         };
+        let mut hit = self.check_frame_bound_closure(expr, into);
         let mut values = Vec::new();
         self.values_reaching(expr, true, &mut values);
-        let mut hit = false;
         // Two arms returning the same name are one escape, not two.
         let mut seen: Vec<&str> = Vec::new();
         for value in values {
@@ -1900,10 +2009,8 @@ impl<'a> OwnershipChecker<'a> {
                     self.record_link_provenance(name, &t, init);
                     self.binding_types.insert(name.clone(), t);
                 }
-                // SL1: inherit scope limit from closure expression
-                if let Some(&borrow_block) = self.closure_scope_limits.get(&init.id) {
-                    self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
-                }
+                // SL1: the name takes over the limit of any closure `init` holds.
+                self.inherit_frame_limit(std::slice::from_ref(name), init, self.current_block);
                 if matches!(init.kind, ExprKind::Closure { .. }) {
                     self.closure_literals.insert(name.clone(), init.clone());
                 }
@@ -1943,6 +2050,9 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                // SL1: `let (f, n) = pair` hands `f` the limit `pair` carries.
+                let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+                self.inherit_frame_limit(&names, init, self.current_block);
             }
             StmtKind::Let { name, name_span: _, ty, init } => {
                 self.check_expr(init);
@@ -1964,10 +2074,8 @@ impl<'a> OwnershipChecker<'a> {
                         self.borrow_bindings.insert(name.clone(), self.current_block);
                     }
                 }
-                // SL1: inherit scope limit from closure expression
-                if let Some(&borrow_block) = self.closure_scope_limits.get(&init.id) {
-                    self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
-                }
+                // SL1: the name takes over the limit of any closure `init` holds.
+                self.inherit_frame_limit(std::slice::from_ref(name), init, self.current_block);
                 if matches!(init.kind, ExprKind::Closure { .. }) {
                     self.closure_literals.insert(name.clone(), init.clone());
                 }
@@ -2018,6 +2126,24 @@ impl<'a> OwnershipChecker<'a> {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                     self.binding_decl_blocks.insert(name, self.current_block);
                 }
+                // SL1: a field bound by name takes the type the struct gives
+                // it, and with it any limit the struct carries.
+                if let Pattern::Struct { fields, .. } = pattern {
+                    let declared = self.node_ty(&init.id).and_then(|t| self.struct_fields_for_type(t));
+                    let mut names = Vec::new();
+                    for (field_name, pat) in fields {
+                        if let Pattern::Ident(n) = pat {
+                            if let Some((_, t)) = declared
+                                .as_ref()
+                                .and_then(|fs| fs.iter().find(|(f, _)| f == field_name))
+                            {
+                                self.binding_types.insert(n.clone(), t.clone());
+                            }
+                            names.push(n.clone());
+                        }
+                    }
+                    self.inherit_frame_limit(&names, init, self.current_block);
+                }
             }
             StmtKind::LetTuple { patterns, init } => {
                 self.check_expr(init);
@@ -2038,6 +2164,9 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                // SL1: `let (f, n) = pair` hands `f` the limit `pair` carries.
+                let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+                self.inherit_frame_limit(&names, init, self.current_block);
             }
             StmtKind::Expr(expr) => {
                 self.check_expr(expr);
@@ -2165,31 +2294,13 @@ impl<'a> OwnershipChecker<'a> {
                         self.closure_literals.remove(target_name);
                     }
                 }
-                if let ExprKind::Ident(value_name) = &value.kind {
-                    if let Some(&(borrow_block, _)) = self.scope_limited_closures.get(value_name) {
-                        // Into a name the limit follows it; into a field or
-                        // an index `check_flow` has already refused it.
-                        if let ExprKind::Ident(target_name) = &target.kind {
-                            let decl_block = self.binding_decl_blocks
-                                .get(target_name).copied()
-                                .unwrap_or(self.current_block);
-                            self.scope_limited_closures.insert(
-                                target_name.clone(),
-                                (borrow_block, decl_block),
-                            );
-                        }
-                    }
-                }
-                if let Some(&borrow_block) = self.closure_scope_limits.get(&value.id) {
-                    if let ExprKind::Ident(target_name) = &target.kind {
-                        let decl_block = self.binding_decl_blocks
-                            .get(target_name).copied()
-                            .unwrap_or(self.current_block);
-                        self.scope_limited_closures.insert(
-                            target_name.clone(),
-                            (borrow_block, decl_block),
-                        );
-                    }
+                // SL1: into a name, the limit follows; into a field or an
+                // index, `check_flow` has already refused it.
+                if let ExprKind::Ident(target_name) = &target.kind {
+                    let decl_block = self.binding_decl_blocks
+                        .get(target_name).copied()
+                        .unwrap_or(self.current_block);
+                    self.inherit_frame_limit(std::slice::from_ref(target_name), value, decl_block);
                 }
             }
             StmtKind::Return(expr) => {
@@ -2246,6 +2357,13 @@ impl<'a> OwnershipChecker<'a> {
                     expr.span,
                     lender.as_deref(),
                 );
+                // SL1: what the pattern binds takes over any limit the
+                // scrutinee carries.
+                {
+                    let mut bound = Vec::new();
+                    Self::collect_pattern_binding_names(pattern, &mut bound);
+                    self.inherit_frame_limit(&bound, expr, self.current_block);
+                }
                 let mut bound = Vec::new();
                 Self::collect_pattern_binding_names(pattern, &mut bound);
                 self.check_loop_body(body, &bound, label.as_ref(), false);
@@ -3156,6 +3274,13 @@ impl<'a> OwnershipChecker<'a> {
                     scrutinee.span,
                     lender.as_deref(),
                 );
+                // SL1: what the pattern binds takes over any limit the
+                // scrutinee carries.
+                {
+                    let mut bound = Vec::new();
+                    Self::collect_pattern_binding_names(pattern, &mut bound);
+                    self.inherit_frame_limit(&bound, scrutinee, self.current_block);
+                }
                 // A resource the pattern binds lives in the then-branch only, as
                 // an `if x? as c` binding does. Left registered past the branch,
                 // `if m is Conn as c { return c }` reported `c` as leaked at the
@@ -3237,6 +3362,13 @@ impl<'a> OwnershipChecker<'a> {
                         scrutinee.span,
                         lender.as_deref(),
                     );
+                    // SL1: what the arm binds takes over any limit the
+                    // scrutinee carries.
+                    {
+                        let mut bound = Vec::new();
+                        Self::collect_pattern_binding_names(&arm.pattern, &mut bound);
+                        self.inherit_frame_limit(&bound, scrutinee, self.current_block);
+                    }
                     if let Some(guard) = &arm.guard {
                         self.check_expr(guard);
                     }
@@ -3295,6 +3427,13 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     if let Some(ty) = self.node_ty(&inner.id).cloned() {
                         let narrowed = ty.as_option().cloned().unwrap_or(ty);
+                        // SL1: `o? as g` hands `g` any limit `o` carries.
+                        if self.type_holds_callable(&narrowed, &mut Vec::new()) {
+                            if let Some((limit, _)) = self.frame_limit_of(inner) {
+                                self.scope_limited_closures
+                                    .insert(name.clone(), (limit, self.current_block));
+                            }
+                        }
                         self.bindings.insert(name.clone(), BindingState::Owned);
                         if self.type_is_resource(&narrowed) {
                             self.resource_bindings.insert(name.clone());
