@@ -3426,6 +3426,29 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
             }
 
+            SharedCycle { owner, field, payload, path, span } => {
+                let chain = std::iter::once(owner.clone())
+                    .chain(path.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" → ");
+                Diagnostic::error(format!(
+                    "`{}.{}` is a `Shared` that can point back at `{}`",
+                    owner, field, owner
+                ))
+                .with_code("E0925")
+                .with_primary(*span, format!("`Shared<{}>` here can hold `{}` again: {}", payload, owner, chain))
+                .with_fix(format!(
+                    "put the `{}` values in a rack and share that: `Shared<Rack<{}>>`, with `Link<{}>?` for the edges",
+                    owner, owner, owner
+                ))
+                .with_why(
+                    "a `Shared` is refcounted. Two boxes holding each other keep both counts above \
+                     zero after every outside name is gone, and nothing ever frees them. A rack owns \
+                     its nodes, so a cycle of links costs nothing [mem.racks/RK1], and `delete` nulls \
+                     the edges into a dead node [RK3]",
+                )
+            }
+
             LinearInContainer { container, elem, span } => {
                 let rule = match container.as_str() {
                     "Map" => "RC3",

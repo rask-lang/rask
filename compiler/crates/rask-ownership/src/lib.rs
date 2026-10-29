@@ -2443,7 +2443,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 for rack_arg in &deleting_args {
-                    self.kill_links_for_deleting_arg(rack_arg, expr.span);
+                    self.forward_to_deleting_param(rack_arg, expr.span);
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
@@ -2575,7 +2575,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.require_deleting(object, "`clear` here", expr.span);
                 }
                 for rack_arg in &method_deleting_args {
-                    self.kill_links_for_deleting_arg(rack_arg, expr.span);
+                    self.forward_to_deleting_param(rack_arg, expr.span);
                 }
                 // What the method's declaration says it does to the
                 // receiver's size (`@grows`, `@shrinks`). A name list here
@@ -3885,6 +3885,23 @@ impl<'a> OwnershipChecker<'a> {
             },
             span,
         });
+    }
+
+    /// A rack handed to a `deleting` parameter. The callee picks the victims,
+    /// so this body's links into the rack die here — and if the rack came in
+    /// as this body's own parameter, the caller above has links too and was
+    /// never told. That makes the hand-off an unnamed delete through that
+    /// parameter, the fifth shape next to `delete`, `clear` and a consumed
+    /// derived link, and it needs the same `deleting` declaration. Without
+    /// this a `mutate` wrapper around a `deleting` callee compiled, and the
+    /// caller's next read of its link was a use after free (#1664).
+    fn forward_to_deleting_param(&mut self, arg: &Expr, span: Span) {
+        let op = match arg.name() {
+            Some(n) => format!("handing `{n}` to a `deleting` parameter"),
+            None => "handing it to a `deleting` parameter".to_string(),
+        };
+        self.require_deleting(arg, &op, span);
+        self.kill_links_for_deleting_arg(arg, span);
     }
 
     /// At a call passing `arg` to a `deleting` parameter, the callee picks which
