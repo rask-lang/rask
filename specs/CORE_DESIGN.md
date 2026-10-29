@@ -308,6 +308,7 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 - Dangling pointers — impossible; references can't escape their scope, so there's nothing to leave behind
 - Use-after-free through a link — the rack nulls every stored edge at delete (`mem.racks/RK3`), and a local link the rack can't reach is a compile error to use afterwards (RK5). There's no stale state to observe
 - Iterator invalidation — same story: the rack nulls the edges it can reach, and a local link is a compile error to use
+- Memory leaks — a safe program can't make one. Each value has one owner and is released with it, a linear value is consumed on every path including unwinding, nothing stores a reference, there is no `forget`, and a `Shared` can't hold its own holder (`conc.sync/SH10`), so every allocation has a release point the program's structure fixes. Rust chose not to promise this (`mem::forget` is safe there, and an `Rc` cycle leaks in safe code). The implementation is held to it by `tests/leak_gate.sh`, and `tests/known_leaks.txt` is the list of where it still falls short. The argument in full is `analysis.forest`, section 5
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 

@@ -628,7 +628,7 @@ impl TypeChecker {
                     if generic
                         || matches!(resolved, Type::Var(_))
                         || Self::type_is_shared(&resolved, &self.types)
-                        || self.types.holds_link(&resolved)
+                        || self.types.task_bound(&resolved).is_some()
                     {
                         let depth = self.local_depth(name).unwrap_or(0);
                         let type_params = self.types.type_param_scope();

@@ -2,7 +2,7 @@
 
 The whole language, compressed and normative. This is the reference that travels with a prompt when a model writes Rask, and the lookup page when a human forgets a rule. Every claim matches the specs; citations like `mem.borrowing/W2` point at the deep file (see [specs/CONVENTIONS.md](specs/CONVENTIONS.md)). If this card and a spec disagree, the spec wins — file the discrepancy.
 
-Rask is a compiled systems language: value semantics, single ownership, no GC, no lifetime annotations, no function coloring. Safety mechanisms are visible in source (`with`, `mutate`, `take`, `ensure`) and failures are compile errors or deterministic panics — never UB. Direction: [NORTH_STAR.md](NORTH_STAR.md).
+Rask is a compiled systems language: value semantics, single ownership, no GC, no lifetime annotations, no function coloring. Safety mechanisms are visible in source (`with`, `mutate`, `take`, `ensure`) and failures are compile errors or deterministic panics — never UB. A safe program can't leak memory, by design; `tests/leak_gate.sh` holds the implementation to it. Direction: [NORTH_STAR.md](NORTH_STAR.md).
 
 ## Syntax core
 

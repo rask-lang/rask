@@ -1318,6 +1318,19 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// conc.sync/SH10: a field holds a `Shared` whose payload can hold the
+    /// field's own type again, so two boxes can point at each other and
+    /// neither refcount ever reaches zero. `path` is the chain of type names
+    /// from the payload back to `owner`.
+    #[error("`{owner}.{field}` is a `Shared` that can point back at `{owner}`")]
+    SharedCycle {
+        owner: String,
+        field: String,
+        payload: Type,
+        path: Vec<String>,
+        span: Span,
+    },
+
     /// mem.resource-types/RC1, RC3: a `Vec<T>` or `Map<K, V>` element (or key)
     /// is a linear value (`@resource`, transitively-linear, or an optional/
     /// tuple/array built from one). Vec/Map drop can't consume linear elements,
@@ -1636,6 +1649,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            SharedCycle { payload, .. } => *payload = f(payload),
             RackNodeNotStruct { node, .. } => *node = f(node),
             TransmuteNeedsTarget { from, .. } => *from = f(from),
             TransmuteSizeMismatch { from, to, .. } => {
