@@ -4822,6 +4822,26 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("a task works on its own copy of what it captured, and `join()` is not a write-back — the write would be thrown away when the task ends")
             }
 
+            HeldNodeDeleted { collection, link, holder_span, in_loop } => {
+                let holder = if *in_loop { "the `for mutate` loop" } else { "the `with` block" };
+                Diagnostic::error(format!(
+                    "this can delete the node holding `{}`, and {} is still using it",
+                    collection, holder
+                ))
+                .with_code("E0926")
+                .with_primary(self.span, format!("the node `{}` names can be freed here", link))
+                .with_secondary(*holder_span, format!("`{}` is held from here until the block ends", collection))
+                .with_fix(format!(
+                    "delete after the block ends, or copy what you need out of `{}` first",
+                    collection
+                ))
+                .with_why(
+                    "a node's fields live in the node, and deleting it frees them. Nodes never \
+                     move, so deleting a different node is fine, but this one is where the held \
+                     element lives [mem.racks/RK1, mem.borrowing/W2]",
+                )
+            }
+
             ForMutateStructuralMutation { collection, operation, via, loop_span } => {
                 let (headline, primary) = match via {
                     Some(callee) => (

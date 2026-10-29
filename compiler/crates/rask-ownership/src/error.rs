@@ -573,6 +573,19 @@ pub enum OwnershipErrorKind {
         binding_span: Span,
     },
 
+    /// RK1 with W2/LP14: the rack node a `with` or `for mutate` holds a
+    /// place in, deleted while it does.
+    #[error("the node holding `{collection}` is deleted while it's in use")]
+    HeldNodeDeleted {
+        /// The held source as written: `a.items`.
+        collection: String,
+        /// The link that names the node: `a`.
+        link: String,
+        /// The `with` binding or the loop.
+        holder_span: Span,
+        in_loop: bool,
+    },
+
     /// LP14: structural mutation during `for mutate`
     #[error("cannot {operation} `{collection}` during `for mutate` — invalidates iteration")]
     ForMutateStructuralMutation {

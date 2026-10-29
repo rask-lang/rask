@@ -2716,6 +2716,13 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 // W2/LP14: an argument handed to a parameter the callee resizes.
                 self.check_held_sources(expr);
+                // A closure called by name does what its body does, deletes
+                // included.
+                if let Some(name) = func.name() {
+                    if let Some(lit) = self.closure_literals.get(name).cloned() {
+                        self.replay_closure_deletes(&lit, expr.span);
+                    }
+                }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
@@ -2832,6 +2839,12 @@ impl<'a> OwnershipChecker<'a> {
                     if !named {
                         self.require_deleting(object, "`delete` here", expr.span);
                     }
+                    let victim = if named {
+                        args.first().and_then(|a| a.expr.name()).map(str::to_string)
+                    } else {
+                        None
+                    };
+                    self.check_held_node_deleted(object, victim.as_deref(), expr.span);
                 }
                 // `rack.clear()` deletes every node at once. It names no link,
                 // so a local link into that rack has to die here the same way
@@ -2844,6 +2857,7 @@ impl<'a> OwnershipChecker<'a> {
                     // freed rather than as moved.
                     self.link_delete_spans.insert(expr.span);
                     self.require_deleting(object, "`clear` here", expr.span);
+                    self.check_held_node_deleted(object, None, expr.span);
                 }
                 for rack_arg in &method_deleting_args {
                     self.forward_to_deleting_param(rack_arg, expr.span);
@@ -4126,6 +4140,87 @@ impl<'a> OwnershipChecker<'a> {
         };
         self.require_deleting(arg, &op, span);
         self.kill_links_for_deleting_arg(arg, span);
+        self.check_held_node_deleted(arg, None, span);
+    }
+
+    /// RK3/RK5 through a closure: calling a closure that deletes from a rack
+    /// it captured is that delete, at the call. A named delete kills the link
+    /// it names, an unnamed one (`clear`, a link the closure can't vouch for)
+    /// every local link into the rack, exactly as if the body were written
+    /// at the call. Without this, `let kill = || { r.delete(a) }; kill();
+    /// a.v` read the freed node (#1665).
+    ///
+    /// Only a closure literal bound to a name is seen into; one that arrives
+    /// through a parameter has no body here to read.
+    fn replay_closure_deletes(&mut self, closure: &Expr, span: Span) {
+        let ExprKind::Closure { body, .. } = &closure.kind else { return };
+        let mut deletes: Vec<(Expr, Option<String>)> = Vec::new();
+        rask_ast::visit::walk_expr(body, &mut |e| {
+            let ExprKind::MethodCall { object, method, args, .. } = &e.kind else { return };
+            if self.receiver_type_name(object).as_deref() != Some("Rack") {
+                return;
+            }
+            match method.as_str() {
+                "delete" => {
+                    let named = args
+                        .first()
+                        .filter(|a| self.is_identified_link(&a.expr))
+                        .and_then(|a| a.expr.name())
+                        .map(str::to_string);
+                    deletes.push(((**object).clone(), named));
+                }
+                "clear" => deletes.push(((**object).clone(), None)),
+                _ => {}
+            }
+        });
+        for (rack, victim) in deletes {
+            match &victim {
+                Some(name) => {
+                    self.kill_derived_links_into_rack(&rack, span);
+                    self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+                }
+                None => self.kill_links_into_rack(&rack, span),
+            }
+            self.link_delete_spans.insert(span);
+            self.check_held_node_deleted(&rack, victim.as_deref(), span);
+        }
+    }
+
+    /// RK1 with W2/LP14: a `with` or `for mutate` whose source lives in a rack
+    /// node (`with a.items[0]`, `a` a link) holds a place inside that node,
+    /// and deleting the node frees it. `victim` is the link a named delete
+    /// takes; `None` is a delete that picks its own nodes (`clear`, a link
+    /// the body can't vouch for, a `deleting` call), which may take any node
+    /// in the rack. Deleting a different node is fine: nodes never move.
+    ///
+    /// A source reached through more than one field may hop through another
+    /// link to a different node, so any delete on the rack counts for it.
+    /// That can refuse a program that was safe, never the other way.
+    ///
+    /// Nothing asked this before, and `with a.items[0] { r.delete(a) }`
+    /// segfaulted when the block released its view (#1666).
+    fn check_held_node_deleted(&mut self, rack: &Expr, victim: Option<&str>, span: Span) {
+        let Some(rack_root) = Self::extract_root_and_fields(rack).0 else { return };
+        let holds = |root: &str, fields: &[String]| -> bool {
+            self.link_rack_root.get(root).is_some_and(|r| *r == rack_root)
+                && match victim {
+                    Some(v) => v == root || fields.len() > 1,
+                    None => true,
+                }
+        };
+        let mut found: Vec<(String, String, Span, bool)> = Vec::new();
+        if let Some(wb) = self.active_with_bindings.iter().find(|w| holds(&w.root, &w.fields)) {
+            found.push((wb.collection_name.clone(), wb.root.clone(), wb.span, false));
+        }
+        if let Some(fm) = self.active_for_mutates.iter().find(|f| holds(&f.root, &f.fields)) {
+            found.push((fm.collection_name.clone(), fm.root.clone(), fm.span, true));
+        }
+        for (collection, link, holder_span, in_loop) in found {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::HeldNodeDeleted { collection, link, holder_span, in_loop },
+                span,
+            });
+        }
     }
 
     /// At a call passing `arg` to a `deleting` parameter, the callee picks which

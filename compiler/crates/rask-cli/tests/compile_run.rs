@@ -2730,6 +2730,17 @@ fn error_a_task_local_shared_cannot_be_sent() {
 }
 
 #[test]
+fn error_rack_delete_while_held() {
+    let (failed, out) = compile_error_output("rack_delete_while_held.rk");
+    assert!(failed, "a delete of a held node, or through a closure, must be rejected: {}", out);
+    // The held node deleted, cleared, and taken by a `deleting` call (#1666);
+    // a link read after a closure deleted or cleared its node (#1665).
+    // Deleting a different node, directly or in a closure, reports nothing.
+    assert_eq!(out.matches("error[E0926]").count(), 3, "held node: {}", out);
+    assert_eq!(out.matches("error[E0328]").count(), 2, "through a closure: {}", out);
+}
+
+#[test]
 fn error_held_source_resized() {
     let (failed, out) = compile_error_output("held_source_resized.rk");
     assert!(failed, "resizing what a with/for mutate holds must be rejected: {}", out);
