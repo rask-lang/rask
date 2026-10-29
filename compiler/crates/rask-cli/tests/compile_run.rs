@@ -3010,6 +3010,31 @@ fn error_bare_shared_with() {
     );
 }
 
+/// mem.borrowing/W1: `with c.write() as v` over a user type's own `write`
+/// (#1658). The call returns a value, so `v` was a copy and every write to it
+/// was dropped at block exit — both backends compiled it and printed the old
+/// value. Checks the code and that the fix is shown as code, not prose.
+#[test]
+fn error_with_over_a_call() {
+    let (failed, out) = compile_error_output("with_over_a_call.rk");
+    assert!(failed, "should reject `with c.write() as v` on a type that isn't a Shared");
+    assert!(
+        out.contains("E0926"),
+        "should be the call-source error, not something else: {}",
+        out,
+    );
+    assert!(
+        out.contains("let v = c.write()"),
+        "should show the fix as code: {}",
+        out,
+    );
+    assert!(
+        !out.contains("E0874"),
+        "a call is its own case, not the plain-place one: {}",
+        out,
+    );
+}
+
 #[test]
 fn error_missing_return() {
     assert!(compile_error("missing_return.rk"), "should reject missing return");
@@ -8427,6 +8452,8 @@ fn a_c_struct_goes_by_value() {
         "triple 321",
         "rgba 4321",
         "mixed 50",
+        "seg 4321",
+        "tri 321",
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }

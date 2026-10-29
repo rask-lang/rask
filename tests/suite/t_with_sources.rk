@@ -92,6 +92,59 @@ test "a plain field is written through, not scoped" {
     assert sheet.rows[1].n == 2
 }
 
+// An element reached through a nested path — the source is still the outer
+// index expression.
+test "with over a nested element path" {
+    mut sheets: Vec<Sheet> = Vec.new()
+    sheets.push(Sheet(rows: Vec<Row>.new()))
+    sheets[0].rows.push(Row(key: "f", n: 10))
+    with sheets[0].rows[0] as r {
+        r.bump()
+        r.bump()
+    }
+    assert sheets[0].rows[0].n == 12
+}
+
+// A Map element, reached by key.
+test "with over a Map element" {
+    mut m: Map<string, Row> = Map.new()
+    m.insert("k", Row(key: "k", n: 1))
+    with m["k"] as r {
+        r.bump()
+    }
+    assert m["k"].n == 2
+}
+
+// The third lock a Shared hands out: `staged()` works on a copy and commits
+// it at block exit (conc.sync/ST1).
+const STAGED: Shared<i64, Mutex> = Shared.mutex(5)
+
+test "with over a staged Shared" {
+    with STAGED.staged() as n {
+        n = n + 1
+    }
+    with STAGED.read() as n {
+        assert n == 6
+    }
+}
+
+// The Shared can sit behind a field; the source is still its lock. A user
+// type's own `write` method is not one (E0926, #1658) — a call on anything
+// but a Shared returns a value the block would silently throw away.
+struct Guard {
+    hits: Shared<i64, Mutex>
+}
+
+test "with over a lock reached through a field" {
+    let g = Guard(hits: Shared.mutex(0))
+    with g.hits.write() as n {
+        n = n + 3
+    }
+    with g.hits.read() as n {
+        assert n == 3
+    }
+}
+
 func main() {
     mut v: Vec<Row> = Vec.new()
     v.push(Row(key: "a", n: 1))

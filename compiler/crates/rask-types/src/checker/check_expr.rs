@@ -2250,17 +2250,52 @@ impl TypeChecker {
                     // the field access already does. The interpreter said so at
                     // run time and native compiled it, which is the divergence
                     // in #1114; the grammar in mem.borrowing takes an index.
+                    //
+                    // A call is a source only when it is the lock a `Shared`
+                    // hands out. Any other call — `read`/`write` on a user type
+                    // included — returns a value, so the binding is a copy and
+                    // the write-back at block exit has nowhere to go. Both
+                    // backends used to compile that and drop every write (#1658).
                     let indexes = matches!(&binding.source.kind, ExprKind::Index { .. });
-                    let calls_a_method =
-                        matches!(&binding.source.kind, ExprKind::MethodCall { .. });
-                    if !indexes && !is_box && !calls_a_method {
-                        self.errors.push(TypeError::WithNeedsElementOrBox {
-                            place: Self::source_text_for(&binding.source)
-                                .unwrap_or_else(|| "this".to_string()),
-                            ty: self.render_type(&self.ctx.apply(&source_ty)),
-                            binding: binding.name.clone(),
-                            span: binding.source.span,
-                        });
+                    let lock_on_shared = match &binding.source.kind {
+                        ExprKind::MethodCall { object, .. } => {
+                            names_a_lock && self.expr_is_shared(object)
+                        }
+                        _ => false,
+                    };
+                    if !indexes && !is_box && !lock_on_shared {
+                        match &binding.source.kind {
+                            ExprKind::MethodCall { object, method, args, .. } => {
+                                let receiver_ty = self
+                                    .node_types
+                                    .get(&object.id)
+                                    .map(|t| self.render_type(&self.ctx.apply(t)))
+                                    .unwrap_or_else(|| "value".to_string());
+                                let receiver = Self::source_text_for(object)
+                                    .unwrap_or_else(|| "value".to_string());
+                                let call = if args.is_empty() {
+                                    format!("{}.{}()", receiver, method)
+                                } else {
+                                    format!("{}.{}(…)", receiver, method)
+                                };
+                                self.errors.push(TypeError::WithOverCall {
+                                    call,
+                                    receiver_ty,
+                                    result_ty: self.render_type(&self.ctx.apply(&source_ty)),
+                                    binding: binding.name.clone(),
+                                    span: binding.source.span,
+                                });
+                            }
+                            _ => {
+                                self.errors.push(TypeError::WithNeedsElementOrBox {
+                                    place: Self::source_text_for(&binding.source)
+                                        .unwrap_or_else(|| "this".to_string()),
+                                    ty: self.render_type(&self.ctx.apply(&source_ty)),
+                                    binding: binding.name.clone(),
+                                    span: binding.source.span,
+                                });
+                            }
+                        }
                     }
                     if !names_a_lock && Self::type_is_shared(&source_ty, &self.types) {
                         self.errors.push(TypeError::BareSharedWith {

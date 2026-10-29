@@ -174,10 +174,16 @@ existing checks say what breaks:
 
 - **Tasks:** anything with the `async` effect is an error. There's no scheduler to run it.
 - **OS modules:** `fs`, `net` and `os` aren't there to import.
-- **Heap:** optional. Without one, `@no_alloc` applies to the whole build, and `Vec`,
-  `Map` and `string` go with it. That leaves arrays, structs and enums, and it needs a
-  fixed-capacity collection that doesn't exist yet (`Vec<T, max: 64>` or similar). That
-  one is real new design.
+- **Heap:** the program's to supply, and usually it should. "No OS" doesn't mean "no
+  heap": the runtime already takes a pluggable allocator (`rask_allocator_set`,
+  `mem.alloc/AL1`), so a bump or TLSF allocator over a static buffer (`static HEAP:
+  [u8; 64 * 1024]`) gives `Vec`, `Map`, `string` and everything built on them, on a chip
+  with 520 KB of SRAM. That's how embedded Rust mostly runs too (`embedded-alloc` plus
+  `alloc`). Leaving the heap out is for the places allocating is actually wrong: a
+  handler (section 4, already `@no_alloc`), a hard real-time path that can't absorb a
+  fragmented `free`, or a part with 8 KB. Without one, `@no_alloc` applies to the whole
+  build, `Vec`, `Map` and `string` go with it, and the fixed-capacity collections below
+  stand in. Those don't exist yet and are real new design.
 - **Panics:** with no task to kill, a panic goes to a function the program names, which
   usually halts or resets the chip.
 - **Printing:** `println` needs somewhere to write. The program names the sink, typically
@@ -280,6 +286,13 @@ full buffer is normal, like an interrupt handler filling a ring.
 Strings mostly survive without a heap: literals are static, and anything up to 15 bytes
 is inline (`std.strings/S8`). Interpolation is what allocates, so `println` with a
 no-heap build formats straight into the sink instead of building a string first.
+
+None of this is the default for an MCU build. The default is a heap over a static buffer
+(section 5) and the ordinary collections; the fixed ones are for the handler, the
+real-time path and the tiny part. A long-running device that interpolates strings in a
+loop will churn a small heap, and the only thing Rask adds over Rust there is that every
+allocation is visible at the call site. Keeping the hot loop in core is still the
+programmer's job.
 
 ### A slice parameter
 

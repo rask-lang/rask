@@ -157,8 +157,10 @@ impl TargetConfig {
         let link_flags = match target_os {
             // `-lrt` for the preemption timer: `timer_create` lives in librt
             // before glibc 2.34, and in libc (with an empty librt) after.
-            "linux" => vec!["-no-pie".into(), "-lpthread".into(), "-lm".into(), "-lrt".into()],
-            "macos" => vec!["-lpthread".into(), "-lm".into()],
+            // `--gc-sections` / `-dead_strip`: drop the runtime functions the
+            // program never reaches (see `profile_cflags`).
+            "linux" => vec!["-no-pie".into(), "-Wl,--gc-sections".into(), "-lpthread".into(), "-lm".into(), "-lrt".into()],
+            "macos" => vec!["-Wl,-dead_strip".into(), "-lpthread".into(), "-lm".into()],
             _ => vec![],
         };
 
@@ -214,11 +216,16 @@ pub fn build_cfg(
 /// cached objects and the link, or the cache would hand back objects built
 /// for a different build.
 fn profile_cflags(release: bool) -> Vec<String> {
+    // One section per function and per object, so the link can drop what
+    // the program never reaches. The runtime is linked whole (every object,
+    // always), and without this hello world carried all of it: json, the
+    // map, sim's fault injection, 784 KB for one println.
+    let sections = ["-ffunction-sections", "-fdata-sections"];
     if release {
-        vec!["-O2".into()]
+        ["-O2"].iter().chain(sections.iter()).map(|f| f.to_string()).collect()
     } else {
         // -g preserves DWARF; -DRASK_DEBUG turns on the runtime's own checks.
-        vec!["-DRASK_DEBUG".into(), "-g".into()]
+        ["-DRASK_DEBUG", "-g"].iter().chain(sections.iter()).map(|f| f.to_string()).collect()
     }
 }
 
