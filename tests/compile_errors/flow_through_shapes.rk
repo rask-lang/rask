@@ -2,9 +2,9 @@
 // A restricted value is restricted wherever it goes, whatever shape it goes in.
 //
 // Each of these compiled while each restriction had its own walk: the link
-// check looked inside tuples and structs but not branches, and the lookup check
-// looked inside branches but not tuples, and only at a `return`. All four read
-// freed memory natively (#1662). One walk now hands every value that reaches a
+// check looked inside tuples and structs but not branches, the lookup check
+// looked inside branches but not tuples, and only at a `return`, and the
+// frame-bound closure check looked at neither (#1662). One walk now hands every value that reaches a
 // destination to every check.
 
 import memory.Rack
@@ -47,6 +47,23 @@ func link_through_match(k: i32) -> Link<Node> {
         0 => a,
         _ => a,
     }
+}
+
+// A closure over `v`, which dies here, returned through an `if` and inside a
+// tuple. Only a bare name or the returned expression itself used to be asked.
+func make(base: Vec<i64>) -> func(i64) -> i64 {
+    return |x| x + base.len().wrap<i64>()
+}
+
+func closure_through_if(c: bool) -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    let f = make(v)
+    return if c { f } else { f }  // ERROR: E0862
+}
+
+func closure_in_tuple() -> (func(i64) -> i64, i32) {
+    let v: Vec<i64> = [1, 2]
+    return (make(v), 1)          // ERROR: E0862
 }
 
 // Fine: the copy is written down.

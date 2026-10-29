@@ -1662,6 +1662,7 @@ impl<'a> OwnershipChecker<'a> {
         let mut hit = false;
         for value in values {
             hit |= self.check_lent_escape(value, into);
+            hit |= self.check_frame_bound_closure(value, into);
             hit |= match into {
                 Sink::Return => {
                     let field = self.check_borrowed_field_escape(value);
@@ -1672,6 +1673,35 @@ impl<'a> OwnershipChecker<'a> {
             };
         }
         hit
+    }
+
+    /// SL2: a closure that points at its frame, given a holder the limit
+    /// can't follow. The limit is tracked through plain local names only, so
+    /// a return, a field, a tuple, a variant or a `Heap` is where it would be
+    /// lost, and each is refused. A plain name takes the limit over (the
+    /// assignment and `let` code does that), and a `take` argument has its
+    /// own rule, which knows the parameter's mode (`check_closure_arg_escape`).
+    ///
+    /// A closure returned through an `if` or inside a tuple used to compile:
+    /// only a bare name or the returned expression itself was asked (#1662).
+    fn check_frame_bound_closure(&mut self, expr: &Expr, into: &Sink) -> bool {
+        match into {
+            Sink::TakeArg { .. } => return false,
+            Sink::Place { place, root } if place == root => return false,
+            _ => {}
+        }
+        let name = match &expr.kind {
+            ExprKind::Ident(name) if self.scope_limited_closures.contains_key(name) => name.clone(),
+            _ if self.closure_scope_limits.contains_key(&expr.id) => "<closure>".to_string(),
+            _ => return false,
+        };
+        // Reported here, so the block exit doesn't report it again.
+        self.scope_limited_closures.remove(&name);
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name },
+            span: expr.span,
+        });
+        true
     }
 
     /// The outlives half of `check_flow`. Only a return and a store can take
@@ -2137,6 +2167,8 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 if let ExprKind::Ident(value_name) = &value.kind {
                     if let Some(&(borrow_block, _)) = self.scope_limited_closures.get(value_name) {
+                        // Into a name the limit follows it; into a field or
+                        // an index `check_flow` has already refused it.
                         if let ExprKind::Ident(target_name) = &target.kind {
                             let decl_block = self.binding_decl_blocks
                                 .get(target_name).copied()
@@ -2145,15 +2177,6 @@ impl<'a> OwnershipChecker<'a> {
                                 target_name.clone(),
                                 (borrow_block, decl_block),
                             );
-                        } else {
-                            // Field/index assignment — cannot track, treat as escape
-                            self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                    name: value_name.clone(),
-                                },
-                                span: value.span,
-                            });
-                            self.scope_limited_closures.remove(value_name);
                         }
                     }
                 }
@@ -2166,14 +2189,6 @@ impl<'a> OwnershipChecker<'a> {
                             target_name.clone(),
                             (borrow_block, decl_block),
                         );
-                    } else if self.is_borrowing_closure(value) {
-                        // Direct closure literal assigned to a field/index — escape
-                        self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                name: "<closure>".to_string(),
-                            },
-                            span: value.span,
-                        });
                     }
                 }
             }
@@ -2208,31 +2223,6 @@ impl<'a> OwnershipChecker<'a> {
                     // end-of-body check alone misses an early return that skips a
                     // consume or a replacement.
                     self.check_exit_obligations(stmt.span);
-                    // SL2: Check if returning a scope-limited closure
-                    if let ExprKind::Ident(name) = &expr.kind {
-                        if self.scope_limited_closures.contains_key(name) {
-                            self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                    name: name.clone(),
-                                },
-                                span: stmt.span,
-                            });
-                            // Remove to avoid double-reporting at block exit
-                            self.scope_limited_closures.remove(name);
-                        }
-                    } else if self.closure_scope_limits.contains_key(&expr.id) {
-                        // A returned expression carrying a scope limit: a
-                        // non-carrying closure literal over a local, or (SL3) a
-                        // call that built one over an argument this frame owns.
-                        // `return make(v)` hands back a closure over `v`, and
-                        // `v` dies here.
-                        self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                name: "<closure>".to_string(),
-                            },
-                            span: stmt.span,
-                        });
-                    }
                 } else {
                     // A bare `return` is an exit too.
                     self.check_exit_obligations(stmt.span);
@@ -2770,27 +2760,6 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::StructLit { fields, spread, .. } => {
                 for field in fields {
                     self.check_expr(&field.value);
-                    // SL2: scope-limited closure stored in a struct field
-                    if let ExprKind::Ident(name) = &field.value.kind {
-                        if self.scope_limited_closures.contains_key(name) {
-                            self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                    name: name.clone(),
-                                },
-                                span: field.value.span,
-                            });
-                            self.scope_limited_closures.remove(name);
-                        }
-                    } else if self.is_borrowing_closure(&field.value)
-                        && self.closure_scope_limits.contains_key(&field.value.id)
-                    {
-                        self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
-                                name: "<closure>".to_string(),
-                            },
-                            span: field.value.span,
-                        });
-                    }
                 }
                 if let Some(spread) = spread {
                     self.check_expr(spread);

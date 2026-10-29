@@ -2737,6 +2737,8 @@ fn error_flow_through_shapes() {
     // through an `if` (two arms, two links) and a `match` (two arms, one link).
     assert_eq!(out.matches("error[E0879]").count(), 2, "lookup escapes: {}", out);
     assert_eq!(out.matches("error[E0379]").count(), 3, "link escapes, one per link: {}", out);
+    // A closure over a dying local, through an `if` and inside a tuple.
+    assert_eq!(out.matches("error[E0862]").count(), 2, "frame-bound closures: {}", out);
     assert!(
         out.contains("storing it in `h.items`") && out.contains("a tuple or array holding it"),
         "the lookup message names where it was going: {}",
