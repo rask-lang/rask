@@ -34,7 +34,7 @@ AL4–AL11 are deleted. They made the allocator a defaulted type parameter (`Vec
 |------|-------------|
 | **AL12: Using block** | `using expr { body }` where `expr: Allocator` installs `expr` as the current allocator for `body`, restored on exit — normal, `return`, `try`, and unwind alike |
 | **AL21: Per task, dynamic** | The current allocator is a task-local value. A fresh collection (`Vec.new()`, `Map.new()`, a built `string`, `Heap(…)`, `Rack.new()`) takes whatever is current at the moment it allocates, however deep the call. AL14 (lexical only) is deleted: propagation into callees is the point |
-| **AL22: A collection remembers its own** | A collection records the allocator it first allocated from and grows, shrinks and frees through that one, never through the current one. A `Global` vec pushed to inside an arena block keeps growing in `Global` |
+| **AL22: A collection remembers its own** | A collection records the current allocator when it's constructed, before it has allocated anything, and grows, shrinks and frees through that one, never through the current one. A `Global` vec pushed to inside an arena block keeps growing in `Global`, including an empty one whose first push happens there |
 | **AL23: Explicit choice** | `Vec.new_in(a)` and the same on every constructor builds the collection under `a` whatever is current. Same type as `Vec.new()`; only the remembered allocator differs |
 | **AL24: Spawn starts at Global** | A spawned task starts with `Global` current. It never inherits the spawning block's allocator, because it may outlive it |
 
@@ -57,8 +57,8 @@ func handle_request(req: Request) -> Response {
 
 | Rule | Description |
 |------|-------------|
-| **AL13: Block-born values stay in the block** | Any non-Copy value produced inside a `using` block — built there, or returned by a call made there — is block-born. A block-born value cannot be returned from the block, assigned to a binding or field declared outside it, pushed into a collection born outside it, sent on a channel, or captured by `spawn`. Compile error (E0420) |
-| **AL25: Copy-out is a clone with a target** | `.clone()` inside the block clones into the current allocator, so it doesn't help. `.clone_in(a)` deep-copies under `a`, and the result lives as long as `a` does: `clone_in(Global)` can leave every block, `clone_in(outer)` can leave the inner block but not `outer`'s. It's the one way out, and it's written where the copy happens |
+| **AL13: A value can't outlive its allocator** | A value whose type owns heap memory (a collection, `string`, `Heap`, `Rack`, `Shared`, or anything holding one) is born under the allocator that was current when it was built, or under `a` for `new_in(a)` and `clone_in(a)`. A call's result counts as born under the allocator current at the call. A literal or `const` is born under nothing and lives forever. A value born under a `using` block's allocator is block-born: it cannot be returned from that block, assigned to a binding or field declared outside it, pushed into a collection born outside it, sent on a channel, or captured by `spawn`. Compile error (E0420). Under `Global` nothing is block-born |
+| **AL25: Copy-out is a clone with a target** | `.clone()` inside the block clones into the current allocator, so it doesn't help. `.clone_in(a)` deep-copies under `a`, and the result lives as long as `a` does: `clone_in(Global)` can leave every block, `clone_in(outer)` can leave the inner block but not `outer`'s. It's the one way out, and it's written where the copy happens. This is AL13 applied to the copy |
 | **AL26: Callers' values pass through** | A value born outside the block may be read and mutated inside it. AL22 keeps its growth in its own allocator, so passing it by `mutate` to a callee is fine |
 
 AL13 is keyed on where the value was produced, not on its type, because its type doesn't say. That is the same shape as the `with` block rule for borrows (`mem.borrowing/W2`): a scope that lends you something checks that nothing leaves with it.
@@ -69,10 +69,10 @@ A library can't leak a block-born value out of the block — AL13 is checked at 
 
 | Rule | Description |
 |------|-------------|
-| **AL27: Stash is inferred** | For every function the compiler computes, transitively over calls, which parameters and globals a fresh allocation can be moved into. Nothing is declared; it's a property of the body, shown as a ghost on the signature and by `rask api` |
-| **AL28: Stashing into the outside is an error** | A call inside a `using` block to a function that stashes into a parameter the caller passes a non-block-born value for, or into a global, is a compile error (E0421) at the call, naming the line inside the callee that stashes. Fix: hoist the call out of the block, or wrap it in `using Global { … }` |
+| **AL27: Stash is inferred** | For every function the compiler computes, transitively over calls, which parameters and globals a fresh allocation made under the current allocator can be moved into. An allocation under a named one (`new_in(Global)`, `clone_in(Global)`, the body's own `using`) isn't counted, so a cache or interner that means to keep things writes that and is never a stash. Nothing is declared; it's a property of the body, shown as a ghost on the signature and by `rask api` |
+| **AL28: Stashing into the outside is an error** | A call made while an allocator other than `Global` is current, to a function that stashes into storage that outlives that allocator's block — a parameter whose argument was born before the block, or a global — is a compile error (E0421) at the call, naming the line inside the callee that stashes. Fix at the call: hoist it out of the block, or wrap it in `using Global { … }`. Fix in the library, if keeping is the point: allocate what it keeps under `Global` (AL27) |
 | **AL29: Block-born storage is fine** | Stashing into a parameter whose argument is block-born passes: the storage dies with the block too. A builder made in the block and filled by a helper is the common case |
-| **AL30: Indirect calls** | Through a function value, a stored closure or an interface, the callee isn't one function. The compiler takes the union of the stash sets over every reachable target of that type, the way a widened method call is dispatched. A callback entered from C runs under `Global` whatever the task had installed, since its call site is where no check can run (`conc.async/CC3` draws the same line for `spawn`) |
+| **AL30: Indirect calls** | Through a function value, a stored closure or an interface, the callee isn't one function. The compiler takes the union of the stash sets over every reachable target of that type, the way a widened method call is dispatched. An `extern "C"` function runs its body under `Global`, set on entry and restored on return, whoever calls it. C can only reach Rask through one (closures aren't C-compatible, `struct.c-interop/EX4`), and C may call it from a thread with no Rask task, so the function and not the task decides. Called from Rask it runs under `Global` too: one behaviour, not two |
 
 AL17 and AL18 are deleted. An inline closure runs under whatever is current when it runs, which is what AL17 said; a stored closure does too, which is the opposite of AL18.
 
@@ -160,6 +160,10 @@ FIX: Hoist the call out of the block, or run it under Global:
 | Comptime allocations | — | Compiler arena (`ctrl.comptime/CT17`), `using` is a compile error inside `comptime` |
 | `try_push` on a `FixedBuffer`-backed vec | AL3 | `GrowError` when the buffer is full |
 | Panic inside the block | AL12 | Unwind restores the previous allocator and frees the arena after `ensure` blocks ran |
+| Pointer from `.as_ptr()` handed to C inside a block | AL13 | No new rule. A raw pointer is already invalid once its source is dropped (`struct.c-interop/ST4`), the source is block-born so it's dropped no later than the block ends, and the arena is freed no earlier. C keeping it longer was already the `unsafe` block's promise to break |
+| `return "done"` from inside a block | AL13 | Fine. A literal is born under nothing |
+| A 32-byte struct of numbers built in the block | AL13 | Fine. Its type owns no heap memory, so the allocator never touched it |
+| `let v = Vec.new_in(Global)` in the block, then returned | AL13 | Fine. Born under `Global` |
 
 ---
 
