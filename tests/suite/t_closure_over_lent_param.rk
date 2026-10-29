@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure built over a borrowed parameter points at the caller's value and
+// must never free it (mem.closures/CM3, #1679).
+//
+// `make(base)` borrows `base` and returns a closure that reads it. The closure
+// outlives `make`, so it carries its captures, but `base` is the caller's `v`.
+// Native used to free `v` when the first such closure was released, once
+// `make` had been inlined and the capture looked like `v` itself; the next
+// closure over `v` read freed memory and the program crashed. The caller must
+// also still free `v` itself, exactly once, which the leak and memcheck gates
+// see. A `main` rather than `test` blocks, because the crash needed `make`
+// inlined into the frame that owns `v`.
+
+func make(base: Vec<i64>) -> func(i64) -> i64 {
+    return |x| x + base.len().wrap<i64>()
+}
+
+struct Holder {
+    cb: func(i64) -> i64
+    n: i32
+}
+
+// Exactly two closures over `v`, one released inside a struct before the
+// other is called. Keep this file to `make`'s two sites here: the glue is one
+// per closure function, and a third site anywhere in the program that
+// disagrees about ownership switches the glue off and hides the bug.
+func main() {
+    let v: Vec<i64> = [1, 2]
+    let h = Holder(cb: make(v), n: 2)
+    let c = h.cb
+    println("{c(2)} {h.n}")
+    let o: (func(i64) -> i64)? = make(v)
+    if o? as g {
+        println("{g(3)}")
+    }
+}
