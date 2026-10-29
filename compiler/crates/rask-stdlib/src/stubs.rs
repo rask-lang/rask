@@ -67,11 +67,14 @@ const LAYERS: &[(&str, Layer)] = &[
     ("error_context.rk", Layer::Alloc),
     ("hex.rk", Layer::Alloc),
     ("base64.rk", Layer::Alloc),
+    // Encode/Decode and field reflection are language features the compiler
+    // does most of; the files are their surface. Alloc because what they
+    // hand back (field names, a Vec of them) lives on the heap.
+    ("encoding.rk", Layer::Alloc),
+    ("reflect.rk", Layer::Alloc),
     // Useful, not essential: a build that never names them shouldn't carry
     // them, so they sit above the chip's layers whatever they need.
     ("digest.rk", Layer::Std),
-    ("reflect.rk", Layer::Std),
-    ("encoding.rk", Layer::Std),
     ("json.rk", Layer::Std),
     ("url.rk", Layer::Std),
     ("path.rk", Layer::Std),
