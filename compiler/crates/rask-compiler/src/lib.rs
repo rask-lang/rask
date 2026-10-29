@@ -497,6 +497,7 @@ pub fn check_loaded(
     // by lowering, mono and the interpreter.
     typed.task_bound_closures = ownership_result.task_bound_closures.clone();
     typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
+    typed.lent_captures = ownership_result.lent_captures.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -856,6 +857,7 @@ fn check_package_scoped(
     // by lowering, mono and the interpreter.
     typed.task_bound_closures = ownership_result.task_bound_closures.clone();
     typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
+    typed.lent_captures = ownership_result.lent_captures.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(

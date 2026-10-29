@@ -154,6 +154,8 @@ pub struct Monomorphizer<'a> {
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
     pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
+    /// CM3: lent captures, as `typed.lent_captures`, under instantiated ids.
+    pub instantiated_lent_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments in the copies whose new value takes the old one.
     pub instantiated_field_reuses: HashSet<NodeId>,
     pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
@@ -548,6 +550,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_fallback_keeps_shape: HashSet::new(),
             instantiated_err_returns: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
+            instantiated_lent_captures: HashMap::new(),
             instantiated_field_reuses: HashSet::new(),
             instantiated_return_moves: HashMap::new(),
             instantiated_task_bound_closures: HashSet::new(),
@@ -723,6 +726,11 @@ impl<'a> Monomorphizer<'a> {
             // it is written, which substitution doesn't move.
             if typed.escaping_closures.contains(&old_id) {
                 self.instantiated_escaping_closures.insert(new_id);
+            }
+            // CM3: which captures are lent is where the closure is written,
+            // too.
+            if let Some(lent) = typed.lent_captures.get(&old_id) {
+                self.instantiated_lent_captures.insert(new_id, lent.clone());
             }
             // Which assignment builds its value from the old one is written in
             // the source, and substitution doesn't change it.

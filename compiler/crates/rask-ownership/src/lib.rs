@@ -51,6 +51,10 @@ pub struct OwnershipResult {
     /// cross is decided per instantiation, by mono and the interpreter
     /// (`TypeTable::generic_closure_task_bound`).
     pub generic_closure_captures: HashMap<rask_ast::NodeId, Vec<(String, Type)>>,
+    /// CM3: for each closure that outlives its frame, the captures that are
+    /// lent parameters of that frame. The environment holds the caller's
+    /// value without owning it, so lowering marks those slots never to free.
+    pub lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -300,6 +304,8 @@ pub struct OwnershipChecker<'a> {
     method_resizes: resize::MethodResizes,
     /// See `OwnershipResult::task_bound_closures`.
     task_bound_closures: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::lent_captures`.
+    lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// See `OwnershipResult::generic_closure_captures`.
     generic_closure_captures: HashMap<rask_ast::NodeId, Vec<(String, Type)>>,
     /// The type parameters the body being walked can name: its own and its
@@ -464,6 +470,7 @@ impl<'a> OwnershipChecker<'a> {
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
+            lent_captures: HashMap::new(),
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
             method_resizes: HashMap::new(),
@@ -717,6 +724,7 @@ impl<'a> OwnershipChecker<'a> {
             return_moves: self.return_moves,
             task_bound_closures: self.task_bound_closures,
             generic_closure_captures: self.generic_closure_captures,
+            lent_captures: self.lent_captures,
         }
     }
 
@@ -2989,6 +2997,14 @@ impl<'a> OwnershipChecker<'a> {
                 // instantiation sees the same captures; once is enough.
                 if self.instance.is_none() {
                     self.check_task_crossing(expr.id, body, &captures, is_task);
+                }
+                // CM3: what a carrying closure holds without owning.
+                if carries && !is_task {
+                    let lent: Vec<String> =
+                        captures.iter().filter(|n| self.outlives_this_call(n)).cloned().collect();
+                    if !lent.is_empty() {
+                        self.lent_captures.insert(expr.id, lent);
+                    }
                 }
 
                 // Separate resource captures from non-resource captures
@@ -8295,6 +8311,7 @@ pub fn check_ownership_with_stdlib(
     result.return_moves.extend(stdlib.return_moves);
     // A stdlib closure crosses to a task the same way a program's does.
     result.task_bound_closures.extend(stdlib.task_bound_closures);
+    result.lent_captures.extend(stdlib.lent_captures);
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result
 }

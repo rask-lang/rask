@@ -859,6 +859,10 @@ pub struct TypedProgram {
     /// through `TypeTable::generic_closure_task_bound`.
     /// Written back by the ownership pass.
     pub generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
+    /// For each closure that outlives its frame, the captures that are lent
+    /// parameters of that frame (mem.closures/CM3): held, not owned. Written
+    /// back by the ownership pass.
+    pub lent_captures: HashMap<NodeId, Vec<String>>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the
     /// `read_file(p)` call, so lowering branches there and hands `.len()` the

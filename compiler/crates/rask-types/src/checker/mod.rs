@@ -1122,6 +1122,7 @@ impl TypeChecker {
             // The ownership pass works these out; the driver writes them back.
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: HashMap::new(),
+            lent_captures: HashMap::new(),
             try_chain_placement,
             else_binding_types,
             unsafe_ops,

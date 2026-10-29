@@ -68,6 +68,8 @@ pub struct MonoProgram {
     /// ER9: error-side returns in instantiated bodies.
     pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
+    /// CM3: lent captures on instantiated closures.
+    pub instantiated_lent_captures: HashMap<NodeId, Vec<String>>,
     pub instantiated_field_reuses: HashSet<NodeId>,
     pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
     /// Closures in instantiated bodies that may not reach another task, each
@@ -102,6 +104,8 @@ pub struct NodeRecords {
     pub err_returns: HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them.
     pub escaping_closures: HashSet<NodeId>,
+    /// CM3: lent captures of those closures (ownership).
+    pub lent_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value takes the old one (ownership).
     pub field_reuses: HashSet<NodeId>,
     /// The bindings each `return` moves (ownership).
@@ -121,6 +125,7 @@ impl NodeRecords {
             fallback_keeps_shape: typed.fallback_keeps_shape.clone(),
             err_returns: typed.err_returns.clone(),
             escaping_closures: typed.escaping_closures.clone(),
+            lent_captures: typed.lent_captures.clone(),
             field_reuses: typed.field_reuses.clone(),
             return_moves: typed.return_moves.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
@@ -141,6 +146,7 @@ impl MonoProgram {
         r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
         r.err_returns.extend(self.instantiated_err_returns.iter().copied());
         r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
+        r.lent_captures.extend(self.instantiated_lent_captures.iter().map(|(k, v)| (*k, v.clone())));
         r.field_reuses.extend(self.instantiated_field_reuses.iter().copied());
         r.return_moves.extend(self.instantiated_return_moves.iter().map(|(k, v)| (*k, v.clone())));
         r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
@@ -1062,6 +1068,7 @@ fn monomorphize_inner(
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
         instantiated_err_returns: mono.instantiated_err_returns,
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
+        instantiated_lent_captures: mono.instantiated_lent_captures,
         instantiated_field_reuses: mono.instantiated_field_reuses,
         instantiated_return_moves: mono.instantiated_return_moves,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
@@ -1275,6 +1282,7 @@ mod tests {
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
+            lent_captures: std::collections::HashMap::new(),
             field_reuses: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
             task_bound_closures: std::collections::HashSet::new(),
