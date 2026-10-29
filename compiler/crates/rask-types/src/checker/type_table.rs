@@ -1656,10 +1656,7 @@ impl TypeTable {
     /// closure literal; monomorphization asks again for a closure in a generic
     /// body, whose capture types are only concrete per instantiation.
     pub fn task_bound(&self, ty: &Type) -> Option<TaskBound> {
-        if let Some(args) = self.shared_args(ty) {
-            return (self.shared_strategy_name(args) == "Local").then_some(TaskBound::LocalBox);
-        }
-        self.holds_link(ty).then_some(TaskBound::Link)
+        self.task_bound_inner(ty, &mut Vec::new())
     }
 
     /// Is a closure in a generic body task-bound in one instantiation? Its
@@ -1705,66 +1702,232 @@ impl TypeTable {
         }
     }
 
-    /// Does a value of this type carry a `Link` — itself, in an option or a
-    /// container, or in a field of a struct or enum it holds?
+    /// The walk behind `task_bound`: the first `Local` box or `Link` anywhere
+    /// in the type — itself, in an option or a container, in a field of a
+    /// struct or enum it holds, inside a locking `Shared`. A link is a node's
+    /// address (`mem.ownership/T2`) and a `Local` box takes no lock
+    /// (`conc.sync/SH7`), and either keeps the whole value on its task however
+    /// deep it sits. The top of the type used to be the only place a `Local`
+    /// box was looked for, so one field down crossed a spawn unseen (#1669).
     ///
-    /// A link is a node's address, so a value carrying one can't go to another
-    /// task (`mem.ownership/T2`). A `Rack` is the exception and isn't walked:
-    /// moving the whole rack takes its nodes' links with the nodes they point
-    /// at, which is how `snapshot()` hands a graph over.
-    pub fn holds_link(&self, ty: &Type) -> bool {
-        self.holds_link_inner(ty, &mut Vec::new())
-    }
-
-    fn holds_link_inner(&self, ty: &Type, seen: &mut Vec<TypeId>) -> bool {
+    /// A `Rack` isn't walked: moving the whole rack takes its nodes' links with
+    /// the nodes they point at, which is how `snapshot()` hands a graph over.
+    fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>) -> Option<TaskBound> {
+        if let Some(args) = self.shared_args(ty) {
+            if self.shared_strategy_name(args) == "Local" {
+                return Some(TaskBound::LocalBox);
+            }
+        }
         let generic = |base: &str, args: &[GenericArg], seen: &mut Vec<TypeId>| match base {
-            "Link" => true,
-            "Rack" => false,
-            _ => args
-                .iter()
-                .any(|a| matches!(a, GenericArg::Type(t) if self.holds_link_inner(t, seen))),
+            "Link" => Some(TaskBound::Link),
+            "Rack" => None,
+            _ => args.iter().find_map(|a| match a {
+                GenericArg::Type(t) => self.task_bound_inner(t, seen),
+                _ => None,
+            }),
         };
         match ty {
-            Type::Named(id) => self.def_holds_link(*id, seen),
+            Type::Named(id) => self.def_task_bound(*id, seen),
             Type::UnresolvedNamed(name) => {
-                let base = name;
-                self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen))
             }
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                let name = full.as_str();
-                generic(name, args, seen) || self.def_holds_link(*base, seen)
+                generic(full.as_str(), args, seen).or_else(|| self.def_task_bound(*base, seen))
             }
-            Type::UnresolvedGeneric { name, args } => {
-                let base = name;
-                generic(base, args, seen)
-                    || self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
-            }
+            Type::UnresolvedGeneric { name, args } => generic(name, args, seen).or_else(|| {
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen))
+            }),
             Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(|t| self.holds_link_inner(t, seen))
+                elems.iter().find_map(|t| self.task_bound_inner(t, seen))
             }
-            Type::Array { elem, .. } => self.holds_link_inner(elem, seen),
-            Type::Result { ok, err } => {
-                self.holds_link_inner(ok, seen) || self.holds_link_inner(err, seen)
-            }
-            _ => false,
+            Type::Array { elem, .. } => self.task_bound_inner(elem, seen),
+            Type::Result { ok, err } => self
+                .task_bound_inner(ok, seen)
+                .or_else(|| self.task_bound_inner(err, seen)),
+            _ => None,
         }
     }
 
-    fn def_holds_link(&self, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
+    fn def_task_bound(&self, id: TypeId, seen: &mut Vec<TypeId>) -> Option<TaskBound> {
         if seen.contains(&id) {
-            return false;
+            return None;
         }
         seen.push(id);
         match self.types.get(id.0 as usize) {
             Some(TypeDef::Struct { fields, .. }) => {
-                fields.iter().any(|(_, t)| self.holds_link_inner(t, seen))
+                fields.iter().find_map(|(_, t)| self.task_bound_inner(t, seen))
             }
-            Some(TypeDef::Enum { variants, .. }) => variants
-                .iter()
-                .any(|(_, payload)| payload.iter().any(|t| self.holds_link_inner(t, seen))),
-            _ => false,
+            Some(TypeDef::Enum { variants, .. }) => variants.iter().find_map(|(_, payload)| {
+                payload.iter().find_map(|t| self.task_bound_inner(t, seen))
+            }),
+            _ => None,
         }
+    }
+
+    /// Walk what a value of `ty` holds by value. Every struct or enum met on
+    /// the way goes in `named` (and, with `descend`, its fields are walked
+    /// too, once); the payload of every `Shared` met goes in `payloads` and
+    /// the box is not entered, since its payload is a separate allocation that
+    /// other boxes may share. A `Link` is not entered either: it owns nothing.
+    fn walk_by_value(
+        &self,
+        ty: &Type,
+        descend: bool,
+        seen: &mut Vec<TypeId>,
+        named: &mut Vec<TypeId>,
+        payloads: &mut Vec<Type>,
+    ) {
+        if let Some(args) = self.shared_args(ty) {
+            if let Some(GenericArg::Type(p)) = args.first() {
+                payloads.push((**p).clone());
+            }
+            return;
+        }
+        if let Some(inner) = ty.as_option() {
+            return self.walk_by_value(inner, descend, seen, named, payloads);
+        }
+        let def = |id: TypeId, seen: &mut Vec<TypeId>, named: &mut Vec<TypeId>, payloads: &mut Vec<Type>| {
+            named.push(id);
+            if !descend || seen.contains(&id) {
+                return;
+            }
+            seen.push(id);
+            match self.get(id) {
+                Some(TypeDef::Struct { fields, .. }) => {
+                    for (_, t) in fields {
+                        self.walk_by_value(t, descend, seen, named, payloads);
+                    }
+                }
+                Some(TypeDef::Enum { variants, .. }) => {
+                    for (_, payload) in variants {
+                        for t in payload {
+                            self.walk_by_value(t, descend, seen, named, payloads);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        };
+        match ty {
+            Type::Named(id) => def(*id, seen, named, payloads),
+            Type::UnresolvedNamed(name) => {
+                if let Some(&id) = self.type_names.get(name) {
+                    def(id, seen, named, payloads);
+                }
+            }
+            Type::Generic { base, args } => {
+                if self.type_name(*base) == "Link" {
+                    return;
+                }
+                def(*base, seen, named, payloads);
+                for a in args {
+                    if let GenericArg::Type(t) = a {
+                        self.walk_by_value(t, descend, seen, named, payloads);
+                    }
+                }
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                if name == "Link" {
+                    return;
+                }
+                if let Some(&id) = self.type_names.get(name) {
+                    def(id, seen, named, payloads);
+                }
+                for a in args {
+                    if let GenericArg::Type(t) = a {
+                        self.walk_by_value(t, descend, seen, named, payloads);
+                    }
+                }
+            }
+            Type::Tuple(elems) | Type::Union(elems) => {
+                for t in elems {
+                    self.walk_by_value(t, descend, seen, named, payloads);
+                }
+            }
+            Type::Array { elem, .. } => self.walk_by_value(elem, descend, seen, named, payloads),
+            Type::Result { ok, err } => {
+                self.walk_by_value(ok, descend, seen, named, payloads);
+                self.walk_by_value(err, descend, seen, named, payloads);
+            }
+            _ => {}
+        }
+    }
+
+    /// The payloads of the `Shared` boxes written directly in `ty` (not in
+    /// the fields of a type it names). What a declaration site asks before
+    /// queueing itself for the cycle check.
+    pub fn direct_shared_payloads(&self, ty: &Type) -> Vec<Type> {
+        let mut payloads = Vec::new();
+        self.walk_by_value(ty, false, &mut Vec::new(), &mut Vec::new(), &mut payloads);
+        payloads
+    }
+
+    /// Every struct or enum a box with this payload can hold: the payload's
+    /// own type, what it holds by value, and the same through any box nested
+    /// in it.
+    fn shared_targets(&self, payload: &Type, seen: &mut Vec<TypeId>, out: &mut Vec<TypeId>) {
+        let mut nested = Vec::new();
+        self.walk_by_value(payload, true, seen, out, &mut nested);
+        for p in nested {
+            self.shared_targets(&p, seen, out);
+        }
+    }
+
+    /// The types a value of `id` can reach through one `Shared` it holds,
+    /// directly or in something it holds by value.
+    fn shared_edges(&self, id: TypeId) -> Vec<TypeId> {
+        let mut payloads = Vec::new();
+        self.walk_by_value(&Type::Named(id), true, &mut Vec::new(), &mut Vec::new(), &mut payloads);
+        let mut out = Vec::new();
+        for p in &payloads {
+            self.shared_targets(p, &mut Vec::new(), &mut out);
+        }
+        out.sort_by_key(|t| t.0);
+        out.dedup();
+        out
+    }
+
+    /// conc.sync/SH10: can a box with this payload, held by a value of
+    /// `owner`, hold a value of `owner` again, directly or through further
+    /// boxes? If so, two boxes can point at each other and neither count ever
+    /// reaches zero (#1672). The answer is the chain of type names from the
+    /// payload back to the owner, for the message.
+    pub fn shared_cycle(&self, owner: TypeId, payload: &Type) -> Option<Vec<String>> {
+        let mut starts = Vec::new();
+        self.shared_targets(payload, &mut Vec::new(), &mut starts);
+        let mut visited: Vec<TypeId> = Vec::new();
+        for start in starts {
+            let mut path = vec![start];
+            if self.shared_path_to(start, owner, &mut visited, &mut path) {
+                return Some(path.iter().map(|id| self.type_name(*id)).collect());
+            }
+        }
+        None
+    }
+
+    fn shared_path_to(
+        &self,
+        from: TypeId,
+        to: TypeId,
+        visited: &mut Vec<TypeId>,
+        path: &mut Vec<TypeId>,
+    ) -> bool {
+        if from == to {
+            return true;
+        }
+        if visited.contains(&from) {
+            return false;
+        }
+        visited.push(from);
+        for next in self.shared_edges(from) {
+            path.push(next);
+            if self.shared_path_to(next, to, visited, path) {
+                return true;
+            }
+            path.pop();
+        }
+        false
     }
 
     /// Container wrappers that hold values without becoming linear themselves.

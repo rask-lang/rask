@@ -2279,11 +2279,12 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
 fn error_rack_delete_undeclared() {
     let (failed, out) = compile_error_output("rack_delete_undeclared.rk");
     assert!(failed, "an undeclared unnamed delete must be rejected: {}", out);
-    // Three ways to pick your own victim: walk the rack, clear it, or hand a
-    // link you derived to something that consumes it.
+    // Four ways to pick your own victim: walk the rack, clear it, hand a link
+    // you derived to something that consumes it, or hand the rack itself to a
+    // `deleting` parameter (#1664) — plus the two-rack blame case below.
     assert_eq!(
         out.matches("error[E0329]").count(),
-        4,
+        5,
         "each unnamed delete is reported once: {}",
         out
     );
@@ -2708,10 +2709,12 @@ fn error_resource_unconsumed_in_test_body() {
 fn error_a_task_local_shared_cannot_be_sent() {
     let (failed, out) = compile_error_output("local_shared_sent.rk");
     assert!(failed, "sending a `Local` box must be rejected: {}", out);
+    // The bare `Shared.local` capture and the one a struct field down (#1669);
+    // neither the default nor the `mutex` box is reported.
     assert_eq!(
         out.matches("error[E0346]").count(),
-        1,
-        "exactly the `Shared.local` capture, not the default or the `mutex` one: {}",
+        2,
+        "exactly the two `Shared.local` captures, not the default or the `mutex` one: {}",
         out
     );
     assert!(
@@ -2722,6 +2725,31 @@ fn error_a_task_local_shared_cannot_be_sent() {
     assert!(
         out.contains("Shared.new") && out.contains("Shared.mutex"),
         "and it has to name the ways out: {}",
+        out
+    );
+}
+
+#[test]
+fn error_shared_cycle() {
+    let (failed, out) = compile_error_output("shared_cycle.rk");
+    assert!(failed, "a box that can hold its own holder must be rejected: {}", out);
+    // Direct, two mutual, through a Vec, and by value: five fields close a
+    // cycle. The box over a config and the box over a rack of linked nodes
+    // are the shapes that must stay legal.
+    assert_eq!(
+        out.matches("error[E0925]").count(),
+        5,
+        "one error per field that closes a box cycle, none for the rack or the config: {}",
+        out
+    );
+    assert!(
+        out.contains("Inner.back") && out.contains("Outer"),
+        "the by-value case names the holder the payload reaches: {}",
+        out
+    );
+    assert!(
+        out.contains("Shared<Rack<"),
+        "the fix has to point at the rack: {}",
         out
     );
 }
