@@ -98,7 +98,7 @@ Allocation already costs a `malloc`; the indirect call next to it is noise. The 
 
 | Allocator | Description |
 |-----------|-------------|
-| `Global` | System allocator (malloc/free). Default |
+| `Global` | The process allocator. `malloc`/`free` unless the program replaces it before its first allocation (`rask_allocator_set` in the runtime), which is how a build with no OS gets a heap over a static buffer ([bare-metal.md](../analysis/bare-metal.md)). Default |
 | `Arena` | Bump allocator. Bulk free on drop, `dealloc` is a no-op. Fixed size, exhaustion is `AllocError`, never a hidden `malloc` |
 | `FixedBuffer` | Allocates from a `[u8; N]` the caller owns. No system calls. Embedded-friendly |
 
