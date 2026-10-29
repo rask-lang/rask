@@ -30,7 +30,7 @@ func held_node_deleted() {
         println(first)
     }
     with a.items[0] as first {
-        r.delete(a)              // ERROR: E0926
+        r.delete(a)              // ERROR: E0928
         println(first)
     }
 }
@@ -39,13 +39,13 @@ func held_node_cleared() {
     mut r: Rack<Node> = Rack.new()
     let a = r.insert(Node(v: 1, items: [1, 2], next: none))
     with a.items[0] as first {
-        r.clear()                // ERROR: E0926
+        r.clear()                // ERROR: E0928
         println(first)
     }
     // `clear` killed `a`, so the loop holds a node of its own.
     let c = r.insert(Node(v: 3, items: [4], next: none))
     for mutate x in c.items {
-        kill_all(deleting r)     // ERROR: E0926
+        kill_all(deleting r)     // ERROR: E0928
         x += 1
     }
 }

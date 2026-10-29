@@ -4857,7 +4857,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "this can delete the node holding `{}`, and {} is still using it",
                     collection, holder
                 ))
-                .with_code("E0926")
+                .with_code("E0928")
                 .with_primary(self.span, format!("the node `{}` names can be freed here", link))
                 .with_secondary(*holder_span, format!("`{}` is held from here until the block ends", collection))
                 .with_fix(format!(
