@@ -15,6 +15,11 @@ extend claims {
     @builtin
     public func input<T: Decode>(name: string) -> T {}
 
+    /// Fill the value at `dst` from the claim's choices, through the shape a
+    /// decode of its type reads. What `input` lowers to.
+    @native("rask_claim_fill")
+    func fill(dst: i64, shape: i64) {}
+
     /// Record how an input prints, as `name = value`.
     @native("rask_claim_note_input")
     public func note_input(text: string) {}

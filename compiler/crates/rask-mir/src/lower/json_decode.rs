@@ -495,7 +495,7 @@ impl<'a> MirLowerer<'a> {
         let dst_size = if scalar_dst { 16 } else { target_mir.size() as i64 };
         for (func, args) in [
             ("json_decode_zero", vec![MirOperand::Local(dst), MirOperand::Constant(MirConst::Int(dst_size))]),
-            ("claim_fill", vec![MirOperand::Local(dst), MirOperand::Local(shape)]),
+            ("claims_fill", vec![MirOperand::Local(dst), MirOperand::Local(shape)]),
             ("json_shape_free", vec![MirOperand::Local(shape)]),
         ] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
