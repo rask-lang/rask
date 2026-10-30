@@ -19,6 +19,12 @@ pub enum BindingState {
     Borrowed { mode: BorrowMode, scope: BorrowScope },
     /// The value was explicitly discarded; any use is an error (D1).
     Discarded { at: Span },
+    /// The binding still owns its value and still owes whatever the value
+    /// owes, but a raw pointer in it points into something that changed size,
+    /// moved, was replaced or went out of scope at `at` (mem.unsafe/PT3).
+    /// Reading the pointer, or the whole value, is an error; reading a part
+    /// that holds no pointer is fine.
+    PointerDead { at: Span },
 }
 
 /// Whether a borrow is shared (read-only) or exclusive (mutable).

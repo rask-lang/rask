@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a raw pointer points into stays alive while the pointer is in use
+// (mem.unsafe/PT5).
+//
+// `s.as_ptr()` was the string's last use by name, so native released the
+// buffer right there and the read after the loop read freed memory. The
+// memcheck gate sees the read; the assert alone may not, since freed bytes
+// often still hold the old value.
+
+test "a pointer into a heap string reads it after other allocations" {
+    let a = "hello world, a string long enough to live on the heap"
+    let s = "{a}{a}"
+    let p: *u8 = unsafe s.as_ptr()
+    mut filler: Vec<string> = Vec.new()
+    mut i = 0
+    while i < 200 {
+        filler.push("{a}{i}")
+        i += 1
+    }
+    let first = unsafe *p
+    assert first == 104
+    assert filler.len() == 200
+}

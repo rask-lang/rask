@@ -172,7 +172,7 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 | Rule | Description |
 |------|-------------|
 | **W1: First-class block** | `with` is a real scope — `return` exits the function, `try` propagates to the enclosing function, `break`/`continue` work for surrounding loops |
-| **W2: No structural mutation** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, push, pop, clear). Reading and writing other elements via inline access is allowed |
+| **W2: No structural mutation** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, push, pop, clear) or replaced (`v = …`, `h.items = …`), however the change gets there: a method on the source, a method on what holds it (`h.reset()` resizing `self.items`), or a helper handed it as `mutate` whose body can resize that parameter, directly or through further calls. Whether a helper can is inferred from its body (`comp.advanced/EF3`); a helper that only writes elements, or grows a vector of its own, is fine. The source may be a field (`with h.items[0]`), and then a change to any other field of `h` is fine too. Reading and writing other elements via inline access is allowed |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
 | **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation; the modified value writes back to the source at block exit. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), and plain reads use inline access |

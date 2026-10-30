@@ -138,7 +138,6 @@ impl TypeChecker {
                 self.note_linear_container_site(*name_span, binding_ty);
                 // E5: Cannot store sync access result in a variable
                 self.check_sync_access_in_binding(init);
-                self.note_closure_binding(name, init);
                 self.clear_expression_borrows();
             }
             StmtKind::Let { name, name_span, ty, init } => {
@@ -186,7 +185,6 @@ impl TypeChecker {
                 self.note_linear_container_site(*name_span, binding_ty);
                 // E5: Cannot store sync access result in a variable
                 self.check_sync_access_in_binding(init);
-                self.note_closure_binding(name, init);
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value, .. } => {
@@ -287,9 +285,6 @@ impl TypeChecker {
                 // the optional shape `T` widens to `T?` at the lvalue, same as a
                 // binding. Bind keeps `T or E` (E ≠ none) strict.
                 self.coerce_into_node(CoercionSite::Assignment, value_ty, target_ty, Some(value.id), stmt.span);
-                if let ExprKind::Ident(name) = &target.kind {
-                    self.note_closure_binding(name, value);
-                }
                 self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {

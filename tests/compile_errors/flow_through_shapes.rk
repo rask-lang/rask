@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A restricted value is restricted wherever it goes, whatever shape it goes in.
+//
+// Each of these compiled while each restriction had its own walk: the link
+// check looked inside tuples and structs but not branches, the lookup check
+// looked inside branches but not tuples, and only at a `return`, and the
+// frame-bound closure check looked at neither (#1662). One walk now hands every value that reaches a
+// destination to every check.
+
+import memory.Rack
+import memory.Link
+
+struct Holder {
+    items: Vec<i32>
+}
+
+struct Node {
+    v: i32
+    next: Link<Node>?
+}
+
+// A lookup's element stored into a field: `rows` still holds it.
+func lent_into_field(rows: Vec<Vec<i32>>) {
+    mut h = Holder(items: Vec.new())
+    h.items = rows[0]            // ERROR: E0879
+    h.items.push(9)
+}
+
+// A lookup's element returned inside a tuple.
+func lent_in_tuple(rows: Vec<Vec<i32>>) -> (Vec<i32>, i32) {
+    return (rows[0], 1)          // ERROR: E0879
+}
+
+// A link into a rack this body declared, returned through an `if`.
+func link_through_if(b: bool) -> Link<Node> {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, next: none))
+    let c = r.insert(Node(v: 2, next: none))
+    return if b { a } else { c }  // ERROR: E0379
+}
+
+// The same through a `match`. Two arms naming one link are one error.
+func link_through_match(k: i32) -> Link<Node> {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, next: none))
+    return match k {             // ERROR: E0379
+        0 => a,
+        _ => a,
+    }
+}
+
+// A closure over `v`, which dies here, returned through an `if` and inside a
+// tuple. Only a bare name or the returned expression itself used to be asked.
+func make(base: Vec<i64>) -> func(i64) -> i64 {
+    return |x| x + base.len().wrap<i64>()
+}
+
+func closure_through_if(c: bool) -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    let f = make(v)
+    return if c { f } else { f }  // ERROR: E0862
+}
+
+func closure_in_tuple() -> (func(i64) -> i64, i32) {
+    let v: Vec<i64> = [1, 2]
+    return (make(v), 1)          // ERROR: E0862
+}
+
+// The limit rides along in an aggregate bound to a name, and comes back out
+// of it by destructuring or a field read.
+struct Callback {
+    cb: func(i64) -> i64
+    n: i32
+}
+
+func closure_in_bound_tuple() -> (func(i64) -> i64, i32) {
+    let v: Vec<i64> = [1, 2]
+    let p = (make(v), 1)
+    return p                     // ERROR: E0862
+}
+
+func closure_destructured() -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    let p = (make(v), 1)
+    let (f, _) = p
+    return f                     // ERROR: E0862
+}
+
+func closure_field_read() -> func(i64) -> i64 {
+    let v: Vec<i64> = [1, 2]
+    let h = Callback(cb: make(v), n: 2)
+    return h.cb                  // ERROR: E0862
+}
+
+// Fine: the aggregate never leaves, and a part that can't hold a closure
+// carries no limit.
+func closure_kept_local() -> i32 {
+    let v: Vec<i64> = [1, 2]
+    let p = (make(v), 1)
+    let (f, n) = p
+    println("{f(1)}")
+    let h = Callback(cb: make(v), n: 2)
+    return h.n + n
+}
+
+// Fine: the copy is written down.
+func lent_copied(rows: Vec<Vec<i32>>) -> (Vec<i32>, i32) {
+    return (rows[0].clone(), 1)
+}
+
+// Fine: the rack is the caller's, so the link outlives this call.
+func link_into_callers(mutate r: Rack<Node>, b: bool) -> Link<Node> {
+    let a = r.insert(Node(v: 1, next: none))
+    let c = r.insert(Node(v: 2, next: none))
+    return if b { a } else { c }
+}
+
+func main() {
+    let rows: Vec<Vec<i32>> = [[1, 2], [3, 4]]
+    lent_into_field(rows)
+    let _ = lent_in_tuple(rows)
+    let _ = lent_copied(rows)
+    mut r: Rack<Node> = Rack.new()
+    let _ = link_into_callers(mutate r, true)
+    let _ = closure_kept_local()
+}

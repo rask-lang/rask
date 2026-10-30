@@ -73,7 +73,7 @@ pub enum OwnershipErrorKind {
     /// with two owners.
     #[error("`{path}` would get a second owner")]
     FieldViewStored {
-        into: ViewSink,
+        into: Sink,
         path: String,
         /// `src` of `src.items`.
         root: String,
@@ -111,14 +111,18 @@ pub enum OwnershipErrorKind {
         field_ty: String,
     },
 
-    /// mem.borrowing/S3 one level out: a value a container lent, returned.
+    /// mem.borrowing/S3 one level out: a value a container lent, given a
+    /// second owner — returned, stored in a field, or built into a tuple,
+    /// struct or variant.
     ///
     /// `return index.get(word) ?? Vec.new()` is fresh on one path and the map's
     /// own vector on the other. One name, two owners — freeing it corrupts the
     /// map, not freeing it leaks — so the shape is rejected and the copy is
     /// written down.
-    #[error("`{call}` hands back what `{holder}` still holds — returning it gives the caller a second name for it")]
+    #[error("`{call}` hands back what `{holder}` still holds, and this would give it a second owner")]
     LentValueEscapes {
+        /// Where it was going.
+        into: Sink,
         /// `index.get(…)`.
         call: String,
         /// The container the value belongs to. Not called `source`:
@@ -314,6 +318,24 @@ pub enum OwnershipErrorKind {
     ConsumedBorrowedParam {
         name: String,
         ty: String,
+    },
+
+    /// conc.sync/SH7: a task-local `Shared` captured by a task block.
+    #[error("this `Shared` is task-local and cannot be sent")]
+    LocalSharedSent {
+        name: String,
+    },
+
+    /// mem.ownership/T2: a value carrying a `Link` captured by a task block.
+    /// A link is a node's address; two tasks holding it would both write the
+    /// node.
+    #[error("`{name}` holds a link, which can't go to another task")]
+    LinkSent {
+        name: String,
+        /// The captured value's type, for the message.
+        ty: String,
+        /// The value is a link itself rather than something holding one.
+        bare_link: bool,
     },
 
     /// analysis.fourth-option: a link that would outlive the rack it points into.
@@ -545,7 +567,50 @@ pub enum OwnershipErrorKind {
     WithBlockStructuralMutation {
         collection: String,
         operation: String,
+        /// The callee that would do it, when the change is a parameter the
+        /// callee resizes rather than a method on the held name itself.
+        via: Option<String>,
         binding_span: Span,
+    },
+
+    /// RK1 with W2/LP14: the rack node a `with` or `for mutate` holds a
+    /// place in, deleted while it does.
+    #[error("the node holding `{collection}` is deleted while it's in use")]
+    HeldNodeDeleted {
+        /// The held source as written: `a.items`.
+        collection: String,
+        /// The link that names the node: `a`.
+        link: String,
+        /// The `with` binding or the loop.
+        holder_span: Span,
+        in_loop: bool,
+    },
+
+    /// mem.unsafe/PT3: a pointer used after what it points into changed
+    /// size, moved, was replaced, or went out of scope.
+    #[error("`{name}` points into `{pointee}`, which is gone or has moved")]
+    PointerDangles {
+        name: String,
+        pointee: String,
+        loss: PointerLoss,
+        lost_at: Span,
+    },
+
+    /// mem.unsafe/PT2: a pointer into this frame going somewhere that
+    /// outlives what it points into.
+    #[error("a pointer into `{pointee}` would outlive it")]
+    PointerEscapes {
+        pointee: String,
+        into: PointerSink,
+    },
+
+    /// mem.unsafe/PT4: a write through a pointer into something a `with` or
+    /// `for mutate` holds a place in.
+    #[error("writing through a pointer into `{pointee}` while it's held")]
+    PointerWriteUnderView {
+        pointee: String,
+        holder_span: Span,
+        in_loop: bool,
     },
 
     /// LP14: structural mutation during `for mutate`
@@ -553,6 +618,8 @@ pub enum OwnershipErrorKind {
     ForMutateStructuralMutation {
         collection: String,
         operation: String,
+        /// As in `WithBlockStructuralMutation`.
+        via: Option<String>,
         loop_span: Span,
     },
 
@@ -642,11 +709,16 @@ pub enum OwnershipErrorKind {
     },
 }
 
-/// What a field view was handed to. Drives the E0909 copy.
+/// Where a value is handed: every place it gets a new holder. The ownership
+/// pass asks one question at each (`check_flow`), and the messages name the
+/// destination from this.
 #[derive(Debug, Clone)]
-pub enum ViewSink {
-    /// `out.items = …`, `v = …`: the place, rendered.
-    Place(String),
+pub enum Sink {
+    /// `return …`, or a closure's result.
+    Return,
+    /// `out.items = …`, `v = …`: the place rendered, and the binding it
+    /// belongs to.
+    Place { place: String, root: String },
     /// `Bag(items: …)`.
     StructField { ty: String, field: String },
     /// `(…, 1)` or `[…]`.
@@ -657,6 +729,32 @@ pub enum ViewSink {
     Heap,
     /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
     TakeArg { callee: String },
+}
+
+/// What happened to the value a pointer points into (mem.unsafe/PT3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PointerLoss {
+    /// It changed size, so its buffer may have moved: `push`, or a call that
+    /// resizes it through a `mutate` parameter (`via` names that call).
+    Resized { operation: String, via: Option<String> },
+    /// It was moved or consumed.
+    Moved,
+    /// An assignment replaced it, freeing what it held.
+    Replaced,
+    /// Its block ended.
+    OutOfScope,
+}
+
+/// Where a pointer into this frame was going (mem.unsafe/PT2).
+#[derive(Debug, Clone)]
+pub enum PointerSink {
+    /// Out of the function.
+    Return,
+    /// Into a place the caller can see: a field of a parameter, a `mutate`
+    /// parameter.
+    Place(String),
+    /// Into a task, as this capture.
+    Task(String),
 }
 
 /// How a link escapes its rack's scope. Drives the E0379 copy.

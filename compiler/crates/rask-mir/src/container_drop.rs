@@ -274,7 +274,7 @@ fn env_drop_glue(
                 let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else {
                     continue;
                 };
-                for c in captures.iter().filter(|c| !c.by_ref) {
+                for c in captures.iter().filter(|c| !c.by_ref && !c.lent) {
                     *capturers.entry((func.name.clone(), c.local_id)).or_default() += 1;
                 }
             }
@@ -379,7 +379,7 @@ fn env_drop_glue(
                 };
                 let mut owned: Vec<EnvSlot> = captures
                     .iter()
-                    .filter(|c| !c.by_ref)
+                    .filter(|c| !c.by_ref && !c.lent)
                     .filter(|c| {
                         capturers
                             .get(&(func.name.clone(), c.local_id))
@@ -414,7 +414,7 @@ fn env_drop_glue(
                     captures
                         .iter()
                         .filter(|_| !frame_drops.contains(dst))
-                        .filter(|c| !c.by_ref)
+                        .filter(|c| !c.by_ref && !c.lent)
                         .filter(|c| !gone(c))
                         .filter(|c| made_each_turn(c))
                         .filter(|c| made_here.contains_key(&c.local_id))
@@ -438,7 +438,7 @@ fn env_drop_glue(
                 owned.extend(
                     captures
                         .iter()
-                        .filter(|c| !c.by_ref)
+                        .filter(|c| !c.by_ref && !c.lent)
                         .filter(|c| !gone(c))
                         .filter(|c| retained_here.contains(&c.local_id))
                         .filter(|c| !owned.iter().any(|o| o.offset == c.offset))
@@ -458,7 +458,7 @@ fn env_drop_glue(
                 owned.extend(
                     captures
                         .iter()
-                        .filter(|c| !c.by_ref)
+                        .filter(|c| !c.by_ref && !c.lent)
                         .filter(|c| !gone(c))
                         .filter(|c| func.local_ty(c.local_id) == Some(&MirType::Buffer))
                         .map(|c| EnvSlot { offset: c.offset, holds: Holds::Str }),
@@ -1015,8 +1015,12 @@ fn param_is_kept_by(
                         consumed.get(func_name.as_str()).is_none_or(|offs| offs.contains(&offset))
                     };
                     let dies_with_frame = !*heap || frees_last.contains(dst);
+                    // A lent capture is held for the caller, never handed over
+                    // (CM3): the frame that owns it still frees it (#1679).
                     if captures.iter().any(|c| {
-                        names.contains(&c.local_id) && (!dies_with_frame || body_consumes(c.offset))
+                        names.contains(&c.local_id)
+                            && !c.lent
+                            && (!dies_with_frame || body_consumes(c.offset))
                     }) {
                         return true;
                     }
@@ -1942,7 +1946,9 @@ fn container_facts(
                         if cap.by_ref && lent.slots.contains_key(&cap.local_id) {
                             ev.push(Event::View { dst: *dst, base: cap.local_id });
                             ev.push(Event::WriteThrough(cap.local_id));
-                        } else if !*heap && env(dst) && !cap.by_ref {
+                        } else if (!*heap && env(dst) && !cap.by_ref) || cap.lent {
+                            // A lent capture is viewed, not handed over: the
+                            // closure holds the caller's value for it (CM3).
                             ev.push(Event::View { dst: *dst, base: cap.local_id });
                         } else {
                             ev.push(Event::HandOver(cap.local_id));
@@ -2097,7 +2103,7 @@ fn captures_freed_with_the_closure(
     let mut capturers: HashMap<LocalId, usize> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else { continue };
-        for c in captures.iter().filter(|c| !c.by_ref) {
+        for c in captures.iter().filter(|c| !c.by_ref && !c.lent) {
             *capturers.entry(c.local_id).or_default() += 1;
         }
     }
@@ -2110,7 +2116,7 @@ fn captures_freed_with_the_closure(
         if !dropped.contains(dst) {
             continue;
         }
-        for c in captures.iter().filter(|c| !c.by_ref) {
+        for c in captures.iter().filter(|c| !c.by_ref && !c.lent) {
             if capturers.get(&c.local_id).copied().unwrap_or(0) != 1 {
                 continue;
             }

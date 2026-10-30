@@ -323,6 +323,25 @@ impl Type {
         matches!(self, Type::Result { err, .. } if **err == Type::None)
     }
 
+    /// Does this type mention a name `is_param` says is a type parameter?
+    /// A closure capturing such a value is judged per instantiation.
+    pub fn mentions_type_param(&self, is_param: &dyn Fn(&str) -> bool) -> bool {
+        let arg = |a: &GenericArg| matches!(a, GenericArg::Type(t) if t.mentions_type_param(is_param));
+        match self {
+            Type::UnresolvedNamed(n) => is_param(n),
+            Type::Generic { args, .. } => args.iter().any(arg),
+            Type::UnresolvedGeneric { args, .. } => args.iter().any(arg),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(|t| t.mentions_type_param(is_param))
+            }
+            Type::Array { elem, .. } => elem.mentions_type_param(is_param),
+            Type::Result { ok, err } => {
+                ok.mentions_type_param(is_param) || err.mentions_type_param(is_param)
+            }
+            _ => false,
+        }
+    }
+
     /// Unwrap the inner type if this is an optional (`T or none`).
     pub fn as_option(&self) -> Option<&Type> {
         if let Type::Result { ok, err } = self {
